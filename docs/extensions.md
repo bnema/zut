@@ -136,6 +136,7 @@ manifest tells zut how to launch it:
   "language": "go",
   "description": "current weather for any city",
   "skills": ["skills"],
+  "host_env": ["WEATHER_API_TOKEN"],
   "enabled": true
 }
 ```
@@ -149,14 +150,13 @@ manifest tells zut how to launch it:
 | `language` | optional. informational only (`go`, `python`, `typescript`, ...). |
 | `description` | optional. shown in `zut ext list`. |
 | `skills` | optional. relative directories containing bundled `<name>/SKILL.md` files or a direct `SKILL.md`. Paths must remain inside the extension directory. |
+| `host_env` | optional. uppercase environment-variable names to copy explicitly from the host. Intended for extension-specific tokens. |
 | `enabled` | optional, defaults to `true`. set to `false` to disable without removing. |
 
 ## Lifecycle
 
 1. **Discovery**: zut reads every `extension.json` in the search dirs.
-2. **Spawn**: enabled extensions are launched as subprocesses. stderr
-   redirects to `$ZUT_HOME/logs/ext-<name>.log` (one file per
-   extension, append-mode).
+2. **Spawn**: enabled extensions are launched as subprocesses. stdout is reserved for protocol frames. stderr and host diagnostics go to `$ZUT_HOME/logs/ext-<name>.log`, which is truncated on each launch, limited to 1 MiB, and created with user-only permissions where supported.
 3. **Hello handshake**: the extension's first stdout frame must be
    `hello` with `protocol_version: 2`; zut rejects a mismatched major
    and replies with `hello_ack` containing the same protocol version,
@@ -182,6 +182,14 @@ manifest tells zut how to launch it:
 A crashing extension does not bring down zut. The slash command it
 owned simply stops working until the extension is fixed and zut is
 restarted.
+
+### Process environment and credentials
+
+Extension processes do not inherit zut's complete environment. The default launch environment retains only runtime basics when they are set: `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, and the Windows variables `USERPROFILE`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`, and `PATHEXT`. Unix launches also receive `PWD` set to the extension directory.
+
+Use `host_env` to request an extension-specific credential or configuration value by name. Names use portable uppercase identifier syntax, are bounded, and cannot duplicate baseline variables. Variables that alter executable loading or inject runtime options—such as `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, and `BASH_ENV`—are rejected. Missing requested variables are omitted; explicitly empty variables remain present. Values are delivered only in the child environment and are never copied into protocol frames or zut diagnostics.
+
+`host_env` reduces accidental ambient credential exposure; it is not an approval system or sandbox. Installing or enabling an extension runs code with the user's OS permissions. An extension may access files and other resources available to that user, and it can print received values to its own bounded stderr log. Review extension code and manifests before enabling them. Theme-only extensions do not launch a process and receive no environment.
 
 ## Wire format
 
