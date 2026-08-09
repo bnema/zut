@@ -1974,6 +1974,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			oldCloseErr = oldSess.Close()
 		}
 		sess = candidate.session
+		candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
 		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
 		// The live agent only receives a compact resume window, but the
 		// session file remains intact. Keep the persistence baseline at
@@ -2180,6 +2181,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		sess = newSess
 		if newSess != nil {
+			newAg.SetSessionTimeContext(newSess.Meta.Started, newSess.Meta.Timezone, newSess.Meta.TimezoneOffset)
 			newStates = copyExtensionStates(newSess.ExtensionState)
 		}
 		sessBaselineMsgs = 0

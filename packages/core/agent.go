@@ -892,9 +892,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) (res ToolResult) {
 	started := time.Now()
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		if recover() != nil {
 			res = ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("panic: %v", recovered)}},
+				Content: []provider.Content{provider.TextBlock{Text: "tool execution failed"}},
 				IsError: true,
 			}
 		}
@@ -904,8 +904,6 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 			Duration:    time.Since(started),
 		}
 	}()
-
-	sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
 
 	tool, err := tools.Get(tc.Name)
 	if err != nil {
@@ -945,6 +943,7 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 
 	// Tool panics are recovered by the invocation-level defer above so
 	// guard, lookup, progress, and Execute panics all receive timing.
+	sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
 	out, err := tool.Execute(ctx, args, func(text string) {
 		sink(EvToolProgress{ID: tc.ID, Text: text})
 	})

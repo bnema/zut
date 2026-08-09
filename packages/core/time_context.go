@@ -38,13 +38,16 @@ func (a *Agent) SetSessionTimeContext(started time.Time, timezone, offset string
 		return
 	}
 	location := time.Local
-	if offset != "" {
-		if fixed := parseUTCOffset(offset); fixed != nil {
-			location = fixed
-		}
-	} else if timezone != "" && timezone != "Local" {
+	loadedTimezone := false
+	if timezone != "" && timezone != "Local" {
 		if loaded, err := time.LoadLocation(timezone); err == nil {
 			location = loaded
+			loadedTimezone = true
+		}
+	}
+	if !loadedTimezone && offset != "" {
+		if fixed := parseUTCOffset(offset); fixed != nil {
+			location = fixed
 		}
 	}
 	if timezone == "" {

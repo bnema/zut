@@ -116,6 +116,35 @@ func TestRunOneToolEmitsExecutionStartedAfterApproval(t *testing.T) {
 	}
 }
 
+func TestRunOneToolDoesNotEmitExecutionStartedForMissingOrDeniedTools(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tools Registry
+		guard func(provider.ToolCallBlock) (bool, string, json.RawMessage)
+	}{
+		{name: "missing tool", tools: Registry{}},
+		{
+			name:  "denied tool",
+			tools: Registry{"echo": &recordingTool{}},
+			guard: func(provider.ToolCallBlock) (bool, string, json.RawMessage) { return false, "denied", nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewAgent(nil, "test", "", tc.tools)
+			a.BeforeToolExecute = tc.guard
+			var started int
+			a.runOneTool(context.Background(), provider.ToolCallBlock{ID: "T1", Name: "echo"}, a.ToolsSnapshot(), func(event AgentEvent) {
+				if _, ok := event.(EvToolExecutionStarted); ok {
+					started++
+				}
+			})
+			if started != 0 {
+				t.Fatalf("execution-started events = %d, want none", started)
+			}
+		})
+	}
+}
+
 // TestBeforeToolExecuteBlockSurfacesReason verifies a refusal from
 // the interceptor returns an error ToolResult with the reason text.
 func TestBeforeToolExecuteBlockSurfacesReason(t *testing.T) {
@@ -174,6 +203,12 @@ func TestRunOneToolTimingCoversOutcomes(t *testing.T) {
 			}
 			res := a.runOneTool(tc.ctx, provider.ToolCallBlock{ID: "timed", Name: callName}, tc.tools, func(AgentEvent) {})
 			assertToolTiming(t, res.Timing)
+			if tc.name == "panic" {
+				text, ok := res.Content[0].(provider.TextBlock)
+				if !ok || text.Text != "tool execution failed" {
+					t.Fatalf("panic result = %#v, want generic tool execution error", res.Content)
+				}
+			}
 		})
 	}
 }

@@ -30,6 +30,15 @@ func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 				continue
 			}
 
+			timingText := ""
+			if result.Timing != nil {
+				candidate := formatToolTiming(result.Timing)
+				if len(candidate) <= remaining {
+					timingText = candidate
+					remaining -= len(candidate)
+				}
+			}
+
 			textBytes := toolResultTextBytes(result.Content)
 			if textBytes > 0 {
 				limit := maxToolResultTextBytes
@@ -40,8 +49,8 @@ func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 				result.Content, retained = projectToolResultContent(result.Content, limit)
 				remaining -= retained
 			}
-			if result.Timing != nil {
-				result.Content = append(result.Content, provider.TextBlock{Text: formatToolTiming(result.Timing)})
+			if timingText != "" {
+				result.Content = append(result.Content, provider.TextBlock{Text: timingText})
 			}
 			projected[i].Content[j] = result
 		}
