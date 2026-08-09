@@ -545,6 +545,72 @@ func TestSubagentSpawnRejectsPartialModelProviderOverride(t *testing.T) {
 	}
 }
 
+func TestSubagentSpawnReportsStructuredUnavailableReasons(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		tool := &SubagentSpawnTool{Supervisor: newTestSupervisor(t), Enabled: func() bool { return false }}
+		res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review"}`), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Details.(map[string]any)["reason"]; got != "feature_disabled" {
+			t.Fatalf("reason = %v, want feature_disabled", got)
+		}
+	})
+
+	t.Run("profile disallowed", func(t *testing.T) {
+		tool := &SubagentSpawnTool{Supervisor: newTestSupervisor(t), Enabled: func() bool { return true }}
+		res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review","agent":"reviewer"}`), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Details.(map[string]any)["reason"]; got != "profile_disallowed" {
+			t.Fatalf("reason = %v, want profile_disallowed", got)
+		}
+	})
+}
+
+func TestSubagentSpawnReportsExhaustionAndCapacityRecovery(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	manager := subagents.New(subagents.Config{
+		Root: filepath.Join(root, "subagents"), RepoRoot: root,
+		Policy: subagents.SubagentPolicy{MaxConcurrent: 1},
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+				started <- struct{}{}
+				<-release
+				return nil
+			})
+		},
+	})
+	t.Cleanup(manager.StopAll)
+	first, err := manager.Spawn(context.Background(), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first worker did not start")
+	}
+
+	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"second"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Details.(map[string]any)["reason"]; got != "quota_exhausted" {
+		t.Fatalf("reason = %v, want quota_exhausted", got)
+	}
+
+	close(release)
+	first.Wait()
+	if capacity := manager.Capacity(); !capacity.Available || capacity.Remaining != 1 {
+		t.Fatalf("capacity after completion = %+v", capacity)
+	}
+}
+
 func textResult(content []provider.Content) string {
 	if len(content) == 0 {
 		return ""

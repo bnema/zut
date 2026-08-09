@@ -131,10 +131,13 @@ func (t *SubagentSpawnTool) Schema() json.RawMessage {
 func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	prefix := t.Name()
 	if t.Supervisor == nil {
-		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
+		return protocolToolUnavailable(prefix+": subagent supervisor not available in this mode", "feature_disabled")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": subagent delegation is unavailable in this mode")
+		return protocolToolUnavailable(prefix+": subagent delegation is unavailable in this mode", "feature_disabled")
+	}
+	if capacity := t.Supervisor.Capacity(); !capacity.Available {
+		return protocolToolUnavailable(prefix+": subagent delegation capacity is exhausted", string(capacity.Reason))
 	}
 	var a subagentSpawnArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -175,15 +178,15 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	fastModeFromProfile := false
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
-			return protocolToolError(prefix + ": named subagent profiles are unavailable")
+			return protocolToolUnavailable(prefix+": named subagent profiles are unavailable", "profile_disallowed")
 		}
 		var err error
 		profile, err = t.ResolveSubagent(agentName)
 		if err != nil {
-			return protocolToolError(prefix + ": " + err.Error())
+			return protocolToolUnavailable(prefix+": "+err.Error(), "profile_disallowed")
 		}
 		if profile == nil {
-			return protocolToolError(prefix + ": unknown subagent profile " + agentName)
+			return protocolToolUnavailable(prefix+": unknown subagent profile "+agentName, "profile_disallowed")
 		}
 		agentName = profile.Name
 		fastModeOverride = profile.FastMode
@@ -338,6 +341,12 @@ func reasoningOverride(reasoning, thinking string) (string, error) {
 func protocolToolError(msg string) (core.ToolResult, error) {
 	//nolint:nilerr // ToolResult.IsError is the established tool protocol.
 	return toolErr(msg), nil
+}
+
+func protocolToolUnavailable(msg, reason string) (core.ToolResult, error) {
+	result := toolErr(msg)
+	result.Details = map[string]any{"reason": reason}
+	return result, nil
 }
 
 func toolErr(msg string) core.ToolResult {

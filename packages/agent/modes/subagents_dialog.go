@@ -36,6 +36,7 @@ type subagentsDialog struct {
 	compactMode bool
 	lineInput   bool
 	snapshot    func() []subagents.AgentSnapshot
+	capacity    func() subagents.Capacity
 	stop        func(id string) error
 	remove      func(id string) error
 	// spawn accepts an optional model + provider override (empty
@@ -117,6 +118,10 @@ type subagentsDialog struct {
 }
 
 func newSubagentsDialog() *subagentsDialog { return &subagentsDialog{} }
+
+func (d *subagentsDialog) SetCapacity(capacity func() subagents.Capacity) {
+	d.capacity = capacity
+}
 
 func (d *subagentsDialog) SetCompactMode(enabled bool) {
 	d.compactMode = enabled
@@ -1023,6 +1028,14 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	out := []string{frameHeader(th, "subagents (n new, p prompt, R resume, ↑/↓ move, enter view, k kill, r remove, esc close)", width)}
+	if d.capacity != nil {
+		capacity := d.capacity()
+		if capacity.Available {
+			out = append(out, "  "+th.FGColor(th.Muted, fmt.Sprintf("delegation capacity: %d of %d available", capacity.Remaining, capacity.Limit)))
+		} else {
+			out = append(out, "  "+th.FGColor(th.Muted, "delegation unavailable: all worker slots are in use"))
+		}
+	}
 	if d.prompting {
 		return d.renderPromptEditor(th, width, out)
 	}

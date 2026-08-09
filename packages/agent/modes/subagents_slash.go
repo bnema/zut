@@ -78,6 +78,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	i.subagentsDialog.SetCompactMode(i.compactModeEnabled())
 	i.subagentsDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
 	i.subagentsDialog.SetLoadTranscript(i.cfg.Supervisor.LoadTranscript)
+	i.subagentsDialog.SetCapacity(i.cfg.Supervisor.Capacity)
 	i.subagentsDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)
 	if i.cfg.LoggedInProviders != nil {
 		i.subagentsDialog.SetLoggedInProviders(i.cfg.LoggedInProviders())

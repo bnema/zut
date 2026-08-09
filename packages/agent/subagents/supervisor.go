@@ -215,6 +215,24 @@ func (f *Supervisor) MaxTurns() int {
 	return f.cfg.Policy.MaxTurns
 }
 
+// Capacity reports whether another worker can start immediately.
+func (f *Supervisor) Capacity() Capacity {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	remaining := max(f.cfg.Policy.MaxConcurrent-f.active, 0)
+	reason := CapacityAvailable
+	if remaining == 0 {
+		reason = CapacityQuotaExhausted
+	}
+	return Capacity{
+		Available: remaining > 0,
+		Remaining: remaining,
+		Active:    f.active,
+		Limit:     f.cfg.Policy.MaxConcurrent,
+		Reason:    reason,
+	}
+}
+
 // SetFastMode updates the fast-mode setting for subsequently spawned
 // children. Existing agents keep the setting captured at their spawn
 // boundary so resumes remain deterministic.

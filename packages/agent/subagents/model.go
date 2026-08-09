@@ -105,6 +105,24 @@ const (
 	CaptureDiff  CaptureMode = "diff"
 )
 
+type CapacityReason string
+
+const (
+	CapacityAvailable      CapacityReason = "available"
+	CapacityQuotaExhausted CapacityReason = "quota_exhausted"
+)
+
+// Capacity is a non-sensitive snapshot of the supervisor's global launch
+// budget. Remaining counts workers that can start immediately; queued workers
+// are not included because they do not consume a running slot.
+type Capacity struct {
+	Available bool           `json:"available"`
+	Remaining int            `json:"remaining"`
+	Active    int            `json:"active"`
+	Limit     int            `json:"limit"`
+	Reason    CapacityReason `json:"reason"`
+}
+
 // SubagentPolicy contains manager-owned safety and resource limits. normalize
 // replaces zero MaxOutputBytes, MaxOutputLines, QueueTimeout, and
 // DefaultTimeout values with positive manager defaults. Other zero values retain
