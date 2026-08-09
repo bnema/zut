@@ -11,11 +11,15 @@ import (
 
 type streamTestClient struct {
 	events []provider.Event
+	err    error
 }
 
 func (c *streamTestClient) Name() string { return "stream-test" }
 
 func (c *streamTestClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
 	out := make(chan provider.Event, len(c.events))
 	go func() {
 		defer close(out)

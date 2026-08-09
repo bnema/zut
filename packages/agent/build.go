@@ -644,7 +644,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			if !CredentialAvailable(other) {
 				continue
 			}
-			c, m, a, err := ResolveCredentialFull(other, args.APIKey)
+			// An explicit launch key belongs to the initially selected provider;
+			// automatic fallback must never reuse it for another provider.
+			c, m, a, err := ResolveCredentialFull(other, "")
 			provName = other
 			cred, method, accountID, credErr = c, m, a, err
 			break
@@ -858,14 +860,23 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
 	primaryInteractive := selectedProfile == nil && interactiveMode
-	if primaryInteractive && autoSubagentsToolAllowed(args) {
+	primaryOrchestrator := selectedProfile == nil && args.Orchestrate
+	if (primaryInteractive || primaryOrchestrator) && autoSubagentsToolAllowed(args) {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
 		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
 			append_ = append(append_, subagentsAddendum)
 		}
 	}
-	if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+	if primaryOrchestrator {
+		// Headless orchestration owns its strict prompt contract rather than
+		// inheriting the interactive setting.
+		append_ = append(append_, AutoSubagentsSystemAddendumFor(
+			autoSubagentsToolAllowed(args),
+			autoSubagentsStopToolAllowed(args),
+			autoSubagentsResumeToolAllowed(args),
+		))
+	} else if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		append_ = append(append_, AutoSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),

@@ -78,6 +78,90 @@ func TestSubagentStopTerminatesStuckWorker(t *testing.T) {
 	}
 }
 
+func TestSubagentResumeBeforeHookRunsBeforeRestartedWorkerStarts(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan *subagents.Agent, 2)
+	resumedTurnEnded := make(chan struct{})
+	tracker := subagents.NewCompletionTracker()
+	manager := subagents.New(subagents.Config{
+		Root:     filepath.Join(root, "subagents"),
+		RepoRoot: root,
+		NewRunner: func(agent *subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+				started <- agent
+				if agent.Resuming {
+					if agent.OnTurnEnd == nil {
+						return context.Canceled
+					}
+					agent.OnTurnEnd(1, "")
+					close(resumedTurnEnded)
+					return nil
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(manager.StopAll)
+
+	first, err := manager.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("initial subagent did not start")
+	}
+	if err := manager.Stop(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	first.Wait()
+
+	const prompt = "continue the review"
+	var beforeAgent *subagents.Agent
+	var beforePrompt string
+	tool := &SubagentResumeTool{
+		Supervisor: manager,
+		Enabled:    func() bool { return true },
+		BeforeResumed: func(agent *subagents.Agent, gotPrompt string) func() {
+			beforeAgent = agent
+			beforePrompt = gotPrompt
+			return tracker.TrackFutureTurn(agent, gotPrompt, true)
+		},
+		OnResumed: func(*subagents.Agent, string) {
+			t.Fatal("post-success callback should not run with a pre-resume hook")
+		},
+	}
+	args, err := json.Marshal(subagentResumeArgs{AgentID: first.ID, Prompt: prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := tool.Execute(context.Background(), args, nil); err != nil || res.IsError {
+		t.Fatalf("resume result = (%+v, %v), want success", res, err)
+	}
+	if beforeAgent == nil || beforeAgent == first || beforePrompt != prompt {
+		t.Fatalf("before hook = (%p, %q), want restarted worker and %q", beforeAgent, beforePrompt, prompt)
+	}
+	select {
+	case resumed := <-started:
+		if resumed.OnTurnEnd == nil {
+			t.Fatal("restarted worker started without its pre-registered callback")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resumed subagent did not start")
+	}
+	select {
+	case <-resumedTurnEnded:
+	case <-time.After(time.Second):
+		t.Fatal("resumed turn did not finish")
+	}
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != prompt {
+		t.Fatalf("resumed completion = (%+v, %v), want one %q completion", batch, err, prompt)
+	}
+}
+
 func TestSubagentResumeRestartsSessionWithFollowUp(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan *subagents.Agent, 2)

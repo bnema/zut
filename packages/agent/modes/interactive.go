@@ -345,6 +345,9 @@ type InteractiveConfig struct {
 	// It should update config.json and (if there's an active session)
 	// write a new meta row so resume picks up the same model.
 	PersistModel func(providerName, model string)
+	// OnReasoningChanged updates host-owned runtime defaults after the setting
+	// has been persisted successfully.
+	OnReasoningChanged func(level string)
 
 	// InitialSessionTitle is the persisted title of the session loaded before
 	// the TUI starts. It is shown in the terminal without another model call.
@@ -774,14 +777,14 @@ type Interactive struct {
 	extPanel          *extPanelDialog
 	llamaConfigured   bool
 
-	// subagentWatch tracks auto-subagents sub-agents the main agent spawned
-	// via subagent_spawn. Each entry holds the agent + the task text;
-	// a per-entry goroutine waits on the agent's terminal state. When
-	// every tracked entry has finished, the watcher flushes a single
-	// summary turn into the main chat (queued if the main agent is
-	// busy, run immediately if idle).
-	subagentWatchMu sync.Mutex
-	subagentWatch   []*subagentWatchEntry
+	// completionTracker observes auto-subagent turn and process completion.
+	// Delivery is kept separate so every active set is injected as one
+	// summary turn, preserving the existing queue behavior.
+	completionTracker         *subagents.CompletionTracker
+	completionDeliveryMu      sync.Mutex
+	completionDeliveryRunning bool
+	completionDeliveryRequest bool
+	completionDeliveryHolds   int
 
 	// subagentsWaitWatcherDone is an optional test hook invoked when a
 	// /subagents wait watcher exits.
@@ -1026,7 +1029,9 @@ func (i *Interactive) markCtrlCExit() {
 
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
+	i.mu.Lock()
 	i.runCtx = ctx
+	i.mu.Unlock()
 	term := i.cfg.Terminal
 	restore, err := term.EnterRaw()
 	if err != nil {
@@ -5629,6 +5634,9 @@ func (i *Interactive) applyReasoningSetting(level string) {
 			return
 		}
 	}
+	if i.cfg.OnReasoningChanged != nil {
+		i.cfg.OnReasoningChanged(level)
+	}
 	i.mu.Lock()
 	if i.agent != nil {
 		i.agent.Reasoning = level
@@ -7672,7 +7680,9 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		i.handleEventForPresentation(ev)
 	}
 
+	releaseCompletionHold := i.beginCompletionDeliveryHold()
 	go func() {
+		defer releaseCompletionHold()
 		var err error
 		if continueExisting {
 			err = i.agent.Continue(ctx, sink)
@@ -8694,177 +8704,153 @@ func (a telegramSenderAdapter) Active() bool {
 	return a.bridge != nil && a.bridge.Active()
 }
 
-// subagentWatchEntry is one tracked auto-subagents sub-agent. It records the
-// delegated turn's outcome separately from the long-lived daemon status.
-type subagentWatchEntry struct {
-	agent    *subagents.Agent
-	task     string
-	followUp bool
-	done     bool
-	outcome  string
-	err      string
-}
-
 // TrackSubagentWorker is the exported entry point used by the cli to
-// hand a freshly-spawned auto-subagents agent off to the watcher.
+// hand a freshly-spawned auto-subagents agent off to the shared tracker.
 func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string) {
-	i.trackSubagentWorker(a, task, false)
+	i.trackSubagentWorker(a, task, false, false)
 }
 
 // TrackResumedSubagentWorker watches a resumed follow-up independently of the
 // worker's original task. A long-lived daemon can complete several manager
 // turns, each of which must produce its own automatic delivery.
 func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string) {
-	i.trackSubagentWorker(a, prompt, true)
+	i.trackSubagentWorker(a, prompt, true, false)
+}
+
+// PrepareResumedSubagentWorker registers a resumed turn before its prompt is
+// sent. The returned cleanup removes the registration if the resume operation
+// fails before delivery. It is used by the resume tool's pre-send hook; the
+// existing TrackResumedSubagentWorker signature remains the post-success API.
+func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string) func() {
+	return i.trackSubagentWorker(a, prompt, true, true)
 }
 
 // TrackStoppedSubagentWorker watches a requested worker shutdown. If an active
-// task watcher already owns the worker, that watcher reports the terminal
-// outcome; otherwise this creates a single exit-only watcher, including for a
-// worker restored by Reload.
+// task watcher already owns the worker, the shared tracker leaves that watcher
+// responsible for the terminal outcome.
 func (i *Interactive) TrackStoppedSubagentWorker(a *subagents.Agent) {
 	if i == nil || a == nil {
 		return
 	}
-	i.subagentWatchMu.Lock()
-	for _, existing := range i.subagentWatch {
-		if existing.agent.ID == a.ID && !existing.done {
-			i.subagentWatchMu.Unlock()
-			return
-		}
-	}
-	entry := &subagentWatchEntry{agent: a, task: a.Task}
-	i.subagentWatch = append(i.subagentWatch, entry)
-	i.subagentWatchMu.Unlock()
+	tracker := i.ensureCompletionTracker()
+	tracker.TrackExit(a, a.Task)
 	i.invalidate()
-	i.watchSubagentExit(entry)
+	i.requestCompletionDelivery()
 }
 
-// trackSubagentWorker records an auto-subagents turn and subscribes to both
-// ways it can finish. Successful long-lived agents report a prompt-level
-// turn_end and keep listening; startup failures and unexpected daemon exits
-// only unblock Agent.Wait. Whichever signal arrives first completes the entry
-// exactly once.
-func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, followUp bool) {
+func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, followUp, future bool) func() {
 	if i == nil || a == nil {
-		return
+		return nil
 	}
-	entry := &subagentWatchEntry{agent: a, task: task, followUp: followUp}
-	i.subagentWatchMu.Lock()
-	i.subagentWatch = append(i.subagentWatch, entry)
-	i.subagentWatchMu.Unlock()
+	tracker := i.ensureCompletionTracker()
+	var cancel func()
+	if future {
+		cancel = tracker.TrackFutureTurn(a, task, followUp)
+	} else {
+		cancel = tracker.TrackTurn(a, task, followUp)
+	}
 	i.invalidate()
-
-	a.SetOnTurnEnd(func(step int, errMsg string) {
-		outcome := "completed"
-		if errMsg != "" {
-			outcome = "failed"
-		}
-		i.completeSupervisorWatchEntry(entry, outcome, errMsg)
-	})
-	i.watchSubagentExit(entry)
+	i.requestCompletionDelivery()
+	return cancel
 }
 
-func (i *Interactive) watchSubagentExit(entry *subagentWatchEntry) {
-	go func() {
-		entry.agent.Wait()
-		snap := entry.agent.Snapshot()
-		outcome := string(snap.Status)
-		if snap.Status == subagents.StatusDone {
-			outcome = "completed"
-		}
-		i.completeSupervisorWatchEntry(entry, outcome, snap.Err)
-	}()
+func (i *Interactive) ensureCompletionTracker() *subagents.CompletionTracker {
+	// Tests and lightweight embedders may construct Interactive with a struct
+	// literal instead of NewInteractive, so retain this lazy fallback.
+	i.completionDeliveryMu.Lock()
+	defer i.completionDeliveryMu.Unlock()
+	if i.completionTracker == nil {
+		i.completionTracker = subagents.NewCompletionTracker()
+	}
+	return i.completionTracker
 }
 
-func (i *Interactive) completeSupervisorWatchEntry(entry *subagentWatchEntry, outcome, errMsg string) {
-	i.subagentWatchMu.Lock()
-	if entry.done {
-		i.subagentWatchMu.Unlock()
+// requestCompletionDelivery starts at most one waiter for the current active
+// set. A request arriving while that waiter is formatting or submitting is
+// picked up before the waiter exits, so a later worker cannot be lost in the
+// handoff between batches.
+func (i *Interactive) requestCompletionDelivery() {
+	if i == nil {
 		return
 	}
-	entry.done = true
-	entry.outcome = outcome
-	entry.err = errMsg
-	allDone := true
-	for _, e := range i.subagentWatch {
-		if !e.done {
-			allDone = false
-			break
-		}
-	}
-	var batch []*subagentWatchEntry
-	if allDone {
-		batch = i.subagentWatch
-		i.subagentWatch = nil
-	}
-	i.subagentWatchMu.Unlock()
-	if len(batch) != 0 {
-		i.flushSupervisorSummary(batch)
-	}
-}
-
-// flushSupervisorSummary composes a synthetic user turn describing every
-// sub-agent's outcome and injects it via SubmitOrQueue so the main
-// agent picks it up at the next safe boundary. The summary is
-// phrased as a system update ("Auto-subagents finished: ...") so the
-// model treats it as observed state, not as a fresh user request.
-func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
-	if len(batch) == 0 {
+	i.ensureCompletionTracker()
+	i.completionDeliveryMu.Lock()
+	i.completionDeliveryRequest = true
+	if i.completionDeliveryRunning || i.completionDeliveryHolds != 0 {
+		i.completionDeliveryMu.Unlock()
 		return
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "[auto-subagents update] %d sub-agent(s) finished:\n\n", len(batch))
-	for idx, e := range batch {
-		snap := e.agent.Snapshot()
-		status := e.outcome
-		if status == "" {
-			status = string(snap.Status)
-		}
-		resultErr := ""
-		if snap.Result != nil && snap.Result.ShutdownOrigin != "" {
-			if snap.Result.Status == subagents.ResultCanceled {
-				status = "cancelled"
-			}
-			if snap.Result.Error != nil {
-				resultErr = snap.Result.Error.Message
-			}
-		}
-		task := e.task
-		if task == "" || !e.followUp {
-			task = snap.Task
-		}
-		if task == "" {
-			task = e.task
-		}
-		fmt.Fprintf(&sb, "%d. agent %s - status: %s\n", idx+1, snap.ID, status)
-		fmt.Fprintf(&sb, "   task: %s\n", truncateForSummary(task, 240))
-		if resultErr != "" {
-			fmt.Fprintf(&sb, "   cancellation: %s\n", truncateForSummary(resultErr, 240))
-		} else if snap.Err != "" {
-			fmt.Fprintf(&sb, "   error: %s\n", truncateForSummary(snap.Err, 240))
-		} else if e.err != "" {
-			fmt.Fprintf(&sb, "   turn error: %s\n", truncateForSummary(e.err, 240))
-		}
-		if snap.LastAssistant != "" {
-			sb.WriteString("   final response:\n")
-			sb.WriteString(snap.LastAssistant)
-			sb.WriteString("\n")
-		} else if tail := strings.TrimSpace(snap.Tail); tail != "" {
-			fmt.Fprintf(&sb, "   tail: %s\n", truncateForSummary(tail, 600))
-		}
-		sb.WriteString("\n")
-	}
-	sb.WriteString("Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks.")
-	i.SubmitOrQueue(sb.String(), nil)
+	i.completionDeliveryRunning = true
+	i.completionDeliveryMu.Unlock()
+
+	go i.deliverCompletionUpdates()
 }
 
-func truncateForSummary(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
+// beginCompletionDeliveryHold keeps all completions observed during one
+// parent model turn together. Tool calls are executed sequentially inside the
+// core agent, so the release point is the owning registration boundary for
+// same-parent-turn batching rather than a timing-based debounce.
+func (i *Interactive) beginCompletionDeliveryHold() func() {
+	if i == nil {
+		return func() {}
 	}
-	return s[:n-3] + "..."
+	i.completionDeliveryMu.Lock()
+	i.completionDeliveryHolds++
+	i.completionDeliveryMu.Unlock()
+	return i.releaseCompletionDeliveryHold
+}
+
+func (i *Interactive) releaseCompletionDeliveryHold() {
+	if i == nil {
+		return
+	}
+	start := false
+	i.completionDeliveryMu.Lock()
+	if i.completionDeliveryHolds > 0 {
+		i.completionDeliveryHolds--
+	}
+	if i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning {
+		i.completionDeliveryRunning = true
+		start = true
+	}
+	i.completionDeliveryMu.Unlock()
+	if start {
+		go i.deliverCompletionUpdates()
+	}
+}
+
+func (i *Interactive) completionWaitContext() context.Context {
+	i.mu.Lock()
+	ctx := i.runCtx
+	i.mu.Unlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (i *Interactive) deliverCompletionUpdates() {
+	for {
+		i.completionDeliveryMu.Lock()
+		i.completionDeliveryRequest = false
+		tracker := i.completionTracker
+		i.completionDeliveryMu.Unlock()
+
+		batch, err := tracker.WaitIdle(i.completionWaitContext())
+		if err == nil && len(batch) != 0 {
+			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
+			i.SubmitOrQueue(subagents.FormatCompletionUpdate(batch, instruction), nil)
+		}
+
+		i.completionDeliveryMu.Lock()
+		if i.completionDeliveryRequest {
+			i.completionDeliveryMu.Unlock()
+			continue
+		}
+		i.completionDeliveryRunning = false
+		i.completionDeliveryMu.Unlock()
+		return
+	}
 }
 
 // autoSubagentsAddenda returns the prompt blocks owned by subagent prompting,
@@ -9067,9 +9053,9 @@ func (i *Interactive) applyAutoSubagentsTool() {
 		}
 		if i.autoSubagentsResumeToolAllowed() {
 			resumeTool := &tools.SubagentResumeTool{
-				Supervisor: i.cfg.Supervisor,
-				Enabled:    func() bool { return true },
-				OnResumed:  i.TrackResumedSubagentWorker,
+				Supervisor:    i.cfg.Supervisor,
+				Enabled:       func() bool { return true },
+				BeforeResumed: i.PrepareResumedSubagentWorker,
 			}
 			next[resumeTool.Name()] = resumeTool
 		}

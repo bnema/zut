@@ -52,6 +52,20 @@ Supported metadata:
 
 Other frontmatter from another agent host is ignored when zut does not have an equivalent setting. Recursive child spawning is disabled in v1; a worker cannot invoke `subagent_spawn` to create descendants.
 
+## Headless orchestration
+
+Headless orchestration is explicit: pass `--orchestrate` with `-p`/`--print`, `--stream`, or `--json`. There is no implicit activation. The parent must be allowed to use `subagent_spawn`; the default tool set allows it, while an explicit allowlist must include it (for example, `--tools subagent_spawn`), and `--no-tools` disables it. A packaged agent's `PermissionSet` has no `subagent_spawn` capability, so orchestration is rejected for packaged agents and profile-worker mode. `--orchestrate` is incompatible with `--stats` and unsupported in interactive and RPC modes. Workers are non-recursive: a worker cannot spawn another worker.
+
+The parent CLI's `--provider`, `--model`, and `--reasoning` values are inherited by unnamed workers. A named profile can explicitly override provider, model, and reasoning in its frontmatter; the profile's body and other metadata are applied only after the parent selects it. For example:
+
+```bash
+zut -p --orchestrate --provider openai --model gpt-5 --reasoning high "delegate the implementation and synthesize the result"
+```
+
+The parent runs completion-driven waves rather than polling, with at most 32 follow-up waves per invocation. Configured concurrency and per-parent concurrency limits, queue and turn deadlines, maximum turns/output, and the graceful cancellation/shutdown period apply. Cancellation propagates to the parent and workers through the supervisor; partial worker evidence remains available when the worker reports it.
+
+Output follows the selected existing mode. Print writes only the final synthesis. Stream renders every parent turn on stdout and keeps tool diagnostics on stderr. JSON retains every event from every parent turn as parseable JSONL; completion reports are injected as ordinary `user_message` events, and a failed primary or handoff produces one terminal JSON error object rather than a host log.
+
 ## Selecting a profile
 
 When **auto-subagents** is enabled in `/settings`, the interactive primary agent runs in strict orchestrator mode. It must delegate all implementation, debugging/testing, and code-review work to an appropriately named profile, or to a clearly described general worker when no profile fits. The primary agent must not write or edit code, make direct implementation tool calls, inspect or review code, or apply worker patches. It may decompose requests, select and spawn workers, check status, coordinate follow-ups, and synthesize their results.

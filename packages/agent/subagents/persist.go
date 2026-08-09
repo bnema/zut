@@ -805,6 +805,17 @@ func (f *Supervisor) ResumeSession(ctx context.Context, id string) (*Agent, erro
 // terminal worker is restarted with the follow-up as its initial prompt,
 // avoiding a race with inbox listener startup.
 func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*Agent, error) {
+	return f.ResumeWithPromptBefore(ctx, id, prompt, nil)
+}
+
+// ResumeWithPromptBefore is ResumeWithPrompt with a pre-delivery hook. The
+// hook runs after the target Agent is known but before a queued or direct
+// follow-up is made deliverable. For a restarted worker it runs after the new
+// Agent is built and before its runner is scheduled. For queued and direct
+// delivery, the hook runs while operationMu is held and must not block or call
+// back into Supervisor methods. A non-nil cleanup is called when the operation
+// is rejected before delivery.
+func (f *Supervisor) ResumeWithPromptBefore(ctx context.Context, id, prompt string, before func(*Agent, string) func()) (*Agent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -843,10 +854,17 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 			// Active turns cannot accept a command through the worker inbox yet.
 			// Keep the prompt durable and let the idle transition deliver it in
 			// order after the current message turn finishes.
+			var undo func()
+			if before != nil {
+				undo = before(existing, prompt)
+			}
 			acceptedAt := f.cfg.Now()
 			commandID := existing.queueResumePrompt(prompt, acceptedAt)
 			if err := f.persistAgent(existing); err != nil {
 				existing.removeQueuedResumePrompt(commandID)
+				if undo != nil {
+					undo()
+				}
 				f.operationMu.Unlock()
 				return nil, fmt.Errorf("subagent: persist queued follow-up for %s: %w", existing.ID, err)
 			}
@@ -859,6 +877,10 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 		}
 		turnID := existing.CurrentTurnID()
 		previousRunTurns := existing.resetCurrentRunTurns()
+		var undo func()
+		if before != nil {
+			undo = before(existing, prompt)
+		}
 		// Reserve the worker before writing to its inbox. A second manager call
 		// must not enqueue another turn in the small interval before the worker
 		// reports its turn.start event. Persist the prompt first so a host exit
@@ -872,6 +894,9 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 			existing.setTurnState(TurnIdle, turnID)
 			existing.setCurrentRunTurns(previousRunTurns)
 			existing.restoreResumePrompt(previousPrompt)
+			if undo != nil {
+				undo()
+			}
 			f.operationMu.Unlock()
 			return nil, fmt.Errorf("subagent: persist follow-up for %s: %w", existing.ID, err)
 		}
@@ -888,6 +913,9 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 					retryUnknown = true
 				} else {
 					existing.restoreResumePrompt(previousPrompt)
+					if undo != nil {
+						undo()
+					}
 				}
 				if persistErr := f.persistAgent(existing); persistErr != nil {
 					err = fmt.Errorf("%w; persist recovery: %v", err, persistErr)
@@ -905,7 +933,7 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 	}
 	f.operationMu.Unlock()
 
-	return f.resume(ctx, id, true, prompt)
+	return f.resumeWithHook(ctx, id, true, prompt, before)
 }
 
 // dispatchQueuedResumeWithTimeout keeps the idle callback bounded. Unlike a
@@ -986,6 +1014,10 @@ func (f *Supervisor) RestartTask(ctx context.Context, id string) (*Agent, error)
 }
 
 func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resumePrompt string) (*Agent, error) {
+	return f.resumeWithHook(ctx, id, resuming, resumePrompt, nil)
+}
+
+func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming bool, resumePrompt string, before func(*Agent, string) func()) (*Agent, error) {
 	f.operationMu.Lock()
 	defer f.operationMu.Unlock()
 	if ctx == nil {
@@ -1052,6 +1084,20 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 	if pendingResumePrompt != "" && pendingResumePromptID == "" {
 		pendingResumePromptID = uuid.NewString()
 	}
+	if resuming && pendingResumePrompt == "" && len(pendingResumeQueue) > 0 {
+		// A host can exit after accepting an active-worker follow-up but before
+		// dispatching it. Promote the oldest durable prompt before accepting a
+		// new one so scheduler and completion-tracker order stay aligned.
+		queued := pendingResumeQueue[0]
+		pendingResumePrompt = queued.Prompt
+		pendingResumePromptAt = queued.AcceptedAt
+		pendingResumePromptID = queued.CommandID
+		if pendingResumePromptID == "" {
+			pendingResumePromptID = uuid.NewString()
+		}
+		pendingResumeQueue = pendingResumeQueue[1:]
+	}
+	hadPendingResumePrompt := pendingResumePrompt != ""
 	if resumePrompt != "" {
 		currentRunTurns = 0
 		if pendingResumePrompt == "" {
@@ -1061,19 +1107,6 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 		} else {
 			pendingResumeQueue = append(pendingResumeQueue, queuedResumePrompt{Prompt: resumePrompt, AcceptedAt: now, CommandID: uuid.NewString()})
 		}
-	}
-	if resuming && resumePrompt == "" && pendingResumePrompt == "" && len(pendingResumeQueue) > 0 {
-		// A host can exit after accepting an active-worker follow-up but before
-		// dispatching it. Make the first durable queued prompt the resumed
-		// worker's initial turn rather than leaving the queue stranded.
-		queued := pendingResumeQueue[0]
-		pendingResumePrompt = queued.Prompt
-		pendingResumePromptAt = queued.AcceptedAt
-		pendingResumePromptID = queued.CommandID
-		if pendingResumePromptID == "" {
-			pendingResumePromptID = uuid.NewString()
-		}
-		pendingResumeQueue = pendingResumeQueue[1:]
 	}
 	if resuming && pendingResumePrompt != "" {
 		// A retained follow-up is an explicit new run, including a queued
@@ -1254,7 +1287,20 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 
 	// Refreshing metadata happened before queue admission, so a later
 	// supervisor can reconstruct this resumed attempt even if the runner
-	// has not reached its first event yet.
+	// has not reached its first event yet. Register the turn before the
+	// scheduler can start the worker and emit a fast turn_end. A durable pending
+	// prompt is consumed before the newly requested prompt, so tracker
+	// registrations must preserve that scheduler order.
+	if before != nil {
+		if hadPendingResumePrompt {
+			_ = before(a, pendingResumePrompt)
+		}
+		if resumePrompt != "" {
+			// No rejecting operation remains before scheduling, so there is no path
+			// that needs the hook's rollback after this point.
+			_ = before(a, resumePrompt)
+		}
+	}
 	f.armQueueTimeout(a)
 	f.schedule()
 	return a, nil

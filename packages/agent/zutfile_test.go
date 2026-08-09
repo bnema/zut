@@ -18,6 +18,29 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+func TestRunZutfileOrchestrationRejectsPackagedAgentBeforeSideEffects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	// A nonexistent reference proves validation happens before local loading,
+	// remote fetching, unpacking, data-directory creation, or consent.
+	missingPackage := filepath.Join(t.TempDir(), "missing.zut")
+
+	handled, err := runZutfileCommand([]string{"run", missingPackage, "--print", "--orchestrate", "task"}, "test")
+	if !handled {
+		t.Fatal("run command was not handled")
+	}
+	if err == nil || !strings.Contains(err.Error(), "packaged agents") {
+		t.Fatalf("run error = %v, want packaged-agent validation error", err)
+	}
+	entries, readErr := os.ReadDir(home)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("packaged-agent rejection created state: %v", entries)
+	}
+}
+
 func TestReadZutfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
 	tests := []struct {
 		name  string

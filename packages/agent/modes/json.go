@@ -3,8 +3,9 @@ package modes
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
+	"sync"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -24,8 +25,14 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 // a successful checkpoint.
 func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, persistCompaction func([]provider.Message) error) (ContextRecoveryResult, error) {
 	enc := json.NewEncoder(out)
+	var writeMu sync.Mutex
+	var writeErr error
 	write := func(v any) {
-		_ = enc.Encode(v)
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if writeErr == nil {
+			writeErr = enc.Encode(v)
+		}
 	}
 
 	var runErr error
@@ -42,9 +49,12 @@ func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt stri
 	}
 
 	if runErr != nil {
-		fmt.Fprintln(out, `{"type":"error","message":`+jsonString(runErr.Error())+`}`)
+		write(map[string]any{"type": "error", "message": runErr.Error()})
 	}
-	return recovery, runErr
+	writeMu.Lock()
+	outputErr := writeErr
+	writeMu.Unlock()
+	return recovery, errors.Join(runErr, outputErr)
 }
 
 // EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
@@ -154,9 +164,4 @@ func nullableReasoningTokens(usage provider.Usage) any {
 		return nil
 	}
 	return usage.ReasoningTokens
-}
-
-func jsonString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }

@@ -1,12 +1,73 @@
 package agent
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/google/uuid"
 )
+
+func TestParseArgsOrchestrate(t *testing.T) {
+	for _, mode := range []string{"--print", "--stream", "--json"} {
+		args, err := ParseArgs([]string{mode, "--orchestrate", "task"})
+		if err != nil {
+			t.Fatalf("ParseArgs(%q): %v", mode, err)
+		}
+		if !args.Orchestrate {
+			t.Fatalf("ParseArgs(%q): Orchestrate = false", mode)
+		}
+	}
+}
+
+func TestValidateOrchestrationArgs(t *testing.T) {
+	valid := Args{Mode: ModePrint, Orchestrate: true}
+	if err := validateOrchestrationArgs(valid); err != nil {
+		t.Fatalf("valid orchestration args: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		args Args
+		want string
+	}{
+		{name: "interactive", args: Args{Mode: ModeInteractive, Orchestrate: true}, want: "print, stream, or JSON"},
+		{name: "rpc", args: Args{Mode: ModeRPC, Orchestrate: true}, want: "RPC"},
+		{name: "worker", args: Args{Mode: ModeSubagentWorker, Orchestrate: true}, want: "subagent-worker"},
+		{name: "profile", args: Args{Mode: ModePrint, Orchestrate: true, Subagent: "reviewer"}, want: "--subagent profiles"},
+		{name: "stats", args: Args{Mode: ModePrint, Orchestrate: true, StatsPath: "stats.json"}, want: "--stats"},
+		{name: "packaged", args: Args{Mode: ModePrint, Orchestrate: true, PermissionSet: &tools.PermissionSet{}}, want: "packaged"},
+		{name: "packaged agent name", args: Args{Mode: ModePrint, Orchestrate: true, AgentName: "bundled"}, want: "packaged"},
+		{name: "packaged agent data dir", args: Args{Mode: ModePrint, Orchestrate: true, AgentDataDir: "/tmp/agent-data"}, want: "packaged"},
+		{name: "missing spawn", args: Args{Mode: ModePrint, Orchestrate: true, ToolsSet: true, Tools: []string{"read"}}, want: "subagent_spawn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOrchestrationArgs(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestInvalidOrchestrationRejectsBeforeRuntimeCatalogSideEffects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+
+	err := runWithArgsRaw([]string{"--orchestrate", "task"}, "test")
+	if err == nil || !strings.Contains(err.Error(), "requires print, stream, or JSON") {
+		t.Fatalf("run error = %v, want mode validation error", err)
+	}
+	entries, readErr := os.ReadDir(home)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid orchestration created runtime state: %v", entries)
+	}
+}
 
 func TestParseArgsSubagentAndReasoning(t *testing.T) {
 	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--subagent", "reviewer", "--reasoning", "high", "task"})

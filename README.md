@@ -192,6 +192,7 @@ zut "fix the failing test"       # tui, pre-filled prompt
 zut -p "list all go files"       # print final text, exit
 zut -p --stats stats.json "task" # print final text and write generation stats
 zut --json "refactor main.go"    # newline-delimited json events, exit
+zut -p --orchestrate --provider openai --model gpt-5 "implement and synthesize"
 zut --continue                   # resume the most recent session for this cwd
 zut --resume                     # pick a session to resume
 zut --resume <UUID>              # resume a persisted session by UUID
@@ -213,7 +214,8 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZUT_HOME/SYSTEM.md`). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
-| `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
+| `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON; incompatible with `--orchestrate`. |
+| `--orchestrate` | In print, stream, or JSON mode, enable bounded headless delegation and final synthesis. It is not implicit. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume [UUID]` | Pick a session to resume, or resume a persisted session by UUID. |
 | `--session <path>` | Resume a specific session file. |
@@ -247,6 +249,14 @@ When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits r
 - **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
 - **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
 - **RPC**: `zut rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
+
+### Headless orchestration
+
+`--orchestrate` explicitly enables bounded delegation for `-p`/`--print`, `--stream`, or `--json`; ordinary headless runs never delegate implicitly. The parent needs `subagent_spawn`: it is available with the default tool set, or must be named in `--tools subagent_spawn` (and is disabled by `--no-tools`). A packaged agent's `PermissionSet` does not expose `subagent_spawn`, so packaged-agent and profile-worker modes cannot use orchestration. Interactive and RPC modes do not support this flag, and `--stats` cannot be combined with it.
+
+Workers inherit the parent CLI provider, model, and reasoning selection. Profile metadata from [docs/subagents.md](docs/subagents.md) is provided to the parent through `[subagents_list]` before selection; only the selected profile body and child-specific provider/model/reasoning configuration are loaded or applied afterward. Print mode writes only the final synthesis; stream mode renders every parent turn to stdout while tool diagnostics remain on stderr; JSON mode retains every parent event as parseable JSONL, including completion updates as existing `user_message` events. Worker output is evidence for the next parent turn, not a host log.
+
+The supervisor enforces configured concurrency, per-parent concurrency, queue/deadline, active-turn, output, and cancellation-grace limits; a headless invocation permits at most 32 completion follow-up waves. Cancellation stops the parent and workers through the normal graceful shutdown path. Workers cannot spawn descendants. See [docs/subagents.md](docs/subagents.md) for the profile manifest, limits, and unsupported combinations.
 
 When an initial print, stream, or JSON request exceeds the provider context window, zut compacts the existing transcript and continues the already-appended prompt once. Print still writes only the recovered final text, stream keeps assistant text on stdout and tool diagnostics on stderr, and JSON suppresses the recoverable first terminal error so stdout remains JSONL for the successful turn. A compaction failure or a second context-window error remains terminal; this is not a general autonomous-follow-up policy. The same one-shot recovery applies to subagent workers. It does not apply to RPC, SDK, bot, or Telegram requests.
 

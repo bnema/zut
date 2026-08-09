@@ -34,10 +34,11 @@ const (
 
 // Args holds parsed command-line options.
 type Args struct {
-	Mode     Mode
-	Provider string
-	Model    string
-	APIKey   string
+	Mode        Mode
+	Orchestrate bool
+	Provider    string
+	Model       string
+	APIKey      string
 
 	// inheritedCredential is populated only by subagent-worker mode from
 	// the supervisor's stdin. It is never accepted as a CLI argument.
@@ -200,6 +201,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.Mode = ModeStream
 		case "--json":
 			a.Mode = ModeJSON
+		case "--orchestrate":
+			a.Orchestrate = true
 		case "--rpc":
 			a.Mode = ModeRPC
 		case "-c", "--continue":
@@ -518,6 +521,7 @@ func PrintHelp(version string) {
 		row{"zut", "interactive tui"},
 		row{"zut \"prompt\"", "interactive, pre-filled prompt"},
 		row{"zut -p \"prompt\"", "print final text, exit"},
+		row{"zut -p --orchestrate \"prompt\"", "delegate independent work, print final synthesis, exit"},
 		row{"zut --stream \"prompt\"", "stream assistant text live, exit"},
 		row{"zut --json \"prompt\"", "newline-delimited json events, exit"},
 		row{"zut rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
@@ -553,6 +557,7 @@ func PrintHelp(version string) {
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)
 	section("prompt and session flags",
+		row{"--orchestrate", "headless delegation and final synthesis (print, stream, or json modes)"},
 		row{"--stats PATH", "write print-mode generation stats as json"},
 		row{"--system-prompt TEXT", "replace the default system prompt"},
 		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},

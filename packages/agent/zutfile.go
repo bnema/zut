@@ -114,6 +114,12 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 		if yes {
 			args.Yes = true
 		}
+		if args.Orchestrate {
+			return true, fmt.Errorf("--orchestrate is not supported for packaged agents")
+		}
+		if err := validateOrchestrationArgs(args); err != nil {
+			return true, err
+		}
 		return true, runLocalZutfile(ref, args, version)
 	default:
 		return false, nil
@@ -131,6 +137,13 @@ func runLocalZutfile(ref string, args Args, version string) error {
 	}
 	if err := checkZutfileRequirements(zf, version); err != nil {
 		return err
+	}
+	// A packaged agent has not yet had its manifest permissions attached to
+	// Args. Reject orchestration at this boundary, before creating its data
+	// directory or asking for permission consent.
+	if args.Orchestrate {
+		args.AgentName = zf.Manifest.Name
+		return validateOrchestrationArgs(args)
 	}
 	agentData := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "data")
 	if err := os.MkdirAll(agentData, 0o755); err != nil {

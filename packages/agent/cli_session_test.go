@@ -18,6 +18,16 @@ import (
 	"github.com/google/uuid"
 )
 
+type failingStdinReader struct{}
+
+func (failingStdinReader) Read([]byte) (int, error) { return 0, errors.New("stdin failed") }
+
+func TestReadAllStdinFromPropagatesReadErrors(t *testing.T) {
+	if _, err := readAllStdinFrom(failingStdinReader{}); err == nil || !strings.Contains(err.Error(), "stdin failed") {
+		t.Fatalf("readAllStdinFrom error = %v, want stdin failure", err)
+	}
+}
+
 func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	root := t.TempDir()
 	cwd := t.TempDir()
@@ -409,6 +419,48 @@ func TestApplyInitialSessionResumeKeepsFreshEmptySessionOwned(t *testing.T) {
 	}
 	if _, err := os.Stat(sess.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fresh empty session remained after close: %v", err)
+	}
+}
+
+func TestApplyInitialSessionResumeWithRuntimePreservesInheritedModelDefaults(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Provider: "ollama", Model: "current-local-model"}); err != nil {
+		t.Fatal(err)
+	}
+	path := syntheticSession(t, "ollama", "stored-local-model", provider.Usage{})
+	args := Args{Mode: ModePrint, Orchestrate: true, CWD: t.TempDir()}
+	base, err := Resolve(args, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := base.NewAgent()
+	runtime := newSubagentRuntime(subagentRuntimeConfig{
+		Context:  context.Background(),
+		Args:     args,
+		Root:     t.TempDir(),
+		RepoRoot: args.CWD,
+		Provider: base.Provider,
+		Model:    base.Model,
+	})
+	defer func() { _ = runtime.Close(context.Background()) }()
+
+	sess, _, err := core.OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSess, gotAgent, providerName, model, err := applyInitialSessionResumeWithRuntime(context.Background(), args, base, nil, sess, current, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gotSess.Close()
+	if gotAgent == current || providerName != "ollama" || model != "stored-local-model" {
+		t.Fatalf("resume candidate = rebuilt=%v provider/model=%q/%q", gotAgent == current, providerName, model)
+	}
+	if got := runtime.currentModel(); got != "stored-local-model" {
+		t.Fatalf("runtime inherited model = %q, want stored-local-model", got)
+	}
+	if _, ok := gotAgent.ToolsSnapshot()["subagent_spawn"]; !ok {
+		t.Fatal("resumed parent lost canonical subagent_spawn manager tool")
 	}
 }
 

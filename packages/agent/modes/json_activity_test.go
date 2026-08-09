@@ -1,11 +1,73 @@
 package modes
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
+
+func TestRunJSONCompletionUserMessageIsValidJSONL(t *testing.T) {
+	message := core.EvUserMessage{Message: provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "[auto-subagents update] worker finished"}},
+	}}
+	var line bytes.Buffer
+	if err := json.NewEncoder(&line).Encode(EventToJSON(message)); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(line.Bytes()), &decoded); err != nil {
+		t.Fatalf("completion event is not JSON: %v", err)
+	}
+	if decoded["type"] != "user_message" {
+		t.Fatalf("event type = %#v, want user_message", decoded["type"])
+	}
+}
+
+type failingJSONWriter struct{ err error }
+
+func (w failingJSONWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestRunJSONPropagatesOutputErrors(t *testing.T) {
+	providerErr := errors.New("provider unavailable")
+	writerErr := errors.New("stdout unavailable")
+	ag := core.NewAgent(&streamTestClient{err: providerErr}, "test-model", "", nil)
+	_, err := RunJSONWithContextRecovery(context.Background(), ag, "hello", nil, failingJSONWriter{err: writerErr}, nil)
+	if !errors.Is(err, providerErr) || !errors.Is(err, writerErr) {
+		t.Fatalf("RunJSONWithContextRecovery error = %v, want provider and output errors", err)
+	}
+}
+
+func TestRunJSONFailureEmitsOneErrorObject(t *testing.T) {
+	client := &streamTestClient{err: errors.New("provider unavailable")}
+	ag := core.NewAgent(client, "test-model", "", nil)
+	var out bytes.Buffer
+	_, err := RunJSONWithContextRecovery(context.Background(), ag, "hello", nil, &out, nil)
+	if err == nil {
+		t.Fatal("RunJSONWithContextRecovery unexpectedly succeeded")
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	errorObjects := 0
+	for _, line := range lines {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("invalid JSONL line %q: %v", line, err)
+		}
+		if decoded["type"] == "error" {
+			errorObjects++
+		}
+	}
+	if errorObjects != 1 {
+		t.Fatalf("error objects = %d, want one; output=%q", errorObjects, out.String())
+	}
+}
 
 func TestEventToJSONActivityLifecycle(t *testing.T) {
 	request := EventToJSON(core.EvRequestStarted{

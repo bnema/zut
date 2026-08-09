@@ -249,6 +249,10 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 			return
 		}
 		waitWatcherDone := i.subagentsWaitWatcherDone
+		// Publish the initial state before starting the watcher. A worker may
+		// already be done, and its completion must be the final status rather
+		// than being overwritten by a late "waiting" update.
+		i.subagentsStatus("waiting for "+a.ID, "")
 		go func() {
 			defer func() {
 				if waitWatcherDone != nil {
@@ -265,7 +269,6 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 				i.subagentsStatus("completed "+a.ID, "")
 			}
 		}()
-		i.subagentsStatus("waiting for "+a.ID, "")
 	case "resume-session", "resume", "reattach", "reopen":
 		if rest == "" {
 			count := i.subagentsDialog.OpenForResume(

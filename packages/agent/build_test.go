@@ -339,6 +339,46 @@ func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
 	}
 }
 
+func TestResolveOrchestratedParentPromptScopesManifestAndContract(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	project := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZUT_HOME", filepath.Join(root, "zut-home"))
+	t.Setenv("ZUT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	if err := os.WriteFile(filepath.Join(home, ".agents", "agents", "reviewer.md"), []byte("---\nname: reviewer\ndescription: Read-only reviewer\n---\nReview only.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	parent, err := Resolve(Args{CWD: project, Mode: ModePrint, Orchestrate: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(parent.SystemPrompt, "[subagents_list]"); got != 1 {
+		t.Fatalf("parent profile manifest count = %d, want 1\n%s", got, parent.SystemPrompt)
+	}
+	if !strings.Contains(parent.SystemPrompt, "primary-agent orchestrator") {
+		t.Fatalf("parent prompt omitted strict orchestrator contract:\n%s", parent.SystemPrompt)
+	}
+
+	child, err := Resolve(Args{CWD: project, Mode: ModePrint, Orchestrate: true, Subagent: "reviewer"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(child.SystemPrompt, "primary-agent orchestrator") || strings.Contains(child.SystemPrompt, "[subagents_list]") {
+		t.Fatalf("selected child inherited parent orchestration instructions:\n%s", child.SystemPrompt)
+	}
+	if !strings.Contains(child.SystemPrompt, "Review only.") {
+		t.Fatalf("selected child profile prompt missing:\n%s", child.SystemPrompt)
+	}
+}
+
 func TestResolveIncludesNamedSubagentsListWhenAutoSubagentsIsEnabled(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
@@ -426,6 +466,7 @@ func TestResolveKeepsStrictContractButOmitsProfilesWhenSpawnIsUnavailable(t *tes
 		{name: "read allowlist", args: Args{CWD: project, Tools: []string{"read"}, ToolsSet: true}},
 		{name: "status allowlist", args: Args{CWD: project, Tools: []string{"subagent_status"}, ToolsSet: true}},
 		{name: "permission set", args: Args{CWD: project, PermissionSet: &tools.PermissionSet{}}},
+		{name: "headless orchestration", args: Args{CWD: project, Mode: ModePrint, Orchestrate: true, NoTools: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -71,8 +71,19 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 		firstFollowUp  = "Check the parser behavior."
 		secondFollowUp = "Then check the error handling."
 	)
-	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, firstFollowUp); err != nil {
+	tracker := NewCompletionTracker()
+	if _, err := f.ResumeWithPromptBefore(context.Background(), a.ID, firstFollowUp, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	}); err != nil {
 		t.Fatalf("queue first active follow-up: %v", err)
+	}
+	if a.OnTurnEnd == nil {
+		t.Fatal("active resume did not register its turn callback before queueing")
+	}
+	a.OnTurnEnd(2, "")
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != firstFollowUp {
+		t.Fatalf("active resume completion = (%+v, %v), want one %q completion", batch, err, firstFollowUp)
 	}
 	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, secondFollowUp); err != nil {
 		t.Fatalf("queue second active follow-up: %v", err)
@@ -147,6 +158,124 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 	a.Wait()
 }
 
+func TestResumeWithPromptRestartTracksExistingPendingPromptBeforeNewPrompt(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan *Agent, 2)
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				started <- a
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	original, err := f.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("original runner did not start")
+	}
+	if err := f.Stop(original.ID); err != nil {
+		t.Fatal(err)
+	}
+	original.Wait()
+
+	const (
+		pendingPrompt = "finish the queued review"
+		newPrompt     = "then review the follow-up"
+	)
+	original.setResumePrompt(pendingPrompt, time.Now())
+	if err := f.persistAgent(original); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewCompletionTracker()
+	resumed, err := f.ResumeWithPromptBefore(context.Background(), original.ID, newPrompt, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != resumed {
+			t.Fatalf("started agent = %p, want resumed agent %p", got, resumed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resumed runner did not start")
+	}
+	if got := resumed.resumePrompt(); got != pendingPrompt {
+		t.Fatalf("first scheduled prompt = %q, want pending prompt %q", got, pendingPrompt)
+	}
+	queue := resumed.resumePromptQueueSnapshot()
+	if len(queue) != 1 || queue[0].Prompt != newPrompt {
+		t.Fatalf("resume queue = %+v, want new prompt queued second", queue)
+	}
+	if resumed.OnTurnEnd == nil {
+		t.Fatal("restart did not install completion tracking before scheduling")
+	}
+	resumed.OnTurnEnd(1, "")
+	resumed.OnTurnEnd(2, "")
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 2 || batch[0].Task != pendingPrompt || batch[1].Task != newPrompt {
+		t.Fatalf("completion order = %+v, want pending prompt then new prompt", batch)
+	}
+
+	// Recreate the durable queue-only state: no in-flight prompt, with the
+	// previously queued command still awaiting scheduler consumption.
+	if err := f.Stop(resumed.ID); err != nil {
+		t.Fatal(err)
+	}
+	resumed.Wait()
+	resumed.clearResumePrompt()
+	if err := f.persistAgent(resumed); err != nil {
+		t.Fatal(err)
+	}
+
+	const newestPrompt = "finally synthesize both reviews"
+	queueTracker := NewCompletionTracker()
+	restarted, err := f.ResumeWithPromptBefore(context.Background(), resumed.ID, newestPrompt, func(agent *Agent, prompt string) func() {
+		return queueTracker.TrackFutureTurn(agent, prompt, true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != restarted {
+			t.Fatalf("queue-only restart agent = %p, want %p", got, restarted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queue-only restarted runner did not start")
+	}
+	if got := restarted.resumePrompt(); got != newPrompt {
+		t.Fatalf("promoted queue prompt = %q, want %q", got, newPrompt)
+	}
+	queue = restarted.resumePromptQueueSnapshot()
+	if len(queue) != 1 || queue[0].Prompt != newestPrompt {
+		t.Fatalf("queue-only restart queue = %+v, want newest prompt second", queue)
+	}
+	restarted.OnTurnEnd(1, "")
+	restarted.OnTurnEnd(2, "")
+	batch, err = queueTracker.WaitIdle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 2 || batch[0].Task != newPrompt || batch[1].Task != newestPrompt {
+		t.Fatalf("queue-only completion order = %+v, want promoted prompt then newest prompt", batch)
+	}
+}
+
 func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox transport uses Unix-domain sockets")
@@ -202,7 +331,10 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	a.setTurnCounts(4, 2)
 
 	const followUp = "I applied your review. What do you think now?"
-	continued, err := f.ResumeWithPrompt(context.Background(), a.ID, followUp)
+	tracker := NewCompletionTracker()
+	continued, err := f.ResumeWithPromptBefore(context.Background(), a.ID, followUp, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	})
 	if err != nil {
 		t.Fatalf("continue idle worker: %v", err)
 	}
@@ -236,10 +368,17 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 		if !payload.NewRun {
 			t.Fatal("idle follow-up did not request a fresh run budget")
 		}
+		if a.OnTurnEnd == nil {
+			t.Fatal("idle resume callback was not installed before prompt delivery")
+		}
+		a.OnTurnEnd(5, "")
 	case <-time.After(time.Second):
 		t.Fatal("idle worker did not receive the follow-up")
 	}
-
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != followUp {
+		t.Fatalf("idle resume completion = (%+v, %v), want one %q completion", batch, err, followUp)
+	}
 	persisted, err := readAgentMeta(filepath.Join(root, "agents", a.ID))
 	if err != nil {
 		t.Fatal(err)

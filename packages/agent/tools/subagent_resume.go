@@ -20,10 +20,15 @@ type SubagentResumeTool struct {
 	Supervisor *subagents.Supervisor
 	Enabled    func() bool
 
+	// BeforeResumed, when set, registers the follow-up before the supervisor
+	// sends or queues its prompt. It returns a cleanup for resume failures that
+	// happen before delivery. The interactive host uses this to avoid losing a
+	// fast idle or restarted-worker turn.
+	BeforeResumed func(agent *subagents.Agent, prompt string) func()
+
 	// OnResumed receives the worker and follow-up after a successful resume.
-	// It runs synchronously, so callbacks must only register non-blocking
-	// tracking work. The interactive host uses it to watch this new delegated
-	// turn and deliver its outcome back to the manager automatically.
+	// It remains available for callers that only need post-success
+	// notification; tracking callers should prefer BeforeResumed.
 	OnResumed func(agent *subagents.Agent, prompt string)
 }
 
@@ -88,11 +93,11 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
-	resumed, err := t.Supervisor.ResumeWithPrompt(ctx, snapshot.ID, args.Prompt)
+	resumed, err := t.Supervisor.ResumeWithPromptBefore(ctx, snapshot.ID, args.Prompt, t.BeforeResumed)
 	if err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
 	}
-	if t.OnResumed != nil {
+	if t.BeforeResumed == nil && t.OnResumed != nil {
 		t.OnResumed(resumed, args.Prompt)
 	}
 

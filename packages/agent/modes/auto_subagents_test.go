@@ -222,7 +222,7 @@ func TestTrackResumedSubagentWorkerDeliversFollowUp(t *testing.T) {
 	if a.OnTurnEnd == nil {
 		t.Fatal("resumed worker has no completion watcher")
 	}
-	a.OnTurnEnd(2, "")
+	a.OnTurnEnd(1, "")
 
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "task: "+followUp) {
@@ -230,6 +230,103 @@ func TestTrackResumedSubagentWorkerDeliversFollowUp(t *testing.T) {
 	}
 	if !strings.Contains(update, "status: completed") {
 		t.Fatalf("follow-up update missing completed status: %q", update)
+	}
+}
+
+func TestTrackResumedSubagentWorkerQueuesActiveFollowUpOnSameWorker(t *testing.T) {
+	started := make(chan struct{})
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	first, err := mgr.Spawn(context.Background(), "original task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	t.Cleanup(func() {
+		_ = mgr.Stop(first.ID)
+		first.Wait()
+	})
+
+	iv := newQueuedAutoSubagentsInteractive()
+	iv.TrackSubagentWorker(first, first.Task)
+	const followUp = "queued follow-up"
+	cancel := iv.PrepareResumedSubagentWorker(first, followUp)
+	if cancel == nil {
+		t.Fatal("resume registration returned nil cleanup")
+	}
+	if first.OnTurnEnd == nil {
+		t.Fatal("worker has no completion watcher")
+	}
+	first.OnTurnEnd(1, "")
+	first.OnTurnEnd(2, "")
+
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "[auto-subagents update] 2 sub-agent(s) finished:") {
+		t.Fatalf("active follow-up was not batched with the original turn: %q", update)
+	}
+	if !strings.Contains(update, "task: "+followUp) {
+		t.Fatalf("active follow-up task missing: %q", update)
+	}
+}
+
+func TestCompletionDeliveryHoldBatchesFastAndLateRegistrations(t *testing.T) {
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	first, err := mgr.Spawn(context.Background(), "first task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := mgr.Spawn(context.Background(), "second task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Stop(first.ID)
+		_ = mgr.Stop(second.ID)
+		first.Wait()
+		second.Wait()
+	})
+
+	iv := newQueuedAutoSubagentsInteractive()
+	release := iv.beginCompletionDeliveryHold()
+	iv.TrackSubagentWorker(first, first.Task)
+	first.OnTurnEnd(1, "")
+	iv.TrackSubagentWorker(second, second.Task)
+	second.OnTurnEnd(1, "")
+	release()
+
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "[auto-subagents update] 2 sub-agent(s) finished:") {
+		t.Fatalf("fast and late registrations were not batched: %q", update)
+	}
+	if !strings.Contains(update, "task: first task") || !strings.Contains(update, "task: second task") {
+		t.Fatalf("batched update omitted one task: %q", update)
+	}
+	iv.mu.Lock()
+	queued := len(iv.queued)
+	iv.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queued updates = %d; want exactly one batched update", queued)
 	}
 }
 
@@ -257,10 +354,11 @@ func TestCompleteSupervisorWatchReportsTurnOutcomeOnce(t *testing.T) {
 	})
 
 	iv := newQueuedAutoSubagentsInteractive()
-	entry := &subagentWatchEntry{agent: a, task: a.Task}
-	iv.subagentWatch = []*subagentWatchEntry{entry}
-	iv.completeSupervisorWatchEntry(entry, "completed", "")
-	iv.completeSupervisorWatchEntry(entry, "failed", "late error")
+	iv.TrackSubagentWorker(a, a.Task)
+	if a.OnTurnEnd == nil {
+		t.Fatal("worker has no completion watcher")
+	}
+	a.OnTurnEnd(1, "")
 
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "status: completed") {
@@ -308,10 +406,9 @@ func TestAutoSubagentsUpdateQueuedAtTurnEndStartsFollowUp(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			interactive.flushSupervisorSummary([]*subagentWatchEntry{{
-				agent: &subagents.Agent{},
-				task:  "smoke test",
-			}})
+			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
+			update := subagents.FormatCompletionUpdate([]subagents.Completion{{Task: "smoke test"}}, instruction)
+			interactive.SubmitOrQueue(update, nil)
 		})
 	}
 

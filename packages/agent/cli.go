@@ -532,10 +532,7 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 	return candidate, nil
 }
 
-// buildNonInteractiveSessionAgent constructs a provider/model-specific agent
-// for startup resume while preserving the cwd sandbox and extension tools that
-// were attached to the initial resolution.
-func buildNonInteractiveSessionAgent(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, providerName, model string) (*core.Agent, string, string, error) {
+func buildNonInteractiveSessionAgentWithRegistry(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, providerName, model string, prepareRegistry func(core.Registry) core.Registry) (*core.Agent, string, string, error) {
 	next := args
 	next.Provider = providerName
 	next.Model = model
@@ -546,6 +543,9 @@ func buildNonInteractiveSessionAgent(ctx context.Context, args Args, base Resolv
 	resolved.UseSandbox(base.Sandbox)
 	if extMgr != nil {
 		resolved.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
+	}
+	if prepareRegistry != nil {
+		prepareRegistry(resolved.ToolRegistry)
 	}
 	ag := resolved.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
@@ -598,9 +598,44 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 // contract used by interactive session switching to non-interactive startup
 // modes. The returned session owns the replacement append handle.
 func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent) (*core.Session, *core.Agent, string, string, error) {
+	return applyInitialSessionResumeWithRegistry(ctx, args, base, extMgr, sess, ag, nil)
+}
+
+func applyInitialSessionResumeWithRegistry(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent, prepareRegistry func(core.Registry) core.Registry) (*core.Session, *core.Agent, string, string, error) {
 	candidate, err := applySessionResume(sess, ag, base.Provider, base.Model,
 		strings.TrimSpace(args.Provider) != "", strings.TrimSpace(args.Model) != "", func(providerName, model string) (*core.Agent, string, string, error) {
-			return buildNonInteractiveSessionAgent(ctx, args, base, extMgr, providerName, model)
+			return buildNonInteractiveSessionAgentWithRegistry(ctx, args, base, extMgr, providerName, model, prepareRegistry)
+		})
+	if err != nil {
+		return nil, ag, "", "", err
+	}
+	return candidate.session, candidate.agent, candidate.provider, candidate.model, nil
+}
+
+func applyInitialSessionResumeWithRuntime(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent, runtime *subagentRuntime) (*core.Session, *core.Agent, string, string, error) {
+	candidate, err := applySessionResume(sess, ag, base.Provider, base.Model,
+		strings.TrimSpace(args.Provider) != "", strings.TrimSpace(args.Model) != "", func(providerName, model string) (*core.Agent, string, string, error) {
+			next := args
+			next.Provider = providerName
+			next.Model = model
+			resolved, resolveErr := Resolve(next, true)
+			if resolveErr != nil {
+				return nil, "", "", resolveErr
+			}
+			resolved.UseSandbox(base.Sandbox)
+			if extMgr != nil {
+				resolved.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
+			}
+			if runtime != nil {
+				runtime.SetProvider(resolved.Provider)
+				runtime.SetModel(resolved.Model)
+				runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+				runtime.SetFastMode(resolved.FastMode)
+				runtime.PrepareResolvedRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
+			}
+			rebuilt := resolved.NewAgent()
+			wireNonInteractiveAgentExtHooks(ctx, rebuilt, extMgr)
+			return rebuilt, resolved.Provider, resolved.Model, nil
 		})
 	if err != nil {
 		return nil, ag, "", "", err
@@ -749,6 +784,11 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		fmt.Println("zut", version)
 		return nil
 	}
+	// Reject invalid orchestration combinations before catalog repair or model
+	// refresh can mutate local state or launch background work.
+	if err := validateOrchestrationArgs(args); err != nil {
+		return err
+	}
 	// Model catalog: load any cached discovery data before we inspect
 	// the model list (list-models, print/json, interactive).
 	prepareRuntimeCatalog()
@@ -762,6 +802,9 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 }
 
 func runWithArgs(args Args, version string) error {
+	if err := validateOrchestrationArgs(args); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	switch args.Mode {
 	case ModePrint:
@@ -891,6 +934,9 @@ func writePrintStats(path, providerID, model string, usage provider.Usage, elaps
 }
 
 func runPrintMode(ctx context.Context, args Args, version string) (runErr error) {
+	if args.Orchestrate {
+		return runOrchestratedPrintMode(ctx, args, version)
+	}
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in print mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -969,6 +1015,9 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 }
 
 func runStreamMode(ctx context.Context, args Args, version string) (runErr error) {
+	if args.Orchestrate {
+		return runOrchestratedStreamMode(ctx, args, version)
+	}
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in stream mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -1086,6 +1135,9 @@ func newStreamTextSink(out io.Writer) (func(core.AgentEvent), func()) {
 }
 
 func runJSONMode(ctx context.Context, args Args, version string) (runErr error) {
+	if args.Orchestrate {
+		return runOrchestratedJSONMode(ctx, args, version)
+	}
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in json mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -1300,46 +1352,22 @@ func webSearchExplicitlyEnabledForSession(args Args) bool {
 // refreshes the agent tool registry + system prompt so skills/extensions
 // installed by entry.pre are visible to the following turn.
 func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *extensions.Manager, sharedSandbox *tools.Sandbox, ag *core.Agent) error {
+	_, err := reloadResourcesAfterStartupPreWithRegistry(ctx, args, extMgr, sharedSandbox, ag, nil)
+	return err
+}
+
+func reloadResourcesAfterStartupPreWithRegistry(ctx context.Context, args Args, extMgr *extensions.Manager, sharedSandbox *tools.Sandbox, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry) (subagents.WebSearchPolicy, error) {
 	if strings.TrimSpace(args.StartupPre) == "" || ag == nil {
-		return nil
+		return subagents.WebSearchDeny, nil
 	}
 	adapter := &extToolAdapter{mgr: extMgr}
 	if extMgr != nil {
 		_ = extMgr.Reload(ctx, 2*time.Second)
 	}
-	_, err := refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil, nil)
-	return err
+	return refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, mutateRegistry, nil)
 }
 
 // ---- interactive mode: opens the TUI even without credentials ----
-
-func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
-	parseDuration := func(value string) time.Duration {
-		if strings.TrimSpace(value) == "" {
-			return 0
-		}
-		parsed, err := time.ParseDuration(strings.TrimSpace(value))
-		if err != nil || parsed <= 0 {
-			return 0
-		}
-		return parsed
-	}
-	return subagents.SubagentPolicy{
-		MaxConcurrent:          cfg.MaxConcurrent,
-		MaxConcurrentPerParent: cfg.MaxConcurrentPerParent,
-		QueueTimeout:           parseDuration(cfg.QueueTimeout),
-		DefaultTimeout:         parseDuration(cfg.DefaultTimeout),
-		MaxTurns:               cfg.MaxTurns,
-		MaxOutputBytes:         cfg.MaxOutputBytes,
-		MaxOutputLines:         cfg.MaxOutputLines,
-		AllowedTools:           append([]string(nil), cfg.AllowedTools...),
-		AllowedRoots:           append([]string(nil), cfg.AllowedRoots...),
-		HeartbeatInterval:      parseDuration(cfg.HeartbeatInterval),
-		IdleTimeout:            parseDuration(cfg.IdleTimeout),
-		ReconnectTimeout:       parseDuration(cfg.ReconnectTimeout),
-		CancelGracePeriod:      parseDuration(cfg.CancelGracePeriod),
-	}
-}
 
 func runInteractive(ctx context.Context, args Args, version string) (runErr error) {
 	initialCfg, _ := LoadConfig()
@@ -1405,78 +1433,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	r.MergeExtensionTools(extToolAdapter)
 	webSearchGuard := &webSearchSessionGuard{}
 
-	// Build the subagent supervisor BEFORE the agent so the auto-subagents
-	// tool can reference it during tool-registry construction. State
-	// lives under ZutHome/subagents so per-agent meta/events survive
-	// restarts; the user can hunt orphaned agents down with
-	// `git worktree list` if anything misbehaves.
-	//
-	// subagentsMgr is also captured by loadSession / changeCWD closures
-	// further down the function, which is why we keep the variable
-	// in this outer scope rather than scoping it tighter.
+	// Keep the shared subagent runtime in the outer scope: session reloads,
+	// dashboard updates, agent rebuilds, and shutdown all use the same owner.
+	var runtime *subagentRuntime
 	var subagentsMgr *subagents.Supervisor
-	subagentsMgr = subagents.New(subagents.Config{
-		Context:         ctx,
-		Root:            filepath.Join(ZutHome(), "subagents"),
-		RepoRoot:        r.CWD,
-		Provider:        r.Provider,
-		FastMode:        r.FastMode,
-		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
-		BaseURL:         r.BaseURL,
-		InsecureTLS:     r.InsecureTLS,
-		Policy:          subagentPolicyFromConfig(initialCfg.Subagents),
-		// Keep an explicit launch key in this callback only. Supervisor persists
-		// connection settings, but never stores credentials in Agent metadata
-		// or puts them in the worker's argv/environment.
-		ResolveCredential: func(ctx context.Context, providerID string) (subagents.Credential, error) {
-			childProvider := canonicalProvider(providerID)
-			persistMu.Lock()
-			hostProvider := canonicalProvider(activeProvider)
-			persistMu.Unlock()
-			if childProvider == "" {
-				childProvider = hostProvider
-			}
-			explicit := ""
-			// A launch-time API key is scoped to the provider selected at
-			// startup. Never send it to an explicitly different child
-			// provider; resolve that provider's own credential instead.
-			if args.APIKey != "" && childProvider == hostProvider {
-				explicit = args.APIKey
-			}
-			if childProvider == "ollama" && explicit == "" {
-				return subagents.Credential{Value: "ollama", Method: "apikey"}, nil
-			}
-			credential, method, accountID, err := ResolveCredentialFullContext(ctx, childProvider, explicit)
-			if err != nil {
-				// Providers backed only by a local endpoint do not need a key.
-				// Leave stdin untouched and let the child resolve that endpoint.
-				if !CredentialAvailable(childProvider) {
-					return subagents.Credential{}, nil
-				}
-				return subagents.Credential{}, err
-			}
-			return subagents.Credential{Value: credential, Method: method, AccountID: accountID}, nil
-		},
-	})
-	if args.PermissionSet != nil {
-		// Packaged zutfile agents have an explicit capability ceiling. A
-		// child process would otherwise rebuild a fresh unrestricted sandbox,
-		// so do not expose either slash or tool-based delegation from this
-		// restricted host until worker capability propagation exists.
-		subagentsMgr = nil
-	} else {
-		// Replaying every historical event log can take seconds for users with
-		// many completed subagents. The manager is safe for concurrent snapshots,
-		// so populate the detached-agent dashboard in the background instead of
-		// blocking the first interactive paint.
-		go func() { _, _ = subagentsMgr.Reload() }()
-	}
-
-	// onSpawnedSupervisor is the OnSpawned callback the subagent_spawn tool
-	// fires after every successful spawn. It hands the agent off to
-	// the running Interactive so the watcher can flush a summary back
-	// into chat when all sub-agents finish. Reads `iv` lazily because
-	// the Interactive is constructed after the agent.
+	// These callbacks deliberately resolve iv lazily because the Interactive
+	// instance is constructed after the agent and its registry.
 	onSpawnedSupervisor := func(a *subagents.Agent, task string) {
 		if iv != nil {
 			iv.TrackSubagentWorker(a, task)
@@ -1487,86 +1449,77 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			iv.TrackResumedSubagentWorker(a, prompt)
 		}
 	}
+	onBeforeResumedSupervisor := func(a *subagents.Agent, prompt string) func() {
+		if iv != nil {
+			return iv.PrepareResumedSubagentWorker(a, prompt)
+		}
+		return nil
+	}
 	onStopRequestedSupervisor := func(a *subagents.Agent) {
 		if iv != nil {
 			iv.TrackStoppedSubagentWorker(a)
 		}
 	}
-	resolveSubagent := func(name string) (*subagents.Profile, error) {
-		return findSubagentProfile(r.CWD, name)
+	activeProviderForSubagents := func() string {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		return activeProvider
+	}
+	activeModelForSubagents := func() string {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		return activeModel
 	}
 
-	// Register the canonical subagent tools whenever launch-time policy permits
-	// them. The auto-subagents setting controls strict orchestration guidance,
-	// not explicit user-requested delegation.
-	injectSubagentTools := func(reg core.Registry) core.Registry {
-		if reg == nil || subagentsMgr == nil || !autoSubagentsAnyToolAllowed(args) {
-			return reg
-		}
-		if autoSubagentsToolAllowed(args) {
-			canonical := &tools.SubagentSpawnTool{
-				Supervisor: subagentsMgr,
-				Enabled:    func() bool { return true },
-				DefaultModel: func() string {
-					persistMu.Lock()
-					defer persistMu.Unlock()
-					return activeModel
-				},
-				DefaultProvider: func() string {
-					persistMu.Lock()
-					defer persistMu.Unlock()
-					return activeProvider
-				},
-				DefaultReasoning: func() string { return r.Reasoning },
-				ResolveSubagent:  resolveSubagent,
-				OnSpawned:        onSpawnedSupervisor,
-			}
-			reg[canonical.Name()] = canonical
-		}
-		if autoSubagentsStatusToolAllowed(args) {
-			statusTool := &tools.SubagentStatusTool{
-				Supervisor: subagentsMgr,
-				Enabled:    func() bool { return true },
-			}
-			reg[statusTool.Name()] = statusTool
-		}
-		if autoSubagentsStopToolAllowed(args) {
-			stopTool := &tools.SubagentStopTool{
-				Supervisor:      subagentsMgr,
-				Enabled:         func() bool { return true },
-				OnStopRequested: onStopRequestedSupervisor,
-			}
-			reg[stopTool.Name()] = stopTool
-		}
-		if autoSubagentsResumeToolAllowed(args) {
-			resumeTool := &tools.SubagentResumeTool{
-				Supervisor: subagentsMgr,
-				Enabled:    func() bool { return true },
-				OnResumed:  onResumedSupervisor,
-			}
-			reg[resumeTool.Name()] = resumeTool
-		}
-		return reg
+	runtime = newSubagentRuntime(subagentRuntimeConfig{
+		Context:         ctx,
+		Args:            args,
+		Root:            filepath.Join(ZutHome(), "subagents"),
+		RepoRoot:        r.CWD,
+		Provider:        r.Provider,
+		Model:           r.Model,
+		Reasoning:       r.Reasoning,
+		BaseURL:         r.BaseURL,
+		InsecureTLS:     r.InsecureTLS,
+		FastMode:        r.FastMode,
+		APIKey:          args.APIKey,
+		Policy:          subagentPolicyFromConfig(initialCfg.Subagents),
+		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
+		WebSearchGuard:  webSearchGuard,
+		ActiveProvider:  activeProviderForSubagents,
+		ActiveModel:     activeModelForSubagents,
+		OnSpawned:       onSpawnedSupervisor,
+		OnResumed:       onResumedSupervisor,
+		BeforeResumed:   onBeforeResumedSupervisor,
+		OnStopRequested: onStopRequestedSupervisor,
+	})
+	subagentsMgr = runtime.Supervisor()
+	reloadDone := make(chan struct{})
+	var reloadErrs []error
+	if subagentsMgr != nil {
+		// Replaying historical event logs can take seconds. Populate the
+		// detached-agent dashboard without blocking the first interactive paint.
+		go func() {
+			_, reloadErrs = subagentsMgr.Reload()
+			close(reloadDone)
+		}()
+	} else {
+		close(reloadDone)
 	}
-	prepareInteractiveRegistry := func(reg core.Registry) core.Registry {
-		reg = injectSubagentTools(reg)
-		return webSearchGuard.wrapRegistry(reg)
-	}
-	prepareResolvedInteractiveRegistry := func(reg core.Registry, policy subagents.WebSearchPolicy) core.Registry {
-		// The resolved policy is a ceiling. In particular, an extension named
-		// web_search must not reintroduce the capability when --no-tools,
-		// --tools, a packaged PermissionSet, or persisted settings deny it.
-		if policy != subagents.WebSearchAllow {
-			delete(reg, "web_search")
-		}
-		return prepareInteractiveRegistry(reg)
-	}
+	defer func() {
+		// Reload may attach detached workers, so let it finish before shutdown
+		// snapshots the supervisor's worker set.
+		<-reloadDone
+		_ = closeSubagentRuntimeFresh(runtime)
+	}()
+
+	prepareInteractiveRegistry := runtime.PrepareRegistry
+	prepareResolvedInteractiveRegistry := runtime.PrepareResolvedRegistry
 	prepareResolvedInteractiveRegistry(r.ToolRegistry, r.WebSearchPolicy)
 	initialWebSearchPolicy := webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry)
 	webSearchGuard.setAvailable(initialWebSearchPolicy == subagents.WebSearchAllow)
-	if subagentsMgr != nil {
-		subagentsMgr.SetWebSearchPolicy(initialWebSearchPolicy)
-	}
+	runtime.SetWebSearchPolicy(initialWebSearchPolicy)
+	resolveSubagent := runtime.resolveSubagent
 
 	// Confirmation gate: when --no-yolo is on, the agent must ask
 	// the user before every tool call. In interactive mode the TUI
@@ -1650,10 +1603,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if subagentsMgr != nil {
-			subagentsMgr.SetProvider(resolved.Provider)
-			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
-		}
+		runtime.SetProvider(resolved.Provider)
+		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1673,10 +1625,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if subagentsMgr != nil {
-			subagentsMgr.SetProvider(resolved.Provider)
-			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
-		}
+		runtime.SetProvider(resolved.Provider)
+		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1704,10 +1655,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if subagentsMgr != nil {
-			subagentsMgr.SetProvider(resolved.Provider)
-			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
-		}
+		runtime.SetProvider(resolved.Provider)
+		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1927,19 +1877,24 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		persistMu.Unlock()
 
 		// A candidate build must not publish its provider/model as the live
-		// selection before the candidate commits.
+		// selection before the candidate commits. The builder also stages
+		// provider settings on the shared runtime, so restore those settings on
+		// every failed path, including errors returned during preparation.
+		runtimeConfig := runtime.snapshotConfiguration()
+		committed := false
+		var candidate sessionResumeCandidate
+		defer func() {
+			if !committed {
+				runtime.restoreConfiguration(runtimeConfig)
+				loadErr = joinSessionCloseError(loadErr, candidate.session)
+			}
+		}()
 		candidate, err := prepareSessionResume(path, currentAg, currentProvider, currentModel, baseBuildAgentFor)
 		if err != nil {
 			// prepareSessionResume closes its append handle on failure;
 			// no live agent or session has been changed.
 			return err
 		}
-		committed := false
-		defer func() {
-			if !committed {
-				loadErr = joinSessionCloseError(loadErr, candidate.session)
-			}
-		}()
 
 		// Wire the private candidate before it can become visible. This is
 		// also required for legacy same-provider resumes, where the current
@@ -1995,7 +1950,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			if iv != nil {
 				iv.SetSubagentSessionScope(candidate.session.ID)
 			} else {
-				subagentsMgr.SetActiveSession(candidate.session.ID)
+				runtime.SetActiveSession(candidate.session.ID)
 			}
 		}
 		committed = true
@@ -2073,10 +2028,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		oldActiveProvider := activeProvider
 		oldActiveModel := activeModel
 		persistMu.Unlock()
-		oldSupervisorRoot := ""
-		if subagentsMgr != nil {
-			oldSupervisorRoot = subagentsMgr.RepoRoot()
-		}
+		runtimeConfig := runtime.snapshotConfiguration()
 		oldSandboxRoot := ""
 		oldSandboxLocked := false
 		if sharedSandbox != nil {
@@ -2091,9 +2043,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			activeProvider = oldActiveProvider
 			activeModel = oldActiveModel
 			persistMu.Unlock()
-			if subagentsMgr != nil {
-				subagentsMgr.SetRepoRoot(oldSupervisorRoot)
-			}
+			runtime.restoreConfiguration(runtimeConfig)
 			if sharedSandbox != nil {
 				sharedSandbox.Root = oldSandboxRoot
 				if oldSandboxLocked {
@@ -2106,9 +2056,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 
 		args.CWD = absPath
 		r.CWD = absPath
-		if subagentsMgr != nil {
-			subagentsMgr.SetRepoRoot(absPath)
-		}
+		runtime.SetRepoRoot(absPath)
 		if args.PermissionSet != nil {
 			expanded := args.PermissionSet.Expand(absPath, args.AgentDataDir)
 			args.PermissionSet = &expanded
@@ -2189,11 +2137,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 
 		// Re-scope the subagent dashboard to the new session.
-		if subagentsMgr != nil && newSess != nil {
+		if newSess != nil {
 			if iv != nil {
 				iv.SetSubagentSessionScope(newSess.ID)
 			} else {
-				subagentsMgr.SetActiveSession(newSess.ID)
+				runtime.SetActiveSession(newSess.ID)
 			}
 		}
 		if newSess != nil {
@@ -2272,25 +2220,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 	}
 
-	// subagentsMgr was constructed and reloaded earlier (before the agent
-	// build, so the auto-subagents tool could capture it). Here we just
-	// scope the dashboard to the active host session so /subagents only
-	// shows agents this session spawned (and any pre-upgrade unscoped
-	// agents — see SnapshotAll docs). Updated again whenever the
-	// user swaps sessions via loadSession below.
-	if sess != nil && subagentsMgr != nil {
-		subagentsMgr.SetActiveSession(sess.ID)
-	}
-	// Best-effort shutdown on normal interactive exit: stop only workers
-	// owned by the active host session. Other session scopes can share this
-	// supervisor and must remain alive.
-	if subagentsMgr != nil {
-		defer func() {
-			rootSessionID := subagentsMgr.ActiveSession()
-			if rootSessionID != "" {
-				_ = subagentsMgr.StopByRootSession(rootSessionID)
-			}
-		}()
+	// Scope the dashboard to the active host session. The runtime owns
+	// shutdown separately and closes the supervisor exactly once.
+	if sess != nil {
+		runtime.SetActiveSession(sess.ID)
 	}
 
 	var startupSkills []*skills.Skill
@@ -2315,7 +2248,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if available {
 			policy = subagents.WebSearchAllow
 		}
-		subagentsMgr.SetWebSearchPolicy(policy)
+		runtime.SetWebSearchPolicy(policy)
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
@@ -2363,6 +2296,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		AuthMethod:                      r.AuthMethod,
 		BaseURL:                         r.BaseURL,
 		Reasoning:                       r.Reasoning,
+		OnReasoningChanged:              runtime.SetReasoning,
 		SystemPrompt:                    r.SystemPrompt,
 		Tools:                           r.ToolRegistry,
 		MaxSteps:                        r.MaxSteps,
@@ -2573,6 +2507,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		},
 	})
 	extHooks.attachInteractive(iv)
+	go func() {
+		<-reloadDone
+		for _, reloadErr := range reloadErrs {
+			if reloadErr != nil {
+				iv.ReportError(fmt.Errorf("reload subagents: %w", reloadErr))
+			}
+		}
+	}()
 
 	// Bind the interactive TUI as the Confirmer. We deferred this
 	// until now because the gate is constructed before the TUI
@@ -2624,12 +2566,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		closeAgentLSP(finalAg)
 		closeResolvedLSP(r)
 		// Stop supervised workers before exiting. os.Exit skips deferred
-		// cleanup, so relying only on the normal runInteractive defer would
-		// leave child daemons (and their descendants) alive after a TERM or
-		// HUP delivered to the host.
-		if subagentsMgr != nil {
-			subagentsMgr.StopAll()
-		}
+		// cleanup, so wait for reload and close the shared runtime explicitly.
+		<-reloadDone
+		_ = closeSubagentRuntimeFresh(runtime)
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
 		// flushed the only at-risk state (the session file) and stopped
@@ -2825,7 +2764,11 @@ func readAllStdin() (string, error) {
 	if (fi.Mode() & os.ModeCharDevice) != 0 {
 		return "", nil
 	}
-	b, err := io.ReadAll(os.Stdin)
+	return readAllStdinFrom(os.Stdin)
+}
+
+func readAllStdinFrom(r io.Reader) (string, error) {
+	b, err := io.ReadAll(r)
 	return string(b), err
 }
 
