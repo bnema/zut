@@ -243,6 +243,35 @@ func imageFootprintBlank(s string) bool {
 	return strings.TrimSpace(s) == ""
 }
 
+// visibleTailHasImage reports whether an inline image or its blank terminal
+// footprint intersects the visible tail. Images earlier in retained scrollback
+// do not prevent ordinary text reflows from using the stable in-place path.
+func visibleTailHasImage(lines []string, viewportTop int) bool {
+	if viewportTop < 0 {
+		viewportTop = 0
+	}
+	if viewportTop >= len(lines) {
+		return false
+	}
+	for _, line := range lines[viewportTop:] {
+		if containsImageEscape(line) {
+			return true
+		}
+	}
+	if viewportTop == 0 || !imageFootprintBlank(lines[viewportTop]) {
+		return false
+	}
+	for idx := viewportTop - 1; idx >= 0; idx-- {
+		if containsImageEscape(lines[idx]) {
+			return true
+		}
+		if !imageFootprintBlank(lines[idx]) {
+			return false
+		}
+	}
+	return false
+}
+
 // paintBackgroundRow applies the optional theme background to a single
 // already-truncated terminal row. It pads with spaces to cols so the
 // background reaches the right edge, and re-applies the background
@@ -746,42 +775,86 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 			reflowAbove := false
 			if delta != 0 {
 				overlapEnd := min(len(chatFrame), len(r.logChat))
-				for idx := r.logViewportTop; idx < overlapEnd; idx++ {
+				// When the viewport starts in the bottom band there are no chat
+				// rows to compare at the old logical coordinates, but changing
+				// chat height still shifts the entire visible band.
+				reflowAbove = r.logViewportTop >= overlapEnd
+				for idx := r.logViewportTop; !reflowAbove && idx < overlapEnd; idx++ {
 					if r.logChat[idx] != chatFrame[idx] {
 						reflowAbove = true
-						break
 					}
 				}
 			}
 			if reflowAbove {
-				// Reflow has made the cached logical coordinates unreliable.
-				// Repaint only the visible tail: replaying the full transcript
-				// duplicates scrollback, while rebasing by the total height delta
-				// can drift when some new rows landed inside the viewport.
-				w.WriteString(SeqDeleteKittyImages + SeqCursorHome + SeqClearToEnd)
-				viewportTop := max(0, len(lines)-r.rows)
-				start := viewportTop
-				if start > 0 && imageFootprintBlank(lines[start]) {
-					for idx := start - 1; idx >= 0; idx-- {
-						if containsImageEscape(lines[idx]) {
-							start = idx
-							break
+				// A text-only logical buffer can be rebased without resetting the
+				// terminal viewport. Advance physical rows when it grows, then
+				// repaint the visible tail in place for both growth and shrinkage.
+				// Cursor-home plus erase-to-end makes several terminals visibly
+				// jump on streaming-markdown reflows.
+				growth := len(lines) - len(r.logLines)
+				newViewportTop := max(0, len(lines)-r.rows)
+				hasVisibleImages := visibleTailHasImage(r.logLines, r.logViewportTop) ||
+					visibleTailHasImage(lines, newViewportTop)
+				if !hasVisibleImages && len(lines) >= r.rows {
+					currentScreenRow := r.logHardwareRow - r.logViewportTop
+					if currentScreenRow < 0 {
+						currentScreenRow = 0
+					}
+					if currentScreenRow >= r.rows {
+						currentScreenRow = r.rows - 1
+					}
+					if growth > 0 {
+						if down := r.rows - 1 - currentScreenRow; down > 0 {
+							w.WriteString("\x1b[" + itoa(down) + "B")
 						}
-						if !imageFootprintBlank(lines[idx]) {
-							break
+						for range growth {
+							w.WriteString("\r\n")
+						}
+						currentScreenRow = r.rows - 1
+					}
+					if currentScreenRow > 0 {
+						w.WriteString("\x1b[" + itoa(currentScreenRow) + "A")
+					}
+					w.WriteString("\r")
+					for idx := newViewportTop; idx < len(lines); idx++ {
+						if idx > newViewportTop {
+							w.WriteString("\r\n")
+						}
+						w.WriteString("\x1b[0m")
+						w.WriteString(SeqClearLine)
+						w.WriteString(lines[idx])
+					}
+					r.logViewportTop = newViewportTop
+					r.logHardwareRow = len(lines) - 1
+				} else {
+					// Inline-image reflows and buffers shorter than the viewport need
+					// the conservative repaint path. Replaying the full transcript
+					// would duplicate retained scrollback.
+					w.WriteString(SeqDeleteKittyImages + SeqCursorHome + SeqClearToEnd)
+					viewportTop := max(0, len(lines)-r.rows)
+					start := viewportTop
+					if start > 0 && imageFootprintBlank(lines[start]) {
+						for idx := start - 1; idx >= 0; idx-- {
+							if containsImageEscape(lines[idx]) {
+								start = idx
+								break
+							}
+							if !imageFootprintBlank(lines[idx]) {
+								break
+							}
 						}
 					}
-				}
-				for idx := start; idx < len(lines); idx++ {
-					if idx > start {
-						w.WriteString("\r\n")
+					for idx := start; idx < len(lines); idx++ {
+						if idx > start {
+							w.WriteString("\r\n")
+						}
+						w.WriteString("\x1b[0m")
+						w.WriteString(SeqClearLine)
+						w.WriteString(lines[idx])
 					}
-					w.WriteString("\x1b[0m")
-					w.WriteString(SeqClearLine)
-					w.WriteString(lines[idx])
+					r.logViewportTop = viewportTop
+					r.logHardwareRow = len(lines) - 1
 				}
-				r.logViewportTop = viewportTop
-				r.logHardwareRow = len(lines) - 1
 				firstChanged = -1
 				lastChanged = -1
 			} else {
