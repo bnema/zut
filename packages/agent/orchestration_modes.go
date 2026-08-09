@@ -98,7 +98,7 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		runtime.SetActiveSession(sess.ID)
 	}
 	announceSession(extMgr, sess)

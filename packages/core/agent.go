@@ -72,10 +72,12 @@ type Agent struct {
 	// collection into one lifecycle round trip.
 	BeforeTurnContext func(ctx context.Context, step int) (allowed bool, reason, context string)
 
-	// OnToolResult, if set, receives extension/tool metadata immediately
-	// after each tool call completes. Details are host-owned metadata and
-	// are never sent to the provider; hosts may persist selected details
-	// with the active session.
+	// CommitToolResult, if set, commits extension/tool metadata immediately
+	// after each tool call completes. Returning an error converts the result to
+	// an error before it is appended to the transcript or sent to the provider.
+	CommitToolResult func(id string, result ToolResult) error
+	// OnToolResult observes the final result after CommitToolResult succeeds or
+	// converts it to an error.
 	OnToolResult func(id string, result ToolResult)
 
 	// BeforeAssistantMessage, if set, is called after the model's
@@ -861,6 +863,15 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			continue
 		}
 		res := a.runOneTool(ctx, tc, tools, sink)
+		if a.CommitToolResult != nil {
+			if err := a.CommitToolResult(tc.ID, res); err != nil {
+				res = ToolResult{
+					Content: []provider.Content{provider.TextBlock{Text: "tool result state could not be persisted"}},
+					IsError: true,
+					Timing:  res.Timing,
+				}
+			}
+		}
 		if res.IsError {
 			hadError = true
 		}

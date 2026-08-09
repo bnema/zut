@@ -42,6 +42,44 @@ func (r *recordingTool) Execute(_ context.Context, args json.RawMessage, _ func(
 	}, nil
 }
 
+func TestToolResultPersistenceFailureBecomesToolError(t *testing.T) {
+	agent := NewAgent(nil, "test", "", Registry{
+		"result": &resultTool{result: ToolResult{
+			Content: []provider.Content{provider.TextBlock{Text: "done"}},
+			Details: "durable update",
+		}},
+	})
+	agent.CommitToolResult = func(string, ToolResult) error { return errors.New("disk full") }
+	message := provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.Content{provider.ToolCallBlock{
+			ID:        "call-1",
+			Name:      "result",
+			Arguments: json.RawMessage(`{}`),
+		}},
+	}
+	var event EvToolResult
+	toolMessage, hadError := agent.executeTools(context.Background(), message, func(ev AgentEvent) {
+		if result, ok := ev.(EvToolResult); ok {
+			event = result
+		}
+	})
+
+	if !hadError {
+		t.Fatal("persistence failure did not mark the tool batch failed")
+	}
+	if !event.Result.IsError || event.Result.Details != nil {
+		t.Fatalf("tool event result = %#v", event.Result)
+	}
+	block, ok := toolMessage.Content[0].(provider.ToolResultBlock)
+	if !ok || !block.IsError {
+		t.Fatalf("tool transcript block = %#v", toolMessage.Content)
+	}
+	if got := block.Content[0].(provider.TextBlock).Text; got != "tool result state could not be persisted" {
+		t.Fatalf("tool error text = %q", got)
+	}
+}
+
 // TestBeforeToolExecuteModifiesArgs verifies that a non-nil
 // modifiedArgs returned from BeforeToolExecute is what the tool
 // actually sees.

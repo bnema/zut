@@ -41,6 +41,23 @@ func TestUpdateGoalToolRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestGoalUpdateFromResultRejectsBlockedWithoutReason(t *testing.T) {
+	result := core.ToolResult{Details: GoalUpdate{Status: core.GoalBlocked}}
+	if _, ok := GoalUpdateFromResult(result); ok {
+		t.Fatal("blank-reason blocked update was accepted")
+	}
+
+	result.Details = GoalUpdate{Status: core.GoalBlocked, Reason: "needs user input"}
+	if _, ok := GoalUpdateFromResult(result); !ok {
+		t.Fatal("blocked update with reason was rejected")
+	}
+
+	result.Details = GoalUpdate{Status: core.GoalDone}
+	if _, ok := GoalUpdateFromResult(result); !ok {
+		t.Fatal("completed update without reason was rejected")
+	}
+}
+
 func TestUpdateGoalToolRejectsUnsupportedStatus(t *testing.T) {
 	tool := &UpdateGoalTool{}
 	raw := json.RawMessage(`{"status":"active"}`)

@@ -143,7 +143,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		// A prompt is acknowledged by the supervisor only after this callback
 		// has appended and synced the matching user message. This closes the
 		// crash window between accepting a follow-up and writing session.json.

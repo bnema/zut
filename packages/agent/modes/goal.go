@@ -100,6 +100,10 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		pendingIdleWork := i.takePendingIdleWorkLocked()
 		i.mu.Unlock()
 		runPendingIdleWork(pendingIdleWork)
+		// The objective may have been replaced while the prior turn was
+		// finishing. Re-evaluate it now instead of waiting for another event;
+		// the idle gate still gives queued user work priority.
+		i.requestGoalContinuationIfIdle(parent)
 		i.invalidate()
 		return
 	}

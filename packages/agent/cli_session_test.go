@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +19,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestPersistToolResultFinishesBeforeSessionTransition(t *testing.T) {
+func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	root := t.TempDir()
 	original, err := core.NewSession(root, "original", "provider", "model", "test")
 	if err != nil {
@@ -38,53 +37,37 @@ func TestPersistToolResultFinishesBeforeSessionTransition(t *testing.T) {
 		}
 	}
 
-	var transitionMu sync.RWMutex
-	var persistMu sync.Mutex
-	current := original
+	boundSession := original
+	currentSession := next // Simulate a completed session switch before callback delivery.
 	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalDone}}
-	persistMu.Lock()
-	persisted := make(chan struct{})
-	go func() {
-		persistToolResultForCurrentSession(&transitionMu, &persistMu, func() *core.Session { return current }, nil, result)
-		close(persisted)
-	}()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for transitionMu.TryLock() {
-		transitionMu.Unlock()
-		if time.Now().After(deadline) {
-			persistMu.Unlock()
-			t.Fatal("tool-result callback did not acquire the session read lock")
-		}
-		runtime.Gosched()
-	}
-
-	transitioned := make(chan struct{})
-	go func() {
-		transitionMu.Lock()
-		persistMu.Lock()
-		current = next
-		persistMu.Unlock()
-		transitionMu.Unlock()
-		close(transitioned)
-	}()
-	persistMu.Unlock()
-	select {
-	case <-persisted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("tool result did not persist")
-	}
-	select {
-	case <-transitioned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("session transition did not finish")
+	if err := persistToolResultState(nil, boundSession, result); err != nil {
+		t.Fatal(err)
 	}
 
 	if original.Meta.Goal == nil || original.Meta.Goal.Status != core.GoalDone {
 		t.Fatalf("original goal = %#v, want done", original.Meta.Goal)
 	}
-	if next.Meta.Goal == nil || next.Meta.Goal.Status != core.GoalActive {
-		t.Fatalf("next goal = %#v, want active", next.Meta.Goal)
+	if currentSession.Meta.Goal == nil || currentSession.Meta.Goal.Status != core.GoalActive {
+		t.Fatalf("current goal = %#v, want active", currentSession.Meta.Goal)
+	}
+}
+
+func TestPersistGoalToolResultRejectsBlockedWithoutReason(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "finish the change", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalBlocked}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalActive {
+		t.Fatalf("persisted goal = %#v, want active", got)
 	}
 }
 

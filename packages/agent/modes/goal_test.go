@@ -20,7 +20,7 @@ func goalToolRegistry() core.Registry {
 type goalContinuationClient struct {
 	mu       sync.Mutex
 	requests []provider.Request
-	onSecond func()
+	onCall   func(call int)
 }
 
 func (c *goalContinuationClient) Name() string { return "goal-continuation" }
@@ -29,10 +29,10 @@ func (c *goalContinuationClient) Stream(_ context.Context, req provider.Request)
 	c.mu.Lock()
 	c.requests = append(c.requests, req)
 	call := len(c.requests)
-	onSecond := c.onSecond
+	onCall := c.onCall
 	c.mu.Unlock()
-	if call == 2 && onSecond != nil {
-		onSecond()
+	if onCall != nil {
+		onCall(call)
 	}
 	out := make(chan provider.Event, 1)
 	out <- provider.EventDone{
@@ -60,8 +60,10 @@ func TestActiveGoalStartsAnotherTurnWhenThreadBecomesIdle(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}
-	client := &goalContinuationClient{onSecond: func() {
-		_ = persistGoal(&core.SessionGoal{Objective: "finish issue 97", Status: core.GoalPaused})
+	client := &goalContinuationClient{onCall: func(call int) {
+		if call == 2 {
+			_ = persistGoal(&core.SessionGoal{Objective: "finish issue 97", Status: core.GoalPaused})
+		}
 	}}
 	turnFlushed := make(chan struct{}, 2)
 	interactive := NewInteractive(InteractiveConfig{
@@ -90,6 +92,136 @@ func TestActiveGoalStartsAnotherTurnWhenThreadBecomesIdle(t *testing.T) {
 	messages := client.requests[1].Messages
 	if len(messages) == 0 || messages[len(messages)-1].Meta[goalContinueMetaKey] != "true" {
 		t.Fatalf("continuation request tail = %#v", messages)
+	}
+}
+
+func TestReplacementGoalContinuesAfterStaleTurn(t *testing.T) {
+	var mu sync.Mutex
+	goal := &core.SessionGoal{Objective: "replacement objective", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		mu.Lock()
+		defer mu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		mu.Lock()
+		goal = cloneSessionGoal(next)
+		mu.Unlock()
+		return nil
+	}
+	client := &goalContinuationClient{onCall: func(call int) {
+		if call == 1 {
+			_ = persistGoal(&core.SessionGoal{Objective: "replacement objective", Status: core.GoalPaused})
+		}
+	}}
+	turnFlushed := make(chan struct{}, 1)
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:       core.NewAgent(client, "model", "system", goalToolRegistry()),
+		CurrentGoal: currentGoal,
+		PersistGoal: persistGoal,
+		FlushSession: func() {
+			turnFlushed <- struct{}{}
+		},
+	})
+	interactive.runCtx = context.Background()
+	interactive.mu.Lock()
+	interactive.busy = true
+	interactive.mu.Unlock()
+	stale := provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "original objective"}},
+		Meta:    map[string]string{goalContinueMetaKey: "true"},
+	}
+
+	interactive.startGoalContinuation(context.Background(), stale)
+	select {
+	case <-turnFlushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement goal did not start")
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(client.requests))
+	}
+	tail := client.requests[0].Messages[len(client.requests[0].Messages)-1]
+	if got := userMessageText(tail); !strings.Contains(got, "replacement objective") || strings.Contains(got, "original objective") {
+		t.Fatalf("continuation message = %q", got)
+	}
+}
+
+func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
+	var transitionMu sync.RWMutex
+	callbackStarted := make(chan struct{})
+	allowPersistence := make(chan struct{})
+	transitionHeld := make(chan struct{})
+	transitionDone := make(chan struct{})
+	handled := make(chan struct{})
+	agent := core.NewAgent(nil, "model", "system", goalToolRegistry())
+	agent.CommitToolResult = func(_ string, _ core.ToolResult) error {
+		close(callbackStarted)
+		<-allowPersistence
+		transitionMu.RLock()
+		transitionMu.RUnlock()
+		return nil
+	}
+	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+
+	go func() {
+		_ = agent.CommitToolResult("tool", core.ToolResult{})
+		interactive.handleEvent(core.EvToolResult{ID: "tool", Result: core.ToolResult{}})
+		close(handled)
+	}()
+	select {
+	case <-callbackStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool-result callback did not start")
+	}
+	go func() {
+		transitionMu.Lock()
+		close(transitionHeld)
+		interactive.ApplySessionAgent(core.NewAgent(nil, "model", "system", goalToolRegistry()), "provider", "model")
+		transitionMu.Unlock()
+		close(transitionDone)
+	}()
+	select {
+	case <-transitionHeld:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session transition did not acquire its lock")
+	}
+	select {
+	case <-transitionDone:
+	case <-time.After(2 * time.Second):
+		close(allowPersistence)
+		t.Fatal("session transition deadlocked with tool-result persistence")
+	}
+	close(allowPersistence)
+	select {
+	case <-handled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool-result callback did not finish")
+	}
+}
+
+func TestGoalBadgeUsesDurableStatusAfterPersistenceFailure(t *testing.T) {
+	goal := &core.SessionGoal{Objective: "finish issue 97", Status: core.GoalActive}
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:       core.NewAgent(nil, "model", "system", goalToolRegistry()),
+		CurrentGoal: func() *core.SessionGoal { return cloneSessionGoal(goal) },
+	})
+	// Core converts a goal update to an error result when durable persistence
+	// fails, so the presentation layer must leave the active badge unchanged.
+	result := core.ToolResult{
+		Content: []provider.Content{provider.TextBlock{Text: "tool result state could not be persisted"}},
+		IsError: true,
+	}
+
+	interactive.handleEvent(core.EvToolResult{ID: "goal", Result: result})
+	interactive.mu.Lock()
+	defer interactive.mu.Unlock()
+	if interactive.goalStatus != core.GoalActive {
+		t.Fatalf("goal badge = %q, want durable active status", interactive.goalStatus)
 	}
 }
 

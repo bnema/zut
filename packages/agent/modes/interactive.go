@@ -379,8 +379,7 @@ type InteractiveConfig struct {
 	CurrentGoal func() *core.SessionGoal
 	PersistGoal func(goal *core.SessionGoal) error
 
-	OnAssistant  func(m provider.Message)
-	OnToolResult func(id string, r core.ToolResult)
+	OnAssistant func(m provider.Message)
 
 	// Extensions, if non-nil, lets users invoke extension-registered
 	// slash commands. Commands declared by extensions are looked up
@@ -8300,9 +8299,6 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			}
 			tc.Result = text.String()
 			bumpToolRevision(tc)
-		}
-		if i.cfg.OnToolResult != nil {
-			i.cfg.OnToolResult(e.ID, e.Result)
 		}
 		if update, ok := tools.GoalUpdateFromResult(e.Result); ok && i.goalStatus == core.GoalActive {
 			i.goalStatus = update.Status

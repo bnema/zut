@@ -88,6 +88,9 @@ func GoalUpdateFromResult(result core.ToolResult) (GoalUpdate, bool) {
 	if update.Status != core.GoalDone && update.Status != core.GoalBlocked {
 		return GoalUpdate{}, false
 	}
+	if update.Status == core.GoalBlocked && strings.TrimSpace(update.Reason) == "" {
+		return GoalUpdate{}, false
+	}
 	return update, true
 }
 

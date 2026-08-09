@@ -688,28 +688,22 @@ func copyExtensionStates(states map[string]json.RawMessage) map[string]json.RawM
 	return out
 }
 
-func persistExtensionToolResult(mgr *extensions.Manager, sess *core.Session, result core.ToolResult) {
+func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result core.ToolResult) error {
 	if sess == nil {
-		return
+		return nil
 	}
 	if details, ok := result.Details.(extensions.ToolResultDetails); ok && details.Extension != "" && len(details.State) > 0 {
 		if err := sess.AppendExtensionState(details.Extension, details.State); err != nil {
-			fmt.Fprintf(os.Stderr, "extension state: %v\n", err)
-		} else if mgr != nil {
+			return fmt.Errorf("extension state: %w", err)
+		}
+		if mgr != nil {
 			mgr.UpdateSessionState(details.Extension, details.State)
 		}
 	}
 	if err := persistGoalToolResult(sess, result); err != nil {
-		fmt.Fprintf(os.Stderr, "goal state: %v\n", err)
+		return fmt.Errorf("goal state: %w", err)
 	}
-}
-
-func persistToolResultForCurrentSession(sessionTransitionMu *sync.RWMutex, persistMu *sync.Mutex, currentSession func() *core.Session, mgr *extensions.Manager, result core.ToolResult) {
-	sessionTransitionMu.RLock()
-	defer sessionTransitionMu.RUnlock()
-	persistMu.Lock()
-	defer persistMu.Unlock()
-	persistExtensionToolResult(mgr, currentSession(), result)
+	return nil
 }
 
 func persistGoalToolResult(sess *core.Session, result core.ToolResult) error {
@@ -990,7 +984,7 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
@@ -1071,7 +1065,7 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
@@ -1191,7 +1185,7 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
@@ -1842,8 +1836,15 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		goal := *sess.Meta.Goal
 		return &goal
 	}
-	persistToolResult := func(_ string, result core.ToolResult) {
-		persistToolResultForCurrentSession(&sessionTransitionMu, &persistMu, func() *core.Session { return sess }, extMgr, result)
+	bindAgentToolResultSession := func(a *core.Agent, boundSession *core.Session) {
+		if a == nil {
+			return
+		}
+		a.CommitToolResult = func(_ string, result core.ToolResult) error {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			return persistToolResultState(extMgr, boundSession, result)
+		}
 	}
 	wireAgentPersist := func(a *core.Agent) *core.Agent {
 		if a == nil {
@@ -1858,7 +1859,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		a.OnMessageAppended = persistMessage
 		a.OnUsage = persistUsage
 		a.OnTranscriptCompacted = persistCompaction
-		a.OnToolResult = persistToolResult
+		bindAgentToolResultSession(a, currentSession)
 		return a
 	}
 	wireAgentPersist(ag)
@@ -1967,6 +1968,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			oldCloseErr = oldSess.Close()
 		}
 		sess = candidate.session
+		bindAgentToolResultSession(candidate.agent, candidate.session)
 		candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
 		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
 		// The live agent only receives a compact resume window, but the
@@ -2169,6 +2171,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			oldCloseErr = sess.Close()
 		}
 		sess = newSess
+		bindAgentToolResultSession(newAg, newSess)
 		if newSess != nil {
 			newAg.SetSessionTimeContext(newSess.Meta.Started, newSess.Meta.Timezone, newSess.Meta.TimezoneOffset)
 			newStates = copyExtensionStates(newSess.ExtensionState)
