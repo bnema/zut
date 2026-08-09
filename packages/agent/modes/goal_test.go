@@ -153,6 +153,7 @@ func TestReplacementGoalContinuesAfterStaleTurn(t *testing.T) {
 
 func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
 	var transitionMu sync.RWMutex
+	transitionCompleted := false
 	callbackStarted := make(chan struct{})
 	allowPersistence := make(chan struct{})
 	transitionHeld := make(chan struct{})
@@ -163,13 +164,18 @@ func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
 		close(callbackStarted)
 		<-allowPersistence
 		transitionMu.RLock()
+		completed := transitionCompleted
 		transitionMu.RUnlock()
+		if !completed {
+			return errors.New("session transition did not complete")
+		}
 		return nil
 	}
 	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+	commitErr := make(chan error, 1)
 
 	go func() {
-		_ = agent.CommitToolResult("tool", core.ToolResult{})
+		commitErr <- agent.CommitToolResult("tool", core.ToolResult{})
 		interactive.handleEvent(core.EvToolResult{ID: "tool", Result: core.ToolResult{}})
 		close(handled)
 	}()
@@ -182,6 +188,7 @@ func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
 		transitionMu.Lock()
 		close(transitionHeld)
 		interactive.ApplySessionAgent(core.NewAgent(nil, "model", "system", goalToolRegistry()), "provider", "model")
+		transitionCompleted = true
 		transitionMu.Unlock()
 		close(transitionDone)
 	}()
@@ -201,6 +208,9 @@ func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
 	case <-handled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("tool-result callback did not finish")
+	}
+	if err := <-commitErr; err != nil {
+		t.Fatalf("commit tool result: %v", err)
 	}
 }
 
