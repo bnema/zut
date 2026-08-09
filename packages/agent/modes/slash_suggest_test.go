@@ -54,6 +54,16 @@ func TestSlashSuggesterHasFastModeToggle(t *testing.T) {
 	}
 }
 
+func TestSlashSuggesterHasOrchestratorToggle(t *testing.T) {
+	s := newSlashSuggester()
+	if got := commandNames(s.matches("/orc")); !contains(got, "/orchestrator") {
+		t.Fatalf("/orchestrator missing from suggestions, got %v", got)
+	}
+	if !isKnownSlashCommand("/ORCHESTRATOR") {
+		t.Fatal("/ORCHESTRATOR was not recognized as a built-in command")
+	}
+}
+
 func TestSlashCommandsAreCaseInsensitive(t *testing.T) {
 	s := newSlashSuggester()
 	if got := commandNames(s.matches("/EX")); !contains(got, "/exit") {

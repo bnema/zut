@@ -83,6 +83,51 @@ func TestAutoSubagentsToggleRollsBackInMemoryStateWhenPersistenceFails(t *testin
 	}
 }
 
+func TestOrchestratorSlashTogglesAutoSubagents(t *testing.T) {
+	allowed := true
+	enabled := false
+	supervisor := subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
+	t.Cleanup(supervisor.StopAll)
+	store := &failingAutoSubagentsSettingsStore{}
+	agent := core.NewAgent(nil, "test-model", "base system", core.Registry{})
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                       agent,
+		Supervisor:                  supervisor,
+		AutoSubagentsEnabled:        &enabled,
+		AutoSubagentsToolAllowed:    &allowed,
+		AutoSubagentsSystemAddendum: "orchestrator guidance",
+		SettingsStore:               store,
+	})
+	interactive.rend = nil
+
+	if interactive.runSlash(context.Background(), "/ORCHESTRATOR") {
+		t.Fatal("/orchestrator requested exit")
+	}
+	if interactive.cfg.AutoSubagentsEnabled == nil || !*interactive.cfg.AutoSubagentsEnabled {
+		t.Fatal("/orchestrator did not enable orchestration")
+	}
+	if store.calls != 1 || interactive.statusOK != "subagent orchestrator enabled" {
+		t.Fatalf("enable persistence/status = calls=%d status=%q", store.calls, interactive.statusOK)
+	}
+	if system, _ := agent.PromptConfig(); !strings.Contains(system, "orchestrator guidance") {
+		t.Fatalf("enabled system prompt = %q, want orchestrator guidance", system)
+	}
+
+	interactive.runSlash(context.Background(), "/orchestrator")
+	if interactive.cfg.AutoSubagentsEnabled == nil || *interactive.cfg.AutoSubagentsEnabled {
+		t.Fatal("/orchestrator did not disable orchestration")
+	}
+	if store.calls != 2 || interactive.statusOK != "subagent orchestrator disabled" {
+		t.Fatalf("disable persistence/status = calls=%d status=%q", store.calls, interactive.statusOK)
+	}
+	if system, _ := agent.PromptConfig(); strings.Contains(system, "orchestrator guidance") {
+		t.Fatalf("disabled system prompt still contains orchestrator guidance: %q", system)
+	}
+	if _, ok := agent.ToolsSnapshot()["subagent_spawn"]; !ok {
+		t.Fatal("disabling orchestration removed subagent_spawn")
+	}
+}
+
 func TestAutoSubagentsSettingsDisableUnavailablePolicy(t *testing.T) {
 	trueValue := true
 	falseValue := false
