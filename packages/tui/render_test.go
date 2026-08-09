@@ -126,7 +126,7 @@ func TestDrawLogInaccessibleChangePreservesScrollbackSelection(t *testing.T) {
 	}
 }
 
-func TestDrawLogStructuralReflowResetsVisibleViewport(t *testing.T) {
+func TestDrawLogStructuralGrowthScrollsBeforeRepaintingVisibleTail(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "ghostty")
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
@@ -135,16 +135,20 @@ func TestDrawLogStructuralReflowResetsVisibleViewport(t *testing.T) {
 	buf.Reset()
 
 	// Chat and the bottom band both grow while an old row is above the
-	// viewport. Rebasing by chat growth alone leaves both tracked terminal
-	// coordinates one row behind, so future status updates paint off-screen.
+	// viewport. Scroll by the logical growth before repainting the visible
+	// tail. Homing and clearing the viewport here makes terminals visibly
+	// jump during every streaming markdown reflow.
 	chat := []string{"new row", "old 0", "old 1"}
 	r.DrawLog(chat, []string{"working 0s", "editor"}, 1, 3)
 	got := buf.String()
-	if !strings.Contains(got, SeqCursorHome+SeqClearToEnd) {
-		t.Fatalf("structural reflow did not reset the visible viewport: %q", got)
+	if strings.Contains(got, SeqCursorHome+SeqClearToEnd) {
+		t.Fatalf("structural growth reset the visible viewport: %q", got)
 	}
 	if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
-		t.Fatalf("structural reflow cleared retained scrollback: %q", got)
+		t.Fatalf("structural growth cleared retained scrollback: %q", got)
+	}
+	if !strings.Contains(got, "\r\n\r\n") {
+		t.Fatalf("structural growth did not advance the viewport by two consecutive rows: %q", got)
 	}
 	if strings.Contains(got, "old 1") {
 		t.Fatalf("viewport repaint included a row above the visible tail: %q", got)
@@ -164,13 +168,59 @@ func TestDrawLogStructuralReflowResetsVisibleViewport(t *testing.T) {
 	buf.Reset()
 	r.DrawLog(chat, []string{"working 1s", "editor"}, 1, 3)
 	if got := buf.String(); !strings.Contains(got, "working 1s") {
-		t.Fatalf("status update after viewport reset was lost: %q", got)
+		t.Fatalf("status update after viewport repaint was lost: %q", got)
 	}
 
 	buf.Reset()
 	r.DrawLog(append(chat, "next tool"), []string{"working 2s", "editor"}, 1, 3)
 	if got := buf.String(); !strings.Contains(got, "next tool") {
-		t.Fatalf("append after viewport reset was lost: %q", got)
+		t.Fatalf("append after viewport repaint was lost: %q", got)
+	}
+}
+
+func TestDrawLogStructuralShrinkRepaintsVisibleTailInPlace(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 4)
+	r.DrawLog([]string{"partial", "old 0", "old 1", "old 2"}, []string{"working", "editor"}, 1, 2)
+	buf.Reset()
+
+	chat := []string{"old 0", "old 1", "old 2"}
+	r.DrawLog(chat, []string{"working", "editor"}, 1, 2)
+	got := buf.String()
+	if strings.Contains(got, SeqCursorHome+SeqClearToEnd) {
+		t.Fatalf("structural shrink reset the visible viewport: %q", got)
+	}
+	for _, visible := range []string{"old 2", "working", "editor"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("viewport repaint missing %q after shrink: %q", visible, got)
+		}
+	}
+	if !strings.Contains(got, "\r\x1b[0m"+SeqClearLine+"old 2") {
+		t.Fatalf("structural shrink did not return to column zero before repaint: %q", got)
+	}
+	if want := len(r.logLines) - r.rows; r.logViewportTop != want {
+		t.Fatalf("viewport top = %d, want %d", r.logViewportTop, want)
+	}
+}
+
+func TestDrawLogStructuralGrowthIgnoresImagesOutsideVisibleTail(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 3)
+	image := "\x1b_Ga=T;payload\x1b\\"
+	r.DrawLog([]string{image, "line 1", "line 2", "line 3"}, []string{"input"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog([]string{"new row", image, "line 1", "line 2", "line 3"}, []string{"input"}, -1, 0)
+	got := buf.String()
+	if strings.Contains(got, SeqCursorHome+SeqClearToEnd) {
+		t.Fatalf("image in retained scrollback forced a viewport reset: %q", got)
+	}
+	if !strings.Contains(got, "line 3") || !strings.Contains(got, "input") {
+		t.Fatalf("visible tail was not repainted after growth: %q", got)
 	}
 }
 
