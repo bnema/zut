@@ -290,6 +290,9 @@ func TestRunSupervisorWaitReportsCompletionBeforeCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exercise the ordering-sensitive path deterministically: /wait can be
+	// invoked after the worker has already completed.
+	a.Wait()
 	watcherDone := make(chan struct{})
 	iv.subagentsWaitWatcherDone = func() { close(watcherDone) }
 	iv.runSubagents(context.Background(), []string{"wait", a.ID})

@@ -1080,11 +1080,24 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	currentRunTurns := existing.CurrentRunTurnsValue()
 	pendingResume := existing.resumePromptState()
 	pendingResumePrompt, pendingResumePromptAt, pendingResumePromptID := pendingResume.Prompt, pendingResume.AcceptedAt, pendingResume.CommandID
-	hadPendingResumePrompt := pendingResumePrompt != ""
 	pendingResumeQueue := existing.resumePromptQueueSnapshot()
 	if pendingResumePrompt != "" && pendingResumePromptID == "" {
 		pendingResumePromptID = uuid.NewString()
 	}
+	if resuming && pendingResumePrompt == "" && len(pendingResumeQueue) > 0 {
+		// A host can exit after accepting an active-worker follow-up but before
+		// dispatching it. Promote the oldest durable prompt before accepting a
+		// new one so scheduler and completion-tracker order stay aligned.
+		queued := pendingResumeQueue[0]
+		pendingResumePrompt = queued.Prompt
+		pendingResumePromptAt = queued.AcceptedAt
+		pendingResumePromptID = queued.CommandID
+		if pendingResumePromptID == "" {
+			pendingResumePromptID = uuid.NewString()
+		}
+		pendingResumeQueue = pendingResumeQueue[1:]
+	}
+	hadPendingResumePrompt := pendingResumePrompt != ""
 	if resumePrompt != "" {
 		currentRunTurns = 0
 		if pendingResumePrompt == "" {
@@ -1094,19 +1107,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		} else {
 			pendingResumeQueue = append(pendingResumeQueue, queuedResumePrompt{Prompt: resumePrompt, AcceptedAt: now, CommandID: uuid.NewString()})
 		}
-	}
-	if resuming && resumePrompt == "" && pendingResumePrompt == "" && len(pendingResumeQueue) > 0 {
-		// A host can exit after accepting an active-worker follow-up but before
-		// dispatching it. Make the first durable queued prompt the resumed
-		// worker's initial turn rather than leaving the queue stranded.
-		queued := pendingResumeQueue[0]
-		pendingResumePrompt = queued.Prompt
-		pendingResumePromptAt = queued.AcceptedAt
-		pendingResumePromptID = queued.CommandID
-		if pendingResumePromptID == "" {
-			pendingResumePromptID = uuid.NewString()
-		}
-		pendingResumeQueue = pendingResumeQueue[1:]
 	}
 	if resuming && pendingResumePrompt != "" {
 		// A retained follow-up is an explicit new run, including a queued

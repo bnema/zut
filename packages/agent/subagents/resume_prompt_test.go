@@ -230,6 +230,50 @@ func TestResumeWithPromptRestartTracksExistingPendingPromptBeforeNewPrompt(t *te
 	if len(batch) != 2 || batch[0].Task != pendingPrompt || batch[1].Task != newPrompt {
 		t.Fatalf("completion order = %+v, want pending prompt then new prompt", batch)
 	}
+
+	// Recreate the durable queue-only state: no in-flight prompt, with the
+	// previously queued command still awaiting scheduler consumption.
+	if err := f.Stop(resumed.ID); err != nil {
+		t.Fatal(err)
+	}
+	resumed.Wait()
+	resumed.clearResumePrompt()
+	if err := f.persistAgent(resumed); err != nil {
+		t.Fatal(err)
+	}
+
+	const newestPrompt = "finally synthesize both reviews"
+	queueTracker := NewCompletionTracker()
+	restarted, err := f.ResumeWithPromptBefore(context.Background(), resumed.ID, newestPrompt, func(agent *Agent, prompt string) func() {
+		return queueTracker.TrackFutureTurn(agent, prompt, true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != restarted {
+			t.Fatalf("queue-only restart agent = %p, want %p", got, restarted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queue-only restarted runner did not start")
+	}
+	if got := restarted.resumePrompt(); got != newPrompt {
+		t.Fatalf("promoted queue prompt = %q, want %q", got, newPrompt)
+	}
+	queue = restarted.resumePromptQueueSnapshot()
+	if len(queue) != 1 || queue[0].Prompt != newestPrompt {
+		t.Fatalf("queue-only restart queue = %+v, want newest prompt second", queue)
+	}
+	restarted.OnTurnEnd(1, "")
+	restarted.OnTurnEnd(2, "")
+	batch, err = queueTracker.WaitIdle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 2 || batch[0].Task != newPrompt || batch[1].Task != newestPrompt {
+		t.Fatalf("queue-only completion order = %+v, want promoted prompt then newest prompt", batch)
+	}
 }
 
 func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
