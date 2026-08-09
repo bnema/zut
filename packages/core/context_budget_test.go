@@ -5,10 +5,127 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestProjectProviderMessagesAnnotatesUserTimeWithoutMutatingTranscript(t *testing.T) {
+	zone := time.FixedZone("PDT", -7*60*60)
+	accepted := time.Date(2026, 8, 8, 12, 34, 56, 0, zone)
+	messages := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "hello"}},
+		Time:    accepted,
+	}}
+
+	projected := projectProviderMessages(messages)
+	if got := messages[0].Content[0].(provider.TextBlock).Text; got != "hello" {
+		t.Fatalf("raw user text changed to %q", got)
+	}
+	if len(projected[0].Content) != 2 {
+		t.Fatalf("projected content = %d blocks, want timestamp and original", len(projected[0].Content))
+	}
+	annotation := projected[0].Content[0].(provider.TextBlock).Text
+	if annotation != "[message time: 2026-08-08T12:34:56-07:00]" {
+		t.Fatalf("timestamp annotation = %q", annotation)
+	}
+	if got := projected[0].Content[1].(provider.TextBlock).Text; got != "hello" {
+		t.Fatalf("projected user text = %q", got)
+	}
+}
+
+func TestAgentProviderTimeContextIsStableAndLocal(t *testing.T) {
+	a := NewAgent(nil, "model", "system", Registry{})
+	started := time.Date(2026, 8, 8, 9, 10, 11, 0, time.UTC)
+	a.SetSessionTimeContext(started, "America/Los_Angeles", "-07:00")
+
+	first := a.providerTimeContext().systemText()
+	second := a.providerTimeContext().systemText()
+	if first != second {
+		t.Fatalf("time context changed between requests: %q != %q", first, second)
+	}
+	for _, want := range []string{"session_started: 2026-08-08T02:10:11-07:00", "local_timezone: America/Los_Angeles (UTC-07:00)"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("time context %q missing %q", first, want)
+		}
+	}
+}
+
+func TestSessionTimeContextUsesNamedTimezoneForProjectedWinterMessages(t *testing.T) {
+	a := NewAgent(nil, "model", "", Registry{})
+	started := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	a.SetSessionTimeContext(started, "America/Los_Angeles", "-07:00")
+
+	context := a.providerTimeContext()
+	december := time.Date(2026, 12, 8, 12, 0, 0, 0, time.UTC).In(context.location)
+	projected := projectProviderMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "winter message"}},
+		Time:    december,
+	}})
+	annotation := projected[0].Content[0].(provider.TextBlock).Text
+	if annotation != "[message time: 2026-12-08T04:00:00-08:00]" {
+		t.Fatalf("winter message annotation = %q, want Pacific Standard Time", annotation)
+	}
+}
+
+func TestProjectToolTimingIsModelOnly(t *testing.T) {
+	started := time.Date(2026, 8, 8, 12, 0, 0, 0, time.FixedZone("UTC-4", -4*60*60))
+	timing := &provider.ToolTiming{StartedAt: started, CompletedAt: started.Add(1500 * time.Millisecond), Duration: 1500 * time.Millisecond}
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+		CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: "output"}}, Timing: timing,
+	}}}}
+
+	projected := projectProviderMessages(messages)
+	original := messages[0].Content[0].(provider.ToolResultBlock)
+	if len(original.Content) != 1 {
+		t.Fatalf("raw result content was changed: %#v", original.Content)
+	}
+	result := projected[0].Content[0].(provider.ToolResultBlock)
+	if len(result.Content) != 2 {
+		t.Fatalf("projected result content = %d blocks, want output and timing", len(result.Content))
+	}
+	timingText := result.Content[1].(provider.TextBlock).Text
+	if !strings.Contains(timingText, "started=2026-08-08T12:00:00-04:00") || !strings.Contains(timingText, "duration=1.5s") {
+		t.Fatalf("timing projection = %q", timingText)
+	}
+}
+
+func TestProjectToolTimingCountsTowardAggregateBudget(t *testing.T) {
+	started := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	timing := &provider.ToolTiming{StartedAt: started, CompletedAt: started.Add(time.Second), Duration: time.Second}
+	msgs := make([]provider.Message, 0, maxToolResultTotalTextBytes/maxToolResultTextBytes+1)
+	for i := 0; i < maxToolResultTotalTextBytes/maxToolResultTextBytes; i++ {
+		msgs = append(msgs, provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+			CallID:  string(rune('a' + i)),
+			Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("x", maxToolResultTextBytes)}},
+		}}})
+	}
+	msgs = append(msgs, provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+		CallID: "timed-empty", Timing: timing,
+	}}})
+
+	projected := projectToolResultMessages(msgs)
+	if got := toolResultTextForCall(projected, "timed-empty"); got != formatToolTiming(timing) {
+		t.Fatalf("empty timed result = %q, want timing annotation", got)
+	}
+	var total int
+	for _, message := range projected {
+		for _, content := range message.Content {
+			if result, ok := content.(provider.ToolResultBlock); ok {
+				total += retainedToolResultTextBytes(result.Content)
+			}
+		}
+	}
+	if total > maxToolResultTotalTextBytes {
+		t.Fatalf("projected tool-result text = %d bytes, want <= %d", total, maxToolResultTotalTextBytes)
+	}
+	if got := toolResultTextForCall(projected, "a"); !strings.Contains(got, toolResultOmissionMarker) {
+		t.Fatalf("oldest result = %q, want truncation after timing reservation", got)
+	}
+}
 
 func TestProjectToolResultMessagesBoundsAndUTF8(t *testing.T) {
 	msgs := make([]provider.Message, 0, 10)
@@ -158,12 +275,14 @@ func TestAgentNormalRequestProjectsToolResultsAfterPairRepair(t *testing.T) {
 	client := &captureClient{}
 	agent := NewAgent(client, "model", "system", Registry{})
 	full := strings.Repeat("full-normal-result ", maxToolResultTextBytes)
+	timing := &provider.ToolTiming{StartedAt: time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC), CompletedAt: time.Date(2026, 8, 8, 12, 0, 1, 0, time.UTC), Duration: time.Second}
 	agent.SetMessages([]provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "continue"}}},
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "read"}}},
 		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
 			CallID:  "call-1",
 			Content: []provider.Content{provider.TextBlock{Text: full}},
+			Timing:  timing,
 		}}},
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-2", Name: "read"}}},
 	})
@@ -172,8 +291,11 @@ func TestAgentNormalRequestProjectsToolResultsAfterPairRepair(t *testing.T) {
 		t.Fatalf("Continue: %v", err)
 	}
 	projectedText := toolResultTextForCall(client.lastReq.Messages, "call-1")
-	if retainedToolResultTextBytesForCall(client.lastReq.Messages, "call-1") > maxToolResultTextBytes || !strings.Contains(projectedText, toolResultOmissionMarker) {
+	if retainedToolResultTextBytesForCall(client.lastReq.Messages, "call-1") > maxToolResultTotalTextBytes || !strings.Contains(projectedText, toolResultOmissionMarker) {
 		t.Fatalf("normal request result was not bounded: %d bytes, %q", len(projectedText), projectedText[:min(len(projectedText), 80)])
+	}
+	if !strings.Contains(projectedText, formatToolTiming(timing)) {
+		t.Fatal("normal request is missing the tool timing annotation")
 	}
 	if !hasToolResultCall(client.lastReq.Messages, "call-2") {
 		t.Fatal("pair repair result was not preserved in normal request")
@@ -190,6 +312,7 @@ func TestCompactionProjectsSummaryInputWithoutChangingPersistedTail(t *testing.T
 	client := &compactLifecycleClient{}
 	agent := NewAgent(client, "model", "system", Registry{})
 	oldText := strings.Repeat("full-compaction-result ", maxToolResultTextBytes)
+	timing := &provider.ToolTiming{StartedAt: time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC), CompletedAt: time.Date(2026, 8, 8, 12, 0, 1, 0, time.UTC), Duration: time.Second}
 	tailText := strings.Repeat("full-tail-result ", maxToolResultTextBytes)
 	agent.SetMessages([]provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "summarize this"}}},
@@ -197,6 +320,7 @@ func TestCompactionProjectsSummaryInputWithoutChangingPersistedTail(t *testing.T
 		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
 			CallID:  "old-call",
 			Content: []provider.Content{provider.TextBlock{Text: oldText}},
+			Timing:  timing,
 		}}},
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "tail-call", Name: "read"}}},
 		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
@@ -215,6 +339,9 @@ func TestCompactionProjectsSummaryInputWithoutChangingPersistedTail(t *testing.T
 	requestText := client.req.Messages[0].Content[0].(provider.TextBlock).Text
 	if !strings.Contains(requestText, toolResultOmissionMarker) {
 		t.Fatal("compaction request is missing the tool-result omission marker")
+	}
+	if !strings.Contains(requestText, formatToolTiming(timing)) {
+		t.Fatal("compaction request is missing the tool timing annotation")
 	}
 	if got := toolResultTextForCall(agent.Messages(), "tail-call"); got != tailText {
 		t.Fatalf("compacted Agent.Messages tail changed: got %d bytes, want %d", len(got), len(tailText))

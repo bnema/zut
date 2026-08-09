@@ -570,6 +570,7 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	if sess == nil || ag == nil {
 		return candidate, nil
 	}
+	ag.SetSessionTimeContext(sess.Meta.Started, sess.Meta.Timezone, sess.Meta.TimezoneOffset)
 	// A newly created meta-only session is already on the active pair. Avoid
 	// reopening and closing it through the resume path: Close intentionally
 	// removes fresh empty sessions, and a second append handle would otherwise
@@ -591,6 +592,7 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	if closeErr := sess.Close(); closeErr != nil {
 		return sessionResumeCandidate{}, errors.Join(fmt.Errorf("close session: %w", closeErr), joinSessionCloseError(nil, candidate.session))
 	}
+	candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
 	return candidate, nil
 }
 
@@ -1809,6 +1811,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if a == nil {
 			return a
 		}
+		persistMu.Lock()
+		currentSession := sess
+		persistMu.Unlock()
+		if currentSession != nil {
+			a.SetSessionTimeContext(currentSession.Meta.Started, currentSession.Meta.Timezone, currentSession.Meta.TimezoneOffset)
+		}
 		a.OnMessageAppended = persistMessage
 		a.OnUsage = persistUsage
 		a.OnTranscriptCompacted = persistCompaction
@@ -1921,6 +1929,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			oldCloseErr = oldSess.Close()
 		}
 		sess = candidate.session
+		candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
 		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
 		// The live agent only receives a compact resume window, but the
 		// session file remains intact. Keep the persistence baseline at
@@ -2120,6 +2129,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		sess = newSess
 		if newSess != nil {
+			newAg.SetSessionTimeContext(newSess.Meta.Started, newSess.Meta.Timezone, newSess.Meta.TimezoneOffset)
 			newStates = copyExtensionStates(newSess.ExtensionState)
 		}
 		sessBaselineMsgs = 0
@@ -2691,6 +2701,7 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 		return nil, err
 	}
 	if s != nil {
+		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
 		ag.SetMessages(msgs)
 		if cum, last, uerr := core.SessionUsageDetail(s.Path); uerr == nil {
 			ag.SeedCost(cum)
@@ -2698,7 +2709,11 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 		}
 		return s, nil
 	}
-	return core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
+	s, err = core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
+	if err == nil {
+		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
+	}
+	return s, err
 }
 
 func pickSession(root, cwd string) (string, error) {

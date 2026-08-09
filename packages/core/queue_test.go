@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -128,6 +129,23 @@ func queueTestContains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestQueuedMessageKeepsAcceptedTimeAcrossDrain(t *testing.T) {
+	a := NewAgent(nil, "fake", "", Registry{})
+	before := time.Now()
+	if !a.QueueMessage("queued") {
+		t.Fatal("QueueMessage returned false")
+	}
+	after := time.Now()
+
+	queued := a.drainQueuedMessages()
+	if len(queued) != 1 {
+		t.Fatalf("drained %d messages, want 1", len(queued))
+	}
+	if queued[0].accepted.Before(before) || queued[0].accepted.After(after) {
+		t.Fatalf("accepted time %s outside queue submission window %s..%s", queued[0].accepted, before, after)
+	}
 }
 
 func TestQueueMessageSnapshotPopAndDrain(t *testing.T) {

@@ -274,8 +274,8 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		out.MaxTokens = &maxTok
 	}
 
-	if req.System != "" {
-		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: req.System})
+	if system := req.SystemPrompt(); system != "" {
+		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: system})
 	}
 
 	deferredMode := isKimiDeferredModel(req.Model)
@@ -412,6 +412,13 @@ func buildOAIUserContent(blocks []Content, textOnly bool) interface{} {
 		}
 	}
 	if textOnly || !hasImage {
+		// Keep multiple text blocks structured. The core provider projection
+		// adds message-time annotations as a separate block; collapsing that
+		// block with the user text changes the wire representation of the
+		// original prompt and can make consumers misclassify the request.
+		if !textOnly && len(blocks) > 1 {
+			return buildOAIContentBlocks(blocks, false)
+		}
 		var sb strings.Builder
 		for _, b := range blocks {
 			if tb, ok := b.(TextBlock); ok {

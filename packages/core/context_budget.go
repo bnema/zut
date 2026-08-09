@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
@@ -28,23 +30,58 @@ func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 				continue
 			}
 
-			textBytes := toolResultTextBytes(result.Content)
-			if textBytes == 0 {
-				continue
+			timingText := ""
+			if result.Timing != nil {
+				candidate := formatToolTiming(result.Timing)
+				if len(candidate) <= remaining {
+					timingText = candidate
+					remaining -= len(candidate)
+				}
 			}
 
-			limit := maxToolResultTextBytes
-			if remaining < limit {
-				limit = remaining
+			textBytes := toolResultTextBytes(result.Content)
+			if textBytes > 0 {
+				limit := maxToolResultTextBytes
+				if remaining < limit {
+					limit = remaining
+				}
+				var retained int
+				result.Content, retained = projectToolResultContent(result.Content, limit)
+				remaining -= retained
 			}
-			var retained int
-			result.Content, retained = projectToolResultContent(result.Content, limit)
+			if timingText != "" {
+				result.Content = append(result.Content, provider.TextBlock{Text: timingText})
+			}
 			projected[i].Content[j] = result
-			remaining -= retained
 		}
 	}
 
 	return projected
+}
+
+// projectProviderMessages creates the provider-only transcript view. The
+// timestamp and timing annotations are deliberately added to this copy so
+// the visible transcript and its persisted historical content remain intact.
+func projectProviderMessages(msgs []provider.Message) []provider.Message {
+	projected := projectToolResultMessages(msgs)
+	for i, message := range projected {
+		if message.Role != provider.RoleUser || message.Time.IsZero() {
+			continue
+		}
+		content := make([]provider.Content, 0, len(message.Content)+1)
+		content = append(content, provider.TextBlock{Text: fmt.Sprintf("[message time: %s]", message.Time.Format(time.RFC3339))})
+		content = append(content, message.Content...)
+		projected[i].Content = content
+	}
+	return projected
+}
+
+func formatToolTiming(timing *provider.ToolTiming) string {
+	return fmt.Sprintf("[tool timing: started=%s completed=%s duration=%s]",
+		timing.StartedAt.Format(time.RFC3339),
+		timing.CompletedAt.Format(time.RFC3339),
+		timing.Duration,
+	)
 }
 
 // copyToolResultMessages copies the slices that the projection can replace.

@@ -58,12 +58,22 @@ type ToolCallBlock struct {
 
 func (ToolCallBlock) isContent() {}
 
+// ToolTiming records the wall-clock bounds and monotonic duration of a tool
+// invocation. It is optional so sessions written before timing was added
+// remain valid and compact.
+type ToolTiming struct {
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	CompletedAt time.Time     `json:"completed_at,omitempty"`
+	Duration    time.Duration `json:"duration,omitempty"`
+}
+
 // ToolResultBlock is the result of a tool execution, attached to a
 // Message with Role == RoleTool.
 type ToolResultBlock struct {
-	CallID  string    `json:"call_id"`
-	Content []Content `json:"content"`
-	IsError bool      `json:"is_error"`
+	CallID  string      `json:"call_id"`
+	Content []Content   `json:"content"`
+	IsError bool        `json:"is_error"`
+	Timing  *ToolTiming `json:"timing,omitempty"`
 }
 
 func (ToolResultBlock) isContent() {}
@@ -258,12 +268,13 @@ type RequestLifecycle interface {
 
 // Request is a single LLM call.
 type Request struct {
-	Model       string
-	System      string
-	Messages    []Message
-	Tools       []Tool
-	MaxTokens   int
-	Temperature *float32
+	Model         string
+	System        string
+	SystemContext string
+	Messages      []Message
+	Tools         []Tool
+	MaxTokens     int
+	Temperature   *float32
 	// Reasoning is "", "minimum", "low", "medium", "high", "xhigh", or
 	// "max". Empty disables reasoning. The max tier is sent natively only to
 	// models that support it and clamped elsewhere.
@@ -274,6 +285,18 @@ type Request struct {
 	// Lifecycle receives in-memory request-attempt notifications. It is not
 	// included in any provider request payload.
 	Lifecycle RequestLifecycle
+}
+
+// SystemPrompt returns the stable system prompt plus optional model-only
+// session context without requiring callers to mutate their system prompt.
+func (r Request) SystemPrompt() string {
+	if r.SystemContext == "" {
+		return r.System
+	}
+	if r.System == "" {
+		return r.SystemContext
+	}
+	return r.System + "\n\n" + r.SystemContext
 }
 
 // OpenAI's current Fast mode is represented as the priority service tier on

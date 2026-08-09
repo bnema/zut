@@ -198,7 +198,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		Model:             req.Model,
 		Store:             false,
 		Stream:            true,
-		Instructions:      req.System,
+		Instructions:      req.SystemPrompt(),
 		ParallelToolCalls: true,
 		Include:           []string{"reasoning.encrypted_content"},
 	}

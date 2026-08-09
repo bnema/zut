@@ -62,12 +62,14 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 
 	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
 
+	systemContext := a.providerTimeContext().systemText()
 	req := provider.Request{
-		Model:       a.Model,
-		System:      summarizationSystem,
-		MaxTokens:   4096,
-		Temperature: a.Temperature,
-		FastMode:    fastMode,
+		Model:         a.Model,
+		System:        summarizationSystem,
+		SystemContext: systemContext,
+		MaxTokens:     4096,
+		Temperature:   a.Temperature,
+		FastMode:      fastMode,
 		Messages: []provider.Message{
 			{
 				Role:    provider.RoleUser,
@@ -193,7 +195,7 @@ func repairOrphanedToolResults(msgs []provider.Message) []provider.Message {
 // text transcript the summarization model can read without trying to
 // continue the conversation.
 func serializeTranscript(msgs []provider.Message) string {
-	msgs = projectToolResultMessages(msgs)
+	msgs = projectProviderMessages(msgs)
 	var sb strings.Builder
 	for _, m := range msgs {
 		switch m.Role {

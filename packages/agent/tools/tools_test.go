@@ -350,6 +350,16 @@ func TestBashSuccess(t *testing.T) {
 	if !strings.Contains(got, "hi") || !strings.Contains(got, "[exit 0]") {
 		t.Fatalf("got %q", got)
 	}
+	if strings.Contains(got, "Took ") {
+		t.Fatalf("bash output still contains duplicate timing: %q", got)
+	}
+	details, ok := res.Details.(map[string]any)
+	if !ok || details == nil {
+		t.Fatalf("bash details = %#v (%T), want non-nil map[string]any", res.Details, res.Details)
+	}
+	if _, exists := details["duration_ms"]; exists {
+		t.Fatalf("bash details still contain duplicate duration: %#v", details)
+	}
 	if res.IsError {
 		t.Fatal("unexpected error flag")
 	}

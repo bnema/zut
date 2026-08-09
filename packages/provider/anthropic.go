@@ -246,6 +246,8 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		out.Temperature = req.Temperature
 	}
 
+	system := req.SystemPrompt()
+
 	// System prompt assembly differs between api-key and OAuth modes.
 	// OAuth requests MUST begin with the Claude Code identity line or
 	// Anthropic rejects them (429 rate_limit_error with zero tokens used).
@@ -270,17 +272,17 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 			Text:         claudeCodeIdentity,
 			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 		}}
-		if req.System != "" {
+		if system != "" {
 			out.System = append(out.System, anthSystemBlock{
 				Type:         "text",
-				Text:         req.System,
+				Text:         system,
 				CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 			})
 		}
-	} else if req.System != "" {
+	} else if system != "" {
 		out.System = []anthSystemBlock{{
 			Type:         "text",
-			Text:         req.System,
+			Text:         system,
 			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 		}}
 	}
