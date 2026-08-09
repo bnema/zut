@@ -333,8 +333,8 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	reasoning := ClampReasoningForModel(model, req.Reasoning)
 	adaptive := usesAdaptiveThinking(model)
 
-	if req.System != "" {
-		sysBlock := map[string]interface{}{"text": req.System}
+	if system := req.SystemPrompt(); system != "" {
+		sysBlock := map[string]interface{}{"text": system}
 		if caching {
 			// Append cachePoint after the system text so the stable system
 			// prompt is cached as the first breakpoint.

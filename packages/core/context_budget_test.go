@@ -5,10 +5,75 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestProjectProviderMessagesAnnotatesUserTimeWithoutMutatingTranscript(t *testing.T) {
+	zone := time.FixedZone("PDT", -7*60*60)
+	accepted := time.Date(2026, 8, 8, 12, 34, 56, 0, zone)
+	messages := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "hello"}},
+		Time:    accepted,
+	}}
+
+	projected := projectProviderMessages(messages)
+	if got := messages[0].Content[0].(provider.TextBlock).Text; got != "hello" {
+		t.Fatalf("raw user text changed to %q", got)
+	}
+	if len(projected[0].Content) != 2 {
+		t.Fatalf("projected content = %d blocks, want timestamp and original", len(projected[0].Content))
+	}
+	annotation := projected[0].Content[0].(provider.TextBlock).Text
+	if annotation != "[message time: 2026-08-08T12:34:56-07:00]" {
+		t.Fatalf("timestamp annotation = %q", annotation)
+	}
+	if got := projected[0].Content[1].(provider.TextBlock).Text; got != "hello" {
+		t.Fatalf("projected user text = %q", got)
+	}
+}
+
+func TestAgentProviderTimeContextIsStableAndLocal(t *testing.T) {
+	a := NewAgent(nil, "model", "system", Registry{})
+	started := time.Date(2026, 8, 8, 9, 10, 11, 0, time.UTC)
+	a.SetSessionTimeContext(started, "America/Los_Angeles", "-07:00")
+
+	first := a.providerTimeContext().systemText()
+	second := a.providerTimeContext().systemText()
+	if first != second {
+		t.Fatalf("time context changed between requests: %q != %q", first, second)
+	}
+	for _, want := range []string{"session_started: 2026-08-08T02:10:11-07:00", "local_timezone: America/Los_Angeles (UTC-07:00)"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("time context %q missing %q", first, want)
+		}
+	}
+}
+
+func TestProjectToolTimingIsModelOnly(t *testing.T) {
+	started := time.Date(2026, 8, 8, 12, 0, 0, 0, time.FixedZone("UTC-4", -4*60*60))
+	timing := &provider.ToolTiming{StartedAt: started, CompletedAt: started.Add(1500 * time.Millisecond), Duration: 1500 * time.Millisecond}
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+		CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: "output"}}, Timing: timing,
+	}}}}
+
+	projected := projectProviderMessages(messages)
+	original := messages[0].Content[0].(provider.ToolResultBlock)
+	if len(original.Content) != 1 {
+		t.Fatalf("raw result content was changed: %#v", original.Content)
+	}
+	result := projected[0].Content[0].(provider.ToolResultBlock)
+	if len(result.Content) != 2 {
+		t.Fatalf("projected result content = %d blocks, want output and timing", len(result.Content))
+	}
+	timingText := result.Content[1].(provider.TextBlock).Text
+	if !strings.Contains(timingText, "started=2026-08-08T12:00:00-04:00") || !strings.Contains(timingText, "duration=1.5s") {
+		t.Fatalf("timing projection = %q", timingText)
+	}
+}
 
 func TestProjectToolResultMessagesBoundsAndUTF8(t *testing.T) {
 	msgs := make([]provider.Message, 0, 10)

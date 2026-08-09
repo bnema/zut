@@ -309,11 +309,15 @@ func openOrCreateSessionForBot(args Args, r Resolved, ag *core.Agent, version st
 			if err != nil {
 				return nil, nil, err
 			}
+			ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
 			ag.SetMessages(msgs)
 			return s, nil, nil
 		}
 	}
 	s, err := core.NewSession(ZutHome(), args.CWD, r.Provider, r.Model, version)
+	if err == nil {
+		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
+	}
 	return s, nil, err
 }
 

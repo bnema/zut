@@ -56,6 +56,10 @@ type SessionMeta struct {
 	Started  time.Time `json:"started"`
 	Version  string    `json:"version"`
 	Title    string    `json:"title,omitempty"`
+	// Timezone and TimezoneOffset capture the local semantics at session
+	// start. They are optional so older session headers remain compatible.
+	Timezone       string `json:"timezone,omitempty"`
+	TimezoneOffset string `json:"timezone_offset,omitempty"`
 
 	// CompactHandoff is opaque host-managed state for a live compaction
 	// continuation. It is session metadata, never provider context.
@@ -179,10 +183,21 @@ func newSessionAt(p, cwd, providerName, model, version string) (*Session, error)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	timezone, timezoneOffset := localTimeMetadata(now)
 	s := &Session{
-		ID:             id,
-		Path:           p,
-		Meta:           SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
+		ID:   id,
+		Path: p,
+		Meta: SessionMeta{
+			ID:             id,
+			CWD:            cwd,
+			Provider:       providerName,
+			Model:          model,
+			Started:        now.UTC(),
+			Version:        version,
+			Timezone:       timezone,
+			TimezoneOffset: timezoneOffset,
+		},
 		writer:         f,
 		buf:            bufio.NewWriter(f),
 		freshFile:      true,
@@ -1513,9 +1528,10 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			})
 		case head.CallID != "":
 			var tr struct {
-				CallID  string            `json:"call_id"`
-				Content []json.RawMessage `json:"content"`
-				IsError bool              `json:"is_error"`
+				CallID  string               `json:"call_id"`
+				Content []json.RawMessage    `json:"content"`
+				IsError bool                 `json:"is_error"`
+				Timing  *provider.ToolTiming `json:"timing,omitempty"`
 			}
 			if err := json.Unmarshal(raw, &tr); err != nil || tr.Content == nil {
 				if err == nil {
@@ -1523,7 +1539,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				}
 				return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
 			}
-			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError}
+			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError, Timing: tr.Timing}
 			for innerIdx, c := range tr.Content {
 				var inner struct {
 					Text     string `json:"text"`

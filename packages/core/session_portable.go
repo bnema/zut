@@ -215,14 +215,18 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	bw := bufio.NewWriter(dst)
 
 	// Write a fresh meta row claiming ownership.
+	now := time.Now()
+	timezone, timezoneOffset := localTimeMetadata(now)
 	importMeta := SessionMeta{
 		ID:             newID,
 		CWD:            cwd,
 		Model:          snapshot.Meta.Model,
 		Provider:       snapshot.Meta.Provider,
-		Started:        time.Now().UTC(),
+		Started:        now.UTC(),
 		Version:        version,
 		Title:          snapshot.Title,
+		Timezone:       timezone,
+		TimezoneOffset: timezoneOffset,
 		CompactHandoff: append(json.RawMessage(nil), snapshot.Meta.CompactHandoff...),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &importMeta})

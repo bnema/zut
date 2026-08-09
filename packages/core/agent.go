@@ -13,6 +13,11 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+type queuedMessage struct {
+	text     string
+	accepted time.Time
+}
+
 // Agent is a stateful conversation bound to a provider client, a model,
 // and a set of tools.
 type Agent struct {
@@ -131,7 +136,8 @@ type Agent struct {
 	// boundaries: before the next model call after a tool batch, or
 	// after a text-only assistant turn finishes. It never interrupts
 	// a running tool or cancels an in-flight provider request.
-	queued []string
+	queued      []queuedMessage
+	timeContext agentTimeContext
 }
 
 // NewAgent returns an Agent with sensible defaults.
@@ -144,6 +150,7 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 		MaxSteps:       0, // 0 = unlimited
 		MaxRetries:     3,
 		RetryBaseDelay: 2 * time.Second,
+		timeContext:    newAgentTimeContext(time.Now()),
 	}
 }
 
@@ -174,7 +181,7 @@ func (a *Agent) QueueMessage(text string) bool {
 		return false
 	}
 	a.mu.Lock()
-	a.queued = append(a.queued, text)
+	a.queued = append(a.queued, queuedMessage{text: text, accepted: time.Now()})
 	a.mu.Unlock()
 	return true
 }
@@ -186,7 +193,9 @@ func (a *Agent) PendingQueuedMessages() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]string, len(a.queued))
-	copy(out, a.queued)
+	for i, queued := range a.queued {
+		out[i] = queued.text
+	}
 	return out
 }
 
@@ -207,7 +216,7 @@ func (a *Agent) PopQueuedMessage() (string, bool) {
 	if n == 0 {
 		return "", false
 	}
-	text := a.queued[n-1]
+	text := a.queued[n-1].text
 	a.queued = a.queued[:n-1]
 	return text, true
 }
@@ -216,24 +225,32 @@ func (a *Agent) PopQueuedMessage() (string, bool) {
 // Hosts use this on explicit cancel/clear so stale follow-ups do
 // not run after the user aborted the turn.
 func (a *Agent) DrainQueuedMessages() []string {
-	return a.drainQueuedMessages()
+	queued := a.drainQueuedMessages()
+	out := make([]string, len(queued))
+	for i, message := range queued {
+		out[i] = message.text
+	}
+	return out
 }
 
-func (a *Agent) drainQueuedMessages() []string {
+func (a *Agent) drainQueuedMessages() []queuedMessage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]string, len(a.queued))
-	copy(out, a.queued)
+	out := append([]queuedMessage(nil), a.queued...)
 	a.queued = nil
 	return out
 }
 
-func (a *Agent) appendQueuedAsUser(texts []string, sink func(AgentEvent)) {
-	for _, text := range texts {
+func (a *Agent) appendQueuedAsUser(messages []queuedMessage, sink func(AgentEvent)) {
+	for _, queued := range messages {
+		accepted := queued.accepted
+		if accepted.IsZero() {
+			accepted = time.Now()
+		}
 		msg := provider.Message{
 			Role:    provider.RoleUser,
-			Content: []provider.Content{provider.TextBlock{Text: text}},
-			Time:    time.Now(),
+			Content: []provider.Content{provider.TextBlock{Text: queued.text}},
+			Time:    accepted,
 		}
 		a.mu.Lock()
 		a.messages = append(a.messages, msg)
@@ -690,6 +707,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		return provider.StopError, provider.Message{}, err
 	}
 	system, tools := a.PromptConfig()
+	systemContext := a.providerTimeContext().systemText()
 	if contextText := boundedTurnContext(turnContext); contextText != "" {
 		if system != "" {
 			system += "\n\n"
@@ -701,8 +719,9 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	// remain in the request so every tool call still has a matching result.
 	messages := repairToolUseResultPairs(a.Messages())
 	req := provider.Request{
-		Model:  a.Model,
-		System: system,
+		Model:         a.Model,
+		System:        system,
+		SystemContext: systemContext,
 		// Repair any dangling tool_use blocks before sending. A turn
 		// aborted mid-flight (cancel, connection drop, ECONNREFUSED to a
 		// dev server, etc.) can leave an assistant tool_use with no
@@ -711,7 +730,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		// next in-process request is rejected by providers like Anthropic
 		// with "tool_use ids were found without tool_result blocks". The
 		// repair is pure and a no-op on already-valid transcripts.
-		Messages:    projectToolResultMessages(messages),
+		Messages:    projectProviderMessages(messages),
 		Tools:       tools.Specs(),
 		Reasoning:   a.Reasoning,
 		FastMode:    fastMode,
@@ -849,6 +868,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			CallID:  tc.ID,
 			Content: res.Content,
 			IsError: res.IsError,
+			Timing:  res.Timing,
 		})
 		for _, name := range res.ActivateTools {
 			if _, err := tools.Get(name); err == nil && !containsString(addedTools, name) {
@@ -869,7 +889,24 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 	}, hadError
 }
 
-func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) ToolResult {
+func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) (res ToolResult) {
+	started := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			res = ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("panic: %v", recovered)}},
+				IsError: true,
+			}
+		}
+		res.Timing = &provider.ToolTiming{
+			StartedAt:   started,
+			CompletedAt: time.Now(),
+			Duration:    time.Since(started),
+		}
+	}()
+
+	sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
+
 	tool, err := tools.Get(tc.Name)
 	if err != nil {
 		return ToolResult{
@@ -906,38 +943,24 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 		args = json.RawMessage("{}")
 	}
 
-	// Recover panics so a buggy tool does not crash the agent.
-	var res ToolResult
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				res = ToolResult{
-					Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("panic: %v", r)}},
-					IsError: true,
-				}
-			}
-		}()
-		sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
-		out, err := tool.Execute(ctx, args, func(text string) {
-			sink(EvToolProgress{ID: tc.ID, Text: text})
-		})
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				res = ToolResult{
-					Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
-					IsError: true,
-				}
-				return
-			}
-			res = ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
+	// Tool panics are recovered by the invocation-level defer above so
+	// guard, lookup, progress, and Execute panics all receive timing.
+	out, err := tool.Execute(ctx, args, func(text string) {
+		sink(EvToolProgress{ID: tc.ID, Text: text})
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
 				IsError: true,
 			}
-			return
 		}
-		res = out
-	}()
-	return res
+		return ToolResult{
+			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
+			IsError: true,
+		}
+	}
+	return out
 }
 
 // extractText concatenates all TextBlock content in a message. Used

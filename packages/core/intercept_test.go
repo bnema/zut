@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
@@ -12,6 +13,22 @@ import (
 // can verify the interceptor-rewritten args reached execution.
 type recordingTool struct {
 	lastArgs json.RawMessage
+}
+
+type resultTool struct {
+	result ToolResult
+	err    error
+	panic  bool
+}
+
+func (t *resultTool) Name() string            { return "result" }
+func (t *resultTool) Description() string     { return "result" }
+func (t *resultTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (t *resultTool) Execute(context.Context, json.RawMessage, func(string)) (ToolResult, error) {
+	if t.panic {
+		panic("tool boom")
+	}
+	return t.result, t.err
 }
 
 func (r *recordingTool) Name() string            { return "echo" }
@@ -48,6 +65,7 @@ func TestBeforeToolExecuteModifiesArgs(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error result: %v", res.Content)
 	}
+	assertToolTiming(t, res.Timing)
 	if string(rec.lastArgs) != string(newArgs) {
 		t.Errorf("tool saw %s, want %s", string(rec.lastArgs), string(newArgs))
 	}
@@ -128,5 +146,50 @@ func TestBeforeToolExecuteBlockSurfacesReason(t *testing.T) {
 	}
 	if rec.lastArgs != nil {
 		t.Error("tool ran despite block")
+	}
+	assertToolTiming(t, res.Timing)
+}
+
+func TestRunOneToolTimingCoversOutcomes(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name  string
+		tools Registry
+		ctx   context.Context
+		want  string
+	}{
+		{name: "success", tools: Registry{"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "ok"}}}}}, ctx: context.Background()},
+		{name: "ordinary error", tools: Registry{"result": &resultTool{err: errors.New("ordinary")}}, ctx: context.Background()},
+		{name: "cancellation", tools: Registry{"result": &resultTool{err: context.Canceled}}, ctx: cancelled},
+		{name: "missing", tools: Registry{}, ctx: context.Background()},
+		{name: "panic", tools: Registry{"result": &resultTool{panic: true}}, ctx: context.Background()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewAgent(nil, "test", "", tc.tools)
+			callName := "result"
+			if tc.name == "missing" {
+				callName = "missing"
+			}
+			res := a.runOneTool(tc.ctx, provider.ToolCallBlock{ID: "timed", Name: callName}, tc.tools, func(AgentEvent) {})
+			assertToolTiming(t, res.Timing)
+		})
+	}
+}
+
+func assertToolTiming(t *testing.T, timing *provider.ToolTiming) {
+	t.Helper()
+	if timing == nil {
+		t.Fatal("tool result has no timing")
+	}
+	if timing.StartedAt.IsZero() || timing.CompletedAt.IsZero() {
+		t.Fatalf("tool timing has zero wall-clock bound: %#v", timing)
+	}
+	if timing.CompletedAt.Before(timing.StartedAt) {
+		t.Fatalf("tool completed before start: %#v", timing)
+	}
+	if timing.Duration < 0 {
+		t.Fatalf("tool duration = %s, want non-negative", timing.Duration)
 	}
 }

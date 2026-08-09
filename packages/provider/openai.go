@@ -274,8 +274,8 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		out.MaxTokens = &maxTok
 	}
 
-	if req.System != "" {
-		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: req.System})
+	if system := req.SystemPrompt(); system != "" {
+		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: system})
 	}
 
 	deferredMode := isKimiDeferredModel(req.Model)

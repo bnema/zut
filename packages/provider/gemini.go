@@ -145,9 +145,9 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	out := &gemRequest{}
 
 	// System prompt → systemInstruction.parts[0].text.
-	if strings.TrimSpace(req.System) != "" {
+	if system := req.SystemPrompt(); strings.TrimSpace(system) != "" {
 		out.SystemInstruction = &gemSystemInstruction{
-			Parts: []gemPart{{Text: req.System}},
+			Parts: []gemPart{{Text: system}},
 		}
 	}
 
