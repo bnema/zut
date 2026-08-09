@@ -47,6 +47,23 @@ type Session struct {
 	messagesAppended int
 }
 
+// GoalStatus is the persisted lifecycle state of an autonomous session goal.
+type GoalStatus string
+
+const (
+	GoalActive  GoalStatus = "active"
+	GoalPaused  GoalStatus = "paused"
+	GoalBlocked GoalStatus = "blocked"
+	GoalDone    GoalStatus = "done"
+)
+
+// SessionGoal is the concise autonomous objective attached to one session.
+type SessionGoal struct {
+	Objective string     `json:"objective"`
+	Status    GoalStatus `json:"status"`
+	Reason    string     `json:"reason,omitempty"`
+}
+
 // SessionMeta is written as the first line of every session file.
 type SessionMeta struct {
 	ID       string    `json:"id"`
@@ -65,6 +82,9 @@ type SessionMeta struct {
 	// continuation. It is session metadata, never provider context.
 	// Missing or invalid values are handled by the owning host as no handoff.
 	CompactHandoff json.RawMessage `json:"compact_handoff,omitempty"`
+	// Goal is the current autonomous objective for this session. Completed
+	// goals remain inspectable until the user clears or replaces them.
+	Goal *SessionGoal `json:"goal,omitempty"`
 
 	// Parent is the ID of the session this one was forked from, or
 	// empty for top-level sessions. The tree picker walks parents
@@ -1295,6 +1315,25 @@ func (s *Session) UpdateCompactHandoff(state json.RawMessage) error {
 	return nil
 }
 
+// UpdateGoal records or clears the current autonomous session goal.
+func (s *Session) UpdateGoal(goal *SessionGoal) error {
+	if s == nil {
+		return nil
+	}
+	previous := s.Meta.Goal
+	if goal == nil {
+		s.Meta.Goal = nil
+	} else {
+		copyGoal := *goal
+		s.Meta.Goal = &copyGoal
+	}
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.Goal = previous
+		return fmt.Errorf("update goal: %w", err)
+	}
+	return nil
+}
+
 // UpdateTitle records a session title without adding anything to the
 // conversation transcript. The title is kept in memory as well so the live
 // session can restore it when the user switches sessions in the TUI.
@@ -1374,7 +1413,7 @@ func (s *Session) Close() error {
 	}
 	flushErr := s.Flush()
 	closeErr := s.writer.Close()
-	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 {
+	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Goal == nil {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.

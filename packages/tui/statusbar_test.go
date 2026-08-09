@@ -7,6 +7,30 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestStatusBarShowsActiveGoal(t *testing.T) {
+	params := StatusBarParams{
+		Theme:      Dark,
+		Provider:   "openai",
+		Model:      "gpt-test",
+		GoalStatus: "active",
+		CWD:        "/tmp/project",
+		Cols:       100,
+	}
+	lines := StatusBar(params)
+	if len(lines) == 0 || !strings.Contains(lines[0], "goal:active") {
+		t.Fatalf("status bar = %q, want active goal", lines)
+	}
+
+	params.Cols = 35
+	lines = StatusBar(params)
+	for _, line := range lines {
+		if strings.Contains(line, "goal:active") {
+			return
+		}
+	}
+	t.Fatalf("narrow status bar = %q, want active goal", lines)
+}
+
 // TestStatusBarAlwaysTwoLines verifies the status bar always emits
 // two lines when a cwd is present, regardless of terminal width, and
 // that the cwd is indented with the 2-space pad so it lines up under

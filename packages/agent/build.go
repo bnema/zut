@@ -101,7 +101,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// capability policy excludes the current session. An extension must
 		// not turn a normal CLI opt-out into a differently implemented search
 		// capability with the same model-visible name.
-		if info.Name == "web_search" {
+		if info.Name == "web_search" || info.Name == "update_goal" {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -1291,6 +1291,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"edit":            &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
 		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
+		"update_goal":     &tools.UpdateGoalTool{},
 	}
 	if webSearchAllowedForRegistry(args) {
 		all["web_search"] = tools.NewWebSearchTool()
@@ -1377,7 +1378,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "create_worktree", "lsp", "web_search"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "create_worktree", "lsp", "web_search", "update_goal"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

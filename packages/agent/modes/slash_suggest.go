@@ -53,6 +53,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/reasoning", Desc: "set the reasoning level"},
 	{Name: "/fast", Desc: "toggle fast mode"},
 	{Name: "/orchestrator", Desc: "toggle automatic subagent orchestration"},
+	{Name: "/goal", Desc: "start or control an autonomous goal"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/fork", Desc: "pick a user message and fork the current session"},

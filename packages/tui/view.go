@@ -2828,8 +2828,9 @@ type StatusBarParams struct {
 	Busy       bool
 	BusyPrefix string // spinner + funny line when busy
 	CWD        string
-	Locked     bool // sandbox on?
-	NoYolo     bool // confirmation mode enabled?
+	Locked     bool   // sandbox on?
+	NoYolo     bool   // confirmation mode enabled?
+	GoalStatus string // autonomous goal lifecycle, empty when none
 
 	// Cumulative session usage and cost.
 	Usage provider.Usage
@@ -2903,6 +2904,9 @@ func StatusBar(p StatusBarParams) []string {
 	}
 	if costStr != "" {
 		stats = append(stats, costStr)
+	}
+	if p.GoalStatus != "" {
+		stats = append(stats, "goal:"+p.GoalStatus)
 	}
 
 	// Context %. Color-coded: yellow >70, red >90.

@@ -13,10 +13,82 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/google/uuid"
 )
+
+func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
+	root := t.TempDir()
+	original, err := core.NewSession(root, "original", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	next, err := core.NewSession(root, "next", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	for _, sess := range []*core.Session{original, next} {
+		if err := sess.UpdateGoal(&core.SessionGoal{Objective: "finish", Status: core.GoalActive}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	boundSession := original
+	currentSession := next // Simulate a completed session switch before callback delivery.
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalDone}}
+	if err := persistToolResultState(nil, boundSession, result); err != nil {
+		t.Fatal(err)
+	}
+
+	if original.Meta.Goal == nil || original.Meta.Goal.Status != core.GoalDone {
+		t.Fatalf("original goal = %#v, want done", original.Meta.Goal)
+	}
+	if currentSession.Meta.Goal == nil || currentSession.Meta.Goal.Status != core.GoalActive {
+		t.Fatalf("current goal = %#v, want active", currentSession.Meta.Goal)
+	}
+}
+
+func TestPersistGoalToolResultRejectsBlockedWithoutReason(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "finish the change", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalBlocked}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalActive {
+		t.Fatalf("persisted goal = %#v, want active", got)
+	}
+}
+
+func TestPersistGoalToolResultUpdatesActiveGoal(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "finish the change", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalBlocked, Reason: "need user input"}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalBlocked || got.Reason != "need user input" {
+		t.Fatalf("persisted goal = %#v", got)
+	}
+}
 
 type failingStdinReader struct{}
 
