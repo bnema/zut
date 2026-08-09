@@ -1,13 +1,12 @@
 name: release
 
-# After CI succeeds on main, create at most one tag for the unreleased
-# conventional commits. The tag is then built by the shared GoReleaser
-# workflow at its exact commit.
+# Once each morning, create at most one tag for the unreleased conventional
+# commits on main. GitHub schedules in UTC, so both possible UTC offsets are
+# triggered and the first step keeps only the 07:00 Europe/Paris run.
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
+  schedule:
+    - cron: "0 5,6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,26 +17,39 @@ concurrency:
 
 jobs:
   tag:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      !contains(github.event.workflow_run.head_commit.message, '[release=skip]')
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Check out the verified commit
+      - name: Check the Paris release time
+        id: release-time
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TZ: Europe/Paris
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$(date +%H)" = 07 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out main
+        if: steps.release-time.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: main
 
       - name: Compute the next release tag
+        if: steps.release-time.outputs.run == 'true'
         id: version
         shell: bash
         run: |
           set -euo pipefail
+          if git log -1 --format=%B | grep -Fq '[release=skip]'; then
+            echo "The latest commit requested that the release be skipped."
+            exit 0
+          fi
           tag=$(bash .github/scripts/next-release-tag.sh)
           if [ -z "$tag" ]; then
             echo "No releasable conventional commits for this run."
