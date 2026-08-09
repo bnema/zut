@@ -329,7 +329,12 @@ func TestSubagentRuntimeCallbacksAndExactlyOnceClose(t *testing.T) {
 	var spawned atomic.Int32
 	var stopped atomic.Int32
 	cfg := newRuntimeTestConfig(root, t.TempDir(), func(*subagents.Agent) subagents.Runner { return runner })
-	cfg.OnSpawned = func(*subagents.Agent, string) { spawned.Add(1) }
+	cfg.OnSpawned = func(_ *subagents.Agent, _ string, required bool) {
+		if required {
+			t.Errorf("optional spawn callback required = true")
+		}
+		spawned.Add(1)
+	}
 	cfg.OnStopRequested = func(*subagents.Agent) { stopped.Add(1) }
 	rt := newSubagentRuntime(cfg)
 	registry := rt.InjectTools(core.NewRegistry())

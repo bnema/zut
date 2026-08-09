@@ -12,11 +12,10 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// SubagentSpawnTool lets the main agent fork a background sub-agent
-// against the host's cwd via subagents.Supervisor.SpawnReq. The sub-agent runs
-// in parallel: the tool returns the agent id immediately and the main
-// turn continues uninterrupted. The user can monitor / chat with the
-// spawned agent via /subagents.
+// SubagentSpawnTool lets the main agent delegate work against the host's cwd
+// via subagents.Supervisor.SpawnReq. Optional work returns immediately and runs
+// in the background. Required work keeps the tool call open until the delegated
+// turn reaches a durable terminal outcome.
 //
 // Available when the host's launch-time tool policy permits delegation. The
 // primary-agent prompt decides whether delegation is proactive or only on an
@@ -42,11 +41,10 @@ type SubagentSpawnTool struct {
 	// The child receives only the name and loads the profile itself.
 	ResolveSubagent func(name string) (*subagents.Profile, error)
 
-	// OnSpawned, if set, is called after every successful spawn with
-	// the new agent + the task it was started with. Used by the
-	// interactive host to track agents and surface a summary back
-	// in chat when all sub-agents finish.
-	OnSpawned func(agent *subagents.Agent, task string)
+	// OnSpawned, if set, is called after every successful spawn with the
+	// requirement mode. Hosts track optional work for asynchronous completion;
+	// required work is delivered by this blocking tool call instead.
+	OnSpawned func(agent *subagents.Agent, task string, required bool)
 }
 
 type subagentSpawnArgs struct {
@@ -57,6 +55,7 @@ type subagentSpawnArgs struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	Thinking  string `json:"thinking,omitempty"`
 	FastMode  *bool  `json:"fast_mode,omitempty"`
+	Required  bool   `json:"required,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
 	MaxTurns  *int   `json:"max_turns,omitempty"`
@@ -95,6 +94,10 @@ const subagentSpawnSchemaTemplate = `{
       "type": "boolean",
       "description": "Optional fast-mode override for the child. Omit to inherit the selected profile or host setting."
     },
+    "required": {
+      "type": "boolean",
+      "description": "Set true when the parent must receive this delegated result before it can finish. Required calls wait event-driven for a terminal outcome; failed, timed-out, or canceled work remains unmet until a successful retry or explicit user removal. An outcome unobserved across host restart requires explicit user reconciliation."
+    },
     "isolation": {
       "type": "string",
       "enum": ["shared", "worktree"],
@@ -116,7 +119,7 @@ const subagentSpawnSchemaTemplate = `{
 
 func (t *SubagentSpawnTool) Name() string { return "subagent_spawn" }
 func (t *SubagentSpawnTool) Description() string {
-	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile, model/provider/reasoning, timeout, turn limit, and shared/worktree isolation, and fast-mode preference. Returns the sub-agent id immediately. Completion is host-event-driven: wait only for the injected [auto-subagents update]; never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
+	return "Delegate work to a sub-agent. Set required=true when its outcome is mandatory before the parent can finish; the tool then waits event-driven and returns that outcome in the current turn. Optional work runs in the background and returns an id immediately. Optional completion is host-event-driven: wait only for the injected [auto-subagents update]; never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	maxTurns := 3
@@ -250,6 +253,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		Reasoning:     reasoning,
 		FastMode:      fastModeOverride,
 		Subagent:      agentName,
+		Required:      a.Required,
 		Timeout:       timeout,
 		MaxTurns:      maxTurns,
 		WorkspaceMode: workspaceMode,
@@ -259,7 +263,10 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 	if t.OnSpawned != nil {
-		t.OnSpawned(agent, task)
+		t.OnSpawned(agent, task, a.Required)
+	}
+	if a.Required {
+		return waitRequiredSubagent(ctx, t.Name(), t.Supervisor, agent, task)
 	}
 
 	var sb strings.Builder
@@ -298,6 +305,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 			"provider":      providerID,
 			"reasoning":     reasoning,
 			"fast_mode":     agent.FastMode,
+			"required":      false,
 			"isolation":     string(workspaceMode),
 			"timeout":       agent.Timeout.String(),
 			"max_turns":     agent.MaxTurns,
@@ -306,6 +314,50 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 			"turn_state":    string(agent.TurnState()),
 			"result_ref":    subagents.ResultRef(agent.ID),
 		},
+	}, nil
+}
+
+func waitRequiredSubagent(ctx context.Context, toolName string, supervisor *subagents.Supervisor, agent *subagents.Agent, task string) (core.ToolResult, error) {
+	requirement, err := supervisor.WaitRequired(ctx, agent.ID)
+	if err != nil {
+		return core.ToolResult{}, fmt.Errorf("%s: wait for required agent %s: %w", toolName, agent.ID, err)
+	}
+	snapshot := agent.Snapshot()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "required sub-agent %s reached %s\n", agent.ID, requirement.State)
+	fmt.Fprintf(&sb, "task: %s\n", truncateTask(task, 200))
+	fmt.Fprintf(&sb, "requirement: %s\n", requirement.State)
+	if requirement.ErrorCode != "" {
+		fmt.Fprintf(&sb, "error_code: %s\n", requirement.ErrorCode)
+		fmt.Fprintf(&sb, "diagnostic: %s\n", subagents.ResultRef(agent.ID))
+	}
+	output := strings.TrimSpace(snapshot.LastAssistant)
+	if snapshot.Result != nil && strings.TrimSpace(snapshot.Result.Output) != "" {
+		output = strings.TrimSpace(snapshot.Result.Output)
+	}
+	if output != "" {
+		sb.WriteString("\nresult:\n")
+		sb.WriteString(output)
+		sb.WriteByte('\n')
+	}
+	if requirement.Unmet() {
+		sb.WriteString("\nThis required work is still unmet. Retry it with subagent_resume before producing a terminal answer. The user may explicitly waive it by removing the terminal worker with /subagents rm.")
+	} else {
+		sb.WriteString("\nThe required result is now available in this turn; continue with it before answering.")
+	}
+	return core.ToolResult{
+		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
+		Details: map[string]any{
+			"agent_id":          agent.ID,
+			"task":              task,
+			"required":          true,
+			"requirement_state": string(requirement.State),
+			"state":             snapshot.Status,
+			"process_state":     string(snapshot.ProcessState),
+			"turn_state":        string(snapshot.TurnState),
+			"result_ref":        subagents.ResultRef(agent.ID),
+		},
+		IsError: requirement.Unmet(),
 	}, nil
 }
 

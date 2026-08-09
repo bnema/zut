@@ -861,11 +861,32 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 		if !isDelegatedTurnEnd(ev) {
 			break
 		}
-		if message, _ := ev.Data["error"].(string); message != "" {
+		message, _ := ev.Data["error"].(string)
+		if message != "" {
 			a.setTurnState(TurnFailed, ev.TurnID)
 		} else {
 			a.setTurnState(TurnSucceeded, ev.TurnID)
 		}
+		ordinal := a.LifetimeTurnsValue()
+		if step, ok := eventCounter(ev.Data, "step"); ok {
+			if ordinal == 0 {
+				// Missing protocol-v1 turn.started counters can accompany
+				// either zero-based or one-based step values. Normalize to
+				// the durable target when either representation matches.
+				target := a.requirementSnapshot().TargetTurn
+				switch {
+				case step == target || step+1 == target:
+					ordinal = target
+				case step == 0:
+					ordinal = 1
+				default:
+					ordinal = step
+				}
+			} else if step > ordinal {
+				ordinal = step
+			}
+		}
+		a.resolveRequirement(ordinal, a.Result(), message, false)
 		persist = true
 	}
 	if persist && a.persistFn != nil {

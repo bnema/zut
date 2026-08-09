@@ -578,6 +578,7 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		a.resultRef = ResultRef(a.ID)
 		a.lifecycleMu.Unlock()
 	}
+	a.resolveRequirement(0, result, "", true)
 }
 
 // ReadResult returns the durable structured result for an agent.

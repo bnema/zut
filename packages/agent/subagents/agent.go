@@ -157,27 +157,30 @@ type Agent struct {
 	legacyEventState            bool
 	transcriptMu                sync.Mutex
 
-	lifecycleMu      sync.Mutex
-	processState     ProcessState
-	turnState        TurnState
-	currentTurnID    string
-	updatedAt        time.Time
-	lastActivity     time.Time
-	result           *TurnResult
-	resultRef        string
-	patchRef         string
-	changedFiles     []string
-	outputBytes      int
-	outputLines      int
-	outputTruncated  bool
-	maxOutputBytes   int
-	maxOutputLines   int
-	persistFn        func(*Agent) error
-	persistMu        sync.Mutex
-	stateDir         string
-	workspaceCleanup func() error
-	workspaceCapture func() (WorkspaceCapture, error)
-	onTurnIdle       func()
+	lifecycleMu           sync.Mutex
+	processState          ProcessState
+	turnState             TurnState
+	currentTurnID         string
+	updatedAt             time.Time
+	lastActivity          time.Time
+	result                *TurnResult
+	resultRef             string
+	requirement           RequirementSnapshot
+	requirementPersisting bool
+	requirementChanged    chan struct{}
+	patchRef              string
+	changedFiles          []string
+	outputBytes           int
+	outputLines           int
+	outputTruncated       bool
+	maxOutputBytes        int
+	maxOutputLines        int
+	persistFn             func(*Agent) error
+	persistMu             sync.Mutex
+	stateDir              string
+	workspaceCleanup      func() error
+	workspaceCapture      func() (WorkspaceCapture, error)
+	onTurnIdle            func()
 
 	// OnTurnEnd, if set, fires once per prompt-level turn_end event
 	// emitted by the subagent daemon wrapper. Provider/tool-loop

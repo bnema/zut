@@ -34,6 +34,8 @@ import (
 // Historical fields like `branch` and `isolated` are silently dropped
 // by encoding/json's permissive decoder when an older meta.json is
 // loaded; we don't need to keep them in the struct.
+type requirementMeta = RequirementSnapshot
+
 type agentMeta struct {
 	ID               string          `json:"id"`
 	Task             string          `json:"task"`
@@ -73,6 +75,7 @@ type agentMeta struct {
 	UpdatedAt        time.Time       `json:"updated_at,omitempty"`
 	LastActivity     time.Time       `json:"last_activity,omitempty"`
 	ResultRef        string          `json:"result_ref,omitempty"`
+	Requirement      requirementMeta `json:"requirement,omitempty"`
 	PatchRef         string          `json:"patch_ref,omitempty"`
 	ChangedFiles     []string        `json:"changed_files,omitempty"`
 	InboxPath        string          `json:"inbox_path"`
@@ -134,6 +137,7 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 	updatedAt := a.updatedAt
 	lastActivity := a.lastActivity
 	resultRef := a.resultRef
+	requirement := a.requirement
 	patchRef := a.patchRef
 	changedFiles := append([]string(nil), a.changedFiles...)
 	a.lifecycleMu.Unlock()
@@ -176,6 +180,7 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		UpdatedAt:        updatedAt,
 		LastActivity:     lastActivity,
 		ResultRef:        resultRef,
+		Requirement:      requirement,
 		PatchRef:         patchRef,
 		ChangedFiles:     changedFiles,
 		InboxPath:        a.InboxPath,
@@ -383,10 +388,15 @@ func (f *Supervisor) reloadRoot(root string) (loaded int, errs []error) {
 			f.mu.Unlock()
 			continue
 		}
-		a := f.buildDetachedAgent(m)
+		a, requirementReconciled := f.buildDetachedAgent(m)
 		f.agents[m.ID] = a
 		f.order = append(f.order, m.ID)
 		f.mu.Unlock()
+		if requirementReconciled {
+			if err := f.persistAgent(a); err != nil {
+				errs = append(errs, fmt.Errorf("persist reconciled requirement %s: %w", a.ID, err))
+			}
+		}
 		loaded++
 	}
 	return loaded, errs
@@ -398,7 +408,7 @@ func (f *Supervisor) reloadRoot(root string) (loaded int, errs []error) {
 //
 // The returned Agent has a closed `done` channel because Wait should return
 // instantly: there is nothing to wait for.
-func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
+func (f *Supervisor) buildDetachedAgent(m agentMeta) (*Agent, bool) {
 	// Metadata without a repository identity uses the current RepoRoot;
 	// records with one retain their persisted repository so a restart from
 	// another checkout cannot silently redirect the child.
@@ -517,12 +527,14 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		lastActivity:      lastActivity,
 		stateDir:          agentStateDir,
 		resultRef:         m.ResultRef,
+		requirement:       m.Requirement,
 		patchRef:          m.PatchRef,
 		changedFiles:      append([]string(nil), m.ChangedFiles...),
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
 		maxOutputLines:    f.cfg.Policy.MaxOutputLines,
 		done:              make(chan struct{}),
 		turnResults:       make(chan *TurnResult, 16),
+		persistFn:         f.persistAgent,
 	}
 	if a.updatedAt.IsZero() {
 		a.updatedAt = lastActivity
@@ -544,10 +556,24 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 	if a.EventLogPath != "" {
 		resultDir = filepath.Dir(a.EventLogPath)
 	}
+	beforeRequirement := a.requirementSnapshot()
 	if result, err := readTurnResult(resultDir); err == nil && validateTurnResultAgent(result, a.ID) == nil {
-		a.setResult(result.Bounded(f.cfg.Policy.MaxOutputBytes, f.cfg.Policy.MaxOutputLines))
+		bounded := result.Bounded(f.cfg.Policy.MaxOutputBytes, f.cfg.Policy.MaxOutputLines)
+		a.setResult(bounded)
+		if requirementAcceptsResult(beforeRequirement, bounded) {
+			a.resolveRequirement(0, bounded, "", true)
+		}
 	}
-	return a
+	if a.requirementSnapshot().pending() {
+		a.resolveRequirement(0, &TurnResult{
+			Status: ResultFailed,
+			Error: &ResultError{
+				Code:    "required_outcome_unobserved",
+				Message: "host restarted before the required worker outcome was durably observed",
+			},
+		}, "", true)
+	}
+	return a, beforeRequirement != a.requirementSnapshot()
 }
 
 // LoadTranscript hydrates one reloaded agent's durable event history. Reload
@@ -790,13 +816,13 @@ func replayEventTranscript(a *Agent, ev Event) {
 // Killed). Resuming a still-running agent returns an error so two
 // runners don't race for the same session.
 func (f *Supervisor) Resume(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, true, "")
+	return f.resumeWithHook(ctx, id, true, "", f.requiredRetryHook(id))
 }
 
 // ResumeSession continues the existing child session without replaying the
 // original task. It is the explicit canonical spelling for Resume.
 func (f *Supervisor) ResumeSession(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, true, "")
+	return f.resumeWithHook(ctx, id, true, "", f.requiredRetryHook(id))
 }
 
 // ResumeWithPrompt continues an agent with a manager follow-up while retaining
@@ -805,7 +831,47 @@ func (f *Supervisor) ResumeSession(ctx context.Context, id string) (*Agent, erro
 // terminal worker is restarted with the follow-up as its initial prompt,
 // avoiding a race with inbox listener startup.
 func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*Agent, error) {
+	if hook := f.requiredRetryHook(id); hook != nil {
+		return f.ResumeWithPromptBefore(ctx, id, prompt, hook)
+	}
 	return f.ResumeWithPromptBefore(ctx, id, prompt, nil)
+}
+
+// ResumeRequiredWithPrompt retries required work. The next delegated turn
+// becomes the new durable target before it can be queued or delivered, so a
+// fast worker cannot finish between the resume call and requirement tracking.
+func (f *Supervisor) ResumeRequiredWithPrompt(ctx context.Context, id, prompt string) (*Agent, error) {
+	return f.ResumeRequiredWithPromptBefore(ctx, id, prompt, nil)
+}
+
+// ResumeRequiredWithPromptBefore combines durable requirement registration
+// with the host's pre-delivery callback.
+func (f *Supervisor) ResumeRequiredWithPromptBefore(ctx context.Context, id, prompt string, before func(*Agent, string) func()) (*Agent, error) {
+	return f.ResumeWithPromptBefore(ctx, id, prompt, combineRequiredRetryHook(before))
+}
+
+func (f *Supervisor) requiredRetryHook(id string) func(*Agent, string) func() {
+	a := f.Get(strings.TrimSpace(id))
+	if a == nil || !a.requirementSnapshot().Unmet() {
+		return nil
+	}
+	return combineRequiredRetryHook(nil)
+}
+
+func combineRequiredRetryHook(before func(*Agent, string) func()) func(*Agent, string) func() {
+	return func(a *Agent, prompt string) func() {
+		previous := a.prepareRequired(0)
+		var cleanup func()
+		if before != nil {
+			cleanup = before(a, prompt)
+		}
+		return func() {
+			if cleanup != nil {
+				cleanup()
+			}
+			a.restoreRequirement(previous)
+		}
+	}
 }
 
 // ResumeWithPromptBefore is ResumeWithPrompt with a pre-delivery hook. The
@@ -1010,11 +1076,7 @@ func (f *Supervisor) dispatchQueuedResume(ctx context.Context, a *Agent) {
 // RestartTask intentionally runs the stored original task again in a fresh
 // worker attempt. Callers should use ResumeSession for normal recovery.
 func (f *Supervisor) RestartTask(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, false, "")
-}
-
-func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resumePrompt string) (*Agent, error) {
-	return f.resumeWithHook(ctx, id, resuming, resumePrompt, nil)
+	return f.resumeWithHook(ctx, id, false, "", f.requiredRetryHook(id))
 }
 
 func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming bool, resumePrompt string, before func(*Agent, string) func()) (*Agent, error) {
@@ -1131,8 +1193,9 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		MaxTurns: existing.MaxTurns, LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Timeout: existing.Timeout, Tools: append([]string(nil), existing.Tools...),
 		WebSearchPolicy: childWebSearchPolicy(existing.WebSearchPolicy, existing.Subagent, existing.Tools),
 		CurrentTurnID:   existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
-		SessionID: existing.SessionID,
-		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
+		Requirement: existingSnapshot.Requirement,
+		SessionID:   existing.SessionID,
+		InboxPath:   inboxPath, EventLogPath: existing.EventLogPath,
 		SessionPath:    existing.SessionPath,
 		ResumePrompt:   pendingResumePrompt,
 		ResumePromptAt: pendingResumePromptAt,
@@ -1240,6 +1303,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		updatedAt:         now,
 		lastActivity:      now,
 		currentTurnID:     m.CurrentTurnID,
+		requirement:       m.Requirement,
 		stateDir:          stateDir,
 		lease:             lease,
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
@@ -1299,6 +1363,12 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 			// No rejecting operation remains before scheduling, so there is no path
 			// that needs the hook's rollback after this point.
 			_ = before(a, resumePrompt)
+		}
+		if !hadPendingResumePrompt && resumePrompt == "" {
+			_ = before(a, "")
+		}
+		if err := f.persistAgent(a); err != nil {
+			a.recordPersistenceError(err)
 		}
 	}
 	f.armQueueTimeout(a)

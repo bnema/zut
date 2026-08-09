@@ -8743,14 +8743,26 @@ func (a telegramSenderAdapter) Active() bool {
 
 // TrackSubagentWorker is the exported entry point used by the cli to
 // hand a freshly-spawned auto-subagents agent off to the shared tracker.
-func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string) {
+func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string, required ...bool) {
+	if len(required) != 0 && required[0] {
+		if i != nil {
+			i.invalidate()
+		}
+		return
+	}
 	i.trackSubagentWorker(a, task, false, false)
 }
 
 // TrackResumedSubagentWorker watches a resumed follow-up independently of the
 // worker's original task. A long-lived daemon can complete several manager
 // turns, each of which must produce its own automatic delivery.
-func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string) {
+func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string, required ...bool) {
+	if len(required) != 0 && required[0] {
+		if i != nil {
+			i.invalidate()
+		}
+		return
+	}
 	i.trackSubagentWorker(a, prompt, true, false)
 }
 
@@ -8758,7 +8770,13 @@ func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt stri
 // sent. The returned cleanup removes the registration if the resume operation
 // fails before delivery. It is used by the resume tool's pre-send hook; the
 // existing TrackResumedSubagentWorker signature remains the post-success API.
-func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string) func() {
+func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string, required ...bool) func() {
+	if len(required) != 0 && required[0] {
+		if i != nil {
+			i.invalidate()
+		}
+		return nil
+	}
 	return i.trackSubagentWorker(a, prompt, true, true)
 }
 
@@ -9069,7 +9087,9 @@ func (i *Interactive) applyAutoSubagentsTool() {
 				DefaultProvider:  func() string { return i.cfg.Provider },
 				DefaultReasoning: func() string { return i.cfg.Reasoning },
 				ResolveSubagent:  i.cfg.ResolveSubagent,
-				OnSpawned:        i.TrackSubagentWorker,
+				OnSpawned: func(a *subagents.Agent, task string, required bool) {
+					i.TrackSubagentWorker(a, task, required)
+				},
 			}
 			next[canonical.Name()] = canonical
 		}
@@ -9090,9 +9110,11 @@ func (i *Interactive) applyAutoSubagentsTool() {
 		}
 		if i.autoSubagentsResumeToolAllowed() {
 			resumeTool := &tools.SubagentResumeTool{
-				Supervisor:    i.cfg.Supervisor,
-				Enabled:       func() bool { return true },
-				BeforeResumed: i.PrepareResumedSubagentWorker,
+				Supervisor: i.cfg.Supervisor,
+				Enabled:    func() bool { return true },
+				BeforeResumed: func(a *subagents.Agent, prompt string, required bool) func() {
+					return i.PrepareResumedSubagentWorker(a, prompt, required)
+				},
 			}
 			next[resumeTool.Name()] = resumeTool
 		}
