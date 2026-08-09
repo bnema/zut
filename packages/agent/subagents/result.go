@@ -557,18 +557,6 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			result.Status = ResultFailed
-			// The parent deadline is authoritative for terminal categorization, so
-			// it intentionally overrides any child result error, including
-			// context_limit. The worker was first asked to stop cleanly, and any
-			// streamed output remains in this result and HistoryRef(agentID).
-			message := "subagent deadline exceeded; inspect history for received output"
-			if result.Output != "" {
-				message = "subagent deadline exceeded; partial output is preserved in the result and history"
-			}
-			result.Error = &ResultError{
-				Code:    "deadline_exceeded",
-				Message: message,
-			}
 			result.ShutdownOrigin = ShutdownOriginDeadline
 		} else if result.Error == nil {
 			result.Error = &ResultError{Code: "runner_failed", Message: truncate(runErr.Error(), 500)}

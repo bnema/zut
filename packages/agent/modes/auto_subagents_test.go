@@ -166,6 +166,33 @@ func TestTrackStoppedSubagentWorkerDeliversTerminalUpdate(t *testing.T) {
 	}
 }
 
+func TestTrackDeadlineFailureUsesAttributedResultError(t *testing.T) {
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+				return context.DeadlineExceeded
+			})
+		},
+	})
+	a, err := mgr.Spawn(context.Background(), "run until deadline")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iv := newQueuedAutoSubagentsInteractive()
+	iv.TrackSubagentWorker(a, a.Task)
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "status: failed") {
+		t.Fatalf("deadline update changed failed status: %q", update)
+	}
+	want := subagents.ShutdownResultError(subagents.ShutdownOriginDeadline).Message
+	if !strings.Contains(update, want) {
+		t.Fatalf("deadline update missing attributed result error: %q", update)
+	}
+}
+
 func TestTrackResumedSubagentWorkerDeliversFollowUp(t *testing.T) {
 	started := make(chan struct{})
 	mgr := subagents.New(subagents.Config{

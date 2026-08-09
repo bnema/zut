@@ -8822,8 +8822,10 @@ func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
 			status = string(snap.Status)
 		}
 		resultErr := ""
-		if snap.Result != nil && snap.Result.Status == subagents.ResultCanceled && snap.Result.ShutdownOrigin != "" {
-			status = "cancelled"
+		if snap.Result != nil && snap.Result.ShutdownOrigin != "" {
+			if snap.Result.Status == subagents.ResultCanceled {
+				status = "cancelled"
+			}
 			if snap.Result.Error != nil {
 				resultErr = snap.Result.Error.Message
 			}

@@ -190,6 +190,87 @@ func TestStopCancelsRunningAgent(t *testing.T) {
 	}
 }
 
+func TestStopPublishesShutdownOriginBeforeConcurrentFinalization(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	finalizing := make(chan struct{})
+	f := newTestSupervisor(t, func(a *Agent) Runner {
+		return RunnerFunc(func(context.Context, Sink) error {
+			close(started)
+			<-finish
+			close(finalizing)
+			return nil
+		})
+	})
+	a, err := f.Spawn(context.Background(), "finish while stopping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	// Hold lifecycle finalization after Runner.Run returns. Shutdown must publish
+	// its origin before exposing StatusKilled, without relying on finalization
+	// ordering to fill the durable result correctly.
+	a.lifecycleMu.Lock()
+	lifecycleLocked := true
+	finishClosed := false
+	defer func() {
+		if !finishClosed {
+			close(finish)
+		}
+		if lifecycleLocked {
+			a.lifecycleMu.Unlock()
+		}
+	}()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- f.stop(context.Background(), a.ID, ShutdownOriginSession) }()
+
+	deadline := time.Now().Add(time.Second)
+	for a.Status() != StatusKilled {
+		if time.Now().After(deadline) {
+			t.Fatal("shutdown did not publish killed status")
+		}
+		runtime.Gosched()
+	}
+	a.mu.Lock()
+	origin := a.shutdownOrigin
+	a.mu.Unlock()
+	if origin != ShutdownOriginSession {
+		t.Fatalf("shutdown origin = %q when killed became observable, want %q", origin, ShutdownOriginSession)
+	}
+
+	close(finish)
+	finishClosed = true
+	<-finalizing
+	deadline = time.Now().Add(time.Second)
+	for {
+		a.mu.Lock()
+		finalizationStarted := !a.finished.IsZero()
+		a.mu.Unlock()
+		if finalizationStarted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runner finalization did not start")
+		}
+		runtime.Gosched()
+	}
+	a.lifecycleMu.Unlock()
+	lifecycleLocked = false
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+
+	result := a.Result()
+	if result == nil || result.Status != ResultCanceled || result.ShutdownOrigin != ShutdownOriginSession {
+		t.Fatalf("final result = %#v, want attributed session cancellation", result)
+	}
+	if result.Error == nil || result.Error.Code != "shutdown" {
+		t.Fatalf("final result error = %#v, want shutdown", result.Error)
+	}
+}
+
 func TestStopByRootSessionLeavesOtherSessionsRunning(t *testing.T) {
 	started := make(chan string, 2)
 	stopped := make(chan string, 2)

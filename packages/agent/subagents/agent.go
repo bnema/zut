@@ -152,6 +152,7 @@ type Agent struct {
 	streamingAssistantLines     int
 	finished                    time.Time
 	lastErr                     error
+	shutdownOrigin              ShutdownOrigin
 	transcriptLoaded            bool
 	legacyEventState            bool
 	transcriptMu                sync.Mutex
@@ -163,7 +164,6 @@ type Agent struct {
 	updatedAt        time.Time
 	lastActivity     time.Time
 	result           *TurnResult
-	shutdownOrigin   ShutdownOrigin
 	resultRef        string
 	patchRef         string
 	changedFiles     []string
@@ -411,17 +411,28 @@ func (a *Agent) setResult(result *TurnResult) {
 	a.lifecycleMu.Unlock()
 }
 
-func (a *Agent) setShutdownOrigin(origin ShutdownOrigin) {
-	a.lifecycleMu.Lock()
-	a.shutdownOrigin = origin.Sanitized()
-	a.updatedAt = time.Now()
-	a.lifecycleMu.Unlock()
+func (a *Agent) shutdownOriginValue() ShutdownOrigin {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.shutdownOrigin
 }
 
-func (a *Agent) shutdownOriginValue() ShutdownOrigin {
-	a.lifecycleMu.Lock()
-	defer a.lifecycleMu.Unlock()
-	return a.shutdownOrigin
+// prepareShutdown publishes the shutdown origin in the same critical section
+// as the killed status. Finalization can therefore observe either the previous
+// terminal state or a fully attributed cancellation, never an intermediate one.
+func (a *Agent) prepareShutdown(origin ShutdownOrigin) (Status, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	status := a.status
+	if status == StatusDone || status == StatusFailed || status == StatusKilled {
+		return status, false
+	}
+	a.shutdownOrigin = origin.Sanitized()
+	if status != StatusDetached {
+		a.status = StatusKilled
+		a.activity = "canceling"
+	}
+	return status, true
 }
 
 // Transcript returns a copy of the running transcript. Detached agents

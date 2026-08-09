@@ -286,21 +286,22 @@ func checkCaptureFailureResult(t *testing.T, agent *Agent, stateDir string) {
 
 func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 	tests := []struct {
-		name           string
-		status         Status
-		runErr         error
-		childCode      string
-		shutdownOrigin ShutdownOrigin
-		wantState      TurnStatus
-		wantCode       string
-		wantOutput     string
+		name               string
+		status             Status
+		runErr             error
+		childCode          string
+		shutdownOrigin     ShutdownOrigin
+		wantShutdownOrigin ShutdownOrigin
+		wantState          TurnStatus
+		wantCode           string
+		wantOutput         string
 	}{
 		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed, wantCode: "runner_failed"},
 		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
-		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
-		{name: "deadline overrides child error", status: StatusFailed, runErr: context.DeadlineExceeded, childCode: "context_limit", wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantShutdownOrigin: ShutdownOriginDeadline, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "deadline overrides child error", status: StatusFailed, runErr: context.DeadlineExceeded, childCode: "context_limit", wantShutdownOrigin: ShutdownOriginDeadline, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
 		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
-		{name: "session shutdown", status: StatusKilled, runErr: context.Canceled, shutdownOrigin: ShutdownOriginSession, wantState: ResultCanceled, wantCode: "shutdown"},
+		{name: "session shutdown", status: StatusKilled, runErr: context.Canceled, shutdownOrigin: ShutdownOriginSession, wantShutdownOrigin: ShutdownOriginSession, wantState: ResultCanceled, wantCode: "shutdown"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -348,8 +349,14 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 			if durable.Error == nil || durable.Error.Code != tt.wantCode {
 				t.Fatalf("durable result error = %#v, want code %q", durable.Error, tt.wantCode)
 			}
-			if durable.ShutdownOrigin != tt.shutdownOrigin && tt.shutdownOrigin != "" {
-				t.Fatalf("durable shutdown origin = %q, want %q", durable.ShutdownOrigin, tt.shutdownOrigin)
+			if durable.ShutdownOrigin != tt.wantShutdownOrigin {
+				t.Fatalf("durable shutdown origin = %q, want %q", durable.ShutdownOrigin, tt.wantShutdownOrigin)
+			}
+			if tt.wantShutdownOrigin != "" {
+				wantErr := ShutdownResultError(tt.wantShutdownOrigin)
+				if *durable.Error != *wantErr {
+					t.Fatalf("durable result error = %#v, want canonical %#v", durable.Error, wantErr)
+				}
 			}
 		})
 	}
