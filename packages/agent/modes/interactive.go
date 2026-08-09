@@ -8821,6 +8821,15 @@ func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
 		if status == "" {
 			status = string(snap.Status)
 		}
+		resultErr := ""
+		if snap.Result != nil && snap.Result.ShutdownOrigin != "" {
+			if snap.Result.Status == subagents.ResultCanceled {
+				status = "cancelled"
+			}
+			if snap.Result.Error != nil {
+				resultErr = snap.Result.Error.Message
+			}
+		}
 		task := e.task
 		if task == "" || !e.followUp {
 			task = snap.Task
@@ -8830,7 +8839,9 @@ func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
 		}
 		fmt.Fprintf(&sb, "%d. agent %s - status: %s\n", idx+1, snap.ID, status)
 		fmt.Fprintf(&sb, "   task: %s\n", truncateForSummary(task, 240))
-		if snap.Err != "" {
+		if resultErr != "" {
+			fmt.Fprintf(&sb, "   cancellation: %s\n", truncateForSummary(resultErr, 240))
+		} else if snap.Err != "" {
 			fmt.Fprintf(&sb, "   error: %s\n", truncateForSummary(snap.Err, 240))
 		} else if e.err != "" {
 			fmt.Fprintf(&sb, "   turn error: %s\n", truncateForSummary(e.err, 240))

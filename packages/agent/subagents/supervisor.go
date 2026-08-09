@@ -800,10 +800,8 @@ func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin)
 	// the pending cleanup below could then finalize an agent that was already
 	// admitted to the runner.
 	f.mu.Lock()
-	a.mu.Lock()
-	status := a.status
-	if status == StatusDone || status == StatusFailed || status == StatusKilled {
-		a.mu.Unlock()
+	status, shutdownStarted := a.prepareShutdown(origin)
+	if !shutdownStarted {
 		f.mu.Unlock()
 		f.operationMu.Unlock()
 		return nil
@@ -812,15 +810,12 @@ func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin)
 		path := a.InboxPath
 		inbox := a.inbox
 		pid := a.ProcessPIDValue()
-		a.mu.Unlock()
 		f.mu.Unlock()
 		// The detached worker may take the full grace period to exit. Do not
 		// serialize unrelated supervisor operations for that entire wait.
 		f.operationMu.Unlock()
 		return f.stopDetached(ctx, a, path, inbox, pid, origin)
 	}
-	a.status = StatusKilled
-	a.activity = "canceling"
 	atomic.CompareAndSwapInt32(&a.launchState, 0, 2)
 	if status == StatusPending {
 		for i, queued := range f.queue {
@@ -830,7 +825,6 @@ func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin)
 			}
 		}
 	}
-	a.mu.Unlock()
 	f.mu.Unlock()
 	f.operationMu.Unlock()
 	a.setTurnState(TurnCanceling, a.CurrentTurnID())

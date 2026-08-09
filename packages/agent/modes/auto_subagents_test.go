@@ -158,8 +158,38 @@ func TestTrackStoppedSubagentWorkerDeliversTerminalUpdate(t *testing.T) {
 	if !strings.Contains(update, "task: investigate the stuck worker") {
 		t.Fatalf("stop update missing task: %q", update)
 	}
-	if !strings.Contains(update, "status: killed") {
-		t.Fatalf("stop update missing killed status: %q", update)
+	if !strings.Contains(update, "status: cancelled") {
+		t.Fatalf("stop update missing cancellation status: %q", update)
+	}
+	if !strings.Contains(update, "subagent stopped by request") || strings.Contains(update, "context canceled") {
+		t.Fatalf("stop update missing attributed cancellation: %q", update)
+	}
+}
+
+func TestTrackDeadlineFailureUsesAttributedResultError(t *testing.T) {
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+				return context.DeadlineExceeded
+			})
+		},
+	})
+	a, err := mgr.Spawn(context.Background(), "run until deadline")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iv := newQueuedAutoSubagentsInteractive()
+	iv.TrackSubagentWorker(a, a.Task)
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "status: failed") {
+		t.Fatalf("deadline update changed failed status: %q", update)
+	}
+	want := subagents.ShutdownResultError(subagents.ShutdownOriginDeadline).Message
+	if !strings.Contains(update, want) {
+		t.Fatalf("deadline update missing attributed result error: %q", update)
 	}
 }
 

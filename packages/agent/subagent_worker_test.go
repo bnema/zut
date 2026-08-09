@@ -53,9 +53,16 @@ func TestSubagentTurnContextResetsDeadlineAndHonorsShutdown(t *testing.T) {
 }
 
 func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
-	payload := resultErrorPayload(context.DeadlineExceeded)
+	payload := resultErrorPayload(context.DeadlineExceeded, "")
 	if payload["code"] != "deadline_exceeded" {
 		t.Fatalf("deadline error code = %v, want deadline_exceeded", payload["code"])
+	}
+}
+
+func TestResultErrorPayloadAttributesShutdownCancellation(t *testing.T) {
+	payload := resultErrorPayload(context.Canceled, subagents.ShutdownOriginSession)
+	if payload["code"] != "shutdown" || payload["message"] != "subagent stopped during session shutdown" {
+		t.Fatalf("session shutdown error = %#v", payload)
 	}
 }
 
@@ -257,7 +264,7 @@ func TestPromptWithContextRecoveryPropagatesCompactionFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "compact transcript after initial overflow") {
 		t.Fatalf("promptWithContextRecovery error = %v, want compaction failure", err)
 	}
-	payload := resultErrorPayload(err)
+	payload := resultErrorPayload(err, "")
 	if payload["code"] != "turn_failed" {
 		t.Fatalf("result error payload = %#v, want turn_failed", payload)
 	}
@@ -736,7 +743,7 @@ func workerRequestUserTextCount(req provider.Request, want string) int {
 }
 
 func TestResultErrorPayloadSanitizesContextOverflow(t *testing.T) {
-	payload := resultErrorPayload(errors.New("provider error: input exceeds the context window; echoed task text"))
+	payload := resultErrorPayload(errors.New("provider error: input exceeds the context window; echoed task text"), "")
 	if payload["code"] != "context_limit" {
 		t.Fatalf("error code = %q, want context_limit", payload["code"])
 	}

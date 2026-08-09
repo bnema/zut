@@ -115,7 +115,7 @@ During an active delegated turn, interactive mode shows compact rows beside the 
 
 The worker and supervisor communicate over newline-delimited JSON. Current messages use version `1` envelopes with `version`, `message_id`, `agent_id`, `turn_id`, `timestamp`, and `payload`. Unknown event names and payload fields are retained. Only versioned JSONL envelopes are accepted on the worker protocol.
 
-A completed worker emits a `turn.result` event and writes `result.json`. The host then injects `[auto-subagents update]`; that completion update, rather than polling or inspecting state, is the signal for the primary to continue. The inline output is bounded; after that update, inspect the full session through the stable references:
+A completed worker emits a `turn.result` event and writes `result.json`. Intentional cancellation records `shutdown_origin` as `targeted`, `session`, `deadline`, or `process`; manager updates describe that cancellation instead of reporting the worker as generically failed with `context canceled`. The host then injects `[auto-subagents update]`; that completion update, rather than polling or inspecting state, is the signal for the primary to continue. The inline output is bounded; after that update, inspect the full session through the stable references:
 
 If a provider rejects a child request because its payload or context window is too large, the worker compacts its persisted transcript and continues the same request once. If compaction or that retry cannot fit, the result uses error code `context_limit` and directs the caller to narrow the task or reduce gathered context; it does not include the provider's raw request error.
 

@@ -354,21 +354,33 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 				resultStatus = "failed"
 			}
 		}
+		mu.Lock()
+		resultShutdownOrigin := shutdownOrigin.Sanitized()
+		mu.Unlock()
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			resultShutdownOrigin = subagents.ShutdownOriginDeadline
+		case !errors.Is(err, context.Canceled):
+			resultShutdownOrigin = ""
+		}
 		resultPayload := map[string]any{
 			"status":  resultStatus,
 			"turn_id": turnID,
 			"summary": boundedResultSummary(output),
 			"output":  boundedResultOutput(output, maxOutputBytes, maxOutputLines),
-			"error":   resultErrorPayload(err),
+			"error":   resultErrorPayload(err, resultShutdownOrigin),
+		}
+		if resultShutdownOrigin != "" {
+			resultPayload["shutdown_origin"] = resultShutdownOrigin
 		}
 		em.emit("turn.result", resultPayload)
 		if err != nil {
-			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": resultErrorPayload(err)})
+			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": resultErrorPayload(err, resultShutdownOrigin)})
 		}
 		em.emit("turn_end", map[string]any{
 			"step":    step,
 			"turn_id": turnID,
-			"error":   turnErrorMessage(err),
+			"error":   turnErrorMessage(err, resultShutdownOrigin),
 		})
 
 		cancel()
@@ -413,11 +425,11 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	}
 
 	requestShutdown := func(origin subagents.ShutdownOrigin) {
-		mu.Lock()
-		closing = true
-		mu.Unlock()
 		shutdownOnce.Do(func() {
+			mu.Lock()
+			closing = true
 			shutdownOrigin = origin.Sanitized()
+			mu.Unlock()
 			close(shutdown)
 		})
 	}
@@ -725,22 +737,32 @@ func truncateOutputUTF8(value string, maxBytes int) string {
 	return string(data)
 }
 
-func resultErrorPayload(err error) map[string]any {
+func resultErrorPayload(err error, shutdownOrigin subagents.ShutdownOrigin) map[string]any {
 	if err == nil {
 		return nil
 	}
 	if provider.IsContextOverflowError(err) {
 		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || shutdownOrigin == subagents.ShutdownOriginDeadline {
 		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}
+	}
+	if errors.Is(err, context.Canceled) {
+		if resultErr := subagents.ShutdownResultError(shutdownOrigin); resultErr != nil {
+			return map[string]any{"code": resultErr.Code, "message": resultErr.Message}
+		}
 	}
 	return map[string]any{"code": "turn_failed", "message": truncateForLog(err.Error(), 500)}
 }
 
-func turnErrorMessage(err error) string {
+func turnErrorMessage(err error, shutdownOrigin subagents.ShutdownOrigin) string {
 	if provider.IsContextOverflowError(err) {
 		return subagentContextLimitMessage
+	}
+	if err != nil {
+		if resultErr := subagents.ShutdownResultError(shutdownOrigin); resultErr != nil {
+			return resultErr.Message
+		}
 	}
 	return errString(err)
 }
