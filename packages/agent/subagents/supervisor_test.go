@@ -234,6 +234,9 @@ func TestStopByRootSessionLeavesOtherSessionsRunning(t *testing.T) {
 }
 
 func TestSupervisorShutdownCommandsIdentifyOrigin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
 	for _, tc := range []struct {
 		name   string
 		origin ShutdownOrigin

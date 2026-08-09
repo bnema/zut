@@ -158,6 +158,80 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 	a.Wait()
 }
 
+func TestResumeWithPromptRestartTracksExistingPendingPromptBeforeNewPrompt(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan *Agent, 2)
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				started <- a
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	original, err := f.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("original runner did not start")
+	}
+	if err := f.Stop(original.ID); err != nil {
+		t.Fatal(err)
+	}
+	original.Wait()
+
+	const (
+		pendingPrompt = "finish the queued review"
+		newPrompt     = "then review the follow-up"
+	)
+	original.setResumePrompt(pendingPrompt, time.Now())
+	if err := f.persistAgent(original); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewCompletionTracker()
+	resumed, err := f.ResumeWithPromptBefore(context.Background(), original.ID, newPrompt, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != resumed {
+			t.Fatalf("started agent = %p, want resumed agent %p", got, resumed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resumed runner did not start")
+	}
+	if got := resumed.resumePrompt(); got != pendingPrompt {
+		t.Fatalf("first scheduled prompt = %q, want pending prompt %q", got, pendingPrompt)
+	}
+	queue := resumed.resumePromptQueueSnapshot()
+	if len(queue) != 1 || queue[0].Prompt != newPrompt {
+		t.Fatalf("resume queue = %+v, want new prompt queued second", queue)
+	}
+	if resumed.OnTurnEnd == nil {
+		t.Fatal("restart did not install completion tracking before scheduling")
+	}
+	resumed.OnTurnEnd(1, "")
+	resumed.OnTurnEnd(2, "")
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 2 || batch[0].Task != pendingPrompt || batch[1].Task != newPrompt {
+		t.Fatalf("completion order = %+v, want pending prompt then new prompt", batch)
+	}
+}
+
 func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox transport uses Unix-domain sockets")

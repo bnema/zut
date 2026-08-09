@@ -15,7 +15,7 @@ import (
 
 const autoSubagentsTestTimeout = 10 * time.Second
 
-func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t *testing.T) {
+func TestAutoSubagentsSystemPromptKeepsProfileManifestWhileTogglingDelegationGuidance(t *testing.T) {
 	const onDemand = "delegate only on an explicit user request"
 	iv := &Interactive{
 		agent: &core.Agent{System: "base system"},
@@ -38,8 +38,11 @@ func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t
 	}
 
 	iv.applyAutoSubagentsSystemPrompt(false)
-	if strings.Contains(iv.agent.System, "[subagents_list]") || strings.Contains(iv.agent.System, "auto-subagents guidance") {
-		t.Fatalf("disabled system prompt retained subagent blocks: %q", iv.agent.System)
+	if !strings.Contains(iv.agent.System, "[subagents_list]") {
+		t.Fatalf("disabled system prompt omitted profile manifest: %q", iv.agent.System)
+	}
+	if strings.Contains(iv.agent.System, "auto-subagents guidance") {
+		t.Fatalf("disabled system prompt retained orchestrator guidance: %q", iv.agent.System)
 	}
 	if !strings.Contains(iv.agent.System, onDemand) {
 		t.Fatalf("disabled system prompt omitted on-demand delegation guidance: %q", iv.agent.System)
@@ -64,8 +67,9 @@ func TestAutoSubagentsTogglePreservesMatchingBasePromptBlocks(t *testing.T) {
 		t.Fatalf("enabling should append owned duplicate blocks: %q", iv.agent.System)
 	}
 	iv.applyAutoSubagentsSystemPrompt(false)
-	if got := strings.TrimSpace(iv.agent.System); got != base {
-		t.Fatalf("disabling changed matching base prompt: %q; want %q", got, base)
+	want := base + "\n\n" + manifest
+	if got := strings.TrimSpace(iv.agent.System); got != want {
+		t.Fatalf("disabling changed matching base prompt blocks: %q; want %q", got, want)
 	}
 }
 

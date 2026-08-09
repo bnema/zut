@@ -514,18 +514,27 @@ func TestAutoSubagentsSystemAddendumRequiresHostCompletionUpdate(t *testing.T) {
 	}
 }
 
-func TestResolveOmitsAutoSubagentsOrchestratorContractWhenDisabled(t *testing.T) {
+func TestResolveKeepsNamedSubagentsListWithoutOrchestratorContractWhenDisabled(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	zutHome := filepath.Join(root, "zut-home")
 	project := filepath.Join(root, "repo")
+	profilesDir := filepath.Join(home, ".agents", "agents")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("ZUT_AGENT_PROFILES", profilesDir)
 	disabled := false
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSubagentsEnabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	profile := "---\nname: reviewer\ndescription: Read-only code reviewer\n---\nReview without editing.\n"
+	if err := os.WriteFile(filepath.Join(profilesDir, "reviewer.md"), []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -536,18 +545,21 @@ func TestResolveOmitsAutoSubagentsOrchestratorContractWhenDisabled(t *testing.T)
 	for _, unwanted := range []string{
 		AutoSubagentsSystemAddendum,
 		"primary-agent orchestrator",
-		"[subagents_list]",
 	} {
 		if strings.Contains(r.SystemPrompt, unwanted) {
 			t.Fatalf("disabled system prompt contains auto-subagents contract %q:\n%s", unwanted, r.SystemPrompt)
 		}
 	}
 	for _, required := range []string{
+		"[subagents_list]",
+		"reviewer",
+		"Read-only code reviewer",
+		"[/subagents_list]",
 		"user asks you to delegate",
 		"active skill workflow requires delegation",
 	} {
 		if !strings.Contains(r.SystemPrompt, required) {
-			t.Fatalf("disabled system prompt omits permitted delegation path %q:\n%s", required, r.SystemPrompt)
+			t.Fatalf("disabled system prompt omits available delegation context %q:\n%s", required, r.SystemPrompt)
 		}
 	}
 }

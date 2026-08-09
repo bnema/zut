@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -346,6 +347,63 @@ func TestSubagentSpawnAppliesProfileFastModeRestriction(t *testing.T) {
 	}
 	if got := res.Details.(map[string]any)["fast_mode"]; got != false {
 		t.Fatalf("fast_mode detail = %v, want false", got)
+	}
+}
+
+func TestSubagentSpawnSchemaAdvertisesFastModeOverride(t *testing.T) {
+	var schema struct {
+		Properties map[string]struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal((&SubagentSpawnTool{}).Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	fastMode, ok := schema.Properties["fast_mode"]
+	if !ok {
+		t.Fatal("subagent_spawn schema does not advertise fast_mode")
+	}
+	if fastMode.Type != "boolean" {
+		t.Fatalf("fast_mode type = %q, want boolean", fastMode.Type)
+	}
+	if !strings.Contains(strings.ToLower(fastMode.Description), "inherit") {
+		t.Fatalf("fast_mode description = %q, want inheritance guidance", fastMode.Description)
+	}
+}
+
+func TestSubagentSpawnExplicitFastModeOverridesProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		profileFast bool
+		spawnFast   bool
+	}{
+		{name: "enable", profileFast: false, spawnFast: true},
+		{name: "disable", profileFast: true, spawnFast: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profileFast := tc.profileFast
+			tool := &SubagentSpawnTool{
+				Supervisor: newTestSupervisor(t),
+				Enabled:    func() bool { return true },
+				ResolveSubagent: func(name string) (*subagents.Profile, error) {
+					return &subagents.Profile{Name: name, FastMode: &profileFast}, nil
+				},
+			}
+
+			raw := fmt.Sprintf(`{"task":"review auth","agent":"worker","fast_mode":%t}`, tc.spawnFast)
+			res, err := tool.Execute(context.Background(), json.RawMessage(raw), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+			}
+			agents := tool.Supervisor.List()
+			if len(agents) != 1 || agents[0].FastMode != tc.spawnFast {
+				t.Fatalf("agent fast mode = %#v, want %t", agents, tc.spawnFast)
+			}
+		})
 	}
 }
 

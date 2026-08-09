@@ -70,9 +70,9 @@ Output follows the selected existing mode. Print writes only the final synthesis
 
 When **auto-subagents** is enabled in `/settings`, the interactive primary agent runs in strict orchestrator mode. It must delegate all implementation, debugging/testing, and code-review work to an appropriately named profile, or to a clearly described general worker when no profile fits. The primary agent must not write or edit code, make direct implementation tool calls, inspect or review code, or apply worker patches. It may decompose requests, select and spawn workers, check status, coordinate follow-ups, and synthesize their results.
 
-When auto-subagents is disabled, the canonical subagent tools remain available subject to launch-time policy. The primary may use them when the user requests delegation or an active skill workflow requires delegation. It continues to perform work itself otherwise and does not receive the profile manifest or strict orchestrator contract. The setting changes prompting, not tool availability.
+When auto-subagents is disabled, the canonical subagent tools remain available subject to launch-time policy. The primary may use them when the user requests delegation or an active skill workflow requires delegation. It continues to perform work itself otherwise and does not receive the strict orchestrator contract. The setting changes orchestration prompting, not tool or profile availability.
 
-When `subagent_spawn` is available, the orchestrator receives a compact `[subagents_list]` section in its system prompt and should select the profile whose description best matches each worker task. If launch-time policy withholds `subagent_spawn`, strict orchestrator guidance remains active, profile metadata is omitted, and the primary must report that delegation is unavailable rather than implementing directly. If no profile fits when spawning is available, omit `agent` to use a general worker:
+When `subagent_spawn` is available, the primary agent receives a compact `[subagents_list]` section in its system prompt and should select the profile whose description best matches each worker task. If launch-time policy withholds `subagent_spawn`, strict orchestrator guidance remains active, profile metadata is omitted, and the primary must report that delegation is unavailable rather than implementing directly. If no profile fits when spawning is available, omit `agent` to use a general worker:
 
 ```json
 {
@@ -99,17 +99,18 @@ This profile metadata is a tool-selection boundary, not a general network sandbo
 
 Completion is host-event-driven. After spawning, never use `bash sleep`, `watch`, `tail -f`, polling loops, repeated `subagent_status`, or dashboard, metadata, event-log, or file checks solely to wait; those are not completion signals. The primary may work on unrelated independent tasks, but otherwise must end or yield its turn until the host injects `[auto-subagents update]`. Completion updates are the only completion signal. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are not prohibited.
 
-A per-spawn reasoning override is also accepted:
+Per-spawn reasoning and fast-mode overrides are also accepted:
 
 ```json
 {
   "task": "Implement the parser change and add regression tests.",
   "agent": "implementer",
-  "reasoning": "high"
+  "reasoning": "high",
+  "fast_mode": true
 }
 ```
 
-`thinking` is accepted as an alias for `reasoning`. If neither is supplied, the child inherits the host reasoning level for an unnamed spawn, or the profile's `thinking` value for a named spawn.
+`thinking` is accepted as an alias for `reasoning`. If neither is supplied, the child inherits the host reasoning level for an unnamed spawn, or the profile's `thinking` value for a named spawn. An explicit `fast_mode` value takes precedence over the selected profile and host setting; omit it to inherit them.
 
 The interactive command also supports the same selection explicitly:
 
@@ -118,7 +119,7 @@ The interactive command also supports the same selection explicitly:
 /subagents new --agent implementer --reasoning high Implement the parser change
 ```
 
-Shared mode preserves the historical host working directory, so workers there must be coordinated to avoid conflicting edits and to sequence dependent tasks. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree and captures changed files and a patch without merging automatically. In orchestrator mode, assign any worktree patch integration to a worker rather than applying it in the primary session. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; globally appended instructions, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` enables fast mode even when the host setting is off; the `subagent_spawn` result warns the parent session when this override occurs. Child providers that do not yet support fast mode return an unsupported-provider error instead of silently ignoring an enabled setting.
+Shared mode preserves the historical host working directory, so workers there must be coordinated to avoid conflicting edits and to sequence dependent tasks. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree and captures changed files and a patch without merging automatically. In orchestrator mode, assign any worktree patch integration to a worker rather than applying it in the primary session. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; globally appended instructions, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. An explicit `fast_mode` spawn argument has highest precedence. Otherwise, a profile with `fastMode: false` opts out, while `fastMode: true` enables fast mode even when the host setting is off; the `subagent_spawn` result warns the parent session when this profile override occurs. Child providers that do not yet support fast mode return an unsupported-provider error instead of silently ignoring an enabled setting.
 
 ## Lifecycle, results, and recovery
 

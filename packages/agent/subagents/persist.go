@@ -1080,6 +1080,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	currentRunTurns := existing.CurrentRunTurnsValue()
 	pendingResume := existing.resumePromptState()
 	pendingResumePrompt, pendingResumePromptAt, pendingResumePromptID := pendingResume.Prompt, pendingResume.AcceptedAt, pendingResume.CommandID
+	hadPendingResumePrompt := pendingResumePrompt != ""
 	pendingResumeQueue := existing.resumePromptQueueSnapshot()
 	if pendingResumePrompt != "" && pendingResumePromptID == "" {
 		pendingResumePromptID = uuid.NewString()
@@ -1287,11 +1288,18 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	// Refreshing metadata happened before queue admission, so a later
 	// supervisor can reconstruct this resumed attempt even if the runner
 	// has not reached its first event yet. Register the turn before the
-	// scheduler can start the worker and emit a fast turn_end.
-	if before != nil && resumePrompt != "" {
-		// No rejecting operation remains before scheduling, so there is no path
-		// that needs the hook's rollback after this point.
-		_ = before(a, resumePrompt)
+	// scheduler can start the worker and emit a fast turn_end. A durable pending
+	// prompt is consumed before the newly requested prompt, so tracker
+	// registrations must preserve that scheduler order.
+	if before != nil {
+		if hadPendingResumePrompt {
+			_ = before(a, pendingResumePrompt)
+		}
+		if resumePrompt != "" {
+			// No rejecting operation remains before scheduling, so there is no path
+			// that needs the hook's rollback after this point.
+			_ = before(a, resumePrompt)
+		}
 	}
 	f.armQueueTimeout(a)
 	f.schedule()

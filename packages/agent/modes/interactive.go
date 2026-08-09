@@ -189,7 +189,7 @@ type InteractiveConfig struct {
 	OnDemandSubagentsSystemAddendum string
 
 	// SubagentsSystemAddendum is the metadata-only [subagents_list]
-	// block that is added or removed together with auto-subagents.
+	// block available whenever the primary agent can spawn subagents.
 	SubagentsSystemAddendum string
 	SettingsStore           SettingsStore
 
@@ -8853,25 +8853,26 @@ func (i *Interactive) deliverCompletionUpdates() {
 	}
 }
 
-// autoSubagentsAddenda returns the prompt blocks owned by the auto-subagents
-// setting, in the same order Resolve appends them to a new agent.
+// autoSubagentsAddenda returns the prompt blocks owned by subagent prompting,
+// in the same order Resolve appends them to a new agent. The profile manifest
+// is independent of strict orchestration and remains available in on-demand
+// mode whenever the primary agent can spawn a worker.
 func autoSubagentsAddenda(cfg InteractiveConfig, orchestrating bool) []string {
-	if !orchestrating {
-		if cfg.Supervisor == nil || !autoSubagentsAnyToolAllowedConfig(cfg) {
-			return nil
-		}
-		if addendum := strings.TrimSpace(cfg.OnDemandSubagentsSystemAddendum); addendum != "" {
-			return []string{addendum}
-		}
-		return nil
-	}
-
 	addenda := make([]string, 0, 2)
 	if cfg.Supervisor != nil && autoSubagentsToolAllowedConfig(cfg) {
 		if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
 			addenda = append(addenda, addendum)
 		}
 	}
+	if !orchestrating {
+		if cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
+			if addendum := strings.TrimSpace(cfg.OnDemandSubagentsSystemAddendum); addendum != "" {
+				addenda = append(addenda, addendum)
+			}
+		}
+		return addenda
+	}
+
 	if addendum := strings.TrimSpace(cfg.AutoSubagentsSystemAddendum); addendum != "" {
 		addenda = append(addenda, addendum)
 	}
@@ -8889,9 +8890,9 @@ func removeLastAutoSubagentsAddendum(system, addendum string) (string, bool) {
 	return system[:idx] + system[idx+len(addendum):], true
 }
 
-// applyAutoSubagentsSystemPrompt swaps the prompt blocks owned by the
-// auto-subagents setting on the running agent. The profile manifest belongs
-// only to strict orchestration; disabled mode keeps on-demand guidance.
+// applyAutoSubagentsSystemPrompt swaps the prompt blocks owned by subagent
+// prompting on the running agent. Toggling strict orchestration changes the
+// delegation guidance while retaining the profile manifest when usable.
 func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	// i.mu is sufficient here: this path updates the existing agent's system
 	// prompt and managed addenda in place; it does not replace the agent or

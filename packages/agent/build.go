@@ -859,36 +859,30 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && args.Orchestrate {
-		// Headless orchestration owns its prompt contract rather than inheriting
-		// the interactive setting. Discover and append the compact manifest once;
-		// child profile bodies remain private to the selected child.
-		if autoSubagentsToolAllowed(args) {
-			homeDir, _ := os.UserHomeDir()
-			profiles, _ := subagents.Discover(args.CWD, homeDir)
-			if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
-				append_ = append(append_, subagentsAddendum)
-			}
+	primaryInteractive := selectedProfile == nil && interactiveMode
+	primaryOrchestrator := selectedProfile == nil && args.Orchestrate
+	if (primaryInteractive || primaryOrchestrator) && autoSubagentsToolAllowed(args) {
+		homeDir, _ := os.UserHomeDir()
+		profiles, _ := subagents.Discover(args.CWD, homeDir)
+		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+			append_ = append(append_, subagentsAddendum)
 		}
+	}
+	if primaryOrchestrator {
+		// Headless orchestration owns its strict prompt contract rather than
+		// inheriting the interactive setting.
 		append_ = append(append_, AutoSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),
 		))
-	} else if selectedProfile == nil && interactiveMode && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		if autoSubagentsToolAllowed(args) {
-			homeDir, _ := os.UserHomeDir()
-			profiles, _ := subagents.Discover(args.CWD, homeDir)
-			if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
-				append_ = append(append_, subagentsAddendum)
-			}
-		}
+	} else if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		append_ = append(append_, AutoSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),
 		))
-	} else if selectedProfile == nil && interactiveMode && autoSubagentsAnyToolAllowed(args) {
+	} else if primaryInteractive && autoSubagentsAnyToolAllowed(args) {
 		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {

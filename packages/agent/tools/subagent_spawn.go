@@ -56,6 +56,7 @@ type subagentSpawnArgs struct {
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Thinking  string `json:"thinking,omitempty"`
+	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
 	MaxTurns  *int   `json:"max_turns,omitempty"`
@@ -89,6 +90,10 @@ const subagentSpawnSchemaTemplate = `{
       "type": "string",
       "enum": ["off", "minimum", "low", "medium", "high", "xhigh", "max"],
       "description": "Alias for reasoning, accepted for compatibility with common agent profile terminology. Prefer reasoning when both are available."
+    },
+    "fast_mode": {
+      "type": "boolean",
+      "description": "Optional fast-mode override for the child. Omit to inherit the selected profile or host setting."
     },
     "isolation": {
       "type": "string",
@@ -167,6 +172,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	agentName := strings.TrimSpace(a.Agent)
 	var profile *subagents.Profile
 	var fastModeOverride *bool
+	fastModeFromProfile := false
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
 			return protocolToolError(prefix + ": named subagent profiles are unavailable")
@@ -181,6 +187,11 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		}
 		agentName = profile.Name
 		fastModeOverride = profile.FastMode
+		fastModeFromProfile = profile.FastMode != nil
+	}
+	if a.FastMode != nil {
+		fastModeOverride = a.FastMode
+		fastModeFromProfile = false
 	}
 
 	model := strings.TrimSpace(a.Model)
@@ -271,7 +282,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	if agent.FastMode {
 		sb.WriteString("fast mode: enabled\n")
 	}
-	if fastModeOverride != nil && *fastModeOverride && agent.FastModeOverridesHost() {
+	if fastModeFromProfile && fastModeOverride != nil && *fastModeOverride && agent.FastModeOverridesHost() {
 		sb.WriteString("warning: subagent profile has fast mode enabled, overriding global fast mode off\n")
 	}
 	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven: wait for the injected [auto-subagents update], the only completion signal. ")
