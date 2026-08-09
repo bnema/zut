@@ -4614,8 +4614,8 @@ func (i *Interactive) openSettingsDialog() {
 		},
 		{
 			key:      "auto_subagents_enabled",
-			label:    "auto-subagents",
-			desc:     "let the agent spawn background sub-agents and query their live state",
+			label:    "Subagent Orchestrator",
+			desc:     "automatically delegate coding work to sub-agents; tools stay available when disabled",
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,
@@ -5236,7 +5236,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		if value && !i.autoSubagentsAvailable() {
 			i.mu.Lock()
 			i.statusOK = ""
-			i.statusErr = "auto-subagents unavailable: " + i.autoSubagentsUnavailableHint()
+			i.statusErr = "subagent orchestrator unavailable: " + i.autoSubagentsUnavailableHint()
 			i.mu.Unlock()
 			return
 		}
@@ -5265,7 +5265,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		// should orchestrate proactively or delegate only on user request.
 		i.applyAutoSubagentsSystemPrompt(value)
 		i.mu.Lock()
-		i.statusOK = "auto-subagents " + onOff(value)
+		i.statusOK = "subagent orchestrator " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "fast_mode":
@@ -5994,6 +5994,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/fast":
 		enabled := i.cfg.FastMode == nil || !*i.cfg.FastMode
 		i.applySettingToggle("fast_mode", enabled)
+	case "/orchestrator":
+		enabled := i.cfg.AutoSubagentsEnabled == nil || !*i.cfg.AutoSubagentsEnabled
+		i.applySettingToggle("auto_subagents_enabled", enabled)
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
