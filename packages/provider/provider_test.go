@@ -110,6 +110,36 @@ func TestOpenAIErrorStatus(t *testing.T) {
 	}
 }
 
+func TestOpenAIUserContentPreservesProjectedTextBlocks(t *testing.T) {
+	c := NewOpenAI("x", "").(*openaiClient)
+	wire, err := c.buildRequest(Request{
+		Model: "gpt-5",
+		Messages: []Message{{
+			Role: RoleUser,
+			Content: []Content{
+				TextBlock{Text: "[message time: 2026-08-08T12:34:56-07:00]"},
+				TextBlock{Text: "fail"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, ok := wire.Messages[0].Content.([]interface{})
+	if !ok {
+		t.Fatalf("user content = %T, want structured text blocks", wire.Messages[0].Content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("user content blocks = %d, want 2", len(blocks))
+	}
+	if got := blocks[0].(oaiContentText).Text; got != "[message time: 2026-08-08T12:34:56-07:00]" {
+		t.Fatalf("timestamp block = %q", got)
+	}
+	if got := blocks[1].(oaiContentText).Text; got != "fail" {
+		t.Fatalf("user text block = %q", got)
+	}
+}
+
 func TestMiniMaxM3CatalogAndRequest(t *testing.T) {
 	for _, provider := range []string{"minimax", "minimax-cn"} {
 		m, err := FindModel(provider, "MiniMax-M3")
