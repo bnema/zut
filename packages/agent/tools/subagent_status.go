@@ -29,8 +29,9 @@ type subagentStatusArgs struct {
 }
 
 type subagentStatusResponse struct {
-	Agent  *subagentStatusEntry  `json:"agent,omitempty"`
-	Agents []subagentStatusEntry `json:"agents"`
+	Capacity subagents.Capacity    `json:"capacity"`
+	Agent    *subagentStatusEntry  `json:"agent,omitempty"`
+	Agents   []subagentStatusEntry `json:"agents"`
 }
 
 type subagentStatusEntry struct {
@@ -99,12 +100,13 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 	// session visibility rules so an id lookup cannot bypass list scoping.
 	snapshots := t.Supervisor.SnapshotAll()
 	id := strings.TrimSpace(args.AgentID)
+	capacity := t.Supervisor.Capacity()
 	if id == "" {
 		entries := make([]subagentStatusEntry, 0, len(snapshots))
 		for _, snapshot := range snapshots {
 			entries = append(entries, publicSubagentStatus(snapshot))
 		}
-		return renderSubagentStatus(subagentStatusResponse{Agents: entries})
+		return renderSubagentStatus(subagentStatusResponse{Capacity: capacity, Agents: entries})
 	}
 
 	snapshot, ok := findSubagentStatusSnapshot(snapshots, id)
@@ -112,7 +114,7 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
 	entry := publicSubagentStatus(snapshot)
-	return renderSubagentStatus(subagentStatusResponse{Agent: &entry})
+	return renderSubagentStatus(subagentStatusResponse{Capacity: capacity, Agent: &entry})
 }
 
 func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) (subagents.AgentSnapshot, bool) {

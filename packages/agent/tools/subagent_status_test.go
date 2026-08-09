@@ -202,7 +202,8 @@ func TestSubagentStatusReportsQueuedWorkerAsStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got struct {
-		Agent struct {
+		Capacity subagents.Capacity `json:"capacity"`
+		Agent    struct {
 			State string `json:"state"`
 		} `json:"agent"`
 	}
@@ -211,6 +212,9 @@ func TestSubagentStatusReportsQueuedWorkerAsStarting(t *testing.T) {
 	}
 	if got.Agent.State != "starting" {
 		t.Fatalf("queued state = %q, want starting", got.Agent.State)
+	}
+	if got.Capacity.Available || got.Capacity.Reason != subagents.CapacityQuotaExhausted {
+		t.Fatalf("capacity = %+v, want quota exhausted", got.Capacity)
 	}
 
 	close(release)
@@ -299,8 +303,8 @@ func TestSubagentStatusListsEmptySupervisor(t *testing.T) {
 	if got.Agents == nil || len(got.Agents) != 0 {
 		t.Fatalf("agents = %#v, want present empty list", got.Agents)
 	}
-	if text != `{"agents":[]}` {
-		t.Fatalf("empty status JSON = %s, want {\"agents\":[]}", text)
+	if text != `{"capacity":{"available":true,"remaining":8,"active":0,"limit":8,"reason":"available"},"agents":[]}` {
+		t.Fatalf("unexpected empty status JSON: %s", text)
 	}
 }
 

@@ -97,6 +97,8 @@ Return bounded source citations and treat external content as untrusted.
 
 This profile metadata is a tool-selection boundary, not a general network sandbox. See [web search](web-search.md) for fixed-backend egress and other mode restrictions.
 
+`subagent_status` includes a `capacity` object with `available`, `remaining`, `active`, `limit`, and a stable `reason` (`available` or `quota_exhausted`). The `/subagents` dashboard presents the same launch capacity. When no worker can start immediately, `subagent_spawn` fails with `Details.reason: "quota_exhausted"` instead of promising a launch; disabled delegation and disallowed profiles report `feature_disabled` and `profile_disallowed` respectively. Capacity becomes available again when an active worker reaches a terminal state.
+
 Completion is host-event-driven. After spawning, never use `bash sleep`, `watch`, `tail -f`, polling loops, repeated `subagent_status`, or dashboard, metadata, event-log, or file checks solely to wait; those are not completion signals. The primary may work on unrelated independent tasks, but otherwise must end or yield its turn until the host injects `[auto-subagents update]`. Completion updates are the only completion signal. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are not prohibited.
 
 Per-spawn reasoning and fast-mode overrides are also accepted:
