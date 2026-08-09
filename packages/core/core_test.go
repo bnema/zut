@@ -296,6 +296,46 @@ func TestSessionCompactHandoffRoundTripAndClear(t *testing.T) {
 	}
 }
 
+func TestSessionGoalRoundTripAndClear(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := &SessionGoal{Objective: "finish the requested change", Status: GoalActive}
+	if err := sess.UpdateGoal(goal); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.Goal == nil || *sess.Meta.Goal != *goal {
+		t.Fatalf("live goal = %#v, want %#v", sess.Meta.Goal, goal)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Meta.Goal == nil || *reopened.Meta.Goal != *goal {
+		t.Fatalf("reopened goal = %#v, want %#v", reopened.Meta.Goal, goal)
+	}
+	if err := reopened.UpdateGoal(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err = OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.Meta.Goal != nil {
+		t.Fatalf("cleared goal = %#v, want nil", reopened.Meta.Goal)
+	}
+}
+
 func TestCostAdd(t *testing.T) {
 	var c CostTracker
 	c.Add(provider.Usage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 20, ReasoningTokensKnown: true, CostUSD: 0.01})

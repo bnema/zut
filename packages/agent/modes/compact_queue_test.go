@@ -17,6 +17,7 @@ type compactQueueClient struct {
 	compactionStarted chan struct{}
 	releaseCompaction chan struct{}
 	followUpRequest   chan provider.Request
+	onFollowUp        func()
 
 	mu    sync.Mutex
 	calls int
@@ -45,6 +46,9 @@ func (c *compactQueueClient) Stream(ctx context.Context, req provider.Request) (
 			return
 		}
 
+		if c.onFollowUp != nil {
+			c.onFollowUp()
+		}
 		c.followUpRequest <- req
 		out <- provider.EventDone{
 			Stop: provider.StopEnd,
@@ -135,6 +139,93 @@ func TestAutoCompactionSettlesFinalStreamingStateBeforeCompacting(t *testing.T) 
 	}
 
 	close(client.releaseCompaction)
+}
+
+func TestActiveGoalContinuesAfterAutomaticCompaction(t *testing.T) {
+	var goalMu sync.Mutex
+	goal := &core.SessionGoal{Objective: "finish the goal", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		goalMu.Lock()
+		defer goalMu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		goalMu.Lock()
+		goal = cloneSessionGoal(next)
+		goalMu.Unlock()
+		return nil
+	}
+	client := &compactQueueClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+		onFollowUp: func() {
+			// Pause before publishing the follow-up so the loop stops after one turn.
+			_ = persistGoal(&core.SessionGoal{Objective: "finish the goal", Status: core.GoalPaused})
+		},
+	}
+	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "request"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "first result"}}},
+	})
+	interactive := NewInteractive(InteractiveConfig{Agent: agent, CurrentGoal: currentGoal, PersistGoal: persistGoal})
+	interactive.runCtx = context.Background()
+
+	interactive.runCompact(context.Background(), compactContinuationRequest{origin: compactOriginAfterTurnThreshold, lastStop: provider.StopEnd})
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic compaction did not start")
+	}
+	close(client.releaseCompaction)
+
+	select {
+	case req := <-client.followUpRequest:
+		if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].Meta[goalContinueMetaKey] != "true" {
+			t.Fatalf("goal continuation tail = %#v", req.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("active goal did not continue after automatic compaction")
+	}
+	waitInteractiveIdle(t, interactive)
+}
+
+func TestActiveGoalDoesNotContinueAfterManualCompaction(t *testing.T) {
+	goal := &core.SessionGoal{Objective: "finish the goal", Status: core.GoalActive}
+	client := &compactQueueClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+	}
+	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "request"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "result"}}},
+	})
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:       agent,
+		CurrentGoal: func() *core.SessionGoal { return cloneSessionGoal(goal) },
+		PersistGoal: func(next *core.SessionGoal) error {
+			goal = cloneSessionGoal(next)
+			return nil
+		},
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.runCompact(context.Background(), compactContinuationRequest{origin: compactOriginManual})
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("manual compaction did not start")
+	}
+	close(client.releaseCompaction)
+	waitInteractiveIdle(t, interactive)
+	select {
+	case req := <-client.followUpRequest:
+		t.Fatalf("manual compaction started goal continuation: %#v", req)
+	default:
+	}
 }
 
 func TestPromptSubmittedDuringCompactionStartsFollowUpTurn(t *testing.T) {

@@ -228,6 +228,7 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		Timezone:       timezone,
 		TimezoneOffset: timezoneOffset,
 		CompactHandoff: append(json.RawMessage(nil), snapshot.Meta.CompactHandoff...),
+		Goal:           cloneSessionGoal(snapshot.Meta.Goal),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &importMeta})
 	if err != nil {
@@ -320,7 +321,8 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", err
 	}
 	compactHandoff := compactHandoffAtBranch(snapshot.Meta, snapshot.Messages, limit)
-	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions, extensionState, compactHandoff)
+	goal := goalAtBranch(snapshot.Meta, snapshot.Messages, limit)
+	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions, extensionState, compactHandoff, goal)
 }
 
 // BranchSessionHiddenFromHistory creates a hidden tree branch from a
@@ -350,7 +352,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 	if err != nil {
 		return "", err
 	}
-	return writeBranchSession(root, cwd, version, snapshot.Meta, segment.Messages, segment.UsageCheckpoints, limit, true, extensionState, nil)
+	return writeBranchSession(root, cwd, version, snapshot.Meta, segment.Messages, segment.UsageCheckpoints, limit, true, extensionState, nil, nil)
 }
 
 // readExtensionStateAtFork reconstructs the latest extension snapshot that was
@@ -437,7 +439,22 @@ func compactHandoffAtBranch(parent SessionMeta, messages []provider.Message, lim
 	return append(json.RawMessage(nil), parent.CompactHandoff...)
 }
 
-func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage, compactHandoff json.RawMessage) (string, error) {
+func goalAtBranch(parent SessionMeta, messages []provider.Message, limit int) *SessionGoal {
+	if limit != len(messages) {
+		return nil
+	}
+	return cloneSessionGoal(parent.Goal)
+}
+
+func cloneSessionGoal(goal *SessionGoal) *SessionGoal {
+	if goal == nil {
+		return nil
+	}
+	clone := *goal
+	return &clone
+}
+
+func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage, compactHandoff json.RawMessage, goal *SessionGoal) (string, error) {
 	dir := SessionsDir(root, cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -479,6 +496,7 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		ForkPoint:        limit,
 		HideFromSessions: hideFromSessions,
 		CompactHandoff:   append(json.RawMessage(nil), compactHandoff...),
+		Goal:             cloneSessionGoal(goal),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
 	if err != nil {

@@ -36,6 +36,15 @@ func (webSearchConflictSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
 	return &tools.ReadTool{}
 }
 
+type updateGoalConflictSource struct{}
+
+func (updateGoalConflictSource) Tools() []ExtensionToolInfo {
+	return []ExtensionToolInfo{{Extension: "test", Name: "update_goal"}}
+}
+func (updateGoalConflictSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
+	return &tools.ReadTool{}
+}
+
 type unorderedExtensionSource struct{}
 
 func (unorderedExtensionSource) Tools() []ExtensionToolInfo {
@@ -84,11 +93,14 @@ func TestMergeExtensionToolsRespectsDisabledSkillDiscovery(t *testing.T) {
 	}
 }
 
-func TestMergeExtensionToolsReservesWebSearchName(t *testing.T) {
+func TestMergeExtensionToolsReservesNativeControlNames(t *testing.T) {
 	r := Resolved{ToolRegistry: make(core.Registry)}
 	r.MergeExtensionTools(webSearchConflictSource{})
-	if _, ok := r.ToolRegistry["web_search"]; ok {
-		t.Fatal("extension replaced reserved native web_search name")
+	r.MergeExtensionTools(updateGoalConflictSource{})
+	for _, name := range []string{"web_search", "update_goal"} {
+		if _, ok := r.ToolRegistry[name]; ok {
+			t.Fatalf("extension replaced reserved native %s name", name)
+		}
 	}
 }
 
@@ -103,7 +115,7 @@ func TestMergeExtensionToolsKeepsDeterministicNativeSummaryOrder(t *testing.T) {
 	for _, summary := range r.ToolSummary {
 		names = append(names, summary.Name)
 	}
-	want := "read,write,edit,bash,create_worktree,web_search,alpha,zeta"
+	want := "read,write,edit,bash,create_worktree,web_search,update_goal,alpha,zeta"
 	if got := strings.Join(names, ","); got != want {
 		t.Fatalf("merged tool summary order = %q, want %q", got, want)
 	}
@@ -153,6 +165,9 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if _, ok := registry["web_search"].(*tools.WebSearchTool); !ok {
 		t.Fatalf("default registry web_search = %#v", registry["web_search"])
 	}
+	if _, ok := registry["update_goal"].(*tools.UpdateGoalTool); !ok {
+		t.Fatalf("default registry update_goal = %#v", registry["update_goal"])
+	}
 	write, ok := registry["write"].(*tools.WriteTool)
 	if !ok || write.LSP == nil || !write.LSPDiagnostics {
 		t.Fatalf("write tool LSP wiring = %#v", write)
@@ -161,8 +176,8 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if !ok || edit.LSP == nil || edit.LSPDiagnostics {
 		t.Fatalf("edit tool LSP wiring = %#v", edit)
 	}
-	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 6 {
-		t.Fatalf("LSP-disabled registry has %d tools, want 6", len(disabled))
+	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 7 {
+		t.Fatalf("LSP-disabled registry has %d tools, want 7", len(disabled))
 	}
 	readOnly := buildToolRegistry(Args{Tools: []string{"read"}}, root, tools.NewSandbox(root), true, true, true)
 	if read, ok := readOnly["read"].(*tools.ReadTool); !ok || read == nil {
@@ -193,12 +208,12 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	}
 }
 
-func TestToolSummariesIncludeCreateWorktreeAndWebSearch(t *testing.T) {
+func TestToolSummariesIncludeGoalUpdates(t *testing.T) {
 	root := t.TempDir()
 	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, false, false)
 
 	summaries := toolSummaries(registry, Args{})
-	want := []string{"read", "write", "edit", "bash", "create_worktree", "web_search"}
+	want := []string{"read", "write", "edit", "bash", "create_worktree", "web_search", "update_goal"}
 	if len(summaries) != len(want) {
 		t.Fatalf("tool summaries = %#v, want %v", summaries, want)
 	}

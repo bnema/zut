@@ -80,6 +80,10 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	if err := sess.UpdateCompactHandoff(handoff); err != nil {
 		t.Fatal(err)
 	}
+	goal := &SessionGoal{Objective: "finish the portable task", Status: GoalPaused}
+	if err := sess.UpdateGoal(goal); err != nil {
+		t.Fatal(err)
+	}
 	_ = sess.Close()
 
 	// Export to a directory — helper should build a name inside it.
@@ -123,6 +127,9 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	}
 	if got := string(imported.Meta.CompactHandoff); got != string(handoff) {
 		t.Errorf("compact handoff = %q, want %q", got, handoff)
+	}
+	if imported.Meta.Goal == nil || *imported.Meta.Goal != *goal {
+		t.Errorf("goal = %#v, want %#v", imported.Meta.Goal, goal)
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages, got %d", len(msgs))
@@ -564,6 +571,10 @@ func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
 	if err := parent.UpdateCompactHandoff(handoff); err != nil {
 		t.Fatal(err)
 	}
+	goal := &SessionGoal{Objective: "finish the branch", Status: GoalActive}
+	if err := parent.UpdateGoal(goal); err != nil {
+		t.Fatal(err)
+	}
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -580,6 +591,9 @@ func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
 	if got := string(full.Meta.CompactHandoff); got != string(handoff) {
 		t.Fatalf("full branch compact handoff = %q, want %q", got, handoff)
 	}
+	if full.Meta.Goal == nil || *full.Meta.Goal != *goal {
+		t.Fatalf("full branch goal = %#v, want %#v", full.Meta.Goal, goal)
+	}
 
 	prefixPath, err := BranchSession(parent.Path, root, cwd, "test", 1)
 	if err != nil {
@@ -592,6 +606,9 @@ func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
 	t.Cleanup(func() { _ = prefix.Close() })
 	if len(prefix.Meta.CompactHandoff) != 0 {
 		t.Fatalf("prefix branch compact handoff = %q, want empty", prefix.Meta.CompactHandoff)
+	}
+	if prefix.Meta.Goal != nil {
+		t.Fatalf("prefix branch goal = %#v, want nil", prefix.Meta.Goal)
 	}
 }
 

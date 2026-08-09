@@ -372,6 +372,13 @@ type InteractiveConfig struct {
 	// after a manual rename has already been written to disk.
 	OnSessionTitleChanged func(title string)
 
+	// CurrentGoal and PersistGoal expose the autonomous goal attached to the
+	// current session. CurrentGoal must return a copy, not the live session
+	// pointer, so failed persistence cannot mutate in-memory state. The callbacks
+	// follow session switches without coupling the TUI to the session file owner.
+	CurrentGoal func() *core.SessionGoal
+	PersistGoal func(goal *core.SessionGoal) error
+
 	OnAssistant  func(m provider.Message)
 	OnToolResult func(id string, r core.ToolResult)
 
@@ -661,6 +668,7 @@ type Interactive struct {
 	toolGate               map[string]int
 	statusErr              string
 	statusOK               string
+	goalStatus             core.GoalStatus
 	reloadStatusSeq        uint64
 	extStatuses            map[string]map[string]extensionStatus
 	extWidgets             map[string]map[string]extensionWidget
@@ -916,6 +924,12 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	startupContextPaths := []string(nil)
 	startupExtensionNames := []string(nil)
 	startupSkillNames := []string(nil)
+	initialGoalStatus := core.GoalStatus("")
+	if cfg.CurrentGoal != nil {
+		if goal := cfg.CurrentGoal(); goal != nil {
+			initialGoalStatus = goal.Status
+		}
+	}
 	if cfg.ShowInstructionsAtStartup != nil && *cfg.ShowInstructionsAtStartup {
 		startupAgentName = cfg.StartupAgentName
 		startupContextPaths = append(startupContextPaths, cfg.StartupContextPaths...)
@@ -969,6 +983,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		spin:                newSpinner(cfg.Theme),
 		inputHistoryIndex:   -1,
 		clock:               time.Now,
+		goalStatus:          initialGoalStatus,
 		reloadErrors:        append([]string(nil), cfg.StartupExtensionErrors...),
 		compactContinuation: decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
@@ -2066,6 +2081,7 @@ func (i *Interactive) redraw() {
 	if workingWithStatus {
 		statusBusyPrefix = busyPrefix
 	}
+	goalStatus := string(i.goalStatus)
 	statusLines := tui.StatusBar(tui.StatusBarParams{
 		Theme:          i.cfg.Theme,
 		Provider:       i.cfg.Provider,
@@ -2077,6 +2093,7 @@ func (i *Interactive) redraw() {
 		CWD:            i.cfg.CWD,
 		Locked:         i.cfg.Sandbox.Locked(),
 		NoYolo:         i.cfg.NoYolo,
+		GoalStatus:     goalStatus,
 		Usage:          i.cumUsage,
 		Subscription:   i.cfg.AuthMethod == "oauth",
 		ContextUsed:    i.lastCtxInput,
@@ -2544,7 +2561,7 @@ func filterHiddenTranscriptMessages(msgs []provider.Message) []provider.Message 
 }
 
 func isHiddenTranscriptMessage(m provider.Message) bool {
-	if m.Meta[autoCompactContinueMetaKey] == "true" {
+	if m.Meta[autoCompactContinueMetaKey] == "true" || m.Meta[goalContinueMetaKey] == "true" {
 		return true
 	}
 	if m.Role != provider.RoleUser || len(m.Content) == 0 {
@@ -3290,6 +3307,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		i.mu.Unlock()
 		if busyCancel {
+			i.updateActiveGoal(core.GoalPaused, "interrupted by user")
 			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
 			// goroutine unblocks and the context cancellation can
@@ -5908,6 +5926,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	}
 
 	switch strings.ToLower(parts[0]) {
+	case "/goal":
+		i.runGoalCommand(ctx, cmd, parts)
 	case "/exit":
 		return true
 	case "/clear":
@@ -7293,6 +7313,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		}
 		summary, err := i.agent.Compact(ctx, keepTail, sink)
 		_ = summary
+		goalMessage, goalActive := i.goalContinuationMessage()
 		i.mu.Lock()
 		// Keep busy/compacting asserted while cleanup and queue selection run.
 		// Completion updates can arrive in this window; clearing busy before
@@ -7311,6 +7332,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		var hasNext bool
 		var continueExisting bool
 		var continueAutomatically bool
+		var continueGoal bool
 		var handoff json.RawMessage
 		var persistHandoff bool
 
@@ -7398,6 +7420,9 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 					handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				}
 				continueAutomatically = true
+			case auto && goalActive:
+				continueGoal = true
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			default:
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			}
@@ -7406,7 +7431,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		// the mutex. A completion update arriving after the compaction result
 		// but before this assignment is then queued for the selected follow-up
 		// instead of starting a competing turn.
-		i.busy = hasNext || continueExisting || continueAutomatically
+		i.busy = hasNext || continueExisting || continueAutomatically || continueGoal
 		i.compacting = false
 		i.autoCompacting = false
 		i.mu.Unlock()
@@ -7416,7 +7441,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		runPendingIdleWork(pendingIdleWork)
 		i.invalidate()
 
-		if hasNext || continueExisting || continueAutomatically {
+		if hasNext || continueExisting || continueAutomatically || continueGoal {
 			p := i.runCtx
 			if p == nil {
 				p = context.Background()
@@ -7428,6 +7453,8 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				i.startTurnWithImages(p, next, nextImages)
 			case continueAutomatically:
 				i.startAutoCompactContinuation(p)
+			case continueGoal:
+				i.startGoalContinuation(p, goalMessage)
 			}
 		}
 	}()
@@ -7762,6 +7789,11 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if flush != nil {
 			flush()
 		}
+		terminalGoalError := ctx.Err() == nil && !offer && !recoverContextOverflow && (err != nil || lastTurnErr != nil || lastStop == provider.StopError)
+		if terminalGoalError {
+			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
+		}
+		goalMessage, goalActive := i.goalContinuationMessage()
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
@@ -7812,6 +7844,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if !continueStatusRescue && (i.agent == nil || ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
+		continueGoal := goalActive && !awaitingPre && !hasNext && !continueQueued && !continueStatusRescue && !offer && !recoverContextOverflow && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil
 		// The agent run can finish before the paced final text reaches the
 		// transcript. A compaction replaces that transcript, so it must never
 		// race the still-live stream frame; otherwise stale deltas can repaint
@@ -7819,8 +7852,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if recoverContextOverflow || shouldAutoCompact {
 			i.resetStreamingStateLocked()
 		}
-		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
-		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
+		i.busy = hasNext || continueQueued || continueStatusRescue || continueGoal || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
@@ -7844,6 +7877,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.startTurnRequest(parent, "", nil, true, false)
 		case continueStatusRescue:
 			i.startAutoCompactContinuation(parent)
+		case continueGoal:
+			i.startGoalContinuation(parent, goalMessage)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
@@ -8268,6 +8303,9 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		}
 		if i.cfg.OnToolResult != nil {
 			i.cfg.OnToolResult(e.ID, e.Result)
+		}
+		if update, ok := tools.GoalUpdateFromResult(e.Result); ok && i.goalStatus == core.GoalActive {
+			i.goalStatus = update.Status
 		}
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative

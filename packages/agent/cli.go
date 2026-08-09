@@ -692,17 +692,38 @@ func persistExtensionToolResult(mgr *extensions.Manager, sess *core.Session, res
 	if sess == nil {
 		return
 	}
-	details, ok := result.Details.(extensions.ToolResultDetails)
-	if !ok || details.Extension == "" || len(details.State) == 0 {
-		return
+	if details, ok := result.Details.(extensions.ToolResultDetails); ok && details.Extension != "" && len(details.State) > 0 {
+		if err := sess.AppendExtensionState(details.Extension, details.State); err != nil {
+			fmt.Fprintf(os.Stderr, "extension state: %v\n", err)
+		} else if mgr != nil {
+			mgr.UpdateSessionState(details.Extension, details.State)
+		}
 	}
-	if err := sess.AppendExtensionState(details.Extension, details.State); err != nil {
-		fmt.Fprintf(os.Stderr, "extension state: %v\n", err)
-		return
+	if err := persistGoalToolResult(sess, result); err != nil {
+		fmt.Fprintf(os.Stderr, "goal state: %v\n", err)
 	}
-	if mgr != nil {
-		mgr.UpdateSessionState(details.Extension, details.State)
+}
+
+func persistToolResultForCurrentSession(sessionTransitionMu *sync.RWMutex, persistMu *sync.Mutex, currentSession func() *core.Session, mgr *extensions.Manager, result core.ToolResult) {
+	sessionTransitionMu.RLock()
+	defer sessionTransitionMu.RUnlock()
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	persistExtensionToolResult(mgr, currentSession(), result)
+}
+
+func persistGoalToolResult(sess *core.Session, result core.ToolResult) error {
+	if sess == nil || sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
+		return nil
 	}
+	update, ok := tools.GoalUpdateFromResult(result)
+	if !ok {
+		return nil
+	}
+	goal := *sess.Meta.Goal
+	goal.Status = update.Status
+	goal.Reason = update.Reason
+	return sess.UpdateGoal(&goal)
 }
 
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
@@ -1802,10 +1823,27 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		return append(json.RawMessage(nil), sess.Meta.CompactHandoff...)
 	}
-	persistToolResult := func(_ string, result core.ToolResult) {
+	persistGoal := func(goal *core.SessionGoal) error {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
 		persistMu.Lock()
 		defer persistMu.Unlock()
-		persistExtensionToolResult(extMgr, sess, result)
+		if sess == nil {
+			return errors.New("session persistence is disabled")
+		}
+		return sess.UpdateGoal(goal)
+	}
+	currentGoal := func() *core.SessionGoal {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil || sess.Meta.Goal == nil {
+			return nil
+		}
+		goal := *sess.Meta.Goal
+		return &goal
+	}
+	persistToolResult := func(_ string, result core.ToolResult) {
+		persistToolResultForCurrentSession(&sessionTransitionMu, &persistMu, func() *core.Session { return sess }, extMgr, result)
 	}
 	wireAgentPersist := func(a *core.Agent) *core.Agent {
 		if a == nil {
@@ -1964,6 +2002,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		committed = true
 		persistMu.Unlock()
+		if iv != nil {
+			iv.RefreshGoal()
+		}
 		if candidate.session.Meta.Parent != "" {
 			extMgr.EmitSessionEvent("session_forked", sessionContext(candidate.session), newStates)
 		}
@@ -2144,6 +2185,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if iv != nil {
 			startupPaths := instructionContextPaths(loadAgentsContext(absPath, ZutHome()))
 			iv.ApplyChangedCWDWithStartupContext(newAg, newProvider, newModel, absPath, startupPaths)
+			iv.RefreshGoal()
 		}
 
 		// Re-scope the subagent dashboard to the new session.
@@ -2401,6 +2443,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		ChangeCWD:             changeCWD,
 		PersistCompactHandoff: persistCompactHandoff,
 		CurrentCompactHandoff: currentCompactHandoff,
+		PersistGoal:           persistGoal,
+		CurrentGoal:           currentGoal,
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()

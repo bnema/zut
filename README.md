@@ -9,7 +9,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- seven core built-in tools (read, write, edit, bash, create_worktree, lsp, and web_search); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for web-search egress and availability boundaries.
+- eight core built-in tools (read, write, edit, bash, create_worktree, lsp, web_search, and update_goal); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for web-search egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -239,6 +239,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `create_worktree`: create a new branch from the current `HEAD` and check it out persistently. A repository with no configured root and no `.worktrees` directory first returns bootstrap guidance without making changes; the agent asks whether to use the repository default or an external root, then retries with `bootstrap_root`. The choice is saved privately in local Git config. Choosing `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the root `.gitignore`; an absolute external root leaves tracked repository files and the root `.gitignore` unchanged. The tool never copies uncommitted or ignored files, and it refuses an existing branch or worktree path.
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 - `web_search`: search the public web through DuckDuckGo HTML and return bounded source titles, URLs, and snippets. Enabled by default for normal CLI sessions; it is unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
+- `update_goal`: mark an explicitly started autonomous session goal `done` or `blocked`. Starting, pausing, resuming, and clearing goals remain user-controlled through `/goal`.
 
 When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. `create_worktree` also requires its repository root, configured worktree destination, optional `.gitignore`, and Git metadata to remain inside the jail. Jail does not sandbox web-search network egress.
 
@@ -295,6 +296,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls. |
 | `/orchestrator` | Toggle automatic subagent orchestration. When disabled, subagent tools remain available for explicit delegation. |
+| `/goal <objective>` | Start an autonomous interactive-session goal. Use `/goal` for status and `/goal pause`, `resume`, or `clear` for control. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. The picker omits branches created only for tree navigation. |
 | `/fork` | Pick a previous user message and fork the current session after that turn. The selected turn becomes branch context and no provider turn starts during the checkout. |
@@ -314,6 +316,12 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/exit` | Exit zut. |
 
 Extension-registered commands appear under a divider at the bottom of the popup, sorted by name.
+
+### `/goal`
+
+In interactive mode, `/goal <objective>` starts work immediately and keeps the objective active across normal provider turn boundaries. While the goal is active, zut starts a hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. The model marks the goal `done` or `blocked` with the built-in `update_goal` tool. The current state appears in the status bar and is persisted with the session. `esc` pauses an interrupted goal, and terminal provider errors block it instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
+
+A branch that copies the complete transcript inherits the goal. Forking from an earlier turn clears it because the later objective did not necessarily exist at that point. Manual `/compact` leaves an active goal recorded but does not start a hidden follow-up; run `/goal resume` to continue it.
 
 ### Shell escape (`!command`)
 
@@ -1084,7 +1092,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, create_worktree, lsp, web search, sandbox
+packages/agent/tools/                 read, write, edit, bash, create_worktree, lsp, web search, goals, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/subagents/             named profiles, supervisor, and background runtime
 packages/agent/sdk/                   public Go SDK for embedding zut in-process (package sdk)
