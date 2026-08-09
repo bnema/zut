@@ -23,7 +23,8 @@ type Completion struct {
 	// turnError preserves the label used by the interactive update for an
 	// error reported by a prompt-level turn_end rather than by the worker
 	// process itself.
-	turnError bool
+	turnError    bool
+	cancellation bool
 
 	registrationSeq uint64
 }
@@ -364,8 +365,21 @@ func makeCompletion(entry *completionEntry, snap AgentSnapshot, turnErr string, 
 		task = snap.Task
 	}
 
-	errText := snap.Err
+	errText := ""
+	cancellation := false
+	if snap.Result != nil && snap.Result.ShutdownOrigin != "" {
+		if snap.Result.Status == ResultCanceled {
+			status = "cancelled"
+		}
+		if snap.Result.Error != nil {
+			errText = snap.Result.Error.Message
+			cancellation = true
+		}
+	}
 	turnError := false
+	if errText == "" {
+		errText = snap.Err
+	}
 	if errText == "" && turnErr != "" {
 		errText = turnErr
 		turnError = true
@@ -378,6 +392,7 @@ func makeCompletion(entry *completionEntry, snap AgentSnapshot, turnErr string, 
 		FinalResponse:   snap.LastAssistant,
 		Tail:            snap.Tail,
 		turnError:       turnError,
+		cancellation:    cancellation,
 		registrationSeq: entry.registrationSeq,
 	}
 }
@@ -472,7 +487,9 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 		fmt.Fprintf(&sb, "   task: %s\n", truncateCompletionField(completion.Task, 240))
 		if completion.Error != "" {
 			label := "error"
-			if completion.turnError {
+			if completion.cancellation {
+				label = "cancellation"
+			} else if completion.turnError {
 				label = "turn error"
 			}
 			fmt.Fprintf(&sb, "   %s: %s\n", label, truncateCompletionField(completion.Error, 240))

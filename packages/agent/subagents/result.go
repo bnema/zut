@@ -37,22 +37,40 @@ type ResultError struct {
 	Message string `json:"message,omitempty"`
 }
 
+// ShutdownResultError returns the stable, user-facing error associated with
+// an intentional worker shutdown. Unknown origins are not attributed.
+func ShutdownResultError(origin ShutdownOrigin) *ResultError {
+	switch origin.Sanitized() {
+	case ShutdownOriginTargeted:
+		return &ResultError{Code: "shutdown", Message: "subagent stopped by request"}
+	case ShutdownOriginSession:
+		return &ResultError{Code: "shutdown", Message: "subagent stopped during session shutdown"}
+	case ShutdownOriginDeadline:
+		return &ResultError{Code: "deadline_exceeded", Message: "subagent turn deadline exceeded; partial output is preserved in the result and history"}
+	case ShutdownOriginProcess:
+		return &ResultError{Code: "shutdown", Message: "subagent stopped during process shutdown"}
+	default:
+		return nil
+	}
+}
+
 // TurnResult is the protocol-level result for a delegated turn. Output is a
 // bounded inline preview; the full session/history remains available through
 // HistoryRef and the complete JSON result through ResultRef.
 type TurnResult struct {
-	Version      int             `json:"version"`
-	AgentID      string          `json:"agent_id,omitempty"`
-	TurnID       string          `json:"turn_id,omitempty"`
-	Status       TurnStatus      `json:"status"`
-	Summary      string          `json:"summary,omitempty"`
-	Output       string          `json:"output,omitempty"`
-	Structured   json.RawMessage `json:"structured,omitempty"`
-	Artifacts    []ArtifactRef   `json:"artifacts,omitempty"`
-	ChangedFiles []string        `json:"changed_files,omitempty"`
-	Usage        map[string]any  `json:"usage,omitempty"`
-	Error        *ResultError    `json:"error,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
+	Version        int             `json:"version"`
+	AgentID        string          `json:"agent_id,omitempty"`
+	TurnID         string          `json:"turn_id,omitempty"`
+	Status         TurnStatus      `json:"status"`
+	Summary        string          `json:"summary,omitempty"`
+	Output         string          `json:"output,omitempty"`
+	Structured     json.RawMessage `json:"structured,omitempty"`
+	Artifacts      []ArtifactRef   `json:"artifacts,omitempty"`
+	ChangedFiles   []string        `json:"changed_files,omitempty"`
+	Usage          map[string]any  `json:"usage,omitempty"`
+	Error          *ResultError    `json:"error,omitempty"`
+	ShutdownOrigin ShutdownOrigin  `json:"shutdown_origin,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 func (r *TurnResult) Validate(maxBytes, maxLines int) error {
@@ -70,6 +88,9 @@ func (r *TurnResult) Validate(maxBytes, maxLines int) error {
 	}
 	if r.AgentID == "" {
 		return errors.New("subagents: result missing agent id")
+	}
+	if r.ShutdownOrigin != "" && r.ShutdownOrigin.Sanitized() == "" {
+		return errors.New("subagents: result has invalid shutdown origin")
 	}
 	if r.TurnID == "" {
 		return errors.New("subagents: result missing turn id")
@@ -443,6 +464,10 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		return
 	}
 	attempt := a.AttemptValue()
+	shutdownOrigin := a.shutdownOriginValue()
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		shutdownOrigin = ShutdownOriginDeadline
+	}
 	a.mu.Lock()
 	partialOutput := a.lastAssistant
 	a.mu.Unlock()
@@ -515,6 +540,15 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 	if result.CreatedAt.IsZero() {
 		result.CreatedAt = time.Now().UTC()
 	}
+	if shutdownOrigin != "" {
+		result.ShutdownOrigin = shutdownOrigin
+		result.Error = ShutdownResultError(shutdownOrigin)
+		if shutdownOrigin == ShutdownOriginDeadline {
+			result.Status = ResultFailed
+		} else {
+			result.Status = ResultCanceled
+		}
+	}
 	if runErr != nil {
 		if status == StatusKilled || errors.Is(runErr, context.Canceled) {
 			result.Status = ResultCanceled
@@ -522,18 +556,8 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 			result.Status = ResultFailed
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
-			// The parent deadline is authoritative for terminal categorization, so
-			// it intentionally overrides any child result error, including
-			// context_limit. The worker was first asked to stop cleanly, and any
-			// streamed output remains in this result and HistoryRef(agentID).
-			message := "subagent deadline exceeded; inspect history for received output"
-			if result.Output != "" {
-				message = "subagent deadline exceeded; partial output is preserved in the result and history"
-			}
-			result.Error = &ResultError{
-				Code:    "deadline_exceeded",
-				Message: message,
-			}
+			result.Status = ResultFailed
+			result.ShutdownOrigin = ShutdownOriginDeadline
 		} else if result.Error == nil {
 			result.Error = &ResultError{Code: "runner_failed", Message: truncate(runErr.Error(), 500)}
 		}

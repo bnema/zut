@@ -33,6 +33,20 @@ func TestTurnResultValidationAndBoundedOutput(t *testing.T) {
 	}
 }
 
+func TestTurnResultValidatesShutdownOrigin(t *testing.T) {
+	result := &TurnResult{
+		Version: ProtocolVersion, AgentID: "a", TurnID: "t", Status: ResultCanceled,
+		ShutdownOrigin: ShutdownOriginSession,
+	}
+	if err := result.Validate(0, 0); err != nil {
+		t.Fatalf("known shutdown origin was rejected: %v", err)
+	}
+	result.ShutdownOrigin = ShutdownOrigin("private detail")
+	if err := result.Validate(0, 0); err == nil {
+		t.Fatal("unknown shutdown origin was accepted")
+	}
+}
+
 func TestTurnResultBoundedHonorsLineAndUTF8Limits(t *testing.T) {
 	result := &TurnResult{
 		Version: ProtocolVersion, AgentID: "a", TurnID: "t", Status: ResultSucceeded,
@@ -108,11 +122,14 @@ func TestDecodeTurnResultEventValidatesIdentityAndStatus(t *testing.T) {
 	if _, err := decodeTurnResultEvent(mismatched, "agent-1", 100, 10); err == nil {
 		t.Fatal("mismatched result agent was accepted")
 	}
-	valid := NewEvent(EventTurnResult, map[string]any{"status": string(ResultSucceeded)})
+	valid := NewEvent(EventTurnResult, map[string]any{
+		"status":          string(ResultCanceled),
+		"shutdown_origin": ShutdownOriginSession,
+	})
 	valid.AgentID = "agent-1"
 	valid.TurnID = "turn-1"
 	result, err := decodeTurnResultEvent(valid, "agent-1", 100, 10)
-	if err != nil || result.AgentID != "agent-1" || result.TurnID != "turn-1" {
+	if err != nil || result.AgentID != "agent-1" || result.TurnID != "turn-1" || result.ShutdownOrigin != ShutdownOriginSession {
 		t.Fatalf("valid result = %#v, err=%v", result, err)
 	}
 }
@@ -269,19 +286,22 @@ func checkCaptureFailureResult(t *testing.T, agent *Agent, stateDir string) {
 
 func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     Status
-		runErr     error
-		childCode  string
-		wantState  TurnStatus
-		wantCode   string
-		wantOutput string
+		name               string
+		status             Status
+		runErr             error
+		childCode          string
+		shutdownOrigin     ShutdownOrigin
+		wantShutdownOrigin ShutdownOrigin
+		wantState          TurnStatus
+		wantCode           string
+		wantOutput         string
 	}{
 		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed, wantCode: "runner_failed"},
 		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
-		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
-		{name: "deadline overrides child error", status: StatusFailed, runErr: context.DeadlineExceeded, childCode: "context_limit", wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantShutdownOrigin: ShutdownOriginDeadline, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "deadline overrides child error", status: StatusFailed, runErr: context.DeadlineExceeded, childCode: "context_limit", wantShutdownOrigin: ShutdownOriginDeadline, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
 		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
+		{name: "session shutdown", status: StatusKilled, runErr: context.Canceled, shutdownOrigin: ShutdownOriginSession, wantShutdownOrigin: ShutdownOriginSession, wantState: ResultCanceled, wantCode: "shutdown"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,9 +313,10 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 				childError = &ResultError{Code: tt.childCode, Message: "child error"}
 			}
 			agent := &Agent{
-				ID:            "agent-1",
-				stateDir:      stateDir,
-				lastAssistant: tt.wantOutput,
+				ID:             "agent-1",
+				stateDir:       stateDir,
+				lastAssistant:  tt.wantOutput,
+				shutdownOrigin: tt.shutdownOrigin,
 				result: &TurnResult{
 					AgentID: "agent-1", TurnID: "turn-1", Status: childStatus, Error: childError,
 				},
@@ -327,6 +348,15 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 			}
 			if durable.Error == nil || durable.Error.Code != tt.wantCode {
 				t.Fatalf("durable result error = %#v, want code %q", durable.Error, tt.wantCode)
+			}
+			if durable.ShutdownOrigin != tt.wantShutdownOrigin {
+				t.Fatalf("durable shutdown origin = %q, want %q", durable.ShutdownOrigin, tt.wantShutdownOrigin)
+			}
+			if tt.wantShutdownOrigin != "" {
+				wantErr := ShutdownResultError(tt.wantShutdownOrigin)
+				if *durable.Error != *wantErr {
+					t.Fatalf("durable result error = %#v, want canonical %#v", durable.Error, wantErr)
+				}
 			}
 		})
 	}
