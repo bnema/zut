@@ -1456,19 +1456,19 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	var subagentsMgr *subagents.Supervisor
 	// These callbacks deliberately resolve iv lazily because the Interactive
 	// instance is constructed after the agent and its registry.
-	onSpawnedSupervisor := func(a *subagents.Agent, task string) {
+	onSpawnedSupervisor := func(a *subagents.Agent, task string, required bool) {
 		if iv != nil {
-			iv.TrackSubagentWorker(a, task)
+			iv.TrackSubagentWorker(a, task, required)
 		}
 	}
-	onResumedSupervisor := func(a *subagents.Agent, prompt string) {
+	onResumedSupervisor := func(a *subagents.Agent, prompt string, required bool) {
 		if iv != nil {
-			iv.TrackResumedSubagentWorker(a, prompt)
+			iv.TrackResumedSubagentWorker(a, prompt, required)
 		}
 	}
-	onBeforeResumedSupervisor := func(a *subagents.Agent, prompt string) func() {
+	onBeforeResumedSupervisor := func(a *subagents.Agent, prompt string, required bool) func() {
 		if iv != nil {
-			return iv.PrepareResumedSubagentWorker(a, prompt)
+			return iv.PrepareResumedSubagentWorker(a, prompt, required)
 		}
 		return nil
 	}
@@ -1513,6 +1513,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	subagentsMgr = runtime.Supervisor()
 	reloadDone := make(chan struct{})
 	var reloadErrs []error
+	runtime.SetRequiredWorkerReady(reloadDone, func() error {
+		return errors.Join(reloadErrs...)
+	})
 	if subagentsMgr != nil {
 		// Replaying historical event logs can take seconds. Populate the
 		// detached-agent dashboard without blocking the first interactive paint.
@@ -1610,6 +1613,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return true, "", r.ReplaceText
 		}
 		a.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
+		runtime.WireRequiredWorkerGate(a)
 		return a
 	}
 

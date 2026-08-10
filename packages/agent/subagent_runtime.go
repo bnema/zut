@@ -38,14 +38,20 @@ type subagentRuntime struct {
 	webSearchPolicy subagents.WebSearchPolicy
 	webSearchGuard  *webSearchSessionGuard
 
-	onSpawned       func(*subagents.Agent, string)
-	onResumed       func(*subagents.Agent, string)
-	beforeResumed   func(*subagents.Agent, string) func()
+	onSpawned       func(*subagents.Agent, string, bool)
+	onResumed       func(*subagents.Agent, string, bool)
+	beforeResumed   func(*subagents.Agent, string, bool) func()
 	onStopRequested func(*subagents.Agent)
 
-	settingsMu sync.RWMutex
-	closeMu    sync.Mutex
-	closed     bool
+	requiredReadyMu       sync.RWMutex
+	requiredReady         <-chan struct{}
+	requiredReadyErr      func() error
+	requiredContextMu     sync.Mutex
+	reportedRequiredUnmet map[string]struct{}
+	lastRequiredBlock     string
+	settingsMu            sync.RWMutex
+	closeMu               sync.Mutex
+	closed                bool
 }
 
 type subagentRuntimeConfiguration struct {
@@ -83,9 +89,9 @@ type subagentRuntimeConfig struct {
 	ActiveReasoning func() string
 	NewRunner       func(*subagents.Agent) subagents.Runner
 
-	OnSpawned       func(*subagents.Agent, string)
-	OnResumed       func(*subagents.Agent, string)
-	BeforeResumed   func(*subagents.Agent, string) func()
+	OnSpawned       func(*subagents.Agent, string, bool)
+	OnResumed       func(*subagents.Agent, string, bool)
+	BeforeResumed   func(*subagents.Agent, string, bool) func()
 	OnStopRequested func(*subagents.Agent)
 }
 

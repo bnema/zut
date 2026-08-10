@@ -44,7 +44,15 @@ type subagentStatusEntry struct {
 	UpdatedAt       time.Time             `json:"updated_at"`
 	FinishedAt      *time.Time            `json:"finished_at,omitempty"`
 	TaskSummary     string                `json:"task_summary,omitempty"`
+	Requirement     *statusRequirement    `json:"requirement,omitempty"`
 	Result          *subagentStatusResult `json:"result,omitempty"`
+}
+
+type statusRequirement struct {
+	State      string `json:"state"`
+	TargetTurn int    `json:"target_turn"`
+	Unmet      bool   `json:"unmet"`
+	ErrorCode  string `json:"error_code,omitempty"`
 }
 
 type subagentStatusResult struct {
@@ -63,7 +71,7 @@ const subagentStatusSchema = `{
   }
 }`
 
-func (t *SubagentStatusTool) Name() string { return "subagent_status" }
+func (t *SubagentStatusTool) Name() string { return SubagentStatusToolName }
 
 func (t *SubagentStatusTool) Description() string {
 	return "Query live status for one background sub-agent or list all visible workers without waiting for completion."
@@ -147,6 +155,14 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot) subagentStatusEntry 
 	if !snapshot.Finished.IsZero() {
 		finished := snapshot.Finished
 		entry.FinishedAt = &finished
+	}
+	if snapshot.Requirement.Required {
+		entry.Requirement = &statusRequirement{
+			State:      string(snapshot.Requirement.State),
+			TargetTurn: snapshot.Requirement.TargetTurn,
+			Unmet:      snapshot.Requirement.Unmet(),
+			ErrorCode:  snapshot.Requirement.ErrorCode,
+		}
 	}
 	if snapshot.Result != nil {
 		entry.Result = &subagentStatusResult{

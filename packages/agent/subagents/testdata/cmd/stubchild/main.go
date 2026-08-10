@@ -149,7 +149,7 @@ func runTurn(emit emitter, text string, step int) {
 			map[string]any{"type": "text", "text": "echo: " + text},
 		},
 	})
-	emit("turn_end", map[string]any{"stop": "end"})
+	emit("turn_end", map[string]any{"step": step, "stop": "end"})
 }
 
 type emitter = func(string, map[string]any)

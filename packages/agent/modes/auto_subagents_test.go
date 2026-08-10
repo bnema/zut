@@ -91,7 +91,7 @@ func TestAutoSubagentsSummaryIncludesCompleteFinalResponseAfterLongTask(t *testi
 	}
 
 	iv := newQueuedAutoSubagentsInteractive()
-	iv.TrackSubagentWorker(a, a.Task)
+	iv.TrackSubagentWorker(a, a.Task, false)
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "final response:\n"+response) {
 		t.Fatalf("update missing complete final response: %q", update)
@@ -114,7 +114,7 @@ func TestTrackSubagentWorkerReportsStartupFailure(t *testing.T) {
 	}
 
 	iv := newQueuedAutoSubagentsInteractive()
-	iv.TrackSubagentWorker(a, a.Task)
+	iv.TrackSubagentWorker(a, a.Task, false)
 
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "status: failed") {
@@ -182,7 +182,7 @@ func TestTrackDeadlineFailureUsesAttributedResultError(t *testing.T) {
 	}
 
 	iv := newQueuedAutoSubagentsInteractive()
-	iv.TrackSubagentWorker(a, a.Task)
+	iv.TrackSubagentWorker(a, a.Task, false)
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "status: failed") {
 		t.Fatalf("deadline update changed failed status: %q", update)
@@ -218,7 +218,7 @@ func TestTrackResumedSubagentWorkerDeliversFollowUp(t *testing.T) {
 
 	iv := newQueuedAutoSubagentsInteractive()
 	const followUp = "I applied your review. What do you think now?"
-	iv.TrackResumedSubagentWorker(a, followUp)
+	iv.TrackResumedSubagentWorker(a, followUp, false)
 	if a.OnTurnEnd == nil {
 		t.Fatal("resumed worker has no completion watcher")
 	}
@@ -260,9 +260,9 @@ func TestTrackResumedSubagentWorkerQueuesActiveFollowUpOnSameWorker(t *testing.T
 	})
 
 	iv := newQueuedAutoSubagentsInteractive()
-	iv.TrackSubagentWorker(first, first.Task)
+	iv.TrackSubagentWorker(first, first.Task, false)
 	const followUp = "queued follow-up"
-	cancel := iv.PrepareResumedSubagentWorker(first, followUp)
+	cancel := iv.PrepareResumedSubagentWorker(first, followUp, false)
 	if cancel == nil {
 		t.Fatal("resume registration returned nil cleanup")
 	}
@@ -309,9 +309,9 @@ func TestCompletionDeliveryHoldBatchesFastAndLateRegistrations(t *testing.T) {
 
 	iv := newQueuedAutoSubagentsInteractive()
 	release := iv.beginCompletionDeliveryHold()
-	iv.TrackSubagentWorker(first, first.Task)
+	iv.TrackSubagentWorker(first, first.Task, false)
 	first.OnTurnEnd(1, "")
-	iv.TrackSubagentWorker(second, second.Task)
+	iv.TrackSubagentWorker(second, second.Task, false)
 	second.OnTurnEnd(1, "")
 	release()
 
@@ -354,7 +354,7 @@ func TestCompleteSupervisorWatchReportsTurnOutcomeOnce(t *testing.T) {
 	})
 
 	iv := newQueuedAutoSubagentsInteractive()
-	iv.TrackSubagentWorker(a, a.Task)
+	iv.TrackSubagentWorker(a, a.Task, false)
 	if a.OnTurnEnd == nil {
 		t.Fatal("worker has no completion watcher")
 	}

@@ -24,17 +24,18 @@ type SubagentResumeTool struct {
 	// sends or queues its prompt. It returns a cleanup for resume failures that
 	// happen before delivery. The interactive host uses this to avoid losing a
 	// fast idle or restarted-worker turn.
-	BeforeResumed func(agent *subagents.Agent, prompt string) func()
+	BeforeResumed func(agent *subagents.Agent, prompt string, required bool) func()
 
 	// OnResumed receives the worker and follow-up after a successful resume.
 	// It remains available for callers that only need post-success
 	// notification; tracking callers should prefer BeforeResumed.
-	OnResumed func(agent *subagents.Agent, prompt string)
+	OnResumed func(agent *subagents.Agent, prompt string, required bool)
 }
 
 type subagentResumeArgs struct {
-	AgentID string `json:"agent_id"`
-	Prompt  string `json:"prompt"`
+	AgentID  string `json:"agent_id"`
+	Prompt   string `json:"prompt"`
+	Required bool   `json:"required,omitempty"`
 }
 
 const subagentResumeSchema = `{
@@ -47,22 +48,26 @@ const subagentResumeSchema = `{
     "prompt": {
       "type": "string",
       "description": "New manager follow-up for the sub-agent. Its earlier task and conversation remain available in the retained session."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "Set true to make this follow-up mandatory. Failed, timed-out, or canceled required work remains required automatically; indeterminate work needs explicit user reconciliation."
     }
   },
   "required": ["agent_id", "prompt"]
 }`
 
-func (t *SubagentResumeTool) Name() string { return "subagent_resume" }
+func (t *SubagentResumeTool) Name() string { return SubagentResumeToolName }
 
 func (t *SubagentResumeTool) Description() string {
-	return "Continue a sub-agent with a fresh turn budget and its retained session; deliver immediately when idle, queue while active, or restart a stopped worker."
+	return "Continue a sub-agent with a fresh turn budget and retained session. Set required=true for a mandatory follow-up; retries of failed, timed-out, or canceled required work stay required and wait event-driven for the new outcome. Indeterminate work requires explicit user reconciliation."
 }
 
 func (t *SubagentResumeTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentResumeSchema)
 }
 
-func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
+func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
@@ -93,12 +98,31 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
-	resumed, err := t.Supervisor.ResumeWithPromptBefore(ctx, snapshot.ID, args.Prompt, t.BeforeResumed)
+	if snapshot.Requirement.State == subagents.RequirementIndeterminate {
+		return protocolToolError(fmt.Sprintf("%s: required outcome for %s is indeterminate after host restart; the user must inspect the durable result or external side effect, then explicitly use /subagents resume-session, /subagents restart-task, or /subagents remove", prefix, snapshot.ID))
+	}
+	required := args.Required || snapshot.Requirement.Unmet()
+	var before func(*subagents.Agent, string) func()
+	if t.BeforeResumed != nil {
+		before = func(agent *subagents.Agent, prompt string) func() {
+			return t.BeforeResumed(agent, prompt, required)
+		}
+	}
+	var resumed *subagents.Agent
+	var err error
+	if required {
+		resumed, err = t.Supervisor.ResumeRequiredWithPromptBefore(ctx, snapshot.ID, args.Prompt, before)
+	} else {
+		resumed, err = t.Supervisor.ResumeWithPromptBefore(ctx, snapshot.ID, args.Prompt, before)
+	}
 	if err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
 	}
 	if t.BeforeResumed == nil && t.OnResumed != nil {
-		t.OnResumed(resumed, args.Prompt)
+		t.OnResumed(resumed, args.Prompt, required)
+	}
+	if required {
+		return waitRequiredSubagent(ctx, prefix, t.Supervisor, resumed, args.Prompt, progress)
 	}
 
 	snapshot, ok = findSubagentStatusSnapshot(t.Supervisor.SnapshotAll(), snapshot.ID)

@@ -68,6 +68,11 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 			runErr = errors.Join(runErr, closeErr)
 		}
 	}()
+	if runtime.Supervisor() != nil {
+		if _, reloadErrs := runtime.Supervisor().Reload(); len(reloadErrs) != 0 {
+			return fmt.Errorf("reload subagents: %w", errors.Join(reloadErrs...))
+		}
+	}
 
 	prepareRegistry := func(reg core.Registry) core.Registry {
 		return runtime.PrepareRegistry(reg)
@@ -102,6 +107,7 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 		runtime.SetActiveSession(sess.ID)
 	}
 	announceSession(extMgr, sess)
+	runtime.WireRequiredWorkerGate(ag)
 
 	start := len(ag.Messages())
 	preSink, finishPre := hooks.startupSink()
@@ -186,16 +192,23 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 }
 
 func newOrchestratedRuntime(ctx context.Context, args Args, r Resolved, cfg Config, tracker *subagents.CompletionTracker) *subagentRuntime {
-	onSpawned := func(a *subagents.Agent, task string) {
-		tracker.TrackTurn(a, task, false)
+	onSpawned := func(a *subagents.Agent, task string, required bool) {
+		if !required {
+			tracker.TrackTurn(a, task, false)
+		}
 	}
-	onResumed := func(a *subagents.Agent, prompt string) {
+	onResumed := func(a *subagents.Agent, prompt string, required bool) {
 		// BeforeResumed normally owns future-turn registration. Keep this
 		// fallback for direct runtime callers that do not install the pre-hook;
 		// SubagentResumeTool suppresses it when BeforeResumed accepted delivery.
-		tracker.TrackTurn(a, prompt, true)
+		if !required {
+			tracker.TrackTurn(a, prompt, true)
+		}
 	}
-	onBeforeResumed := func(a *subagents.Agent, prompt string) func() {
+	onBeforeResumed := func(a *subagents.Agent, prompt string, required bool) func() {
+		if required {
+			return nil
+		}
 		return tracker.TrackFutureTurn(a, prompt, true)
 	}
 	onStopRequested := func(a *subagents.Agent) {

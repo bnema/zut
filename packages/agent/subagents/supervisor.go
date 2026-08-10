@@ -357,6 +357,9 @@ type SpawnRequest struct {
 	RootSessionID    string
 	RequesterAgentID string
 
+	// Required keeps this delegated turn on the parent's critical path. The
+	// supervisor persists its outcome and the manager tool waits for it.
+	Required         bool
 	Timeout          time.Duration
 	MaxTurns         int
 	Tools            []string
@@ -531,6 +534,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		turnState:         TurnQueued,
 		updatedAt:         now,
 		lastActivity:      now,
+		requirement:       newRequirement(req.Required, 1, now),
 		stateDir:          stateDir,
 		lease:             lease,
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
@@ -1114,6 +1118,7 @@ type AgentSnapshot struct {
 	LastAssistant   string   // complete final assistant message, without role formatting
 	Result          *TurnResult
 	ResultRef       string
+	Requirement     RequirementSnapshot
 	PatchRef        string
 	ChangedFiles    []string
 	OutputTruncated bool
@@ -1170,6 +1175,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	updatedAt := a.updatedAt
 	result := cloneTurnResult(a.result)
 	resultRef := a.resultRef
+	requirement := a.visibleRequirementLocked()
 	patchRef := a.patchRef
 	changedFiles := append([]string(nil), a.changedFiles...)
 	a.lifecycleMu.Unlock()
@@ -1180,7 +1186,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 		Started: a.Started, Finished: finished, CreatedAt: a.Started, UpdatedAt: updatedAt, LastActivity: lastActivity,
 		Err: errStr, Tail: tail, Lines: lines,
 		LastAssistant: lastAssistant, Result: result, ResultRef: resultRef,
-		PatchRef: patchRef, ChangedFiles: changedFiles, OutputTruncated: outputTruncated,
+		Requirement: requirement, PatchRef: patchRef, ChangedFiles: changedFiles, OutputTruncated: outputTruncated,
 		Model: a.Model, Provider: a.Provider, BaseURL: a.BaseURL,
 		InsecureTLS: a.InsecureTLS, Reasoning: a.Reasoning,
 		FastMode: a.FastMode, Subagent: a.Subagent, WorkspaceMode: a.WorkspaceMode,

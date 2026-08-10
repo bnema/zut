@@ -124,12 +124,12 @@ func TestSubagentResumeBeforeHookRunsBeforeRestartedWorkerStarts(t *testing.T) {
 	tool := &SubagentResumeTool{
 		Supervisor: manager,
 		Enabled:    func() bool { return true },
-		BeforeResumed: func(agent *subagents.Agent, gotPrompt string) func() {
+		BeforeResumed: func(agent *subagents.Agent, gotPrompt string, _ bool) func() {
 			beforeAgent = agent
 			beforePrompt = gotPrompt
 			return tracker.TrackFutureTurn(agent, gotPrompt, true)
 		},
-		OnResumed: func(*subagents.Agent, string) {
+		OnResumed: func(*subagents.Agent, string, bool) {
 			t.Fatal("post-success callback should not run with a pre-resume hook")
 		},
 	}
@@ -201,7 +201,7 @@ func TestSubagentResumeRestartsSessionWithFollowUp(t *testing.T) {
 	tool := &SubagentResumeTool{
 		Supervisor: manager,
 		Enabled:    func() bool { return true },
-		OnResumed: func(agent *subagents.Agent, gotPrompt string) {
+		OnResumed: func(agent *subagents.Agent, gotPrompt string, _ bool) {
 			tracked = agent
 			trackedPrompt = gotPrompt
 		},
