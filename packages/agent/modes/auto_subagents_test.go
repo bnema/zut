@@ -125,6 +125,32 @@ func TestTrackSubagentWorkerReportsStartupFailure(t *testing.T) {
 	}
 }
 
+func TestTrackRequiredSubagentWorkerReportsFailureAsynchronously(t *testing.T) {
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+				return errors.New("required reviewer failed")
+			})
+		},
+	})
+	a, err := mgr.SpawnReq(context.Background(), subagents.SpawnRequest{Task: "review the release", Required: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iv := newQueuedAutoSubagentsInteractive()
+	iv.TrackSubagentWorker(a, a.Task, true)
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "status: failed") || !strings.Contains(update, "required reviewer failed") {
+		t.Fatalf("required worker failure was not delivered: %q", update)
+	}
+	if !a.Snapshot().Requirement.Unmet() {
+		t.Fatal("delivered failure did not remain recoverable")
+	}
+}
+
 func TestTrackStoppedSubagentWorkerDeliversTerminalUpdate(t *testing.T) {
 	started := make(chan struct{})
 	mgr := subagents.New(subagents.Config{

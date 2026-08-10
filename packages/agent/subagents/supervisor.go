@@ -357,8 +357,8 @@ type SpawnRequest struct {
 	RootSessionID    string
 	RequesterAgentID string
 
-	// Required keeps this delegated turn on the parent's critical path. The
-	// supervisor persists its outcome and the manager tool waits for it.
+	// Required keeps this delegated turn on the parent's completion path. The
+	// supervisor persists its outcome while the manager remains asynchronous.
 	Required         bool
 	Timeout          time.Duration
 	MaxTurns         int

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
-	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -16,10 +15,10 @@ import (
 const requiredWorkerContextHeader = "[required-subagents update]"
 
 // WireRequiredWorkerGate composes host-enforced requirement handling with any
-// extension hooks already installed on the parent. Blocking required tool calls
-// handle the normal in-turn path; the before-turn hook covers cancellation,
-// restart, and session resume, while the assistant hook fails closed after an
-// unsuccessful required outcome.
+// extension hooks already installed on the parent. Parent turns and tools stay
+// available while required work runs; terminal outcomes are injected on the
+// next turn, and only a terminal assistant response is held while an obligation
+// remains unmet.
 func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 	if rt == nil || rt.supervisor == nil || parent == nil {
 		return
@@ -37,10 +36,7 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 		if err := rt.waitRequiredWorkerReady(ctx); err != nil {
 			return false, fmt.Sprintf("loading persisted subagents failed: %v; resolve the supervisor reload error before continuing", err), inherited
 		}
-		required, err := rt.supervisor.WaitActiveRequirements(ctx)
-		if err != nil {
-			return false, fmt.Sprintf("waiting for required subagents: %v", err), inherited
-		}
+		required := rt.supervisor.RequiredSnapshots()
 		update := rt.formatRequiredWorkerContext(required)
 		if update == "" {
 			return true, "", inherited
@@ -50,10 +46,6 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 
 	previousBeforeTool := parent.BeforeToolExecute
 	parent.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
-		unmet := rt.supervisor.UnmetRequirements()
-		if len(unmet) != 0 && !requiredRecoveryTool(call.Name) {
-			return false, formatRequiredWorkerBlock(unmet), nil
-		}
 		if previousBeforeTool != nil {
 			return previousBeforeTool(call)
 		}
@@ -161,15 +153,6 @@ func (rt *subagentRuntime) formatRequiredWorkerContext(required []subagents.Agen
 		}
 	}
 	return contextText
-}
-
-func requiredRecoveryTool(name string) bool {
-	switch name {
-	case tools.SubagentResumeToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName:
-		return true
-	default:
-		return false
-	}
 }
 
 func formatRequiredWorkerContextWithReported(required []subagents.AgentSnapshot, previouslyReported map[string]struct{}) string {

@@ -120,7 +120,7 @@ func TestRequiredWaitCompletesOnDelegatedTurnWhileWorkerStaysAlive(t *testing.T)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runnerProcessTimeout)
 	defer cancel()
-	got, err := f.WaitRequired(ctx, a.ID)
+	got, err := a.waitRequirement(ctx)
 	if err != nil {
 		events, _ := ReadEventLog(a.EventLogPath)
 		t.Fatalf("wait for delegated turn: %v\nsnapshot: %+v\nevents: %#v\nformatted: %s", err, a.Snapshot(), events, formatEvents(events))
@@ -321,7 +321,7 @@ func TestWaitRequiredIsEventDrivenAndRetryCanSatisfy(t *testing.T) {
 	waited := make(chan RequirementSnapshot, 1)
 	waitErr := make(chan error, 1)
 	go func() {
-		result, err := f.WaitRequired(ctx, a.ID)
+		result, err := a.waitRequirement(ctx)
 		if err != nil {
 			waitErr <- err
 			return
@@ -354,7 +354,7 @@ func TestWaitRequiredIsEventDrivenAndRetryCanSatisfy(t *testing.T) {
 		t.Fatalf("required retry: %v", err)
 	}
 	resumed.Wait()
-	got, err := f.WaitRequired(context.Background(), a.ID)
+	got, err := resumed.waitRequirement(context.Background())
 	if err != nil {
 		t.Fatalf("wait for retry: %v", err)
 	}

@@ -5,14 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestRequiredWorkerGateWaitsBeforeParentModelTurn(t *testing.T) {
+func TestRequiredWorkerGateKeepsParentFreeWhileWorkerRuns(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	cfg := newRuntimeTestConfig(t.TempDir(), t.TempDir(), func(*subagents.Agent) subagents.Runner {
@@ -41,36 +40,22 @@ func TestRequiredWorkerGateWaitsBeforeParentModelTurn(t *testing.T) {
 
 	parent := &core.Agent{}
 	rt.WireRequiredWorkerGate(parent)
-	if parent.BeforeTurnContext == nil {
-		t.Fatal("required worker gate did not install a before-turn hook")
+	allowed, reason, turnContext := parent.BeforeTurnContext(context.Background(), 1)
+	if !allowed || reason != "" || turnContext != "" {
+		t.Fatalf("parent turn while worker runs = (%v, %q, %q), want immediate access", allowed, reason, turnContext)
 	}
-
-	type turnResult struct {
-		allowed bool
-		reason  string
-		context string
+	if allowed, reason, _ := parent.BeforeToolExecute(provider.ToolCallBlock{Name: "bash"}); !allowed || reason != "" {
+		t.Fatalf("independent parent tool allowed=%v reason=%q", allowed, reason)
 	}
-	result := make(chan turnResult, 1)
-	go func() {
-		allowed, reason, turnContext := parent.BeforeTurnContext(context.Background(), 1)
-		result <- turnResult{allowed: allowed, reason: reason, context: turnContext}
-	}()
-	select {
-	case got := <-result:
-		t.Fatalf("parent gate returned while required worker was running: %+v", got)
-	default:
+	if allowed, reason, _ := parent.BeforeAssistantMessage("premature final answer"); allowed || !strings.Contains(reason, a.ID) {
+		t.Fatalf("terminal parent answer allowed=%v reason=%q, want deferred finalization", allowed, reason)
 	}
 
 	close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	select {
-	case got := <-result:
-		if !got.allowed || got.reason != "" || !strings.Contains(got.context, "required") || !strings.Contains(got.context, a.ID) {
-			t.Fatalf("gate result = %+v, want required completion context", got)
-		}
-	case <-ctx.Done():
-		t.Fatal("parent gate did not wake when required worker finished")
+	a.Wait()
+	allowed, reason, turnContext = parent.BeforeTurnContext(context.Background(), 2)
+	if !allowed || reason != "" || !strings.Contains(turnContext, a.ID) {
+		t.Fatalf("completion context = (%v, %q, %q), want required outcome", allowed, reason, turnContext)
 	}
 }
 
@@ -150,8 +135,11 @@ func TestRequiredWorkerGateTreatsManualTerminalRemovalAsWaiver(t *testing.T) {
 	worker.Wait()
 	parent := &core.Agent{}
 	rt.WireRequiredWorkerGate(parent)
-	if allowed, _, _ := parent.BeforeToolExecute(provider.ToolCallBlock{Name: "bash"}); allowed {
-		t.Fatal("unmet requirement did not block tools")
+	if allowed, reason, _ := parent.BeforeToolExecute(provider.ToolCallBlock{Name: "bash"}); !allowed || reason != "" {
+		t.Fatalf("unmet requirement blocked independent tool: allowed=%v reason=%q", allowed, reason)
+	}
+	if allowed, _, _ := parent.BeforeAssistantMessage("done"); allowed {
+		t.Fatal("unmet requirement allowed terminal answer")
 	}
 	if err := rt.Supervisor().Remove(worker.ID); err != nil {
 		t.Fatalf("explicit user removal waiver: %v", err)
@@ -188,9 +176,13 @@ func TestRequiredWorkerGateRejectsTerminalParentResponseUntilRetrySucceeds(t *te
 
 	parent := &core.Agent{}
 	rt.WireRequiredWorkerGate(parent)
+	turnAllowed, turnReason, turnContext := parent.BeforeTurnContext(context.Background(), 1)
+	if !turnAllowed || turnReason != "" || !strings.Contains(turnContext, worker.ID) || !strings.Contains(turnContext, "subagent_resume") {
+		t.Fatalf("failed worker recovery context = (%v, %q, %q)", turnAllowed, turnReason, turnContext)
+	}
 	toolAllowed, toolReason, _ := parent.BeforeToolExecute(provider.ToolCallBlock{Name: "bash"})
-	if toolAllowed || !strings.Contains(toolReason, worker.ID) {
-		t.Fatalf("finalization tool allowed=%v reason=%q, want failed required worker gate", toolAllowed, toolReason)
+	if !toolAllowed || toolReason != "" {
+		t.Fatalf("independent tool allowed=%v reason=%q, want parent to remain usable", toolAllowed, toolReason)
 	}
 	toolAllowed, toolReason, _ = parent.BeforeToolExecute(provider.ToolCallBlock{Name: "subagent_resume"})
 	if !toolAllowed || toolReason != "" {

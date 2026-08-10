@@ -51,7 +51,7 @@ const subagentResumeSchema = `{
     },
     "required": {
       "type": "boolean",
-      "description": "Set true to make this follow-up mandatory. Failed, timed-out, or canceled required work remains required automatically; indeterminate work needs explicit user reconciliation."
+      "description": "Set true to make this asynchronous follow-up mandatory before the parent's terminal response. Failed, timed-out, or canceled required work remains required automatically; indeterminate work needs explicit user reconciliation."
     }
   },
   "required": ["agent_id", "prompt"]
@@ -67,7 +67,7 @@ func (t *SubagentResumeTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentResumeSchema)
 }
 
-func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
@@ -121,10 +121,6 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, p
 	if t.BeforeResumed == nil && t.OnResumed != nil {
 		t.OnResumed(resumed, args.Prompt, required)
 	}
-	if required {
-		return waitRequiredSubagent(ctx, prefix, t.Supervisor, resumed, args.Prompt, progress)
-	}
-
 	snapshot, ok = findSubagentStatusSnapshot(t.Supervisor.SnapshotAll(), snapshot.ID)
 	if !ok {
 		return core.ToolResult{}, fmt.Errorf("%s: resumed agent disappeared from supervisor", prefix)

@@ -192,23 +192,16 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 }
 
 func newOrchestratedRuntime(ctx context.Context, args Args, r Resolved, cfg Config, tracker *subagents.CompletionTracker) *subagentRuntime {
-	onSpawned := func(a *subagents.Agent, task string, required bool) {
-		if !required {
-			tracker.TrackTurn(a, task, false)
-		}
+	onSpawned := func(a *subagents.Agent, task string, _ bool) {
+		tracker.TrackTurn(a, task, false)
 	}
-	onResumed := func(a *subagents.Agent, prompt string, required bool) {
+	onResumed := func(a *subagents.Agent, prompt string, _ bool) {
 		// BeforeResumed normally owns future-turn registration. Keep this
 		// fallback for direct runtime callers that do not install the pre-hook;
 		// SubagentResumeTool suppresses it when BeforeResumed accepted delivery.
-		if !required {
-			tracker.TrackTurn(a, prompt, true)
-		}
+		tracker.TrackTurn(a, prompt, true)
 	}
-	onBeforeResumed := func(a *subagents.Agent, prompt string, required bool) func() {
-		if required {
-			return nil
-		}
+	onBeforeResumed := func(a *subagents.Agent, prompt string, _ bool) func() {
 		return tracker.TrackFutureTurn(a, prompt, true)
 	}
 	onStopRequested := func(a *subagents.Agent) {
