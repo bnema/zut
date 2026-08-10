@@ -654,6 +654,10 @@ type Interactive struct {
 	streamFlushPending bool
 	toolCalls          map[string]*tui.ToolCallView
 	toolOrder          []string
+	// toolRenderRevision is monotonic for the lifetime of the interactive
+	// view. Per-call counters would let unrelated tools alias the same rendered
+	// cache frame when they reach the same local revision.
+	toolRenderRevision uint64
 	// toolGate records, per tool-call id, how many runes of paced
 	// assistant text must have drained into `streaming` before that
 	// tool block may appear. It exists to make stream ordering
@@ -8164,12 +8168,17 @@ func eventAffectsPresentation(ev core.AgentEvent) bool {
 	}
 }
 
-func bumpToolRevision(tc *tui.ToolCallView) {
-	if tc.Revision == ^uint64(0) {
-		tc.Revision = 1
-		return
+func (i *Interactive) bumpToolRevisionLocked(tc *tui.ToolCallView) {
+	i.toolRenderRevision++
+	if i.toolRenderRevision == 0 {
+		// Overflow is practically unreachable, but resetting the sequence must
+		// also drop old revisions before they can alias new frames.
+		if i.view != nil {
+			i.view.InvalidateRenderCache()
+		}
+		i.toolRenderRevision = 1
 	}
-	tc.Revision++
+	tc.Revision = i.toolRenderRevision
 }
 
 func (i *Interactive) handleEventForPresentation(ev core.AgentEvent) {
@@ -8234,19 +8243,20 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// EvToolCall for the same ID updates the same struct (the
 		// final parsed args + name are already known here).
 		if _, exists := i.toolCalls[e.ID]; !exists {
-			i.toolCalls[e.ID] = &tui.ToolCallView{
+			tc := &tui.ToolCallView{
 				ID:        e.ID,
 				Name:      e.Name,
-				Revision:  1,
 				Streaming: true,
 			}
+			i.bumpToolRevisionLocked(tc)
+			i.toolCalls[e.ID] = tc
 			i.toolOrder = append(i.toolOrder, e.ID)
 			i.gateToolLocked(e.ID)
 		}
 	case core.EvToolUseArgs:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.RawJSONBuf += e.Delta
-			bumpToolRevision(tc)
+			i.bumpToolRevisionLocked(tc)
 			// Refresh the live path as soon as it parses; used in
 			// the header (write /Users/example/Desktop/demo.ts)
 			// while the content is still streaming.
@@ -8259,7 +8269,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	case core.EvToolUseEnd:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Streaming = false
-			bumpToolRevision(tc)
+			i.bumpToolRevisionLocked(tc)
 		}
 	case core.EvToolCall:
 		// If we already pre-created the view during streaming, just
@@ -8267,19 +8277,20 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// (non-streaming providers or legacy paths).
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Args = tui.ShortArgs(e.Name, e.Args)
-			bumpToolRevision(tc)
+			i.bumpToolRevisionLocked(tc)
 			if tc.RawJSONBuf == "" {
 				tc.RawJSONBuf = string(e.Args)
 			}
 			tc.Streaming = false
 		} else {
-			i.toolCalls[e.ID] = &tui.ToolCallView{
+			tc := &tui.ToolCallView{
 				ID:         e.ID,
 				Name:       e.Name,
-				Revision:   1,
 				Args:       tui.ShortArgs(e.Name, e.Args),
 				RawJSONBuf: string(e.Args),
 			}
+			i.bumpToolRevisionLocked(tc)
+			i.toolCalls[e.ID] = tc
 			i.toolOrder = append(i.toolOrder, e.ID)
 			i.gateToolLocked(e.ID)
 		}
@@ -8298,7 +8309,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				}
 			}
 			tc.Result = text.String()
-			bumpToolRevision(tc)
+			i.bumpToolRevisionLocked(tc)
 		}
 		if update, ok := tools.GoalUpdateFromResult(e.Result); ok && i.goalStatus == core.GoalActive {
 			i.goalStatus = update.Status
