@@ -172,10 +172,6 @@ func requiredRecoveryTool(name string) bool {
 	}
 }
 
-func formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
-	return formatRequiredWorkerContextWithReported(required, nil)
-}
-
 func formatRequiredWorkerContextWithReported(required []subagents.AgentSnapshot, previouslyReported map[string]struct{}) string {
 	var items []subagents.AgentSnapshot
 	for _, snapshot := range required {
