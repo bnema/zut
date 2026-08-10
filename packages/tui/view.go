@@ -234,6 +234,7 @@ type messageRenderCacheEntry struct {
 }
 
 type liveToolCacheKey struct {
+	callID     string
 	revision   uint64
 	content    uint64
 	width      int
@@ -390,7 +391,7 @@ func (v *View) Build(width int) []string {
 // scrollback renderers can keep these rows outside the immutable transcript
 // so native scrolling stays stable while a turn streams.
 func (v *View) BuildLive(width int) []string {
-	v.prepareLiveBodyHeights()
+	v.prepareLiveToolState()
 	if v.liveRenderCache == nil {
 		v.liveRenderCache = make(map[liveToolCacheKey][]string)
 	}
@@ -531,22 +532,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	if v.liveRenderCache == nil {
 		v.liveRenderCache = make(map[liveToolCacheKey][]string)
 	}
-	v.prepareLiveBodyHeights()
-	// Drop high-water entries for calls that are gone or finalised so
-	// the reservation never leaks into a later, shorter tool box.
-	if len(v.liveBodyHigh) > 0 {
-		active := make(map[string]bool, len(v.ToolCalls))
-		for _, tc := range v.ToolCalls {
-			if tc.Result == "" {
-				active[tc.ID] = true
-			}
-		}
-		for id := range v.liveBodyHigh {
-			if !active[id] {
-				delete(v.liveBodyHigh, id)
-			}
-		}
-	}
+	v.prepareLiveToolState()
 
 	// Pre-render every message (hits the cache for unchanged ones) so
 	// we can allocate `out` in a single shot with the exact capacity.
@@ -665,13 +651,41 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	return out, anchors
 }
 
-// prepareLiveBodyHeights resets live tool height reservations when ctrl+o
-// changes expansion state. Expanded content must not keep a collapsed box
-// padded to its former full height.
-func (v *View) prepareLiveBodyHeights() {
+// prepareLiveToolState drops cached frames and height reservations that no
+// longer match an active tool version. Expansion changes also reset height
+// reservations so collapsed dimensions cannot leak into expanded content.
+func (v *View) prepareLiveToolState() {
 	if v.liveBodyHigh == nil || v.liveBodyExpandAll != v.ExpandAll {
 		v.liveBodyHigh = make(map[string]int)
 		v.liveBodyExpandAll = v.ExpandAll
+	}
+
+	activeCalls := make(map[string]bool, len(v.ToolCalls))
+	activeVersions := make(map[liveToolCacheKey]struct{}, len(v.ToolCalls))
+	for _, tc := range v.ToolCalls {
+		if tc.Result == "" {
+			activeCalls[tc.ID] = true
+		}
+		activeVersions[liveToolCacheKey{
+			callID:   tc.ID,
+			revision: tc.Revision,
+			content:  hashLiveTool(tc),
+		}] = struct{}{}
+	}
+	for id := range v.liveBodyHigh {
+		if !activeCalls[id] {
+			delete(v.liveBodyHigh, id)
+		}
+	}
+	for key := range v.liveRenderCache {
+		version := liveToolCacheKey{
+			callID:   key.callID,
+			revision: key.revision,
+			content:  key.content,
+		}
+		if _, ok := activeVersions[version]; !ok {
+			delete(v.liveRenderCache, key)
+		}
 	}
 }
 
@@ -1102,6 +1116,7 @@ func (v *View) renderToolCallCached(tc ToolCallView, width int, themeKey uint64)
 		v.liveRenderCache = make(map[liveToolCacheKey][]string)
 	}
 	key := liveToolCacheKey{
+		callID:     tc.ID,
 		revision:   tc.Revision,
 		content:    hashLiveTool(tc),
 		width:      width,
@@ -1253,6 +1268,13 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			// high-water mark is per call id and is dropped the moment a
 			// Result lands (this branch only runs while Result == "").
 			high := len(body)
+			// Live edits otherwise grow from a few rows to the collapsed
+			// preview limit as newText arrives, moving the editor on every
+			// line. Reserve the final collapsed height from the first visible
+			// edit frame; ctrl+o still opts into unconstrained growth.
+			if !v.ExpandAll && (tc.Name == "edit" || tc.Name == "Edit") && high < ToolCollapsePreview+2 {
+				high = ToolCollapsePreview + 2
+			}
 			if v.liveBodyHigh != nil {
 				if prev := v.liveBodyHigh[tc.ID]; prev > high {
 					high = prev

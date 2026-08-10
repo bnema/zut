@@ -82,6 +82,61 @@ func TestLiveToolOverlayShowsFullBashCommandBeforeResult(t *testing.T) {
 	}
 }
 
+func TestLiveToolCacheSeparatesCallsAtTheSameRevision(t *testing.T) {
+	v := View{Theme: Dark, ToolCalls: []ToolCallView{
+		{
+			ID:         "toolu_alpha",
+			Name:       "edit",
+			Revision:   7,
+			RawJSONBuf: `{"path":"alpha.go","edits":[{"oldText":"old","newText":"alpha content"}]}`,
+			LivePath:   "alpha.go",
+		},
+		{
+			ID:         "toolu_beta",
+			Name:       "edit",
+			Revision:   7,
+			RawJSONBuf: `{"path":"beta.go","edits":[{"oldText":"old","newText":"beta content"}]}`,
+			LivePath:   "beta.go",
+		},
+	}}
+
+	plain := stripANSI(strings.Join(v.BuildLive(80), "\n"))
+	for _, want := range []string{"alpha.go", "alpha content", "beta.go", "beta content"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("live tool cache aliased calls at the same revision; missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestLiveToolCacheDropsSupersededAndInactiveCalls(t *testing.T) {
+	v := View{Theme: Dark, ToolCalls: []ToolCallView{{
+		ID:         "toolu_1",
+		Name:       "edit",
+		Revision:   1,
+		RawJSONBuf: `{"path":"sample.go","edits":[{"oldText":"old","newText":"first"}]}`,
+		LivePath:   "sample.go",
+	}}}
+	v.BuildLive(80)
+
+	v.ToolCalls[0].Revision = 2
+	v.ToolCalls[0].RawJSONBuf = `{"path":"sample.go","edits":[{"oldText":"old","newText":"second"}]}`
+	v.BuildLive(80)
+	for key := range v.liveRenderCache {
+		if key.callID != "toolu_1" || key.revision != 2 {
+			t.Fatalf("live cache retained superseded entry: %+v", key)
+		}
+	}
+
+	v.ToolCalls = nil
+	v.BuildLive(80)
+	if len(v.liveRenderCache) != 0 {
+		t.Fatalf("live cache retained %d entries after all calls disappeared", len(v.liveRenderCache))
+	}
+	if len(v.liveBodyHigh) != 0 {
+		t.Fatalf("live height reservations retained %d inactive calls", len(v.liveBodyHigh))
+	}
+}
+
 func TestLiveToolOverlayHeightDoesNotShrinkMidStream(t *testing.T) {
 	v := View{Theme: Dark}
 	tall := json.RawMessage(`{"command":"line1\nline2\nline3\nline4\nline5"}`)
@@ -102,6 +157,25 @@ func TestLiveToolOverlayHeightDoesNotShrinkMidStream(t *testing.T) {
 	}
 	if got := len(v.Build(80)); got < tallRows {
 		t.Fatalf("live box shrank mid-stream from %d to %d rows", tallRows, got)
+	}
+}
+
+func TestLiveEditOverlayKeepsStableHeightWhileStreaming(t *testing.T) {
+	v := View{Theme: Dark, ToolCalls: []ToolCallView{{
+		ID:         "toolu_1",
+		Name:       "edit",
+		Revision:   1,
+		RawJSONBuf: `{"path":"sample.go","edits":[{"oldText":"old","newText":"line 1"}]}`,
+		LivePath:   "sample.go",
+	}}}
+	shortRows := len(v.BuildLive(80))
+
+	v.ToolCalls[0].Revision = 2
+	v.ToolCalls[0].RawJSONBuf = `{"path":"sample.go","edits":[{"oldText":"old","newText":"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14"}]}`
+	longRows := len(v.BuildLive(80))
+
+	if longRows != shortRows {
+		t.Fatalf("live edit changed height while streaming: short=%d rows, long=%d rows", shortRows, longRows)
 	}
 }
 

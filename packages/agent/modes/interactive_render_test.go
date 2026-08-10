@@ -65,6 +65,28 @@ func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
 	}
 }
 
+func TestToolRenderRevisionsAreGloballyMonotonic(t *testing.T) {
+	i := &Interactive{
+		dirty:     make(chan struct{}, 1),
+		toolCalls: make(map[string]*tui.ToolCallView),
+		toolGate:  make(map[string]int),
+	}
+
+	i.handleEventForPresentation(core.EvToolUseStart{ID: "alpha", Name: "edit"})
+	alphaStart := i.toolCalls["alpha"].Revision
+	i.handleEventForPresentation(core.EvToolUseArgs{ID: "alpha", Delta: `{"path":"alpha.go"}`})
+	alphaArgs := i.toolCalls["alpha"].Revision
+	i.handleEventForPresentation(core.EvToolUseStart{ID: "beta", Name: "edit"})
+	betaStart := i.toolCalls["beta"].Revision
+	i.handleEventForPresentation(core.EvToolUseArgs{ID: "beta", Delta: `{"path":"beta.go"}`})
+	betaArgs := i.toolCalls["beta"].Revision
+
+	if !(alphaStart < alphaArgs && alphaArgs < betaStart && betaStart < betaArgs) {
+		t.Fatalf("tool revisions are not globally monotonic: alpha start=%d args=%d, beta start=%d args=%d",
+			alphaStart, alphaArgs, betaStart, betaArgs)
+	}
+}
+
 func TestToolEventBurstUsesThrottledInvalidationPath(t *testing.T) {
 	scheduler := newLatestFrameScheduler()
 	i := &Interactive{
