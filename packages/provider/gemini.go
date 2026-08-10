@@ -661,6 +661,12 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 				sendDone()
 				return
 			}
+			if ev.Err != nil {
+				stop = StopError
+				finalErr = fmt.Errorf("read SSE: %w", ev.Err)
+				sendDone()
+				return
+			}
 			if strings.TrimSpace(ev.Data) == "" {
 				continue
 			}

@@ -10,10 +10,11 @@ import (
 type sseEvent struct {
 	Event string // value of "event:" field (may be empty)
 	Data  string // concatenated "data:" lines
+	Err   error  // terminal scanner failure, if any
 }
 
-// readSSE reads events from r and sends them on out. It closes out when r
-// is exhausted or a read error occurs.
+// readSSE reads events from r and sends them on out. A scanner failure is
+// delivered as a final event before out closes.
 func readSSE(r io.Reader, out chan<- sseEvent) {
 	defer close(out)
 	sc := bufio.NewScanner(r)
@@ -56,4 +57,7 @@ func readSSE(r io.Reader, out chan<- sseEvent) {
 		}
 	}
 	flush()
+	if err := sc.Err(); err != nil {
+		out <- sseEvent{Err: err}
+	}
 }

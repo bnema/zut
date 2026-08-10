@@ -518,6 +518,12 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				sendDone()
 				return
 			}
+			if ev.Err != nil {
+				stop = StopError
+				finalErr = fmt.Errorf("read SSE: %w", ev.Err)
+				sendDone()
+				return
+			}
 			var head struct {
 				Type string `json:"type"`
 			}

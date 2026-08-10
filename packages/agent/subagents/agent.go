@@ -152,6 +152,7 @@ type Agent struct {
 	streamingAssistantLines     int
 	finished                    time.Time
 	lastErr                     error
+	startupErr                  error
 	shutdownOrigin              ShutdownOrigin
 	transcriptLoaded            bool
 	legacyEventState            bool

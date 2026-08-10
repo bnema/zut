@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+var errStartupTimeout = errors.New("subagents: worker startup timeout")
+
 func (f *Supervisor) resolveWebSearchPolicy(req SpawnRequest) WebSearchPolicy {
 	// Inherit is valid only as the request's unresolved value. Unknown values
 	// are not another way to inherit the parent's capability.
@@ -207,6 +209,7 @@ func (f *Supervisor) schedule() {
 	for _, a := range starts {
 		f.persistAgent(a)
 		f.startLifecycleMonitor(a)
+		f.armStartupTimeout(a)
 		go f.run(a)
 	}
 }
@@ -309,7 +312,49 @@ func (f *Supervisor) armQueueTimeout(a *Agent) {
 	}()
 }
 
-func (f *Supervisor) expireQueued(id string) { f.cancelQueued(id, context.DeadlineExceeded) }
+func (f *Supervisor) expireQueued(id string) {
+	f.cancelQueued(id, fmt.Errorf("subagents: queue timeout after %s waiting for an execution slot", f.cfg.Policy.QueueTimeout))
+}
+
+func (f *Supervisor) armStartupTimeout(a *Agent) {
+	if a == nil {
+		return
+	}
+	d := f.cfg.Policy.StartupTimeout
+	if d <= 0 {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-a.done:
+			return
+		case <-timer.C:
+			f.expireStarting(a, d)
+		}
+	}()
+}
+
+func (f *Supervisor) expireStarting(a *Agent, d time.Duration) {
+	if a == nil || a.ProcessState() != ProcessStarting {
+		return
+	}
+	cause := fmt.Errorf("%w after %s waiting for agent_ready; inspect the worker output and retry", errStartupTimeout, d)
+	a.mu.Lock()
+	if a.status != StatusRunning {
+		a.mu.Unlock()
+		return
+	}
+	a.startupErr = cause
+	a.lastErr = cause
+	a.activity = "startup timeout: worker did not become ready"
+	a.mu.Unlock()
+	f.persistAgent(a)
+	if a.cancel != nil {
+		a.cancel()
+	}
+}
 
 func (f *Supervisor) cancelQueued(id string, cause error) {
 	a := f.Get(id)
@@ -330,10 +375,10 @@ func (f *Supervisor) cancelQueued(id string, cause error) {
 	}
 	a.status = StatusFailed
 	atomic.CompareAndSwapInt32(&a.launchState, 0, 2)
-	if cause == context.Canceled {
+	if errors.Is(cause, context.Canceled) {
 		a.activity = "cancelled while queued"
 	} else {
-		a.activity = "queue timeout"
+		a.activity = "queue timeout: no execution slot became available"
 	}
 	a.lastErr = cause
 	a.finished = f.cfg.Now()

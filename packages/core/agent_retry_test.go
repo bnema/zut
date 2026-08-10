@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,7 +15,8 @@ import (
 )
 
 type retryFakeClient struct {
-	calls int32
+	calls    int32
+	firstErr error
 }
 
 func (c *retryFakeClient) Name() string { return "retry-fake" }
@@ -29,7 +31,11 @@ func (c *retryFakeClient) Stream(ctx context.Context, req provider.Request) (<-c
 		defer close(out)
 		out <- provider.EventStart{Provider: "retry-fake", Model: req.Model}
 		if call == 1 {
-			out <- provider.EventDone{Stop: provider.StopError, Err: fmt.Errorf("anthropic overloaded_error: Overloaded")}
+			err := c.firstErr
+			if err == nil {
+				err = fmt.Errorf("anthropic overloaded_error: Overloaded")
+			}
+			out <- provider.EventDone{Stop: provider.StopError, Err: err}
 			return
 		}
 		out <- provider.EventTextDelta{Delta: "ok"}
@@ -67,6 +73,19 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 	if got := extractText(msgs[1]); got != "ok" {
 		t.Fatalf("final assistant text = %q; want ok", got)
+	}
+}
+
+func TestAgentRetriesUnexpectedEOFStreamError(t *testing.T) {
+	client := &retryFakeClient{firstErr: fmt.Errorf("read SSE: %w", io.ErrUnexpectedEOF)}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("Stream calls = %d; want 2", got)
 	}
 }
 

@@ -111,6 +111,99 @@ func TestSpawnRunsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestStartupTimeoutFailsWorkerThatNeverBecomesReady(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		Policy: SubagentPolicy{StartupTimeout: 20 * time.Millisecond},
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	a, err := f.Spawn(context.Background(), "stuck startup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := a.WaitContext(waitCtx); err != nil {
+		t.Fatalf("worker did not fail after startup timeout: %v", err)
+	}
+	if got := a.Status(); got != StatusFailed {
+		t.Fatalf("status = %s, want %s", got, StatusFailed)
+	}
+	if !errors.Is(a.Err(), errStartupTimeout) {
+		t.Fatalf("worker error = %v, want startup timeout", a.Err())
+	}
+	if got := a.Activity(); !strings.Contains(got, "startup timeout") {
+		t.Fatalf("activity = %q, want startup timeout explanation", got)
+	}
+}
+
+func TestQueueTimeoutFailsWorkerWaitingForExecutionSlot(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	var startOnce sync.Once
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		Policy: SubagentPolicy{
+			MaxConcurrent:  1,
+			QueueTimeout:   20 * time.Millisecond,
+			StartupTimeout: time.Second,
+		},
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				startOnce.Do(func() { close(started) })
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	first, err := f.Spawn(context.Background(), "occupy only slot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first runner did not start")
+	}
+	queued, err := f.Spawn(context.Background(), "wait for slot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := queued.WaitContext(waitCtx); err != nil {
+		t.Fatalf("queued worker did not time out: %v", err)
+	}
+	if got := queued.Status(); got != StatusFailed {
+		t.Fatalf("queued worker status = %s, want %s", got, StatusFailed)
+	}
+	if got := queued.ProcessState(); got != ProcessExited {
+		t.Fatalf("queued worker process state = %s, want %s", got, ProcessExited)
+	}
+	if got := queued.Err(); got == nil || !strings.Contains(got.Error(), "waiting for an execution slot") {
+		t.Fatalf("queued worker error = %v, want queue-pressure explanation", got)
+	}
+	f.Stop(first.ID)
+	first.Wait()
+}
+
 // TestSpawnAgentSharesRepoRoot verifies the only-mode-we-support:
 // every spawned agent points its cwd at the parent zut's RepoRoot.
 func TestSpawnAgentSharesRepoRoot(t *testing.T) {

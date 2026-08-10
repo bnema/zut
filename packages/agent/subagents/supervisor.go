@@ -631,9 +631,16 @@ func (f *Supervisor) run(a *Agent) {
 
 	a.mu.Lock()
 	a.finished = f.cfg.Now()
+	startupErr := a.startupErr
+	terminalErr := err
 	switch {
 	case a.status == StatusKilled:
 		// Stop requested a terminal state; preserve it.
+	case startupErr != nil:
+		a.status = StatusFailed
+		a.activity = "startup timeout: worker did not become ready"
+		a.lastErr = startupErr
+		terminalErr = startupErr
 	case errors.Is(err, context.Canceled):
 		a.status = StatusKilled
 		a.activity = "cancelled"
@@ -676,7 +683,7 @@ func (f *Supervisor) run(a *Agent) {
 	// temporary workspace is removed. This ordering is the recovery
 	// invariant: a user can always inspect a durable result after failure.
 	f.captureWorkspace(a)
-	f.ensureResult(a, finalStatus, err)
+	f.ensureResult(a, finalStatus, terminalErr)
 	if a.cancel != nil {
 		a.cancel()
 	}
