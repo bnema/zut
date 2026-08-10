@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -44,7 +45,8 @@ type Manifest struct {
 	Language    string   `json:"language,omitempty"` // informational ("go", "python", "typescript", ...)
 	Enabled     *bool    `json:"enabled,omitempty"`  // nil = enabled
 	Description string   `json:"description,omitempty"`
-	Skills      []string `json:"skills,omitempty"` // bundled skill directories
+	Skills      []string `json:"skills,omitempty"`   // bundled skill directories
+	HostEnv     []string `json:"host_env,omitempty"` // explicitly inherited host variables
 }
 
 // IsEnabled returns the manifest's effective enabled state. Default
@@ -106,7 +108,7 @@ type Extension struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	stdout   io.ReadCloser
-	logFile  *os.File
+	logFile  *boundedLog
 	helloAck bool
 	commands []extproto.RegisterCommandFromExt
 	tools    []extproto.RegisterToolFromExt
@@ -347,6 +349,9 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	if mf.Name == "" {
 		return errors.New("manifest: name is required")
 	}
+	if err := validateExtensionName(mf.Name); err != nil {
+		return fmt.Errorf("manifest: %w", err)
+	}
 	hasTheme := HasExtensionTheme(dir)
 	if mf.Exec == "" && !hasTheme {
 		return errors.New("manifest: exec is required")
@@ -379,7 +384,7 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 		lifecycleStop:    make(chan struct{}),
 	}
 	for _, skillErr := range skillErrs {
-		ext.diagnostics = append(ext.diagnostics, "skill: "+skillErr.Error())
+		ext.diagnostics = appendBoundedDiagnostic(ext.diagnostics, "skill: "+skillErr.Error())
 	}
 	if mf.Exec != "" {
 		if err := m.spawn(ctx, ext); err != nil {
@@ -593,7 +598,7 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 			case <-deadline:
 				ext.mu.Lock()
 				ext.readyTimedOut = true
-				ext.diagnostics = append(ext.diagnostics, "timed out waiting for ready frame")
+				ext.diagnostics = appendBoundedDiagnostic(ext.diagnostics, "timed out waiting for ready frame")
 				ext.mu.Unlock()
 				fmt.Fprintf(ext.logFile, "[zut] timed out waiting for ready frame; proceeding\n")
 				ext.readyOnce.Do(func() { close(ext.readyCh) })
@@ -631,7 +636,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	logsDir := filepath.Join(m.zutHome, "logs")
 	_ = os.MkdirAll(logsDir, 0o755)
 	logPath := filepath.Join(logsDir, "ext-"+ext.Manifest.Name+".log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := openBoundedLog(logPath)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
@@ -642,8 +647,27 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Bare names (node, npx, python3, tsx, etc.) are looked up via PATH;
 	// absolute and extension-relative paths are resolved by the helper.
 	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
+	env, err := extensionEnvironment(ext.Manifest.HostEnv, os.LookupEnv)
+	if err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("manifest host_env: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		foundPWD := false
+		for index, value := range env {
+			if strings.HasPrefix(value, "PWD=") {
+				env[index] = "PWD=" + ext.Dir
+				foundPWD = true
+				break
+			}
+		}
+		if !foundPWD {
+			env = append(env, "PWD="+ext.Dir)
+		}
+	}
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
 	cmd.Dir = ext.Dir
+	cmd.Env = env
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)
 
@@ -801,7 +825,7 @@ func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
 			ext.readyOnce.Do(func() {
 				ext.mu.Lock()
 				ext.autoReady = true
-				ext.diagnostics = append(ext.diagnostics, "no ready frame; auto-ready after idle")
+				ext.diagnostics = appendBoundedDiagnostic(ext.diagnostics, "no ready frame; auto-ready after idle")
 				ext.mu.Unlock()
 				fmt.Fprintf(ext.logFile, "[zut] no ready frame; auto-readying after idle (legacy SDK?)\n")
 				close(ext.readyCh)
@@ -1145,7 +1169,7 @@ func (ext *Extension) lifecycleWriter() {
 func (ext *Extension) recordDiagnostic(msg string) {
 	ext.mu.Lock()
 	defer ext.mu.Unlock()
-	ext.diagnostics = append(ext.diagnostics, msg)
+	ext.diagnostics = appendBoundedDiagnostic(ext.diagnostics, msg)
 }
 
 // RegisteredCommandDiagnostic describes one command an extension attempted
