@@ -842,7 +842,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	summaries := toolSummaries(reg, args)
 
 	contextFiles := []ContextFile(nil)
-	if selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext {
+	if !args.NoContextFiles && (selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext) {
 		contextFiles = loadAgentsContext(args.CWD, ZutHome())
 	}
 	append_ := []string(nil)

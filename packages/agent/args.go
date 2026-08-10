@@ -106,6 +106,10 @@ type Args struct {
 	// skill discovery, including built-ins.
 	WithSkills bool
 
+	// NoContextFiles disables discovery and loading of AGENTS.md files
+	// from $ZUT_HOME and the cwd's ancestor directories.
+	NoContextFiles bool
+
 	// InsecureTLS skips TLS verification for custom inference endpoints.
 	InsecureTLS bool
 
@@ -275,6 +279,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoExt = true
 		case "--no-skill", "--no-skills":
 			a.NoSkill = true
+		case "--no-context-files", "-nc":
+			a.NoContextFiles = true
 		case "--with-skills", "--with-skill":
 			// Deprecated no-op: user skills are loaded by default.
 			a.WithSkills = true
@@ -575,6 +581,7 @@ func PrintHelp(version string) {
 		row{"-y, --yes", "accept zut run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},
 		row{"--no-skill", "skip all skill discovery for this run"},
+		row{"--no-context-files, -nc", "skip AGENTS.md discovery for this run"},
 	)
 	section("misc",
 		row{"--max-steps N", "agent loop iteration cap (default: unlimited)"},

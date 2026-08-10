@@ -202,6 +202,7 @@ The first time you launch a newer zut binary, the TUI shows the GitHub release n
 zut                              # interactive tui
 zut "fix the failing test"       # tui, pre-filled prompt
 zut -p "list all go files"       # print final text, exit
+cat README.md | zut "summarize this text" # pipe input and infer print mode
 zut -p --stats stats.json "task" # print final text and write generation stats
 zut --json "refactor main.go"    # newline-delimited json events, exit
 zut -p --orchestrate --provider openai --model gpt-5 "implement and synthesize"
@@ -240,6 +241,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
 | `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
+| `--no-context-files`, `-nc` | Disable discovery and loading of global and project `AGENTS.md` files. |
 | `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Press `/` while the dialog is focused to run a slash command first; closing its input or child dialog returns to the pending confirmation. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
 
 ## Tools
@@ -260,6 +262,7 @@ When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits r
 - **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands.
 - **Print**: `zut -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
 - **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
+- **Piped input**: stdin implies print mode when no explicit mode is selected. Print, stream, and JSON modes prepend piped input to the positional prompt, separated by a newline. For example, `cat README.md | zut "summarize this text"`.
 - **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
 - **RPC**: `zut rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
 
