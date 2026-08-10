@@ -81,7 +81,7 @@ func TestToolRenderRevisionsAreGloballyMonotonic(t *testing.T) {
 	i.handleEventForPresentation(core.EvToolUseArgs{ID: "beta", Delta: `{"path":"beta.go"}`})
 	betaArgs := i.toolCalls["beta"].Revision
 
-	if !(alphaStart < alphaArgs && alphaArgs < betaStart && betaStart < betaArgs) {
+	if alphaStart >= alphaArgs || alphaArgs >= betaStart || betaStart >= betaArgs {
 		t.Fatalf("tool revisions are not globally monotonic: alpha start=%d args=%d, beta start=%d args=%d",
 			alphaStart, alphaArgs, betaStart, betaArgs)
 	}
