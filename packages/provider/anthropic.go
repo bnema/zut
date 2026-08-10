@@ -680,6 +680,12 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				sendDone()
 				return
 			}
+			if ev.Err != nil {
+				stop = StopError
+				finalErr = fmt.Errorf("read SSE: %w", ev.Err)
+				sendDone()
+				return
+			}
 			// Parse event payload based on event: type.
 			var payload map[string]json.RawMessage
 			if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {

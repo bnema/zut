@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +26,104 @@ func TestSSEParse(t *testing.T) {
 	}
 	if _, ok := <-ch; ok {
 		t.Fatalf("channel not closed")
+	}
+}
+
+type errorAfterReader struct {
+	data *strings.Reader
+	err  error
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if r.data.Len() > 0 {
+		return r.data.Read(p)
+	}
+	return 0, r.err
+}
+
+func TestSSEReadErrorIsDeliveredBeforeChannelClose(t *testing.T) {
+	want := io.ErrUnexpectedEOF
+	ch := make(chan sseEvent, 2)
+	go readSSE(&errorAfterReader{
+		data: strings.NewReader("data: hello\n\n"),
+		err:  want,
+	}, ch)
+
+	if event := <-ch; event.Data != "hello" {
+		t.Fatalf("event = %+v, want payload before read error", event)
+	}
+	terminal, ok := <-ch
+	if !ok {
+		t.Fatal("channel closed without scanner error")
+	}
+	if !errors.Is(terminal.Err, want) {
+		t.Fatalf("scanner error = %v, want %v", terminal.Err, want)
+	}
+	if _, ok := <-ch; ok {
+		t.Fatal("channel remained open after scanner error")
+	}
+}
+
+func TestStreamsReportSSEReadFailures(t *testing.T) {
+	want := io.ErrUnexpectedEOF
+	response := func() *http.Response {
+		return &http.Response{Body: io.NopCloser(&errorAfterReader{
+			data: strings.NewReader(""),
+			err:  want,
+		})}
+	}
+	cases := []struct {
+		name string
+		run  func(chan<- Event)
+	}{
+		{
+			name: "anthropic",
+			run: func(out chan<- Event) {
+				(&anthropicClient{}).runStream(context.Background(), response(), Request{Model: "test"}, out)
+			},
+		},
+		{
+			name: "openai",
+			run: func(out chan<- Event) {
+				(&openaiClient{}).runStream(context.Background(), response(), Request{Model: "test"}, out)
+			},
+		},
+		{
+			name: "gemini",
+			run: func(out chan<- Event) {
+				(&geminiClient{}).runStream(context.Background(), response(), Request{Model: "test"}, out)
+			},
+		},
+		{
+			name: "openai codex",
+			run: func(out chan<- Event) {
+				(&codexClient{}).runStream(context.Background(), response(), Request{Model: "test"}, out)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := make(chan Event, 4)
+			go tc.run(out)
+
+			var done EventDone
+			foundDone := false
+			for event := range out {
+				if e, ok := event.(EventDone); ok {
+					done = e
+					foundDone = true
+				}
+			}
+			if !foundDone {
+				t.Fatal("stream ended without EventDone")
+			}
+			if done.Stop != StopError {
+				t.Fatalf("stop = %s, want %s", done.Stop, StopError)
+			}
+			if !errors.Is(done.Err, want) {
+				t.Fatalf("stream error = %v, want %v", done.Err, want)
+			}
+		})
 	}
 }
 

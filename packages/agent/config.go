@@ -28,6 +28,7 @@ type SubagentsConfig struct {
 	MaxConcurrent          int      `json:"max_concurrent,omitempty"`
 	MaxConcurrentPerParent int      `json:"max_concurrent_per_parent,omitempty"`
 	QueueTimeout           string   `json:"queue_timeout,omitempty"`
+	StartupTimeout         string   `json:"startup_timeout,omitempty"`
 	DefaultTimeout         string   `json:"default_timeout,omitempty"`
 	MaxTurns               int      `json:"max_turns,omitempty"`
 	MaxOutputBytes         int      `json:"max_output_bytes,omitempty"`

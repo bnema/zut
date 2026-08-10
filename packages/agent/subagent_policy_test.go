@@ -4,9 +4,17 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 )
+
+func TestSubagentPolicyParsesStartupTimeout(t *testing.T) {
+	policy := subagentPolicyFromConfig(SubagentsConfig{StartupTimeout: "42s"})
+	if got := policy.StartupTimeout; got != 42*time.Second {
+		t.Fatalf("StartupTimeout = %s, want 42s", got)
+	}
+}
 
 func TestSubagentPolicyIgnoresLegacyMaxTotalSpawned(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())

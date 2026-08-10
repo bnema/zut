@@ -472,6 +472,7 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 		MaxConcurrent:          cfg.MaxConcurrent,
 		MaxConcurrentPerParent: cfg.MaxConcurrentPerParent,
 		QueueTimeout:           parseDuration(cfg.QueueTimeout),
+		StartupTimeout:         parseDuration(cfg.StartupTimeout),
 		DefaultTimeout:         parseDuration(cfg.DefaultTimeout),
 		MaxTurns:               cfg.MaxTurns,
 		MaxOutputBytes:         cfg.MaxOutputBytes,
