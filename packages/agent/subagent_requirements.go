@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -33,13 +35,13 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 			inherited = contextText
 		}
 		if err := rt.waitRequiredWorkerReady(ctx); err != nil {
-			return false, "loading persisted subagents failed; resolve the supervisor reload error before continuing", inherited
+			return false, fmt.Sprintf("loading persisted subagents failed: %v; resolve the supervisor reload error before continuing", err), inherited
 		}
 		required, err := rt.supervisor.WaitActiveRequirements(ctx)
 		if err != nil {
 			return false, fmt.Sprintf("waiting for required subagents: %v", err), inherited
 		}
-		update := formatRequiredWorkerContext(required)
+		update := rt.formatRequiredWorkerContext(required)
 		if update == "" {
 			return true, "", inherited
 		}
@@ -63,9 +65,12 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 		unmet := rt.supervisor.UnmetRequirements()
 		if len(unmet) != 0 {
 			reason := formatRequiredWorkerBlock(unmet)
-			parent.QueueMessage(reason)
+			if rt.noteRequiredBlock(unmet) {
+				parent.QueueMessage(reason)
+			}
 			return false, reason, ""
 		}
+		rt.clearRequiredBlock()
 		if previousBeforeAssistant != nil {
 			allowed, reason, replacement := previousBeforeAssistant(text)
 			if !allowed {
@@ -119,9 +124,48 @@ func (rt *subagentRuntime) acknowledgeSatisfiedRequirements() {
 	}
 }
 
+const requiredWorkerContextRuneBudget = 6000
+
+func (rt *subagentRuntime) noteRequiredBlock(unmet []subagents.AgentSnapshot) bool {
+	ids := make([]string, 0, len(unmet))
+	for _, snapshot := range unmet {
+		ids = append(ids, fmt.Sprintf("%s:%s:%d:%s", snapshot.ID, snapshot.Requirement.State, snapshot.Requirement.TargetTurn, snapshot.Requirement.ErrorCode))
+	}
+	sort.Strings(ids)
+	key := strings.Join(ids, "\n")
+	rt.requiredContextMu.Lock()
+	defer rt.requiredContextMu.Unlock()
+	if key == rt.lastRequiredBlock {
+		return false
+	}
+	rt.lastRequiredBlock = key
+	return true
+}
+
+func (rt *subagentRuntime) clearRequiredBlock() {
+	rt.requiredContextMu.Lock()
+	rt.lastRequiredBlock = ""
+	rt.requiredContextMu.Unlock()
+}
+
+func (rt *subagentRuntime) formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
+	rt.requiredContextMu.Lock()
+	defer rt.requiredContextMu.Unlock()
+	contextText := formatRequiredWorkerContextWithReported(required, rt.reportedRequiredUnmet)
+	if rt.reportedRequiredUnmet == nil {
+		rt.reportedRequiredUnmet = make(map[string]struct{})
+	}
+	for _, snapshot := range required {
+		if snapshot.Requirement.Unmet() {
+			rt.reportedRequiredUnmet[snapshot.ID] = struct{}{}
+		}
+	}
+	return contextText
+}
+
 func requiredRecoveryTool(name string) bool {
 	switch name {
-	case "subagent_resume", "subagent_status", "subagent_stop":
+	case tools.SubagentResumeToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName:
 		return true
 	default:
 		return false
@@ -129,6 +173,10 @@ func requiredRecoveryTool(name string) bool {
 }
 
 func formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
+	return formatRequiredWorkerContextWithReported(required, nil)
+}
+
+func formatRequiredWorkerContextWithReported(required []subagents.AgentSnapshot, previouslyReported map[string]struct{}) string {
 	var items []subagents.AgentSnapshot
 	for _, snapshot := range required {
 		requirement := snapshot.Requirement
@@ -148,6 +196,12 @@ func formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
 	sb.WriteString("\nThe host waited for required delegated work before this model turn. These outcomes are durable and authoritative:\n")
 	for _, snapshot := range items {
 		requirement := snapshot.Requirement
+		if requirement.Unmet() {
+			if _, reported := previouslyReported[snapshot.ID]; reported {
+				fmt.Fprintf(&sb, "\n- %s: %s (turn %d; previously reported; diagnostic: %s)\n", snapshot.ID, requirement.State, requirement.TargetTurn, subagents.ResultRef(snapshot.ID))
+				continue
+			}
+		}
 		fmt.Fprintf(&sb, "\n- %s: %s (turn %d)\n  task: %s\n", snapshot.ID, requirement.State, requirement.TargetTurn, strings.TrimSpace(snapshot.Task))
 		if requirement.ErrorCode != "" {
 			fmt.Fprintf(&sb, "  error_code: %s\n  diagnostic: %s\n", requirement.ErrorCode, subagents.ResultRef(snapshot.ID))
@@ -167,7 +221,15 @@ func formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
 	} else {
 		sb.WriteString("\nAll listed requirements are satisfied. Use their results before answering.")
 	}
-	return sb.String()
+	return truncateRequiredContext(sb.String(), requiredWorkerContextRuneBudget)
+}
+
+func truncateRequiredContext(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
 }
 
 func formatRequiredWorkerBlock(unmet []subagents.AgentSnapshot) string {

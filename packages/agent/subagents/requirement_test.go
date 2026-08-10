@@ -28,16 +28,17 @@ func TestRequiredWaitWakesOnlyAfterOutcomePersistence(t *testing.T) {
 		close(resolved)
 	}()
 	<-persisting
+	a.lifecycleMu.Lock()
+	visible := a.visibleRequirementLocked()
+	a.lifecycleMu.Unlock()
+	if visible.State != RequirementPending {
+		t.Fatalf("visible requirement while persistence is blocked = %+v, want pending", visible)
+	}
 	waited := make(chan RequirementSnapshot, 1)
 	go func() {
 		got, _ := a.waitRequirement(context.Background())
 		waited <- got
 	}()
-	select {
-	case got := <-waited:
-		t.Fatalf("wait woke before durable persistence: %+v", got)
-	default:
-	}
 	close(release)
 	<-resolved
 	if got := <-waited; got.State != RequirementSatisfied {
@@ -353,7 +354,7 @@ func TestWaitRequiredIsEventDrivenAndRetryCanSatisfy(t *testing.T) {
 		t.Fatalf("required retry: %v", err)
 	}
 	resumed.Wait()
-	got, err := f.WaitRequired(ctx, a.ID)
+	got, err := f.WaitRequired(context.Background(), a.ID)
 	if err != nil {
 		t.Fatalf("wait for retry: %v", err)
 	}

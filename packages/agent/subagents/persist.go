@@ -1355,20 +1355,44 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	// scheduler can start the worker and emit a fast turn_end. A durable pending
 	// prompt is consumed before the newly requested prompt, so tracker
 	// registrations must preserve that scheduler order.
+	var beforeCleanups []func()
 	if before != nil {
+		register := func(prompt string) {
+			if cleanup := before(a, prompt); cleanup != nil {
+				beforeCleanups = append(beforeCleanups, cleanup)
+			}
+		}
 		if hadPendingResumePrompt {
-			_ = before(a, pendingResumePrompt)
+			register(pendingResumePrompt)
 		}
 		if resumePrompt != "" {
-			// No rejecting operation remains before scheduling, so there is no path
-			// that needs the hook's rollback after this point.
-			_ = before(a, resumePrompt)
+			register(resumePrompt)
 		}
 		if !hadPendingResumePrompt && resumePrompt == "" {
-			_ = before(a, "")
+			register("")
 		}
 		if err := f.persistAgent(a); err != nil {
 			a.recordPersistenceError(err)
+			for idx := len(beforeCleanups) - 1; idx >= 0; idx-- {
+				beforeCleanups[idx]()
+			}
+			f.mu.Lock()
+			f.agents[a.ID] = existing
+			for idx, queued := range f.queue {
+				if queued == a {
+					f.queue = append(f.queue[:idx], f.queue[idx+1:]...)
+					break
+				}
+			}
+			f.mu.Unlock()
+			if restoreErr := f.persistAgent(existing); restoreErr != nil {
+				existing.recordPersistenceError(restoreErr)
+			}
+			if a.cancel != nil {
+				a.cancel()
+			}
+			_ = lease.Close()
+			return nil, err
 		}
 	}
 	f.armQueueTimeout(a)

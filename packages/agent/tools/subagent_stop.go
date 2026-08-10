@@ -44,7 +44,7 @@ const subagentStopSchema = `{
   "required": ["agent_id"]
 }`
 
-func (t *SubagentStopTool) Name() string { return "subagent_stop" }
+func (t *SubagentStopTool) Name() string { return SubagentStopToolName }
 
 func (t *SubagentStopTool) Description() string {
 	return "Request termination of a stuck background sub-agent. It gracefully requests shutdown, then cancels or force-stops the worker when necessary."

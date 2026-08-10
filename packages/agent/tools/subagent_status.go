@@ -71,7 +71,7 @@ const subagentStatusSchema = `{
   }
 }`
 
-func (t *SubagentStatusTool) Name() string { return "subagent_status" }
+func (t *SubagentStatusTool) Name() string { return SubagentStatusToolName }
 
 func (t *SubagentStatusTool) Description() string {
 	return "Query live status for one background sub-agent or list all visible workers without waiting for completion."

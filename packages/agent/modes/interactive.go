@@ -8743,8 +8743,8 @@ func (a telegramSenderAdapter) Active() bool {
 
 // TrackSubagentWorker is the exported entry point used by the cli to
 // hand a freshly-spawned auto-subagents agent off to the shared tracker.
-func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string, required ...bool) {
-	if len(required) != 0 && required[0] {
+func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string, required bool) {
+	if required {
 		if i != nil {
 			i.invalidate()
 		}
@@ -8756,8 +8756,8 @@ func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string, requi
 // TrackResumedSubagentWorker watches a resumed follow-up independently of the
 // worker's original task. A long-lived daemon can complete several manager
 // turns, each of which must produce its own automatic delivery.
-func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string, required ...bool) {
-	if len(required) != 0 && required[0] {
+func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string, required bool) {
+	if required {
 		if i != nil {
 			i.invalidate()
 		}
@@ -8770,8 +8770,8 @@ func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt stri
 // sent. The returned cleanup removes the registration if the resume operation
 // fails before delivery. It is used by the resume tool's pre-send hook; the
 // existing TrackResumedSubagentWorker signature remains the post-success API.
-func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string, required ...bool) func() {
-	if len(required) != 0 && required[0] {
+func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string, required bool) func() {
+	if required {
 		if i != nil {
 			i.invalidate()
 		}

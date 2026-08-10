@@ -43,12 +43,15 @@ type subagentRuntime struct {
 	beforeResumed   func(*subagents.Agent, string, bool) func()
 	onStopRequested func(*subagents.Agent)
 
-	requiredReadyMu  sync.RWMutex
-	requiredReady    <-chan struct{}
-	requiredReadyErr func() error
-	settingsMu       sync.RWMutex
-	closeMu          sync.Mutex
-	closed           bool
+	requiredReadyMu       sync.RWMutex
+	requiredReady         <-chan struct{}
+	requiredReadyErr      func() error
+	requiredContextMu     sync.Mutex
+	reportedRequiredUnmet map[string]struct{}
+	lastRequiredBlock     string
+	settingsMu            sync.RWMutex
+	closeMu               sync.Mutex
+	closed                bool
 }
 
 type subagentRuntimeConfiguration struct {

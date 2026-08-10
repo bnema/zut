@@ -165,6 +165,7 @@ func TestIndeterminateRequiredWorkNeedsExplicitUserReconciliation(t *testing.T) 
 			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error { return nil })
 		},
 	})
+	t.Cleanup(second.StopAll)
 	if _, errs := second.Reload(); len(errs) != 0 {
 		t.Fatalf("reload errors: %v", errs)
 	}

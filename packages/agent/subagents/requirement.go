@@ -154,11 +154,28 @@ func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, 
 	if result != nil && a.persistFn != nil && !unobservedRequirementResult(result) {
 		durable, err := readTurnResult(a.stateDirectory(""))
 		if err != nil || durable.TurnID != result.TurnID || durable.AgentID != result.AgentID {
-			a.lifecycleMu.Unlock()
-			if err != nil {
-				a.recordPersistenceError(fmt.Errorf("persist required result: %w", err))
+			if err == nil {
+				err = fmt.Errorf("durable result identity does not match agent %s turn %s", result.AgentID, result.TurnID)
 			}
-			return current
+			persistenceErr := fmt.Errorf("persist required result: %w", err)
+			a.requirement.State = RequirementIndeterminate
+			a.requirement.ErrorCode = "required_outcome_unobserved"
+			a.requirement.Notified = false
+			a.requirement.UpdatedAt = time.Now().UTC()
+			resolved := a.requirement
+			a.requirementPersisting = true
+			a.lifecycleMu.Unlock()
+			a.recordPersistenceError(persistenceErr)
+			if err := a.persistFn(a); err != nil {
+				a.recordPersistenceError(err)
+			}
+			a.lifecycleMu.Lock()
+			if a.requirement == resolved {
+				a.requirementPersisting = false
+				a.signalRequirementLocked()
+			}
+			a.lifecycleMu.Unlock()
+			return resolved
 		}
 	}
 	state, errorCode := classifyRequirementOutcome(result, errMsg)

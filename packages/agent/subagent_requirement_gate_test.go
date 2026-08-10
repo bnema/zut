@@ -127,7 +127,7 @@ func TestRequiredWorkerGateFailsClosedOnReloadError(t *testing.T) {
 	parent := &core.Agent{}
 	rt.WireRequiredWorkerGate(parent)
 	allowed, reason, _ := parent.BeforeTurnContext(context.Background(), 1)
-	if allowed || reason != "loading persisted subagents failed; resolve the supervisor reload error before continuing" {
+	if allowed || reason != "loading persisted subagents failed: malformed persisted worker; resolve the supervisor reload error before continuing" {
 		t.Fatalf("reload gate allowed=%v reason=%q, want fail-closed reload error", allowed, reason)
 	}
 }

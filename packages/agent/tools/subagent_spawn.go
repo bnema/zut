@@ -20,6 +20,13 @@ import (
 // Available when the host's launch-time tool policy permits delegation. The
 // primary-agent prompt decides whether delegation is proactive or only on an
 // explicit user request.
+const (
+	SubagentSpawnToolName  = "subagent_spawn"
+	SubagentStatusToolName = "subagent_status"
+	SubagentStopToolName   = "subagent_stop"
+	SubagentResumeToolName = "subagent_resume"
+)
+
 type SubagentSpawnTool struct {
 	// Supervisor is the supervisor used to spawn agents. Nil means subagents
 	// are unavailable in this mode and the tool always errors.
@@ -117,7 +124,7 @@ const subagentSpawnSchemaTemplate = `{
   "required": ["task"]
 }`
 
-func (t *SubagentSpawnTool) Name() string { return "subagent_spawn" }
+func (t *SubagentSpawnTool) Name() string { return SubagentSpawnToolName }
 func (t *SubagentSpawnTool) Description() string {
 	return "Delegate work to a sub-agent. Set required=true when its outcome is mandatory before the parent can finish; the tool then waits event-driven and returns that outcome in the current turn. Optional work runs in the background and returns an id immediately. Optional completion is host-event-driven: wait only for the injected [auto-subagents update]; never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
 }
@@ -266,7 +273,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		t.OnSpawned(agent, task, a.Required)
 	}
 	if a.Required {
-		return waitRequiredSubagent(ctx, t.Name(), t.Supervisor, agent, task)
+		return waitRequiredSubagent(ctx, t.Name(), t.Supervisor, agent, task, progress)
 	}
 
 	var sb strings.Builder
@@ -317,7 +324,10 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	}, nil
 }
 
-func waitRequiredSubagent(ctx context.Context, toolName string, supervisor *subagents.Supervisor, agent *subagents.Agent, task string) (core.ToolResult, error) {
+func waitRequiredSubagent(ctx context.Context, toolName string, supervisor *subagents.Supervisor, agent *subagents.Agent, task string, progress func(string)) (core.ToolResult, error) {
+	if progress != nil {
+		progress(fmt.Sprintf("waiting for required sub-agent %s", agent.ID))
+	}
 	requirement, err := supervisor.WaitRequired(ctx, agent.ID)
 	if err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: wait for required agent %s: %w", toolName, agent.ID, err)
