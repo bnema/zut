@@ -19,6 +19,44 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestWireRetryLifecyclePersistence(t *testing.T) {
+	session, err := core.NewSession(t.TempDir(), "/workspace", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	agent := core.NewAgent(nil, "model", "system", core.Registry{})
+	wireRetryLifecyclePersistence(agent, session)
+	if agent.OnRetryLifecycle == nil {
+		t.Fatal("session-backed agent has no retry lifecycle persistence")
+	}
+	agent.OnRetryLifecycle(core.RetryLifecycleRecord{
+		Event: core.RetryLifecycleRequestFailed, Scope: core.RetryScopeAgent,
+		Attempt: 1, MaxAttempts: 1, Reason: core.RetryReasonServer, Terminal: true,
+	})
+	if err := session.AppendUsage(provider.Usage{}, provider.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"retry_lifecycle"`) {
+		t.Fatalf("session lacks retry lifecycle: %s", raw)
+	}
+
+	wireRetryLifecyclePersistence(agent, nil)
+	if agent.OnRetryLifecycle != nil {
+		t.Fatal("sessionless agent retained retry lifecycle persistence")
+	}
+}
+
 func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	root := t.TempDir()
 	original, err := core.NewSession(root, "original", "provider", "model", "test")

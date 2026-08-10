@@ -79,8 +79,9 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 		},
 	}
 	if eventSink != nil {
-		req.Lifecycle = requestLifecycleSink{
+		req.Lifecycle = &requestLifecycleSink{
 			sink:     eventSink,
+			observe:  a.fireRetryLifecycle,
 			provider: a.Client.Name(),
 			model:    a.Model,
 		}

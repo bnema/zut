@@ -249,10 +249,14 @@ func botRun(spec *botSpec, rawTail []string, version string) (runErr error) {
 			agent.OnUsage = func(u provider.Usage) {
 				_ = sess.AppendUsage(u, u)
 			}
+			agent.OnRetryLifecycle = sess.RecordRetryLifecycle
 			agent.OnTranscriptCompacted = func(msgs []provider.Message) {
 				_ = sess.AppendCompaction(msgs)
 			}
-			defer func() { runErr = joinSessionCloseError(runErr, sess) }()
+			defer func() {
+				runErr = errors.Join(runErr, sess.FlushRetryLifecycle(agent.LastTurnUsage(), agent.Cost()))
+				runErr = joinSessionCloseError(runErr, sess)
+			}()
 		} else {
 			fmt.Fprintln(os.Stderr, "session:", serr)
 		}

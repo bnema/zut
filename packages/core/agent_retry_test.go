@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,6 +116,80 @@ func TestAgentEmitsRetryLifecycleEvents(t *testing.T) {
 	}
 	if strings.Join(lifecycle, ",") != strings.Join(want, ",") {
 		t.Fatalf("lifecycle = %v, want %v", lifecycle, want)
+	}
+}
+
+func TestAgentReportsSanitizedRetryLifecycle(t *testing.T) {
+	client := &retryFakeClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	var records []RetryLifecycleRecord
+	a.OnRetryLifecycle = func(record RetryLifecycleRecord) {
+		records = append(records, record)
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+
+	want := []RetryLifecycleRecord{
+		{
+			Event: RetryLifecycleRequestFailed, Scope: RetryScopeAgent,
+			Attempt: 1, MaxAttempts: 4, Reason: RetryReasonOverload,
+		},
+		{
+			Event: RetryLifecycleRetryScheduled, Scope: RetryScopeAgent,
+			Attempt: 2, MaxAttempts: 4, Reason: RetryReasonOverload, DelayMS: 1,
+		},
+	}
+	if !reflect.DeepEqual(records, want) {
+		t.Fatalf("retry lifecycle = %#v, want %#v", records, want)
+	}
+}
+
+func TestRequestLifecycleSinkForwardsProviderFailureReason(t *testing.T) {
+	var records []RetryLifecycleRecord
+	sink := &requestLifecycleSink{
+		sink:    func(AgentEvent) {},
+		observe: func(record RetryLifecycleRecord) { records = append(records, record) },
+	}
+	sink.RequestFailed(1, 3, provider.RequestFailureOverload, false)
+	sink.RetryScheduled(2, 3, 250*time.Millisecond)
+
+	want := []RetryLifecycleRecord{
+		{
+			Event: RetryLifecycleRequestFailed, Scope: RetryScopeProvider,
+			Attempt: 1, MaxAttempts: 3, Reason: RetryReasonOverload,
+		},
+		{
+			Event: RetryLifecycleRetryScheduled, Scope: RetryScopeProvider,
+			Attempt: 2, MaxAttempts: 3, Reason: RetryReasonOverload, DelayMS: 250,
+		},
+	}
+	if !reflect.DeepEqual(records, want) {
+		t.Fatalf("provider retry lifecycle = %#v, want %#v", records, want)
+	}
+}
+
+func TestAgentReportsTerminalRetryFailure(t *testing.T) {
+	client := &retryFakeClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+
+	var records []RetryLifecycleRecord
+	a.OnRetryLifecycle = func(record RetryLifecycleRecord) {
+		records = append(records, record)
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err == nil {
+		t.Fatal("Prompt succeeded; want terminal provider error")
+	}
+	if len(records) != 1 {
+		t.Fatalf("retry lifecycle = %#v, want one terminal record", records)
+	}
+	record := records[0]
+	if record.Event != RetryLifecycleRequestFailed || record.Scope != RetryScopeAgent ||
+		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != RetryReasonOverload || !record.Terminal {
+		t.Fatalf("terminal retry record = %#v", record)
 	}
 }
 
@@ -361,6 +436,10 @@ func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
 	agent.MaxRetries = 1
 
 	var retries []EvRetryScheduled
+	var lifecycle []RetryLifecycleRecord
+	agent.OnRetryLifecycle = func(record RetryLifecycleRecord) {
+		lifecycle = append(lifecycle, record)
+	}
 	err := agent.Prompt(ctx, "hello", nil, func(event AgentEvent) {
 		if retry, ok := event.(EvRetryScheduled); ok {
 			retries = append(retries, retry)
@@ -371,5 +450,8 @@ func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
 	}
 	if len(retries) != 0 {
 		t.Fatalf("retry events = %#v, want none after cancellation", retries)
+	}
+	if len(lifecycle) != 1 || lifecycle[0].Event != RetryLifecycleRequestFailed || !lifecycle[0].Terminal {
+		t.Fatalf("retry lifecycle = %#v, want one terminal failure after cancellation", lifecycle)
 	}
 }

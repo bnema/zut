@@ -102,7 +102,12 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			if !isTransientConnectError(err) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			transient := isTransientConnectError(err)
+			reportRequestFailure(lifecycle, attempt+1, maxAttempts, requestFailureReasonForError(err), !transient || attempt == streamRetryAttempts)
+			if !transient {
 				return nil, err
 			}
 			continue
@@ -114,15 +119,18 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 			trimmed := strings.TrimSpace(string(body))
+			reason := requestFailureReasonForHTTP(resp.StatusCode, trimmed)
 			if resp.StatusCode == http.StatusTooManyRequests && isTerminalRateLimitBody(trimmed) {
 				// Subscription/quota/billing limits are not transient
 				// throttles; retrying only burns time. Surface the
 				// response immediately so the caller formats the
 				// normal "http 429: body" error.
+				reportRequestFailure(lifecycle, attempt+1, maxAttempts, RequestFailureQuota, true)
 				return synthesizeResponse(resp.StatusCode, body), nil
 			}
 			lastErr = &transientHTTPError{Status: resp.StatusCode, Body: trimmed}
 			if attempt == streamRetryAttempts {
+				reportRequestFailure(lifecycle, attempt+1, maxAttempts, reason, true)
 				// Wrap as a real *http.Response shape the caller
 				// expects so it formats the error identically to a
 				// non-retried failure.
@@ -130,11 +138,13 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 			}
 			if d, ok := retryAfterDelay(resp.Header); ok {
 				if d > maxServerRetryDelay {
+					reportRequestFailure(lifecycle, attempt+1, maxAttempts, reason, true)
 					return nil, fmt.Errorf("server requested %s retry delay (max %s): http %d: %s",
 						d.Round(time.Second), maxServerRetryDelay, resp.StatusCode, trimmed)
 				}
 				serverDelay = d
 			}
+			reportRequestFailure(lifecycle, attempt+1, maxAttempts, reason, false)
 			continue
 		}
 		return resp, nil
@@ -156,6 +166,36 @@ type transientHTTPError struct {
 }
 
 func (e *transientHTTPError) Error() string { return "transient http error" }
+
+func reportRequestFailure(lifecycle RequestLifecycle, attempt, maxAttempts int, reason RequestFailureReason, terminal bool) {
+	if observer, ok := lifecycle.(RequestFailureLifecycle); ok {
+		observer.RequestFailed(attempt, maxAttempts, reason, terminal)
+	}
+}
+
+func requestFailureReasonForHTTP(status int, body string) RequestFailureReason {
+	msg := strings.ToLower(body)
+	if status == 529 || strings.Contains(msg, "overload") {
+		return RequestFailureOverload
+	}
+	if status == http.StatusTooManyRequests {
+		return RequestFailureRateLimit
+	}
+	return RequestFailureServer
+}
+
+func requestFailureReasonForError(err error) RequestFailureReason {
+	if err == nil {
+		return RequestFailureUnknown
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+		return RequestFailureTimeout
+	}
+	if isTransientConnectError(err) {
+		return RequestFailureNetwork
+	}
+	return RequestFailureUnknown
+}
 
 // synthesizeResponse rebuilds a closable response wrapping the captured
 // body bytes so the caller's existing non-200 handling path keeps

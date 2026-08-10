@@ -161,6 +161,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 				sessionPersistence.record(err)
 			}
 		}
+		ag.OnRetryLifecycle = sess.RecordRetryLifecycle
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
