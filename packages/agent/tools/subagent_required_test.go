@@ -8,13 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
-	"github.com/bnema/zut/packages/core"
 )
 
-func TestRequiredSubagentSpawnBlocksUntilTerminalOutcome(t *testing.T) {
+func TestRequiredSubagentSpawnReturnsWhileWorkerRuns(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -43,24 +41,17 @@ func TestRequiredSubagentSpawnBlocksUntilTerminalOutcome(t *testing.T) {
 			spawned <- required
 		},
 	}
-	result := make(chan core.ToolResult, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		got, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"finish the release","required":true}`), nil)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		result <- got
-	}()
-
+	got, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"finish the release","required":true}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	<-started
-	select {
-	case got := <-result:
-		t.Fatalf("required spawn returned while worker was running: %s", textResult(got.Content))
-	case err := <-errCh:
-		t.Fatalf("required spawn failed while worker was running: %v", err)
-	default:
+	text := textResult(got.Content)
+	if got.IsError || !strings.Contains(text, "required: pending") || !strings.Contains(text, "manager remains free") {
+		t.Fatalf("required spawn result = %#v\n%s", got, text)
+	}
+	if details, ok := got.Details.(map[string]any); !ok || details["required"] != true || details["requirement_state"] != "pending" {
+		t.Fatalf("required details = %#v", got.Details)
 	}
 	select {
 	case required := <-spawned:
@@ -72,52 +63,45 @@ func TestRequiredSubagentSpawnBlocksUntilTerminalOutcome(t *testing.T) {
 	}
 
 	close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	select {
-	case err := <-errCh:
-		t.Fatalf("required spawn failed: %v", err)
-	case got := <-result:
-		text := textResult(got.Content)
-		if got.IsError || !strings.Contains(text, "required") || !strings.Contains(text, "satisfied") {
-			t.Fatalf("required result = %#v\n%s", got, text)
-		}
-		if details, ok := got.Details.(map[string]any); !ok || details["required"] != true || details["requirement_state"] != "satisfied" {
-			t.Fatalf("required details = %#v", got.Details)
-		}
-	case <-ctx.Done():
-		t.Fatal("required spawn did not return after worker completion")
-	}
+	manager.List()[0].Wait()
 }
 
-func TestRequiredSubagentResumeRetriesUnmetWorkAsRequired(t *testing.T) {
+func TestRequiredSubagentResumeRetriesUnmetWorkWithoutBlocking(t *testing.T) {
 	root := t.TempDir()
 	attempt := 0
+	retryStarted := make(chan struct{})
+	releaseRetry := make(chan struct{})
 	manager := subagents.New(subagents.Config{
 		Root:     filepath.Join(root, "subagents"),
 		RepoRoot: root,
 		NewRunner: func(*subagents.Agent) subagents.Runner {
 			attempt++
 			current := attempt
-			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
 				if current == 1 {
 					return errors.New("first review failed")
 				}
-				return nil
+				close(retryStarted)
+				select {
+				case <-releaseRetry:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			})
 		},
 	})
 	t.Cleanup(manager.StopAll)
 	spawn := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
 	first, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"review","required":true}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !first.IsError {
-		t.Fatalf("first required result should remain unmet: %s", textResult(first.Content))
+	if err != nil || first.IsError {
+		t.Fatalf("required spawn = (%+v, %v), want asynchronous success", first, err)
 	}
 	worker := manager.List()[0]
 	worker.Wait()
+	if !worker.Snapshot().Requirement.Unmet() {
+		t.Fatal("failed required worker was not retained as unmet")
+	}
 
 	var callbackRequired bool
 	resume := &SubagentResumeTool{
@@ -132,8 +116,14 @@ func TestRequiredSubagentResumeRetriesUnmetWorkAsRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.IsError || !callbackRequired || !strings.Contains(textResult(got.Content), "satisfied") {
+	<-retryStarted
+	if got.IsError || !callbackRequired || !strings.Contains(textResult(got.Content), `"requirement":{"state":"pending"`) {
 		t.Fatalf("required retry = %#v callback_required=%v\n%s", got, callbackRequired, textResult(got.Content))
+	}
+	close(releaseRetry)
+	manager.List()[0].Wait()
+	if state := manager.List()[0].Snapshot().Requirement.State; state != subagents.RequirementSatisfied {
+		t.Fatalf("required retry state = %s, want satisfied", state)
 	}
 }
 
@@ -204,14 +194,15 @@ func TestRequiredSubagentFailureStaysUnmet(t *testing.T) {
 	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
 
 	got, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"finish the release","required":true}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(textResult(got.Content), "failed") {
-		t.Fatalf("required failure was not surfaced: %s", textResult(got.Content))
+	if err != nil || got.IsError || !strings.Contains(textResult(got.Content), "required: pending") {
+		t.Fatalf("required spawn = (%+v, %v), want asynchronous pending result", got, err)
 	}
 	agents := manager.List()
-	if len(agents) != 1 || !agents[0].Snapshot().Requirement.Unmet() {
+	if len(agents) != 1 {
+		t.Fatalf("spawned agents = %d, want 1", len(agents))
+	}
+	agents[0].Wait()
+	if !agents[0].Snapshot().Requirement.Unmet() {
 		t.Fatalf("failed required worker was not retained as unmet: %#v", agents)
 	}
 	status := &SubagentStatusTool{Supervisor: manager, Enabled: func() bool { return true }}

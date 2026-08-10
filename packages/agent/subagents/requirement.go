@@ -2,7 +2,6 @@ package subagents
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -303,24 +302,8 @@ func (a *Agent) waitRequirement(ctx context.Context) (RequirementSnapshot, error
 	}
 }
 
-var errRequiredAgentMissing = errors.New("subagents: required agent no longer exists")
-
-// WaitRequired blocks on requirement state transitions, never filesystem or
-// status polling, until the selected required turn reaches a terminal outcome.
-func (f *Supervisor) WaitRequired(ctx context.Context, id string) (RequirementSnapshot, error) {
-	a := f.Get(strings.TrimSpace(id))
-	if a == nil {
-		return RequirementSnapshot{}, fmt.Errorf("%w: %q", errRequiredAgentMissing, id)
-	}
-	requirement := a.requirementSnapshot()
-	if !requirement.Required {
-		return requirement, fmt.Errorf("subagents: agent %s is not required", a.ID)
-	}
-	return a.waitRequirement(ctx)
-}
-
 // MarkRequirementNotified records that the parent received the terminal
-// outcome through a blocking manager tool or host-injected update.
+// outcome through a host-injected update.
 func (f *Supervisor) MarkRequirementNotified(id string) error {
 	a := f.Get(strings.TrimSpace(id))
 	if a == nil {
@@ -358,8 +341,8 @@ func (f *Supervisor) RequiredSnapshots() []AgentSnapshot {
 	return out
 }
 
-// UnmetRequirements returns every required worker that still blocks parent
-// completion in the active session.
+// UnmetRequirements returns every required worker that still blocks the
+// parent's terminal response in the active session.
 func (f *Supervisor) UnmetRequirements() []AgentSnapshot {
 	required := f.RequiredSnapshots()
 	out := required[:0]
@@ -369,31 +352,4 @@ func (f *Supervisor) UnmetRequirements() []AgentSnapshot {
 		}
 	}
 	return out
-}
-
-// WaitActiveRequirements waits for all currently pending required workers in
-// the active session. It returns all required snapshots so the host can inject
-// both successful outcomes and unresolved failures before the next model turn.
-func (f *Supervisor) WaitActiveRequirements(ctx context.Context) ([]AgentSnapshot, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	for {
-		pending := false
-		for _, snapshot := range f.RequiredSnapshots() {
-			if snapshot.Requirement.pending() {
-				pending = true
-				if _, err := f.WaitRequired(ctx, snapshot.ID); err != nil {
-					if errors.Is(err, errRequiredAgentMissing) {
-						break
-					}
-					return nil, err
-				}
-				break
-			}
-		}
-		if !pending {
-			return f.RequiredSnapshots(), nil
-		}
-	}
 }
