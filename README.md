@@ -151,6 +151,18 @@ Ponytail coding mode is enabled by default, including when an existing `config.j
 
 A selected subagent profile with `systemPromptMode: replace` supplies the child's base identity even when `--system-prompt` was provided for the parent run. Global append addenda, including enabled Ponytail guidance, still follow their normal inclusion rules.
 
+### HTTP proxy
+
+To route zut-managed HTTP and HTTPS requests through one proxy, add `http_proxy` to `$ZUT_HOME/config.json`:
+
+```json
+{
+  "http_proxy": "http://127.0.0.1:7890"
+}
+```
+
+The setting is applied at startup to both HTTP and HTTPS traffic. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` environment variables take precedence for their corresponding protocol. `NO_PROXY` and `no_proxy` continue to control bypasses. Restart zut after changing the config file. If the URL contains proxy credentials, prefer protected environment variables because `config.json` is not a credential store.
+
 ## Persistent instructions (AGENTS.md)
 
 Use `AGENTS.md` to give zut standing instructions that layer **on top of** the default system prompt, without replacing it. This is the friendliest way to shape behavior (for example, taming local models that jump straight to code edits) because it adds guidance rather than taking over the base identity the way `SYSTEM.md` does.

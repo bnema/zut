@@ -48,3 +48,34 @@ func TestModelRouterRejectsMissingAPIClient(t *testing.T) {
 		t.Fatal("expected missing API client error")
 	}
 }
+
+func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
+	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
+	if got := router.fallback.(*openaiClient).baseURL; got != "https://example.com/go/v1" {
+		t.Fatalf("Completions base URL = %q", got)
+	}
+	responses := router.byAPI[APIResponses].(*renamedClient).inner.(*codexClient)
+	if got := responses.baseURL; got != "https://example.com/go/v1/responses" {
+		t.Fatalf("Responses base URL = %q", got)
+	}
+
+	completionsCapture := &routeCaptureClient{name: "opencode-go"}
+	responsesCapture := &routeCaptureClient{name: "opencode-go"}
+	router.fallback = completionsCapture
+	router.byAPI[APIResponses] = responsesCapture
+	for _, model := range []string{"gpt-5.6-luna", "kimi-k3"} {
+		stream, err := router.Stream(context.Background(), Request{Model: model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range stream {
+		}
+	}
+
+	if len(responsesCapture.models) != 1 || responsesCapture.models[0] != "gpt-5.6-luna" {
+		t.Fatalf("Responses models = %v", responsesCapture.models)
+	}
+	if len(completionsCapture.models) != 1 || completionsCapture.models[0] != "kimi-k3" {
+		t.Fatalf("Completions models = %v", completionsCapture.models)
+	}
+}

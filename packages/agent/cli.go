@@ -765,6 +765,10 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 
 // Run is the top-level entrypoint for the zut binary.
 func Run(rawArgs []string, version string) error {
+	// Apply network configuration before any subcommand can make an HTTP
+	// request. Standard proxy environment variables retain precedence.
+	applyConfiguredHTTPProxy()
+
 	// Extension installs can invoke external build and clone processes.
 	// Give those processes a cancellation context without changing signal
 	// handling for the interactive modes below.

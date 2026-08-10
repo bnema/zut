@@ -32,6 +32,62 @@ func TestLlamaCPPLoadProgressStages(t *testing.T) {
 	}
 }
 
+func TestLlamaCPPWatchOutlivesRequestTimeout(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseEvent := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(requestStarted)
+		select {
+		case <-releaseEvent:
+			fmt.Fprint(w, "data: {\"model\":\"test\",\"event\":\"download_progress\",\"data\":{}}\n\n")
+			w.(http.Flusher).Flush()
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewLlamaCPPClient(server.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.HTTP.Timeout = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan llamaCPPEvent, 1)
+	watchDone := make(chan error, 1)
+	go func() { watchDone <- client.watch(ctx, events) }()
+	<-requestStarted
+
+	select {
+	case err := <-watchDone:
+		t.Fatalf("watch stopped at ordinary request timeout: %v", err)
+	case <-time.After(3 * client.HTTP.Timeout):
+	}
+	close(releaseEvent)
+	select {
+	case event := <-events:
+		if event.Model != "test" || event.Event != "download_progress" {
+			t.Fatalf("event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delayed SSE event")
+	}
+}
+
+func TestLlamaCPPModelAcceptsTopLevelDownloadProgress(t *testing.T) {
+	var model LlamaCPPModel
+	if err := json.Unmarshal([]byte(`{"id":"test","status":{"value":"downloading"},"progress":{"model.gguf":{"done":512,"total":1024}}}`), &model); err != nil {
+		t.Fatal(err)
+	}
+	progress, ok := downloadProgress(model.Progress)
+	if !ok || progress.Ratio != 0.5 {
+		t.Fatalf("progress = %#v, ok = %v", progress, ok)
+	}
+}
+
 func TestLlamaCPPClientLoadAndDownloadProgress(t *testing.T) {
 	var mu sync.Mutex
 	status := "unloaded"

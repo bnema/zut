@@ -124,9 +124,14 @@ func NewOpenCode(apiKey, baseURL string) Client {
 	return NewOpenAICompat("opencode", apiKey, baseURL, "https://opencode.ai/zen/v1")
 }
 
-// NewOpenCodeGo is the opencode-go variant.
+// NewOpenCodeGo routes each model through the wire API exposed by OpenCode Go.
 func NewOpenCodeGo(apiKey, baseURL string) Client {
-	return NewOpenAICompat("opencode-go", apiKey, baseURL, "https://opencode.ai/zen/go/v1")
+	const defaultBaseURL = "https://opencode.ai/zen/go/v1"
+	return NewModelRouter("opencode-go",
+		NewOpenAICompat("opencode-go", apiKey, baseURL, defaultBaseURL),
+		map[string]Client{
+			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode-go"),
+		})
 }
 
 // NewMinimaxOpenAI is the OpenAI-completions flavor of MiniMax, in case

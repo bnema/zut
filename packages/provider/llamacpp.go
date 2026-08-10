@@ -47,6 +47,10 @@ type LlamaCPPModel struct {
 		Size         int64  `json:"size,omitempty"`
 		FileType     string `json:"ftype,omitempty"`
 	} `json:"meta,omitempty"`
+	// Progress is emitted at the model's top level by current llama.cpp
+	// routers. Status.Progress supports versions that follow the documented
+	// nested shape.
+	Progress map[string]LlamaCPPBytes `json:"progress,omitempty"`
 }
 
 // LlamaCPPBytes describes byte progress for one downloaded file.
@@ -204,7 +208,13 @@ func (c *LlamaCPPClient) watch(ctx context.Context, events chan<- llamaCPPEvent)
 	if c.APIKey != "" {
 		req.Header.Set("authorization", "Bearer "+c.APIKey)
 	}
-	resp, err := c.HTTP.Do(req)
+	// http.Client.Timeout covers the complete response body lifetime, which is
+	// appropriate for ordinary management requests but would terminate this
+	// long-lived SSE stream. Preserve the configured transport and other client
+	// behavior while letting ctx control the stream lifetime.
+	streamClient := *c.HTTP
+	streamClient.Timeout = 0
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -408,7 +418,11 @@ func (c *LlamaCPPClient) DownloadAndWait(ctx context.Context, model string, upda
 				}
 				if entry.Status.Value == "downloading" {
 					sawDownload = true
-					if progress, ok := downloadProgress(entry.Status.Progress); ok {
+					files := entry.Status.Progress
+					if len(files) == 0 {
+						files = entry.Progress
+					}
+					if progress, ok := downloadProgress(files); ok {
 						update(progress)
 					}
 				} else if sawDownload || polls >= 2 {

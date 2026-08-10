@@ -181,6 +181,10 @@ type Config struct {
 	// Insecure skips TLS verification for custom inference endpoints.
 	Insecure bool `json:"insecure,omitempty"`
 
+	// HTTPProxy is a global proxy URL used for HTTP and HTTPS requests when
+	// the corresponding standard proxy environment variable is not already set.
+	HTTPProxy string `json:"http_proxy,omitempty"`
+
 	// LastChangelogShown is the version whose release-notes
 	// dialog the user has already seen. When the running binary's
 	// version differs, the next interactive run shows the
@@ -330,6 +334,26 @@ func SaveConfig(c Config) error {
 		return err
 	}
 	return os.WriteFile(ConfigPath(), b, 0o644)
+}
+
+// applyConfiguredHTTPProxy makes the persisted proxy available to Go's
+// standard HTTP transport and to child processes. Explicit environment
+// variables take precedence over config.json.
+func applyConfiguredHTTPProxy() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return
+	}
+	proxy := strings.TrimSpace(cfg.HTTPProxy)
+	if proxy == "" {
+		return
+	}
+	if os.Getenv("HTTP_PROXY") == "" && os.Getenv("http_proxy") == "" {
+		_ = os.Setenv("HTTP_PROXY", proxy)
+	}
+	if os.Getenv("HTTPS_PROXY") == "" && os.Getenv("https_proxy") == "" {
+		_ = os.Setenv("HTTPS_PROXY", proxy)
+	}
 }
 
 // AuthStoreFor returns the auth.Store backed by AuthPath().
