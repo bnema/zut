@@ -29,7 +29,17 @@ func TestAvailableReasoningLevels(t *testing.T) {
 				Provider: "anthropic", Reasoning: true,
 				ReasoningLevelMap: map[string]string{"minimum": "low", "high": "", "max": "max"},
 			},
-			want: []string{"", "low", "medium", "xhigh"},
+			want: []string{"", "low", "medium", "xhigh", "max"},
+		},
+		{
+			name: "explicit levels extend generic defaults",
+			model: Model{
+				Provider: "custom", Reasoning: true,
+				ReasoningLevelMap: map[string]string{
+					"minimum": "", "low": "", "medium": "", "high": "high", "xhigh": "xhigh", "max": "max",
+				},
+			},
+			want: []string{"", "high", "xhigh", "max"},
 		},
 	}
 	for _, tt := range tests {
@@ -59,6 +69,12 @@ func TestClampReasoningForModel(t *testing.T) {
 			level: "minimum",
 			want:  "high",
 		},
+		{
+			name:  "explicit max extends generic defaults",
+			model: Model{Reasoning: true, ReasoningLevelMap: map[string]string{"max": "max"}},
+			level: "max",
+			want:  "max",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,20 +87,28 @@ func TestClampReasoningForModel(t *testing.T) {
 
 func TestOpenAIRequestUsesReasoningLevelMap(t *testing.T) {
 	SetLiveModels([]Model{{
-		Provider:          "openai",
+		Provider:          "custom",
 		ID:                "mapped-reasoning-model",
 		Reasoning:         true,
-		ReasoningLevelMap: map[string]string{"high": "low"},
+		ReasoningLevelMap: map[string]string{"high": "low", "max": "max"},
 	}})
 	t.Cleanup(func() { SetLiveModels(nil) })
 
-	client := NewOpenAI("test", "").(*openaiClient)
-	request, err := client.buildRequest(Request{Model: "mapped-reasoning-model", Reasoning: "high"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if request.ReasoningEffort != "low" {
-		t.Fatalf("reasoning effort = %q, want low", request.ReasoningEffort)
+	client := NewOpenAICompat("custom", "test", "", "").(*openaiClient)
+	for _, tt := range []struct {
+		requested string
+		want      string
+	}{
+		{requested: "high", want: "low"},
+		{requested: "max", want: "max"},
+	} {
+		request, err := client.buildRequest(Request{Model: "mapped-reasoning-model", Reasoning: tt.requested})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.ReasoningEffort != tt.want {
+			t.Errorf("reasoning effort for %q = %q, want %q", tt.requested, request.ReasoningEffort, tt.want)
+		}
 	}
 }
 

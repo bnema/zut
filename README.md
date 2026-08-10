@@ -533,7 +533,7 @@ Place a `models.json` in `$ZUT_HOME` (`$XDG_STATE_HOME/zut/` when set, otherwise
 
 Supported fields per model: `id` (required), `name`, `reasoning`, `reasoningLevelMap`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
 
-`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, or to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
+`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, use an identity mapping such as `"max": "max"` to enable a level beyond the protocol default, or map it to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
 
 Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`, `moonshot`, `moonshot-ai`, and `kimi-code` map to `kimi`, and `deepseek-chat` and `deepseek-ai` map to `deepseek`. Built-in provider ids such as `groq`, `openrouter`, `github-copilot`, `amazon-bedrock`, `google-vertex`, `azure-openai-responses`, `fireworks`, `vercel-ai-gateway`, `mistral`, and `xai` can also be used directly.
 
