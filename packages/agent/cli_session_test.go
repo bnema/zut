@@ -24,10 +24,10 @@ func TestWireRetryLifecyclePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}); err != nil {
-		t.Fatal(err)
-	}
 	agent := core.NewAgent(nil, "model", "system", core.Registry{})
+	agent.SetMessages([]provider.Message{{
+		Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}},
+	}})
 	wireRetryLifecyclePersistence(agent, session)
 	if agent.OnRetryLifecycle == nil {
 		t.Fatal("session-backed agent has no retry lifecycle persistence")
@@ -36,7 +36,10 @@ func TestWireRetryLifecyclePersistence(t *testing.T) {
 		Event: core.RetryLifecycleRequestFailed, Scope: core.RetryScopeAgent,
 		Attempt: 1, MaxAttempts: 1, Reason: core.RetryReasonServer, Terminal: true,
 	})
-	if err := session.AppendUsage(provider.Usage{}, provider.Usage{}); err != nil {
+	// Headless modes call WriteNewTranscript on both success and provider
+	// failure. Exercise that real finalization path rather than draining the
+	// session buffer directly.
+	if err := WriteNewTranscript(agent, session, 0); err != nil {
 		t.Fatal(err)
 	}
 	path := session.Path
@@ -47,8 +50,26 @@ func TestWireRetryLifecyclePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"retry_lifecycle"`) {
-		t.Fatalf("session lacks retry lifecycle: %s", raw)
+	var lifecycle []core.RetryLifecycleRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var row struct {
+			Type           string                      `json:"type"`
+			RetryLifecycle []core.RetryLifecycleRecord `json:"retry_lifecycle"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row.Type == "usage" && len(row.RetryLifecycle) > 0 {
+			lifecycle = row.RetryLifecycle
+		}
+	}
+	if len(lifecycle) != 1 {
+		t.Fatalf("retry lifecycle = %#v, want one record", lifecycle)
+	}
+	record := lifecycle[0]
+	if record.Event != core.RetryLifecycleRequestFailed || record.Scope != core.RetryScopeAgent ||
+		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != core.RetryReasonServer || !record.Terminal {
+		t.Fatalf("retry lifecycle record = %#v", record)
 	}
 
 	wireRetryLifecyclePersistence(agent, nil)

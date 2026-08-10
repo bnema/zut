@@ -147,6 +147,9 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 			reportRequestFailure(lifecycle, attempt+1, maxAttempts, reason, false)
 			continue
 		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			reportRequestFailure(lifecycle, attempt+1, maxAttempts, requestFailureReasonForHTTP(resp.StatusCode, ""), true)
+		}
 		return resp, nil
 	}
 	if lastErr == nil {
@@ -174,12 +177,15 @@ func reportRequestFailure(lifecycle RequestLifecycle, attempt, maxAttempts int, 
 }
 
 func requestFailureReasonForHTTP(status int, body string) RequestFailureReason {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+		if status == http.StatusTooManyRequests {
+			return RequestFailureRateLimit
+		}
+		return RequestFailureClient
+	}
 	msg := strings.ToLower(body)
 	if status == 529 || strings.Contains(msg, "overload") {
 		return RequestFailureOverload
-	}
-	if status == http.StatusTooManyRequests {
-		return RequestFailureRateLimit
 	}
 	return RequestFailureServer
 }

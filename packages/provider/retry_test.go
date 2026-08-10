@@ -284,6 +284,32 @@ func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
 	}
 }
 
+func TestDoStreamWithRetryReportsTerminalClientFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("servers overloaded: private provider detail"))
+	}))
+	defer srv.Close()
+
+	lifecycle := &recordingRequestLifecycle{}
+	resp, err := doStreamWithRetry(context.Background(), srv.Client(), func() (*http.Request, error) {
+		return http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, nil)
+	}, lifecycle)
+	if err != nil {
+		t.Fatalf("doStreamWithRetry: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureClient, terminal: true}) {
+		t.Fatalf("failures = %#v, want one terminal client failure", got)
+	}
+	if len(lifecycle.retries) != 0 {
+		t.Fatalf("retries = %#v, want none", lifecycle.retries)
+	}
+}
+
 func TestDoStreamWithRetryReportsTerminalQuota(t *testing.T) {
 	const privateBody = `{"error":{"type":"insufficient_quota","message":"private provider detail"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

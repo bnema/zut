@@ -162,7 +162,10 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			}
 		}
 		ag.OnRetryLifecycle = sess.RecordRetryLifecycle
-		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
+		defer func() {
+			runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost()))
+			runErr = joinSessionCloseError(runErr, sess)
+		}()
 	}
 	announceSession(extMgr, sess)
 
@@ -341,6 +344,11 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 				} else {
 					err = persistErr
 				}
+			}
+		}
+		if sess != nil {
+			if persistErr := sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost()); persistErr != nil {
+				err = errors.Join(err, persistErr)
 			}
 		}
 		if sessionErr := sessionPersistence.err(); err == nil && sessionErr != nil {

@@ -989,6 +989,9 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 	}
 	announceSession(extMgr, sess)
 	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1071,6 +1074,9 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 	}
 	announceSession(extMgr, sess)
 	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1192,6 +1198,9 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 	}
 	announceSession(extMgr, sess)
 	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
