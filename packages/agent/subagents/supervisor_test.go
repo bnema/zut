@@ -114,13 +114,16 @@ func TestSpawnRunsAndCompletes(t *testing.T) {
 func TestStartupTimeoutFailsWorkerThatNeverBecomesReady(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	startupTimeout := time.Hour
 	f := New(Config{
 		Root: root, RepoRoot: root,
-		Policy: SubagentPolicy{StartupTimeout: 20 * time.Millisecond},
+		Policy: SubagentPolicy{StartupTimeout: startupTimeout},
 		NewRunner: func(*Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				close(started)
 				<-ctx.Done()
+				close(cancelled)
 				return ctx.Err()
 			})
 		},
@@ -136,6 +139,12 @@ func TestStartupTimeoutFailsWorkerThatNeverBecomesReady(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runner did not start")
 	}
+	f.expireStarting(a, startupTimeout)
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("startup timeout did not cancel runner")
+	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := a.WaitContext(waitCtx); err != nil {
@@ -150,18 +159,78 @@ func TestStartupTimeoutFailsWorkerThatNeverBecomesReady(t *testing.T) {
 	if got := a.Activity(); !strings.Contains(got, "startup timeout") {
 		t.Fatalf("activity = %q, want startup timeout explanation", got)
 	}
+	result, err := f.ReadResult(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ResultFailed || result.Error == nil {
+		t.Fatalf("startup timeout result = %#v, want failed result with error", result)
+	}
+	if !strings.Contains(result.Error.Message, errStartupTimeout.Error()) || !strings.Contains(result.Error.Message, "inspect the worker output and retry") {
+		t.Fatalf("startup timeout result error = %#v, want timeout and retry guidance", result.Error)
+	}
+}
+
+func TestStartupTimeoutDoesNotCancelReadyWorker(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		Policy: SubagentPolicy{StartupTimeout: time.Hour},
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				close(started)
+				<-ctx.Done()
+				close(cancelled)
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	a, err := f.Spawn(context.Background(), "ready startup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentReady, nil)); err != nil {
+		t.Fatal(err)
+	}
+	f.expireStarting(a, time.Hour)
+
+	if got := a.ProcessState(); got != ProcessAlive {
+		t.Fatalf("process state = %s, want %s", got, ProcessAlive)
+	}
+	if err := a.Err(); err != nil {
+		t.Fatalf("ready worker error = %v, want nil", err)
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("startup timeout canceled ready worker")
+	default:
+	}
+	if err := f.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
 }
 
 func TestQueueTimeoutFailsWorkerWaitingForExecutionSlot(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{})
+	queueTimeout := time.Hour
 	var startOnce sync.Once
 	f := New(Config{
 		Root: root, RepoRoot: root,
 		Policy: SubagentPolicy{
 			MaxConcurrent:  1,
-			QueueTimeout:   20 * time.Millisecond,
-			StartupTimeout: time.Second,
+			QueueTimeout:   queueTimeout,
+			StartupTimeout: time.Hour,
 		},
 		NewRunner: func(*Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
@@ -186,6 +255,7 @@ func TestQueueTimeoutFailsWorkerWaitingForExecutionSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.expireQueued(queued.ID)
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := queued.WaitContext(waitCtx); err != nil {
@@ -200,7 +270,16 @@ func TestQueueTimeoutFailsWorkerWaitingForExecutionSlot(t *testing.T) {
 	if got := queued.Err(); got == nil || !strings.Contains(got.Error(), "waiting for an execution slot") {
 		t.Fatalf("queued worker error = %v, want queue-pressure explanation", got)
 	}
-	f.Stop(first.ID)
+	result, err := f.ReadResult(queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ResultFailed || result.Error == nil || !strings.Contains(result.Error.Message, "waiting for an execution slot") {
+		t.Fatalf("queued worker result = %#v, want failed result with queue-pressure error", result)
+	}
+	if err := f.Stop(first.ID); err != nil {
+		t.Fatal(err)
+	}
 	first.Wait()
 }
 

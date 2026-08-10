@@ -361,6 +361,30 @@ func (a *Agent) setProcessState(state ProcessState) {
 	a.lifecycleMu.Unlock()
 }
 
+// markStartupTimeout atomically claims a worker that is still waiting for
+// agent_ready. Process-state transitions use lifecycleMu too, so a ready
+// worker cannot be timed out based on a stale ProcessStarting observation.
+func (a *Agent) markStartupTimeout(cause error) bool {
+	if cause == nil {
+		return false
+	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.processState != ProcessStarting {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != StatusRunning {
+		return false
+	}
+	a.startupErr = cause
+	a.lastErr = cause
+	a.activity = "startup timeout: worker did not become ready"
+	a.updatedAt = time.Now()
+	return true
+}
+
 func (a *Agent) incrementAttempt() int {
 	a.lifecycleMu.Lock()
 	a.Attempt++

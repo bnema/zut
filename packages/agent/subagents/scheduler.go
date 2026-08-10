@@ -337,19 +337,13 @@ func (f *Supervisor) armStartupTimeout(a *Agent) {
 }
 
 func (f *Supervisor) expireStarting(a *Agent, d time.Duration) {
-	if a == nil || a.ProcessState() != ProcessStarting {
+	if a == nil {
 		return
 	}
 	cause := fmt.Errorf("%w after %s waiting for agent_ready; inspect the worker output and retry", errStartupTimeout, d)
-	a.mu.Lock()
-	if a.status != StatusRunning {
-		a.mu.Unlock()
+	if !a.markStartupTimeout(cause) {
 		return
 	}
-	a.startupErr = cause
-	a.lastErr = cause
-	a.activity = "startup timeout: worker did not become ready"
-	a.mu.Unlock()
 	f.persistAgent(a)
 	if a.cancel != nil {
 		a.cancel()
