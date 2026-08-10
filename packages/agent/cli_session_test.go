@@ -19,6 +19,65 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestWireRetryLifecyclePersistence(t *testing.T) {
+	session, err := core.NewSession(t.TempDir(), "/workspace", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := core.NewAgent(nil, "model", "system", core.Registry{})
+	agent.SetMessages([]provider.Message{{
+		Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}},
+	}})
+	wireRetryLifecyclePersistence(agent, session)
+	if agent.OnRetryLifecycle == nil {
+		t.Fatal("session-backed agent has no retry lifecycle persistence")
+	}
+	agent.OnRetryLifecycle(core.RetryLifecycleRecord{
+		Event: core.RetryLifecycleRequestFailed, Scope: core.RetryScopeAgent,
+		Attempt: 1, MaxAttempts: 1, Reason: core.RetryReasonServer, Terminal: true,
+	})
+	// Headless modes call WriteNewTranscript on both success and provider
+	// failure. Exercise that real finalization path rather than draining the
+	// session buffer directly.
+	if err := WriteNewTranscript(agent, session, 0); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifecycle []core.RetryLifecycleRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var row struct {
+			Type           string                      `json:"type"`
+			RetryLifecycle []core.RetryLifecycleRecord `json:"retry_lifecycle"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row.Type == "usage" && len(row.RetryLifecycle) > 0 {
+			lifecycle = row.RetryLifecycle
+		}
+	}
+	if len(lifecycle) != 1 {
+		t.Fatalf("retry lifecycle = %#v, want one record", lifecycle)
+	}
+	record := lifecycle[0]
+	if record.Event != core.RetryLifecycleRequestFailed || record.Scope != core.RetryScopeAgent ||
+		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != core.RetryReasonServer || !record.Terminal {
+		t.Fatalf("retry lifecycle record = %#v", record)
+	}
+
+	wireRetryLifecyclePersistence(agent, nil)
+	if agent.OnRetryLifecycle != nil {
+		t.Fatal("sessionless agent retained retry lifecycle persistence")
+	}
+}
+
 func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	root := t.TempDir()
 	original, err := core.NewSession(root, "original", "provider", "model", "test")

@@ -38,6 +38,42 @@ const (
 	RetryScopeAgent    RetryScope = "agent"
 )
 
+// RetryLifecycleEvent identifies a sanitized retry audit record.
+type RetryLifecycleEvent string
+
+const (
+	RetryLifecycleRequestFailed  RetryLifecycleEvent = "request_failed"
+	RetryLifecycleRetryScheduled RetryLifecycleEvent = "retry_scheduled"
+)
+
+// RetryReason is an allowlisted failure category safe for session persistence.
+type RetryReason string
+
+const (
+	RetryReasonOverload      RetryReason = "overload"
+	RetryReasonRateLimit     RetryReason = "rate_limit"
+	RetryReasonQuota         RetryReason = "quota"
+	RetryReasonServer        RetryReason = "server"
+	RetryReasonNetwork       RetryReason = "network"
+	RetryReasonTimeout       RetryReason = "timeout"
+	RetryReasonAuth          RetryReason = "auth"
+	RetryReasonContextWindow RetryReason = "context_window"
+	RetryReasonClient        RetryReason = "client"
+	RetryReasonUnknown       RetryReason = "unknown"
+)
+
+// RetryLifecycleRecord contains only bounded, privacy-safe retry metadata.
+// Raw provider errors and response bodies must never be added to this type.
+type RetryLifecycleRecord struct {
+	Event       RetryLifecycleEvent `json:"event"`
+	Scope       RetryScope          `json:"scope"`
+	Attempt     int                 `json:"attempt"`
+	MaxAttempts int                 `json:"max_attempts"`
+	Reason      RetryReason         `json:"reason"`
+	Terminal    bool                `json:"terminal,omitempty"`
+	DelayMS     int64               `json:"delay_ms,omitempty"`
+}
+
 // EvRequestStarted reports an outbound provider request attempt.
 type EvRequestStarted struct {
 	Provider    string

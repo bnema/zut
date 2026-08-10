@@ -117,6 +117,10 @@ type Agent struct {
 	// current and a crash recovers the right cost figure.
 	OnUsage func(cumulative provider.Usage)
 
+	// OnRetryLifecycle receives sanitized retry audit records. It never
+	// receives provider error text or response bodies.
+	OnRetryLifecycle func(RetryLifecycleRecord)
+
 	// OnTranscriptCompacted, if set, fires after Compact replaces the
 	// in-memory transcript with the synthetic summary plus kept tail.
 	// Hosts wire this to append an explicit compaction checkpoint to
@@ -508,7 +512,32 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		for attempt := 0; ; attempt++ {
 			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, attempt, maxAttempts)
 			sink(EvTurnEnd{Stop: stop, Err: err})
-			if err == nil || !a.canRetryError(err, attempt) {
+			if err == nil {
+				break
+			}
+			retryable := a.canRetryError(err, attempt)
+			var retryCtxErr error
+			if retryable {
+				retryCtxErr = ctx.Err()
+				if retryCtxErr != nil {
+					retryable = false
+				}
+			}
+			reason := classifyRetryReason(err)
+			if !errors.Is(err, context.Canceled) {
+				a.fireRetryLifecycle(RetryLifecycleRecord{
+					Event:       RetryLifecycleRequestFailed,
+					Scope:       RetryScopeAgent,
+					Attempt:     attempt + 1,
+					MaxAttempts: maxAttempts,
+					Reason:      reason,
+					Terminal:    !retryable,
+				})
+			}
+			if retryCtxErr != nil {
+				return retryCtxErr
+			}
+			if !retryable {
 				break
 			}
 			a.dropLastAssistantMessage()
@@ -516,6 +545,14 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			if retryErr := ctx.Err(); retryErr != nil {
 				return retryErr
 			}
+			a.fireRetryLifecycle(RetryLifecycleRecord{
+				Event:       RetryLifecycleRetryScheduled,
+				Scope:       RetryScopeAgent,
+				Attempt:     attempt + 2,
+				MaxAttempts: maxAttempts,
+				Reason:      reason,
+				DelayMS:     delay.Milliseconds(),
+			})
 			sink(EvRetryScheduled{
 				Scope:       RetryScopeAgent,
 				Attempt:     attempt + 2,
@@ -643,6 +680,57 @@ func isNonRetryableProviderLimit(msg string) bool {
 	return false
 }
 
+func classifyRetryReason(err error) RetryReason {
+	if err == nil {
+		return RetryReasonUnknown
+	}
+	msg := strings.ToLower(err.Error())
+	if isNonRetryableProviderLimit(msg) {
+		return RetryReasonQuota
+	}
+	if strings.Contains(msg, "overload") || strings.Contains(msg, "servers are busy") {
+		return RetryReasonOverload
+	}
+	if strings.Contains(msg, "rate limit") || strings.Contains(msg, "ratelimit") || strings.Contains(msg, "too many requests") || strings.Contains(msg, "429") {
+		return RetryReasonRateLimit
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") {
+		return RetryReasonTimeout
+	}
+	for _, needle := range []string{"connection", "network", "unexpected eof", "broken pipe", "socket hang up", "transport failure", "upstream connect"} {
+		if strings.Contains(msg, needle) {
+			return RetryReasonNetwork
+		}
+	}
+	for _, needle := range []string{"context window", "context length", "maximum context", "too many tokens"} {
+		if strings.Contains(msg, needle) {
+			return RetryReasonContextWindow
+		}
+	}
+	for _, needle := range []string{"unauthorized", "authentication", "invalid api key", "invalid_api_key", "http 401", "http 403"} {
+		if strings.Contains(msg, needle) {
+			return RetryReasonAuth
+		}
+	}
+	for _, needle := range []string{"server error", "internal error", "service unavailable", "http 500", "http 502", "http 503", "http 504", "provider returned error"} {
+		if strings.Contains(msg, needle) {
+			return RetryReasonServer
+		}
+	}
+	for _, needle := range []string{"bad request", "unsupported", "invalid parameter", "http 400", "http 404", "http 422"} {
+		if strings.Contains(msg, needle) {
+			return RetryReasonClient
+		}
+	}
+	return RetryReasonUnknown
+}
+
+func (a *Agent) fireRetryLifecycle(record RetryLifecycleRecord) {
+	if a.OnRetryLifecycle != nil {
+		a.OnRetryLifecycle(record)
+	}
+}
+
 func (a *Agent) retryDelay(attempt int) time.Duration {
 	base := a.RetryBaseDelay
 	if base <= 0 {
@@ -677,12 +765,14 @@ func (a *Agent) dropLastAssistantMessage() {
 // requestLifecycleSink adapts provider-owned pre-stream retries into core
 // events without letting provider concerns leak into mode renderers.
 type requestLifecycleSink struct {
-	sink     func(AgentEvent)
-	provider string
-	model    string
+	sink       func(AgentEvent)
+	observe    func(RetryLifecycleRecord)
+	provider   string
+	model      string
+	lastReason RetryReason
 }
 
-func (s requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
+func (s *requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
 	s.sink(EvRequestStarted{
 		Provider:    s.provider,
 		Model:       s.model,
@@ -692,13 +782,63 @@ func (s requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
 	})
 }
 
-func (s requestLifecycleSink) RetryScheduled(attempt, maxAttempts int, delay time.Duration) {
+func (s *requestLifecycleSink) RequestFailed(attempt, maxAttempts int, reason provider.RequestFailureReason, terminal bool) {
+	s.lastReason = retryReasonFromProvider(reason)
+	if s.observe != nil {
+		s.observe(RetryLifecycleRecord{
+			Event:       RetryLifecycleRequestFailed,
+			Scope:       RetryScopeProvider,
+			Attempt:     attempt,
+			MaxAttempts: maxAttempts,
+			Reason:      s.lastReason,
+			Terminal:    terminal,
+		})
+	}
+}
+
+func (s *requestLifecycleSink) RetryScheduled(attempt, maxAttempts int, delay time.Duration) {
 	s.sink(EvRetryScheduled{
 		Scope:       RetryScopeProvider,
 		Attempt:     attempt,
 		MaxAttempts: maxAttempts,
 		Delay:       delay,
 	})
+	if s.observe != nil {
+		reason := s.lastReason
+		if reason == "" {
+			reason = RetryReasonUnknown
+		}
+		s.observe(RetryLifecycleRecord{
+			Event:       RetryLifecycleRetryScheduled,
+			Scope:       RetryScopeProvider,
+			Attempt:     attempt,
+			MaxAttempts: maxAttempts,
+			Reason:      reason,
+			DelayMS:     delay.Milliseconds(),
+		})
+	}
+	s.lastReason = ""
+}
+
+func retryReasonFromProvider(reason provider.RequestFailureReason) RetryReason {
+	switch reason {
+	case provider.RequestFailureOverload:
+		return RetryReasonOverload
+	case provider.RequestFailureRateLimit:
+		return RetryReasonRateLimit
+	case provider.RequestFailureQuota:
+		return RetryReasonQuota
+	case provider.RequestFailureServer:
+		return RetryReasonServer
+	case provider.RequestFailureNetwork:
+		return RetryReasonNetwork
+	case provider.RequestFailureTimeout:
+		return RetryReasonTimeout
+	case provider.RequestFailureClient:
+		return RetryReasonClient
+	default:
+		return RetryReasonUnknown
+	}
 }
 
 // oneTurn calls the LLM once, forwards events, returns the stop reason
@@ -720,6 +860,12 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	// repair can add stub results for aborted calls; those results must also
 	// remain in the request so every tool call still has a matching result.
 	messages := repairToolUseResultPairs(a.Messages())
+	requestLifecycle := &requestLifecycleSink{
+		sink:     sink,
+		observe:  a.fireRetryLifecycle,
+		provider: a.Client.Name(),
+		model:    a.Model,
+	}
 	req := provider.Request{
 		Model:         a.Model,
 		System:        system,
@@ -738,11 +884,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
-		Lifecycle: requestLifecycleSink{
-			sink:     sink,
-			provider: a.Client.Name(),
-			model:    a.Model,
-		},
+		Lifecycle:   requestLifecycle,
 	}
 	sink(EvRequestStarted{
 		Provider:    a.Client.Name(),

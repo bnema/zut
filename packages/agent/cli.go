@@ -988,6 +988,10 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
+	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1069,6 +1073,10 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
+	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1189,6 +1197,10 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
+	wireRetryLifecyclePersistence(ag, sess)
+	if sess != nil {
+		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1785,6 +1797,15 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		_ = sess.AppendUsage(cum, cum)
 	}
+	persistRetryLifecycle := func(record core.RetryLifecycleRecord) {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess != nil {
+			sess.RecordRetryLifecycle(record)
+		}
+	}
 	persistCompaction := func(messages []provider.Message) {
 		sessionTransitionMu.RLock()
 		var session *extproto.SessionContext
@@ -1862,6 +1883,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		a.OnMessageAppended = persistMessage
 		a.OnUsage = persistUsage
+		a.OnRetryLifecycle = persistRetryLifecycle
 		a.OnTranscriptCompacted = persistCompaction
 		bindAgentToolResultSession(a, currentSession)
 		return a
@@ -2794,6 +2816,17 @@ func pickSession(root, cwd string) (string, error) {
 func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) error {
 	_, err := writeNewTranscriptLocked(ag, sess, from)
 	return err
+}
+
+func wireRetryLifecyclePersistence(ag *core.Agent, sess *core.Session) {
+	if ag == nil {
+		return
+	}
+	if sess == nil {
+		ag.OnRetryLifecycle = nil
+		return
+	}
+	ag.OnRetryLifecycle = sess.RecordRetryLifecycle
 }
 
 // writeNewTranscriptLocked is the same as WriteNewTranscript. The

@@ -458,7 +458,7 @@ This is a guardrail against accidents, not a hard security boundary. If you need
 
 ## Sessions
 
-Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZUT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. Session metadata stores the provider and model used by that session; resume honors that pair, rebuilding the active agent when it differs and refusing the switch without discarding the current session if rebuilding fails. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
+Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZUT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. Session metadata stores the provider and model used by that session; resume honors that pair, rebuilding the active agent when it differs and refusing the switch without discarding the current session if rebuilding fails. Usage checkpoints may include sanitized `retry_lifecycle` metadata—attempts, backoff delays, terminal state, and an allowlisted failure category—but never raw provider errors or response bodies. This metadata is ignored when rebuilding provider context. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
 
 ## Providers
 

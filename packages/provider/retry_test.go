@@ -227,9 +227,17 @@ type lifecycleRetry struct {
 	delay   time.Duration
 }
 
+type lifecycleFailure struct {
+	attempt  int
+	max      int
+	reason   RequestFailureReason
+	terminal bool
+}
+
 type recordingRequestLifecycle struct {
 	attempts []lifecycleAttempt
 	retries  []lifecycleRetry
+	failures []lifecycleFailure
 }
 
 func (r *recordingRequestLifecycle) RequestAttempt(attempt, maxAttempts int) {
@@ -240,11 +248,16 @@ func (r *recordingRequestLifecycle) RetryScheduled(attempt, maxAttempts int, del
 	r.retries = append(r.retries, lifecycleRetry{attempt: attempt, max: maxAttempts, delay: delay})
 }
 
+func (r *recordingRequestLifecycle) RequestFailed(attempt, maxAttempts int, reason RequestFailureReason, terminal bool) {
+	r.failures = append(r.failures, lifecycleFailure{attempt: attempt, max: maxAttempts, reason: reason, terminal: terminal})
+}
+
 func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if attempts.Add(1) == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("servers overloaded: private provider detail"))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -265,6 +278,59 @@ func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
 	}
 	if got := lifecycle.retries; len(got) != 1 || got[0].attempt != 2 || got[0].max != 3 || got[0].delay != 250*time.Millisecond {
 		t.Fatalf("retries = %#v, want attempt 2 of 3 after 250ms", got)
+	}
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureOverload}) {
+		t.Fatalf("failures = %#v, want one non-terminal overload", got)
+	}
+}
+
+func TestDoStreamWithRetryReportsTerminalClientFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("servers overloaded: private provider detail"))
+	}))
+	defer srv.Close()
+
+	lifecycle := &recordingRequestLifecycle{}
+	resp, err := doStreamWithRetry(context.Background(), srv.Client(), func() (*http.Request, error) {
+		return http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, nil)
+	}, lifecycle)
+	if err != nil {
+		t.Fatalf("doStreamWithRetry: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureClient, terminal: true}) {
+		t.Fatalf("failures = %#v, want one terminal client failure", got)
+	}
+	if len(lifecycle.retries) != 0 {
+		t.Fatalf("retries = %#v, want none", lifecycle.retries)
+	}
+}
+
+func TestDoStreamWithRetryReportsTerminalQuota(t *testing.T) {
+	const privateBody = `{"error":{"type":"insufficient_quota","message":"private provider detail"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(privateBody))
+	}))
+	defer srv.Close()
+
+	lifecycle := &recordingRequestLifecycle{}
+	resp, err := doStreamWithRetry(context.Background(), srv.Client(), func() (*http.Request, error) {
+		return http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, nil)
+	}, lifecycle)
+	if err != nil {
+		t.Fatalf("doStreamWithRetry: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureQuota, terminal: true}) {
+		t.Fatalf("failures = %#v, want one terminal quota failure", got)
 	}
 }
 

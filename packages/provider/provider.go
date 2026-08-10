@@ -266,6 +266,28 @@ type RequestLifecycle interface {
 	RetryScheduled(attempt, maxAttempts int, delay time.Duration)
 }
 
+// RequestFailureReason is an allowlisted request-failure category. It is safe
+// to persist; raw provider errors and response bodies are not.
+type RequestFailureReason string
+
+const (
+	RequestFailureOverload  RequestFailureReason = "overload"
+	RequestFailureRateLimit RequestFailureReason = "rate_limit"
+	RequestFailureQuota     RequestFailureReason = "quota"
+	RequestFailureServer    RequestFailureReason = "server"
+	RequestFailureNetwork   RequestFailureReason = "network"
+	RequestFailureTimeout   RequestFailureReason = "timeout"
+	RequestFailureClient    RequestFailureReason = "client"
+	RequestFailureUnknown   RequestFailureReason = "unknown"
+)
+
+// RequestFailureLifecycle optionally augments RequestLifecycle with sanitized
+// failed-attempt metadata. Keeping it separate preserves existing lifecycle
+// implementations.
+type RequestFailureLifecycle interface {
+	RequestFailed(attempt, maxAttempts int, reason RequestFailureReason, terminal bool)
+}
+
 // Request is a single LLM call.
 type Request struct {
 	Model         string

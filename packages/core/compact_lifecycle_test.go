@@ -2,14 +2,17 @@ package core
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
 
 type compactLifecycleClient struct {
 	hadLifecycle bool
+	reportRetry  bool
 	req          provider.Request
 	summary      string
 	usage        []provider.Usage
@@ -21,7 +24,17 @@ func (c *compactLifecycleClient) Stream(_ context.Context, req provider.Request)
 	c.req = req
 	c.hadLifecycle = req.Lifecycle != nil
 	if req.Lifecycle != nil {
-		req.Lifecycle.RequestAttempt(1, 1)
+		maxAttempts := 1
+		if c.reportRetry {
+			maxAttempts = 2
+		}
+		req.Lifecycle.RequestAttempt(1, maxAttempts)
+		if c.reportRetry {
+			if failures, ok := req.Lifecycle.(provider.RequestFailureLifecycle); ok {
+				failures.RequestFailed(1, 2, provider.RequestFailureOverload, false)
+			}
+			req.Lifecycle.RetryScheduled(2, 2, 250*time.Millisecond)
+		}
 	}
 	summary := c.summary
 	if summary == "" {
@@ -123,6 +136,36 @@ func TestCompactWithEventsEmitsRequestLifecycle(t *testing.T) {
 	}
 	if delta, ok := events[3].(EvTextDelta); !ok || delta.Delta != "summary" {
 		t.Fatalf("fourth event = %#v, want summary text delta", events[3])
+	}
+}
+
+func TestCompactPersistsProviderRetryLifecycleWithoutEventSink(t *testing.T) {
+	client := &compactLifecycleClient{reportRetry: true}
+	agent := NewAgent(client, "compact-model", "system", Registry{})
+	agent.SetMessages([]provider.Message{textMessage(provider.RoleUser, "source")})
+
+	var records []RetryLifecycleRecord
+	agent.OnRetryLifecycle = func(record RetryLifecycleRecord) {
+		records = append(records, record)
+	}
+	if _, err := agent.Compact(context.Background(), 0, nil); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !client.hadLifecycle {
+		t.Fatal("event-less compaction request did not receive a lifecycle observer")
+	}
+	want := []RetryLifecycleRecord{
+		{
+			Event: RetryLifecycleRequestFailed, Scope: RetryScopeProvider,
+			Attempt: 1, MaxAttempts: 2, Reason: RetryReasonOverload,
+		},
+		{
+			Event: RetryLifecycleRetryScheduled, Scope: RetryScopeProvider,
+			Attempt: 2, MaxAttempts: 2, Reason: RetryReasonOverload, DelayMS: 250,
+		},
+	}
+	if !reflect.DeepEqual(records, want) {
+		t.Fatalf("retry lifecycle = %#v, want %#v", records, want)
 	}
 }
 

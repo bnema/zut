@@ -107,6 +107,7 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 		runtime.SetActiveSession(sess.ID)
 	}
 	announceSession(extMgr, sess)
+	wireRetryLifecyclePersistence(ag, sess)
 	runtime.WireRequiredWorkerGate(ag)
 
 	start := len(ag.Messages())

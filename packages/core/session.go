@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/provider"
@@ -45,6 +46,9 @@ type Session struct {
 	// freshFile it tells Close() whether the session left any content
 	// worth keeping.
 	messagesAppended int
+
+	retryMu               sync.Mutex
+	pendingRetryLifecycle []RetryLifecycleRecord
 }
 
 // GoalStatus is the persisted lifecycle state of an autonomous session goal.
@@ -106,16 +110,17 @@ type SessionMeta struct {
 // the default unmarshaler cannot reconstruct); it is written with a
 // regular provider.Message value.
 type sessionLine struct {
-	Type       string              `json:"type"`
-	Title      string              `json:"title,omitempty"`
-	Generated  bool                `json:"generated,omitempty"`
-	Meta       *SessionMeta        `json:"meta,omitempty"`
-	Message    *provider.Message   `json:"message,omitempty"`
-	Messages   *[]provider.Message `json:"messages,omitempty"`
-	Usage      *provider.Usage     `json:"usage,omitempty"`
-	Cumulative *provider.Usage     `json:"cumulative,omitempty"`
-	Extension  string              `json:"extension,omitempty"`
-	State      json.RawMessage     `json:"state,omitempty"`
+	Type           string                 `json:"type"`
+	Title          string                 `json:"title,omitempty"`
+	Generated      bool                   `json:"generated,omitempty"`
+	Meta           *SessionMeta           `json:"meta,omitempty"`
+	Message        *provider.Message      `json:"message,omitempty"`
+	Messages       *[]provider.Message    `json:"messages,omitempty"`
+	Usage          *provider.Usage        `json:"usage,omitempty"`
+	Cumulative     *provider.Usage        `json:"cumulative,omitempty"`
+	RetryLifecycle []RetryLifecycleRecord `json:"retry_lifecycle,omitempty"`
+	Extension      string                 `json:"extension,omitempty"`
+	State          json.RawMessage        `json:"state,omitempty"`
 }
 
 type sessionLineHead struct {
@@ -1263,7 +1268,7 @@ func (s *Session) AppendCompactionWithUsage(messages []provider.Message, cumulat
 		return nil
 	}
 	compactionMessages := messages
-	if err := s.writeLine(sessionLine{
+	if err := s.writeUsageCheckpoint(sessionLine{
 		Type:       "compaction",
 		Messages:   &compactionMessages,
 		Usage:      &cumulative,
@@ -1352,12 +1357,92 @@ func (s *Session) UpdateTitle(title string) error {
 	return nil
 }
 
-// AppendUsage writes a usage row to the session.
+// RecordRetryLifecycle buffers a sanitized retry record for the next usage
+// checkpoint. Invalid enum values are discarded or reduced to "unknown" so
+// callers cannot use this metadata path to persist provider text.
+func (s *Session) RecordRetryLifecycle(record RetryLifecycleRecord) {
+	if s == nil {
+		return
+	}
+	record, ok := sanitizeRetryLifecycleRecord(record)
+	if !ok {
+		return
+	}
+	s.retryMu.Lock()
+	s.pendingRetryLifecycle = append(s.pendingRetryLifecycle, record)
+	s.retryMu.Unlock()
+}
+
+// AppendUsage writes a usage row to the session and includes any retry
+// lifecycle records accumulated since the previous usage checkpoint.
 func (s *Session) AppendUsage(u, cum provider.Usage) error {
 	if s == nil {
 		return nil
 	}
-	return s.writeLine(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
+	return s.writeUsageCheckpoint(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
+}
+
+// FlushRetryLifecycle writes a usage checkpoint only when retry records are
+// pending. Long-running hosts use it during shutdown so a terminal failure
+// without a usage event is still diagnosable.
+func (s *Session) FlushRetryLifecycle(u, cum provider.Usage) error {
+	if s == nil {
+		return nil
+	}
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if len(s.pendingRetryLifecycle) == 0 {
+		return nil
+	}
+	return s.writeUsageCheckpointLocked(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
+}
+
+func (s *Session) writeUsageCheckpoint(row sessionLine) error {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	return s.writeUsageCheckpointLocked(row)
+}
+
+func (s *Session) writeUsageCheckpointLocked(row sessionLine) error {
+	if len(s.pendingRetryLifecycle) > 0 {
+		row.RetryLifecycle = append([]RetryLifecycleRecord(nil), s.pendingRetryLifecycle...)
+	}
+	if err := s.writeLine(row); err != nil {
+		return err
+	}
+	s.pendingRetryLifecycle = nil
+	return nil
+}
+
+func sanitizeRetryLifecycleRecord(record RetryLifecycleRecord) (RetryLifecycleRecord, bool) {
+	switch record.Event {
+	case RetryLifecycleRequestFailed:
+		record.DelayMS = 0
+	case RetryLifecycleRetryScheduled:
+		record.Terminal = false
+		if record.DelayMS < 0 {
+			record.DelayMS = 0
+		}
+	default:
+		return RetryLifecycleRecord{}, false
+	}
+	switch record.Scope {
+	case RetryScopeProvider, RetryScopeAgent:
+	default:
+		return RetryLifecycleRecord{}, false
+	}
+	if record.Attempt < 1 || record.MaxAttempts < record.Attempt {
+		return RetryLifecycleRecord{}, false
+	}
+	switch record.Reason {
+	case RetryReasonOverload, RetryReasonRateLimit, RetryReasonQuota,
+		RetryReasonServer, RetryReasonNetwork, RetryReasonTimeout,
+		RetryReasonAuth, RetryReasonContextWindow, RetryReasonClient,
+		RetryReasonUnknown:
+	default:
+		record.Reason = RetryReasonUnknown
+	}
+	return record, true
 }
 
 const maxExtensionStateBytes = 256 * 1024
