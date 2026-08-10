@@ -21,7 +21,7 @@ type ToolSummary struct {
 type SystemPromptOpts struct {
 	CWD        string
 	Tools      []ToolSummary
-	Custom     string   // if set, replaces the default identity entirely
+	Custom     string   // if set, replaces the built-in identity and docs guidance
 	Append     []string // extra text appended at the end
 	Now        time.Time
 	ZutDocsDir string
@@ -67,7 +67,7 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 	sb.WriteString("\n\n")
 	sb.WriteString(compactedSummaryHandoffInstruction)
 
-	if strings.TrimSpace(o.ZutDocsDir) != "" {
+	if o.Custom == "" && strings.TrimSpace(o.ZutDocsDir) != "" {
 		sb.WriteString("\n\nZut's own docs are installed under ")
 		sb.WriteString(o.ZutDocsDir)
 		sb.WriteString("; use the read tool there when you need details about zut RPC, extensions, skills, or built-in behaviour.")

@@ -145,7 +145,7 @@ $ZUT_HOME/
 └── logs/               # app log files
 ```
 
-Drop a `SYSTEM.md` in `$ZUT_HOME` to replace the built-in identity for every run. Existing append addenda, including `AGENTS.md`, skills, and enabled Ponytail coding mode, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
+Drop a `SYSTEM.md` in `$ZUT_HOME` to replace the built-in identity and docs guidance for every run. Existing append addenda, including `AGENTS.md`, skills, and enabled Ponytail coding mode, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
 
 Ponytail coding mode is enabled by default, including when an existing `config.json` does not contain a `ponytail_enabled` field. When disabled, its compact guidance is omitted from resolved system prompts; when enabled, the guidance tells the model to apply itself only to engineering work. The setting persists its explicit on/off choice in `$ZUT_HOME/config.json` and can be changed from `/settings`. It is advisory guidance only: it does not change tool permissions, confirmations, jail behavior, or sandboxing.
 
@@ -186,9 +186,9 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 |---|---|---|
 | `$ZUT_HOME/AGENTS.md` | global, every run | appended to the default prompt |
 | `./AGENTS.md` (and parent dirs) | project | appended to the default prompt |
-| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity; append addenda remain |
+| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity and docs guidance; append addenda remain |
 | `--append-system-prompt <text>` | single run | appends for one invocation (repeatable) |
-| `--system-prompt <text>` | single run | replaces the built-in identity for one invocation; append addenda remain |
+| `--system-prompt <text>` | single run | replaces the built-in identity and docs guidance for one invocation; append addenda remain |
 
 > **Note:** zut does not read a `CLAUDE.md` instruction file. The only Claude-compatible thing it picks up is skills under `.claude/skills/`. If you are migrating from Claude Code, move that content into `AGENTS.md` (global or per-project) and zut will use it.
 
