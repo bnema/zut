@@ -81,13 +81,14 @@ func TestReasoningCommandOpensDirectSelector(t *testing.T) {
 	}
 }
 
-func TestModelDialogAdvertisesReasoningSelector(t *testing.T) {
+func TestModelDialogAdvertisesReasoningNavigation(t *testing.T) {
 	d := newModelDialog()
 	d.Open("", nil, "high")
 
 	text := strings.Join(d.Render(tui.Dark, 100), "\n")
-	if !strings.Contains(text, "current reasoning: high") || !strings.Contains(text, "/reasoning") {
-		t.Fatalf("model dialog missing reasoning guidance: %q", text)
+	plain := stripANSIBytes(text)
+	if !strings.Contains(plain, "reasoning: high") || !strings.Contains(plain, "←/→ or h/l to change") {
+		t.Fatalf("model dialog missing reasoning guidance: %q", plain)
 	}
 }
 
