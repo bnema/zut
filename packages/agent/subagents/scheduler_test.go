@@ -173,7 +173,9 @@ func TestStopQueuedAgentBeforeRunnerAdmission(t *testing.T) {
 
 func TestCanceledQueuedAgentIsRemovedAndGetsResult(t *testing.T) {
 	root := t.TempDir()
-	started := make(chan struct{})
+	// The runner may start before the test reaches its receive. Buffer the
+	// one-shot readiness signal so scheduling cannot turn it into a lost wakeup.
+	started := make(chan struct{}, 1)
 	f := New(Config{
 		Root: root, RepoRoot: root,
 		Policy: SubagentPolicy{MaxConcurrent: 1, IdleTimeout: time.Hour},
