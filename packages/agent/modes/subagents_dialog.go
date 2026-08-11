@@ -58,10 +58,11 @@ type subagentsDialog struct {
 	// its transcript view is opened. Nil preserves snapshot-only behavior.
 	loadTranscript func(id string) error
 
-	rows    []subagents.AgentSnapshot
-	cursor  int
-	maxRows int  // total dialog rows, including its header and frame rule; zero is unbounded
-	viewing bool // when true, show full transcript of the selected row
+	rows             []subagents.AgentSnapshot
+	cursor           int
+	maxRows          int  // total dialog rows, including its header and frame rule; zero is unbounded
+	viewing          bool // when true, show full transcript of the selected row
+	transcriptScroll int  // display rows above the newest transcript viewport
 
 	// transcriptSpin animates the busy hint shown above the inline
 	// editor while the agent is mid-turn (status running, activity
@@ -739,6 +740,34 @@ func (d *subagentsDialog) handleViewingKey(k tui.Key) (closed bool, msg, errMsg 
 		return false, "", ""
 	}
 
+	// Transcript navigation owns the vertical navigation keys; horizontal
+	// arrows remain available to the inline editor for caret movement.
+	switch k.Kind {
+	case tui.KeyUp:
+		d.transcriptScroll++
+		return false, "", ""
+	case tui.KeyDown:
+		if d.transcriptScroll > 0 {
+			d.transcriptScroll--
+		}
+		return false, "", ""
+	case tui.KeyPageUp:
+		d.transcriptScroll += 10
+		return false, "", ""
+	case tui.KeyPageDown:
+		d.transcriptScroll -= 10
+		if d.transcriptScroll < 0 {
+			d.transcriptScroll = 0
+		}
+		return false, "", ""
+	case tui.KeyHome:
+		d.transcriptScroll = int(^uint(0) >> 1)
+		return false, "", ""
+	case tui.KeyEnd:
+		d.transcriptScroll = 0
+		return false, "", ""
+	}
+
 	// Everything else — typed runes, Enter, Backspace, arrow keys
 	// for caret movement, @-file picker — is editor input. If the
 	// agent isn't running there's no live editor; surface a hint.
@@ -1319,15 +1348,36 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 	// more above" cliff).
 	body := renderSupervisorTranscriptBlocks(raw, th, width, d.compactMode)
 
-	out := header
-	out = append(out, body...)
-
 	// /btw-style inline editor pinned to the bottom of the transcript.
 	// Rendered after the body so the editor sits flush above the
 	// frame rule. Only shown for running agents (others have no live
 	// inbox listener — we surface a hint instead).
-	out = d.appendTranscriptEditor(out, th, width, a)
+	footer := d.appendTranscriptEditor(nil, th, width, a)
+	if d.maxRows > 0 {
+		bodyRows := d.maxRows - len(header) - len(footer) - 1
+		if bodyRows < 1 {
+			bodyRows = 1
+		}
+		maxScroll := len(body) - bodyRows
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if d.transcriptScroll > maxScroll {
+			d.transcriptScroll = maxScroll
+		}
+		start := len(body) - bodyRows - d.transcriptScroll
+		if start < 0 {
+			start = 0
+		}
+		end := start + bodyRows
+		if end > len(body) {
+			end = len(body)
+		}
+		body = body[start:end]
+	}
 
+	out := append(header, body...)
+	out = append(out, footer...)
 	out = append(out, frameRule(th, width))
 	return out
 }
