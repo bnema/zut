@@ -8,20 +8,30 @@ package provider
 // with placeholder prices so they still render in the picker. Prices
 // can be populated later from a richer catalog source.
 func MergeCatalog(live []Model) []Model {
+	return MergeCatalogForProviders(live, nil)
+}
+
+// MergeCatalogForProviders merges live entries and omits baked-in models for
+// providers whose live catalog is authoritative. This is needed for
+// account-scoped catalogs, where a static fallback could otherwise expose a
+// model the signed-in account cannot use.
+func MergeCatalogForProviders(live []Model, authoritativeProviders []string) []Model {
 	byKey := func(p, id string) string { return p + "/" + id }
+	authoritative := make(map[string]bool, len(authoritativeProviders))
+	for _, provider := range authoritativeProviders {
+		authoritative[provider] = true
+	}
 
 	staticIndex := make(map[string]Model, len(Catalog))
 	staticOrder := make([]string, 0, len(Catalog))
 	for _, m := range Catalog {
+		if authoritative[m.Provider] {
+			continue
+		}
 		m.Source = "catalog"
 		k := byKey(m.Provider, m.ID)
 		staticIndex[k] = m
 		staticOrder = append(staticOrder, k)
-	}
-
-	seenLive := make(map[string]bool, len(live))
-	for _, m := range live {
-		seenLive[byKey(m.Provider, m.ID)] = true
 	}
 
 	// Promote/overwrite from live.

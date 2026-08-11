@@ -418,14 +418,21 @@ var (
 // Typically called after a successful /v1/models discovery or on load
 // from the on-disk cache.
 func SetLiveModels(live []Model) {
+	SetLiveModelsForProviders(live, nil)
+}
+
+// SetLiveModelsForProviders replaces the live overlay, treating the listed
+// providers' live catalogs as authoritative. For those providers, static
+// entries omitted by discovery are removed from the active catalog.
+func SetLiveModelsForProviders(live []Model, authoritativeProviders []string) {
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	activeSet = true
-	if len(live) == 0 {
+	if len(live) == 0 && len(authoritativeProviders) == 0 {
 		active = nil
 		return
 	}
-	active = MergeCatalog(live)
+	active = MergeCatalogForProviders(live, authoritativeProviders)
 }
 
 // Active returns the current merged catalog.

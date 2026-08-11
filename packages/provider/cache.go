@@ -10,8 +10,10 @@ import (
 
 // ModelCache is the on-disk shape for discovered models.
 type ModelCache struct {
-	FetchedAt time.Time `json:"fetched_at"`
-	Models    []Model   `json:"models"`
+	FetchedAt              time.Time         `json:"fetched_at"`
+	Models                 []Model           `json:"models"`
+	AuthoritativeProviders []string          `json:"authoritative_providers,omitempty"`
+	ProviderScopes         map[string]string `json:"provider_scopes,omitempty"`
 }
 
 // CacheTTL is how long a discovered list is considered fresh.

@@ -27,7 +27,7 @@ func TestDiscoverOpenAICodex(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"models":[
 			{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_in_api":true,"context_window":272000,"max_context_window":400000},
-			{"slug":"gpt-hidden","display_name":"Hidden","supported_in_api":false},
+			{"slug":"gpt-hidden","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},
 			{"slug":"gpt-custom","supported_in_api":true,"max_context_window":100000}
 		]}`)
 	}))

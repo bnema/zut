@@ -13,6 +13,28 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestFilterCacheByProviderScopesRemovesMismatchedProvider(t *testing.T) {
+	cache := provider.ModelCache{
+		Models: []provider.Model{
+			{Provider: "openai-codex", ID: "account-a-only"},
+			{Provider: "openai", ID: "shared"},
+		},
+		AuthoritativeProviders: []string{"openai-codex"},
+		ProviderScopes:         map[string]string{"openai-codex": "account-a"},
+	}
+
+	filtered := filterCacheByProviderScopes(cache, map[string]string{"openai-codex": "account-b"})
+	if len(filtered.Models) != 1 || filtered.Models[0].Provider != "openai" {
+		t.Fatalf("models = %+v, want only non-scoped model", filtered.Models)
+	}
+	if len(filtered.AuthoritativeProviders) != 0 {
+		t.Fatalf("authoritative providers = %v, want none", filtered.AuthoritativeProviders)
+	}
+	if len(filtered.ProviderScopes) != 0 {
+		t.Fatalf("provider scopes = %v, want none", filtered.ProviderScopes)
+	}
+}
+
 func TestRefreshLlamaCPPModelsAddsOnlyLoadedModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {

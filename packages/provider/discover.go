@@ -260,7 +260,10 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openai-codex discover read response: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("openai-codex discover http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -270,6 +273,7 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 			Slug           string `json:"slug"`
 			DisplayName    string `json:"display_name"`
 			SupportedInAPI bool   `json:"supported_in_api"`
+			Visibility     string `json:"visibility"`
 			ContextWindow  *int   `json:"context_window"`
 			MaxContext     *int   `json:"max_context_window"`
 		} `json:"models"`
@@ -279,7 +283,7 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 	}
 	out := make([]Model, 0, len(page.Models))
 	for _, m := range page.Models {
-		if m.Slug == "" || !m.SupportedInAPI {
+		if m.Slug == "" || !m.SupportedInAPI || m.Visibility == "hide" {
 			continue
 		}
 		contextWindow := 0
