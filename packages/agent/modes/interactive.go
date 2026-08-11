@@ -882,6 +882,10 @@ type Interactive struct {
 	// rendering never races with background file reads.
 	sessionLoads <-chan sessionLoadEvent
 
+	// sessionTreeLoads delivers asynchronously-read tree rows. Like the flat
+	// picker, the main loop is the sole owner of dialog mutation and rendering.
+	sessionTreeLoads <-chan sessionTreeLoadEvent
+
 	// pendingRescuePrompt / pendingRescueImages stash the prompt and
 	// images that should be re-run after the user picks a model in
 	// the rescue dialog. Cleared once applyRescueSelection consumes
@@ -1307,6 +1311,22 @@ func (i *Interactive) Run(ctx context.Context) error {
 				break
 			}
 			i.sessionDialog.ApplyLoad(event)
+			i.mu.Unlock()
+			i.invalidate()
+		case event, ok := <-i.sessionTreeLoads:
+			i.mu.Lock()
+			if !ok {
+				i.sessionTreeLoads = nil
+				i.sessionTreeDialog.ApplyLoadClosed()
+				i.mu.Unlock()
+				i.invalidate()
+				break
+			}
+			if err := i.sessionTreeDialog.ApplyLoad(event); err != nil {
+				i.sessionTreeLoads = nil
+				i.statusErr = "tree: no readable session family"
+				i.statusOK = ""
+			}
 			i.mu.Unlock()
 			i.invalidate()
 		case <-i.dirty:
