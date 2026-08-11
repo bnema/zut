@@ -2,12 +2,14 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/subagents"
 	agenttools "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -44,6 +46,178 @@ func (c *goalContinuationClient) Stream(_ context.Context, req provider.Request)
 	}
 	close(out)
 	return out, nil
+}
+
+type goalWorkerClient struct {
+	mu       sync.Mutex
+	requests []provider.Request
+	calls    chan int
+	onCall   func(call int)
+}
+
+func (c *goalWorkerClient) Name() string { return "goal-worker" }
+
+func (c *goalWorkerClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req)
+	call := len(c.requests)
+	onCall := c.onCall
+	c.mu.Unlock()
+	if onCall != nil {
+		onCall(call)
+	}
+	c.calls <- call
+
+	out := make(chan provider.Event, 1)
+	switch call {
+	case 1:
+		out <- provider.EventDone{
+			Stop: provider.StopToolUse,
+			Message: provider.Message{
+				Role: provider.RoleAssistant,
+				Content: []provider.Content{provider.ToolCallBlock{
+					ID:        "worker",
+					Name:      "start_worker",
+					Arguments: json.RawMessage(`{}`),
+				}},
+			},
+		}
+	default:
+		out <- provider.EventDone{
+			Stop: provider.StopEnd,
+			Message: provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "done"}},
+			},
+		}
+	}
+	close(out)
+	return out, nil
+}
+
+func (c *goalWorkerClient) request(call int) provider.Request {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requests[call-1]
+}
+
+type trackWorkerTool struct {
+	interactive *Interactive
+	worker      *subagents.Agent
+}
+
+func (t *trackWorkerTool) Name() string        { return "start_worker" }
+func (t *trackWorkerTool) Description() string { return "starts a worker" }
+func (t *trackWorkerTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t *trackWorkerTool) Execute(_ context.Context, _ json.RawMessage, _ func(string)) (core.ToolResult, error) {
+	t.interactive.TrackSubagentWorker(t.worker, t.worker.Task, false)
+	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "worker started"}}}, nil
+}
+
+func TestActiveGoalWaitsForWorkerAndDeliversCompletion(t *testing.T) {
+	workerRelease := make(chan struct{})
+	var releaseWorkerOnce sync.Once
+	releaseWorker := func() {
+		releaseWorkerOnce.Do(func() { close(workerRelease) })
+	}
+	workerStarted := make(chan struct{})
+	supervisor := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error {
+				close(workerStarted)
+				<-workerRelease
+				return nil
+			})
+		},
+	})
+	worker, err := supervisor.Spawn(context.Background(), "inspect the upstream worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-workerStarted
+	t.Cleanup(func() {
+		releaseWorker()
+		worker.Wait()
+	})
+
+	var goalMu sync.Mutex
+	goal := &core.SessionGoal{Objective: "finish the upstream work", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		goalMu.Lock()
+		defer goalMu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		goalMu.Lock()
+		goal = cloneSessionGoal(next)
+		goalMu.Unlock()
+		return nil
+	}
+	client := &goalWorkerClient{calls: make(chan int, 3), onCall: func(call int) {
+		if call == 3 {
+			_ = persistGoal(&core.SessionGoal{Objective: "finish the upstream work", Status: core.GoalPaused})
+		}
+	}}
+	workerTool := &trackWorkerTool{worker: worker}
+	interactive := NewInteractive(InteractiveConfig{
+		Agent: core.NewAgent(client, "model", "system", core.Registry{
+			"start_worker":                workerTool,
+			agenttools.UpdateGoalToolName: &agenttools.UpdateGoalTool{},
+		}),
+		CurrentGoal: currentGoal,
+		PersistGoal: persistGoal,
+	})
+	workerTool.interactive = interactive
+	interactive.runCtx = context.Background()
+
+	interactive.runSlash(context.Background(), "/goal finish the upstream work")
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-client.calls:
+			if got != want {
+				t.Fatalf("provider call = %d, want %d", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("provider call %d did not start", want)
+		}
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for !interactive.coordinatorAcceptsUserInput() {
+		select {
+		case <-deadline.C:
+			t.Fatal("active goal started another manager turn while its worker was pending")
+		case <-poll.C:
+		}
+	}
+	select {
+	case got := <-client.calls:
+		t.Fatalf("provider call %d started before the worker completed", got)
+	default:
+	}
+
+	releaseWorker()
+	select {
+	case got := <-client.calls:
+		if got != 3 {
+			t.Fatalf("provider call = %d, want completion delivery call 3", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker completion did not wake the manager")
+	}
+	request := client.request(3)
+	if len(request.Messages) == 0 {
+		t.Fatal("completion delivery request has no messages")
+	}
+	if got := userMessageText(request.Messages[len(request.Messages)-1]); !strings.Contains(got, "inspect the upstream worktree") {
+		t.Fatalf("completion delivery = %q", got)
+	}
 }
 
 func TestActiveGoalStartsAnotherTurnWhenThreadBecomesIdle(t *testing.T) {

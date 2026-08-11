@@ -7482,7 +7482,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 					handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				}
 				continueAutomatically = true
-			case auto && goalActive:
+			case auto && goalActive && !i.coordinatorHasPendingWorkers():
 				continueGoal = true
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			default:
@@ -7855,7 +7855,6 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if terminalGoalError {
 			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
 		}
-		goalMessage, goalActive := i.goalContinuationMessage()
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
@@ -7906,7 +7905,6 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if !continueStatusRescue && (i.agent == nil || ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
-		continueGoal := goalActive && !awaitingPre && !hasNext && !continueQueued && !continueStatusRescue && !offer && !recoverContextOverflow && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil
 		// The agent run can finish before the paced final text reaches the
 		// transcript. A compaction replaces that transcript, so it must never
 		// race the still-live stream frame; otherwise stale deltas can repaint
@@ -7914,8 +7912,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if recoverContextOverflow || shouldAutoCompact {
 			i.resetStreamingStateLocked()
 		}
-		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
-		i.busy = hasNext || continueQueued || continueStatusRescue || continueGoal || recoverContextOverflow || shouldAutoCompact
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
+		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
@@ -7939,8 +7937,6 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.startTurnRequest(parent, "", nil, true, false)
 		case continueStatusRescue:
 			i.startAutoCompactContinuation(parent)
-		case continueGoal:
-			i.startGoalContinuation(parent, goalMessage)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
@@ -8900,6 +8896,16 @@ func (i *Interactive) coordinatorAcceptsUserInput() bool {
 	return accepts
 }
 
+func (i *Interactive) coordinatorHasPendingWorkers() bool {
+	if i == nil {
+		return false
+	}
+	i.completionDeliveryMu.Lock()
+	pending := i.ensureCoordinatorLocked().HasPendingWorkers()
+	i.completionDeliveryMu.Unlock()
+	return pending
+}
+
 func (i *Interactive) applyCoordinator(event orchestration.Event) []orchestration.Action {
 	if i == nil {
 		return nil
@@ -9050,7 +9056,12 @@ func (i *Interactive) releaseCompletionDeliveryHold() {
 		i.completionDeliveryHolds--
 	}
 	if i.completionDeliveryHolds == 0 {
-		actions = i.ensureCoordinatorLocked().Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
+		// The coordinator must observe the goal before sealing the wave, so a
+		// pending worker wins the wake decision instead of a direct continuation.
+		_, goalActive := i.goalContinuationMessage()
+		coordinator := i.ensureCoordinatorLocked()
+		coordinator.Apply(orchestration.Event{Kind: orchestration.EventGoalChanged, GoalActive: goalActive})
+		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
 	}
 	if i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning {
 		i.completionDeliveryRunning = true
