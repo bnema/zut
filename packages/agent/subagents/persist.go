@@ -790,9 +790,7 @@ func replayEventTranscript(a *Agent, ev Event) {
 			a.appendTranscript("tool: " + name)
 		}
 	case "tool_result", EventToolFinished:
-		if text := eventContentText(ev.Data); text != "" {
-			a.appendTranscript("tool result: " + truncate(strings.ReplaceAll(text, "\n", " "), 240))
-		}
+		a.appendTranscript("tool result: completed")
 	case "stdout":
 		if txt, _ := ev.Data["text"].(string); txt != "" {
 			a.appendTranscript(txt)

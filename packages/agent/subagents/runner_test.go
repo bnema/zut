@@ -808,7 +808,7 @@ func TestApplyEventToSinkProjectsToolActivityIntoTranscript(t *testing.T) {
 			"content": []any{map[string]any{"text": "command output"}},
 		}},
 	}
-	want := []string{"tool: bash", "tool result: command output"}
+	want := []string{"tool: bash", "tool result: completed"}
 
 	live := &Agent{}
 	for _, event := range events {
