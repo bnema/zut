@@ -60,7 +60,7 @@ func (i *Interactive) goalContinuationIfIdle() (provider.Message, bool) {
 
 func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool {
 	message, ok := i.goalContinuationMessage()
-	if !ok {
+	if !ok || i.coordinatorHasPendingWorkers() {
 		return false
 	}
 	i.mu.Lock()

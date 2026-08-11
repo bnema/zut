@@ -82,6 +82,12 @@ func (c *Coordinator) AcceptsUserInput() bool {
 	return c != nil && !c.stopped && !c.managerActive && c.waveSealed && len(c.workerOrder) != 0
 }
 
+// HasPendingWorkers reports whether the current manager wave still owns work.
+// Callers use it to avoid starting a goal continuation outside the coordinator.
+func (c *Coordinator) HasPendingWorkers() bool {
+	return c != nil && !c.stopped && c.hasPendingWorkers()
+}
+
 func (c *Coordinator) Apply(event Event) Result {
 	if c == nil || c.stopped {
 		return Result{}
