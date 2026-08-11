@@ -18,34 +18,40 @@ func MergeCatalog(live []Model) []Model {
 func MergeCatalogForProviders(live []Model, authoritativeProviders []string) []Model {
 	byKey := func(p, id string) string { return p + "/" + id }
 	authoritative := make(map[string]bool, len(authoritativeProviders))
-	for _, provider := range authoritativeProviders {
-		authoritative[provider] = true
+	for _, name := range authoritativeProviders {
+		authoritative[name] = true
 	}
 
 	staticIndex := make(map[string]Model, len(Catalog))
 	staticOrder := make([]string, 0, len(Catalog))
 	for _, m := range Catalog {
-		if authoritative[m.Provider] {
-			continue
-		}
 		m.Source = "catalog"
 		k := byKey(m.Provider, m.ID)
 		staticIndex[k] = m
-		staticOrder = append(staticOrder, k)
+		if !authoritative[m.Provider] {
+			staticOrder = append(staticOrder, k)
+		}
 	}
 
 	// Promote/overwrite from live.
 	for _, l := range live {
 		k := byKey(l.Provider, l.ID)
 		if s, ok := staticIndex[k]; ok {
-			// Keep static prices & context window (live endpoint rarely
-			// exposes these), but mark as live and non-speculative.
+			// Preserve static pricing and output limits while allowing live
+			// discovery to supply the account's current display and context
+			// metadata.
 			s.Source = "live"
 			s.Speculative = false
 			if l.DisplayName != "" {
 				s.DisplayName = l.DisplayName
 			}
+			if l.ContextWindow > 0 {
+				s.ContextWindow = l.ContextWindow
+			}
 			staticIndex[k] = s
+			if authoritative[l.Provider] {
+				staticOrder = append(staticOrder, k)
+			}
 		} else {
 			// New live id we'd never heard of. Best-effort defaults.
 			if l.DisplayName == "" {

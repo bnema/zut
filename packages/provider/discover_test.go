@@ -26,8 +26,9 @@ func TestDiscoverOpenAICodex(t *testing.T) {
 			t.Errorf("originator = %q", got)
 		}
 		_, _ = io.WriteString(w, `{"models":[
-			{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_in_api":true,"context_window":272000,"max_context_window":400000},
+			{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_in_api":true,"context_window":272000,"max_context_window":400000,"supported_reasoning_levels":["low","medium","high"]},
 			{"slug":"gpt-hidden","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},
+			{"slug":"gpt-unsupported","display_name":"Unsupported","supported_in_api":false},
 			{"slug":"gpt-custom","supported_in_api":true,"max_context_window":100000}
 		]}`)
 	}))

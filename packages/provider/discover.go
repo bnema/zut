@@ -228,9 +228,10 @@ func looksLikeChatModel(id string) bool {
 }
 
 const (
-	openaiCodexModelsBaseURL = "https://chatgpt.com/backend-api/codex"
-	openaiCodexClientVersion = "0.144.0"
-	openrouterDefaultBaseURL = "https://openrouter.ai/api/v1"
+	openaiCodexModelsBaseURL  = "https://chatgpt.com/backend-api/codex"
+	openaiCodexClientVersion  = "0.144.0"
+	openrouterDefaultBaseURL  = "https://openrouter.ai/api/v1"
+	maxDiscoveryResponseBytes = 10 << 20
 )
 
 // DiscoverOpenAICodex lists the models available to a ChatGPT/Codex OAuth
@@ -260,9 +261,12 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("openai-codex discover read response: %w", err)
+	}
+	if len(body) > maxDiscoveryResponseBytes {
+		return nil, fmt.Errorf("openai-codex discover response exceeds %d bytes", maxDiscoveryResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("openai-codex discover http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -270,12 +274,13 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 
 	var page struct {
 		Models []struct {
-			Slug           string `json:"slug"`
-			DisplayName    string `json:"display_name"`
-			SupportedInAPI bool   `json:"supported_in_api"`
-			Visibility     string `json:"visibility"`
-			ContextWindow  *int   `json:"context_window"`
-			MaxContext     *int   `json:"max_context_window"`
+			Slug                     string   `json:"slug"`
+			DisplayName              string   `json:"display_name"`
+			SupportedInAPI           bool     `json:"supported_in_api"`
+			Visibility               string   `json:"visibility"`
+			SupportedReasoningLevels []string `json:"supported_reasoning_levels"`
+			ContextWindow            *int     `json:"context_window"`
+			MaxContext               *int     `json:"max_context_window"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &page); err != nil {
@@ -302,7 +307,7 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 			ID:            m.Slug,
 			DisplayName:   displayName,
 			ContextWindow: contextWindow,
-			Reasoning:     true,
+			Reasoning:     len(m.SupportedReasoningLevels) > 0,
 			Source:        "live",
 		})
 	}

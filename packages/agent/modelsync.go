@@ -51,19 +51,36 @@ func currentModelProviderScopes() map[string]string {
 // marker so that a failed refresh falls back to the baked-in catalog instead
 // of treating another account's empty catalog as authoritative.
 func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string) provider.ModelCache {
-	for name, cachedScope := range c.ProviderScopes {
-		if cachedScope == scopes[name] && cachedScope != "" {
+	out := provider.ModelCache{
+		FetchedAt:              c.FetchedAt,
+		Models:                 append([]provider.Model(nil), c.Models...),
+		AuthoritativeProviders: append([]string(nil), c.AuthoritativeProviders...),
+		ProviderScopes:         make(map[string]string, len(c.ProviderScopes)),
+	}
+	for name, scope := range c.ProviderScopes {
+		out.ProviderScopes[name] = scope
+	}
+
+	scopedProviders := map[string]struct{}{"openai-codex": {}}
+	for name := range c.ProviderScopes {
+		scopedProviders[name] = struct{}{}
+	}
+	for name := range scopes {
+		scopedProviders[name] = struct{}{}
+	}
+	for name := range scopedProviders {
+		if cachedScope := c.ProviderScopes[name]; cachedScope != "" && cachedScope == scopes[name] {
 			continue
 		}
-		c.Models = filterModelsByProvider(c.Models, name)
-		c.AuthoritativeProviders = filterProviderNames(c.AuthoritativeProviders, name)
-		delete(c.ProviderScopes, name)
+		out.Models = filterModelsByProvider(out.Models, name)
+		out.AuthoritativeProviders = filterProviderNames(out.AuthoritativeProviders, name)
+		delete(out.ProviderScopes, name)
 	}
-	return c
+	return out
 }
 
 func filterModelsByProvider(models []provider.Model, name string) []provider.Model {
-	out := models[:0]
+	out := make([]provider.Model, 0, len(models))
 	for _, model := range models {
 		if model.Provider != name {
 			out = append(out, model)
@@ -73,7 +90,7 @@ func filterModelsByProvider(models []provider.Model, name string) []provider.Mod
 }
 
 func filterProviderNames(names []string, target string) []string {
-	out := names[:0]
+	out := make([]string, 0, len(names))
 	for _, name := range names {
 		if name != target {
 			out = append(out, name)
@@ -244,12 +261,15 @@ func refreshModels() {
 
 	var all []provider.Model
 	var authoritativeProviders []string
+	providerScopes := make(map[string]string)
 	if cached.IsFresh() {
 		cached = filterCacheByProviderScopes(cached, currentScopes)
 		all = append(all, cached.Models...)
 		authoritativeProviders = append(authoritativeProviders, cached.AuthoritativeProviders...)
+		for name, scope := range cached.ProviderScopes {
+			providerScopes[name] = scope
+		}
 	}
-	providerScopes := make(map[string]string)
 
 	if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
 		// /v1/models on Anthropic is API-key only; OAuth tokens can
@@ -266,9 +286,12 @@ func refreshModels() {
 	}
 	if cred, method, accountID, err := resolveCredentialFull(ctx, "openai-codex", "", apiKeyCommandSkip); err == nil && method == "oauth" {
 		if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
+			all = filterModelsByProvider(all, "openai-codex")
+			authoritativeProviders = filterProviderNames(authoritativeProviders, "openai-codex")
+			delete(providerScopes, "openai-codex")
 			all = append(all, live...)
-			authoritativeProviders = append(authoritativeProviders, "openai-codex")
 			if accountID != "" {
+				authoritativeProviders = append(authoritativeProviders, "openai-codex")
 				providerScopes["openai-codex"] = accountID
 			}
 		}
