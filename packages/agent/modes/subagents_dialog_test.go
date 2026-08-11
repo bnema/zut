@@ -978,6 +978,12 @@ func TestSubagentsDialogSpawnEditor_SlashModelOpensPicker(t *testing.T) {
 	if d.spawnDraft != "refactor X" {
 		t.Fatalf("spawnDraft = %q; want %q (the /model line should be stripped, the task kept)", d.spawnDraft, "refactor X")
 	}
+	// The embedded picker has no reasoning control, so H must remain a filter
+	// character rather than being consumed as a reasoning shortcut.
+	d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
+	if d.modelPicker.query != "H" {
+		t.Fatalf("embedded picker query = %q, want H", d.modelPicker.query)
+	}
 
 	// Picker render must take over the dialog frame.
 	out := strings.Join(d.Render(tui.Theme{}, 80), "\n")

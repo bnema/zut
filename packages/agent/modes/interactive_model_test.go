@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -84,10 +85,11 @@ func TestReasoningCommandOpensDirectSelector(t *testing.T) {
 func TestModelDialogAdvertisesReasoningNavigation(t *testing.T) {
 	d := newModelDialog()
 	d.Open("", nil, "high")
+	d.view = []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}}
 
 	text := strings.Join(d.Render(tui.Dark, 100), "\n")
 	plain := stripANSIBytes(text)
-	if !strings.Contains(plain, "reasoning: high") || !strings.Contains(plain, "←/→ or h/l to change") {
+	if !strings.Contains(plain, "reasoning: high") || !strings.Contains(plain, "←/→ or H/L to change") {
 		t.Fatalf("model dialog missing reasoning guidance: %q", plain)
 	}
 }

@@ -29,9 +29,25 @@ func TestModelDialogReasoningNavigation(t *testing.T) {
 	if !act.ReasoningChanged || act.Reasoning != "xhigh" {
 		t.Fatalf("left action = %+v; want xhigh", act)
 	}
-	act = d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'h'})
+	act = d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
 	if !act.ReasoningChanged || act.Reasoning != "high" {
-		t.Fatalf("h action = %+v; want high", act)
+		t.Fatalf("H action = %+v; want high", act)
+	}
+}
+
+func TestModelDialogReasoningAliasesPreserveFiltering(t *testing.T) {
+	d := &modelDialog{active: true, showReasoning: true}
+	for _, r := range "claude" {
+		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
+	}
+	if d.query != "claude" {
+		t.Fatalf("query = %q, want claude", d.query)
+	}
+
+	d = &modelDialog{active: true}
+	d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
+	if d.query != "H" {
+		t.Fatalf("embedded picker query = %q, want H", d.query)
 	}
 }
 
@@ -72,6 +88,25 @@ func TestModelDialogReasoningNavigationAppliesToInteractive(t *testing.T) {
 	}
 }
 
+func TestModelDialogReasoningReflectsHighlightedModel(t *testing.T) {
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		reasoning:     "high",
+		view:          []provider.Model{{Provider: "google", ID: "gemini-2.0-flash"}},
+	}
+	text := stripANSIBytes(strings.Join(d.Render(tui.Dark, 100), "\n"))
+	if !strings.Contains(text, "reasoning: off") {
+		t.Fatalf("effective reasoning level missing from %q", text)
+	}
+	if !strings.Contains(text, "unavailable for highlighted model") {
+		t.Fatalf("unsupported-model hint missing from %q", text)
+	}
+	if strings.Contains(text, "H/L to change") {
+		t.Fatalf("unsupported model advertises reasoning controls: %q", text)
+	}
+}
+
 func TestModelDialogReasoningUsesLevelColor(t *testing.T) {
 	tests := []struct {
 		level string
@@ -88,12 +123,17 @@ func TestModelDialogReasoningUsesLevelColor(t *testing.T) {
 		}
 	}
 
-	d := &modelDialog{active: true, showReasoning: true, reasoning: "max"}
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		reasoning:     "max",
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+	}
 	text := strings.Join(d.Render(tui.Dark, 100), "\n")
 	if !strings.Contains(text, tui.Dark.FGColor(tui.Dark.ThinkingMax, "max")) {
 		t.Fatalf("max reasoning color missing from %q", text)
 	}
-	if !strings.Contains(text, "←/→ or h/l to change") {
+	if !strings.Contains(text, "←/→ or H/L to change") {
 		t.Fatalf("reasoning navigation hint missing from %q", text)
 	}
 }

@@ -157,12 +157,16 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 	}
 	lines = append(lines, th.FGColor(th.Muted, hint))
 	if d.showReasoning {
-		reasoning := d.reasoning
+		reasoning, adjustable := d.cursorReasoning()
 		if reasoning == "" {
 			reasoning = "off"
 		}
+		help := "  unavailable for highlighted model"
+		if adjustable {
+			help = "  ←/→ or H/L to change"
+		}
 		lines = append(lines,
-			th.FGColor(th.Muted, "✦ reasoning: ")+th.FGColor(reasoningLevelColor(th, reasoning), reasoning)+th.FGColor(th.Muted, "  ←/→ or h/l to change"),
+			th.FGColor(th.Muted, "✦ reasoning: ")+th.FGColor(reasoningLevelColor(th, reasoning), reasoning)+th.FGColor(th.Muted, help),
 		)
 	}
 
@@ -286,6 +290,17 @@ func reasoningLevelColor(th tui.Theme, level string) tui.TerminalColor {
 	}
 }
 
+// cursorReasoning returns the effective level for the model under the cursor
+// and whether that model allows it to be adjusted.
+func (d *modelDialog) cursorReasoning() (string, bool) {
+	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
+		return d.reasoning, false
+	}
+	model := d.view[d.cursor]
+	levels := provider.AvailableReasoningLevels(model)
+	return provider.ClampReasoningForModel(model, d.reasoning), len(levels) > 1
+}
+
 // stepReasoning moves through the levels supported by the model under the
 // cursor. It stops at each end rather than wrapping, matching arrow-key
 // expectations and preventing an accidental jump from max to off.
@@ -293,8 +308,9 @@ func (d *modelDialog) stepReasoning(direction int) modelDialogAction {
 	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
 		return modelDialogAction{}
 	}
-	levels := provider.AvailableReasoningLevels(d.view[d.cursor])
-	current := provider.ClampReasoningForModel(d.view[d.cursor], d.reasoning)
+	model := d.view[d.cursor]
+	levels := provider.AvailableReasoningLevels(model)
+	current := provider.ClampReasoningForModel(model, d.reasoning)
 	idx := 0
 	for i, level := range levels {
 		if level == current {
@@ -353,11 +369,13 @@ func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 		if k.Alt || k.Ctrl {
 			break
 		}
-		switch k.Rune {
-		case 'h', 'H':
-			return d.stepReasoning(-1)
-		case 'l', 'L':
-			return d.stepReasoning(1)
+		if d.showReasoning {
+			switch k.Rune {
+			case 'H':
+				return d.stepReasoning(-1)
+			case 'L':
+				return d.stepReasoning(1)
+			}
 		}
 		// Only printable ASCII is useful for narrowing.
 		if k.Rune >= 0x20 && k.Rune < 0x7f {
