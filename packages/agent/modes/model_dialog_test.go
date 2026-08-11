@@ -1,0 +1,154 @@
+package modes
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
+)
+
+func TestModelDialogReasoningNavigation(t *testing.T) {
+	d := &modelDialog{
+		active:        true,
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning:     "high",
+		showReasoning: true,
+	}
+
+	act := d.HandleKey(tui.Key{Kind: tui.KeyRight})
+	if !act.ReasoningChanged || act.Reasoning != "xhigh" || d.reasoning != "xhigh" {
+		t.Fatalf("right action = %+v, dialog reasoning = %q; want xhigh", act, d.reasoning)
+	}
+	act = d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'L'})
+	if !act.ReasoningChanged || act.Reasoning != "max" || d.reasoning != "max" {
+		t.Fatalf("L action = %+v, dialog reasoning = %q; want max", act, d.reasoning)
+	}
+	act = d.HandleKey(tui.Key{Kind: tui.KeyLeft})
+	if !act.ReasoningChanged || act.Reasoning != "xhigh" {
+		t.Fatalf("left action = %+v; want xhigh", act)
+	}
+	act = d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
+	if !act.ReasoningChanged || act.Reasoning != "high" {
+		t.Fatalf("H action = %+v; want high", act)
+	}
+}
+
+func TestModelDialogReasoningAllowsLowercaseFilter(t *testing.T) {
+	d := &modelDialog{active: true, showReasoning: true}
+	for _, r := range "claude" {
+		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
+	}
+	if d.query != "claude" {
+		t.Fatalf("query = %q, want claude", d.query)
+	}
+}
+
+func TestModelDialogWithoutReasoningTreatsHAsFilter(t *testing.T) {
+	d := &modelDialog{active: true}
+	d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
+	if d.query != "H" {
+		t.Fatalf("embedded picker query = %q, want H", d.query)
+	}
+}
+
+func TestModelDialogReasoningNavigationStopsAtBounds(t *testing.T) {
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning:     "",
+	}
+
+	if act := d.HandleKey(tui.Key{Kind: tui.KeyLeft}); act.ReasoningChanged {
+		t.Fatalf("left at off changed reasoning: %+v", act)
+	}
+	d.reasoning = "max"
+	if act := d.HandleKey(tui.Key{Kind: tui.KeyRight}); act.ReasoningChanged {
+		t.Fatalf("right at max changed reasoning: %+v", act)
+	}
+}
+
+func TestModelDialogReasoningNavigationAppliesToInteractive(t *testing.T) {
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning:     "high",
+	}
+	var changed string
+	i := &Interactive{
+		cfg: InteractiveConfig{
+			Reasoning:          "high",
+			OnReasoningChanged: func(level string) { changed = level },
+		},
+		modelDialog: d,
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRight})
+	if i.cfg.Reasoning != "xhigh" || changed != "xhigh" {
+		t.Fatalf("reasoning = %q, callback = %q; want xhigh", i.cfg.Reasoning, changed)
+	}
+}
+
+func TestModelDialogWithoutReasoningIgnoresArrows(t *testing.T) {
+	d := &modelDialog{
+		active:    true,
+		view:      []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning: "high",
+	}
+	if act := d.HandleKey(tui.Key{Kind: tui.KeyRight}); act.ReasoningChanged || d.reasoning != "high" {
+		t.Fatalf("hidden reasoning changed: action=%+v reasoning=%q", act, d.reasoning)
+	}
+}
+
+func TestModelDialogReasoningReflectsHighlightedModel(t *testing.T) {
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		reasoning:     "high",
+		view:          []provider.Model{{Provider: "google", ID: "gemini-2.0-flash"}},
+	}
+	text := stripANSIBytes(strings.Join(d.Render(tui.Dark, 100), "\n"))
+	if !strings.Contains(text, "reasoning: off") {
+		t.Fatalf("effective reasoning level missing from %q", text)
+	}
+	if !strings.Contains(text, "unavailable for highlighted model") {
+		t.Fatalf("unsupported-model hint missing from %q", text)
+	}
+	if strings.Contains(text, "H/L to change") {
+		t.Fatalf("unsupported model advertises reasoning controls: %q", text)
+	}
+}
+
+func TestModelDialogReasoningUsesLevelColor(t *testing.T) {
+	tests := []struct {
+		level string
+		color tui.TerminalColor
+	}{
+		{"off", tui.Dark.Muted},
+		{"low", tui.Dark.Accent},
+		{"high", tui.Dark.Warning},
+		{"max", tui.Dark.ThinkingMax},
+	}
+	for _, tt := range tests {
+		if got := reasoningLevelColor(tui.Dark, tt.level); got != tt.color {
+			t.Errorf("reasoningLevelColor(%q) = %#v, want %#v", tt.level, got, tt.color)
+		}
+	}
+
+	d := &modelDialog{
+		active:        true,
+		showReasoning: true,
+		reasoning:     "max",
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+	}
+	text := strings.Join(d.Render(tui.Dark, 100), "\n")
+	if !strings.Contains(text, tui.Dark.FGColor(tui.Dark.ThinkingMax, "max")) {
+		t.Fatalf("max reasoning color missing from %q", text)
+	}
+	if !strings.Contains(text, "←/→ or H/L to change") {
+		t.Fatalf("reasoning navigation hint missing from %q", text)
+	}
+}

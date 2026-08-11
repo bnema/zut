@@ -36,10 +36,12 @@ type modelDialog struct {
 
 // modelDialogAction is returned by HandleKey.
 type modelDialogAction struct {
-	Select   bool
-	Provider string
-	Model    string
-	Close    bool
+	Select           bool
+	Provider         string
+	Model            string
+	ReasoningChanged bool
+	Reasoning        string
+	Close            bool
 }
 
 func newModelDialog() *modelDialog {
@@ -155,11 +157,17 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 	}
 	lines = append(lines, th.FGColor(th.Muted, hint))
 	if d.showReasoning {
-		reasoning := d.reasoning
+		reasoning, adjustable := d.cursorReasoning()
 		if reasoning == "" {
 			reasoning = "off"
 		}
-		lines = append(lines, th.FGColor(th.Muted, "✦ supports reasoning; current reasoning: "+reasoning+"; change with /reasoning"))
+		help := "  unavailable for highlighted model"
+		if adjustable {
+			help = "  ←/→ or H/L to change"
+		}
+		lines = append(lines,
+			th.FGColor(th.Muted, "✦ reasoning: ")+th.FGColor(reasoningLevelColor(th, reasoning), reasoning)+th.FGColor(th.Muted, help),
+		)
 	}
 
 	if len(d.view) == 0 {
@@ -266,9 +274,69 @@ func padRight(s string, w int) string {
 	return runewidth.Truncate(s, w, "…")
 }
 
+// reasoningLevelColor makes the active reasoning depth legible at a glance:
+// low levels use the theme accent, medium/high use the warning color, and the
+// most expensive levels use the explicit thinking-max color.
+func reasoningLevelColor(th tui.Theme, level string) tui.TerminalColor {
+	switch provider.NormalizeReasoning(level) {
+	case "minimum", "low":
+		return th.Accent
+	case "medium", "high":
+		return th.Warning
+	case "xhigh", "max":
+		return th.ThinkingMax
+	default:
+		return th.Muted
+	}
+}
+
+// cursorReasoning returns the effective level for the model under the cursor
+// and whether that model allows it to be adjusted.
+func (d *modelDialog) cursorReasoning() (string, bool) {
+	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
+		return d.reasoning, false
+	}
+	model := d.view[d.cursor]
+	levels := provider.AvailableReasoningLevels(model)
+	return provider.ClampReasoningForModel(model, d.reasoning), len(levels) > 1
+}
+
+// stepReasoning moves through the levels supported by the model under the
+// cursor. It stops at each end rather than wrapping, matching arrow-key
+// expectations and preventing an accidental jump from max to off.
+func (d *modelDialog) stepReasoning(direction int) modelDialogAction {
+	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
+		return modelDialogAction{}
+	}
+	model := d.view[d.cursor]
+	levels := provider.AvailableReasoningLevels(model)
+	current := provider.ClampReasoningForModel(model, d.reasoning)
+	idx := 0
+	for i, level := range levels {
+		if level == current {
+			idx = i
+			break
+		}
+	}
+	next := idx + direction
+	if next < 0 || next >= len(levels) {
+		return modelDialogAction{}
+	}
+	d.reasoning = levels[next]
+	return modelDialogAction{ReasoningChanged: true, Reasoning: d.reasoning}
+}
+
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 	switch k.Kind {
+	case tui.KeyLeft:
+		if d.showReasoning {
+			return d.stepReasoning(-1)
+		}
+	case tui.KeyRight:
+		if d.showReasoning {
+			return d.stepReasoning(1)
+		}
 	case tui.KeyUp:
 		if d.cursor > 0 {
 			d.cursor--
@@ -304,6 +372,14 @@ func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 	case tui.KeyRune:
 		if k.Alt || k.Ctrl {
 			break
+		}
+		if d.showReasoning {
+			switch k.Rune {
+			case 'H':
+				return d.stepReasoning(-1)
+			case 'L':
+				return d.stepReasoning(1)
+			}
 		}
 		// Only printable ASCII is useful for narrowing.
 		if k.Rune >= 0x20 && k.Rune < 0x7f {
