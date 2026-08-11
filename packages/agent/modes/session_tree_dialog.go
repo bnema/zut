@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -73,6 +74,13 @@ type sessionTreeDialog struct {
 	items  []sessionTreeItem
 	cursor int
 
+	loading        bool
+	loadingDone    int
+	loadGeneration uint64
+	loadCancel     context.CancelFunc
+	loadDone       chan struct{}
+	loadFamily     func(context.Context, string, string, string) ([]sessionTreeItem, error)
+
 	// MaxRows is the maximum number of transcript/boundary rows rendered in
 	// one viewport. The interactive host may set it from terminal height. A
 	// bounded default is deliberately used when it is left at zero so a large
@@ -117,6 +125,22 @@ type sessionTreeSnapshot struct {
 	history  []core.SessionHistorySegment
 }
 
+type sessionTreeLoadEventKind uint8
+
+const (
+	sessionTreeLoadStarted sessionTreeLoadEventKind = iota
+	sessionTreeLoadEntry
+	sessionTreeLoadFinished
+	sessionTreeLoadFailed
+)
+
+type sessionTreeLoadEvent struct {
+	kind       sessionTreeLoadEventKind
+	generation uint64
+	item       sessionTreeItem
+	err        error
+}
+
 const defaultSessionTreeRows = 12
 
 func newSessionTreeDialog() *sessionTreeDialog { return &sessionTreeDialog{} }
@@ -137,22 +161,226 @@ func (d *sessionTreeDialog) OpenMessages(msgs []provider.Message) bool {
 // recoverable by choosing an arbitrary forest root. Failed reads leave the
 // prior dialog state untouched.
 func (d *sessionTreeDialog) OpenSessionFamily(root, cwd, currentPath string) bool {
-	roots, err := core.BuildSessionTreeFamilyStrict(root, cwd, currentPath)
-	if err != nil || len(roots) == 0 {
-		return false
-	}
-	familyRoot := roots[0]
-
-	snapshots, err := preflightSessionTreeFamily(familyRoot)
-	if err != nil {
-		return false
-	}
-	items := flattenSessionFamilySnapshot(familyRoot, currentPath, snapshots)
-	if len(items) == 0 || !sessionTreeItemsMeaningful(items, familyRoot.Summary.Path) {
+	items, err := loadSessionTreeFamily(context.Background(), root, cwd, currentPath)
+	if err != nil || len(items) == 0 {
 		return false
 	}
 	d.activate(items, indexCurrentTreeItem(items))
 	return true
+}
+
+// OpenSessionFamilyAsync shows the tree immediately and streams rows from the
+// newest visible content toward the oldest. The caller applies returned events
+// on its UI goroutine, so disk reads never contend with input or rendering.
+func (d *sessionTreeDialog) OpenSessionFamilyAsync(parent context.Context, root, cwd, currentPath string, beforeLoad func()) <-chan sessionTreeLoadEvent {
+	if d.loadCancel != nil {
+		d.loadCancel()
+	}
+	previousDone := d.loadDone
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	d.loadCancel = cancel
+	d.loadGeneration++
+	generation := d.loadGeneration
+	d.loadDone = make(chan struct{})
+	d.items = nil
+	d.cursor = 0
+	d.viewTop = 0
+	d.loading = true
+	d.loadingDone = 0
+	d.active = true
+
+	// Keep the producer ahead of a redraw so a large family does not require
+	// one main-loop iteration for every emitted row.
+	events := make(chan sessionTreeLoadEvent, 64)
+	send := func(event sessionTreeLoadEvent) bool {
+		select {
+		case events <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	loadFamily := d.loadFamily
+	done := d.loadDone
+	go func() {
+		defer close(done)
+		defer close(events)
+		if previousDone != nil {
+			select {
+			case <-previousDone:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if beforeLoad != nil {
+			beforeLoad()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !send(sessionTreeLoadEvent{kind: sessionTreeLoadStarted, generation: generation}) {
+			return
+		}
+		emit := func(item sessionTreeItem) bool {
+			return send(sessionTreeLoadEvent{kind: sessionTreeLoadEntry, generation: generation, item: item})
+		}
+		var err error
+		if loadFamily != nil {
+			items, loadErr := loadFamily(ctx, root, cwd, currentPath)
+			err = loadErr
+			for index := len(items) - 1; err == nil && index >= 0; index-- {
+				if !emit(items[index]) {
+					return
+				}
+			}
+		} else {
+			err = streamSessionTreeFamily(ctx, root, cwd, currentPath, emit)
+		}
+		if err != nil {
+			if ctx.Err() == nil {
+				send(sessionTreeLoadEvent{kind: sessionTreeLoadFailed, generation: generation, err: err})
+			}
+			return
+		}
+		send(sessionTreeLoadEvent{kind: sessionTreeLoadFinished, generation: generation})
+	}()
+	return events
+}
+
+// ApplyLoad incorporates a background event on the UI goroutine. A non-nil
+// result means the complete family could not be read and should be reported by
+// the host after it closes the overlay.
+func (d *sessionTreeDialog) ApplyLoad(event sessionTreeLoadEvent) error {
+	if !d.active || event.generation != d.loadGeneration {
+		return nil
+	}
+	switch event.kind {
+	case sessionTreeLoadStarted:
+	case sessionTreeLoadEntry:
+		d.items = append(d.items, event.item)
+		d.loadingDone++
+	case sessionTreeLoadFinished:
+		if cursor := indexCurrentTreeItem(d.items); cursor >= 0 {
+			d.cursor = cursor
+		}
+		d.finishLoad()
+	case sessionTreeLoadFailed:
+		d.finishLoad()
+		d.active = false
+		return event.err
+	}
+	return nil
+}
+
+func (d *sessionTreeDialog) ApplyLoadClosed() {
+	if d.active && d.loading {
+		d.finishLoad()
+		d.active = false
+	}
+}
+
+func (d *sessionTreeDialog) finishLoad() {
+	d.loading = false
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
+	}
+}
+
+func loadSessionTreeFamily(ctx context.Context, root, cwd, currentPath string) ([]sessionTreeItem, error) {
+	roots, err := core.BuildSessionTreeFamilyContext(ctx, root, cwd, currentPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("session tree: no readable session family")
+	}
+	familyRoot := roots[0]
+	snapshots, err := preflightSessionTreeFamilyContext(ctx, familyRoot)
+	if err != nil {
+		return nil, err
+	}
+	items := flattenSessionFamilySnapshot(familyRoot, currentPath, snapshots)
+	if len(items) == 0 || !sessionTreeItemsMeaningful(items, familyRoot.Summary.Path) {
+		return nil, fmt.Errorf("session tree: no messages in this family")
+	}
+	return items, nil
+}
+
+func streamSessionTreeFamily(ctx context.Context, root, cwd, currentPath string, emit func(sessionTreeItem) bool) error {
+	roots, err := core.BuildSessionTreeFamilyContext(ctx, root, cwd, currentPath)
+	if err != nil {
+		return err
+	}
+	if len(roots) == 0 {
+		return fmt.Errorf("session tree: no readable session family")
+	}
+	familyRoot := roots[0]
+	current := findSessionTreeNode(familyRoot, currentPath)
+	if current == nil {
+		return fmt.Errorf("session tree: current session is missing from its family")
+	}
+	currentHistory, err := core.ReadSessionHistoryContext(ctx, current.Summary.Path)
+	if err != nil {
+		return fmt.Errorf("session tree: read current %q: %w", current.Summary.Path, err)
+	}
+	if currentHistory.Meta.ID != current.Meta.ID {
+		return fmt.Errorf("session tree: current session id changed in %q", current.Summary.Path)
+	}
+	currentSnapshots := map[string]sessionTreeSnapshot{
+		current.Summary.Path: {path: current.Summary.Path, messages: sessionHistoryMessages(currentHistory), history: currentHistory.Segments},
+	}
+	preview := flattenSessionNode(current, currentPath, currentSnapshots, 0, current.Meta.ForkPoint, false, false)
+	seen := make(map[sessionTreeTarget]struct{}, len(preview))
+	for index := len(preview) - 1; index >= 0; index-- {
+		seen[preview[index].target] = struct{}{}
+		if !emit(preview[index]) {
+			return ctx.Err()
+		}
+	}
+
+	snapshots, err := preflightSessionTreeFamilyContext(ctx, familyRoot)
+	if err != nil {
+		return err
+	}
+	items := flattenSessionFamilySnapshot(familyRoot, currentPath, snapshots)
+	if len(items) == 0 || !sessionTreeItemsMeaningful(items, familyRoot.Summary.Path) {
+		return fmt.Errorf("session tree: no messages in this family")
+	}
+	for index := len(items) - 1; index >= 0; index-- {
+		if _, alreadyEmitted := seen[items[index].target]; alreadyEmitted {
+			continue
+		}
+		if !emit(items[index]) {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func findSessionTreeNode(node *core.TreeNode, path string) *core.TreeNode {
+	if node == nil {
+		return nil
+	}
+	if node.Summary.Path == path {
+		return node
+	}
+	for _, child := range node.Children {
+		if found := findSessionTreeNode(child, path); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func sessionHistoryMessages(history core.SessionHistory) []provider.Message {
+	if len(history.Segments) == 0 {
+		return nil
+	}
+	return history.Segments[len(history.Segments)-1].Messages
 }
 
 func sessionTreeItemsMeaningful(items []sessionTreeItem, rootPath string) bool {
@@ -165,6 +393,11 @@ func sessionTreeItemsMeaningful(items []sessionTreeItem, rootPath string) bool {
 }
 
 func (d *sessionTreeDialog) activate(items []sessionTreeItem, cursor int) {
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
+	}
+	d.loading = false
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -177,8 +410,15 @@ func (d *sessionTreeDialog) activate(items []sessionTreeItem, cursor int) {
 	d.active = true
 }
 
-// Close hides the dialog.
-func (d *sessionTreeDialog) Close() { d.active = false }
+// Close hides the dialog and cancels any in-flight family read.
+func (d *sessionTreeDialog) Close() {
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
+	}
+	d.loading = false
+	d.active = false
+}
 
 // CursorPos returns -1 because this dialog has no inline editor.
 func (d *sessionTreeDialog) CursorPos() (row, col int) { return -1, -1 }
@@ -290,6 +530,17 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 	line := func(s string) string { return truncateSessionTreeANSI(s, renderWidth) }
 
 	lines := []string{line(frameHeader(th, "session tree", renderWidth))}
+	if d.loading {
+		progress := fmt.Sprintf("loading session history... %d loaded", d.loadingDone)
+		lines = append(lines, line(th.FGColor(th.Muted, progress)))
+		if len(d.items) == 0 {
+			lines = append(lines,
+				line(th.FGColor(th.Muted, "recent messages appear first; esc cancels")),
+				line(frameRule(th, renderWidth)),
+			)
+			return lines
+		}
+	}
 	if len(d.items) == 0 {
 		lines = append(lines,
 			line(th.FGColor(th.Muted, "no messages in this session yet")),
@@ -298,8 +549,11 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		)
 		return lines
 	}
-	lines = append(lines, line(th.FGColor(th.Muted,
-		"session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):")))
+	hint := "session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):"
+	if d.loading {
+		hint = "session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel; more loading):"
+	}
+	lines = append(lines, line(th.FGColor(th.Muted, hint)))
 
 	d.followCursor()
 	start := d.viewTop
@@ -368,10 +622,13 @@ func fitSessionTreeItemPlain(it sessionTreeItem, maxWidth int) string {
 	return prefix + fitSessionTreeLabel(it.label, labelWidth) + suffix
 }
 
-// preflightSessionTreeFamily reads every node before any dialog state is
-// changed. The returned messages are the shared effective snapshots used by
-// all flattening and target construction for this open operation.
-func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnapshot, error) {
+// preflightSessionTreeFamilyContext reads every node and returns the shared
+// effective snapshots used by all flattening and target construction for one
+// open operation.
+func preflightSessionTreeFamilyContext(ctx context.Context, root *core.TreeNode) (map[string]sessionTreeSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if root == nil {
 		return nil, fmt.Errorf("session tree: nil family root")
 	}
@@ -379,6 +636,9 @@ func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnap
 	visiting := make(map[string]bool)
 	var walk func(*core.TreeNode) error
 	walk = func(node *core.TreeNode) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if node == nil {
 			return nil
 		}
@@ -390,10 +650,14 @@ func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnap
 			return nil
 		}
 		visiting[path] = true
-		history, err := core.ReadSessionHistory(path)
+		history, err := core.ReadSessionHistoryContext(ctx, path)
 		if err != nil {
 			delete(visiting, path)
 			return fmt.Errorf("session tree: read %q: %w", path, err)
+		}
+		if history.Meta.ID != node.Meta.ID {
+			delete(visiting, path)
+			return fmt.Errorf("session tree: session id changed in %q", path)
 		}
 		var messages []provider.Message
 		if len(history.Segments) > 0 {

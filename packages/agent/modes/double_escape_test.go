@@ -10,6 +10,17 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+func applySessionTreeLoads(d *sessionTreeDialog, events <-chan sessionTreeLoadEvent) error {
+	var loadErr error
+	for event := range events {
+		if err := d.ApplyLoad(event); err != nil {
+			loadErr = err
+		}
+	}
+	d.ApplyLoadClosed()
+	return loadErr
+}
+
 func TestInteractiveCtrlCExitMarker(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{})
 	key := tui.Key{Kind: tui.KeyCtrlC}
@@ -290,10 +301,13 @@ func TestDoubleEscapeOpensReadableTreeThroughSharedGate(t *testing.T) {
 		t.Fatal("second Escape exited")
 	}
 	if !i.sessionTreeDialog.Active() {
-		t.Fatal("readable session tree did not open")
+		t.Fatal("session tree did not open before its background load")
+	}
+	if err := applySessionTreeLoads(i.sessionTreeDialog, i.sessionTreeLoads); err != nil {
+		t.Fatalf("background session tree load: %v", err)
 	}
 	if flushes != 1 {
-		t.Fatalf("FlushSession called %d times, want once after the gate", flushes)
+		t.Fatalf("FlushSession called %d times, want once in the background", flushes)
 	}
 	if got := len(ag.Messages()); got != 1 {
 		t.Fatalf("double Escape changed transcript with a provider turn: %d messages", got)
@@ -381,8 +395,8 @@ func TestSecondEscapeStillConsumesFailClosedTreeGate(t *testing.T) {
 			if pathCalls == 1 {
 				return path
 			}
-			// Keep the cheap gesture eligibility true while making the full
-			// tree-family gate reject the second tap.
+			// Keep the cheap gesture eligibility true while making the
+			// asynchronous family read fail after the overlay opens.
 			return path + ".missing"
 		},
 		LoadSession: func(string) error { return nil },
@@ -399,14 +413,17 @@ func TestSecondEscapeStillConsumesFailClosedTreeGate(t *testing.T) {
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
 		t.Fatal("second Escape exited")
 	}
+	if !i.sessionTreeDialog.Active() {
+		t.Fatal("tree did not open before the asynchronous family validation")
+	}
+	if err := applySessionTreeLoads(i.sessionTreeDialog, i.sessionTreeLoads); err == nil {
+		t.Fatal("unreadable family did not fail in the background")
+	}
 	if i.sessionTreeDialog.Active() {
-		t.Fatal("fail-closed tree gate opened an overlay")
+		t.Fatal("unreadable family left the tree overlay active")
 	}
-	if i.statusErr != "tree: session tree is unavailable" {
-		t.Fatalf("gate status = %q, want the fail-closed tree error", i.statusErr)
-	}
-	if flushes != 0 {
-		t.Fatalf("FlushSession called %d times after the rejected gate", flushes)
+	if flushes != 1 {
+		t.Fatalf("FlushSession called %d times, want one asynchronous flush", flushes)
 	}
 }
 

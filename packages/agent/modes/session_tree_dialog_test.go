@@ -1,8 +1,10 @@
 package modes
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,81 @@ import (
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
+
+func TestSessionTreeAsyncLoadOpensImmediatelyAndStreamsNewestFirst(t *testing.T) {
+	d := newSessionTreeDialog()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	d.loadFamily = func(context.Context, string, string, string) ([]sessionTreeItem, error) {
+		close(started)
+		<-release
+		return []sessionTreeItem{{label: "oldest"}, {label: "newest"}}, nil
+	}
+
+	events := d.OpenSessionFamilyAsync(context.Background(), "root", "cwd", "current", nil)
+	if !d.Active() || !d.loading {
+		t.Fatal("tree was not visible and loading immediately")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background tree loader did not start")
+	}
+	if len(d.items) != 0 {
+		t.Fatalf("tree showed items before the loader released them: %#v", d.items)
+	}
+
+	close(release)
+	if err := applySessionTreeLoads(d, events); err != nil {
+		t.Fatalf("apply background tree load: %v", err)
+	}
+	if d.loading {
+		t.Fatal("tree remained loading after its terminal event")
+	}
+	if got := []string{d.items[0].label, d.items[1].label}; !reflect.DeepEqual(got, []string{"newest", "oldest"}) {
+		t.Fatalf("stream order = %v, want newest to oldest", got)
+	}
+}
+
+func TestSessionTreeAsyncLoadCancelsWhenClosed(t *testing.T) {
+	d := newSessionTreeDialog()
+	started := make(chan struct{})
+	d.loadFamily = func(ctx context.Context, _, _, _ string) ([]sessionTreeItem, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	events := d.OpenSessionFamilyAsync(context.Background(), "root", "cwd", "current", nil)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background tree loader did not start")
+	}
+	select {
+	case event := <-events:
+		if event.kind != sessionTreeLoadStarted {
+			t.Fatalf("first load event = %v, want started", event.kind)
+		}
+		if err := d.ApplyLoad(event); err != nil {
+			t.Fatalf("apply startup event: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tree loader did not announce startup")
+	}
+	d.Close()
+	if d.Active() {
+		t.Fatal("Close left the tree active")
+	}
+	select {
+	case _, ok := <-events:
+		if ok {
+			t.Fatal("canceled tree loader emitted an event")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled tree loader did not stop")
+	}
+}
 
 func TestSessionTreeTargetCarriesEffectiveBoundaryAndDraft(t *testing.T) {
 	msgs := []provider.Message{

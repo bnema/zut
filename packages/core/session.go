@@ -500,6 +500,20 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 // branching; this audit projection exists for session-tree navigation so a
 // compaction cannot make earlier fork points disappear.
 func ReadSessionHistory(path string) (SessionHistory, error) {
+	return readSessionHistory(context.Background(), path)
+}
+
+// ReadSessionHistoryContext is the cancellation-aware counterpart to
+// ReadSessionHistory. It is intended for background consumers such as the
+// interactive session-tree loader.
+func ReadSessionHistoryContext(ctx context.Context, path string) (SessionHistory, error) {
+	return readSessionHistory(ctx, path)
+}
+
+func readSessionHistory(ctx context.Context, path string) (SessionHistory, error) {
+	if err := contextErr(ctx); err != nil {
+		return SessionHistory{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return SessionHistory{}, fmt.Errorf("session history: open %q: %w", path, err)
@@ -537,7 +551,7 @@ func ReadSessionHistory(path string) (SessionHistory, error) {
 		current = rawSegment{}
 	}
 
-	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+	err = forEachStrictJSONLLineContext(ctx, f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
 		if err := json.Unmarshal(line, &head); err != nil {
 			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)

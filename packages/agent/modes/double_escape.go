@@ -1,11 +1,11 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -129,9 +129,9 @@ func (i *Interactive) canArmSessionTreeEscape() bool {
 }
 
 // canOpenSessionTree is the shared, fail-closed precondition for both the
-// /session tree command and the bare-Escape gesture. It does not flush or
-// mutate session state. In particular, callers must not flush until this
-// check has returned true.
+// /session tree command and the bare-Escape gesture. It intentionally avoids
+// filesystem work so a slow or large session family cannot stall input; the
+// asynchronous dialog loader validates the family after the overlay opens.
 func (i *Interactive) canOpenSessionTree() bool {
 	if i == nil || i.ed == nil || i.cfg.CWD == "" || i.sessionsRoot() == "" ||
 		i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil {
@@ -155,12 +155,7 @@ func (i *Interactive) canOpenSessionTree() bool {
 		return false
 	}
 
-	current := i.currentSessionPath()
-	if current == "" {
-		return false
-	}
-	roots, err := core.BuildSessionTreeFamilyStrict(i.sessionsRoot(), i.cfg.CWD, current)
-	return err == nil && len(roots) != 0
+	return i.currentSessionPath() != ""
 }
 
 // canCommitSessionTreeSelection is the open-gate subset used after the tree
@@ -195,8 +190,8 @@ func (i *Interactive) setSessionTreeError(message string) {
 }
 
 // openSessionTree is the only path that activates the session-tree overlay.
-// The gate runs before FlushSession, and a failed family read leaves the
-// dialog closed instead of falling back to a stale in-memory transcript.
+// It queues the family read rather than performing it on the input goroutine;
+// a failed asynchronous read closes the overlay and reports the usual error.
 func (i *Interactive) openSessionTree() bool {
 	if !i.canOpenSessionTree() {
 		i.setSessionTreeError("tree: session tree is unavailable")
@@ -207,13 +202,17 @@ func (i *Interactive) openSessionTree() bool {
 		i.setSessionTreeError("tree: no session is active")
 		return false
 	}
-	if i.cfg.FlushSession != nil {
-		i.cfg.FlushSession()
-	}
-	if i.sessionTreeDialog == nil || !i.sessionTreeDialog.OpenSessionFamily(i.sessionsRoot(), i.cfg.CWD, current) {
-		i.setSessionTreeError("tree: no readable session family")
+	if i.sessionTreeDialog == nil {
+		i.setSessionTreeError("tree: session tree is unavailable")
 		return false
 	}
+	i.mu.Lock()
+	loadCtx := i.runCtx
+	i.mu.Unlock()
+	if loadCtx == nil {
+		loadCtx = context.Background()
+	}
+	i.sessionTreeLoads = i.sessionTreeDialog.OpenSessionFamilyAsync(loadCtx, i.sessionsRoot(), i.cfg.CWD, current, i.cfg.FlushSession)
 	i.mu.Lock()
 	i.statusErr = ""
 	i.statusOK = ""

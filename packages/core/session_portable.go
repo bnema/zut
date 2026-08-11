@@ -682,6 +682,66 @@ func BuildSessionTreeStrict(root, cwd string) ([]*TreeNode, error) {
 // readable current family, while a corrupt member of the selected family still
 // fails the whole preflight.
 func BuildSessionTreeFamilyStrict(root, cwd, currentPath string) ([]*TreeNode, error) {
+	return BuildSessionTreeFamilyStrictContext(context.Background(), root, cwd, currentPath)
+}
+
+// BuildSessionTreeFamilyStrictContext is the cancellation-aware counterpart
+// to BuildSessionTreeFamilyStrict. It performs all filesystem reads on behalf
+// of callers that must remain responsive while a family is being discovered.
+func BuildSessionTreeFamilyStrictContext(ctx context.Context, root, cwd, currentPath string) ([]*TreeNode, error) {
+	roots, err := buildSessionTreeFamilyContext(ctx, root, cwd, currentPath)
+	if err != nil || len(roots) == 0 {
+		return roots, err
+	}
+	var validate func(*TreeNode) error
+	validate = func(node *TreeNode) error {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
+		snapshot, err := readSessionSnapshot(ctx, node.Summary.Path)
+		if err != nil {
+			return fmt.Errorf("build session family: read %q: %w", node.Summary.Path, err)
+		}
+		if snapshot.Meta.ID != node.Meta.ID {
+			return fmt.Errorf("build session family: session id changed in %q", node.Summary.Path)
+		}
+		node.Meta = snapshot.Meta
+		node.Summary = SessionSummary{
+			Path:          node.Summary.Path,
+			Started:       snapshot.Meta.Started,
+			Model:         snapshot.Meta.Model,
+			Provider:      snapshot.Meta.Provider,
+			MessageCount:  len(snapshot.Messages),
+			FirstUserText: firstUserTextFromMessages(snapshot.Messages),
+			Title:         snapshot.Meta.Title,
+		}
+		if len(snapshot.UsageCheckpoints) > 0 {
+			node.Summary.TotalCost = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative.CostUSD
+		}
+		for _, child := range node.Children {
+			if err := validate(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := validate(roots[0]); err != nil {
+		return nil, err
+	}
+	return roots, nil
+}
+
+// BuildSessionTreeFamilyContext discovers the current family from metadata
+// headers. Consumers that read every member themselves can start that work in
+// their preferred order without a redundant whole-family snapshot pass.
+func BuildSessionTreeFamilyContext(ctx context.Context, root, cwd, currentPath string) ([]*TreeNode, error) {
+	return buildSessionTreeFamilyContext(ctx, root, cwd, currentPath)
+}
+
+func buildSessionTreeFamilyContext(ctx context.Context, root, cwd, currentPath string) ([]*TreeNode, error) {
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
 	if currentPath == "" {
 		return nil, errors.New("build session family: current path is empty")
 	}
@@ -697,6 +757,9 @@ func BuildSessionTreeFamilyStrict(root, cwd, currentPath string) ([]*TreeNode, e
 	nodes := make(map[string]*TreeNode)
 	order := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if err := contextErr(ctx); err != nil {
+			return nil, err
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
@@ -730,38 +793,6 @@ func BuildSessionTreeFamilyStrict(root, cwd, currentPath string) ([]*TreeNode, e
 	}
 	if familyRoot == nil {
 		return nil, fmt.Errorf("build session family: current path %q is not in the session forest", currentPath)
-	}
-	var validate func(*TreeNode) error
-	validate = func(node *TreeNode) error {
-		snapshot, err := ReadSessionSnapshot(node.Summary.Path)
-		if err != nil {
-			return fmt.Errorf("build session family: read %q: %w", node.Summary.Path, err)
-		}
-		if snapshot.Meta.ID != node.Meta.ID {
-			return fmt.Errorf("build session family: session id changed in %q", node.Summary.Path)
-		}
-		node.Meta = snapshot.Meta
-		node.Summary = SessionSummary{
-			Path:          node.Summary.Path,
-			Started:       snapshot.Meta.Started,
-			Model:         snapshot.Meta.Model,
-			Provider:      snapshot.Meta.Provider,
-			MessageCount:  len(snapshot.Messages),
-			FirstUserText: firstUserTextFromMessages(snapshot.Messages),
-			Title:         snapshot.Meta.Title,
-		}
-		if len(snapshot.UsageCheckpoints) > 0 {
-			node.Summary.TotalCost = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative.CostUSD
-		}
-		for _, child := range node.Children {
-			if err := validate(child); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := validate(familyRoot); err != nil {
-		return nil, err
 	}
 	return []*TreeNode{familyRoot}, nil
 }
