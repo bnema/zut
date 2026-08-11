@@ -1202,34 +1202,47 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	}
 }
 
-// SnapshotAll returns snapshots of every agent in creation order,
-// scoped to the active session when one is set.
-//
-// Scoping rules:
-//   - activeSession == "": no filter, every agent is returned
-//     (historical behaviour; used by tests and scripted callers).
-//   - activeSession != "": include live agents whose SessionID matches
-//     activeSession, plus unscoped agents. Detached and terminal
-//     agents from another host session remain visible so restart/recovery
-//     does not hide durable work.
+// SnapshotAll returns the supervisor's established status view: live agents
+// are scoped to the active session, while durable terminal entries remain
+// discoverable for recovery callers.
 func (f *Supervisor) SnapshotAll() []AgentSnapshot {
-	agents := f.List()
 	f.mu.Lock()
 	active := f.activeSession
 	f.mu.Unlock()
+	return f.snapshotMatching(func(a *Agent) bool {
+		if active == "" || a.SessionID == "" || a.SessionID == active {
+			return true
+		}
+		status := a.Status()
+		return status != StatusRunning && status != StatusPending
+	})
+}
 
+// SnapshotAllSessions returns every agent, regardless of host session. It is
+// the explicit cross-session view used by the dashboard's All filter.
+func (f *Supervisor) SnapshotAllSessions() []AgentSnapshot {
+	return f.snapshotMatching(func(*Agent) bool { return true })
+}
+
+// SnapshotCurrentSession returns only agents owned by the active host
+// session. When no active session is set, it includes every agent for
+// command-line and test callers that do not establish a session boundary.
+func (f *Supervisor) SnapshotCurrentSession() []AgentSnapshot {
+	f.mu.Lock()
+	active := f.activeSession
+	f.mu.Unlock()
+	return f.snapshotMatching(func(a *Agent) bool {
+		return active == "" || a.SessionID == active
+	})
+}
+
+func (f *Supervisor) snapshotMatching(include func(*Agent) bool) []AgentSnapshot {
+	agents := f.List()
 	out := make([]AgentSnapshot, 0, len(agents))
 	for _, a := range agents {
-		if active != "" && a.SessionID != "" && a.SessionID != active {
-			// Keep detached/terminal entries visible after a normal host
-			// restart so durable recovery remains discoverable. Hide only
-			// live work belonging to another in-process host session.
-			status := a.Status()
-			if status == StatusRunning || status == StatusPending {
-				continue
-			}
+		if include(a) {
+			out = append(out, a.Snapshot())
 		}
-		out = append(out, a.Snapshot())
 	}
 	// Sort by start time for a stable, deterministic listing.
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Started.Before(out[j].Started) })
@@ -1241,7 +1254,8 @@ type agentSink struct{ a *Agent }
 
 func (s agentSink) Activity(msg string) { s.a.setActivity(msg) }
 func (s agentSink) Transcript(chunk string) {
-	if strings.HasPrefix(chunk, "stderr: ") || strings.HasPrefix(chunk, "error: ") {
+	if strings.HasPrefix(chunk, "stderr: ") || strings.HasPrefix(chunk, "error: ") ||
+		strings.HasPrefix(chunk, "tool: ") || strings.HasPrefix(chunk, "tool result: ") {
 		s.a.appendTranscript(chunk)
 		return
 	}

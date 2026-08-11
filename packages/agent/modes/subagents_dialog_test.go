@@ -1319,6 +1319,78 @@ func TestSupervisorTranscriptBusySpinnerRenders(t *testing.T) {
 	}
 }
 
+func TestSubagentsDialogTabTogglesSessionScope(t *testing.T) {
+	now := time.Now()
+	current := staticSnapshots(
+		subagents.AgentSnapshot{ID: "current-1", Status: subagents.StatusRunning, Started: now},
+		subagents.AgentSnapshot{ID: "current-2", Status: subagents.StatusDone, Started: now},
+	)
+	all := staticSnapshots(
+		subagents.AgentSnapshot{ID: "current-1", Status: subagents.StatusRunning, Started: now},
+		subagents.AgentSnapshot{ID: "current-2", Status: subagents.StatusDone, Started: now},
+		subagents.AgentSnapshot{ID: "other-session", Status: subagents.StatusDone, Started: now},
+	)
+	d := newSubagentsDialog()
+	d.SetAllSnapshots(all)
+	d.Open(current, nil, nil, nil, nil, nil, "")
+
+	out := strings.Join(d.Render(tui.Theme{}, 100), "\n")
+	if strings.Contains(out, "other-session") || !strings.Contains(out, "this session") {
+		t.Fatalf("default view is not restricted to the current session:\n%s", out)
+	}
+
+	d.HandleKey(tui.Key{Kind: tui.KeyTab})
+	out = strings.Join(d.Render(tui.Theme{}, 100), "\n")
+	if !strings.Contains(out, "other-session") || !strings.Contains(out, "all sessions") {
+		t.Fatalf("Tab did not switch to the all-sessions view:\n%s", out)
+	}
+}
+
+func TestSubagentsDialogNavigatesAndExpandsLiveSnapshotWithinHeight(t *testing.T) {
+	now := time.Now()
+	rows := []subagents.AgentSnapshot{
+		{ID: "first", Status: subagents.StatusDone, Started: now},
+		{ID: "active", Status: subagents.StatusRunning, Started: now, Lines: []string{
+			"user: inspect the dashboard", "assistant: I am checking the list", "tool: bash", "tool result: dashboard source", "assistant: rendering snapshot",
+		}},
+		{ID: "third", Status: subagents.StatusDone, Started: now},
+	}
+	d := newSubagentsDialog()
+	d.SetMaxRows(20)
+	d.Open(staticSnapshots(rows...), nil, nil, nil, nil, nil, "")
+	_ = d.Render(tui.Theme{}, 100)
+
+	d.HandleKey(tui.Key{Kind: tui.KeyDown})
+	if selected := d.selected(); selected == nil || selected.ID != "active" {
+		t.Fatalf("down did not select active agent: %#v", selected)
+	}
+	d.HandleKey(tui.Key{Kind: tui.KeyRight})
+	out := d.Render(tui.Theme{}, 100)
+	joined := strings.Join(out, "\n")
+	for _, want := range []string{"live snapshot", "inspect the dashboard", "bash", "dashboard source"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expanded snapshot missing %q:\n%s", want, joined)
+		}
+	}
+	if len(out) > 20 {
+		t.Fatalf("dashboard rendered %d rows with 20-row budget:\n%s", len(out), joined)
+	}
+
+	d.HandleKey(tui.Key{Kind: tui.KeyLeft})
+	out = d.Render(tui.Theme{}, 100)
+	if strings.Contains(strings.Join(out, "\n"), "live snapshot") {
+		t.Fatalf("left did not collapse selected snapshot:\n%s", strings.Join(out, "\n"))
+	}
+
+	// Even the smallest supported dashboard retains the selected row instead
+	// of allowing the bottom-sticky compositor to clip it above the viewport.
+	d.SetMaxRows(4)
+	out = d.Render(tui.Theme{}, 100)
+	if len(out) != 4 || !strings.Contains(strings.Join(out, "\n"), "active") {
+		t.Fatalf("short dashboard lost its selected row (%d rows):\n%s", len(out), strings.Join(out, "\n"))
+	}
+}
+
 func TestStatusLabelCoversAll(t *testing.T) {
 	for _, s := range []subagents.Status{
 		subagents.StatusPending, subagents.StatusRunning,

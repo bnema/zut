@@ -21,7 +21,9 @@ import (
 //	p          send a follow-up prompt to the selected agent
 //	R          resume (restart) a detached / finished agent
 //	↑/↓        move cursor
-//	enter      show transcript tail for the selected agent
+//	tab        toggle this-session / all-sessions agents
+//	←/→ or h/l  collapse / expand the selected agent's live snapshot
+//	enter      show the full transcript for the selected agent
 //	k          kill (Stop) the selected running agent
 //	r          remove a terminated agent (clears its state)
 //	esc / q    close
@@ -32,12 +34,15 @@ import (
 //	↑/↓/PgUp/PgDn/Home/End  scroll
 //	esc / q    return to the list
 type subagentsDialog struct {
-	active      bool
-	compactMode bool
-	lineInput   bool
-	snapshot    func() []subagents.AgentSnapshot
-	stop        func(id string) error
-	remove      func(id string) error
+	active       bool
+	compactMode  bool
+	lineInput    bool
+	snapshot     func() []subagents.AgentSnapshot
+	allSnapshots func() []subagents.AgentSnapshot
+	showAll      bool
+	expandedID   string
+	stop         func(id string) error
+	remove       func(id string) error
 	// spawn accepts an optional model + provider override (empty
 	// strings mean "let the child resolve its own default"). The cli
 	// adapter forwards these to subagents.Supervisor.SpawnReq.
@@ -55,6 +60,7 @@ type subagentsDialog struct {
 
 	rows    []subagents.AgentSnapshot
 	cursor  int
+	maxRows int  // total dialog rows, including its header and frame rule; zero is unbounded
 	viewing bool // when true, show full transcript of the selected row
 
 	// transcriptSpin animates the busy hint shown above the inline
@@ -126,6 +132,22 @@ func (d *subagentsDialog) SetLineInput(enabled bool) {
 	d.lineInput = enabled
 }
 
+// SetAllSnapshots supplies the cross-session snapshot source used when the
+// user presses Tab. Open's snapshot source remains the default session view.
+func (d *subagentsDialog) SetAllSnapshots(fn func() []subagents.AgentSnapshot) {
+	d.allSnapshots = fn
+}
+
+// SetMaxRows bounds the complete dashboard before the host composes its
+// bottom-sticky dialog band. Four rows are needed for the frame, column
+// heading, and selected agent; a non-positive value leaves it unbounded.
+func (d *subagentsDialog) SetMaxRows(rows int) {
+	if rows > 0 && rows < 4 {
+		rows = 4
+	}
+	d.maxRows = rows
+}
+
 // SetLoadTranscript supplies the optional on-demand durable transcript loader.
 func (d *subagentsDialog) SetLoadTranscript(fn func(id string) error) {
 	d.loadTranscript = fn
@@ -180,6 +202,8 @@ func (d *subagentsDialog) Open(
 	d.active = true
 	d.cursor = 0
 	d.viewing = false
+	d.showAll = false
+	d.expandedID = ""
 	d.spawning = false
 	d.newTaskEd = nil
 	d.fileSuggest = nil
@@ -467,17 +491,46 @@ func friendlySendErr(id string, err error) string {
 }
 
 func (d *subagentsDialog) refresh() {
-	if d.snapshot == nil {
+	snapshot := d.snapshot
+	if d.showAll && d.allSnapshots != nil {
+		snapshot = d.allSnapshots
+	}
+	if snapshot == nil {
 		d.rows = nil
 		return
 	}
-	d.rows = d.snapshot()
+
+	selectedID := ""
+	if selected := d.selected(); selected != nil {
+		selectedID = selected.ID
+	}
+	d.rows = snapshot()
+	if selectedID != "" {
+		for i, row := range d.rows {
+			if row.ID == selectedID {
+				d.cursor = i
+				break
+			}
+		}
+	}
 	if d.cursor >= len(d.rows) {
 		d.cursor = len(d.rows) - 1
 	}
 	if d.cursor < 0 {
 		d.cursor = 0
 	}
+	if d.expandedID != "" && d.rowByID(d.expandedID) == nil {
+		d.expandedID = ""
+	}
+}
+
+func (d *subagentsDialog) rowByID(id string) *subagents.AgentSnapshot {
+	for i := range d.rows {
+		if d.rows[i].ID == id {
+			return &d.rows[i]
+		}
+	}
+	return nil
 }
 
 // HandleKey advances state. Returns (closed, statusMsg, statusErr).
@@ -518,10 +571,22 @@ func (d *subagentsDialog) HandleKey(k tui.Key) (closed bool, msg, errMsg string)
 	case tui.KeyUp:
 		if d.cursor > 0 {
 			d.cursor--
+			d.expandedID = ""
 		}
 	case tui.KeyDown:
 		if d.cursor < len(d.rows)-1 {
 			d.cursor++
+			d.expandedID = ""
+		}
+	case tui.KeyTab:
+		d.showAll = !d.showAll
+		d.expandedID = ""
+		d.refresh()
+	case tui.KeyLeft:
+		d.collapseSelected()
+	case tui.KeyRight:
+		if err := d.expandSelected(); err != nil {
+			return false, "", "load transcript: " + err.Error()
 		}
 	case tui.KeyEnter:
 		if len(d.rows) > 0 {
@@ -544,6 +609,12 @@ func (d *subagentsDialog) HandleKey(k tui.Key) (closed bool, msg, errMsg string)
 		case 'q':
 			d.Close()
 			return true, "", ""
+		case 'h':
+			d.collapseSelected()
+		case 'l':
+			if err := d.expandSelected(); err != nil {
+				return false, "", "load transcript: " + err.Error()
+			}
 		case 'n':
 			if d.spawn != nil {
 				// Open the task editor directly. The model the new
@@ -602,6 +673,27 @@ func (d *subagentsDialog) HandleKey(k tui.Key) (closed bool, msg, errMsg string)
 		}
 	}
 	return false, "", ""
+}
+
+func (d *subagentsDialog) expandSelected() error {
+	a := d.selected()
+	if a == nil {
+		return nil
+	}
+	if d.loadTranscript != nil {
+		if err := d.loadTranscript(a.ID); err != nil {
+			return err
+		}
+		d.refresh()
+	}
+	d.expandedID = a.ID
+	return nil
+}
+
+func (d *subagentsDialog) collapseSelected() {
+	if a := d.selected(); a != nil && d.expandedID == a.ID {
+		d.expandedID = ""
+	}
 }
 
 // handleViewingKey routes one keystroke while the transcript view
@@ -1022,7 +1114,11 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 		return d.renderTranscript(th, width)
 	}
 
-	out := []string{frameHeader(th, "subagents (n new, p prompt, R resume, ↑/↓ move, enter view, k kill, r remove, esc close)", width)}
+	filter := "this session"
+	if d.showAll {
+		filter = "all sessions"
+	}
+	out := []string{frameHeader(th, "subagents · "+filter+" (tab filter, ↑/↓ select, ←/→ or h/l snapshot, enter view, esc close)", width)}
 	if d.prompting {
 		return d.renderPromptEditor(th, width, out)
 	}
@@ -1085,16 +1181,80 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 	// Column header for readability.
 	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROC/TURN STATUS", "ID", "AGE", "ACTIVITY")
 	out = append(out, th.FGColor(th.Muted, header))
+	out = append(out, d.renderVisibleRows(th, width)...)
+	out = append(out, frameRule(th, width))
+	return out
+}
 
-	for i, r := range d.rows {
+// renderVisibleRows keeps the dashboard inside the terminal-height budget.
+// The selected row is always rendered, which prevents a bottom-sticky dialog
+// from clipping the top rows (and leaving arrow-key selection invisible).
+func (d *subagentsDialog) renderVisibleRows(th tui.Theme, width int) []string {
+	budget := len(d.rows) * (dashboardSnapshotRows + 1)
+	if d.maxRows > 0 {
+		budget = d.maxRows - 3 // frame header, column heading, frame rule
+		if budget < 1 {
+			budget = 1
+		}
+	}
+
+	out := make([]string, 0, budget)
+	// Do not spend the only available body row on the indicator: the selected
+	// agent must remain visible even on an extremely short terminal.
+	if d.cursor > 0 && budget > 1 {
+		out = append(out, "  "+th.FGColor(th.Muted, fmt.Sprintf("↑ %d agents above", d.cursor)))
+	}
+	nextRow := d.cursor
+	for ; nextRow < len(d.rows) && len(out) < budget; nextRow++ {
+		r := d.rows[nextRow]
 		row := formatSupervisorRow(r, width-2)
-		if i == d.cursor {
+		if nextRow == d.cursor {
 			out = append(out, th.PadHighlight("  "+row, width))
 		} else {
 			out = append(out, "  "+th.FGColor(th.FG, row))
 		}
+		if r.ID == d.expandedID && len(out) < budget {
+			out = append(out, d.renderSnapshot(th, width, r, budget-len(out))...)
+		}
 	}
-	out = append(out, frameRule(th, width))
+	if nextRow < len(d.rows) && len(out) < budget {
+		out = append(out, "  "+th.FGColor(th.Muted, "↓ more agents below"))
+	}
+	return out
+}
+
+// dashboardSnapshotRows is deliberately bounded so expanding a running agent
+// keeps the list usable while still exposing its current user, assistant, and
+// tool activity. Enter opens the complete transcript.
+const dashboardSnapshotRows = 12
+
+func (d *subagentsDialog) renderSnapshot(th tui.Theme, width int, a subagents.AgentSnapshot, remaining int) []string {
+	raw := a.Lines
+	if len(raw) == 0 && a.Tail != "" {
+		raw = strings.Split(a.Tail, "\n")
+	}
+	out := []string{"    " + th.FGColor(th.Muted, "└─ live snapshot")}
+	if len(raw) == 0 || remaining <= 1 {
+		if remaining > 1 {
+			out = append(out, "    "+th.FGColor(th.Muted, "   (no activity yet)"))
+		}
+		return out
+	}
+	rows := renderSupervisorTranscriptBlocks(raw, th, width-4, d.compactMode)
+	limit := dashboardSnapshotRows
+	if limit > remaining-1 {
+		limit = remaining - 1
+	}
+	if len(rows) > limit {
+		rows = rows[len(rows)-limit:]
+		if limit > 1 {
+			out = append(out, "    "+th.FGColor(th.Muted, "   … earlier activity"))
+			rows = rows[1:]
+		}
+	}
+	for _, row := range rows {
+		out = append(out, "    "+row)
+	}
 	return out
 }
 
@@ -1273,6 +1433,8 @@ func renderSupervisorTranscriptBlocks(lines []string, th tui.Theme, width int, c
 	const (
 		kindAssistant blockKind = iota
 		kindUser
+		kindTool
+		kindToolResult
 		kindStderr
 		kindError
 	)
@@ -1286,6 +1448,10 @@ func renderSupervisorTranscriptBlocks(lines []string, th tui.Theme, width int, c
 		switch {
 		case strings.HasPrefix(s, "user: "):
 			return kindUser, strings.TrimPrefix(s, "user: ")
+		case strings.HasPrefix(s, "tool: "):
+			return kindTool, strings.TrimPrefix(s, "tool: ")
+		case strings.HasPrefix(s, "tool result: "):
+			return kindToolResult, strings.TrimPrefix(s, "tool result: ")
 		case strings.HasPrefix(s, "stderr: "):
 			return kindStderr, strings.TrimPrefix(s, "stderr: ")
 		case strings.HasPrefix(s, "error: "):
@@ -1339,6 +1505,14 @@ func renderSupervisorTranscriptBlocks(lines []string, th tui.Theme, width int, c
 		case kindAssistant:
 			text := strings.Join(b.body, "\n")
 			out = append(out, renderDialogMarkdownRows(strings.TrimLeft(text, "\n"), th, width)...)
+		case kindTool:
+			for _, line := range b.body {
+				out = append(out, wrapDialogTextRows(th.FGColor(th.Accent, "⚙ "+line), width)...)
+			}
+		case kindToolResult:
+			for _, line := range b.body {
+				out = append(out, wrapDialogTextRows(th.FGColor(th.Muted, "↳ "+line), width)...)
+			}
 		case kindStderr:
 			for _, line := range b.body {
 				out = append(out, wrapDialogTextRows(th.FGColor(th.Muted, "stderr  "+line), width)...)

@@ -1006,8 +1006,12 @@ func applyEventToSink(ev Event, sink Sink) {
 	case "tool_call", EventToolStarted:
 		if name, _ := ev.Data["name"].(string); name != "" {
 			sink.Activity("tool: " + truncate(name, 60))
+			sink.Transcript("tool: " + name)
 		}
 	case "tool_result", EventToolFinished:
+		if text := eventContentText(ev.Data); text != "" {
+			sink.Transcript("tool result: " + truncate(strings.ReplaceAll(text, "\n", " "), 240))
+		}
 		sink.Activity("idle")
 	case "turn_end", EventTurnResult, EventAgentIdle:
 		sink.Activity("idle")
@@ -1022,6 +1026,32 @@ func applyEventToSink(ev Event, sink Sink) {
 			sink.Transcript("error: " + msg)
 		}
 	}
+}
+
+// eventContentText extracts the human-readable text carried by a tool-result
+// event. The event stream is permissive across provider adapters, so accept
+// both the canonical block array and simple string payloads.
+func eventContentText(data map[string]any) string {
+	for _, key := range []string{"content", "output", "text"} {
+		switch value := data[key].(type) {
+		case string:
+			if value != "" {
+				return value
+			}
+		case []any:
+			var text []string
+			for _, item := range value {
+				block, _ := item.(map[string]any)
+				if value, _ := block["text"].(string); value != "" {
+					text = append(text, value)
+				}
+			}
+			if len(text) > 0 {
+				return strings.Join(text, "\n")
+			}
+		}
+	}
+	return ""
 }
 
 // RunnerFunc adapts a plain function into a Runner. Useful for tests
