@@ -1092,7 +1092,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 	if seq := tui.ReportCWD(i.cfg.CWD); seq != "" {
 		_, _ = term.Write([]byte(seq))
 	}
-	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqShowCursor))
+	// Erase the live frame on exit without moving the cursor. The shell can
+	// then draw its prompt on the row where zot ended instead of leaving the
+	// inactive TUI visible above it. Do not erase scrollback: users should
+	// still be able to review the session after closing zot.
+	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.SeqShowCursor))
 	i.applyInputCursorColor()
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
