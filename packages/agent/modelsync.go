@@ -29,9 +29,86 @@ func LoadCachedModels() {
 	if err != nil {
 		return
 	}
-	if len(c.Models) > 0 {
-		provider.SetLiveModels(c.Models)
+	c = filterCacheByProviderScopes(c, currentModelProviderScopes())
+	if len(c.Models) > 0 || len(c.AuthoritativeProviders) > 0 {
+		provider.SetLiveModelsForProviders(c.Models, c.AuthoritativeProviders)
 	}
+}
+
+// currentModelProviderScopes returns identifiers that make a provider's
+// discovered catalog account-specific. The cache remains provider-neutral:
+// each provider supplies an opaque scope value when it needs one.
+func currentModelProviderScopes() map[string]string {
+	scopes := make(map[string]string)
+	if token := loadOAuthToken("openai"); token != nil && token.AccountID != "" {
+		scopes["openai-codex"] = token.AccountID
+	}
+	return scopes
+}
+
+// filterCacheByProviderScopes removes cached entries whose provider scope no
+// longer matches the active credential. It also removes the authoritative
+// marker so that a failed refresh falls back to the baked-in catalog instead
+// of treating another account's empty catalog as authoritative.
+func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string) provider.ModelCache {
+	out := provider.ModelCache{
+		FetchedAt:              c.FetchedAt,
+		Models:                 append([]provider.Model(nil), c.Models...),
+		AuthoritativeProviders: append([]string(nil), c.AuthoritativeProviders...),
+		ProviderScopes:         make(map[string]string, len(c.ProviderScopes)),
+	}
+	for name, scope := range c.ProviderScopes {
+		out.ProviderScopes[name] = scope
+	}
+
+	scopedProviders := map[string]struct{}{"openai-codex": {}}
+	for name := range c.ProviderScopes {
+		scopedProviders[name] = struct{}{}
+	}
+	for name := range scopes {
+		scopedProviders[name] = struct{}{}
+	}
+	for name := range scopedProviders {
+		if cachedScope := c.ProviderScopes[name]; cachedScope != "" && cachedScope == scopes[name] {
+			continue
+		}
+		out.Models = filterModelsByProvider(out.Models, name)
+		out.AuthoritativeProviders = filterProviderNames(out.AuthoritativeProviders, name)
+		delete(out.ProviderScopes, name)
+	}
+	return out
+}
+
+func filterModelsByProvider(models []provider.Model, name string) []provider.Model {
+	out := make([]provider.Model, 0, len(models))
+	for _, model := range models {
+		if model.Provider != name {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func filterProviderNames(names []string, target string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != target {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func providerScopesEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, scope := range a {
+		if b[name] != scope {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadUserModels reads $ZUT_HOME/models.json and merges any user-defined
@@ -174,7 +251,8 @@ func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) e
 
 func refreshModels() {
 	cached, _ := provider.LoadCache(ModelCachePath())
-	if cached.IsFresh() {
+	currentScopes := currentModelProviderScopes()
+	if cached.IsFresh() && providerScopesEqual(cached.ProviderScopes, currentScopes) {
 		return
 	}
 
@@ -182,6 +260,16 @@ func refreshModels() {
 	defer cancel()
 
 	var all []provider.Model
+	var authoritativeProviders []string
+	providerScopes := make(map[string]string)
+	if cached.IsFresh() {
+		cached = filterCacheByProviderScopes(cached, currentScopes)
+		all = append(all, cached.Models...)
+		authoritativeProviders = append(authoritativeProviders, cached.AuthoritativeProviders...)
+		for name, scope := range cached.ProviderScopes {
+			providerScopes[name] = scope
+		}
+	}
 
 	if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
 		// /v1/models on Anthropic is API-key only; OAuth tokens can
@@ -194,6 +282,18 @@ func refreshModels() {
 	if cred, method, err := resolveCredentialForBackground(ctx, "openai"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
 			all = append(all, live...)
+		}
+	}
+	if cred, method, accountID, err := resolveCredentialFull(ctx, "openai-codex", "", apiKeyCommandSkip); err == nil && method == "oauth" {
+		if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
+			all = filterModelsByProvider(all, "openai-codex")
+			authoritativeProviders = filterProviderNames(authoritativeProviders, "openai-codex")
+			delete(providerScopes, "openai-codex")
+			all = append(all, live...)
+			if accountID != "" {
+				authoritativeProviders = append(authoritativeProviders, "openai-codex")
+				providerScopes["openai-codex"] = accountID
+			}
 		}
 	}
 	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
@@ -218,12 +318,14 @@ func refreshModels() {
 		}
 	}
 
-	if len(all) == 0 {
+	if len(all) == 0 && len(authoritativeProviders) == 0 {
 		return
 	}
-	provider.SetLiveModels(all)
+	provider.SetLiveModelsForProviders(all, authoritativeProviders)
 	_ = provider.SaveCache(ModelCachePath(), provider.ModelCache{
-		FetchedAt: time.Now().UTC(),
-		Models:    all,
+		FetchedAt:              time.Now().UTC(),
+		Models:                 all,
+		AuthoritativeProviders: authoritativeProviders,
+		ProviderScopes:         providerScopes,
 	})
 }

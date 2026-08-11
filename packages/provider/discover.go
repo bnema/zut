@@ -227,7 +227,92 @@ func looksLikeChatModel(id string) bool {
 	return false
 }
 
-const openrouterDefaultBaseURL = "https://openrouter.ai/api/v1"
+const (
+	openaiCodexModelsBaseURL  = "https://chatgpt.com/backend-api/codex"
+	openaiCodexClientVersion  = "0.144.0"
+	openrouterDefaultBaseURL  = "https://openrouter.ai/api/v1"
+	maxDiscoveryResponseBytes = 10 << 20
+)
+
+// DiscoverOpenAICodex lists the models available to a ChatGPT/Codex OAuth
+// account. This catalog is separate from api.openai.com/v1/models and is the
+// authoritative source for models usable through the Codex subscription route.
+func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) ([]Model, error) {
+	if baseURL == "" {
+		baseURL = openaiCodexModelsBaseURL
+	}
+	url := strings.TrimRight(baseURL, "/") + "/models?client_version=" + openaiCodexClientVersion
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("authorization", "Bearer "+token)
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+	// The Codex backend expects the same stable client identity used for
+	// requests to its Responses endpoint.
+	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("user-agent", "codex_cli_rs/0.0.0")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("openai-codex discover read response: %w", err)
+	}
+	if len(body) > maxDiscoveryResponseBytes {
+		return nil, fmt.Errorf("openai-codex discover response exceeds %d bytes", maxDiscoveryResponseBytes)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openai-codex discover http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var page struct {
+		Models []struct {
+			Slug                     string   `json:"slug"`
+			DisplayName              string   `json:"display_name"`
+			SupportedInAPI           bool     `json:"supported_in_api"`
+			Visibility               string   `json:"visibility"`
+			SupportedReasoningLevels []string `json:"supported_reasoning_levels"`
+			ContextWindow            *int     `json:"context_window"`
+			MaxContext               *int     `json:"max_context_window"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("openai-codex discover parse: %w", err)
+	}
+	out := make([]Model, 0, len(page.Models))
+	for _, m := range page.Models {
+		if m.Slug == "" || !m.SupportedInAPI || m.Visibility == "hide" {
+			continue
+		}
+		contextWindow := 0
+		if m.ContextWindow != nil {
+			contextWindow = *m.ContextWindow
+		}
+		if contextWindow == 0 && m.MaxContext != nil {
+			contextWindow = *m.MaxContext
+		}
+		displayName := m.DisplayName
+		if displayName == "" {
+			displayName = m.Slug
+		}
+		out = append(out, Model{
+			Provider:      "openai-codex",
+			ID:            m.Slug,
+			DisplayName:   displayName,
+			ContextWindow: contextWindow,
+			Reasoning:     len(m.SupportedReasoningLevels) > 0,
+			Source:        "live",
+		})
+	}
+	return out, nil
+}
 
 // DiscoverOpenRouter lists models from OpenRouter's public /models
 // endpoint (no auth). Per-token USD prices are converted to USD per 1M

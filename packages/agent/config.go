@@ -601,31 +601,31 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 			return key, "apikey", "", nil
 		}
 		if provider == "xai" && pc.OAuth != nil && pc.OAuth.AccessToken != "" {
-			tok, _ := refreshIfExpired(provider, pc.OAuth)
+			tok, _ := refreshIfExpiredContext(ctx, provider, pc.OAuth)
 			return tok.AccessToken, "oauth", "", nil
 		}
 	}
 	switch provider {
 	case "anthropic":
 		if c.Anthropic.OAuth != nil && c.Anthropic.OAuth.AccessToken != "" {
-			tok, _ := refreshIfExpired("anthropic", c.Anthropic.OAuth)
+			tok, _ := refreshIfExpiredContext(ctx, "anthropic", c.Anthropic.OAuth)
 			return tok.AccessToken, "oauth", "", nil
 		}
 	case "openai-codex":
 		if c.OpenAI.OAuth != nil && c.OpenAI.OAuth.AccessToken != "" {
-			tok, _ := refreshIfExpired("openai", c.OpenAI.OAuth)
+			tok, _ := refreshIfExpiredContext(ctx, "openai", c.OpenAI.OAuth)
 			return tok.AccessToken, "oauth", tok.AccountID, nil
 		}
 	case "kimi":
 		if c.Kimi.OAuth != nil && c.Kimi.OAuth.AccessToken != "" {
-			tok, _ := refreshIfExpired("kimi", c.Kimi.OAuth)
+			tok, _ := refreshIfExpiredContext(ctx, "kimi", c.Kimi.OAuth)
 			return tok.AccessToken, "oauth", "", nil
 		}
 		if kimiCLIFallbackDisabled() {
 			break
 		}
 		if tok := loadKimiCodeCLIToken(); tok != nil && tok.AccessToken != "" {
-			tok, _ = refreshIfExpired("kimi", tok)
+			tok, _ = refreshIfExpiredContext(ctx, "kimi", tok)
 			return tok.AccessToken, "oauth", "", nil
 		}
 	case "github-copilot":
@@ -794,6 +794,12 @@ func loadOAuthToken(providerName string) *auth.OAuthToken {
 // a request with the stale access_token, which will 401. That's still
 // better than crashing at credential-resolution time.
 func refreshIfExpired(providerName string, tok *auth.OAuthToken) (*auth.OAuthToken, error) {
+	return refreshIfExpiredContext(context.Background(), providerName, tok)
+}
+
+// refreshIfExpiredContext uses the caller's cancellation deadline while
+// refreshing an expired OAuth token.
+func refreshIfExpiredContext(parent context.Context, providerName string, tok *auth.OAuthToken) (*auth.OAuthToken, error) {
 	if tok == nil {
 		return &auth.OAuthToken{}, fmt.Errorf("nil token")
 	}
@@ -805,7 +811,7 @@ func refreshIfExpired(providerName string, tok *auth.OAuthToken) (*auth.OAuthTok
 	}
 
 	if providerName == "xai" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		next, err := auth.RefreshXAIToken(ctx, tok.RefreshToken)
 		if err != nil {
@@ -832,7 +838,7 @@ func refreshIfExpired(providerName string, tok *auth.OAuthToken) (*auth.OAuthTok
 		return tok, fmt.Errorf("unknown provider %q", providerName)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	next, err := op.Refresh(ctx, tok.RefreshToken)
 	if err != nil {

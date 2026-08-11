@@ -385,19 +385,16 @@ var Catalog = []Model{
 		Provider: "openai-codex", ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 1, PriceOutput: 6, PriceCacheRead: 0.1, PriceCacheWrite: 1.25,
-		Speculative: true,
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 5, PriceOutput: 30, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
-		Speculative: true,
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 2.5, PriceOutput: 15, PriceCacheRead: 0.25, PriceCacheWrite: 3.125,
-		Speculative: true,
 	},
 }
 
@@ -421,14 +418,21 @@ var (
 // Typically called after a successful /v1/models discovery or on load
 // from the on-disk cache.
 func SetLiveModels(live []Model) {
+	SetLiveModelsForProviders(live, nil)
+}
+
+// SetLiveModelsForProviders replaces the live overlay, treating the listed
+// providers' live catalogs as authoritative. For those providers, static
+// entries omitted by discovery are removed from the active catalog.
+func SetLiveModelsForProviders(live []Model, authoritativeProviders []string) {
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	activeSet = true
-	if len(live) == 0 {
+	if len(live) == 0 && len(authoritativeProviders) == 0 {
 		active = nil
 		return
 	}
-	active = MergeCatalog(live)
+	active = MergeCatalogForProviders(live, authoritativeProviders)
 }
 
 // Active returns the current merged catalog.
