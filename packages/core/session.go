@@ -61,10 +61,53 @@ const (
 	GoalDone    GoalStatus = "done"
 )
 
+// GoalOwner identifies who established a session goal. Missing owners in
+// legacy session data are interpreted as user-owned.
+type GoalOwner string
+
+const (
+	GoalOwnerUser    GoalOwner = "user"
+	GoalOwnerManager GoalOwner = "manager"
+)
+
+// MissionStatus is the durable lifecycle state of the user intent that owns
+// a linear sequence of manager and user goals.
+type MissionStatus string
+
+const (
+	MissionActive    MissionStatus = "active"
+	MissionPaused    MissionStatus = "paused"
+	MissionCompleted MissionStatus = "completed"
+	MissionBlocked   MissionStatus = "blocked"
+)
+
+// MissionSource identifies who established the mission objective.
+type MissionSource string
+
+const (
+	MissionSourceUser    MissionSource = "user"
+	MissionSourceManager MissionSource = "manager"
+)
+
+// SessionMission is the bounded, linear container for session goals.
+type SessionMission struct {
+	ID              string        `json:"id"`
+	Objective       string        `json:"objective"`
+	Status          MissionStatus `json:"status"`
+	Source          MissionSource `json:"source"`
+	ActiveGoalID    string        `json:"active_goal_id,omitempty"`
+	TransitionCount int           `json:"transition_count,omitempty"`
+	Reason          string        `json:"reason,omitempty"`
+}
+
 // SessionGoal is the concise autonomous objective attached to one session.
 type SessionGoal struct {
+	ID        string     `json:"id,omitempty"`
+	MissionID string     `json:"mission_id,omitempty"`
 	Objective string     `json:"objective"`
 	Status    GoalStatus `json:"status"`
+	Owner     GoalOwner  `json:"owner,omitempty"`
+	Ordinal   int        `json:"ordinal,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 }
 
@@ -86,9 +129,15 @@ type SessionMeta struct {
 	// continuation. It is session metadata, never provider context.
 	// Missing or invalid values are handled by the owning host as no handoff.
 	CompactHandoff json.RawMessage `json:"compact_handoff,omitempty"`
+	// Mission owns the linear history of autonomous goals. Legacy sessions with
+	// only Goal are normalized on read.
+	Mission *SessionMission `json:"mission,omitempty"`
 	// Goal is the current autonomous objective for this session. Completed
 	// goals remain inspectable until the user clears or replaces them.
 	Goal *SessionGoal `json:"goal,omitempty"`
+	// GoalHistory records prior durable goal states in chronological order.
+	// It stays linear: there is only one current goal at a time.
+	GoalHistory []SessionGoal `json:"goal_history,omitempty"`
 
 	// Parent is the ID of the session this one was forked from, or
 	// empty for top-level sessions. The tree picker walks parents
@@ -466,6 +515,7 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: file is empty", path)
 	}
 
+	normalizeSessionGoalMeta(&snapshot.Meta)
 	snapshot.CompactionGeneration = generation
 	snapshot.ExtensionState = extensionState
 
@@ -1335,22 +1385,139 @@ func (s *Session) UpdateCompactHandoff(state json.RawMessage) error {
 }
 
 // UpdateGoal records or clears the current autonomous session goal.
+const maxMissionGoalTransitions = 16
+
+// EnsureMission creates the durable user-intent boundary when this session has
+// none. It never replaces an existing mission; explicit user controls own
+// replacement and cancellation semantics.
+func (s *Session) EnsureMission(objective string, source MissionSource) error {
+	if s == nil || strings.TrimSpace(objective) == "" || s.Meta.Mission != nil {
+		return nil
+	}
+	previous := s.Meta.Mission
+	s.Meta.Mission = &SessionMission{
+		ID:        uuid.NewString(),
+		Objective: strings.TrimSpace(objective),
+		Status:    MissionActive,
+		Source:    source,
+	}
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.Mission = previous
+		return fmt.Errorf("ensure mission: %w", err)
+	}
+	return nil
+}
+
+// UpdateGoal persists one linear goal transition. It lazily migrates legacy
+// goal-only sessions into a mission and rejects unbounded manager progression.
 func (s *Session) UpdateGoal(goal *SessionGoal) error {
 	if s == nil {
 		return nil
 	}
-	previous := s.Meta.Goal
+	previous := cloneSessionGoal(s.Meta.Goal)
+	previousMission := cloneSessionMission(s.Meta.Mission)
+	previousHistory := append([]SessionGoal(nil), s.Meta.GoalHistory...)
+	if previous != nil {
+		s.Meta.GoalHistory = append(s.Meta.GoalHistory, *previous)
+	}
 	if goal == nil {
 		s.Meta.Goal = nil
+		s.Meta.Mission = nil
 	} else {
 		copyGoal := *goal
+		if err := s.assignGoalToMission(&copyGoal, previous); err != nil {
+			s.Meta.Mission = previousMission
+			s.Meta.GoalHistory = previousHistory
+			return err
+		}
 		s.Meta.Goal = &copyGoal
 	}
 	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
 		s.Meta.Goal = previous
+		s.Meta.Mission = previousMission
+		s.Meta.GoalHistory = previousHistory
 		return fmt.Errorf("update goal: %w", err)
 	}
 	return nil
+}
+
+func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
+	if s.Meta.Mission == nil {
+		source := MissionSourceUser
+		if goal.Owner == GoalOwnerManager {
+			source = MissionSourceManager
+		}
+		s.Meta.Mission = &SessionMission{
+			ID:        uuid.NewString(),
+			Objective: goal.Objective,
+			Status:    MissionActive,
+			Source:    source,
+		}
+	}
+	mission := s.Meta.Mission
+	if goal.ID == "" {
+		goal.ID = uuid.NewString()
+	}
+	isNewManagerGoal := goal.Status == GoalActive && goal.Owner == GoalOwnerManager && (previous == nil || goal.ID != previous.ID)
+	if isNewManagerGoal {
+		mission.TransitionCount++
+		if mission.TransitionCount > maxMissionGoalTransitions {
+			return fmt.Errorf("mission goal transition limit reached")
+		}
+	}
+	goal.MissionID = mission.ID
+	if goal.Ordinal == 0 {
+		goal.Ordinal = len(s.Meta.GoalHistory) + 1
+	}
+	if goal.Owner == "" {
+		goal.Owner = GoalOwnerUser
+	}
+	if goal.Status == GoalActive {
+		mission.ActiveGoalID = goal.ID
+		mission.Status = MissionActive
+		mission.Reason = ""
+	} else if mission.ActiveGoalID == goal.ID {
+		mission.ActiveGoalID = ""
+	}
+	return nil
+}
+
+func normalizeSessionGoalMeta(meta *SessionMeta) {
+	if meta == nil || meta.Goal == nil {
+		return
+	}
+	goal := meta.Goal
+	if goal.Owner == "" {
+		goal.Owner = GoalOwnerUser
+	}
+	if meta.Mission == nil {
+		meta.Mission = &SessionMission{
+			ID:        "legacy-" + meta.ID,
+			Objective: goal.Objective,
+			Status:    MissionActive,
+			Source:    MissionSourceUser,
+		}
+	}
+	if goal.ID == "" {
+		goal.ID = "legacy-goal-" + meta.ID
+	}
+	if goal.MissionID == "" {
+		goal.MissionID = meta.Mission.ID
+	}
+	if goal.Ordinal == 0 {
+		goal.Ordinal = len(meta.GoalHistory) + 1
+	}
+	if goal.Status == GoalActive {
+		meta.Mission.ActiveGoalID = goal.ID
+	}
+}
+
+func cloneSessionMission(mission *SessionMission) *SessionMission {
+	if mission == nil {
+		return nil
+	}
+	clone := *mission
+	return &clone
 }
 
 // UpdateTitle records a session title without adding anything to the
@@ -1512,7 +1679,7 @@ func (s *Session) Close() error {
 	}
 	flushErr := s.Flush()
 	closeErr := s.writer.Close()
-	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Goal == nil {
+	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Mission == nil && s.Meta.Goal == nil && len(s.Meta.GoalHistory) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.

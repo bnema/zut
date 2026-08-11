@@ -707,11 +707,23 @@ func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result 
 }
 
 func persistGoalToolResult(sess *core.Session, result core.ToolResult) error {
-	if sess == nil || sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
+	if sess == nil {
 		return nil
 	}
 	update, ok := tools.GoalUpdateFromResult(result)
 	if !ok {
+		return nil
+	}
+	if update.Status == core.GoalActive {
+		if sess.Meta.Goal != nil && sess.Meta.Goal.Status == core.GoalActive {
+			return fmt.Errorf("cannot replace an active goal")
+		}
+		if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
+			return fmt.Errorf("goal update does not belong to the active mission")
+		}
+		return sess.UpdateGoal(&core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager})
+	}
+	if sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
 		return nil
 	}
 	goal := *sess.Meta.Goal
@@ -1852,6 +1864,16 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		return sess.UpdateGoal(goal)
 	}
+	ensureMission := func(objective string) error {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return errors.New("session persistence is disabled")
+		}
+		return sess.EnsureMission(objective, core.MissionSourceUser)
+	}
 	currentGoal := func() *core.SessionGoal {
 		persistMu.Lock()
 		defer persistMu.Unlock()
@@ -1860,6 +1882,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		goal := *sess.Meta.Goal
 		return &goal
+	}
+	currentGoalHistory := func() []core.SessionGoal {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return nil
+		}
+		return append([]core.SessionGoal(nil), sess.Meta.GoalHistory...)
 	}
 	bindAgentToolResultSession := func(a *core.Agent, boundSession *core.Session) {
 		if a == nil {
@@ -2474,6 +2504,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		CurrentCompactHandoff: currentCompactHandoff,
 		PersistGoal:           persistGoal,
 		CurrentGoal:           currentGoal,
+		CurrentGoalHistory:    currentGoalHistory,
+		EnsureMission:         ensureMission,
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()

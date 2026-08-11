@@ -128,8 +128,11 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	if got := string(imported.Meta.CompactHandoff); got != string(handoff) {
 		t.Errorf("compact handoff = %q, want %q", got, handoff)
 	}
-	if imported.Meta.Goal == nil || *imported.Meta.Goal != *goal {
-		t.Errorf("goal = %#v, want %#v", imported.Meta.Goal, goal)
+	if imported.Meta.Goal == nil || imported.Meta.Goal.Objective != goal.Objective || imported.Meta.Goal.Status != goal.Status || imported.Meta.Goal.MissionID == "" {
+		t.Errorf("goal = %#v", imported.Meta.Goal)
+	}
+	if imported.Meta.Mission == nil || imported.Meta.Mission.ID != imported.Meta.Goal.MissionID || imported.Meta.Mission.Objective != goal.Objective {
+		t.Errorf("mission = %#v", imported.Meta.Mission)
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages, got %d", len(msgs))
@@ -591,8 +594,11 @@ func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
 	if got := string(full.Meta.CompactHandoff); got != string(handoff) {
 		t.Fatalf("full branch compact handoff = %q, want %q", got, handoff)
 	}
-	if full.Meta.Goal == nil || *full.Meta.Goal != *goal {
-		t.Fatalf("full branch goal = %#v, want %#v", full.Meta.Goal, goal)
+	if full.Meta.Goal == nil || full.Meta.Goal.Objective != goal.Objective || full.Meta.Goal.Status != goal.Status || full.Meta.Goal.MissionID == "" {
+		t.Fatalf("full branch goal = %#v", full.Meta.Goal)
+	}
+	if full.Meta.Mission == nil || full.Meta.Mission.ID != full.Meta.Goal.MissionID {
+		t.Fatalf("full branch mission = %#v", full.Meta.Mission)
 	}
 
 	prefixPath, err := BranchSession(parent.Path, root, cwd, "test", 1)
@@ -609,6 +615,9 @@ func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
 	}
 	if prefix.Meta.Goal != nil {
 		t.Fatalf("prefix branch goal = %#v, want nil", prefix.Meta.Goal)
+	}
+	if prefix.Meta.Mission != nil || len(prefix.Meta.GoalHistory) != 0 {
+		t.Fatalf("prefix branch mission/history = %#v / %#v, want nil", prefix.Meta.Mission, prefix.Meta.GoalHistory)
 	}
 }
 

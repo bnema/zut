@@ -214,6 +214,27 @@ func TestToolResultPersistenceRunsOutsideTUILock(t *testing.T) {
 	}
 }
 
+func TestGoalBadgeAcceptsNextPersistedManagerGoal(t *testing.T) {
+	interactive := NewInteractive(InteractiveConfig{
+		Agent: core.NewAgent(nil, "model", "system", goalToolRegistry()),
+		CurrentGoal: func() *core.SessionGoal {
+			return &core.SessionGoal{Objective: "implement the fix", Status: core.GoalActive, Owner: core.GoalOwnerManager}
+		},
+	})
+	interactive.mu.Lock()
+	interactive.goalStatus = core.GoalDone
+	interactive.mu.Unlock()
+
+	interactive.handleEvent(core.EvToolResult{ID: "goal", Result: core.ToolResult{
+		Details: agenttools.GoalUpdate{Status: core.GoalActive, Objective: "implement the fix"},
+	}})
+	interactive.mu.Lock()
+	defer interactive.mu.Unlock()
+	if interactive.goalStatus != core.GoalActive {
+		t.Fatalf("goal badge = %q, want active", interactive.goalStatus)
+	}
+}
+
 func TestGoalBadgeUsesDurableStatusAfterPersistenceFailure(t *testing.T) {
 	goal := &core.SessionGoal{Objective: "finish issue 97", Status: core.GoalActive}
 	interactive := NewInteractive(InteractiveConfig{
@@ -285,6 +306,24 @@ func TestGoalSlashCommandStartsAndControlsGoal(t *testing.T) {
 	interactive.runSlash(context.Background(), "/goal")
 	if !strings.Contains(interactive.statusOK, "waiting for input") {
 		t.Fatalf("goal status = %q", interactive.statusOK)
+	}
+}
+
+func TestGoalHistoryShowsOwnerAndReason(t *testing.T) {
+	interactive := NewInteractive(InteractiveConfig{
+		CurrentGoal: func() *core.SessionGoal { return nil },
+		PersistGoal: func(*core.SessionGoal) error { return nil },
+		CurrentGoalHistory: func() []core.SessionGoal {
+			return []core.SessionGoal{
+				{Objective: "reproduce", Status: core.GoalDone, Owner: core.GoalOwnerManager},
+				{Objective: "await input", Status: core.GoalBlocked, Owner: core.GoalOwnerUser, Reason: "missing logs"},
+			}
+		},
+	})
+
+	interactive.runSlash(context.Background(), "/goal history")
+	if !strings.Contains(interactive.statusOK, "done (manager): reproduce") || !strings.Contains(interactive.statusOK, "blocked (user): await input (missing logs)") {
+		t.Fatalf("goal history = %q", interactive.statusOK)
 	}
 }
 

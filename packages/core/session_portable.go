@@ -228,7 +228,9 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		Timezone:       timezone,
 		TimezoneOffset: timezoneOffset,
 		CompactHandoff: append(json.RawMessage(nil), snapshot.Meta.CompactHandoff...),
+		Mission:        cloneSessionMission(snapshot.Meta.Mission),
 		Goal:           cloneSessionGoal(snapshot.Meta.Goal),
+		GoalHistory:    cloneGoalHistory(snapshot.Meta.GoalHistory),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &importMeta})
 	if err != nil {
@@ -446,12 +448,30 @@ func goalAtBranch(parent SessionMeta, messages []provider.Message, limit int) *S
 	return cloneSessionGoal(parent.Goal)
 }
 
+func missionAtBranch(parent SessionMeta, messages []provider.Message, limit int) *SessionMission {
+	if limit != len(messages) {
+		return nil
+	}
+	return cloneSessionMission(parent.Mission)
+}
+
 func cloneSessionGoal(goal *SessionGoal) *SessionGoal {
 	if goal == nil {
 		return nil
 	}
 	clone := *goal
 	return &clone
+}
+
+func cloneGoalHistory(history []SessionGoal) []SessionGoal {
+	return append([]SessionGoal(nil), history...)
+}
+
+func goalHistoryAtBranch(parent SessionMeta, messages []provider.Message, limit int) []SessionGoal {
+	if limit != len(messages) {
+		return nil
+	}
+	return cloneGoalHistory(parent.GoalHistory)
 }
 
 func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage, compactHandoff json.RawMessage, goal *SessionGoal) (string, error) {
@@ -496,7 +516,9 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		ForkPoint:        limit,
 		HideFromSessions: hideFromSessions,
 		CompactHandoff:   append(json.RawMessage(nil), compactHandoff...),
+		Mission:          missionAtBranch(parent, messages, limit),
 		Goal:             cloneSessionGoal(goal),
+		GoalHistory:      goalHistoryAtBranch(parent, messages, limit),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
 	if err != nil {

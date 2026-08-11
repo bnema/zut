@@ -13,28 +13,33 @@ import (
 
 const (
 	UpdateGoalToolName = "update_goal"
-	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"],"description":"Mark the active autonomous goal complete or blocked."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
+	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked"],"description":"Set the next active goal, or mark the active goal complete or blocked."},"objective":{"type":"string","description":"Concrete objective for status active."},"mission_id":{"type":"string","description":"Mission identifier supplied in the active-goal context when setting a next goal."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
 )
 
-// UpdateGoalTool lets the model stop an explicitly user-started autonomous
-// goal. Starting, pausing, and resuming remain user-controlled.
+// UpdateGoalTool lets the manager set the next concrete active goal or settle
+// the current goal. Host-side persistence validates that a transition remains
+// within the session's active mission.
 type UpdateGoalTool struct{}
 
 type updateGoalArgs struct {
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+	Status    string `json:"status"`
+	Objective string `json:"objective,omitempty"`
+	MissionID string `json:"mission_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // GoalUpdate is trusted metadata returned only by UpdateGoalTool.
 type GoalUpdate struct {
-	Status core.GoalStatus
-	Reason string
+	Status    core.GoalStatus
+	Objective string
+	MissionID string
+	Reason    string
 }
 
 func (t *UpdateGoalTool) Name() string { return UpdateGoalToolName }
 
 func (t *UpdateGoalTool) Description() string {
-	return "Mark the active autonomous goal complete or blocked. Only use this for a goal explicitly started by the user with /goal."
+	return "Set the next concrete goal needed for the active user mission, or mark the active goal complete or blocked. Do not broaden the user's mission."
 }
 
 func (t *UpdateGoalTool) Schema() json.RawMessage { return json.RawMessage(updateGoalSchema) }
@@ -50,10 +55,19 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 		return goalToolError("invalid arguments"), nil
 	}
 	args.Status = strings.TrimSpace(args.Status)
+	args.Objective = strings.TrimSpace(args.Objective)
+	args.MissionID = strings.TrimSpace(args.MissionID)
 	args.Reason = strings.TrimSpace(args.Reason)
 
 	var update GoalUpdate
 	switch args.Status {
+	case "active":
+		if args.Objective == "" {
+			return goalToolError("objective is required when setting a goal"), nil
+		}
+		update.Status = core.GoalActive
+		update.Objective = args.Objective
+		update.MissionID = args.MissionID
 	case "complete":
 		update.Status = core.GoalDone
 	case "blocked":
@@ -63,7 +77,7 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 		update.Status = core.GoalBlocked
 		update.Reason = args.Reason
 	default:
-		return goalToolError("status must be complete or blocked"), nil
+		return goalToolError("status must be active, complete, or blocked"), nil
 	}
 
 	text := "autonomous goal marked " + string(update.Status)
@@ -85,7 +99,10 @@ func GoalUpdateFromResult(result core.ToolResult) (GoalUpdate, bool) {
 	if !ok {
 		return GoalUpdate{}, false
 	}
-	if update.Status != core.GoalDone && update.Status != core.GoalBlocked {
+	if update.Status != core.GoalActive && update.Status != core.GoalDone && update.Status != core.GoalBlocked {
+		return GoalUpdate{}, false
+	}
+	if update.Status == core.GoalActive && strings.TrimSpace(update.Objective) == "" {
 		return GoalUpdate{}, false
 	}
 	if update.Status == core.GoalBlocked && strings.TrimSpace(update.Reason) == "" {

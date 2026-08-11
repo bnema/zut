@@ -377,8 +377,10 @@ type InteractiveConfig struct {
 	// current session. CurrentGoal must return a copy, not the live session
 	// pointer, so failed persistence cannot mutate in-memory state. The callbacks
 	// follow session switches without coupling the TUI to the session file owner.
-	CurrentGoal func() *core.SessionGoal
-	PersistGoal func(goal *core.SessionGoal) error
+	CurrentGoal        func() *core.SessionGoal
+	CurrentGoalHistory func() []core.SessionGoal
+	EnsureMission      func(objective string) error
+	PersistGoal        func(goal *core.SessionGoal) error
 
 	OnAssistant func(m provider.Message)
 
@@ -4176,6 +4178,12 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 		return
 	}
 	i.mu.Unlock()
+	if userInput && i.cfg.EnsureMission != nil {
+		if err := i.cfg.EnsureMission(text); err != nil {
+			i.ReportError(fmt.Errorf("persist mission: %w", err))
+			return
+		}
+	}
 	// User input is an orchestration event, not merely a queue append. When
 	// the manager is dormant behind a sealed worker wave, the coordinator makes
 	// this the next manager turn and carries any completed worker summary with it.
@@ -8362,8 +8370,17 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			tc.Result = text.String()
 			i.bumpToolRevisionLocked(tc)
 		}
-		if update, ok := tools.GoalUpdateFromResult(e.Result); ok && i.goalStatus == core.GoalActive {
-			i.goalStatus = update.Status
+		if update, ok := tools.GoalUpdateFromResult(e.Result); ok {
+			if update.Status == core.GoalActive {
+				// A manager may advance a terminal goal to the next persisted
+				// goal in the same mission. Do not let a late tool result resume
+				// a goal explicitly paused by the user.
+				if i.goalStatus != core.GoalPaused {
+					i.goalStatus = core.GoalActive
+				}
+			} else if i.goalStatus == core.GoalActive {
+				i.goalStatus = update.Status
+			}
 		}
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative

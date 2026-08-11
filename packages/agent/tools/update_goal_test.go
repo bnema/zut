@@ -30,6 +30,21 @@ func TestUpdateGoalToolReturnsPersistableStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateGoalToolReturnsPersistableManagerGoal(t *testing.T) {
+	tool := &UpdateGoalTool{}
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"active","objective":"reproduce the reported failure"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, ok := GoalUpdateFromResult(result)
+	if !ok {
+		t.Fatalf("details = %#v, want goal update", result.Details)
+	}
+	if update.Status != core.GoalActive || update.Objective != "reproduce the reported failure" {
+		t.Fatalf("update = %#v", update)
+	}
+}
+
 func TestUpdateGoalToolRejectsUnknownFields(t *testing.T) {
 	tool := &UpdateGoalTool{}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"complete","unexpected":true}`), nil)
