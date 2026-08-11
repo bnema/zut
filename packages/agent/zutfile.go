@@ -765,7 +765,11 @@ func checkZutfileRequirements(zf zutfileLoaded, version string) error {
 		if isDevVersion(version) {
 			return fmt.Errorf("agent requires zut %s or newer; unversioned development builds cannot satisfy min_zut", min)
 		}
-		if versionLess(version, min) {
+		comparison, err := compareVersions(version, min)
+		if err != nil {
+			return fmt.Errorf("validate min_zut requirement: %w", err)
+		}
+		if comparison < 0 {
 			return fmt.Errorf("agent requires zut %s or newer; running %s", min, versionOnly(version))
 		}
 	}

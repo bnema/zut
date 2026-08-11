@@ -126,6 +126,27 @@ func TestGPT56UsesNativeMaxReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestUsesExplicitReasoningLevelMap(t *testing.T) {
+	SetLiveModels([]Model{{
+		Provider:          "custom-responses",
+		ID:                "reasoning-model",
+		API:               APIResponses,
+		Reasoning:         true,
+		ReasoningLevelMap: map[string]string{"max": "max"},
+	}})
+	t.Cleanup(func() { SetLiveModels(nil) })
+
+	named := NewOpenAIResponsesNamed("token", "https://example.test/v1", "custom-responses").(*renamedClient)
+	c := named.inner.(*codexClient)
+	wire, err := c.buildRequest(Request{Model: "reasoning-model", Reasoning: "max"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Reasoning == nil || wire.Reasoning.Effort != "max" {
+		t.Fatalf("reasoning = %+v", wire.Reasoning)
+	}
+}
+
 func TestXAIResponsesUsesNamedProviderCatalogAndEndpoint(t *testing.T) {
 	named := NewOpenAIResponsesNamed("token", "https://api.x.ai/v1", "xai").(*renamedClient)
 	c := named.inner.(*codexClient)

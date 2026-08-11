@@ -708,6 +708,35 @@ func TestReadAgentsContextMissingFilesIsEmpty(t *testing.T) {
 	}
 }
 
+func TestResolveNoContextFilesSkipsAgentsInstructions(t *testing.T) {
+	zutHome := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	if err := os.WriteFile(filepath.Join(zutHome, "AGENTS.md"), []byte("global rule"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("project rule"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{
+		Provider:       "openai",
+		Model:          "gpt-5",
+		CWD:            cwd,
+		NoContextFiles: true,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ContextFiles) != 0 {
+		t.Fatalf("ContextFiles = %#v, want empty", r.ContextFiles)
+	}
+	if strings.Contains(r.SystemPrompt, "global rule") || strings.Contains(r.SystemPrompt, "project rule") {
+		t.Fatalf("system prompt contains disabled context files:\n%s", r.SystemPrompt)
+	}
+}
+
 // TestResolveFallsBackWhenConfiguredModelIsGone reproduces the
 // startup failure caught by the user's screenshot: the persisted
 // config.json points at a model id that's no longer in the active

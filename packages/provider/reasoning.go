@@ -5,8 +5,8 @@ import "strings"
 var reasoningLevelOrder = []string{"", "minimum", "low", "medium", "high", "xhigh", "max"}
 
 // AvailableReasoningLevels returns the distinct reasoning levels supported by
-// a model. Protocol defaults are adjusted by optional per-model overrides. The
-// empty string represents off.
+// a model. Optional per-model overrides can remove, remap, or extend protocol
+// defaults. The empty string represents off.
 func AvailableReasoningLevels(model Model) []string {
 	defaults := defaultReasoningLevels(model)
 	if !model.Reasoning || len(model.ReasoningLevelMap) == 0 {
@@ -23,9 +23,6 @@ func AvailableReasoningLevels(model Model) []string {
 		effective := level
 		if mapped, overridden := model.ReasoningLevelMap[level]; overridden {
 			effective = NormalizeReasoning(mapped)
-		}
-		if effective != "" && !containsReasoningLevel(defaults, effective) {
-			effective = nearestReasoningLevel(defaults, effective)
 		}
 		if reasoningLevelRank(effective) > 0 {
 			available[effective] = true
@@ -88,6 +85,11 @@ func containsReasoningLevel(levels []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func hasReasoningLevelOverride(model Model, level string) bool {
+	_, ok := model.ReasoningLevelMap[NormalizeReasoning(level)]
+	return ok
 }
 
 // ClampReasoningForModel maps a configured level to the nearest level exposed

@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildSystemPromptAddsCompactionHandoffToCustomPrompt(t *testing.T) {
@@ -20,5 +21,41 @@ func TestBuildSystemPromptAddsCompactionHandoffToCustomPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("compaction handoff missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestBuildSystemPromptCustomOmitsBuiltInDocs(t *testing.T) {
+	got := BuildSystemPrompt(SystemPromptOpts{
+		CWD:        "/workspace",
+		Custom:     "Custom instructions",
+		Append:     []string{"Additional context"},
+		Now:        time.Date(2026, time.August, 6, 0, 0, 0, 0, time.UTC),
+		ZutDocsDir: "/zut/docs",
+	})
+
+	if strings.Contains(got, "Zut's own docs") || strings.Contains(got, "/zut/docs") {
+		t.Fatalf("custom prompt includes built-in docs guidance:\n%s", got)
+	}
+	for _, want := range []string{
+		"Custom instructions",
+		"Additional context",
+		"Current date: 2026-08-06",
+		"Current working directory: /workspace",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("custom prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestBuildSystemPromptDefaultIncludesBuiltInDocs(t *testing.T) {
+	got := BuildSystemPrompt(SystemPromptOpts{
+		CWD:        "/workspace",
+		Now:        time.Date(2026, time.August, 6, 0, 0, 0, 0, time.UTC),
+		ZutDocsDir: "/zut/docs",
+	})
+
+	if !strings.Contains(got, "Zut's own docs are installed under /zut/docs") {
+		t.Fatalf("default prompt missing built-in docs guidance:\n%s", got)
 	}
 }

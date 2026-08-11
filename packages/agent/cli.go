@@ -765,6 +765,10 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 
 // Run is the top-level entrypoint for the zut binary.
 func Run(rawArgs []string, version string) error {
+	// Apply network configuration before any subcommand can make an HTTP
+	// request. Standard proxy environment variables retain precedence.
+	applyConfiguredHTTPProxy()
+
 	// Extension installs can invoke external build and clone processes.
 	// Give those processes a cancellation context without changing signal
 	// handling for the interactive modes below.
@@ -800,6 +804,9 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		rawArgs = append([]string{"--rpc"}, rawArgs[1:]...)
 	}
 
+	if fi, err := os.Stdin.Stat(); err == nil {
+		rawArgs = argsForStdin(rawArgs, fi.Mode())
+	}
 	args, err := ParseArgs(rawArgs)
 	if err != nil {
 		PrintHelp(version)
@@ -1005,11 +1012,8 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
 	}
 
-	prompt := args.Prompt
-	if prompt == "" {
-		piped, _ := readAllStdin()
-		prompt = strings.TrimSpace(piped)
-	}
+	piped, _ := readAllStdin()
+	prompt := combinePromptInput(piped, args.Prompt)
 	if prompt == "" {
 		return fmt.Errorf("print mode requires a prompt (arg or stdin)")
 	}
@@ -1090,11 +1094,8 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
 	}
 
-	prompt := args.Prompt
-	if prompt == "" {
-		piped, _ := readAllStdin()
-		prompt = strings.TrimSpace(piped)
-	}
+	piped, _ := readAllStdin()
+	prompt := combinePromptInput(piped, args.Prompt)
 	if prompt == "" {
 		return fmt.Errorf("stream mode requires a prompt (arg or stdin)")
 	}
@@ -1214,11 +1215,8 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 		defer func() { runErr = errors.Join(runErr, sess.FlushRetryLifecycle(ag.LastTurnUsage(), ag.Cost())) }()
 	}
 
-	prompt := args.Prompt
-	if prompt == "" {
-		piped, _ := readAllStdin()
-		prompt = strings.TrimSpace(piped)
-	}
+	piped, _ := readAllStdin()
+	prompt := combinePromptInput(piped, args.Prompt)
 	if prompt == "" {
 		return fmt.Errorf("json mode requires a prompt (arg or stdin)")
 	}
@@ -2885,6 +2883,24 @@ func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) (nex
 		return next, fmt.Errorf("flush transcript: %w", err)
 	}
 	return next, nil
+}
+
+func argsForStdin(rawArgs []string, mode os.FileMode) []string {
+	if mode&os.ModeCharDevice != 0 {
+		return rawArgs
+	}
+	return append([]string{"--print"}, rawArgs...)
+}
+
+func combinePromptInput(stdin, positional string) string {
+	parts := make([]string, 0, 2)
+	if stdin = strings.TrimSpace(stdin); stdin != "" {
+		parts = append(parts, stdin)
+	}
+	if positional = strings.TrimSpace(positional); positional != "" {
+		parts = append(parts, positional)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func readAllStdin() (string, error) {

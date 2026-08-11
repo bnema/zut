@@ -206,7 +206,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		body.ServiceTier = fastModeServiceTier
 	}
 	if m.Reasoning {
-		if effort := OpenAICodexReasoningEffort(reasoning, req.Model); effort != "" {
+		effort := OpenAICodexReasoningEffort(reasoning, req.Model)
+		if hasReasoningLevelOverride(m, req.Reasoning) {
+			effort = reasoning
+		}
+		if effort != "" {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
 		}
 	}

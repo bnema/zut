@@ -23,9 +23,9 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Flags
 
-`zut rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
+`zut rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
 
-RPC agents use the same resolved system-prompt policy as other modes. Ponytail coding mode is enabled when `ponytail_enabled` is missing or `true` in `$ZUT_HOME/config.json`, and disabled when it is `false`. A custom `--system-prompt` replaces the built-in identity, while enabled append addenda remain present.
+RPC agents use the same resolved system-prompt policy as other modes. Ponytail coding mode is enabled when `ponytail_enabled` is missing or `true` in `$ZUT_HOME/config.json`, and disabled when it is `false`. A custom `--system-prompt` replaces the built-in identity and docs guidance, while enabled append addenda remain present.
 
 ## Auth
 

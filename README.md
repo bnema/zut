@@ -145,11 +145,23 @@ $ZUT_HOME/
 └── logs/               # app log files
 ```
 
-Drop a `SYSTEM.md` in `$ZUT_HOME` to replace the built-in identity for every run. Existing append addenda, including `AGENTS.md`, skills, and enabled Ponytail coding mode, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
+Drop a `SYSTEM.md` in `$ZUT_HOME` to replace the built-in identity and docs guidance for every run. Existing append addenda, including `AGENTS.md`, skills, and enabled Ponytail coding mode, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
 
 Ponytail coding mode is enabled by default, including when an existing `config.json` does not contain a `ponytail_enabled` field. When disabled, its compact guidance is omitted from resolved system prompts; when enabled, the guidance tells the model to apply itself only to engineering work. The setting persists its explicit on/off choice in `$ZUT_HOME/config.json` and can be changed from `/settings`. It is advisory guidance only: it does not change tool permissions, confirmations, jail behavior, or sandboxing.
 
 A selected subagent profile with `systemPromptMode: replace` supplies the child's base identity even when `--system-prompt` was provided for the parent run. Global append addenda, including enabled Ponytail guidance, still follow their normal inclusion rules.
+
+### HTTP proxy
+
+To route zut-managed HTTP and HTTPS requests through one proxy, add `http_proxy` to `$ZUT_HOME/config.json`:
+
+```json
+{
+  "http_proxy": "http://127.0.0.1:7890"
+}
+```
+
+The setting is applied at startup to both HTTP and HTTPS traffic. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` environment variables take precedence for their corresponding protocol. `NO_PROXY` and `no_proxy` continue to control bypasses. Restart zut after changing the config file. If the URL contains proxy credentials, prefer protected environment variables because `config.json` is not a credential store.
 
 ## Persistent instructions (AGENTS.md)
 
@@ -174,9 +186,9 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 |---|---|---|
 | `$ZUT_HOME/AGENTS.md` | global, every run | appended to the default prompt |
 | `./AGENTS.md` (and parent dirs) | project | appended to the default prompt |
-| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity; append addenda remain |
+| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity and docs guidance; append addenda remain |
 | `--append-system-prompt <text>` | single run | appends for one invocation (repeatable) |
-| `--system-prompt <text>` | single run | replaces the built-in identity for one invocation; append addenda remain |
+| `--system-prompt <text>` | single run | replaces the built-in identity and docs guidance for one invocation; append addenda remain |
 
 > **Note:** zut does not read a `CLAUDE.md` instruction file. The only Claude-compatible thing it picks up is skills under `.claude/skills/`. If you are migrating from Claude Code, move that content into `AGENTS.md` (global or per-project) and zut will use it.
 
@@ -190,6 +202,7 @@ The first time you launch a newer zut binary, the TUI shows the GitHub release n
 zut                              # interactive tui
 zut "fix the failing test"       # tui, pre-filled prompt
 zut -p "list all go files"       # print final text, exit
+cat README.md | zut "summarize this text" # pipe input and infer print mode
 zut -p --stats stats.json "task" # print final text and write generation stats
 zut --json "refactor main.go"    # newline-delimited json events, exit
 zut -p --orchestrate --provider openai --model gpt-5 "implement and synthesize"
@@ -228,6 +241,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
 | `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
+| `--no-context-files`, `-nc` | Disable discovery and loading of global and project `AGENTS.md` files. |
 | `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Press `/` while the dialog is focused to run a slash command first; closing its input or child dialog returns to the pending confirmation. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
 
 ## Tools
@@ -248,6 +262,7 @@ When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits r
 - **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands.
 - **Print**: `zut -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
 - **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
+- **Piped input**: stdin implies print mode when no explicit mode is selected. Print, stream, and JSON modes prepend piped input to the positional prompt, separated by a newline. For example, `cat README.md | zut "summarize this text"`.
 - **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
 - **RPC**: `zut rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
 
@@ -518,7 +533,7 @@ Place a `models.json` in `$ZUT_HOME` (`$XDG_STATE_HOME/zut/` when set, otherwise
 
 Supported fields per model: `id` (required), `name`, `reasoning`, `reasoningLevelMap`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
 
-`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, or to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
+`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, use an identity mapping such as `"max": "max"` to enable a level beyond the protocol default, or map it to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
 
 Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`, `moonshot`, `moonshot-ai`, and `kimi-code` map to `kimi`, and `deepseek-chat` and `deepseek-ai` map to `deepseek`. Built-in provider ids such as `groq`, `openrouter`, `github-copilot`, `amazon-bedrock`, `google-vertex`, `azure-openai-responses`, `fireworks`, `vercel-ai-gateway`, `mistral`, and `xai` can also be used directly.
 

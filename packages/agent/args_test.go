@@ -188,6 +188,18 @@ func TestParseArgsStatsRequiresPrintMode(t *testing.T) {
 	}
 }
 
+func TestParseArgsNoContextFiles(t *testing.T) {
+	for _, flag := range []string{"--no-context-files", "-nc"} {
+		args, err := ParseArgs([]string{flag})
+		if err != nil {
+			t.Fatalf("ParseArgs(%q): %v", flag, err)
+		}
+		if !args.NoContextFiles {
+			t.Fatalf("ParseArgs(%q): NoContextFiles = false", flag)
+		}
+	}
+}
+
 func TestParseArgsStream(t *testing.T) {
 	args, err := ParseArgs([]string{"--stream", "hi"})
 	if err != nil {

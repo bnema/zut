@@ -649,10 +649,8 @@ func TestGPT56CatalogEntries(t *testing.T) {
 	}
 }
 
-// TestOpenCodeGoCatalog pins the Grok 4.5 and Kimi K3 entries added to
-// the OpenCode Go provider. Both are listed in the vendor's current Go
-// model lineup (https://opencode.ai/docs/go) and were missing from the
-// baked-in catalog.
+// TestOpenCodeGoCatalog pins entries added from the vendor's current Go
+// model lineup (https://opencode.ai/docs/go).
 func TestOpenCodeGoCatalog(t *testing.T) {
 	cases := []struct {
 		id        string
@@ -662,6 +660,7 @@ func TestOpenCodeGoCatalog(t *testing.T) {
 		priceOut  float64
 		cacheRead float64
 	}{
+		{"gpt-5.6-luna", 1050000, 128000, 0.2, 1.2, 0.02},
 		{"grok-4.5", 500000, 500000, 2, 6, 0.3},
 		{"kimi-k3", 1048576, 131072, 3, 15, 0.3},
 	}
@@ -679,6 +678,17 @@ func TestOpenCodeGoCatalog(t *testing.T) {
 		if m.BaseURL != "https://opencode.ai/zen/go/v1" {
 			t.Fatalf("opencode-go/%s baseURL: %s", tc.id, m.BaseURL)
 		}
+	}
+
+	luna, err := FindModel("opencode-go", "gpt-5.6-luna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if luna.API != APIResponses || luna.PriceCacheWrite != 0.25 {
+		t.Fatalf("opencode-go/gpt-5.6-luna API or cache-write price: %+v", luna)
+	}
+	if luna.PriceTierInputTokens != 272000 || luna.PriceInputAbove != 0.4 || luna.PriceOutputAbove != 1.8 || luna.PriceCacheReadAbove != 0.04 || luna.PriceCacheWriteAbove != 0.5 {
+		t.Fatalf("opencode-go/gpt-5.6-luna long-context prices: %+v", luna)
 	}
 }
 

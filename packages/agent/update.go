@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 // updateCheckTTL is how often we hit the GitHub API to look for a new
@@ -132,40 +133,31 @@ func buildInfo(current, latest, url string) UpdateInfo {
 	return info
 }
 
-// versionLess returns a < b for dotted semver-ish tags like "0.0.4".
-// Non-numeric components compare as zero, which is fine for zut's
-// x.y.z-only scheme.
+// versionLess reports whether a is an older semantic version than b.
+// Invalid versions return false so update checks never offer a downgrade.
 func versionLess(a, b string) bool {
-	as := splitVersion(a)
-	bs := splitVersion(b)
-	for i := 0; i < 3; i++ {
-		av, bv := 0, 0
-		if i < len(as) {
-			av = as[i]
-		}
-		if i < len(bs) {
-			bv = bs[i]
-		}
-		if av != bv {
-			return av < bv
-		}
-	}
-	return false
+	comparison, err := compareVersions(a, b)
+	return err == nil && comparison < 0
 }
 
-func splitVersion(s string) []int {
-	s = strings.TrimPrefix(s, "v")
-	// Strip build-metadata suffix like "(abc1234, 2026-04-18)".
-	if i := strings.IndexAny(s, " ("); i > 0 {
-		s = s[:i]
+func compareVersions(a, b string) (int, error) {
+	a = normalizedVersion(a)
+	b = normalizedVersion(b)
+	if !semver.IsValid(a) {
+		return 0, fmt.Errorf("invalid semantic version %q", strings.TrimPrefix(a, "v"))
 	}
-	parts := strings.Split(s, ".")
-	out := make([]int, 0, len(parts))
-	for _, p := range parts {
-		n, _ := strconv.Atoi(p)
-		out = append(out, n)
+	if !semver.IsValid(b) {
+		return 0, fmt.Errorf("invalid semantic version %q", strings.TrimPrefix(b, "v"))
 	}
-	return out
+	return semver.Compare(a, b), nil
+}
+
+func normalizedVersion(v string) string {
+	v = versionOnly(v)
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	return v
 }
 
 // fetchLatestRelease queries the GitHub API for the latest published
