@@ -31,6 +31,9 @@ func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
 	}
 	text := goal.Objective +
 		"\n\nContinue working autonomously toward this active goal. Do not stop at a progress update. Continue until the goal is complete or blocked, then call update_goal."
+	if goal.MissionID != "" {
+		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
+	}
 	return provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.Content{provider.TextBlock{Text: text}},
@@ -157,12 +160,41 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 	}
 
 	current := copySessionGoal(i.cfg.CurrentGoal())
+	if len(parts) == 2 && strings.EqualFold(parts[1], "history") {
+		if i.cfg.CurrentGoalHistory == nil {
+			i.setGoalCommandError("goal: history is unavailable")
+			return
+		}
+		history := i.cfg.CurrentGoalHistory()
+		if len(history) == 0 {
+			i.setGoalCommandStatus("no goal history")
+			return
+		}
+		entries := make([]string, 0, len(history))
+		for _, goal := range history {
+			owner := goal.Owner
+			if owner == "" {
+				owner = core.GoalOwnerUser
+			}
+			entry := fmt.Sprintf("%s (%s): %s", goal.Status, owner, goal.Objective)
+			if goal.Reason != "" {
+				entry += " (" + goal.Reason + ")"
+			}
+			entries = append(entries, entry)
+		}
+		i.setGoalCommandStatus("goal history: " + strings.Join(entries, " → "))
+		return
+	}
 	if len(parts) == 1 {
 		if current == nil {
 			i.setGoalCommandStatus("no autonomous goal")
 			return
 		}
-		status := fmt.Sprintf("goal %s: %s", current.Status, current.Objective)
+		owner := current.Owner
+		if owner == "" {
+			owner = core.GoalOwnerUser
+		}
+		status := fmt.Sprintf("goal %s (%s): %s", current.Status, owner, current.Objective)
 		if current.Reason != "" {
 			status += " (" + current.Reason + ")"
 		}
@@ -203,10 +235,10 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 	default:
 		objective := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cmd), parts[0]))
 		if objective == "" {
-			i.setGoalCommandError("usage: /goal <objective>|pause|resume|clear")
+			i.setGoalCommandError("usage: /goal <objective>|pause|resume|clear|history")
 			return
 		}
-		current = &core.SessionGoal{Objective: objective, Status: core.GoalActive}
+		current = &core.SessionGoal{Objective: objective, Status: core.GoalActive, Owner: core.GoalOwnerUser}
 		startIfIdle = true
 		startTitle = true
 	}

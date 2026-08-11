@@ -111,6 +111,79 @@ func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	}
 }
 
+func TestPersistGoalToolResultCreatesActiveGoal(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure"}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	if goal := sess.Meta.Goal; goal == nil || goal.Status != core.GoalActive || goal.Objective != "reproduce the reported failure" || goal.Owner != core.GoalOwnerManager {
+		t.Fatalf("persisted goal = %#v", goal)
+	}
+}
+
+func TestPersistGoalToolResultRejectsActiveGoalReplacement(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "current work", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "unrelated work"}})
+	if err == nil {
+		t.Fatal("active goal replacement succeeded")
+	}
+	if got := sess.Meta.Goal; got == nil || got.Objective != "current work" || got.Status != core.GoalActive {
+		t.Fatalf("persisted goal = %#v", got)
+	}
+}
+
+func TestPersistGoalToolResultCreatesNextGoalInMission(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "reproduce", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+	missionID := sess.Meta.Mission.ID
+	if err := persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalDone}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "implement fix", MissionID: missionID}}); err != nil {
+		t.Fatal(err)
+	}
+	goal := sess.Meta.Goal
+	if goal == nil || goal.Objective != "implement fix" || goal.MissionID != missionID || goal.Owner != core.GoalOwnerManager || goal.Ordinal != 3 {
+		t.Fatalf("next goal = %#v", goal)
+	}
+}
+
+func TestPersistGoalToolResultRejectsMismatchedMission(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.EnsureMission("current work", core.MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	err = persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "next work", MissionID: "other-mission"}})
+	if err == nil {
+		t.Fatal("mismatched mission was accepted")
+	}
+}
+
 func TestPersistGoalToolResultRejectsBlockedWithoutReason(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
 	if err != nil {

@@ -296,6 +296,155 @@ func TestSessionCompactHandoffRoundTripAndClear(t *testing.T) {
 	}
 }
 
+func TestNormalizeSessionGoalMetaMigratesLegacyGoal(t *testing.T) {
+	meta := SessionMeta{ID: "legacy-session", Goal: &SessionGoal{Objective: "finish migration", Status: GoalActive}}
+	normalizeSessionGoalMeta(&meta)
+	if meta.Mission == nil || meta.Mission.ID != "legacy-legacy-session" || meta.Mission.Source != MissionSourceUser || meta.Mission.ActiveGoalID != "legacy-goal-legacy-session" {
+		t.Fatalf("mission = %#v", meta.Mission)
+	}
+	if meta.Goal.Owner != GoalOwnerUser || meta.Goal.ID != "legacy-goal-legacy-session" || meta.Goal.MissionID != meta.Mission.ID || meta.Goal.Ordinal != 1 {
+		t.Fatalf("goal = %#v", meta.Goal)
+	}
+}
+
+func TestSessionGoalTransitionLimitRollsBackState(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "initial", Status: GoalActive, Owner: GoalOwnerUser}); err != nil {
+		t.Fatal(err)
+	}
+	for transition := 0; transition < maxMissionGoalTransitions; transition++ {
+		done := *sess.Meta.Goal
+		done.Status = GoalDone
+		if err := sess.UpdateGoal(&done); err != nil {
+			t.Fatalf("settle transition %d: %v", transition, err)
+		}
+		if err := sess.UpdateGoal(&SessionGoal{Objective: "next", Status: GoalActive, Owner: GoalOwnerManager}); err != nil {
+			t.Fatalf("start transition %d: %v", transition, err)
+		}
+	}
+	done := *sess.Meta.Goal
+	done.Status = GoalDone
+	if err := sess.UpdateGoal(&done); err != nil {
+		t.Fatal(err)
+	}
+	previousMission := *sess.Meta.Mission
+	previousGoal := *sess.Meta.Goal
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "one too many", Status: GoalActive, Owner: GoalOwnerManager}); err == nil {
+		t.Fatal("transition limit was not enforced")
+	}
+	if *sess.Meta.Mission != previousMission || *sess.Meta.Goal != previousGoal {
+		t.Fatalf("state changed after rejected transition: mission %#v, goal %#v", sess.Meta.Mission, sess.Meta.Goal)
+	}
+}
+
+func TestSessionGoalResumeDoesNotConsumeTransitionLimit(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "initial", Status: GoalActive, Owner: GoalOwnerUser}); err != nil {
+		t.Fatal(err)
+	}
+	done := *sess.Meta.Goal
+	done.Status = GoalDone
+	if err := sess.UpdateGoal(&done); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "manager work", Status: GoalActive, Owner: GoalOwnerManager}); err != nil {
+		t.Fatal(err)
+	}
+	for cycle := 0; cycle < maxMissionGoalTransitions*2; cycle++ {
+		paused := *sess.Meta.Goal
+		paused.Status = GoalPaused
+		if err := sess.UpdateGoal(&paused); err != nil {
+			t.Fatalf("pause cycle %d: %v", cycle, err)
+		}
+		resumed := *sess.Meta.Goal
+		resumed.Status = GoalActive
+		if err := sess.UpdateGoal(&resumed); err != nil {
+			t.Fatalf("resume cycle %d: %v", cycle, err)
+		}
+	}
+	if got := sess.Meta.Mission.TransitionCount; got != 1 {
+		t.Fatalf("transition count = %d, want 1", got)
+	}
+}
+
+func TestSessionLegacyGoalMigrationPersistsOnNextTransition(t *testing.T) {
+	path := t.TempDir() + "/legacy.jsonl"
+	meta := SessionMeta{ID: "legacy-session", CWD: "/tmp/project", Goal: &SessionGoal{Objective: "finish migration", Status: GoalActive}}
+	line, err := json.Marshal(sessionLine{Type: "meta", Meta: &meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, _, err := OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.Mission == nil || sess.Meta.Goal.MissionID != sess.Meta.Mission.ID {
+		t.Fatalf("legacy migration = mission %#v, goal %#v", sess.Meta.Mission, sess.Meta.Goal)
+	}
+	done := *sess.Meta.Goal
+	done.Status = GoalDone
+	if err := sess.UpdateGoal(&done); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.Meta.Mission == nil || reopened.Meta.Goal == nil || reopened.Meta.Goal.Status != GoalDone || reopened.Meta.Goal.MissionID != reopened.Meta.Mission.ID {
+		t.Fatalf("persisted migration = mission %#v, goal %#v", reopened.Meta.Mission, reopened.Meta.Goal)
+	}
+}
+
+func TestSessionEnsureMissionCreatesUserBoundaryOnce(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.EnsureMission("fix the reported failure", MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.Mission == nil || sess.Meta.Mission.Objective != "fix the reported failure" || sess.Meta.Mission.Source != MissionSourceUser {
+		t.Fatalf("mission = %#v", sess.Meta.Mission)
+	}
+	missionID := sess.Meta.Mission.ID
+	if err := sess.EnsureMission("unrelated follow-up", MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.Mission.ID != missionID || sess.Meta.Mission.Objective != "fix the reported failure" {
+		t.Fatalf("mission was replaced: %#v", sess.Meta.Mission)
+	}
+	path := sess.Path
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.Meta.Mission == nil || reopened.Meta.Mission.ID != missionID {
+		t.Fatalf("reopened mission = %#v", reopened.Meta.Mission)
+	}
+}
+
 func TestSessionGoalRoundTripAndClear(t *testing.T) {
 	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
 	if err != nil {
@@ -305,8 +454,11 @@ func TestSessionGoalRoundTripAndClear(t *testing.T) {
 	if err := sess.UpdateGoal(goal); err != nil {
 		t.Fatal(err)
 	}
-	if sess.Meta.Goal == nil || *sess.Meta.Goal != *goal {
-		t.Fatalf("live goal = %#v, want %#v", sess.Meta.Goal, goal)
+	if sess.Meta.Goal == nil || sess.Meta.Goal.Objective != goal.Objective || sess.Meta.Goal.Status != goal.Status || sess.Meta.Goal.Owner != GoalOwnerUser || sess.Meta.Goal.ID == "" || sess.Meta.Goal.MissionID == "" || sess.Meta.Goal.Ordinal != 1 {
+		t.Fatalf("live goal = %#v", sess.Meta.Goal)
+	}
+	if sess.Meta.Mission == nil || sess.Meta.Mission.ID != sess.Meta.Goal.MissionID || sess.Meta.Mission.Objective != goal.Objective || sess.Meta.Mission.ActiveGoalID != sess.Meta.Goal.ID {
+		t.Fatalf("live mission = %#v", sess.Meta.Mission)
 	}
 	if err := sess.Close(); err != nil {
 		t.Fatal(err)
@@ -316,8 +468,8 @@ func TestSessionGoalRoundTripAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Meta.Goal == nil || *reopened.Meta.Goal != *goal {
-		t.Fatalf("reopened goal = %#v, want %#v", reopened.Meta.Goal, goal)
+	if reopened.Meta.Goal == nil || reopened.Meta.Goal.Objective != goal.Objective || reopened.Meta.Goal.Status != goal.Status || reopened.Meta.Goal.MissionID != sess.Meta.Goal.MissionID {
+		t.Fatalf("reopened goal = %#v", reopened.Meta.Goal)
 	}
 	if err := reopened.UpdateGoal(nil); err != nil {
 		t.Fatal(err)
@@ -333,6 +485,9 @@ func TestSessionGoalRoundTripAndClear(t *testing.T) {
 	defer reopened.Close()
 	if reopened.Meta.Goal != nil {
 		t.Fatalf("cleared goal = %#v, want nil", reopened.Meta.Goal)
+	}
+	if len(reopened.Meta.GoalHistory) != 1 || reopened.Meta.GoalHistory[0].Objective != goal.Objective || reopened.Meta.GoalHistory[0].Status != GoalActive {
+		t.Fatalf("goal history = %#v", reopened.Meta.GoalHistory)
 	}
 }
 

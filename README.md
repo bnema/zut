@@ -239,7 +239,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `create_worktree`: create a new branch from the current `HEAD` and check it out persistently. A repository with no configured root and no `.worktrees` directory first returns bootstrap guidance without making changes; the agent asks whether to use the repository default or an external root, then retries with `bootstrap_root`. The choice is saved privately in local Git config. Choosing `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the root `.gitignore`; an absolute external root leaves tracked repository files and the root `.gitignore` unchanged. The tool never copies uncommitted or ignored files, and it refuses an existing branch or worktree path.
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 - `web_search`: search the public web through DuckDuckGo HTML and return bounded source titles, URLs, and snippets. Enabled by default for normal CLI sessions; it is unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
-- `update_goal`: mark an explicitly started autonomous session goal `done` or `blocked`. Starting, pausing, resuming, and clearing goals remain user-controlled through `/goal`.
+- `update_goal`: set the manager's next bounded goal within the active mission, or mark the active goal `done` or `blocked`. Starting, pausing, resuming, and clearing missions remain user-controlled through `/goal`.
 
 When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. `create_worktree` also requires its repository root, configured worktree destination, optional `.gitignore`, and Git metadata to remain inside the jail. Jail does not sandbox web-search network egress.
 
@@ -296,7 +296,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls. |
 | `/orchestrator` | Toggle automatic subagent orchestration. When disabled, subagent tools remain available for explicit delegation. |
-| `/goal <objective>` | Start an autonomous interactive-session goal. Use `/goal` for status and `/goal pause`, `resume`, or `clear` for control. |
+| `/goal <objective>` | Start an autonomous interactive-session mission. Use `/goal` for status, `/goal history` for prior goals, and `/goal pause`, `resume`, or `clear` for control. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. The picker omits branches created only for tree navigation. |
 | `/fork` | Pick a previous user message and fork the current session after that turn. The selected turn becomes branch context and no provider turn starts during the checkout. |
@@ -319,7 +319,7 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### `/goal`
 
-In interactive mode, `/goal <objective>` starts work immediately and keeps the objective active across normal provider turn boundaries. While the goal is active, zut starts a hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. The model marks the goal `done` or `blocked` with the built-in `update_goal` tool. The current state appears in the status bar and is persisted with the session. `esc` pauses an interrupted goal, and terminal provider errors block it instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
+In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts a hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. The manager can use `update_goal` to settle the current goal or set a bounded next goal within the same mission. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session. `esc` pauses an interrupted goal, and terminal provider errors block it instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
 
 A branch that copies the complete transcript inherits the goal. Forking from an earlier turn clears it because the later objective did not necessarily exist at that point. Manual `/compact` leaves an active goal recorded but does not start a hidden follow-up; run `/goal resume` to continue it.
 
