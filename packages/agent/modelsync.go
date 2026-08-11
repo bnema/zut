@@ -196,6 +196,11 @@ func refreshModels() {
 			all = append(all, live...)
 		}
 	}
+	if cred, method, accountID, err := resolveCredentialFull(ctx, "openai-codex", "", apiKeyCommandSkip); err == nil && method == "oauth" {
+		if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
+			all = append(all, live...)
+		}
+	}
 	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
 			for i := range live {

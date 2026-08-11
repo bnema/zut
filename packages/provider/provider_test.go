@@ -643,6 +643,9 @@ func TestGPT56CatalogEntries(t *testing.T) {
 		if m.PriceInput != tc.priceInput || m.PriceOutput != tc.priceOut || m.PriceCacheRead != tc.cacheRead || m.PriceCacheWrite != tc.cacheWrite {
 			t.Fatalf("%s/%s prices: %+v", tc.provider, tc.id, m)
 		}
+		if tc.provider == "openai-codex" && m.Speculative {
+			t.Fatalf("%s/%s is speculative", tc.provider, tc.id)
+		}
 	}
 }
 
