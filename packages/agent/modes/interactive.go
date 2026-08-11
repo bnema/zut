@@ -19,6 +19,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -789,9 +790,12 @@ type Interactive struct {
 	llamaConfigured   bool
 
 	// completionTracker observes auto-subagent turn and process completion.
-	// Delivery is kept separate so every active set is injected as one
-	// summary turn, preserving the existing queue behavior.
+	// turnCoordinator seals worker waves at manager-turn boundaries and decides
+	// the next wake without relying on timing or polling.
 	completionTracker         *subagents.CompletionTracker
+	turnCoordinator           *orchestration.Coordinator
+	coordinatorWorkerIDs      map[string][]string
+	coordinatorWorkerSeq      uint64
 	completionDeliveryMu      sync.Mutex
 	completionDeliveryRunning bool
 	completionDeliveryRequest bool
@@ -4156,6 +4160,10 @@ func (i *Interactive) SubmitSlash(text string) {
 // forwarded — because the queued-prompt path is text-only; a
 // follow-up can expand the queue entry to carry images.
 func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
+	i.submitOrQueue(text, images, true)
+}
+
+func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, userInput bool) {
 	if cmd, ok := shellEscapeCommand(text); ok {
 		i.startShellEscape(i.runCtx, cmd)
 		return
@@ -4168,6 +4176,15 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		return
 	}
 	i.mu.Unlock()
+	// User input is an orchestration event, not merely a queue append. When
+	// the manager is dormant behind a sealed worker wave, the coordinator makes
+	// this the next manager turn and carries any completed worker summary with it.
+	if userInput && i.coordinatorAcceptsUserInput() {
+		if actions := i.applyCoordinator(orchestration.Event{Kind: orchestration.EventUserInput, Text: text}); len(actions) != 0 {
+			i.executeCoordinatorActions(actions)
+			return
+		}
+	}
 	i.maybeStartSessionTitle(i.runCtx, text)
 	i.mu.Lock()
 	if i.busy {
@@ -4213,6 +4230,8 @@ func (i *Interactive) CancelTurn() {
 	cancel := i.cancelTurn
 	i.mu.Unlock()
 	if cancel != nil {
+		i.cancelCoordinator()
+
 		i.mu.Lock()
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
@@ -8813,6 +8832,7 @@ func (i *Interactive) TrackStoppedSubagentWorker(a *subagents.Agent) {
 		return
 	}
 	tracker := i.ensureCompletionTracker()
+	i.registerCoordinatorWorker(a.ID)
 	tracker.TrackExit(a, a.Task)
 	i.invalidate()
 	i.requestCompletionDelivery()
@@ -8823,6 +8843,7 @@ func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, follo
 		return nil
 	}
 	tracker := i.ensureCompletionTracker()
+	i.registerCoordinatorWorker(a.ID)
 	var cancel func()
 	if future {
 		cancel = tracker.TrackFutureTurn(a, task, followUp)
@@ -8843,6 +8864,126 @@ func (i *Interactive) ensureCompletionTracker() *subagents.CompletionTracker {
 		i.completionTracker = subagents.NewCompletionTracker()
 	}
 	return i.completionTracker
+}
+
+func (i *Interactive) ensureCoordinatorLocked() *orchestration.Coordinator {
+	if i.turnCoordinator == nil {
+		i.turnCoordinator = orchestration.New()
+	}
+	return i.turnCoordinator
+}
+
+func (i *Interactive) coordinatorAcceptsUserInput() bool {
+	if i == nil {
+		return false
+	}
+	i.completionDeliveryMu.Lock()
+	accepts := i.ensureCoordinatorLocked().AcceptsUserInput()
+	i.completionDeliveryMu.Unlock()
+	return accepts
+}
+
+func (i *Interactive) applyCoordinator(event orchestration.Event) []orchestration.Action {
+	if i == nil {
+		return nil
+	}
+	i.completionDeliveryMu.Lock()
+	result := i.ensureCoordinatorLocked().Apply(event)
+	i.completionDeliveryMu.Unlock()
+	return result.Actions
+}
+
+// registerCoordinatorWorker associates a tracker registration with the open
+// manager wave. Direct embedders that register a worker outside startTurn get
+// a one-worker sealed wave, retaining the exported tracker API's old behavior.
+func (i *Interactive) registerCoordinatorWorker(workerID string) {
+	if i == nil || workerID == "" {
+		return
+	}
+	i.completionDeliveryMu.Lock()
+	coordinator := i.ensureCoordinatorLocked()
+	implicitWave := i.completionDeliveryHolds == 0
+	if implicitWave {
+		coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerStarted})
+	}
+	i.coordinatorWorkerSeq++
+	registrationID := fmt.Sprintf("%s#%d", workerID, i.coordinatorWorkerSeq)
+	if i.coordinatorWorkerIDs == nil {
+		i.coordinatorWorkerIDs = make(map[string][]string)
+	}
+	i.coordinatorWorkerIDs[workerID] = append(i.coordinatorWorkerIDs[workerID], registrationID)
+	coordinator.Apply(orchestration.Event{Kind: orchestration.EventWorkerRegistered, WorkerID: registrationID})
+	var actions []orchestration.Action
+	if implicitWave {
+		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
+	}
+	i.completionDeliveryMu.Unlock()
+	i.executeCoordinatorActions(actions)
+}
+
+func (i *Interactive) cancelCoordinator() {
+	if i == nil {
+		return
+	}
+	i.completionDeliveryMu.Lock()
+	coordinator := i.ensureCoordinatorLocked()
+	actions := coordinator.Apply(orchestration.Event{Kind: orchestration.EventCancelled}).Actions
+	// A later user turn starts a fresh wave. Drop tracker registrations as well
+	// as coordinator identities so late outcomes cannot match a new worker with
+	// the same Agent.ID.
+	if i.completionTracker != nil {
+		i.completionTracker.Reset()
+	}
+	i.turnCoordinator = orchestration.New()
+	i.coordinatorWorkerIDs = nil
+	i.completionDeliveryMu.Unlock()
+	i.executeCoordinatorActions(actions)
+}
+
+func (i *Interactive) takeCoordinatorWorkerID(agentID string) string {
+	if i == nil || agentID == "" {
+		return ""
+	}
+	i.completionDeliveryMu.Lock()
+	defer i.completionDeliveryMu.Unlock()
+	ids := i.coordinatorWorkerIDs[agentID]
+	if len(ids) == 0 {
+		return ""
+	}
+	workerID := ids[0]
+	if len(ids) == 1 {
+		delete(i.coordinatorWorkerIDs, agentID)
+	} else {
+		i.coordinatorWorkerIDs[agentID] = ids[1:]
+	}
+	return workerID
+}
+
+func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) {
+	for _, action := range actions {
+		if action.Kind != orchestration.ActionRunManager {
+			continue
+		}
+		prompt := action.Text
+		if len(action.Completions) != 0 {
+			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
+			update := subagents.FormatCompletionUpdate(action.Completions, instruction)
+			if prompt != "" {
+				prompt = update + "\n\nQueued user request:\n" + prompt
+			} else {
+				prompt = update
+			}
+		}
+		if prompt != "" {
+			i.submitOrQueue(prompt, nil, false)
+		} else if action.Reason == orchestration.WakeGoal {
+			parent := i.runCtx
+			if parent == nil {
+				parent = context.Background()
+			}
+			i.requestGoalContinuationIfIdle(parent)
+		}
+	}
 }
 
 // requestCompletionDelivery starts at most one waiter for the current active
@@ -8875,6 +9016,7 @@ func (i *Interactive) beginCompletionDeliveryHold() func() {
 		return func() {}
 	}
 	i.completionDeliveryMu.Lock()
+	i.ensureCoordinatorLocked().Apply(orchestration.Event{Kind: orchestration.EventManagerStarted})
 	i.completionDeliveryHolds++
 	i.completionDeliveryMu.Unlock()
 	return i.releaseCompletionDeliveryHold
@@ -8885,15 +9027,20 @@ func (i *Interactive) releaseCompletionDeliveryHold() {
 		return
 	}
 	start := false
+	var actions []orchestration.Action
 	i.completionDeliveryMu.Lock()
 	if i.completionDeliveryHolds > 0 {
 		i.completionDeliveryHolds--
+	}
+	if i.completionDeliveryHolds == 0 {
+		actions = i.ensureCoordinatorLocked().Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
 	}
 	if i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning {
 		i.completionDeliveryRunning = true
 		start = true
 	}
 	i.completionDeliveryMu.Unlock()
+	i.executeCoordinatorActions(actions)
 	if start {
 		go i.deliverCompletionUpdates()
 	}
@@ -8918,8 +9065,19 @@ func (i *Interactive) deliverCompletionUpdates() {
 
 		batch, err := tracker.WaitIdle(i.completionWaitContext())
 		if err == nil && len(batch) != 0 {
-			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
-			i.SubmitOrQueue(subagents.FormatCompletionUpdate(batch, instruction), nil)
+			var actions []orchestration.Action
+			for _, completion := range batch {
+				workerID := i.takeCoordinatorWorkerID(completion.AgentID)
+				if workerID == "" {
+					continue
+				}
+				actions = append(actions, i.applyCoordinator(orchestration.Event{
+					Kind:       orchestration.EventWorkerFinished,
+					WorkerID:   workerID,
+					Completion: completion,
+				})...)
+			}
+			i.executeCoordinatorActions(actions)
 		}
 
 		i.completionDeliveryMu.Lock()

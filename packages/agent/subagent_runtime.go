@@ -48,7 +48,6 @@ type subagentRuntime struct {
 	requiredReadyErr      func() error
 	requiredContextMu     sync.Mutex
 	reportedRequiredUnmet map[string]struct{}
-	lastRequiredBlock     string
 	settingsMu            sync.RWMutex
 	closeMu               sync.Mutex
 	closed                bool

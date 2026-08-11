@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -56,13 +55,11 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 	parent.BeforeAssistantMessage = func(text string) (bool, string, string) {
 		unmet := rt.supervisor.UnmetRequirements()
 		if len(unmet) != 0 {
-			reason := formatRequiredWorkerBlock(unmet)
-			if rt.noteRequiredBlock(unmet) {
-				parent.QueueMessage(reason)
-			}
-			return false, reason, ""
+			// Worker completion is delivered through the coordinator-owned tracker.
+			// Do not queue a synthetic reminder here: it races that terminal wave
+			// and can wake the parent before every required result is available.
+			return false, formatRequiredWorkerBlock(unmet), ""
 		}
-		rt.clearRequiredBlock()
 		if previousBeforeAssistant != nil {
 			allowed, reason, replacement := previousBeforeAssistant(text)
 			if !allowed {
@@ -117,28 +114,6 @@ func (rt *subagentRuntime) acknowledgeSatisfiedRequirements() {
 }
 
 const requiredWorkerContextRuneBudget = 6000
-
-func (rt *subagentRuntime) noteRequiredBlock(unmet []subagents.AgentSnapshot) bool {
-	ids := make([]string, 0, len(unmet))
-	for _, snapshot := range unmet {
-		ids = append(ids, fmt.Sprintf("%s:%s:%d:%s", snapshot.ID, snapshot.Requirement.State, snapshot.Requirement.TargetTurn, snapshot.Requirement.ErrorCode))
-	}
-	sort.Strings(ids)
-	key := strings.Join(ids, "\n")
-	rt.requiredContextMu.Lock()
-	defer rt.requiredContextMu.Unlock()
-	if key == rt.lastRequiredBlock {
-		return false
-	}
-	rt.lastRequiredBlock = key
-	return true
-}
-
-func (rt *subagentRuntime) clearRequiredBlock() {
-	rt.requiredContextMu.Lock()
-	rt.lastRequiredBlock = ""
-	rt.requiredContextMu.Unlock()
-}
 
 func (rt *subagentRuntime) formatRequiredWorkerContext(required []subagents.AgentSnapshot) string {
 	rt.requiredContextMu.Lock()

@@ -286,6 +286,7 @@ func TestTrackResumedSubagentWorkerQueuesActiveFollowUpOnSameWorker(t *testing.T
 	})
 
 	iv := newQueuedAutoSubagentsInteractive()
+	release := iv.beginCompletionDeliveryHold()
 	iv.TrackSubagentWorker(first, first.Task, false)
 	const followUp = "queued follow-up"
 	cancel := iv.PrepareResumedSubagentWorker(first, followUp, false)
@@ -297,6 +298,7 @@ func TestTrackResumedSubagentWorkerQueuesActiveFollowUpOnSameWorker(t *testing.T
 	}
 	first.OnTurnEnd(1, "")
 	first.OnTurnEnd(2, "")
+	release()
 
 	update := waitForQueuedPrompt(t, iv)
 	if !strings.Contains(update, "[auto-subagents update] 2 sub-agent(s) finished:") {

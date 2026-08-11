@@ -282,6 +282,33 @@ func TestCompletionTrackerKeepsCompletionsBeforeWaiting(t *testing.T) {
 	close(agent.done)
 }
 
+func TestCompletionTrackerResetDropsLateAndBufferedCompletions(t *testing.T) {
+	agent := newCompletionTestAgent("worker-1", "task", StatusRunning)
+	t.Cleanup(func() { close(agent.done) })
+	tracker := NewCompletionTracker()
+	tracker.TrackTurn(agent, agent.Task, false)
+	agent.OnTurnEnd(1, "")
+
+	tracker.Reset()
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 0 {
+		t.Fatalf("reset batch = %+v, want no stale completion", batch)
+	}
+	if tracker.Pending() != 0 {
+		t.Fatalf("pending after reset = %d, want 0", tracker.Pending())
+	}
+
+	tracker.TrackTurn(agent, "new task", true)
+	agent.OnTurnEnd(2, "")
+	batch, err = tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != "new task" {
+		t.Fatalf("new registration completion = (%+v, %v), want one fresh completion", batch, err)
+	}
+}
+
 func TestCompletionTrackerWaitIdleCancellationLeavesActiveWork(t *testing.T) {
 	agent := newCompletionTestAgent("worker-1", "task", StatusRunning)
 	tracker := NewCompletionTracker()
