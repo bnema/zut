@@ -89,13 +89,10 @@ type agentMeta struct {
 	ResumePromptID string               `json:"resume_prompt_id,omitempty"`
 	ResumeQueue    []queuedResumePrompt `json:"resume_queue,omitempty"`
 
-	// SessionID, when non-empty, scopes the agent to a particular
-	// host zut session: the dashboard only shows agents whose
-	// SessionID matches the active session. Older meta.json files
-	// (and agents spawned outside of any session, e.g. by tests or
-	// scripted callers that didn't call SetActiveSession) have an
-	// empty SessionID and are visible from every session as a
-	// unscoped-agent fallback.
+	// SessionID, when non-empty, scopes the agent to a particular host zut
+	// session. The default dashboard view only shows the active session;
+	// older unscoped metadata remains reachable through its all-sessions
+	// filter.
 	SessionID string `json:"session_id,omitempty"`
 }
 
@@ -788,6 +785,12 @@ func replayEventTranscript(a *Agent, ev Event) {
 		} else {
 			a.appendUserMessage(message)
 		}
+	case "tool_call", EventToolStarted:
+		if name, _ := ev.Data["name"].(string); name != "" {
+			a.appendTranscript("tool: " + name)
+		}
+	case "tool_result", EventToolFinished:
+		a.appendTranscript("tool result: completed")
 	case "stdout":
 		if txt, _ := ev.Data["text"].(string); txt != "" {
 			a.appendTranscript(txt)

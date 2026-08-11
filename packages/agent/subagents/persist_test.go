@@ -1411,12 +1411,9 @@ func TestRemoveReloadedAgentKeepsSiblingState(t *testing.T) {
 	}
 }
 
-// TestActiveSessionScopesSnapshotAll proves the session filter the
-// user asked for: a single Supervisor with agents spawned under two
-// different active sessions only surfaces the agents matching the
-// currently-active session via SnapshotAll. Switching the active
-// session re-narrows the view without touching agent state.
-func TestActiveSessionScopesSnapshotAll(t *testing.T) {
+// TestActiveSessionScopesSnapshotCurrentSession proves the dashboard's
+// default session filter. SnapshotAll remains the explicit cross-session view.
+func TestActiveSessionScopesSnapshotCurrentSession(t *testing.T) {
 	root := t.TempDir()
 	f := New(Config{
 		Root: root, RepoRoot: root,
@@ -1447,23 +1444,29 @@ func TestActiveSessionScopesSnapshotAll(t *testing.T) {
 	}
 
 	// Active session B → only aB visible.
-	only := snapshotIDs(f.SnapshotAll())
+	only := snapshotIDs(f.SnapshotCurrentSession())
 	if len(only) != 1 || only[0] != aB.ID {
 		t.Errorf("scoped to sess-B, snapshot ids = %v; want [%s]", only, aB.ID)
 	}
 
 	// Switch back to A → only aA visible.
 	f.SetActiveSession("sess-A")
-	only = snapshotIDs(f.SnapshotAll())
+	only = snapshotIDs(f.SnapshotCurrentSession())
 	if len(only) != 1 || only[0] != aA.ID {
 		t.Errorf("scoped to sess-A, snapshot ids = %v; want [%s]", only, aA.ID)
 	}
 
-	// Clear the scope → both visible.
-	f.SetActiveSession("")
-	all := snapshotIDs(f.SnapshotAll())
+	// The All filter is independent of the active session.
+	all := snapshotIDs(f.SnapshotAllSessions())
 	if len(all) != 2 {
-		t.Errorf("unscoped snapshot ids = %v; want both agents", all)
+		t.Errorf("all-session snapshot ids = %v; want both agents", all)
+	}
+
+	// Clear the scope → both visible from the default view too.
+	f.SetActiveSession("")
+	only = snapshotIDs(f.SnapshotCurrentSession())
+	if len(only) != 2 {
+		t.Errorf("unscoped current-session ids = %v; want both agents", only)
 	}
 
 	// Cleanup.
@@ -1505,26 +1508,26 @@ func TestSessionIDPersistsAcrossReload(t *testing.T) {
 		t.Fatalf("reload loaded=%d errs=%v; want 1 / no errs", loaded, errs)
 	}
 	g.SetActiveSession("sess-keep")
-	got := snapshotIDs(g.SnapshotAll())
+	got := snapshotIDs(g.SnapshotCurrentSession())
 	if len(got) != 1 || got[0] != a.ID {
 		t.Errorf("after reload + scope to sess-keep, ids = %v; want [%s]", got, a.ID)
 	}
 
-	// A terminal persisted agent remains visible from another host session
-	// so a normal restart does not hide durable recovery state.
+	// A terminal persisted agent is hidden by the default session view, but
+	// remains available from the explicit all-sessions filter.
 	g.SetActiveSession("sess-other")
-	if got := snapshotIDs(g.SnapshotAll()); len(got) != 1 || got[0] != a.ID {
-		t.Errorf("scoped to other session, ids = %v; want [%s]", got, a.ID)
+	if got := snapshotIDs(g.SnapshotCurrentSession()); len(got) != 0 {
+		t.Errorf("current session scoped to other session, ids = %v; want none", got)
+	}
+	if got := snapshotIDs(g.SnapshotAllSessions()); len(got) != 1 || got[0] != a.ID {
+		t.Errorf("all sessions ids = %v; want [%s]", got, a.ID)
 	}
 }
 
-// TestEmptySessionIDIsVisibleFromAnyScope pins the unscoped-agent
-// rule: agents whose meta.json predates the SessionID field (or who
-// were spawned without an active session, e.g. via a test rig or
-// scripted caller) carry SessionID == "" and remain visible from
-// every scope. Otherwise the schema bump would orphan every
-// pre-existing agent the moment a user upgraded zut.
-func TestEmptySessionIDIsVisibleFromAnyScope(t *testing.T) {
+// TestEmptySessionIDIsHiddenFromScopedViews keeps historical unscoped
+// agents out of a session-specific dashboard while retaining them in the
+// explicit all-sessions view.
+func TestEmptySessionIDIsHiddenFromScopedViews(t *testing.T) {
 	root := t.TempDir()
 	f := New(Config{
 		Root: root, RepoRoot: root,
@@ -1541,11 +1544,17 @@ func TestEmptySessionIDIsVisibleFromAnyScope(t *testing.T) {
 		t.Fatalf("unscoped spawn produced SessionID %q; want empty", a.SessionID)
 	}
 
-	for _, scope := range []string{"", "any-session", "some-other"} {
+	f.SetActiveSession("")
+	if got := snapshotIDs(f.SnapshotCurrentSession()); len(got) != 1 || got[0] != a.ID {
+		t.Errorf("unscoped view ids = %v; want [%s]", got, a.ID)
+	}
+	for _, scope := range []string{"any-session", "some-other"} {
 		f.SetActiveSession(scope)
-		got := snapshotIDs(f.SnapshotAll())
-		if len(got) != 1 || got[0] != a.ID {
-			t.Errorf("scope=%q: ids = %v; want unscoped agent visible", scope, got)
+		if got := snapshotIDs(f.SnapshotCurrentSession()); len(got) != 0 {
+			t.Errorf("scope=%q: ids = %v; want none", scope, got)
+		}
+		if got := snapshotIDs(f.SnapshotAllSessions()); len(got) != 1 || got[0] != a.ID {
+			t.Errorf("all sessions for scope=%q: ids = %v; want [%s]", scope, got, a.ID)
 		}
 	}
 

@@ -1006,8 +1006,12 @@ func applyEventToSink(ev Event, sink Sink) {
 	case "tool_call", EventToolStarted:
 		if name, _ := ev.Data["name"].(string); name != "" {
 			sink.Activity("tool: " + truncate(name, 60))
+			sink.Transcript("tool: " + name)
 		}
 	case "tool_result", EventToolFinished:
+		// Tool output can contain credentials, terminal controls, and arbitrary
+		// binary text. The dashboard only needs to show that the call completed.
+		sink.Transcript("tool result: completed")
 		sink.Activity("idle")
 	case "turn_end", EventTurnResult, EventAgentIdle:
 		sink.Activity("idle")

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -797,6 +798,32 @@ func TestEventCounterRejectsNegativeFractionalAndOverflowValues(t *testing.T) {
 				t.Fatalf("eventCounter ok = %t, want %t (value %v, got %d)", ok, tc.ok, tc.value, got)
 			}
 		})
+	}
+}
+
+func TestApplyEventToSinkProjectsToolActivityIntoTranscript(t *testing.T) {
+	events := []Event{
+		{Type: EventToolStarted, Data: map[string]any{"name": "bash"}},
+		{Type: EventToolFinished, Data: map[string]any{
+			"content": []any{map[string]any{"text": "command output"}},
+		}},
+	}
+	want := []string{"tool: bash", "tool result: completed"}
+
+	live := &Agent{}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	if got := live.Transcript(); !slices.Equal(got, want) {
+		t.Fatalf("live tool transcript = %#v; want %#v", got, want)
+	}
+
+	replayed := &Agent{}
+	for _, event := range events {
+		replayEventTranscript(replayed, event)
+	}
+	if got := replayed.Transcript(); !slices.Equal(got, want) {
+		t.Fatalf("replayed tool transcript = %#v; want %#v", got, want)
 	}
 }
 

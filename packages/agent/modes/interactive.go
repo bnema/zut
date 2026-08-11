@@ -1957,6 +1957,15 @@ func (i *Interactive) redraw() {
 		i.sessionDialog.MaxRows = avail
 		dialog = i.sessionDialog.Render(i.cfg.Theme, mainCols)
 	case i.subagentsDialog.Active():
+		// The dashboard is composed into the bottom-sticky dialog band.
+		// Reserve its leading gap, frame padding, one chat row, and the
+		// renderer margin so a long list or expanded snapshot never pushes
+		// its top rows out of the terminal viewport.
+		avail := rows - 4
+		if avail < 4 {
+			avail = 4
+		}
+		i.subagentsDialog.SetMaxRows(avail)
 		dialog = i.subagentsDialog.Render(i.cfg.Theme, mainCols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, mainCols)

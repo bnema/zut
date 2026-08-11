@@ -77,6 +77,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	// editor, by typing /model on its own line to pop the picker.
 	i.subagentsDialog.SetCompactMode(i.compactModeEnabled())
 	i.subagentsDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
+	i.subagentsDialog.SetAllSnapshots(i.cfg.Supervisor.SnapshotAllSessions)
 	i.subagentsDialog.SetLoadTranscript(i.cfg.Supervisor.LoadTranscript)
 	i.subagentsDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)
 	if i.cfg.LoggedInProviders != nil {
@@ -86,7 +87,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	switch sub {
 	case "", "list", "ls", "ps":
 		i.subagentsDialog.Open(
-			i.cfg.Supervisor.SnapshotAll,
+			i.cfg.Supervisor.SnapshotCurrentSession,
 			i.cfg.Supervisor.Stop,
 			i.cfg.Supervisor.Remove,
 			spawnAdapter,
@@ -272,7 +273,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	case "resume-session", "resume", "reattach", "reopen":
 		if rest == "" {
 			count := i.subagentsDialog.OpenForResume(
-				i.cfg.Supervisor.SnapshotAll,
+				i.cfg.Supervisor.SnapshotCurrentSession,
 				i.cfg.Supervisor.Stop,
 				i.cfg.Supervisor.Remove,
 				spawnAdapter,
