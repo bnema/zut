@@ -330,9 +330,13 @@ func (d *modelDialog) stepReasoning(direction int) modelDialogAction {
 func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 	switch k.Kind {
 	case tui.KeyLeft:
-		return d.stepReasoning(-1)
+		if d.showReasoning {
+			return d.stepReasoning(-1)
+		}
 	case tui.KeyRight:
-		return d.stepReasoning(1)
+		if d.showReasoning {
+			return d.stepReasoning(1)
+		}
 	case tui.KeyUp:
 		if d.cursor > 0 {
 			d.cursor--

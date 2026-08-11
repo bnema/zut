@@ -35,7 +35,7 @@ func TestModelDialogReasoningNavigation(t *testing.T) {
 	}
 }
 
-func TestModelDialogReasoningAliasesPreserveFiltering(t *testing.T) {
+func TestModelDialogReasoningAllowsLowercaseFilter(t *testing.T) {
 	d := &modelDialog{active: true, showReasoning: true}
 	for _, r := range "claude" {
 		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
@@ -43,8 +43,10 @@ func TestModelDialogReasoningAliasesPreserveFiltering(t *testing.T) {
 	if d.query != "claude" {
 		t.Fatalf("query = %q, want claude", d.query)
 	}
+}
 
-	d = &modelDialog{active: true}
+func TestModelDialogWithoutReasoningTreatsHAsFilter(t *testing.T) {
+	d := &modelDialog{active: true}
 	d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'H'})
 	if d.query != "H" {
 		t.Fatalf("embedded picker query = %q, want H", d.query)
@@ -53,9 +55,10 @@ func TestModelDialogReasoningAliasesPreserveFiltering(t *testing.T) {
 
 func TestModelDialogReasoningNavigationStopsAtBounds(t *testing.T) {
 	d := &modelDialog{
-		active:    true,
-		view:      []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
-		reasoning: "",
+		active:        true,
+		showReasoning: true,
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning:     "",
 	}
 
 	if act := d.HandleKey(tui.Key{Kind: tui.KeyLeft}); act.ReasoningChanged {
@@ -69,9 +72,10 @@ func TestModelDialogReasoningNavigationStopsAtBounds(t *testing.T) {
 
 func TestModelDialogReasoningNavigationAppliesToInteractive(t *testing.T) {
 	d := &modelDialog{
-		active:    true,
-		view:      []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
-		reasoning: "high",
+		active:        true,
+		showReasoning: true,
+		view:          []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning:     "high",
 	}
 	var changed string
 	i := &Interactive{
@@ -85,6 +89,17 @@ func TestModelDialogReasoningNavigationAppliesToInteractive(t *testing.T) {
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRight})
 	if i.cfg.Reasoning != "xhigh" || changed != "xhigh" {
 		t.Fatalf("reasoning = %q, callback = %q; want xhigh", i.cfg.Reasoning, changed)
+	}
+}
+
+func TestModelDialogWithoutReasoningIgnoresArrows(t *testing.T) {
+	d := &modelDialog{
+		active:    true,
+		view:      []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}},
+		reasoning: "high",
+	}
+	if act := d.HandleKey(tui.Key{Kind: tui.KeyRight}); act.ReasoningChanged || d.reasoning != "high" {
+		t.Fatalf("hidden reasoning changed: action=%+v reasoning=%q", act, d.reasoning)
 	}
 }
 
