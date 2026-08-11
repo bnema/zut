@@ -149,6 +149,56 @@ func TestRequiredWorkerGateTreatsManualTerminalRemovalAsWaiver(t *testing.T) {
 	}
 }
 
+func TestRequiredWorkerGateWaitsForEveryRequiredWorker(t *testing.T) {
+	releases := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	started := make(chan struct{}, len(releases))
+	runnerIndex := 0
+	cfg := newRuntimeTestConfig(t.TempDir(), t.TempDir(), func(*subagents.Agent) subagents.Runner {
+		index := runnerIndex
+		runnerIndex++
+		return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+			started <- struct{}{}
+			select {
+			case <-releases[index]:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+	rt := newSubagentRuntime(cfg)
+	defer func() { _ = rt.Close(context.Background()) }()
+	rt.SetActiveSession("parent-session")
+	first, err := rt.Supervisor().SpawnReq(context.Background(), subagents.SpawnRequest{
+		Task: "first required check", RootSessionID: "parent-session", Required: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := rt.Supervisor().SpawnReq(context.Background(), subagents.SpawnRequest{
+		Task: "second required check", RootSessionID: "parent-session", Required: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	<-started
+
+	parent := &core.Agent{}
+	rt.WireRequiredWorkerGate(parent)
+	close(releases[0])
+	first.Wait()
+	if allowed, reason, _ := parent.BeforeAssistantMessage("first worker completed"); allowed || !strings.Contains(reason, second.ID) {
+		t.Fatalf("terminal response after one required worker = (%v, %q), want remaining worker block", allowed, reason)
+	}
+
+	close(releases[1])
+	second.Wait()
+	if allowed, reason, _ := parent.BeforeAssistantMessage("both workers completed"); !allowed || reason != "" {
+		t.Fatalf("terminal response after all required workers = (%v, %q), want allowed", allowed, reason)
+	}
+}
+
 func TestRequiredWorkerGateRejectsTerminalParentResponseUntilRetrySucceeds(t *testing.T) {
 	attempt := 0
 	cfg := newRuntimeTestConfig(t.TempDir(), t.TempDir(), func(*subagents.Agent) subagents.Runner {

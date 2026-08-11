@@ -129,6 +129,35 @@ func (t *CompletionTracker) TrackExit(a *Agent, task string) {
 	t.startProcessWaiter(state)
 }
 
+// Reset discards all active and ready completions. Hosts use it when the
+// owning turn is cancelled so a late result cannot be attributed to a later
+// registration for the same worker.
+func (t *CompletionTracker) Reset() {
+	if t == nil {
+		return
+	}
+	var cancels []context.CancelFunc
+	t.mu.Lock()
+	t.initLocked()
+	for _, state := range t.active {
+		for _, entry := range state.entries {
+			entry.done = true
+		}
+		if state.waitCancel != nil {
+			cancels = append(cancels, state.waitCancel)
+			state.waitCancel = nil
+		}
+		state.waitingForProcess = false
+	}
+	t.active = make(map[*Agent]*completionAgent)
+	t.ready = nil
+	t.signalLocked()
+	t.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
 func (t *CompletionTracker) addTurn(a *Agent, task string, followUp, future bool) (*completionAgent, *completionEntry, bool) {
 	entry := &completionEntry{task: task, followUp: followUp, expectedStep: expectedTurnStep(a, future), strictStep: future}
 	t.mu.Lock()
