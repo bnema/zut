@@ -64,9 +64,10 @@ func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
 func TestPublicSubagentStatusUsesOnlyPrimaryOperation(t *testing.T) {
 	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
 	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
-		OpenOperations: []subagents.Operation{{Type: "turn.started", StartedAt: at}, {Type: "tool.started", StartedAt: at.Add(time.Second)}},
+		OpenOperations:   []subagents.Operation{{Type: "turn.started", StartedAt: at}},
+		PrimaryOperation: &subagents.Operation{Type: "tool.started", StartedAt: at.Add(time.Second)},
 	})
-	if entry.PrimaryOperation == nil || entry.PrimaryOperation.Type != "turn.started" {
+	if entry.PrimaryOperation == nil || entry.PrimaryOperation.Type != "tool.started" {
 		t.Fatalf("primary operation = %#v", entry.PrimaryOperation)
 	}
 	encoded, err := json.Marshal(entry)
@@ -79,6 +80,33 @@ func TestPublicSubagentStatusUsesOnlyPrimaryOperation(t *testing.T) {
 	}
 	if _, found := fields["operation"]; found {
 		t.Fatalf("obsolete operation field in %#v", fields)
+	}
+	if _, found := fields["primary_operation"]; !found {
+		t.Fatalf("primary operation missing from %#v", fields)
+	}
+}
+
+func TestPublicSubagentStatusIncludesResultDeliveryFacts(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
+		Result: &subagents.ResultFact{Available: true, Ref: "subagent://agent-1/result"},
+	})
+	if entry.Result == nil || entry.Result.State != "unknown" || entry.Result.Delivered || entry.Result.DeliveryFailed {
+		t.Fatalf("result = %#v", entry.Result)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(fields["result"], &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["delivered"] != false || result["delivery_failed"] != false {
+		t.Fatalf("result JSON = %#v", result)
 	}
 }
 

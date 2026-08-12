@@ -68,8 +68,8 @@ type subagentStatusResult struct {
 	State          string `json:"state"`
 	Available      bool   `json:"available"`
 	Ref            string `json:"ref,omitempty"`
-	Delivered      bool   `json:"delivered,omitempty"`
-	DeliveryFailed bool   `json:"delivery_failed,omitempty"`
+	Delivered      bool   `json:"delivered"`
+	DeliveryFailed bool   `json:"delivery_failed"`
 }
 
 const subagentStatusSchema = `{
@@ -190,7 +190,7 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 	}
 	if view.Result != nil {
 		if entry.Result == nil {
-			entry.Result = &subagentStatusResult{}
+			entry.Result = &subagentStatusResult{State: "unknown"}
 		}
 		entry.Result.Available = view.Result.Available
 		if view.Result.Ref != "" {

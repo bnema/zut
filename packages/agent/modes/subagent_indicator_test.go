@@ -32,7 +32,7 @@ func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
 		"review-123": {PrimaryOperation: &subagents.Operation{Type: "turn.started", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", At: now.Add(-time.Second)}},
 	}, 100, now))
-	if got := strings.Join(lines, "\n"); !strings.Contains(got, "assistant streaming · 1s ago") || strings.Contains(got, "delta") {
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "turn open · assistant streaming 1s ago") || strings.Contains(got, "delta") {
 		t.Fatalf("activity lines = %#v", lines)
 	}
 }

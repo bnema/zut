@@ -46,7 +46,7 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	}
 	activity := operation.Label()
 	if observation != nil {
-		activity = observation.Label() + " · " + formatSubagentActivityAge(observation.At, now) + " ago"
+		activity += " · " + observation.Label() + " " + formatSubagentActivityAge(observation.At, now) + " ago"
 	}
 	age := formatSubagentActivityAge(operation.StartedAt, now)
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
