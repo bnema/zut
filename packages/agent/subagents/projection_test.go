@@ -75,8 +75,24 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 	if view.Result == nil || !view.Result.Available || !view.Result.Delivered || view.Result.Ref != "subagent://agent-1/result" {
 		t.Fatalf("result = %#v", view.Result)
 	}
-	if got, want := view.Summary(), "tool bash open · assistant streaming"; got != want {
+	if got, want := view.Summary(), "running bash · assistant streaming"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestOperationLabelUsesHumanFacingActivity(t *testing.T) {
+	cases := []struct {
+		operation Operation
+		want      string
+	}{
+		{operation: Operation{Type: "provider.request.started"}, want: "waiting for model response"},
+		{operation: Operation{Type: "tool.started", Name: "bash"}, want: "running bash"},
+		{operation: Operation{Type: "turn.started"}, want: "processing turn"},
+	}
+	for _, tc := range cases {
+		if got := tc.operation.Label(); got != tc.want {
+			t.Fatalf("Label(%q) = %q, want %q", tc.operation.Type, got, tc.want)
+		}
 	}
 }
 
@@ -108,7 +124,7 @@ func TestProjectTraceOmitsObservationForAnotherToolInSameTurn(t *testing.T) {
 	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
 		t.Fatalf("another tool's observation = %#v, want omitted", observation)
 	}
-	if got, want := view.Summary(), "tool bash open"; got != want {
+	if got, want := view.Summary(), "running bash"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 }
@@ -128,7 +144,7 @@ func TestProjectTraceOmitsPriorTurnObservation(t *testing.T) {
 	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
 		t.Fatalf("prior turn observation = %#v, want omitted", observation)
 	}
-	if got, want := view.Summary(), "turn open"; got != want {
+	if got, want := view.Summary(), "processing turn"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 }

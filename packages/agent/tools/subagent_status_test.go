@@ -86,6 +86,16 @@ func TestPublicSubagentStatusUsesOnlyPrimaryOperation(t *testing.T) {
 	}
 }
 
+func TestPublicSubagentStatusDoesNotInferAvailabilityWithoutResultReference(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{
+		ID:     "agent-1",
+		Result: &subagents.TurnResult{Status: subagents.ResultFailed},
+	}, subagents.AgentTraceView{})
+	if entry.Result == nil || entry.Result.Available {
+		t.Fatalf("result availability = %#v, want unavailable without result ref", entry.Result)
+	}
+}
+
 func TestPublicSubagentStatusIncludesResultDeliveryFacts(t *testing.T) {
 	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
 		Result: &subagents.ResultFact{Available: true, Ref: "subagent://agent-1/result"},

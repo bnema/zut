@@ -61,12 +61,50 @@ func (silentStreamClient) Stream(ctx context.Context, _ provider.Request) (<-cha
 	return out, nil
 }
 
+type readableAfterCancellationClient struct {
+	cancel context.CancelFunc
+}
+
+func (c readableAfterCancellationClient) Name() string { return "readable-after-cancellation" }
+
+func (c readableAfterCancellationClient) Stream(_ context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 1)
+	out <- provider.EventStart{}
+	c.cancel()
+	return out, nil
+}
+
+func TestAgentStopsReadingStreamAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a := NewAgent(readableAfterCancellationClient{cancel: cancel}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	if err := a.Prompt(ctx, "hello", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prompt error = %v, want context.Canceled", err)
+	}
+}
+
 func TestAgentStopsSilentStreamAtIdleDeadline(t *testing.T) {
 	a := NewAgent(silentStreamClient{}, "fake-model", "system", Registry{})
 	a.MaxRetries = 0
 	a.StreamIdleTimeout = 10 * time.Millisecond
 	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	}
+}
+
+func TestAgentRetriesSilentStreamWithoutEndingTurn(t *testing.T) {
+	client := &retryFakeClient{firstErr: ErrStreamIdleTimeout}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.MaxRetries = 1
+	a.RetryBaseDelay = time.Millisecond
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("Stream calls = %d; want reconnect after idle timeout", got)
+	}
+	if got := extractText(a.Messages()[1]); got != "ok" {
+		t.Fatalf("final assistant text = %q; want ok", got)
 	}
 }
 

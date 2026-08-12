@@ -164,11 +164,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			runErr = joinSessionCloseError(runErr, sess)
 		}()
 	}
-	// A silent provider stream is neither progress nor a safe reason to leave
-	// a delegated worker occupied until its broad turn deadline. Set this after
-	// session resume because resume may rebuild the agent for another model.
-	ag.StreamIdleTimeout = time.Minute
-
 	// Resolve retains metadata for catalog models and for valid synthesized
 	// local/routed/open-catalog models. The active agent also survives a session
 	// resume that rebuilt it for a different provider/model pair.
@@ -256,13 +251,12 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		mu.Unlock()
 
 		turnStarted := false
-		toolStarted := false
-		ag.MaxRetries = 2
+		// Match Codex's Responses stream policy: five minutes without an
+		// event marks only the current stream as lost, and up to five retries
+		// reconnect the sampling request without ending the delegated turn.
+		ag.StreamIdleTimeout = 5 * time.Minute
+		ag.MaxRetries = 5
 		sink := func(ev core.AgentEvent) {
-			if ev.Type() == "tool_execution_started" && !toolStarted {
-				toolStarted = true
-				ag.MaxRetries = 0
-			}
 			data := subagentEventData(ev)
 			if ev.Type() == "user_message" && !turnStarted {
 				// Prompt invokes OnMessageAppended before delivering this sink

@@ -34,13 +34,23 @@ func (o Operation) Duration(now time.Time) time.Duration {
 	return now.Sub(o.StartedAt)
 }
 
-// Label returns the shared concise label for an open operation.
+// Label returns a concise user-facing description of an open operation.
 func (o Operation) Label() string {
-	label := strings.TrimSuffix(o.Type, ".started")
-	if o.Name != "" {
-		label += " " + o.Name
+	switch o.Type {
+	case "provider.request.started":
+		return "waiting for model response"
+	case "tool.started":
+		if o.Name != "" {
+			return "running " + o.Name
+		}
+		return "running tool"
+	case "turn.started":
+		return "processing turn"
+	case "agent.wait.started":
+		return "waiting"
+	default:
+		return strings.ReplaceAll(strings.TrimSuffix(o.Type, ".started"), ".", " ")
 	}
-	return label + " open"
 }
 
 // LiveObservation is the last safe, factual signal received from a worker.

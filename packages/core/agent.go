@@ -952,41 +952,46 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 			timer.Reset(a.StreamIdleTimeout)
 		}
 	}
+	handleStreamEvent := func(ev provider.Event) (done bool) {
+		if resetIdle != nil {
+			resetIdle()
+		}
+		switch e := ev.(type) {
+		case provider.EventStart:
+			// nothing
+		case provider.EventTextDelta:
+			sink(EvTextDelta{Delta: e.Delta})
+		case provider.EventToolStart:
+			sink(EvToolUseStart{ID: e.ID, Name: e.Name})
+		case provider.EventToolArgs:
+			sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
+		case provider.EventToolEnd:
+			sink(EvToolUseEnd{ID: e.ID})
+		case provider.EventUsage:
+			cum := a.addUsage(e.Usage)
+			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
+			if a.OnUsage != nil {
+				a.OnUsage(cum)
+			}
+		case provider.EventDone:
+			stop = e.Stop
+			finalErr = e.Err
+			finalMsg = e.Message
+			return true
+		}
+		return false
+	}
 	for {
-		// Prefer an already-buffered terminal provider event over a concurrent
-		// context cancellation so retry classification retains its real cause.
+		// Consume no more than one buffered event before honoring cancellation.
 		select {
 		case ev, ok := <-stream:
-			if !ok {
+			if !ok || handleStreamEvent(ev) {
 				goto streamDone
 			}
-			if resetIdle != nil {
-				resetIdle()
-			}
-			switch e := ev.(type) {
-			case provider.EventStart:
-				// nothing
-			case provider.EventTextDelta:
-				sink(EvTextDelta{Delta: e.Delta})
-			case provider.EventToolStart:
-				sink(EvToolUseStart{ID: e.ID, Name: e.Name})
-			case provider.EventToolArgs:
-				sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
-			case provider.EventToolEnd:
-				sink(EvToolUseEnd{ID: e.ID})
-			case provider.EventUsage:
-				cum := a.addUsage(e.Usage)
-				sink(EvUsage{Usage: e.Usage, Cumulative: cum})
-				if a.OnUsage != nil {
-					a.OnUsage(cum)
-				}
-			case provider.EventDone:
-				stop = e.Stop
-				finalErr = e.Err
-				finalMsg = e.Message
-			}
-			continue
 		default:
+		}
+		if err := streamCtx.Err(); err != nil {
+			return provider.StopError, finalMsg, err
 		}
 		select {
 		case <-streamCtx.Done():
@@ -994,33 +999,8 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		case <-idle:
 			return provider.StopError, finalMsg, ErrStreamIdleTimeout
 		case ev, ok := <-stream:
-			if !ok {
+			if !ok || handleStreamEvent(ev) {
 				goto streamDone
-			}
-			if resetIdle != nil {
-				resetIdle()
-			}
-			switch e := ev.(type) {
-			case provider.EventStart:
-				// nothing
-			case provider.EventTextDelta:
-				sink(EvTextDelta{Delta: e.Delta})
-			case provider.EventToolStart:
-				sink(EvToolUseStart{ID: e.ID, Name: e.Name})
-			case provider.EventToolArgs:
-				sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
-			case provider.EventToolEnd:
-				sink(EvToolUseEnd{ID: e.ID})
-			case provider.EventUsage:
-				cum := a.addUsage(e.Usage)
-				sink(EvUsage{Usage: e.Usage, Cumulative: cum})
-				if a.OnUsage != nil {
-					a.OnUsage(cum)
-				}
-			case provider.EventDone:
-				stop = e.Stop
-				finalErr = e.Err
-				finalMsg = e.Message
 			}
 		}
 	}

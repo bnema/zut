@@ -184,7 +184,7 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 	if snapshot.Result != nil {
 		entry.Result = &subagentStatusResult{
 			State:     publicResultState(snapshot.Result.Status),
-			Available: true,
+			Available: snapshot.ResultRef != "",
 			Ref:       snapshot.ResultRef,
 		}
 	}

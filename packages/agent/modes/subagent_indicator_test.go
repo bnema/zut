@@ -21,7 +21,7 @@ func TestRenderSubagentActivityLinesShowsOnlyTraceOpenOperations(t *testing.T) {
 		"alive": {AgentID: "alive", LastEvent: subagents.TraceEvent{Type: "agent.ready", Timestamp: now.Add(-time.Second)}},
 	}
 	got := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", snapshots, views, 80, now))
-	want := []string{"  / reviewer · tool open · 1m12s"}
+	want := []string{"  / reviewer · running tool · 1m12s"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("activity lines = %#v, want %#v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
 		"review-123": {PrimaryOperation: &subagents.Operation{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
 	}, 100, now))
-	if got := strings.Join(lines, "\n"); !strings.Contains(got, "turn open · assistant streaming 1s ago") || strings.Contains(got, "delta") {
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "processing turn · assistant streaming 1s ago") || strings.Contains(got, "delta") {
 		t.Fatalf("activity lines = %#v", lines)
 	}
 }
@@ -42,7 +42,7 @@ func TestRenderSubagentActivityLinesOmitsPriorTurnObservation(t *testing.T) {
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
 		"review-123": {PrimaryOperation: &subagents.Operation{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
 	}, 100, now))
-	if got := strings.Join(lines, "\n"); strings.Contains(got, "assistant streaming") || !strings.Contains(got, "tool open") || !strings.Contains(got, "1m") {
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "assistant streaming") || !strings.Contains(got, "running tool") || !strings.Contains(got, "1m") {
 		t.Fatalf("activity lines = %#v", lines)
 	}
 }
