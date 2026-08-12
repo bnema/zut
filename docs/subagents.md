@@ -44,7 +44,7 @@ Supported metadata:
 | `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, `create_worktree`, `lsp`, and `web_search` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
 | `provider` | Optional separate provider ID for a model without a provider prefix. |
-| `thinking` / `reasoning` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `thinking` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. This is applied as the child's `reasoning` setting. |
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `inheritProjectContext` | Set to `false` to omit `AGENTS.md` context from the child. |
 | `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
@@ -122,7 +122,7 @@ Per-spawn reasoning and fast-mode overrides are also accepted:
 }
 ```
 
-`thinking` is accepted as an alias for `reasoning`. If neither is supplied, the child inherits the host reasoning level for an unnamed spawn, or the profile's `thinking` value for a named spawn. An explicit `fast_mode` value takes precedence over the selected profile and host setting; omit it to inherit them.
+If `reasoning` is omitted from `subagent_spawn`, the child inherits the host reasoning level for an unnamed spawn, or the selected profile's `thinking` value for a named spawn. An explicit `fast_mode` value takes precedence over the selected profile and host setting; omit it to inherit them.
 
 The interactive command also supports the same selection explicitly:
 
