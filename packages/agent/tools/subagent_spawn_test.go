@@ -350,7 +350,7 @@ func TestSubagentSpawnAppliesProfileFastModeRestriction(t *testing.T) {
 	}
 }
 
-func TestSubagentSpawnSchemaAdvertisesFastModeOverride(t *testing.T) {
+func TestSubagentSpawnSchemaUsesReasoningAndKeepsProfileThinkingInternal(t *testing.T) {
 	var schema struct {
 		Properties map[string]struct {
 			Type        string `json:"type"`
@@ -359,6 +359,12 @@ func TestSubagentSpawnSchemaAdvertisesFastModeOverride(t *testing.T) {
 	}
 	if err := json.Unmarshal((&SubagentSpawnTool{}).Schema(), &schema); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := schema.Properties["reasoning"]; !ok {
+		t.Fatal("subagent_spawn schema does not advertise reasoning")
+	}
+	if _, ok := schema.Properties["thinking"]; ok {
+		t.Fatal("subagent_spawn schema exposes profile-only thinking")
 	}
 	fastMode, ok := schema.Properties["fast_mode"]
 	if !ok {

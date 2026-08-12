@@ -59,7 +59,6 @@ type subagentSpawnArgs struct {
 	Model     string `json:"model,omitempty"`
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
 	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Required  bool   `json:"required,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
@@ -89,12 +88,7 @@ const subagentSpawnSchemaTemplate = `{
     "reasoning": {
       "type": "string",
       "enum": ["off", "minimum", "low", "medium", "high", "xhigh", "max"],
-      "description": "Optional reasoning/thinking level for the child. Overrides the selected profile's thinking level when provided."
-    },
-    "thinking": {
-      "type": "string",
-      "enum": ["off", "minimum", "low", "medium", "high", "xhigh", "max"],
-      "description": "Alias for reasoning, accepted for compatibility with common agent profile terminology. Prefer reasoning when both are available."
+      "description": "Optional reasoning level for the child. Overrides the selected profile's thinking level when provided."
     },
     "fast_mode": {
       "type": "boolean",
@@ -231,18 +225,18 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		providerID = strings.TrimSpace(t.DefaultProvider())
 	}
 
-	reasoning, err := reasoningOverride(a.Reasoning, a.Thinking)
+	reasoning, err := normalizeReasoning(a.Reasoning)
 	if err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
 	}
 	if reasoning == "" && profile != nil && strings.TrimSpace(profile.Thinking) != "" {
-		reasoning, err = reasoningOverride(profile.Thinking, "")
+		reasoning, err = normalizeReasoning(profile.Thinking)
 		if err != nil {
 			return protocolToolError(prefix + ": profile " + profile.Name + ": " + err.Error())
 		}
 	}
 	if reasoning == "" && t.DefaultReasoning != nil {
-		reasoning, err = reasoningOverride(t.DefaultReasoning(), "")
+		reasoning, err = normalizeReasoning(t.DefaultReasoning())
 		if err != nil {
 			return protocolToolError(prefix + ": host " + err.Error())
 		}
@@ -326,16 +320,8 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	}, nil
 }
 
-func reasoningOverride(reasoning, thinking string) (string, error) {
-	reasoning = strings.TrimSpace(reasoning)
-	thinking = strings.TrimSpace(thinking)
-	if reasoning != "" && thinking != "" && provider.NormalizeReasoning(reasoning) != provider.NormalizeReasoning(thinking) {
-		return "", fmt.Errorf("reasoning and thinking disagree; provide only one")
-	}
-	value := reasoning
-	if value == "" {
-		value = thinking
-	}
+func normalizeReasoning(value string) (string, error) {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
 	}
