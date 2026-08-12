@@ -710,7 +710,7 @@ func resultErrorPayload(err error, shutdownOrigin subagents.ShutdownOrigin) map[
 		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
 	}
 	if errors.Is(err, core.ErrStreamIdleTimeout) {
-		return map[string]any{"code": "stream_idle_timeout", "message": "provider stream produced no events for one minute; the delegated turn stopped safely"}
+		return map[string]any{"code": "stream_idle_timeout", "message": "provider stream produced no events for five minutes; the delegated turn stopped safely"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || shutdownOrigin == subagents.ShutdownOriginDeadline {
 		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}

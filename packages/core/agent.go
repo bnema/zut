@@ -100,6 +100,7 @@ type Agent struct {
 	// StreamIdleTimeout cancels an individual provider stream when it emits no
 	// events for this duration. Zero leaves the stream unbounded.
 	StreamIdleTimeout time.Duration
+	streamIdleTimer   func(time.Duration) (<-chan time.Time, func(), func())
 
 	// OnEvent, if set, mirrors every AgentEvent the loop emits to
 	// this callback in addition to the per-Prompt sink. Used by the
@@ -871,6 +872,21 @@ func retryReasonFromProvider(reason provider.RequestFailureReason) RetryReason {
 
 // oneTurn calls the LLM once, forwards events, returns the stop reason
 // and the assembled assistant message (already appended to the transcript).
+func newStreamIdleTimer(timeout time.Duration) (<-chan time.Time, func(), func()) {
+	timer := time.NewTimer(timeout)
+	stop := func() { timer.Stop() }
+	reset := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(timeout)
+	}
+	return timer.C, stop, reset
+}
+
 func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
 	fastMode := a.FastModeEnabled()
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
@@ -939,18 +955,13 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	var idle <-chan time.Time
 	var resetIdle func()
 	if a.StreamIdleTimeout > 0 {
-		timer := time.NewTimer(a.StreamIdleTimeout)
-		defer timer.Stop()
-		idle = timer.C
-		resetIdle = func() {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(a.StreamIdleTimeout)
+		newTimer := a.streamIdleTimer
+		if newTimer == nil {
+			newTimer = newStreamIdleTimer
 		}
+		var stopIdle func()
+		idle, stopIdle, resetIdle = newTimer(a.StreamIdleTimeout)
+		defer stopIdle()
 	}
 	handleStreamEvent := func(ev provider.Event) (done bool) {
 		if resetIdle != nil {

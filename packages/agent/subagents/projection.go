@@ -179,8 +179,8 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 			name, _ := event.Data["name"].(string)
 			provider, _ := event.Data["provider"].(string)
 			model, _ := event.Data["model"].(string)
-			attempt, _ := event.Data["attempt"].(int)
-			maxAttempts, _ := event.Data["max_attempts"].(int)
+			attempt := traceInt(event.Data["attempt"])
+			maxAttempts := traceInt(event.Data["max_attempts"])
 			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
 		}
 		if ends {
@@ -279,11 +279,22 @@ func traceObservation(event TraceEvent) *LiveObservation {
 	return nil
 }
 
+func traceInt(value any) int {
+	switch value := value.(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
 func requestFact(event TraceEvent, outcome string) *RequestFact {
 	providerName, _ := event.Data["provider"].(string)
 	model, _ := event.Data["model"].(string)
-	attempt, _ := event.Data["attempt"].(int)
-	maxAttempts, _ := event.Data["max_attempts"].(int)
+	attempt := traceInt(event.Data["attempt"])
+	maxAttempts := traceInt(event.Data["max_attempts"])
 	errorCode, _ := event.Data["error_code"].(string)
 	return &RequestFact{TurnID: event.TurnID, Provider: providerName, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, Outcome: outcome, ErrorCode: errorCode, StartedAt: event.Timestamp, EndedAt: event.Timestamp}
 }

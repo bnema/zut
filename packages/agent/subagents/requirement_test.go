@@ -221,7 +221,7 @@ func TestRequiredOutcomePersistsAcrossReload(t *testing.T) {
 func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
 	trace := NewMemoryTraceWriter()
 	t.Cleanup(func() { _ = trace.Close() })
-	a := &Agent{ID: "agent-1", trace: trace, requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1}}
+	a := &Agent{ID: "agent-1", trace: trace, resultRef: ResultRef("agent-1"), requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1}}
 	s := &Supervisor{agents: map[string]*Agent{a.ID: a}}
 	if err := s.MarkRequirementNotified(a.ID); err != nil {
 		t.Fatal(err)
@@ -240,6 +240,24 @@ func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
 	}
 	if delivered != 1 {
 		t.Fatalf("result.delivered count = %d, want 1", delivered)
+	}
+}
+
+func TestRequirementNotificationRejectsMissingDurableResult(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{ID: "agent-1", trace: trace, requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1}}
+	s := &Supervisor{agents: map[string]*Agent{a.ID: a}}
+	if err := s.MarkRequirementNotified(a.ID); err == nil {
+		t.Fatal("MarkRequirementNotified succeeded without durable result")
+	}
+	if a.Snapshot().Requirement.Notified {
+		t.Fatal("requirement marked notified without durable result")
+	}
+	for _, event := range trace.Events() {
+		if event.Type == "result.delivered" {
+			t.Fatalf("unexpected delivery trace: %#v", event)
+		}
 	}
 }
 

@@ -86,7 +86,12 @@ func TestAgentStopsReadingStreamAfterCancellation(t *testing.T) {
 func TestAgentStopsSilentStreamAtIdleDeadline(t *testing.T) {
 	a := NewAgent(silentStreamClient{}, "fake-model", "system", Registry{})
 	a.MaxRetries = 0
-	a.StreamIdleTimeout = 10 * time.Millisecond
+	a.StreamIdleTimeout = time.Minute
+	idle := make(chan time.Time, 1)
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		idle <- time.Now()
+		return idle, func() {}, func() {}
+	}
 	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
 	}

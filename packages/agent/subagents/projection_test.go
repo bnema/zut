@@ -1,10 +1,31 @@
 package subagents
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestProjectTraceRetainsJSONDecodedRequestAttempts(t *testing.T) {
+	bundle := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bundle, "manifest.json"), []byte(`{"version":1,"trace_file":"trace.jsonl"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"seq":1,"timestamp":"2026-08-12T07:00:00Z","type":"provider.request.started","agent_id":"agent-1","turn_id":"turn-1","data":{"attempt":2,"max_attempts":6}}` + "\n"
+	if err := os.WriteFile(filepath.Join(bundle, "trace.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadTrace(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := ProjectTrace(events)["agent-1"].PrimaryOperation
+	if operation == nil || operation.Attempt != 2 || operation.MaxAttempts != 6 {
+		t.Fatalf("projected operation = %#v, want attempt 2/6", operation)
+	}
+}
 
 func TestProjectTraceReportsOpenOperationInsteadOfLifecycleState(t *testing.T) {
 	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)

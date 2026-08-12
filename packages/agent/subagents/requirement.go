@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -309,6 +310,9 @@ func (f *Supervisor) MarkRequirementNotified(id string) error {
 	a := f.Get(strings.TrimSpace(id))
 	if a == nil {
 		return fmt.Errorf("subagents: no such agent %q", id)
+	}
+	if strings.TrimSpace(a.Snapshot().ResultRef) == "" {
+		return errors.New("subagents: required result is not durably available")
 	}
 	if a.markRequirementNotified() {
 		a.recordTrace(TraceEvent{Type: "result.delivered", TurnID: a.CurrentTurnID(), Data: map[string]any{"ref": ResultRef(a.ID)}})
