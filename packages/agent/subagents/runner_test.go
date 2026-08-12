@@ -806,12 +806,15 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	t.Cleanup(func() { _ = trace.Close() })
 	agent := &Agent{ID: "agent-1", trace: trace}
 	recordWorkerTrace(agent, Event{Type: EventMessageDelta, TurnID: "turn-1", Data: map[string]any{"delta": "sensitive answer"}})
+	recordWorkerTrace(agent, Event{Type: "request_started", TurnID: "turn-1", Data: map[string]any{"provider": "test", "model": "test"}})
+	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
+	recordWorkerTrace(agent, Event{Type: "tool_call", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash", "args": "sensitive arguments"}})
 	recordWorkerTrace(agent, Event{Type: "future_event", TurnID: "turn-1", Data: map[string]any{"secret": "hidden"}})
 	if err := trace.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	events := trace.Events()
-	if len(events) != 2 {
+	if len(events) != 5 {
 		t.Fatalf("events = %#v", events)
 	}
 	if got, want := events[0].Type, "assistant.stream.observed"; got != want {
@@ -820,14 +823,33 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	if _, found := events[0].Data["delta"]; found {
 		t.Fatalf("stream payload leaked: %#v", events[0].Data)
 	}
-	if got, want := events[1].Type, "worker.protocol.observed"; got != want {
+	if got, want := events[1].Type, "provider.request.started"; got != want {
 		t.Fatalf("type = %q, want %q", got, want)
 	}
-	if got, _ := events[1].Data["source_event"].(string); got != "future.event" {
+	if got, want := events[2].Type, "provider.request.finished"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, want := events[3].Type, "tool.started"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, _ := events[3].Data["call_id"].(string); got != "call-1" {
+		t.Fatalf("tool call_id = %q", got)
+	}
+	if _, found := events[3].Data["args"]; found {
+		t.Fatalf("tool arguments leaked: %#v", events[2].Data)
+	}
+	if got, want := events[4].Type, "worker.protocol.observed"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, _ := events[4].Data["source_event"].(string); got != "future.event" {
 		t.Fatalf("source_event = %q", got)
 	}
-	if _, found := events[1].Data["secret"]; found {
-		t.Fatalf("worker payload leaked: %#v", events[1].Data)
+	if _, found := events[4].Data["secret"]; found {
+		t.Fatalf("worker payload leaked: %#v", events[3].Data)
+	}
+	view := ProjectTrace(append([]TraceEvent{{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"}}, events...))["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {
+		t.Fatalf("current-turn tool activity was not projected: %#v", view)
 	}
 }
 

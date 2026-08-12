@@ -819,7 +819,8 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	defer r.Close()
 
 	em := newSubagentEmitter(w)
-	em.emit("turn_start", map[string]any{"step": 1})
+	em.setTurnID("turn-1")
+	em.emit("text_delta", map[string]any{"delta": "sensitive partial answer"})
 	_ = w.Close()
 
 	body, err := io.ReadAll(r)
@@ -835,15 +836,18 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	if err := json.Unmarshal(lines[0], &object); err != nil {
 		t.Fatalf("not valid json: %v\n%s", err, lines[0])
 	}
-	if object["type"] != "turn.started" {
+	if object["type"] != "message.delta" {
 		t.Errorf("type field missing or wrong: %v", object["type"])
+	}
+	if object["turn_id"] != "turn-1" {
+		t.Errorf("turn_id = %v, want turn-1", object["turn_id"])
 	}
 	if _, ok := object["timestamp"].(string); !ok {
 		t.Errorf("timestamp field missing: %v", object["timestamp"])
 	}
 	payload, ok := object["payload"].(map[string]any)
-	if !ok || payload["step"] != float64(1) {
-		t.Errorf("payload step field missing or wrong: %v", object["payload"])
+	if !ok || payload["delta"] != "sensitive partial answer" {
+		t.Errorf("payload delta field missing or wrong: %v", object["payload"])
 	}
 }
 

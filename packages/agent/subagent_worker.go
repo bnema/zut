@@ -248,6 +248,8 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			return
 		}
 		turnID := fmt.Sprintf("turn-%d", step)
+		em.setTurnID(turnID)
+		defer em.setTurnID("")
 		c, cancel := subagentTurnContext(ctx, args.SubagentTurnTimeout)
 		cancelFn = cancel
 		mu.Unlock()
@@ -487,6 +489,7 @@ type subagentEmitter struct {
 	mu      sync.Mutex
 	w       *os.File
 	agentID string
+	turnID  string
 }
 
 func newSubagentEmitter(w *os.File) *subagentEmitter {
@@ -496,6 +499,14 @@ func newSubagentEmitter(w *os.File) *subagentEmitter {
 func (e *subagentEmitter) setProtocolIdentity(agentID string) {
 	e.mu.Lock()
 	e.agentID = agentID
+	e.mu.Unlock()
+}
+
+// setTurnID associates subsequent worker events with the currently admitted
+// delegated turn. Core events do not carry the worker protocol turn ID.
+func (e *subagentEmitter) setTurnID(turnID string) {
+	e.mu.Lock()
+	e.turnID = turnID
 	e.mu.Unlock()
 }
 
@@ -511,6 +522,9 @@ func (e *subagentEmitter) emit(typ string, data map[string]any) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if turnID == "" {
+		turnID = e.turnID
+	}
 
 	wireType := canonicalWorkerEvent(typ)
 	envelope := subagents.NewEventEnvelope(wireType, e.agentID, turnID, payload)

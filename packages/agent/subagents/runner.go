@@ -905,13 +905,26 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	}
 	typeName := strings.ReplaceAll(ev.Type, "_", ".")
 	traceType := "worker.protocol.observed"
+	nestedTurn, _ := ev.Data["nested_turn"].(bool)
 	switch ev.Type {
-	case "turn_start", EventTurnStarted:
+	case "turn_start", "turn_end":
+		if nestedTurn {
+			if ev.Type == "turn_end" {
+				traceType = "provider.request.finished"
+			}
+		} else if ev.Type == "turn_start" {
+			traceType = "turn.started"
+		} else {
+			traceType = "turn.finished"
+		}
+	case EventTurnStarted:
 		traceType = "turn.started"
-	case "turn_end", EventTurnResult:
+	case EventTurnResult:
 		traceType = "turn.finished"
 	case "turn_failed", EventTurnFailed:
 		traceType = "turn.failed"
+	case "request_started":
+		traceType = "provider.request.started"
 	case "tool_call", EventToolStarted:
 		traceType = "tool.started"
 	case "tool_result", EventToolFinished:
@@ -930,7 +943,11 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	if status, ok := ev.Data["status"].(string); ok && status != "" {
 		data["status"] = status
 	}
-	if callID, ok := ev.Data["call_id"].(string); ok && callID != "" {
+	callID, _ := ev.Data["call_id"].(string)
+	if callID == "" {
+		callID, _ = ev.Data["id"].(string)
+	}
+	if callID != "" {
 		data["call_id"] = callID
 	}
 	agent.recordTrace(TraceEvent{Type: traceType, Timestamp: ev.Time, TurnID: ev.TurnID, Data: data})
