@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -57,5 +56,3 @@ func renderTraceInspection(w io.Writer, views map[string]subagents.AgentTraceVie
 	}
 	return nil
 }
-
-func debugCommandStdout() io.Writer { return os.Stdout }

@@ -163,6 +163,15 @@ func TestTraceWriterConcurrentRecordHasOrderedGlobalSequences(t *testing.T) {
 
 func assertPrivate(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if os.PathSeparator == '\\' {
+		// Windows does not expose POSIX permission bits through os.FileMode.
+		// The writer still requests restrictive ACL-compatible modes; assert the
+		// portable property that the bundle member exists instead.
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

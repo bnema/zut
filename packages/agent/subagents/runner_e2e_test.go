@@ -262,45 +262,6 @@ func retrySend(f *Supervisor, id, msg string, timeout time.Duration) error {
 	return lastErr
 }
 
-func eventText(ev Event) string {
-	if ev.Type != "assistant_message" && ev.Type != "user_message" {
-		return ""
-	}
-	content, _ := ev.Data["content"].([]any)
-	var sb strings.Builder
-	for _, c := range content {
-		m, _ := c.(map[string]any)
-		if t, _ := m["type"].(string); t == "text" {
-			if txt, _ := m["text"].(string); txt != "" {
-				sb.WriteString(txt)
-				sb.WriteByte('\n')
-			}
-		}
-	}
-	return sb.String()
-}
-
-func dumpEventsVerbose(evs []Event) string {
-	var sb strings.Builder
-	for _, ev := range evs {
-		sb.WriteString(ev.Type)
-		sb.WriteString("\t")
-		for k, v := range ev.Data {
-			sb.WriteString(k)
-			sb.WriteString("=")
-			switch vv := v.(type) {
-			case string:
-				sb.WriteString(vv)
-			default:
-				sb.WriteString("<...>")
-			}
-			sb.WriteString(" ")
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
 func formatEvents(evs []Event) string {
 	var sb strings.Builder
 	for _, ev := range evs {
