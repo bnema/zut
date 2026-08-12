@@ -928,6 +928,9 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	if status, ok := ev.Data["status"].(string); ok && status != "" {
 		data["status"] = status
 	}
+	if callID, ok := ev.Data["call_id"].(string); ok && callID != "" {
+		data["call_id"] = callID
+	}
 	agent.recordTrace(TraceEvent{Type: traceType, Timestamp: ev.Time, TurnID: ev.TurnID, Data: data})
 }
 

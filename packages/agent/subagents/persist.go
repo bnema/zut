@@ -1325,6 +1325,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	a.setOnTurnIdle(func() { f.dispatchQueuedResumeWithTimeout(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
+	a.trace = f.trace
 	a.runner = f.cfg.NewRunner(a)
 	if err := writeAgentMeta(a.stateDirectory(f.cfg.Root), a); err != nil {
 		if a.cancel != nil {

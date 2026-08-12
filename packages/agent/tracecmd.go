@@ -46,7 +46,12 @@ func renderTraceInspection(w io.Writer, views map[string]subagents.AgentTraceVie
 			}
 			continue
 		}
-		if _, err := fmt.Fprintf(w, "%s  no observable operation; last event %s %s ago\n", id, view.LastEvent.Type, now.Sub(view.LastEvent.Timestamp).Round(time.Second)); err != nil {
+		age := now.Sub(view.LastEvent.Timestamp).Round(time.Second)
+		when := age.String() + " ago"
+		if age < 0 {
+			when = "in " + (-age).String()
+		}
+		if _, err := fmt.Fprintf(w, "%s  no observable operation; last event %s %s\n", id, view.LastEvent.Type, when); err != nil {
 			return err
 		}
 	}

@@ -125,5 +125,5 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if !ok {
 		return core.ToolResult{}, fmt.Errorf("%s: resumed agent disappeared from supervisor", prefix)
 	}
-	return renderSubagentAction("resumed", snapshot)
+	return renderSubagentAction("resumed", snapshot, t.Supervisor.TraceViews()[snapshot.ID])
 }

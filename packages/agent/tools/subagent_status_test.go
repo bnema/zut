@@ -44,7 +44,7 @@ func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
 		ID:              "counter-agent",
 		LifetimeTurns:   7,
 		CurrentRunTurns: 2,
-	})
+	}, subagents.AgentTraceView{})
 	if entry.LifetimeTurns != 7 || entry.CurrentRunTurns != 2 {
 		t.Fatalf("status counters = (%d, %d), want (7, 2)", entry.LifetimeTurns, entry.CurrentRunTurns)
 	}
@@ -198,7 +198,8 @@ func TestSubagentStatusReportsQueuedWorkerWithoutLifecycleState(t *testing.T) {
 	}
 	var got struct {
 		Agent struct {
-			ID string `json:"agent_id"`
+			ID        string          `json:"agent_id"`
+			Operation json.RawMessage `json:"operation"`
 		} `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(textResult(res.Content)), &got); err != nil {
@@ -206,6 +207,9 @@ func TestSubagentStatusReportsQueuedWorkerWithoutLifecycleState(t *testing.T) {
 	}
 	if got.Agent.ID != queued.ID {
 		t.Fatalf("agent id = %q, want %q", got.Agent.ID, queued.ID)
+	}
+	if len(got.Agent.Operation) != 0 {
+		t.Fatalf("queued operation = %s, want omitted", got.Agent.Operation)
 	}
 
 	close(release)
@@ -308,12 +312,13 @@ func TestSubagentStatusRejectsUnknownWorker(t *testing.T) {
 
 func TestSubagentStatusOmitsLifecycleStateForFailedAndCancelledWorkers(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		runnerErr error
-		stop      bool
+		name         string
+		runnerErr    error
+		stop         bool
+		wantTerminal string
 	}{
-		{name: "failed", runnerErr: errors.New("runner failed")},
-		{name: "cancelled", stop: true},
+		{name: "failed", runnerErr: errors.New("runner failed"), wantTerminal: "failed"},
+		{name: "cancelled", stop: true, wantTerminal: "cancelled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -356,7 +361,8 @@ func TestSubagentStatusOmitsLifecycleStateForFailedAndCancelledWorkers(t *testin
 			}
 			var got struct {
 				Agent struct {
-					ID string `json:"agent_id"`
+					ID       string `json:"agent_id"`
+					Terminal string `json:"terminal"`
 				} `json:"agent"`
 			}
 			if err := json.Unmarshal([]byte(textResult(res.Content)), &got); err != nil {
@@ -364,6 +370,12 @@ func TestSubagentStatusOmitsLifecycleStateForFailedAndCancelledWorkers(t *testin
 			}
 			if got.Agent.ID != agent.ID {
 				t.Fatalf("agent id = %q, want %q", got.Agent.ID, agent.ID)
+			}
+			if got.Agent.Terminal != tc.wantTerminal {
+				t.Fatalf("terminal = %q, want %q", got.Agent.Terminal, tc.wantTerminal)
+			}
+			if tc.stop && got.Agent.Terminal == "completed" {
+				t.Fatalf("cancelled worker reported completed terminal")
 			}
 		})
 	}

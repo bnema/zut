@@ -421,7 +421,7 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **Persistence across zut restarts** — every spawn writes durable metadata, a session file, and structured `result.json` under `$ZUT_HOME/subagents/agents/<id>/`. A local execution trace is an optional separate diagnostic bundle. On the next `zut` launch, retained session and result data can be used with `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
 
-**Where state lives** — per-agent metadata, session files, results, and patches live under `$ZUT_HOME/subagents/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. When enabled, trace bundles live below `ZUT_SUBAGENT_TRACE_DIR`. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
+**Where state lives** — per-agent metadata, session files, results, and patches live under `$ZUT_HOME/subagents/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. When enabled, trace bundles live below `ZUT_SUBAGENT_TRACE_DIR`; `zut debug trace <bundle>` reports the open operation, terminal fact, or last event. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
 
 **`/session export` does NOT bundle subagents.** A `.zutsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 

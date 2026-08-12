@@ -148,11 +148,7 @@ func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) 
 	return match, hits == 1
 }
 
-func publicSubagentStatus(snapshot subagents.AgentSnapshot, traceViews ...subagents.AgentTraceView) subagentStatusEntry {
-	var view subagents.AgentTraceView
-	if len(traceViews) != 0 {
-		view = traceViews[0]
-	}
+func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.AgentTraceView) subagentStatusEntry {
 	entry := subagentStatusEntry{
 		ID:              snapshot.ID,
 		Terminal:        view.Terminal,

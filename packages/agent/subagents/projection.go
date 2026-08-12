@@ -1,6 +1,9 @@
 package subagents
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Operation is a factual operation inferred from paired trace boundaries. An
 // empty FinishedAt means that no terminal boundary has been observed yet.
@@ -76,26 +79,39 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 		for _, operation := range operations {
 			view.OpenOperations = append(view.OpenOperations, operation)
 		}
+		sort.Slice(view.OpenOperations, func(i, j int) bool {
+			left, right := view.OpenOperations[i], view.OpenOperations[j]
+			if !left.StartedAt.Equal(right.StartedAt) {
+				return left.StartedAt.Before(right.StartedAt)
+			}
+			if left.Type != right.Type {
+				return left.Type < right.Type
+			}
+			return left.TurnID < right.TurnID
+		})
 		views[agentID] = view
 	}
 	return views
 }
 
 func traceBoundary(event TraceEvent) (key string, starts, ends bool, terminal string) {
-	key = event.Type + ":" + event.TurnID
+	callID, _ := event.Data["call_id"].(string)
+	key = event.Type + ":" + event.TurnID + ":" + callID
 	switch event.Type {
 	case "turn.started":
 		return "turn:" + event.TurnID, true, false, ""
 	case "turn.finished", "turn.failed":
 		return "turn:" + event.TurnID, false, true, ""
 	case "tool.started":
-		return "tool:" + event.TurnID, true, false, ""
+		return "tool:" + event.TurnID + ":" + callID, true, false, ""
 	case "tool.finished":
-		return "tool:" + event.TurnID, false, true, ""
+		return "tool:" + event.TurnID + ":" + callID, false, true, ""
 	case "agent.finished":
 		return key, false, false, "completed"
 	case "agent.failed":
 		return key, false, false, "failed"
+	case "agent.cancelled":
+		return key, false, false, "cancelled"
 	}
 	return key, false, false, ""
 }

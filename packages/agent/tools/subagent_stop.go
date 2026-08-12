@@ -98,7 +98,7 @@ func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ f
 	if !ok {
 		return core.ToolResult{}, fmt.Errorf("%s: terminated agent disappeared from supervisor", prefix)
 	}
-	return renderSubagentAction("stop_requested", snapshot)
+	return renderSubagentAction("stop_requested", snapshot, t.Supervisor.TraceViews()[snapshot.ID])
 }
 
 func subagentCanStop(snapshot subagents.AgentSnapshot) bool {
@@ -107,10 +107,10 @@ func subagentCanStop(snapshot subagents.AgentSnapshot) bool {
 		(snapshot.Status == subagents.StatusDetached && snapshot.ProcessState == subagents.ProcessAlive)
 }
 
-func renderSubagentAction(action string, snapshot subagents.AgentSnapshot) (core.ToolResult, error) {
+func renderSubagentAction(action string, snapshot subagents.AgentSnapshot, view subagents.AgentTraceView) (core.ToolResult, error) {
 	response := subagentActionResponse{
 		Action: action,
-		Agent:  publicSubagentStatus(snapshot),
+		Agent:  publicSubagentStatus(snapshot, view),
 	}
 	data, err := json.Marshal(response)
 	if err != nil {

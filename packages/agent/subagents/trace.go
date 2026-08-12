@@ -101,7 +101,10 @@ type traceRecord struct {
 	barrier chan struct{}
 }
 
-const traceQueueInitialCapacity = 64
+const (
+	traceQueueInitialCapacity = 64
+	memoryTraceEventLimit     = 4096
+)
 
 // NewMemoryTraceWriter creates the non-persistent projection source used when
 // bundle capture is disabled. It retains only normal-mode event metadata.
@@ -301,6 +304,10 @@ func (w *TraceWriter) write(record traceRecord) {
 	if w.memory {
 		w.mu.Lock()
 		w.events = append(w.events, event)
+		if overflow := len(w.events) - memoryTraceEventLimit; overflow > 0 {
+			copy(w.events, w.events[overflow:])
+			w.events = w.events[:memoryTraceEventLimit]
+		}
 		w.mu.Unlock()
 		return
 	}
@@ -383,6 +390,7 @@ func (w *TraceWriter) Flush() error {
 		<-barrier
 	} else {
 		w.mu.Unlock()
+		<-w.finished
 	}
 	return w.recordingError()
 }

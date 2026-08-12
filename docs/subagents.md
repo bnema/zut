@@ -164,7 +164,7 @@ When the relevant manager tool is permitted by launch-time policy, the model can
 
 ## Local execution trace
 
-Set `ZUT_SUBAGENT_TRACE_DIR` to a private local directory before launching zut to retain an execution-trace bundle for each supervisor. Each bundle contains `manifest.json`, ordered `trace.jsonl`, and (only in detailed mode) private `payloads/` files. The default normal mode records redacted metadata; set `ZUT_SUBAGENT_TRACE_MODE=detailed` only when investigating locally and when payload capture is appropriate for the session. Trace bundles are not uploaded, have no automatic retention policy, and should be removed manually after the investigation.
+Set `ZUT_SUBAGENT_TRACE_DIR` to a private local directory before launching zut to retain an execution-trace bundle for each supervisor. Each bundle contains `manifest.json`, ordered `trace.jsonl`, and (only in detailed mode) private `payloads/` files. The default normal mode records redacted metadata. `ZUT_SUBAGENT_TRACE_MODE=detailed` retains unredacted prompts, tool arguments, and tool output in local trace files; enable it only for an appropriate investigation. Trace bundles are not uploaded or deleted automatically, and should be removed manually after the investigation.
 
 Inspect a retained bundle with:
 

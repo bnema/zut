@@ -179,6 +179,8 @@ func New(cfg Config) *Supervisor {
 		// in-memory trace remains the sole status projection in that case.
 		if bundle, err := NewTraceWriter(filepath.Join(cfg.TraceDir, uuid.NewString()), cfg.TraceMode); err == nil {
 			trace = bundle
+		} else {
+			trace.Record(TraceEvent{Type: "trace.bundle.failed", Data: map[string]any{"error_kind": "create"}})
 		}
 	}
 	lifetimeParent := cfg.Context
@@ -734,7 +736,10 @@ func (f *Supervisor) run(a *Agent) {
 	finalStatus := a.status
 	a.mu.Unlock()
 	terminalType := "agent.finished"
-	if terminalErr != nil {
+	switch {
+	case finalStatus == StatusKilled:
+		terminalType = "agent.cancelled"
+	case terminalErr != nil:
 		terminalType = "agent.failed"
 	}
 	f.recordTrace(TraceEvent{Type: terminalType, AgentID: a.ID, Data: map[string]any{"status": string(finalStatus), "error": traceErrorKind(terminalErr)}})
@@ -1105,6 +1110,7 @@ func (f *Supervisor) stopAgents(ctx context.Context, agents []*Agent, origin Shu
 // StopAll cancels every running agent. Used on shutdown.
 func (f *Supervisor) StopAll() {
 	_ = f.stopAll(context.Background())
+	_ = f.Close()
 }
 
 // StopAllContext is the context-aware shutdown variant. It returns the

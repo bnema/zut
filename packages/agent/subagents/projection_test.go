@@ -30,11 +30,14 @@ func TestProjectTraceClosesPairedOperationsAndKeepsTerminalFact(t *testing.T) {
 	views := ProjectTrace([]TraceEvent{
 		{Seq: 1, Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
 		{Seq: 2, Timestamp: started.Add(time.Second), Type: "turn.finished", AgentID: "agent-1", TurnID: "turn-1"},
-		{Seq: 3, Timestamp: started.Add(2 * time.Second), Type: "agent.finished", AgentID: "agent-1"},
+		{Seq: 3, Timestamp: started.Add(2 * time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},
+		{Seq: 4, Timestamp: started.Add(3 * time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two"}},
+		{Seq: 5, Timestamp: started.Add(4 * time.Second), Type: "tool.finished", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},
+		{Seq: 6, Timestamp: started.Add(5 * time.Second), Type: "agent.finished", AgentID: "agent-1"},
 	})
 	view := views["agent-1"]
-	if len(view.OpenOperations) != 0 {
-		t.Fatalf("open operations = %#v, want none", view.OpenOperations)
+	if len(view.OpenOperations) != 1 || view.OpenOperations[0].Type != "tool.started" {
+		t.Fatalf("open operations = %#v, want unmatched tool", view.OpenOperations)
 	}
 	if view.Terminal != "completed" {
 		t.Fatalf("terminal = %q, want completed", view.Terminal)

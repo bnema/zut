@@ -69,6 +69,25 @@ func TestTraceWriterCreatesPrivateBundleAndDetailedPayload(t *testing.T) {
 	}
 }
 
+func TestMemoryTraceWriterRetainsOrderedEventsWithoutBundle(t *testing.T) {
+	writer := NewMemoryTraceWriter()
+	writer.Record(TraceEvent{Type: "agent.started"})
+	writer.Record(TraceEvent{Type: "turn.started", TurnID: "turn-1"})
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := writer.Dir(); got != "" {
+		t.Fatalf("memory trace dir = %q, want empty", got)
+	}
+	events := writer.Events()
+	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
+		t.Fatalf("memory events = %#v, want contiguous sequence", events)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTraceWriterNormalRedactsSensitiveValues(t *testing.T) {
 	writer, err := NewTraceWriter(filepath.Join(t.TempDir(), "trace"), TraceModeNormal)
 	if err != nil {
