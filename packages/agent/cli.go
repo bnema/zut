@@ -1772,7 +1772,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		persistMu.Lock()
 		current := sess
 		persistMu.Unlock()
-		if resumeID := resumableSessionID(ZutHome(), current); resumeID != "" {
+		hasMessages := false
+		if finalAg := iv.Agent(); finalAg != nil {
+			hasMessages = finalAg.MessageCount() > 0
+		}
+		if resumeID := resumableSessionID(ZutHome(), current, hasMessages); resumeID != "" {
 			fmt.Print(resumeSessionHint(resumeID))
 		}
 	}()
@@ -2709,32 +2713,30 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	return runErr
 }
 
-func resumableSessionID(root string, sess *core.Session) string {
-	if sess == nil || sess.ID == "" || sess.Path == "" {
+func resumableSessionID(root string, sess *core.Session, hasMessages bool) string {
+	if !hasMessages || sess == nil || sess.ID == "" || sess.Path == "" {
 		return ""
 	}
-	path, err := core.FindManagedSessionByID(context.Background(), root, sess.ID)
-	if err != nil || !sameSessionPath(path, sess.Path) {
+	managedRoot, err := filepath.Abs(filepath.Join(root, "sessions"))
+	if err != nil {
 		return ""
 	}
-	snapshot, err := core.ReadSessionSnapshot(path)
-	if err != nil || len(snapshot.Messages) == 0 {
+	path, err := filepath.Abs(sess.Path)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(managedRoot, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
 		return ""
 	}
 	return sess.ID
 }
 
-func sameSessionPath(left, right string) bool {
-	leftAbs, leftErr := filepath.Abs(left)
-	rightAbs, rightErr := filepath.Abs(right)
-	if leftErr == nil && rightErr == nil {
-		return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
-}
-
 func resumeSessionHint(id string) string {
-	return fmt.Sprintf("Resume this session with: zut --resume %s\n", id)
+	return fmt.Sprintf("Session ID: %s\nResume with: zut --resume %s\n\n", id, id)
 }
 
 func agentSessionsRoot(root string, args Args) string {
@@ -2871,12 +2873,16 @@ func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) (nex
 	if sess == nil || ag == nil {
 		return next, nil
 	}
-	msgs := ag.Messages()
-	for i := from; i < len(msgs); i++ {
-		if err := sess.AppendMessage(msgs[i]); err != nil {
-			return next, fmt.Errorf("append transcript message %d: %w", i, err)
+	msgs, total := ag.MessagesFrom(from)
+	for offset, msg := range msgs {
+		index := from + offset
+		if err := sess.AppendMessage(msg); err != nil {
+			return next, fmt.Errorf("append transcript message %d: %w", index, err)
 		}
-		next = i + 1
+		next = index + 1
+	}
+	if len(msgs) == 0 {
+		next = total
 	}
 	cum := ag.Cost()
 	if err := sess.AppendUsage(cum, cum); err != nil {

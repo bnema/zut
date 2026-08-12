@@ -322,7 +322,7 @@ func TestResumeHintSuppressesEmptyAndArbitrarySessions(t *testing.T) {
 	if _, err := os.Stat(empty.Path); !os.IsNotExist(err) {
 		t.Fatalf("empty session stat error = %v, want deleted", err)
 	}
-	if got := resumableSessionID(root, empty); got != "" {
+	if got := resumableSessionID(root, empty, false); got != "" {
 		t.Fatalf("empty session hint ID = %q, want empty", got)
 	}
 
@@ -340,7 +340,7 @@ func TestResumeHintSuppressesEmptyAndArbitrarySessions(t *testing.T) {
 	if err := arbitrary.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := resumableSessionID(root, arbitrary); got != "" {
+	if got := resumableSessionID(root, arbitrary, true); got != "" {
 		t.Fatalf("arbitrary session hint ID = %q, want empty", got)
 	}
 }
@@ -390,7 +390,7 @@ func TestResumeHintSuppressesPersistedEmptyExplicitUUIDSession(t *testing.T) {
 	if sess == nil || sess.Path != path {
 		t.Fatalf("resumed persisted empty session = %#v, want path %q", sess, path)
 	}
-	if got := resumableSessionID(root, sess); got != "" {
+	if got := resumableSessionID(root, sess, false); got != "" {
 		t.Fatalf("persisted empty session hint ID = %q, want empty", got)
 	}
 	if err := sess.Close(); err != nil {
@@ -446,9 +446,30 @@ func TestOpenOrCreateSessionUUIDLookupReturnsMetadataErrors(t *testing.T) {
 
 func TestResumeSessionHint(t *testing.T) {
 	id := uuid.NewString()
-	want := "Resume this session with: zut --resume " + id + "\n"
+	want := "Session ID: " + id + "\nResume with: zut --resume " + id + "\n\n"
 	if got := resumeSessionHint(id); got != want {
 		t.Fatalf("resume hint = %q, want %q", got, want)
+	}
+}
+
+func TestResumableSessionIDAcceptsManagedPersistedSession(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	sess, err := core.NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "resume me"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := resumableSessionID(root, sess, true); got != sess.ID {
+		t.Fatalf("managed session hint ID = %q, want %q", got, sess.ID)
 	}
 }
 

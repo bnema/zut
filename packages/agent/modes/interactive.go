@@ -1092,7 +1092,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 	if seq := tui.ReportCWD(i.cfg.CWD); seq != "" {
 		_, _ = term.Write([]byte(seq))
 	}
-	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqShowCursor))
+	// Erase the live frame and place the cursor deterministically before any
+	// exit summary or shell prompt is written. Do not erase scrollback: users
+	// should still be able to review the session after closing zut.
+	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor))
 	i.applyInputCursorColor()
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
