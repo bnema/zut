@@ -76,6 +76,14 @@ func TestMemoryTraceWriterRetainsOrderedEventsWithoutBundle(t *testing.T) {
 	writer := NewMemoryTraceWriter()
 	for index := 0; index < memoryTraceEventLimit+2; index++ {
 		writer.Record(TraceEvent{Type: "event", Data: map[string]any{"index": index}})
+		// Keep this retention test independent from the separate bounded-queue
+		// contract: a slow Windows race run can otherwise intentionally drop
+		// records before the in-memory limit is exercised.
+		if (index+1)%traceQueueInitialCapacity == 0 {
+			if err := writer.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if err := writer.Flush(); err != nil {
 		t.Fatal(err)
