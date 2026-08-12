@@ -24,6 +24,17 @@ func staticSnapshots(rows ...subagents.AgentSnapshot) func() []subagents.AgentSn
 	}
 }
 
+func TestFormatSupervisorRowShowsTerminalResultDelivery(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: at}, subagents.AgentTraceView{
+		Terminal: "completed",
+		Result:   &subagents.ResultFact{Available: true, Delivered: true, At: at},
+	}, 120)
+	if !strings.Contains(got, "completed · result delivered") {
+		t.Fatalf("row = %q", got)
+	}
+}
+
 func TestSubagentsDialogEmptyState(t *testing.T) {
 	d := newSubagentsDialog()
 	d.Open(staticSnapshots(), nil, nil, nil, nil, nil, "")

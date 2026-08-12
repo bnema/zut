@@ -101,14 +101,14 @@ func (a *Agent) restoreRequirement(previous RequirementSnapshot) {
 	a.lifecycleMu.Unlock()
 }
 
-func (a *Agent) markRequirementNotified() {
+func (a *Agent) markRequirementNotified() bool {
 	if a == nil {
-		return
+		return false
 	}
 	a.lifecycleMu.Lock()
 	if !a.requirement.Required || a.requirement.Notified {
 		a.lifecycleMu.Unlock()
-		return
+		return false
 	}
 	previous := a.requirement
 	a.requirement.Notified = true
@@ -123,7 +123,7 @@ func (a *Agent) markRequirementNotified() {
 			}
 			a.lifecycleMu.Unlock()
 			a.recordPersistenceError(err)
-			return
+			return false
 		}
 	}
 	a.lifecycleMu.Lock()
@@ -131,6 +131,7 @@ func (a *Agent) markRequirementNotified() {
 		a.signalRequirementLocked()
 	}
 	a.lifecycleMu.Unlock()
+	return true
 }
 
 func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, force bool) RequirementSnapshot {
@@ -309,7 +310,9 @@ func (f *Supervisor) MarkRequirementNotified(id string) error {
 	if a == nil {
 		return fmt.Errorf("subagents: no such agent %q", id)
 	}
-	a.markRequirementNotified()
+	if a.markRequirementNotified() {
+		a.recordTrace(TraceEvent{Type: "result.delivered", TurnID: a.CurrentTurnID(), Data: map[string]any{"ref": ResultRef(a.ID)}})
+	}
 	return nil
 }
 

@@ -904,7 +904,7 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 		return
 	}
 	typeName := strings.ReplaceAll(ev.Type, "_", ".")
-	traceType := "worker.event"
+	traceType := "worker.protocol.observed"
 	switch ev.Type {
 	case "turn_start", EventTurnStarted:
 		traceType = "turn.started"
@@ -916,12 +916,14 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 		traceType = "tool.started"
 	case "tool_result", EventToolFinished:
 		traceType = "tool.finished"
+	case EventMessageDelta:
+		traceType = "assistant.stream.observed"
 	case "agent_ready", EventAgentReady:
 		traceType = "agent.ready"
 	case "agent_stopped":
 		traceType = "agent.stopped"
 	}
-	data := map[string]any{"worker_event": typeName}
+	data := map[string]any{"source_event": typeName}
 	if name, ok := ev.Data["name"].(string); ok && name != "" {
 		data["name"] = name
 	}

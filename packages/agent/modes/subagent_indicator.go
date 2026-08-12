@@ -17,10 +17,14 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		view := views[snapshot.ID]
-		if len(view.OpenOperations) == 0 {
+		operation := view.PrimaryOperation
+		if operation == nil && len(view.OpenOperations) != 0 {
+			operation = &view.OpenOperations[0]
+		}
+		if operation == nil {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, view.OpenOperations[0], width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.LastObservation, width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}
@@ -28,7 +32,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	return lines
 }
 
-func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, width int, now time.Time) string {
+func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, observation *subagents.LiveObservation, width int, now time.Time) string {
 	name := sanitizeSubagentIndicatorText(snapshot.Subagent)
 	if name == "" {
 		name = sanitizeSubagentIndicatorText(snapshot.ID)
@@ -41,6 +45,9 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 		spinnerGlyph = "."
 	}
 	activity := operation.Label()
+	if observation != nil {
+		activity = observation.Label() + " · " + formatSubagentActivityAge(observation.At, now) + " ago"
+	}
 	age := formatSubagentActivityAge(operation.StartedAt, now)
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {
@@ -167,7 +174,8 @@ func (i *Interactive) activeSubagentActivitySnapshots() ([]subagents.AgentSnapsh
 		if activeSession != "" && agent.SessionID != "" && agent.SessionID != activeSession {
 			continue
 		}
-		if len(views[agent.ID].OpenOperations) == 0 {
+		view := views[agent.ID]
+		if view.PrimaryOperation == nil && len(view.OpenOperations) == 0 {
 			continue
 		}
 		out = append(out, subagents.AgentSnapshot{ID: agent.ID, Started: agent.Started, Subagent: agent.Subagent})

@@ -581,6 +581,7 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 	a.lifecycleMu.Lock()
 	a.resultRef = ResultRef(a.ID)
 	a.lifecycleMu.Unlock()
+	a.recordTrace(TraceEvent{Type: "result.available", TurnID: result.TurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 	a.resolveRequirement(0, result, "", true)
 }
 

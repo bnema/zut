@@ -14,6 +14,7 @@ type Operation struct {
 	AgentID   string
 	TurnID    string
 	CallID    string
+	Name      string
 	StartedAt time.Time
 }
 
@@ -30,20 +31,106 @@ func (o Operation) Duration(now time.Time) time.Duration {
 }
 
 // Label returns the shared concise label for an open operation.
-func (o Operation) Label() string { return strings.TrimSuffix(o.Type, ".started") + " open" }
+func (o Operation) Label() string {
+	label := strings.TrimSuffix(o.Type, ".started")
+	if o.Name != "" {
+		label += " " + o.Name
+	}
+	return label + " open"
+}
+
+// LiveObservation is the last safe, factual signal received from a worker.
+// It intentionally contains no worker text, tool arguments, or output.
+type LiveObservation struct {
+	Type   string
+	Source string
+	At     time.Time
+	TurnID string
+	CallID string
+	Name   string
+}
+
+// Label returns a concise safe description of this observation.
+func (o LiveObservation) Label() string {
+	switch o.Type {
+	case "assistant.stream.observed":
+		return "assistant streaming"
+	case "reasoning.stream.observed":
+		return "reasoning stream observed"
+	case "tool.output.observed":
+		if o.Name != "" {
+			return "tool output observed " + o.Name
+		}
+		return "tool output observed"
+	case "worker.protocol.observed":
+		if o.Source != "" {
+			return "worker " + o.Source
+		}
+		return "worker protocol event"
+	default:
+		return strings.ReplaceAll(o.Type, ".", " ")
+	}
+}
+
+// ResultFact describes a durable result and whether the parent accepted its
+// required-work notification. Available is not equivalent to Delivered.
+type ResultFact struct {
+	Available bool
+	Ref       string
+	Delivered bool
+	Failed    bool
+	At        time.Time
+}
 
 // AgentTraceView is the only user-facing execution state. It intentionally
 // contains operations and terminal facts rather than lifecycle guesses such as
 // working, idle, or alive.
 type AgentTraceView struct {
-	AgentID        string
-	LastEvent      TraceEvent
-	OpenOperations []Operation
-	Terminal       string
+	AgentID          string
+	LastEvent        TraceEvent
+	LastObservation  *LiveObservation
+	OpenOperations   []Operation
+	PrimaryOperation *Operation
+	Terminal         string
+	Result           *ResultFact
+}
+
+// Summary returns the most specific factual activity or terminal result fact.
+func (v AgentTraceView) Summary() string {
+	if v.Terminal != "" {
+		if v.Result != nil && v.Result.Available {
+			if v.Result.Delivered {
+				return v.Terminal + " · result delivered"
+			}
+			if v.Result.Failed {
+				return v.Terminal + " · result delivery failed"
+			}
+			return v.Terminal + " · result available"
+		}
+		return v.Terminal
+	}
+	primary := v.PrimaryOperation
+	if primary == nil && len(v.OpenOperations) != 0 {
+		primary = &v.OpenOperations[0]
+	}
+	if primary != nil {
+		if v.LastObservation != nil {
+			return primary.Label() + " · " + v.LastObservation.Label()
+		}
+		return primary.Label()
+	}
+	if v.LastObservation != nil {
+		return v.LastObservation.Label()
+	}
+	if v.LastEvent.Type != "" {
+		return "last event " + v.LastEvent.Type
+	}
+	return "no observable operation"
 }
 
 // ProjectTrace reduces a chronologically ordered trace into per-agent facts.
-// Unknown events are retained as LastEvent but never guessed into an operation.
+// Unknown worker protocol events remain factual observations and are never
+// guessed into operations.
 func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 	views := make(map[string]AgentTraceView)
 	open := make(map[string]map[string]Operation)
@@ -60,10 +147,17 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 				open[event.AgentID] = make(map[string]Operation)
 			}
 			callID, _ := event.Data["call_id"].(string)
-			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, StartedAt: event.Timestamp}
+			name, _ := event.Data["name"].(string)
+			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, StartedAt: event.Timestamp}
 		}
 		if ends {
 			delete(open[event.AgentID], key)
+		}
+		if observation := traceObservation(event); observation != nil {
+			view.LastObservation = observation
+		}
+		if result := traceResultFact(event, view.Result); result != nil {
+			view.Result = result
 		}
 		if terminal != "" {
 			view.Terminal = terminal
@@ -78,6 +172,9 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 		}
 		sort.Slice(view.OpenOperations, func(i, j int) bool {
 			left, right := view.OpenOperations[i], view.OpenOperations[j]
+			if operationPriority(left) != operationPriority(right) {
+				return operationPriority(left) < operationPriority(right)
+			}
 			if !left.StartedAt.Equal(right.StartedAt) {
 				return left.StartedAt.Before(right.StartedAt)
 			}
@@ -89,9 +186,63 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 			}
 			return left.CallID < right.CallID
 		})
+		if len(view.OpenOperations) != 0 {
+			primary := view.OpenOperations[0]
+			view.PrimaryOperation = &primary
+		}
 		views[agentID] = view
 	}
 	return views
+}
+
+func operationPriority(o Operation) int {
+	switch o.Type {
+	case "tool.started":
+		return 0
+	case "provider.request.started":
+		return 1
+	case "agent.wait.started":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func traceObservation(event TraceEvent) *LiveObservation {
+	typeName := event.Type
+	source, _ := event.Data["source_event"].(string)
+	if source == "" {
+		source, _ = event.Data["worker_event"].(string)
+	}
+	name, _ := event.Data["name"].(string)
+	switch typeName {
+	case "assistant.stream.observed", "reasoning.stream.observed", "tool.output.observed", "worker.protocol.observed":
+		return &LiveObservation{Type: typeName, Source: source, At: event.Timestamp, TurnID: event.TurnID, Name: name}
+	}
+	return nil
+}
+
+func traceResultFact(event TraceEvent, previous *ResultFact) *ResultFact {
+	if event.Type != "result.available" && event.Type != "result.delivered" && event.Type != "result.delivery.failed" {
+		return previous
+	}
+	result := ResultFact{}
+	if previous != nil {
+		result = *previous
+	}
+	if ref, _ := event.Data["ref"].(string); ref != "" {
+		result.Ref = ref
+	}
+	result.At = event.Timestamp
+	switch event.Type {
+	case "result.available":
+		result.Available = true
+	case "result.delivered":
+		result.Available, result.Delivered, result.Failed = true, true, false
+	case "result.delivery.failed":
+		result.Available, result.Failed = true, true
+	}
+	return &result
 }
 
 func traceBoundary(event TraceEvent) (key string, starts, ends bool, terminal string) {
@@ -106,6 +257,14 @@ func traceBoundary(event TraceEvent) (key string, starts, ends bool, terminal st
 		return "tool:" + event.TurnID + ":" + callID, true, false, ""
 	case "tool.finished", "tool.failed", "tool.cancelled":
 		return "tool:" + event.TurnID + ":" + callID, false, true, ""
+	case "provider.request.started":
+		return "provider:" + event.TurnID, true, false, ""
+	case "provider.request.finished", "provider.request.failed", "provider.request.cancelled":
+		return "provider:" + event.TurnID, false, true, ""
+	case "agent.wait.started":
+		return "wait:" + event.TurnID, true, false, ""
+	case "agent.wait.finished":
+		return "wait:" + event.TurnID, false, true, ""
 	case "agent.finished":
 		return key, false, false, "completed"
 	case "agent.failed":

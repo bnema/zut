@@ -56,6 +56,29 @@ func TestProjectTraceClosesFailedToolByCallID(t *testing.T) {
 	}
 }
 
+func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one", "name": "bash"}},
+		{Timestamp: started.Add(2 * time.Second), Type: "assistant.stream.observed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"source_event": "message.delta"}},
+		{Timestamp: started.Add(3 * time.Second), Type: "result.available", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
+		{Timestamp: started.Add(4 * time.Second), Type: "result.delivered", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
+	})["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {
+		t.Fatalf("primary operation = %#v, want bash tool", view.PrimaryOperation)
+	}
+	if view.LastObservation == nil || view.LastObservation.Type != "assistant.stream.observed" || view.LastObservation.Label() != "assistant streaming" {
+		t.Fatalf("last observation = %#v", view.LastObservation)
+	}
+	if view.Result == nil || !view.Result.Available || !view.Result.Delivered || view.Result.Ref != "subagent://agent-1/result" {
+		t.Fatalf("result = %#v", view.Result)
+	}
+	if got, want := view.Summary(), "tool bash open · assistant streaming"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
 func TestProjectTraceFailedAgentClosesOpenOperations(t *testing.T) {
 	view := ProjectTrace([]TraceEvent{
 		{Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},

@@ -1457,17 +1457,7 @@ func (d *subagentsDialog) agentHasOpenOperation(id string) bool {
 }
 
 func (d *subagentsDialog) traceSummary(id string) string {
-	view := d.traceView(id)
-	if view.Terminal != "" {
-		return view.Terminal
-	}
-	if len(view.OpenOperations) != 0 {
-		return view.OpenOperations[0].Label()
-	}
-	if view.LastEvent.Type != "" {
-		return "last event " + view.LastEvent.Type
-	}
-	return "no observable operation"
+	return d.traceView(id).Summary()
 }
 
 // renderSupervisorTranscriptBlocks converts the agent's flat transcript
@@ -1634,14 +1624,17 @@ func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 //	tool open 3m                 fix-login-12345             3m        inspect main.go
 //	completed                     write-tests-67890           1h        add coverage
 func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
-	fact := "no observable operation"
-	if view.Terminal != "" {
-		fact = view.Terminal
-	} else if len(view.OpenOperations) != 0 {
-		operation := view.OpenOperations[0]
-		fact = operation.Label() + " " + formatAge(operation.StartedAt)
+	fact := view.Summary()
+	primary := view.PrimaryOperation
+	if primary == nil && len(view.OpenOperations) != 0 {
+		primary = &view.OpenOperations[0]
+	}
+	if primary != nil {
+		fact += " " + formatAge(primary.StartedAt)
+	} else if view.LastObservation != nil {
+		fact += " " + formatAge(view.LastObservation.At)
 	} else if view.LastEvent.Type != "" {
-		fact = "last " + view.LastEvent.Type + " " + formatAge(view.LastEvent.Timestamp)
+		fact += " " + formatAge(view.LastEvent.Timestamp)
 	}
 	age := formatAge(r.Started)
 	left := fmt.Sprintf("%-30s  %-26s  %-8s  ", truncateLineSafe(fact, 30), truncateLineSafe(r.ID, 26), age)

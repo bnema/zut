@@ -801,6 +801,36 @@ func TestEventCounterRejectsNegativeFractionalAndOverflowValues(t *testing.T) {
 	}
 }
 
+func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: EventMessageDelta, TurnID: "turn-1", Data: map[string]any{"delta": "sensitive answer"}})
+	recordWorkerTrace(agent, Event{Type: "future_event", TurnID: "turn-1", Data: map[string]any{"secret": "hidden"}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := trace.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	if got, want := events[0].Type, "assistant.stream.observed"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if _, found := events[0].Data["delta"]; found {
+		t.Fatalf("stream payload leaked: %#v", events[0].Data)
+	}
+	if got, want := events[1].Type, "worker.protocol.observed"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, _ := events[1].Data["source_event"].(string); got != "future.event" {
+		t.Fatalf("source_event = %q", got)
+	}
+	if _, found := events[1].Data["secret"]; found {
+		t.Fatalf("worker payload leaked: %#v", events[1].Data)
+	}
+}
+
 func TestApplyEventToSinkProjectsToolActivityIntoTranscript(t *testing.T) {
 	events := []Event{
 		{Type: EventToolStarted, Data: map[string]any{"name": "bash"}},

@@ -61,6 +61,27 @@ func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
 	}
 }
 
+func TestPublicSubagentStatusUsesOnlyPrimaryOperation(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
+		OpenOperations: []subagents.Operation{{Type: "turn.started", StartedAt: at}, {Type: "tool.started", StartedAt: at.Add(time.Second)}},
+	})
+	if entry.PrimaryOperation == nil || entry.PrimaryOperation.Type != "turn.started" {
+		t.Fatalf("primary operation = %#v", entry.PrimaryOperation)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := fields["operation"]; found {
+		t.Fatalf("obsolete operation field in %#v", fields)
+	}
+}
+
 func TestSubagentStatusSchemaHasOptionalAgentID(t *testing.T) {
 	var schema struct {
 		Type       string `json:"type"`

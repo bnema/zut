@@ -218,6 +218,31 @@ func TestRequiredOutcomePersistsAcrossReload(t *testing.T) {
 	}
 }
 
+func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{ID: "agent-1", trace: trace, requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1}}
+	s := &Supervisor{agents: map[string]*Agent{a.ID: a}}
+	if err := s.MarkRequirementNotified(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRequirementNotified(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var delivered int
+	for _, event := range trace.Events() {
+		if event.Type == "result.delivered" {
+			delivered++
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("result.delivered count = %d, want 1", delivered)
+	}
+}
+
 func TestRequirementNotificationPersistsAndRetryClearsIt(t *testing.T) {
 	root := t.TempDir()
 	first := New(Config{

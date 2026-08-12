@@ -34,16 +34,17 @@ type subagentStatusResponse struct {
 }
 
 type subagentStatusEntry struct {
-	ID              string                `json:"agent_id"`
-	Operation       *statusOperation      `json:"operation,omitempty"`
-	Terminal        string                `json:"terminal,omitempty"`
-	LastEvent       *statusLastEvent      `json:"last_event,omitempty"`
-	StartedAt       time.Time             `json:"started_at"`
-	LifetimeTurns   int                   `json:"lifetime_turns"`
-	CurrentRunTurns int                   `json:"current_run_turns"`
-	TaskSummary     string                `json:"task_summary,omitempty"`
-	Requirement     *statusRequirement    `json:"requirement,omitempty"`
-	Result          *subagentStatusResult `json:"result,omitempty"`
+	ID               string                `json:"agent_id"`
+	PrimaryOperation *statusOperation      `json:"primary_operation,omitempty"`
+	Terminal         string                `json:"terminal,omitempty"`
+	LastObservation  *statusLastEvent      `json:"last_observation,omitempty"`
+	LastEvent        *statusLastEvent      `json:"last_event,omitempty"`
+	StartedAt        time.Time             `json:"started_at"`
+	LifetimeTurns    int                   `json:"lifetime_turns"`
+	CurrentRunTurns  int                   `json:"current_run_turns"`
+	TaskSummary      string                `json:"task_summary,omitempty"`
+	Requirement      *statusRequirement    `json:"requirement,omitempty"`
+	Result           *subagentStatusResult `json:"result,omitempty"`
 }
 
 type statusOperation struct {
@@ -64,9 +65,11 @@ type statusRequirement struct {
 }
 
 type subagentStatusResult struct {
-	State     string `json:"state"`
-	Available bool   `json:"available"`
-	Ref       string `json:"ref,omitempty"`
+	State          string `json:"state"`
+	Available      bool   `json:"available"`
+	Ref            string `json:"ref,omitempty"`
+	Delivered      bool   `json:"delivered,omitempty"`
+	DeliveryFailed bool   `json:"delivery_failed,omitempty"`
 }
 
 const subagentStatusSchema = `{
@@ -157,9 +160,15 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 		CurrentRunTurns: snapshot.CurrentRunTurns,
 		TaskSummary:     summarizeSubagentTask(snapshot.Task),
 	}
-	if len(view.OpenOperations) != 0 {
-		operation := view.OpenOperations[0]
-		entry.Operation = &statusOperation{Type: operation.Type, StartedAt: operation.StartedAt}
+	primary := view.PrimaryOperation
+	if primary == nil && len(view.OpenOperations) != 0 {
+		primary = &view.OpenOperations[0]
+	}
+	if primary != nil {
+		entry.PrimaryOperation = &statusOperation{Type: primary.Type, StartedAt: primary.StartedAt}
+	}
+	if view.LastObservation != nil {
+		entry.LastObservation = &statusLastEvent{Type: view.LastObservation.Type, At: view.LastObservation.At}
 	}
 	if view.LastEvent.Type != "" {
 		entry.LastEvent = &statusLastEvent{Type: view.LastEvent.Type, At: view.LastEvent.Timestamp}
@@ -178,6 +187,17 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 			Available: true,
 			Ref:       snapshot.ResultRef,
 		}
+	}
+	if view.Result != nil {
+		if entry.Result == nil {
+			entry.Result = &subagentStatusResult{}
+		}
+		entry.Result.Available = view.Result.Available
+		if view.Result.Ref != "" {
+			entry.Result.Ref = view.Result.Ref
+		}
+		entry.Result.Delivered = view.Result.Delivered
+		entry.Result.DeliveryFailed = view.Result.Failed
 	}
 	return entry
 }
