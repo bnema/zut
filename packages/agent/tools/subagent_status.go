@@ -35,17 +35,25 @@ type subagentStatusResponse struct {
 
 type subagentStatusEntry struct {
 	ID              string                `json:"agent_id"`
-	State           string                `json:"state"`
-	ProcessState    string                `json:"process_state"`
-	TurnState       string                `json:"turn_state"`
+	Operation       *statusOperation      `json:"operation,omitempty"`
+	Terminal        string                `json:"terminal,omitempty"`
+	LastEvent       *statusLastEvent      `json:"last_event,omitempty"`
+	StartedAt       time.Time             `json:"started_at"`
 	LifetimeTurns   int                   `json:"lifetime_turns"`
 	CurrentRunTurns int                   `json:"current_run_turns"`
-	StartedAt       time.Time             `json:"started_at"`
-	UpdatedAt       time.Time             `json:"updated_at"`
-	FinishedAt      *time.Time            `json:"finished_at,omitempty"`
 	TaskSummary     string                `json:"task_summary,omitempty"`
 	Requirement     *statusRequirement    `json:"requirement,omitempty"`
 	Result          *subagentStatusResult `json:"result,omitempty"`
+}
+
+type statusOperation struct {
+	Type      string    `json:"type"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type statusLastEvent struct {
+	Type string    `json:"type"`
+	At   time.Time `json:"at"`
 }
 
 type statusRequirement struct {
@@ -102,15 +110,15 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
 	}
 
-	// SnapshotAll is intentionally used for both list and single-worker
-	// queries. Besides being non-blocking, it applies the supervisor's active
-	// session visibility rules so an id lookup cannot bypass list scoping.
+	// SnapshotAll provides identity, session scope, and durable result facts.
+	// The execution indication itself comes solely from the trace projection.
 	snapshots := t.Supervisor.SnapshotAll()
+	views := t.Supervisor.TraceViews()
 	id := strings.TrimSpace(args.AgentID)
 	if id == "" {
 		entries := make([]subagentStatusEntry, 0, len(snapshots))
 		for _, snapshot := range snapshots {
-			entries = append(entries, publicSubagentStatus(snapshot))
+			entries = append(entries, publicSubagentStatus(snapshot, views[snapshot.ID]))
 		}
 		return renderSubagentStatus(subagentStatusResponse{Agents: entries})
 	}
@@ -119,7 +127,7 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
-	entry := publicSubagentStatus(snapshot)
+	entry := publicSubagentStatus(snapshot, views[snapshot.ID])
 	return renderSubagentStatus(subagentStatusResponse{Agent: &entry})
 }
 
@@ -140,21 +148,21 @@ func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) 
 	return match, hits == 1
 }
 
-func publicSubagentStatus(snapshot subagents.AgentSnapshot) subagentStatusEntry {
+func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.AgentTraceView) subagentStatusEntry {
 	entry := subagentStatusEntry{
 		ID:              snapshot.ID,
-		State:           publicSubagentState(snapshot),
-		ProcessState:    string(snapshot.ProcessState),
-		TurnState:       string(snapshot.TurnState),
+		Terminal:        view.Terminal,
+		StartedAt:       snapshot.Started,
 		LifetimeTurns:   snapshot.LifetimeTurns,
 		CurrentRunTurns: snapshot.CurrentRunTurns,
-		StartedAt:       snapshot.Started,
-		UpdatedAt:       snapshot.UpdatedAt,
 		TaskSummary:     summarizeSubagentTask(snapshot.Task),
 	}
-	if !snapshot.Finished.IsZero() {
-		finished := snapshot.Finished
-		entry.FinishedAt = &finished
+	if len(view.OpenOperations) != 0 {
+		operation := view.OpenOperations[0]
+		entry.Operation = &statusOperation{Type: operation.Type, StartedAt: operation.StartedAt}
+	}
+	if view.LastEvent.Type != "" {
+		entry.LastEvent = &statusLastEvent{Type: view.LastEvent.Type, At: view.LastEvent.Timestamp}
 	}
 	if snapshot.Requirement.Required {
 		entry.Requirement = &statusRequirement{
@@ -172,25 +180,6 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot) subagentStatusEntry 
 		}
 	}
 	return entry
-}
-
-func publicSubagentState(snapshot subagents.AgentSnapshot) string {
-	switch snapshot.Status {
-	case subagents.StatusPending:
-		return "starting"
-	case subagents.StatusRunning:
-		return "running"
-	case subagents.StatusDone:
-		return "completed"
-	case subagents.StatusFailed:
-		return "failed"
-	case subagents.StatusKilled:
-		return "cancelled"
-	case subagents.StatusDetached:
-		return "detached"
-	default:
-		return "unknown"
-	}
 }
 
 func publicResultState(status subagents.TurnStatus) string {

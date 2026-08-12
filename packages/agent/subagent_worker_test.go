@@ -759,75 +759,6 @@ func TestSubagentEventDataSanitizesContextOverflow(t *testing.T) {
 	}
 }
 
-// TestSupervisorEmitterMirrorDormantUntilStdoutBreaks regresses the
-// "everything is doubled after reopening a subagent agent" bug.
-//
-// Symptom: events.jsonl held two copies of every event because the
-// child mirrored each event to disk AND the supervisor parsed the
-// child's stdout and appended each event to disk too. On next zut
-// launch the replay produced two transcript lines per real one.
-//
-// Fix invariant: while stdout writes succeed (i.e. the supervisor is
-// alive on the other end of the pipe), the child's mirror writes
-// NOTHING. Only when a stdout write fails (broken pipe → orphan)
-// does the mirror take over so events still get persisted.
-func TestSupervisorEmitterMirrorDormantUntilStdoutBreaks(t *testing.T) {
-	// Real *os.File for the emitter's stdout-equivalent so the
-	// emitter's write() path (which expects *os.File) actually runs.
-	stdoutPath := filepath.Join(t.TempDir(), "stdout.fifo")
-	stdoutFile, err := os.Create(stdoutPath)
-	if err != nil {
-		t.Fatalf("create stdout file: %v", err)
-	}
-	defer stdoutFile.Close()
-
-	// Mirror writes go to a separate events.jsonl that we can read
-	// at the end to assert how many events the mirror emitted.
-	mirrorPath := filepath.Join(t.TempDir(), "events.jsonl")
-	mirror, err := subagents.OpenEventLog(mirrorPath)
-	if err != nil {
-		t.Fatalf("open mirror: %v", err)
-	}
-	defer mirror.Close()
-
-	em := newSubagentEmitter(stdoutFile, mirror)
-
-	// Healthy stdout: emit three events. Mirror must stay empty.
-	em.emit("turn_start", map[string]any{"step": 1})
-	em.emit("assistant_message", map[string]any{"text": "hi"})
-	em.emit("turn_end", map[string]any{"step": 1})
-
-	got, err := subagents.ReadEventLog(mirrorPath)
-	if err != nil {
-		t.Fatalf("read mirror: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("mirror wrote %d events while supervisor was alive; want 0 (every event would otherwise double on the next reload)\n%+v",
-			len(got), got)
-	}
-
-	// Simulate supervisor death: close stdout so the next Write
-	// returns EBADF / broken pipe. The emitter must flip into
-	// orphan mode and start writing through the mirror.
-	if err := stdoutFile.Close(); err != nil {
-		t.Fatalf("close stdout: %v", err)
-	}
-
-	em.emit("assistant_message", map[string]any{"text": "after orphan"})
-	em.emit("turn_end", map[string]any{"step": 2})
-
-	got, err = subagents.ReadEventLog(mirrorPath)
-	if err != nil {
-		t.Fatalf("read mirror post-orphan: %v", err)
-	}
-	if len(got) < 2 {
-		t.Fatalf("mirror failed to take over after stdout died: got %d events", len(got))
-	}
-	if got[len(got)-1].Type != "turn_end" {
-		t.Errorf("last mirrored event type = %q; want turn_end", got[len(got)-1].Type)
-	}
-}
-
 // TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire regresses the
 // large-result wire duplication bug.
 func TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire(t *testing.T) {
@@ -838,7 +769,7 @@ func TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire(t *testing.T) {
 	}
 	defer file.Close()
 
-	em := newSubagentEmitter(file, nil)
+	em := newSubagentEmitter(file)
 	em.setProtocolIdentity("agent-1")
 	em.emit("turn.result", map[string]any{
 		"status":  "succeeded",
@@ -887,7 +818,7 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	}
 	defer r.Close()
 
-	em := newSubagentEmitter(w, nil)
+	em := newSubagentEmitter(w)
 	em.emit("turn_start", map[string]any{"step": 1})
 	_ = w.Close()
 
@@ -913,30 +844,6 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	payload, ok := object["payload"].(map[string]any)
 	if !ok || payload["step"] != float64(1) {
 		t.Errorf("payload step field missing or wrong: %v", object["payload"])
-	}
-}
-
-func TestInitialTurnNumberIgnoresNestedProviderTurns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "events.jsonl")
-	log, err := subagents.OpenEventLog(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Append(subagents.NewEvent(subagents.EventTurnStarted, map[string]any{
-		"step": float64(1), "lifetime_turns": 1, "current_run_turns": 1,
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Append(subagents.NewEvent(subagents.EventTurnStarted, map[string]any{
-		"step": float64(99), "nested_turn": true,
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got := initialTurnNumber(path); got != 1 {
-		t.Fatalf("initial turn number = %d, want 1", got)
 	}
 }
 

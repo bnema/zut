@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -299,15 +298,6 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	}
 
 	inboxPath := r.agent.InboxPath
-	logPath := r.agent.EventLogPath
-	if logPath == "" {
-		return fmt.Errorf("subagent: agent missing event log path")
-	}
-	log, err := OpenEventLog(logPath)
-	if err != nil {
-		return err
-	}
-	defer log.Close()
 
 	args := r.Command
 	if len(args) == 0 {
@@ -337,7 +327,6 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	cmd.Dir = r.agent.Dir
 	cmd.Env = append(workerEnvironment(r.agent.Provider),
 		"ZUT_SUBAGENT_AGENT_ID="+r.agent.ID,
-		"ZUT_SUBAGENT_EVENT_LOG="+logPath,
 	)
 	if r.agent.HeartbeatInterval > 0 {
 		cmd.Env = append(cmd.Env, "ZUT_SUBAGENT_HEARTBEAT_INTERVAL="+r.agent.HeartbeatInterval.String())
@@ -388,28 +377,6 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	defer close(runnerDone)
 	go r.stopOnContextDone(ctx, cmd, runnerDone)
 
-	var logErrMu sync.Mutex
-	var logErr error
-	var stopOnLogErr sync.Once
-	appendLog := func(ev Event) {
-		if err := log.Append(ev); err != nil {
-			logErrMu.Lock()
-			if logErr == nil {
-				logErr = err
-			}
-			logErrMu.Unlock()
-			// A durable event log is part of the runner's recovery contract.
-			// Stop the worker rather than letting it continue in a state the
-			// supervisor cannot reconstruct after restart.
-			stopOnLogErr.Do(func() { _ = killProcessGroup(cmd) })
-		}
-	}
-	firstLogErr := func() error {
-		logErrMu.Lock()
-		defer logErrMu.Unlock()
-		return logErr
-	}
-
 	// stdout: parsed as JSONL. Every well-formed event is appended
 	// to the durable log AND forwarded to the in-memory sink so the
 	// dashboard updates without having to tail the file. Malformed
@@ -431,7 +398,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 				trimmed := strings.TrimRight(string(line), "\r\n")
 				if trimmed != "" && !truncated {
 					if ev, ok := parseEventLine(trimmed); ok {
-						appendLog(ev)
+						recordWorkerTrace(r.agent, ev)
 						if persistErr := updateAgentFromEvent(r.agent, ev); persistErr != nil {
 							sink.Transcript("error: metadata persistence failed: " + persistErr.Error())
 						}
@@ -445,12 +412,12 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 						notifyPromptTurnEnd(r.agent, ev)
 					} else {
 						sink.Transcript(trimmed)
-						appendLog(NewEvent("stdout", map[string]any{"text": trimmed}))
+						r.agent.recordTrace(TraceEvent{Type: "worker.stdout", Data: map[string]any{"length": len(trimmed)}})
 					}
 				} else if trimmed != "" {
 					trimmed += "\n...[line truncated]"
 					sink.Transcript(trimmed)
-					appendLog(NewEvent("stdout", map[string]any{"text": trimmed, "truncated": true}))
+					r.agent.recordTrace(TraceEvent{Type: "worker.stdout", Data: map[string]any{"length": len(trimmed), "truncated": true}})
 				}
 			}
 			if err != nil {
@@ -481,7 +448,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 					txt += "\n...[line truncated]"
 				}
 				sink.Transcript("stderr: " + txt)
-				appendLog(NewEvent("stderr", map[string]any{"text": txt, "truncated": truncated}))
+				r.agent.recordTrace(TraceEvent{Type: "worker.stderr", Data: map[string]any{"length": len(txt), "truncated": truncated}})
 			}
 			if err != nil {
 				return
@@ -502,23 +469,14 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			reason = "deadline"
 		}
-		appendLog(NewEvent("agent_stopped", map[string]any{"reason": reason}))
-		if logErr := firstLogErr(); logErr != nil {
-			return fmt.Errorf("subagent event log: %w", logErr)
-		}
+		r.agent.recordTrace(TraceEvent{Type: "worker.stopped", Data: map[string]any{"reason": reason}})
 		return ctxErr
 	}
 	if err != nil {
-		appendLog(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": exit, "error": err.Error()}))
-		if logErr := firstLogErr(); logErr != nil {
-			return fmt.Errorf("subagent event log: %v; worker: %w", logErr, err)
-		}
+		r.agent.recordTrace(TraceEvent{Type: "worker.failed", Data: map[string]any{"reason": "exit", "code": exit, "error_kind": "exit"}})
 		return err
 	}
-	appendLog(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": 0}))
-	if logErr := firstLogErr(); logErr != nil {
-		return fmt.Errorf("subagent event log: %w", logErr)
-	}
+	r.agent.recordTrace(TraceEvent{Type: "worker.finished", Data: map[string]any{"reason": "exit", "code": 0}})
 	sink.Activity("done")
 	return nil
 }
@@ -936,6 +894,44 @@ func isAssistantStreamBoundary(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// recordWorkerTrace reduces the worker's protocol event to a factual trace
+// observation. It deliberately records identifiers and bounded metadata, not
+// worker payloads, which can contain prompts, tool arguments, or credentials.
+func recordWorkerTrace(agent *Agent, ev Event) {
+	if agent == nil {
+		return
+	}
+	typeName := strings.ReplaceAll(ev.Type, "_", ".")
+	traceType := "worker.event"
+	switch ev.Type {
+	case "turn_start", EventTurnStarted:
+		traceType = "turn.started"
+	case "turn_end", EventTurnResult:
+		traceType = "turn.finished"
+	case "turn_failed", EventTurnFailed:
+		traceType = "turn.failed"
+	case "tool_call", EventToolStarted:
+		traceType = "tool.started"
+	case "tool_result", EventToolFinished:
+		traceType = "tool.finished"
+	case "agent_ready", EventAgentReady:
+		traceType = "agent.ready"
+	case "agent_stopped":
+		traceType = "agent.stopped"
+	}
+	data := map[string]any{"worker_event": typeName}
+	if name, ok := ev.Data["name"].(string); ok && name != "" {
+		data["name"] = name
+	}
+	if status, ok := ev.Data["status"].(string); ok && status != "" {
+		data["status"] = status
+	}
+	if callID, ok := ev.Data["call_id"].(string); ok && callID != "" {
+		data["call_id"] = callID
+	}
+	agent.recordTrace(TraceEvent{Type: traceType, Timestamp: ev.Time, TurnID: ev.TurnID, Data: data})
 }
 
 // applyEventToSink translates an Event into Sink updates. Only a

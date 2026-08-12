@@ -40,13 +40,19 @@ func TestSubagentsDialogEmptyState(t *testing.T) {
 func TestSubagentsDialogRendersRows(t *testing.T) {
 	now := time.Now()
 	rows := []subagents.AgentSnapshot{
-		{ID: "alpha-1", Task: "fix login", Status: subagents.StatusRunning, Activity: "editing file", Started: now},
-		{ID: "beta-2", Task: "write tests", Status: subagents.StatusDone, Activity: "done", Started: now},
+		{ID: "alpha-1", Task: "fix login", Status: subagents.StatusRunning, Started: now},
+		{ID: "beta-2", Task: "write tests", Status: subagents.StatusDone, Started: now},
 	}
 	d := newSubagentsDialog()
+	d.SetTraceViews(func() map[string]subagents.AgentTraceView {
+		return map[string]subagents.AgentTraceView{
+			"alpha-1": {OpenOperations: []subagents.Operation{{Type: "tool.started", StartedAt: now}}},
+			"beta-2":  {Terminal: "completed"},
+		}
+	})
 	d.Open(staticSnapshots(rows...), nil, nil, nil, nil, nil, "")
 	out := strings.Join(d.Render(tui.Theme{}, 100), "\n")
-	for _, want := range []string{"alpha-1", "beta-2", "editing file", "done", "STATUS", "ACTIVITY"} {
+	for _, want := range []string{"alpha-1", "beta-2", "tool open", "completed", "OPERATION", "TASK"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render missing %q:\n%s", want, out)
 		}
@@ -108,7 +114,7 @@ func TestSubagentsDialogEnterShowsTranscript(t *testing.T) {
 	// Esc should bring us back to the list view.
 	d.HandleKey(tui.Key{Kind: tui.KeyEsc})
 	out = strings.Join(d.Render(tui.Theme{}, 80), "\n")
-	if !strings.Contains(out, "STATUS") {
+	if !strings.Contains(out, "OPERATION") {
 		t.Fatalf("did not return to list view:\n%s", out)
 	}
 }
@@ -1299,6 +1305,8 @@ func TestSupervisorTranscriptBusySpinnerRenders(t *testing.T) {
 	}}
 	snap := func() []subagents.AgentSnapshot { return cur }
 	d := newSubagentsDialog()
+	views := map[string]subagents.AgentTraceView{"agent-1": {OpenOperations: []subagents.Operation{{Type: "tool.started", StartedAt: time.Now()}}}}
+	d.SetTraceViews(func() map[string]subagents.AgentTraceView { return views })
 	d.Open(snap, nil, nil, nil,
 		func(string, string) error { return nil },
 		nil, "")
@@ -1306,22 +1314,21 @@ func TestSupervisorTranscriptBusySpinnerRenders(t *testing.T) {
 	d.HandleKey(tui.Key{Kind: tui.KeyEnter})
 
 	out := strings.Join(d.Render(tui.Theme{}, 80), "\n")
-	if !strings.Contains(out, "thinking") {
-		t.Fatalf("busy spinner did not surface activity \"thinking\" near the editor:\n%s", out)
+	if !strings.Contains(out, "tool open") {
+		t.Fatalf("busy spinner did not surface an open tool near the editor:\n%s", out)
 	}
 	if d.transcriptSpin == nil {
 		t.Error("spinner not initialised while agent is busy")
 	}
 
-	// Flip the activity to idle: spinner should vanish.
-	cur[0].Activity = "idle"
+	// Close the operation: spinner should vanish.
+	views["agent-1"] = subagents.AgentTraceView{LastEvent: subagents.TraceEvent{Type: "tool.finished", Timestamp: time.Now()}}
 	out = strings.Join(d.Render(tui.Theme{}, 80), "\n")
 	if d.transcriptSpin != nil {
 		t.Error("spinner stayed live after agent reported idle")
 	}
-	// The bare word "thinking" must not appear anymore.
-	if strings.Contains(out, "· thinking, ") {
-		t.Errorf("busy line still rendered when agent is idle:\n%s", out)
+	if strings.Contains(out, "tool open, ") {
+		t.Errorf("busy line still rendered after operation finished:\n%s", out)
 	}
 }
 

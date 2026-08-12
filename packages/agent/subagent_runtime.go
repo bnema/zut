@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,10 +70,12 @@ type subagentRuntimeConfiguration struct {
 // assemble a subagentRuntime. The active selection callbacks are optional;
 // when omitted, the initial Provider/Model/Reasoning values are used.
 type subagentRuntimeConfig struct {
-	Context  context.Context
-	Args     Args
-	Root     string
-	RepoRoot string
+	Context   context.Context
+	Args      Args
+	Root      string
+	RepoRoot  string
+	TraceDir  string
+	TraceMode subagents.TraceMode
 
 	Provider    string
 	Model       string
@@ -97,6 +102,23 @@ type subagentRuntimeConfig struct {
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	if cfg.Context == nil {
 		cfg.Context = context.Background()
+	}
+	if cfg.TraceDir == "" {
+		cfg.TraceDir = strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_DIR"))
+	}
+	if cfg.TraceMode == "" {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_MODE"))) {
+		case "", string(subagents.TraceModeNormal):
+			cfg.TraceMode = subagents.TraceModeNormal
+		case string(subagents.TraceModeDetailed):
+			cfg.TraceMode = subagents.TraceModeDetailed
+		default:
+			fmt.Fprintf(os.Stderr, "zut: ignoring invalid ZUT_SUBAGENT_TRACE_MODE\n")
+			cfg.TraceMode = subagents.TraceModeNormal
+		}
+	}
+	if cfg.TraceDir == "" {
+		cfg.TraceMode = subagents.TraceModeNormal
 	}
 	rt := &subagentRuntime{
 		args:            cfg.Args,
@@ -159,6 +181,8 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 			Context:           cfg.Context,
 			Root:              root,
 			RepoRoot:          cfg.RepoRoot,
+			TraceDir:          cfg.TraceDir,
+			TraceMode:         cfg.TraceMode,
 			Provider:          rt.currentProvider(),
 			FastMode:          cfg.FastMode,
 			WebSearchPolicy:   cfg.WebSearchPolicy,
@@ -449,7 +473,9 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 	if rt.closed {
 		return nil
 	}
-	if err := rt.supervisor.StopAllContext(ctx); err != nil {
+	stopErr := rt.supervisor.StopAllContext(ctx)
+	closeErr := rt.supervisor.CloseContext(ctx)
+	if err := errors.Join(stopErr, closeErr); err != nil {
 		return err
 	}
 	rt.closed = true

@@ -106,33 +106,9 @@ func TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput(t *te
 		t.Fatal("Run did not return after deadline expiry")
 	}
 
-	events, err := ReadEventLog(a.EventLogPath)
-	if err != nil {
-		t.Fatalf("ReadEventLog: %v", err)
-	}
-	var sawDelta, sawGracefulTurnEnd bool
-	for _, event := range events {
-		if event.Type == "message.delta" && event.Data["delta"] == "partial answer" {
-			sawDelta = true
-		}
-		if event.Type == "turn_end" && event.Data["stop"] == "cancelled" {
-			sawGracefulTurnEnd = true
-		}
-	}
-	if !sawDelta || !sawGracefulTurnEnd {
-		t.Fatalf("deadline did not preserve a graceful partial turn: %s", formatEvents(events))
-	}
-
 	snapshot := a.Snapshot()
 	if snapshot.LastAssistant != "partial answer" {
 		t.Fatalf("live partial output = %q, want %q", snapshot.LastAssistant, "partial answer")
-	}
-	replayed := &Agent{}
-	for _, event := range events {
-		replayEventTranscript(replayed, event)
-	}
-	if snapshot := replayed.Snapshot(); snapshot.LastAssistant != "partial answer" {
-		t.Fatalf("replayed partial output = %q, want %q", snapshot.LastAssistant, "partial answer")
 	}
 }
 
@@ -234,23 +210,18 @@ func TestRunnerEndToEndWithStubChild(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	// Wait until the durable log has at least one assistant_message
-	// from the initial task. That confirms stdout→log→follower.
+	// Wait for the supervisor-owned in-memory transcript. Worker protocol
+	// stdout is no longer duplicated into a per-agent durable event log.
 	waitFor := func(want string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(runnerProcessTimeout)
 		for time.Now().Before(deadline) {
-			evs, _ := ReadEventLog(a.EventLogPath)
-			for _, ev := range evs {
-				if strings.Contains(eventText(ev), want) {
-					return
-				}
+			if strings.Contains(strings.Join(a.Transcript(), "\n"), want) {
+				return
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		evs, _ := ReadEventLog(a.EventLogPath)
-		t.Fatalf("timed out waiting for %q in event log; got %d events:\n%s\n%s",
-			want, len(evs), formatEvents(evs), dumpEventsVerbose(evs))
+		t.Fatalf("timed out waiting for %q in transcript: %q", want, a.Transcript())
 	}
 	waitFor("echo: first task")
 
@@ -289,45 +260,6 @@ func retrySend(f *Supervisor, id, msg string, timeout time.Duration) error {
 		time.Sleep(30 * time.Millisecond)
 	}
 	return lastErr
-}
-
-func eventText(ev Event) string {
-	if ev.Type != "assistant_message" && ev.Type != "user_message" {
-		return ""
-	}
-	content, _ := ev.Data["content"].([]any)
-	var sb strings.Builder
-	for _, c := range content {
-		m, _ := c.(map[string]any)
-		if t, _ := m["type"].(string); t == "text" {
-			if txt, _ := m["text"].(string); txt != "" {
-				sb.WriteString(txt)
-				sb.WriteByte('\n')
-			}
-		}
-	}
-	return sb.String()
-}
-
-func dumpEventsVerbose(evs []Event) string {
-	var sb strings.Builder
-	for _, ev := range evs {
-		sb.WriteString(ev.Type)
-		sb.WriteString("\t")
-		for k, v := range ev.Data {
-			sb.WriteString(k)
-			sb.WriteString("=")
-			switch vv := v.(type) {
-			case string:
-				sb.WriteString(vv)
-			default:
-				sb.WriteString("<...>")
-			}
-			sb.WriteString(" ")
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
 }
 
 func formatEvents(evs []Event) string {

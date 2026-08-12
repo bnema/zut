@@ -39,6 +39,7 @@ type subagentsDialog struct {
 	lineInput    bool
 	snapshot     func() []subagents.AgentSnapshot
 	allSnapshots func() []subagents.AgentSnapshot
+	traceViews   func() map[string]subagents.AgentTraceView
 	showAll      bool
 	expandedID   string
 	stop         func(id string) error
@@ -137,6 +138,12 @@ func (d *subagentsDialog) SetLineInput(enabled bool) {
 // user presses Tab. Open's snapshot source remains the default session view.
 func (d *subagentsDialog) SetAllSnapshots(fn func() []subagents.AgentSnapshot) {
 	d.allSnapshots = fn
+}
+
+// SetTraceViews supplies the shared factual execution projection. Lifecycle
+// snapshots remain only for identity, transcript, and process-control wiring.
+func (d *subagentsDialog) SetTraceViews(fn func() map[string]subagents.AgentTraceView) {
+	d.traceViews = fn
 }
 
 // SetMaxRows bounds the complete dashboard before the host composes its
@@ -337,7 +344,7 @@ func (d *subagentsDialog) transcriptEditorCursorRow(width, popupRows, editorRowO
 	}
 
 	row += popupRows // @-file-suggest popup, if active
-	if agentIsBusy(a) {
+	if a.Status == subagents.StatusRunning && d.send != nil && d.agentHasOpenOperation(a.ID) {
 		row += 2 // blank + spinner row inserted above the editor
 	}
 	row++ // blank above editor (appendTranscriptEditor)
@@ -1208,7 +1215,7 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	// Column header for readability.
-	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROC/TURN STATUS", "ID", "AGE", "ACTIVITY")
+	header := fmt.Sprintf("  %-30s  %-26s  %-8s  %s", "OPERATION", "ID", "AGE", "TASK")
 	out = append(out, th.FGColor(th.Muted, header))
 	out = append(out, d.renderVisibleRows(th, width)...)
 	out = append(out, frameRule(th, width))
@@ -1236,7 +1243,7 @@ func (d *subagentsDialog) renderVisibleRows(th tui.Theme, width int) []string {
 	nextRow := d.cursor
 	for ; nextRow < len(d.rows) && len(out) < budget; nextRow++ {
 		r := d.rows[nextRow]
-		row := formatSupervisorRow(r, width-2)
+		row := formatSupervisorRow(r, d.traceView(r.ID), width-2)
 		if nextRow == d.cursor {
 			out = append(out, th.PadHighlight("  "+row, width))
 		} else {
@@ -1297,7 +1304,7 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 		frameHeader(th, "subagent: "+a.ID+"  (type to send, esc back)", width),
 		"  " + th.FGColor(th.Muted, "task:   "+a.Task),
 		"  " + th.FGColor(th.Muted, "dir:    "+a.Dir),
-		"  " + th.FGColor(th.Muted, fmt.Sprintf("status: %s, %s", a.Status, a.Activity)),
+		"  " + th.FGColor(th.Muted, "observation: "+d.traceSummary(a.ID)),
 	}
 	if a.Model != "" {
 		modelLine := "model:  " + a.Model
@@ -1413,12 +1420,9 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 		}
 	}
 
-	// Busy-spinner row, /btw-style. Shown whenever the agent's
-	// current activity isn't "idle" — so "thinking", "tool: foo",
-	// "starting", etc. all animate. The spinner is stopped (and the
-	// row hidden) once the agent reports idle, mirroring the main
-	// chat's busy line.
-	if agentIsBusy(a) {
+	// Busy-spinner row, /btw-style. It is shown only for a factual open
+	// trace operation, never for a lifecycle or heartbeat label.
+	if d.agentHasOpenOperation(a.ID) {
 		if d.transcriptSpin == nil {
 			d.transcriptSpin = newSpinner(th)
 			d.transcriptSpin.Start()
@@ -1428,7 +1432,7 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 		out = append(out, "")
 		prefix := fmt.Sprintf("%s %s, %s",
 			th.FGColor(th.Assistant, d.transcriptSpin.Frame()),
-			th.FGColor(th.Assistant, a.Activity),
+			th.FGColor(th.Assistant, d.traceSummary(a.ID)),
 			th.FGColor(th.Muted, d.transcriptSpin.Elapsed().String()),
 		)
 		out = append(out, "  "+prefix)
@@ -1448,23 +1452,22 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 	return out
 }
 
-// agentIsBusy reports whether the agent is currently mid-turn and
-// should render a spinner. Conservative: only known idle markers
-// suppress the spinner so transient / unfamiliar activity strings
-// still animate. Detached / done / failed / killed never animate —
-// they aren't actively producing output.
-func agentIsBusy(a *subagents.AgentSnapshot) bool {
-	if a == nil {
-		return false
+func (d *subagentsDialog) agentHasOpenOperation(id string) bool {
+	return len(d.traceView(id).OpenOperations) != 0
+}
+
+func (d *subagentsDialog) traceSummary(id string) string {
+	view := d.traceView(id)
+	if view.Terminal != "" {
+		return view.Terminal
 	}
-	if a.Status != subagents.StatusRunning && a.Status != subagents.StatusPending {
-		return false
+	if len(view.OpenOperations) != 0 {
+		return view.OpenOperations[0].Label()
 	}
-	switch strings.TrimSpace(a.Activity) {
-	case "", "idle":
-		return false
+	if view.LastEvent.Type != "" {
+		return "last event " + view.LastEvent.Type
 	}
-	return true
+	return "no observable operation"
 }
 
 // renderSupervisorTranscriptBlocks converts the agent's flat transcript
@@ -1615,28 +1618,38 @@ func (d *subagentsDialog) renderPromptEditor(th tui.Theme, width int, out []stri
 	return out
 }
 
+// traceView retrieves the latest shared factual trace projection for id.
+func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
+	if d != nil && d.traceViews != nil {
+		return d.traceViews()[id]
+	}
+	return subagents.AgentTraceView{AgentID: id}
+}
+
 // formatSupervisorRow is the one-line summary shown per agent.
 //
-// Layout (fixed-width columns, then free-form activity):
+// Layout (fixed-width columns, then free-form task):
 //
-//	STATUS    ID                          AGE       ACTIVITY
-//	● run     fix-login-12345             3m        editing main.go
-//	✓ done    write-tests-67890           1h        done
-func formatSupervisorRow(r subagents.AgentSnapshot, maxWidth int) string {
-	status := statusLabel(r.Status)
-	if r.ProcessState != "" && r.TurnState != "" {
-		status = truncateLineSafe(status+" "+string(r.ProcessState)+"/"+string(r.TurnState), 18)
+//	OPERATION                     ID                          AGE       TASK
+//	tool open 3m                 fix-login-12345             3m        inspect main.go
+//	completed                     write-tests-67890           1h        add coverage
+func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
+	fact := "no observable operation"
+	if view.Terminal != "" {
+		fact = view.Terminal
+	} else if len(view.OpenOperations) != 0 {
+		operation := view.OpenOperations[0]
+		fact = operation.Label() + " " + formatAge(operation.StartedAt)
+	} else if view.LastEvent.Type != "" {
+		fact = "last " + view.LastEvent.Type + " " + formatAge(view.LastEvent.Timestamp)
 	}
 	age := formatAge(r.Started)
-	left := fmt.Sprintf("%-18s  %-26s  %-8s  ", status, truncateLineSafe(r.ID, 26), age)
+	left := fmt.Sprintf("%-30s  %-26s  %-8s  ", truncateLineSafe(fact, 30), truncateLineSafe(r.ID, 26), age)
 	room := maxWidth - len([]rune(left))
 	if room < 10 {
 		room = 10
 	}
-	act := strings.ReplaceAll(r.Activity, "\n", " ")
-	if act == "" {
-		act = r.Task
-	}
+	act := strings.ReplaceAll(r.Task, "\n", " ")
 	if len([]rune(act)) > room {
 		act = string([]rune(act)[:room-3]) + "..."
 	}

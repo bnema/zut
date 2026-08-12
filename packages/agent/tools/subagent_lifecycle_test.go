@@ -66,15 +66,14 @@ func TestSubagentStopTerminatesStuckWorker(t *testing.T) {
 	var got struct {
 		Action string `json:"action"`
 		Agent  struct {
-			ID    string `json:"agent_id"`
-			State string `json:"state"`
+			ID string `json:"agent_id"`
 		} `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(textResult(res.Content)), &got); err != nil {
 		t.Fatalf("stop response JSON: %v", err)
 	}
-	if got.Action != "stop_requested" || got.Agent.ID != agent.ID || got.Agent.State != "cancelled" {
-		t.Fatalf("stop response = %+v, want stop_requested cancelled agent %s", got, agent.ID)
+	if got.Action != "stop_requested" || got.Agent.ID != agent.ID {
+		t.Fatalf("stop response = %+v, want stop_requested agent %s", got, agent.ID)
 	}
 }
 
