@@ -909,7 +909,9 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	switch ev.Type {
 	case "turn_start", "turn_end":
 		if nestedTurn {
-			if ev.Type == "turn_end" {
+			if ev.Type == "turn_start" {
+				traceType = "provider.request.started"
+			} else {
 				traceType = "provider.request.finished"
 			}
 		} else if ev.Type == "turn_start" {

@@ -193,10 +193,13 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 }
 
 // ObservationFor returns the last observation only when it belongs to this
-// operation's turn. A prior turn's stream is not live activity for a resumed
-// or subsequent turn.
+// operation's turn and, when identified, its tool call. A prior turn's stream
+// or another tool's output is not live activity for this operation.
 func (v AgentTraceView) ObservationFor(operation Operation) *LiveObservation {
 	if v.LastObservation == nil || operation.TurnID == "" || v.LastObservation.TurnID == "" || operation.TurnID != v.LastObservation.TurnID {
+		return nil
+	}
+	if v.LastObservation.CallID != "" && v.LastObservation.CallID != operation.CallID {
 		return nil
 	}
 	return v.LastObservation
@@ -222,9 +225,10 @@ func traceObservation(event TraceEvent) *LiveObservation {
 		source, _ = event.Data["worker_event"].(string)
 	}
 	name, _ := event.Data["name"].(string)
+	callID, _ := event.Data["call_id"].(string)
 	switch typeName {
 	case "assistant.stream.observed", "reasoning.stream.observed", "tool.output.observed", "worker.protocol.observed":
-		return &LiveObservation{Type: typeName, Source: source, At: event.Timestamp, TurnID: event.TurnID, Name: name}
+		return &LiveObservation{Type: typeName, Source: source, At: event.Timestamp, TurnID: event.TurnID, CallID: callID, Name: name}
 	}
 	return nil
 }

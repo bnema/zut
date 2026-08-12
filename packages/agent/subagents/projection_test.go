@@ -79,6 +79,25 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 	}
 }
 
+func TestProjectTraceOmitsObservationForAnotherToolInSameTurn(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one", "name": "bash"}},
+		{Timestamp: started.Add(2 * time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two", "name": "read"}},
+		{Timestamp: started.Add(3 * time.Second), Type: "tool.output.observed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two", "name": "read"}},
+	})["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.CallID != "one" {
+		t.Fatalf("primary operation = %#v, want call one", view.PrimaryOperation)
+	}
+	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+		t.Fatalf("another tool's observation = %#v, want omitted", observation)
+	}
+	if got, want := view.Summary(), "tool bash open"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
 func TestProjectTraceOmitsPriorTurnObservation(t *testing.T) {
 	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
 	view := ProjectTrace([]TraceEvent{

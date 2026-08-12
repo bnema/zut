@@ -249,7 +249,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		}
 		turnID := fmt.Sprintf("turn-%d", step)
 		em.setTurnID(turnID)
-		defer em.setTurnID("")
 		c, cancel := subagentTurnContext(ctx, args.SubagentTurnTimeout)
 		cancelFn = cancel
 		mu.Unlock()
@@ -356,6 +355,9 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 
 		cancel()
 		mu.Lock()
+		// Clear the emitter identity before reopening the busy gate: a newly
+		// admitted turn must not race this completed turn's cleanup.
+		em.setTurnID("")
 		busyTurn = false
 		cancelFn = nil
 		mu.Unlock()
