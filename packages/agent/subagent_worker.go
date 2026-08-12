@@ -117,9 +117,10 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	if err != nil {
 		return err
 	}
-	extMgr, stopExt := setupNonInteractiveExtensions(ctx, args, &r, version)
-	defer stopExt()
-
+	// A delegated worker has one bounded task and must not inherit arbitrary
+	// local extensions, their tools, hooks, or persisted extension state.
+	// Extensions remain available to explicitly selected skills only through
+	// the parent process; the worker runs with its resolved built-in registry.
 	ag := r.NewAgent()
 	initialAg := ag
 	defer func() {
@@ -128,7 +129,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			closeAgentLSP(initialAg)
 		}
 	}()
-	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
@@ -136,12 +136,11 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	var sessionPersistence sessionPersistenceState
 	if sess != nil {
 		var providerName, model string
-		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, nil, sess, ag)
 		if err != nil {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		// A prompt is acknowledged by the supervisor only after this callback
 		// has appended and synced the matching user message. This closes the
 		// crash window between accepting a follow-up and writing session.json.
@@ -165,7 +164,10 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			runErr = joinSessionCloseError(runErr, sess)
 		}()
 	}
-	announceSession(extMgr, sess)
+	// A silent provider stream is neither progress nor a safe reason to leave
+	// a delegated worker occupied until its broad turn deadline. Set this after
+	// session resume because resume may rebuild the agent for another model.
+	ag.StreamIdleTimeout = time.Minute
 
 	// Resolve retains metadata for catalog models and for valid synthesized
 	// local/routed/open-catalog models. The active agent also survives a session
@@ -254,7 +256,13 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		mu.Unlock()
 
 		turnStarted := false
+		toolStarted := false
+		ag.MaxRetries = 2
 		sink := func(ev core.AgentEvent) {
+			if ev.Type() == "tool_execution_started" && !toolStarted {
+				toolStarted = true
+				ag.MaxRetries = 0
+			}
 			data := subagentEventData(ev)
 			if ev.Type() == "user_message" && !turnStarted {
 				// Prompt invokes OnMessageAppended before delivering this sink
@@ -706,6 +714,9 @@ func resultErrorPayload(err error, shutdownOrigin subagents.ShutdownOrigin) map[
 	}
 	if provider.IsContextOverflowError(err) {
 		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
+	}
+	if errors.Is(err, core.ErrStreamIdleTimeout) {
+		return map[string]any{"code": "stream_idle_timeout", "message": "provider stream produced no events for one minute; the delegated turn stopped safely"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || shutdownOrigin == subagents.ShutdownOriginDeadline {
 		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}

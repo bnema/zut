@@ -806,8 +806,12 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	t.Cleanup(func() { _ = trace.Close() })
 	agent := &Agent{ID: "agent-1", trace: trace}
 	recordWorkerTrace(agent, Event{Type: EventMessageDelta, TurnID: "turn-1", Data: map[string]any{"delta": "sensitive answer"}})
+	recordWorkerTrace(agent, Event{Type: "assistant_start", TurnID: "turn-1"})
+	recordWorkerTrace(agent, Event{Type: EventAgentHeartbeat, TurnID: "turn-1"})
 	recordWorkerTrace(agent, Event{Type: "request_started", TurnID: "turn-1", Data: map[string]any{"provider": "test", "model": "test"}})
-	recordWorkerTrace(agent, Event{Type: "turn_start", TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
+	// The worker canonicalizes core turn_start to EventTurnStarted while
+	// retaining nested_turn, so this exercises the supervisor's real input.
+	recordWorkerTrace(agent, Event{Type: EventTurnStarted, TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
 	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
 	recordWorkerTrace(agent, Event{Type: "tool_call", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash", "args": "sensitive arguments"}})
 	recordWorkerTrace(agent, Event{Type: "future_event", TurnID: "turn-1", Data: map[string]any{"secret": "hidden"}})
@@ -854,6 +858,24 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	view := ProjectTrace(append([]TraceEvent{{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"}}, events...))["agent-1"]
 	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {
 		t.Fatalf("current-turn tool activity was not projected: %#v", view)
+	}
+}
+
+func TestRecordWorkerTraceClosesProviderRequestWhenTurnEnds(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: "request_started", TurnID: "turn-1"})
+	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"error": "provider unavailable"}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := ProjectTrace(trace.Events())["agent-1"]
+	if len(view.OpenOperations) != 0 {
+		t.Fatalf("open operations = %#v, want none", view.OpenOperations)
+	}
+	if view.LastEvent.Type != "provider.request.failed" {
+		t.Fatalf("last event = %#v, want provider request failure", view.LastEvent)
 	}
 }
 

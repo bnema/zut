@@ -48,6 +48,28 @@ func (c *retryFakeClient) Stream(ctx context.Context, req provider.Request) (<-c
 	return out, nil
 }
 
+type silentStreamClient struct{}
+
+func (silentStreamClient) Name() string { return "silent-stream" }
+
+func (silentStreamClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event)
+	go func() {
+		defer close(out)
+		<-ctx.Done()
+	}()
+	return out, nil
+}
+
+func TestAgentStopsSilentStreamAtIdleDeadline(t *testing.T) {
+	a := NewAgent(silentStreamClient{}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	a.StreamIdleTimeout = 10 * time.Millisecond
+	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	}
+}
+
 func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	client := &retryFakeClient{}
 	a := NewAgent(client, "fake-model", "system", Registry{})

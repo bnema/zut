@@ -46,6 +46,20 @@ func TestFormatSupervisorRowOmitsPriorTurnObservationAge(t *testing.T) {
 	}
 }
 
+func TestSubagentsDialogTranscriptShowsProviderRequestDiagnostic(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	d := newSubagentsDialog()
+	d.Open(staticSnapshots(subagents.AgentSnapshot{ID: "review-1", Task: "review", Started: at}), nil, nil, nil, nil, nil, "")
+	d.SetTraceViews(func() map[string]subagents.AgentTraceView {
+		return map[string]subagents.AgentTraceView{"review-1": {LastRequest: &subagents.RequestFact{Provider: "openai-codex", Model: "gpt-5.6", Attempt: 2, MaxAttempts: 3, Outcome: "failed", ErrorCode: "deadline_exceeded"}}}
+	})
+	d.viewing = true
+	joined := strings.Join(d.Render(tui.Theme{}, 120), "\n")
+	if !strings.Contains(joined, "provider request: failed · openai-codex / gpt-5.6 · attempt 2/3 · deadline_exceeded") {
+		t.Fatalf("diagnostic missing:\n%s", joined)
+	}
+}
+
 func TestSubagentsDialogEmptyState(t *testing.T) {
 	d := newSubagentsDialog()
 	d.Open(staticSnapshots(), nil, nil, nil, nil, nil, "")

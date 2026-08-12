@@ -1306,6 +1306,22 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 		"  " + th.FGColor(th.Muted, "dir:    "+a.Dir),
 		"  " + th.FGColor(th.Muted, "observation: "+d.traceSummary(a.ID)),
 	}
+	if request := d.traceView(a.ID).LastRequest; request != nil {
+		diagnostic := "provider request: " + request.Outcome
+		if request.Provider != "" || request.Model != "" {
+			diagnostic += " · " + strings.Trim(strings.TrimSpace(request.Provider+" / "+request.Model), " /")
+		}
+		if request.Attempt > 0 {
+			diagnostic += fmt.Sprintf(" · attempt %d", request.Attempt)
+			if request.MaxAttempts > 0 {
+				diagnostic += fmt.Sprintf("/%d", request.MaxAttempts)
+			}
+		}
+		if request.ErrorCode != "" {
+			diagnostic += " · " + request.ErrorCode
+		}
+		header = append(header, "  "+th.FGColor(th.Muted, diagnostic))
+	}
 	if a.Model != "" {
 		modelLine := "model:  " + a.Model
 		if a.Provider != "" {

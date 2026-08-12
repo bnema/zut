@@ -13,6 +13,8 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+var ErrStreamIdleTimeout = errors.New("provider stream idle timeout")
+
 type queuedMessage struct {
 	text     string
 	accepted time.Time
@@ -95,6 +97,9 @@ type Agent struct {
 	// RetryBaseDelay is doubled for each attempt; zero uses 2s.
 	MaxRetries     int
 	RetryBaseDelay time.Duration
+	// StreamIdleTimeout cancels an individual provider stream when it emits no
+	// events for this duration. Zero leaves the stream unbounded.
+	StreamIdleTimeout time.Duration
 
 	// OnEvent, if set, mirrors every AgentEvent the loop emits to
 	// this callback in addition to the per-Prompt sink. Used by the
@@ -916,7 +921,9 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		Attempt:     attempt + 1,
 		MaxAttempts: maxAttempts,
 	})
-	stream, err := a.Client.Stream(ctx, req)
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	stream, err := a.Client.Stream(streamCtx, req)
 	if err != nil {
 		return provider.StopError, provider.Message{}, err
 	}
@@ -929,30 +936,95 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		finalMsg provider.Message
 	)
 
-	for ev := range stream {
-		switch e := ev.(type) {
-		case provider.EventStart:
-			// nothing
-		case provider.EventTextDelta:
-			sink(EvTextDelta{Delta: e.Delta})
-		case provider.EventToolStart:
-			sink(EvToolUseStart{ID: e.ID, Name: e.Name})
-		case provider.EventToolArgs:
-			sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
-		case provider.EventToolEnd:
-			sink(EvToolUseEnd{ID: e.ID})
-		case provider.EventUsage:
-			cum := a.addUsage(e.Usage)
-			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
-			if a.OnUsage != nil {
-				a.OnUsage(cum)
+	var idle <-chan time.Time
+	var resetIdle func()
+	if a.StreamIdleTimeout > 0 {
+		timer := time.NewTimer(a.StreamIdleTimeout)
+		defer timer.Stop()
+		idle = timer.C
+		resetIdle = func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
-		case provider.EventDone:
-			stop = e.Stop
-			finalErr = e.Err
-			finalMsg = e.Message
+			timer.Reset(a.StreamIdleTimeout)
 		}
 	}
+	for {
+		// Prefer an already-buffered terminal provider event over a concurrent
+		// context cancellation so retry classification retains its real cause.
+		select {
+		case ev, ok := <-stream:
+			if !ok {
+				goto streamDone
+			}
+			if resetIdle != nil {
+				resetIdle()
+			}
+			switch e := ev.(type) {
+			case provider.EventStart:
+				// nothing
+			case provider.EventTextDelta:
+				sink(EvTextDelta{Delta: e.Delta})
+			case provider.EventToolStart:
+				sink(EvToolUseStart{ID: e.ID, Name: e.Name})
+			case provider.EventToolArgs:
+				sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
+			case provider.EventToolEnd:
+				sink(EvToolUseEnd{ID: e.ID})
+			case provider.EventUsage:
+				cum := a.addUsage(e.Usage)
+				sink(EvUsage{Usage: e.Usage, Cumulative: cum})
+				if a.OnUsage != nil {
+					a.OnUsage(cum)
+				}
+			case provider.EventDone:
+				stop = e.Stop
+				finalErr = e.Err
+				finalMsg = e.Message
+			}
+			continue
+		default:
+		}
+		select {
+		case <-streamCtx.Done():
+			return provider.StopError, finalMsg, streamCtx.Err()
+		case <-idle:
+			return provider.StopError, finalMsg, ErrStreamIdleTimeout
+		case ev, ok := <-stream:
+			if !ok {
+				goto streamDone
+			}
+			if resetIdle != nil {
+				resetIdle()
+			}
+			switch e := ev.(type) {
+			case provider.EventStart:
+				// nothing
+			case provider.EventTextDelta:
+				sink(EvTextDelta{Delta: e.Delta})
+			case provider.EventToolStart:
+				sink(EvToolUseStart{ID: e.ID, Name: e.Name})
+			case provider.EventToolArgs:
+				sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
+			case provider.EventToolEnd:
+				sink(EvToolUseEnd{ID: e.ID})
+			case provider.EventUsage:
+				cum := a.addUsage(e.Usage)
+				sink(EvUsage{Usage: e.Usage, Cumulative: cum})
+				if a.OnUsage != nil {
+					a.OnUsage(cum)
+				}
+			case provider.EventDone:
+				stop = e.Stop
+				finalErr = e.Err
+				finalMsg = e.Message
+			}
+		}
+	}
+streamDone:
 
 	// Append assistant message to transcript. Aborted turns (Esc / Ctrl+C)
 	// produce partial content. When the partial message is text only we

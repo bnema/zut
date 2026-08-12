@@ -10,12 +10,16 @@ import (
 // boundary. Completed operations are deliberately not retained in the public
 // projection: their terminal trace fact remains available as LastEvent.
 type Operation struct {
-	Type      string
-	AgentID   string
-	TurnID    string
-	CallID    string
-	Name      string
-	StartedAt time.Time
+	Type        string
+	AgentID     string
+	TurnID      string
+	CallID      string
+	Name        string
+	Provider    string
+	Model       string
+	Attempt     int
+	MaxAttempts int
+	StartedAt   time.Time
 }
 
 // Open is always true because the projection exposes only unmatched starts.
@@ -82,6 +86,20 @@ type ResultFact struct {
 	At        time.Time
 }
 
+// RequestFact is a bounded provider-attempt diagnostic. It excludes request
+// bodies, streamed text, tool arguments, and raw provider errors.
+type RequestFact struct {
+	TurnID      string
+	Provider    string
+	Model       string
+	Attempt     int
+	MaxAttempts int
+	Outcome     string
+	ErrorCode   string
+	StartedAt   time.Time
+	EndedAt     time.Time
+}
+
 // AgentTraceView is the only user-facing execution state. It intentionally
 // contains operations and terminal facts rather than lifecycle guesses such as
 // working, idle, or alive.
@@ -93,6 +111,7 @@ type AgentTraceView struct {
 	PrimaryOperation *Operation
 	Terminal         string
 	Result           *ResultFact
+	LastRequest      *RequestFact
 }
 
 // Summary returns the most specific factual activity or terminal result fact.
@@ -140,14 +159,31 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 		view.LastEvent = event
 		key, starts, ends, terminal := traceBoundary(event)
 		if starts {
+			if event.Type == "provider.request.started" {
+				view.LastRequest = requestFact(event, "open")
+			}
 			if open[event.AgentID] == nil {
 				open[event.AgentID] = make(map[string]Operation)
 			}
 			callID, _ := event.Data["call_id"].(string)
 			name, _ := event.Data["name"].(string)
-			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, StartedAt: event.Timestamp}
+			provider, _ := event.Data["provider"].(string)
+			model, _ := event.Data["model"].(string)
+			attempt, _ := event.Data["attempt"].(int)
+			maxAttempts, _ := event.Data["max_attempts"].(int)
+			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
 		}
 		if ends {
+			if event.Type == "provider.request.finished" || event.Type == "provider.request.failed" || event.Type == "provider.request.cancelled" || event.Type == "provider.request.retry.scheduled" {
+				if active, found := open[event.AgentID][key]; found {
+					outcome := strings.TrimPrefix(event.Type, "provider.request.")
+					request := requestFact(event, outcome)
+					request.Provider, request.Model = active.Provider, active.Model
+					request.Attempt, request.MaxAttempts = active.Attempt, active.MaxAttempts
+					request.StartedAt = active.StartedAt
+					view.LastRequest = request
+				}
+			}
 			delete(open[event.AgentID], key)
 		}
 		if observation := traceObservation(event); observation != nil {
@@ -233,6 +269,15 @@ func traceObservation(event TraceEvent) *LiveObservation {
 	return nil
 }
 
+func requestFact(event TraceEvent, outcome string) *RequestFact {
+	providerName, _ := event.Data["provider"].(string)
+	model, _ := event.Data["model"].(string)
+	attempt, _ := event.Data["attempt"].(int)
+	maxAttempts, _ := event.Data["max_attempts"].(int)
+	errorCode, _ := event.Data["error_code"].(string)
+	return &RequestFact{TurnID: event.TurnID, Provider: providerName, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, Outcome: outcome, ErrorCode: errorCode, StartedAt: event.Timestamp, EndedAt: event.Timestamp}
+}
+
 func traceResultFact(event TraceEvent, previous *ResultFact) *ResultFact {
 	if event.Type != "result.available" && event.Type != "result.delivered" && event.Type != "result.delivery.failed" {
 		return previous
@@ -270,7 +315,7 @@ func traceBoundary(event TraceEvent) (key string, starts, ends bool, terminal st
 		return "tool:" + event.TurnID + ":" + callID, false, true, ""
 	case "provider.request.started":
 		return "provider:" + event.TurnID, true, false, ""
-	case "provider.request.finished", "provider.request.failed", "provider.request.cancelled":
+	case "provider.request.finished", "provider.request.failed", "provider.request.cancelled", "provider.request.retry.scheduled":
 		return "provider:" + event.TurnID, false, true, ""
 	case "agent.wait.started":
 		return "wait:" + event.TurnID, true, false, ""

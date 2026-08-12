@@ -52,6 +52,13 @@ func TestSubagentTurnContextResetsDeadlineAndHonorsShutdown(t *testing.T) {
 	}
 }
 
+func TestResultErrorPayloadClassifiesStreamIdleTimeout(t *testing.T) {
+	payload := resultErrorPayload(core.ErrStreamIdleTimeout, "")
+	if payload["code"] != "stream_idle_timeout" {
+		t.Fatalf("idle timeout error code = %v, want stream_idle_timeout", payload["code"])
+	}
+}
+
 func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
 	payload := resultErrorPayload(context.DeadlineExceeded, "")
 	if payload["code"] != "deadline_exceeded" {

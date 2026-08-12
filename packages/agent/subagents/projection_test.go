@@ -1,6 +1,7 @@
 package subagents
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -76,6 +77,20 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 	}
 	if got, want := view.Summary(), "tool bash open · assistant streaming"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestProjectTraceRetainsSafeProviderAttemptDiagnostic(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "provider.request.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"provider": "openai-codex", "model": "gpt-5.6", "attempt": 2, "max_attempts": 4}},
+		{Timestamp: started.Add(time.Second), Type: "provider.request.failed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"error_code": "deadline_exceeded"}},
+	})["agent-1"]
+	if len(view.OpenOperations) != 0 {
+		t.Fatalf("open operations = %#v, want none", view.OpenOperations)
+	}
+	if got, want := view.LastRequest, (&RequestFact{TurnID: "turn-1", Provider: "openai-codex", Model: "gpt-5.6", Attempt: 2, MaxAttempts: 4, Outcome: "failed", ErrorCode: "deadline_exceeded", StartedAt: started, EndedAt: started.Add(time.Second)}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("request diagnostic = %#v, want %#v", got, want)
 	}
 }
 
