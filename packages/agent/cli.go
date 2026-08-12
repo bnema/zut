@@ -793,6 +793,9 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runZutfileCommand(rawArgs, version); handled {
 		return err
 	}
+	if handled, err := runDebugCommand(rawArgs, os.Stdout); handled {
+		return err
+	}
 	return runWithArgsRaw(rawArgs, version)
 }
 

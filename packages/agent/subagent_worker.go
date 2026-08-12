@@ -27,10 +27,8 @@ import (
 //     initial positional task (if any) is the first turn; subsequent
 //     turns arrive through the inbox unix socket at args.SubagentWorker.
 //
-//   - Output: every emitted JSON line is also mirrored verbatim into
-//     events.jsonl (see ZUT_SUBAGENT_EVENT_LOG) so a separate zut
-//     process can /subagents open this agent and replay its full history
-//     even after the parent that spawned us is long gone.
+//   - Output: every emitted JSON line goes to the parent supervisor, which
+//     owns the optional execution trace. Workers never persist trace data.
 //
 // The runner in packages/agent/subagents/runner.go is the only caller in
 // production; tests use the stubchild binary under
@@ -185,20 +183,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	}
 	defer ln.Close()
 
-	// Event log is owned by the supervisor's runner via stdout, but
-	// the daemon also writes a redundant copy here when the runner's
-	// pipe is closed (e.g. parent zut exited but the agent is still
-	// running headless). The env var is set by the runner; if it's
-	// empty we silently skip the second mirror.
-	var logMirror *subagents.EventLog
-	if path := os.Getenv("ZUT_SUBAGENT_EVENT_LOG"); path != "" {
-		logMirror, _ = subagents.OpenEventLog(path)
-	}
-	if logMirror != nil {
-		defer logMirror.Close()
-	}
-
-	em := newSubagentEmitter(os.Stdout, logMirror)
+	em := newSubagentEmitter(os.Stdout)
 	em.setProtocolIdentity(os.Getenv("ZUT_SUBAGENT_AGENT_ID"))
 	em.emit("agent.ready", map[string]any{
 		"version":           version,
@@ -209,30 +194,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		"max_turns":         args.SubagentMaxTurns,
 	})
 
-	// Heartbeats make a live-but-detached child distinguishable from a
-	// failed turn after supervisor reconnect. The parent still treats
-	// unknown event types as forward-compatible.
-	heartbeatDone := make(chan struct{})
-	defer close(heartbeatDone)
-	go func() {
-		interval := 10 * time.Second
-		if raw := os.Getenv("ZUT_SUBAGENT_HEARTBEAT_INTERVAL"); raw != "" {
-			if parsed, parseErr := time.ParseDuration(raw); parseErr == nil && parsed > 0 {
-				interval = parsed
-			}
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-heartbeatDone:
-				return
-			case <-ticker.C:
-				em.emit("agent.heartbeat", map[string]any{"activity": "alive"})
-			}
-		}
-	}()
-
 	// Keep a per-turn cancel so the "cancel" inbox message can interrupt
 	// an in-flight turn without tearing down the whole daemon.
 	var (
@@ -240,7 +201,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		cancelFn context.CancelFunc
 		busyTurn bool
 		budget   = workerTurnBudget{
-			sequence: initialTurnNumber(os.Getenv("ZUT_SUBAGENT_EVENT_LOG")),
 			lifetime: args.SubagentLifetimeTurns,
 			current:  args.SubagentRunTurns,
 		}
@@ -521,29 +481,16 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	}
 }
 
-// subagentEmitter serialises events to stdout and (optionally) to a
-// durable log file. Concurrent goroutines call emit so we have to
-// hold a mutex around the encoder.
+// subagentEmitter serialises protocol events to stdout. The supervisor is
+// the single trace writer; workers never persist execution events themselves.
 type subagentEmitter struct {
 	mu      sync.Mutex
 	w       *os.File
-	mirror  *subagents.EventLog
 	agentID string
-
-	// orphan flips true the first time a stdout write fails (broken
-	// pipe — the supervisor died). Until then the mirror stays
-	// dormant: the supervisor is the canonical writer to events.jsonl
-	// (it parses our stdout and Append()s each event itself). Writing
-	// from both sides used to land every event in the log twice,
-	// which showed up as a fully-duplicated transcript the next time
-	// the agent was reloaded — the exact "why is everything doubled"
-	// bug. Once orphaned the mirror takes over so the events still
-	// land on disk for the next reload.
-	orphan bool
 }
 
-func newSubagentEmitter(w *os.File, mirror *subagents.EventLog) *subagentEmitter {
-	return &subagentEmitter{w: w, mirror: mirror}
+func newSubagentEmitter(w *os.File) *subagentEmitter {
+	return &subagentEmitter{w: w}
 }
 
 func (e *subagentEmitter) setProtocolIdentity(agentID string) {
@@ -569,17 +516,8 @@ func (e *subagentEmitter) emit(typ string, data map[string]any) {
 	envelope := subagents.NewEventEnvelope(wireType, e.agentID, turnID, payload)
 	line, err := subagents.MarshalJSONL(envelope)
 
-	if !e.orphan && err == nil {
-		if _, werr := e.w.Write(line); werr != nil {
-			// Supervisor's stdout pipe is gone (parent zut exited but we
-			// kept running). Switch to mirror-only mode and preserve this
-			// event in the durable log.
-			e.orphan = true
-		}
-	}
-
-	if e.orphan && e.mirror != nil {
-		_ = e.mirror.Append(subagents.NewEvent(wireType, payload))
+	if err == nil {
+		_, _ = e.w.Write(line)
 	}
 }
 
@@ -781,31 +719,6 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-func initialTurnNumber(path string) int {
-	if strings.TrimSpace(path) == "" {
-		return 0
-	}
-	events, err := subagents.ReadEventLog(path)
-	if err != nil {
-		return 0
-	}
-	maxStep := 0
-	for _, ev := range events {
-		if !subagents.IsDelegatedTurnStart(ev) {
-			continue
-		}
-		if step, ok := ev.Data["step"].(float64); ok && int(step) > maxStep {
-			maxStep = int(step)
-		}
-		if strings.HasPrefix(ev.TurnID, "turn-") {
-			if n, parseErr := strconv.Atoi(strings.TrimPrefix(ev.TurnID, "turn-")); parseErr == nil && n > maxStep {
-				maxStep = n
-			}
-		}
-	}
-	return maxStep
 }
 
 func truncateForLog(s string, n int) string {

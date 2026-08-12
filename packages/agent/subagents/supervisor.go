@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Status is the high-level lifecycle state of an Agent.
@@ -85,6 +87,12 @@ type Config struct {
 	// keeping command-backed credentials out of argv and the environment.
 	ResolveCredential func(ctx context.Context, provider string) (Credential, error)
 
+	// TraceDir enables local execution tracing. When non-empty, the supervisor
+	// creates one private bundle beneath this directory and is its sole writer.
+	// An empty directory leaves tracing disabled.
+	TraceDir  string
+	TraceMode TraceMode
+
 	// Now is a clock seam for tests; defaults to time.Now.
 	Now func() time.Time
 }
@@ -134,6 +142,7 @@ type Supervisor struct {
 	activeByParent map[string]int
 	activeByBatch  map[string]int
 	batches        map[string]*Batch
+	trace          *TraceWriter
 
 	// activeSession is the host session id the dashboard is
 	// currently scoped to. When non-empty, SnapshotAll filters out
@@ -163,6 +172,15 @@ func New(cfg Config) *Supervisor {
 		}
 	}
 	cfg.Policy.normalize()
+	trace := NewMemoryTraceWriter()
+	if cfg.TraceDir != "" {
+		// Tracing is observational only: inability to create its optional local
+		// bundle must not prevent the supervisor from running workers. The
+		// in-memory trace remains the sole status projection in that case.
+		if bundle, err := NewTraceWriter(filepath.Join(cfg.TraceDir, uuid.NewString()), cfg.TraceMode); err == nil {
+			trace = bundle
+		}
+	}
 	lifetimeParent := cfg.Context
 	if lifetimeParent == nil {
 		lifetimeParent = context.Background()
@@ -176,6 +194,7 @@ func New(cfg Config) *Supervisor {
 		activeByParent: map[string]int{},
 		activeByBatch:  map[string]int{},
 		batches:        map[string]*Batch{},
+		trace:          trace,
 	}
 }
 
@@ -551,6 +570,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	a.setOnTurnIdle(func() { f.dispatchQueuedResumeWithTimeout(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
+	a.trace = f.trace
 	a.runner = f.cfg.NewRunner(a)
 	if err := writeAgentMeta(stateDir, a); err != nil {
 		if a.cancel != nil {
@@ -569,6 +589,9 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	f.queue = append(f.queue, a)
 	f.mu.Unlock()
 	leaseOwned = false
+	f.recordTrace(TraceEvent{Type: "agent.spawned", AgentID: a.ID, Data: map[string]any{
+		"task_length": len(task), "workspace_mode": string(workspaceMode),
+	}})
 
 	// Persisted metadata was written before queue admission, so a later
 	// supervisor can reconstruct work that never reached a process.
@@ -582,6 +605,54 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 // expected to have already trimmed and expanded the text.
 // CancelTurn requests cancellation of the current turn while keeping the
 // worker process alive for a later follow-up.
+func traceErrorKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "error"
+	}
+}
+
+func (f *Supervisor) recordTrace(event TraceEvent) {
+	if f == nil || f.trace == nil {
+		return
+	}
+	f.trace.Record(event)
+}
+
+// TraceDir returns the opt-in bundle directory, or an empty string when tracing
+// is disabled.
+func (f *Supervisor) TraceDir() string {
+	if f == nil || f.trace == nil {
+		return ""
+	}
+	return f.trace.Dir()
+}
+
+// TraceViews projects the supervisor's factual trace into the diagnostic state
+// for each observed agent. It intentionally does not expose lifecycle labels.
+func (f *Supervisor) TraceViews() map[string]AgentTraceView {
+	if f == nil || f.trace == nil {
+		return map[string]AgentTraceView{}
+	}
+	return ProjectTrace(f.trace.Events())
+}
+
+// Close flushes and closes the optional trace bundle. It does not stop agents;
+// their lifetime remains controlled by the supervisor context and Stop.
+func (f *Supervisor) Close() error {
+	if f == nil || f.trace == nil {
+		return nil
+	}
+	return f.trace.Close()
+}
+
 func (f *Supervisor) CancelTurn(id string) error {
 	a := f.Get(id)
 	if a == nil {
@@ -591,6 +662,7 @@ func (f *Supervisor) CancelTurn(id string) error {
 		return fmt.Errorf("subagents: agent %s has no inbox", a.ID)
 	}
 	a.setTurnState(TurnCanceling, a.CurrentTurnID())
+	f.recordTrace(TraceEvent{Type: "turn.cancel.requested", AgentID: a.ID, TurnID: a.CurrentTurnID()})
 	return a.inbox.SendCommand(NewCommand(CommandTurnCancel, a.ID, a.CurrentTurnID(), TurnCancelPayload{Reason: "user"}))
 }
 
@@ -602,6 +674,7 @@ func (f *Supervisor) SendUserTurn(id, text string) error {
 	if a.inbox == nil {
 		return fmt.Errorf("subagents: agent %s has no inbox", a.ID)
 	}
+	f.recordTrace(TraceEvent{Type: "turn.requested", AgentID: a.ID, Data: map[string]any{"prompt_length": len(text)}})
 	return a.inbox.SendCommand(NewCommand(CommandTurnStart, a.ID, a.CurrentTurnID(), TurnStartPayload{Prompt: text}))
 }
 
@@ -621,6 +694,7 @@ func (f *Supervisor) run(a *Agent) {
 			err = context.Canceled
 		}
 	} else {
+		f.recordTrace(TraceEvent{Type: "agent.started", AgentID: a.ID})
 		a.setActivity("starting")
 		if a.runner == nil {
 			err = errors.New("subagents: agent has no runner")
@@ -659,6 +733,11 @@ func (f *Supervisor) run(a *Agent) {
 	}
 	finalStatus := a.status
 	a.mu.Unlock()
+	terminalType := "agent.finished"
+	if terminalErr != nil {
+		terminalType = "agent.failed"
+	}
+	f.recordTrace(TraceEvent{Type: terminalType, AgentID: a.ID, Data: map[string]any{"status": string(finalStatus), "error": traceErrorKind(terminalErr)}})
 
 	switch finalStatus {
 	case StatusKilled:

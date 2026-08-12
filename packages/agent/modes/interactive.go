@@ -2151,10 +2151,12 @@ func (i *Interactive) redraw() {
 	var allSubagentLines []string
 	if !dashboardActive {
 		now := i.clock()
+		activitySnapshots, traceViews := i.activeSubagentActivitySnapshots()
 		allSubagentLines = renderSubagentActivityLines(
 			i.cfg.Theme,
 			i.spin.FrameAt(now),
-			i.activeSubagentActivitySnapshots(),
+			activitySnapshots,
+			traceViews,
 			mainCols,
 			now,
 		)

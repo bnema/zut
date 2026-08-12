@@ -182,6 +182,7 @@ type Agent struct {
 	workspaceCleanup      func() error
 	workspaceCapture      func() (WorkspaceCapture, error)
 	onTurnIdle            func()
+	trace                 *TraceWriter
 
 	// OnTurnEnd, if set, fires once per prompt-level turn_end event
 	// emitted by the subagent daemon wrapper. Provider/tool-loop
@@ -217,6 +218,16 @@ type Agent struct {
 // agents without inboxes (e.g. tests using a custom Runner that
 // doesn't speak the daemon protocol).
 func (a *Agent) Inbox() *Inbox { return a.inbox }
+
+func (a *Agent) recordTrace(event TraceEvent) {
+	if a == nil || a.trace == nil {
+		return
+	}
+	if event.AgentID == "" {
+		event.AgentID = a.ID
+	}
+	a.trace.Record(event)
+}
 
 // FastModeOverridesHost reports whether this child was created with an
 // explicit fast-mode override while the host setting was disabled.

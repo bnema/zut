@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,10 +68,12 @@ type subagentRuntimeConfiguration struct {
 // assemble a subagentRuntime. The active selection callbacks are optional;
 // when omitted, the initial Provider/Model/Reasoning values are used.
 type subagentRuntimeConfig struct {
-	Context  context.Context
-	Args     Args
-	Root     string
-	RepoRoot string
+	Context   context.Context
+	Args      Args
+	Root      string
+	RepoRoot  string
+	TraceDir  string
+	TraceMode subagents.TraceMode
 
 	Provider    string
 	Model       string
@@ -97,6 +100,12 @@ type subagentRuntimeConfig struct {
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	if cfg.Context == nil {
 		cfg.Context = context.Background()
+	}
+	if cfg.TraceDir == "" {
+		cfg.TraceDir = strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_DIR"))
+	}
+	if mode := strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_MODE")); mode == string(subagents.TraceModeDetailed) {
+		cfg.TraceMode = subagents.TraceModeDetailed
 	}
 	rt := &subagentRuntime{
 		args:            cfg.Args,
@@ -159,6 +168,8 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 			Context:           cfg.Context,
 			Root:              root,
 			RepoRoot:          cfg.RepoRoot,
+			TraceDir:          cfg.TraceDir,
+			TraceMode:         cfg.TraceMode,
 			Provider:          rt.currentProvider(),
 			FastMode:          cfg.FastMode,
 			WebSearchPolicy:   cfg.WebSearchPolicy,
@@ -450,6 +461,9 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 		return nil
 	}
 	if err := rt.supervisor.StopAllContext(ctx); err != nil {
+		return err
+	}
+	if err := rt.supervisor.Close(); err != nil {
 		return err
 	}
 	rt.closed = true

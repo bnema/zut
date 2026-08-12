@@ -10,17 +10,17 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// renderSubagentActivityLines returns one compact, input-adjacent row for each
-// active delegated turn. Terminal and idle workers are intentionally omitted:
-// the /subagents dashboard remains the durable history, while this surface is
-// only a live "is it still moving?" signal.
-func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []subagents.AgentSnapshot, width int, now time.Time) []string {
+// renderSubagentActivityLines renders only trace-observed open operations.
+// A living process, generic lifecycle state, or heartbeat never starts a
+// spinner because none proves that an operation is progressing.
+func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []subagents.AgentSnapshot, views map[string]subagents.AgentTraceView, width int, now time.Time) []string {
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if !subagentTurnIsActive(snapshot) {
+		view := views[snapshot.ID]
+		if len(view.OpenOperations) == 0 {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, view.OpenOperations[0], width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}
@@ -28,40 +28,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	return lines
 }
 
-func subagentTurnIsActive(snapshot subagents.AgentSnapshot) bool {
-	switch snapshot.ProcessState {
-	case subagents.ProcessPending, subagents.ProcessStarting, subagents.ProcessAlive:
-	default:
-		// A detached worker has no confirmed live connection. Keep it in the
-		// dashboard, rather than presenting an endlessly animated row beside
-		// the input as if it were still making progress.
-		return false
-	}
-
-	switch snapshot.TurnState {
-	case subagents.TurnSucceeded, subagents.TurnFailed, subagents.TurnCanceled:
-		return false
-	}
-	switch snapshot.Status {
-	case subagents.StatusPending:
-		return true
-	case subagents.StatusRunning:
-	default:
-		return false
-	}
-
-	switch snapshot.TurnState {
-	case subagents.TurnQueued, subagents.TurnRunning, subagents.TurnCanceling:
-		return true
-	}
-
-	// The worker enters TurnIdle while it waits for a follow-up prompt. Keep a
-	// brief "starting" phase visible, but remove the row as soon as it reports
-	// ordinary idle so an already-completed task never looks active.
-	return strings.TrimSpace(snapshot.Activity) != "" && strings.TrimSpace(snapshot.Activity) != "idle"
-}
-
-func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, width int, now time.Time) string {
+func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, width int, now time.Time) string {
 	name := sanitizeSubagentIndicatorText(snapshot.Subagent)
 	if name == "" {
 		name = sanitizeSubagentIndicatorText(snapshot.ID)
@@ -73,8 +40,8 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	if spinnerGlyph == "" {
 		spinnerGlyph = "."
 	}
-	activity := compactSubagentActivity(snapshot)
-	age := formatSubagentActivityAge(snapshot, now)
+	activity := strings.TrimSuffix(operation.Type, ".started") + " open"
+	age := formatSubagentActivityAge(operation.StartedAt, now)
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {
 		return ""
@@ -98,16 +65,9 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 		name = strings.TrimPrefix(parts[0], spinnerGlyph+" ")
 		return "  " + th.FGColor(th.Spinner, spinnerGlyph) + " " +
 			th.FGColor(th.Assistant, name) + th.FGColor(th.Muted, " · "+parts[1])
-	case subagentActivityCompact:
-		prefix := spinnerGlyph + " "
-		suffix := " " + age
-		if strings.HasPrefix(plain, prefix) && strings.HasSuffix(plain, suffix) {
-			name = strings.TrimSuffix(strings.TrimPrefix(plain, prefix), suffix)
-			return "  " + th.FGColor(th.Spinner, spinnerGlyph) + " " +
-				th.FGColor(th.Assistant, name) + " " + th.FGColor(th.Muted, age)
-		}
+	default:
+		return "  " + th.FGColor(th.Muted, plain)
 	}
-	return "  " + th.FGColor(th.Muted, plain)
 }
 
 type subagentActivityLayout uint8
@@ -119,73 +79,31 @@ const (
 )
 
 func fitSubagentActivityLine(spinnerGlyph, name, activity, age string, width int) (string, subagentActivityLayout) {
-	spinnerGlyph = strings.TrimSpace(spinnerGlyph)
-	if spinnerGlyph == "" {
-		spinnerGlyph = "."
-	}
 	if width <= 0 {
 		return "", subagentActivityCompact
 	}
-
 	full := spinnerGlyph + " " + name + " · " + activity + " · " + age
 	if runewidth.StringWidth(full) <= width {
 		return full, subagentActivityFull
 	}
-
 	nameAge := spinnerGlyph + " " + name + " · " + age
 	if activityWidth := width - runewidth.StringWidth(nameAge) - runewidth.StringWidth(" · "); activityWidth >= 4 {
-		activity = truncateSubagentIndicatorText(activity, activityWidth)
-		return spinnerGlyph + " " + name + " · " + activity + " · " + age, subagentActivityFull
+		return spinnerGlyph + " " + name + " · " + truncateSubagentIndicatorText(activity, activityWidth) + " · " + age, subagentActivityFull
 	}
 	if runewidth.StringWidth(nameAge) <= width {
 		return nameAge, subagentActivityNameAge
 	}
-
-	prefix := spinnerGlyph + " "
-	suffix := " " + age
-	nameWidth := width - runewidth.StringWidth(prefix) - runewidth.StringWidth(suffix)
-	if nameWidth >= 1 {
-		return prefix + truncateSubagentIndicatorText(name, nameWidth) + suffix, subagentActivityCompact
-	}
-	if runewidth.StringWidth(age) <= width {
-		return age, subagentActivityCompact
-	}
-	return truncateSubagentIndicatorText(spinnerGlyph, width), subagentActivityCompact
+	return truncateSubagentIndicatorText(nameAge, width), subagentActivityCompact
 }
 
-func compactSubagentActivity(snapshot subagents.AgentSnapshot) string {
-	activity := sanitizeSubagentIndicatorText(snapshot.Activity)
-	// Heartbeats report "idle" even while a delegated turn is still running.
-	// Keep the row meaningful in that interval instead of contradicting its
-	// spinner and turn state.
-	if activity != "" && (activity != "idle" || snapshot.TurnState != subagents.TurnRunning) {
-		return activity
-	}
-	switch snapshot.TurnState {
-	case subagents.TurnQueued:
-		return "queued"
-	case subagents.TurnCanceling:
-		return "cancelling"
-	default:
-		return "working"
-	}
-}
-
-func formatSubagentActivityAge(snapshot subagents.AgentSnapshot, now time.Time) string {
-	last := snapshot.LastActivity
-	if last.IsZero() {
-		last = snapshot.UpdatedAt
-	}
-	if last.IsZero() {
-		last = snapshot.Started
-	}
-	if last.IsZero() {
+func formatSubagentActivityAge(started, now time.Time) string {
+	if started.IsZero() {
 		return "-"
 	}
 	if now.IsZero() {
 		now = time.Now()
 	}
-	elapsed := now.Sub(last)
+	elapsed := now.Sub(started)
 	if elapsed < 0 {
 		elapsed = 0
 	}
@@ -196,11 +114,9 @@ func formatSubagentActivityAge(snapshot subagents.AgentSnapshot, now time.Time) 
 	case seconds < 60*60:
 		return fmt.Sprintf("%dm%02ds", seconds/60, seconds%60)
 	case seconds < 24*60*60:
-		minutes := (seconds % (60 * 60)) / 60
-		return fmt.Sprintf("%dh%02dm", seconds/(60*60), minutes)
+		return fmt.Sprintf("%dh%02dm", seconds/(60*60), (seconds%(60*60))/60)
 	default:
-		hours := (seconds % (24 * 60 * 60)) / (60 * 60)
-		return fmt.Sprintf("%dd%02dh", seconds/(24*60*60), hours)
+		return fmt.Sprintf("%dd%02dh", seconds/(24*60*60), (seconds%(24*60*60))/(60*60))
 	}
 }
 
@@ -217,16 +133,8 @@ func truncateSubagentIndicatorText(s string, width int) string {
 	return runewidth.Truncate(s, width, "...")
 }
 
-// sanitizeSubagentIndicatorText keeps worker-derived labels on one safe
-// terminal row before they are measured or styled. A worker's profile, id, or
-// tool activity is data, never terminal control output.
-func sanitizeSubagentIndicatorText(s string) string {
-	return sanitizeSessionTreeText(s)
-}
+func sanitizeSubagentIndicatorText(s string) string { return sanitizeSessionTreeText(s) }
 
-// limitSubagentActivityLines reserves the input's terminal rows before adding
-// activity rows. When the frame has room for only part of the live set, retain
-// the earliest rows and make the omitted count explicit in one final row.
 func limitSubagentActivityLines(th tui.Theme, lines []string, maxRows, width int) []string {
 	if maxRows <= 0 || len(lines) == 0 {
 		return nil
@@ -242,20 +150,16 @@ func limitSubagentActivityLines(th tui.Theme, lines []string, maxRows, width int
 }
 
 func subagentActivityOverflowLine(th tui.Theme, hidden, width int) string {
-	text := fmt.Sprintf("  … %d more active subagents", hidden)
+	text := fmt.Sprintf("  … %d more open subagent operations", hidden)
 	return th.FGColor(th.Muted, truncateSubagentIndicatorText(text, width))
 }
 
-// activeSubagentActivitySnapshots builds the compact state needed by the
-// input indicator without copying transcript buffers. It mirrors the
-// supervisor's live-session filtering while deliberately omitting completed
-// workers, which belong in the dashboard and completion notification instead.
-func (i *Interactive) activeSubagentActivitySnapshots() []subagents.AgentSnapshot {
+func (i *Interactive) activeSubagentActivitySnapshots() ([]subagents.AgentSnapshot, map[string]subagents.AgentTraceView) {
 	supervisor := i.cfg.Supervisor
 	if supervisor == nil {
-		return nil
+		return nil, nil
 	}
-
+	views := supervisor.TraceViews()
 	activeSession := supervisor.ActiveSession()
 	agents := supervisor.List()
 	out := make([]subagents.AgentSnapshot, 0, len(agents))
@@ -263,20 +167,10 @@ func (i *Interactive) activeSubagentActivitySnapshots() []subagents.AgentSnapsho
 		if activeSession != "" && agent.SessionID != "" && agent.SessionID != activeSession {
 			continue
 		}
-		snapshot := subagents.AgentSnapshot{
-			ID:           agent.ID,
-			Status:       agent.Status(),
-			ProcessState: agent.ProcessState(),
-			TurnState:    agent.TurnState(),
-			Activity:     agent.Activity(),
-			Started:      agent.Started,
-			UpdatedAt:    agent.UpdatedAt(),
-			LastActivity: agent.LastActivity(),
-			Subagent:     agent.Subagent,
+		if len(views[agent.ID].OpenOperations) == 0 {
+			continue
 		}
-		if subagentTurnIsActive(snapshot) {
-			out = append(out, snapshot)
-		}
+		out = append(out, subagents.AgentSnapshot{ID: agent.ID, Started: agent.Started, Subagent: agent.Subagent})
 	}
-	return out
+	return out, views
 }

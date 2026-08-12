@@ -78,6 +78,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	i.subagentsDialog.SetCompactMode(i.compactModeEnabled())
 	i.subagentsDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
 	i.subagentsDialog.SetAllSnapshots(i.cfg.Supervisor.SnapshotAllSessions)
+	i.subagentsDialog.SetTraceViews(i.cfg.Supervisor.TraceViews)
 	i.subagentsDialog.SetLoadTranscript(i.cfg.Supervisor.LoadTranscript)
 	i.subagentsDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)
 	if i.cfg.LoggedInProviders != nil {

@@ -121,9 +121,7 @@ func TestSubagentStatusListsLiveWorkerWithoutPrivateOutput(t *testing.T) {
 	var got struct {
 		Agents []struct {
 			ID          string `json:"agent_id"`
-			State       string `json:"state"`
 			StartedAt   string `json:"started_at"`
-			UpdatedAt   string `json:"updated_at"`
 			TaskSummary string `json:"task_summary"`
 		} `json:"agents"`
 	}
@@ -137,11 +135,8 @@ func TestSubagentStatusListsLiveWorkerWithoutPrivateOutput(t *testing.T) {
 	if got.Agents[0].ID != agent.ID {
 		t.Fatalf("agent id = %q, want %q", got.Agents[0].ID, agent.ID)
 	}
-	if got.Agents[0].State != "running" {
-		t.Fatalf("state = %q, want running", got.Agents[0].State)
-	}
-	if got.Agents[0].StartedAt == "" || got.Agents[0].UpdatedAt == "" {
-		t.Fatalf("timestamps = started %q updated %q, want both present", got.Agents[0].StartedAt, got.Agents[0].UpdatedAt)
+	if got.Agents[0].StartedAt == "" {
+		t.Fatal("started_at is empty")
 	}
 	if got.Agents[0].TaskSummary != "review architecture" {
 		t.Fatalf("task summary = %q, want first task line", got.Agents[0].TaskSummary)
@@ -163,7 +158,7 @@ func TestSubagentStatusListsLiveWorkerWithoutPrivateOutput(t *testing.T) {
 	agent.Wait()
 }
 
-func TestSubagentStatusReportsQueuedWorkerAsStarting(t *testing.T) {
+func TestSubagentStatusReportsQueuedWorkerWithoutLifecycleState(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -203,14 +198,14 @@ func TestSubagentStatusReportsQueuedWorkerAsStarting(t *testing.T) {
 	}
 	var got struct {
 		Agent struct {
-			State string `json:"state"`
+			ID string `json:"agent_id"`
 		} `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(textResult(res.Content)), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Agent.State != "starting" {
-		t.Fatalf("queued state = %q, want starting", got.Agent.State)
+	if got.Agent.ID != queued.ID {
+		t.Fatalf("agent id = %q, want %q", got.Agent.ID, queued.ID)
 	}
 
 	close(release)
@@ -249,10 +244,8 @@ func TestSubagentStatusQueriesOneWorkerAndReportsTerminalResultMetadata(t *testi
 
 	var got struct {
 		Agent struct {
-			ID       string `json:"agent_id"`
-			State    string `json:"state"`
-			Finished string `json:"finished_at"`
-			Result   *struct {
+			ID     string `json:"agent_id"`
+			Result *struct {
 				State     string `json:"state"`
 				Available bool   `json:"available"`
 			} `json:"result"`
@@ -264,12 +257,6 @@ func TestSubagentStatusQueriesOneWorkerAndReportsTerminalResultMetadata(t *testi
 	}
 	if got.Agent.ID != agent.ID {
 		t.Fatalf("agent id = %q, want %q", got.Agent.ID, agent.ID)
-	}
-	if got.Agent.State != "completed" {
-		t.Fatalf("state = %q, want completed", got.Agent.State)
-	}
-	if got.Agent.Finished == "" {
-		t.Fatal("finished_at is empty for completed worker")
 	}
 	if got.Agent.Result == nil || !got.Agent.Result.Available || got.Agent.Result.State != "completed" {
 		t.Fatalf("result metadata = %#v, want available completed result", got.Agent.Result)
@@ -319,15 +306,14 @@ func TestSubagentStatusRejectsUnknownWorker(t *testing.T) {
 	}
 }
 
-func TestSubagentStatusMapsFailedAndCancelledWorkers(t *testing.T) {
+func TestSubagentStatusOmitsLifecycleStateForFailedAndCancelledWorkers(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		runnerErr error
 		stop      bool
-		wantState string
 	}{
-		{name: "failed", runnerErr: errors.New("runner failed"), wantState: "failed"},
-		{name: "cancelled", stop: true, wantState: "cancelled"},
+		{name: "failed", runnerErr: errors.New("runner failed")},
+		{name: "cancelled", stop: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -370,14 +356,14 @@ func TestSubagentStatusMapsFailedAndCancelledWorkers(t *testing.T) {
 			}
 			var got struct {
 				Agent struct {
-					State string `json:"state"`
+					ID string `json:"agent_id"`
 				} `json:"agent"`
 			}
 			if err := json.Unmarshal([]byte(textResult(res.Content)), &got); err != nil {
 				t.Fatal(err)
 			}
-			if got.Agent.State != tc.wantState {
-				t.Fatalf("state = %q, want %q", got.Agent.State, tc.wantState)
+			if got.Agent.ID != agent.ID {
+				t.Fatalf("agent id = %q, want %q", got.Agent.ID, agent.ID)
 			}
 		})
 	}
