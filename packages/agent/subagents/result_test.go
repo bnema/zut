@@ -198,6 +198,23 @@ func TestEnsureResultRecordsAvailabilityAfterDurableWrite(t *testing.T) {
 	if _, err := os.Stat(resultPath(state)); err != nil {
 		t.Fatalf("durable result missing: %v", err)
 	}
+
+	failedState := t.TempDir()
+	if err := os.Mkdir(resultPath(failedState), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failedTrace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = failedTrace.Close() })
+	failedAgent := &Agent{ID: "agent-2", stateDir: failedState, trace: failedTrace, maxOutputBytes: 1024, maxOutputLines: 10}
+	(&Supervisor{}).ensureResult(failedAgent, StatusDone, nil)
+	if err := failedTrace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range failedTrace.Events() {
+		if event.Type == "result.available" {
+			t.Fatalf("result.available recorded after failed write: %#v", event)
+		}
+	}
 }
 
 func TestCaptureWorkspaceFailureIsDurableAndPrivate(t *testing.T) {

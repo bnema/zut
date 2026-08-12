@@ -24,7 +24,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 		if operation == nil {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.LastObservation, width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.ObservationFor(*operation), width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}

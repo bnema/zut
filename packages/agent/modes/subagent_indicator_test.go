@@ -30,9 +30,19 @@ func TestRenderSubagentActivityLinesShowsOnlyTraceOpenOperations(t *testing.T) {
 func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
-		"review-123": {PrimaryOperation: &subagents.Operation{Type: "turn.started", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", At: now.Add(-time.Second)}},
+		"review-123": {PrimaryOperation: &subagents.Operation{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
 	}, 100, now))
 	if got := strings.Join(lines, "\n"); !strings.Contains(got, "turn open · assistant streaming 1s ago") || strings.Contains(got, "delta") {
+		t.Fatalf("activity lines = %#v", lines)
+	}
+}
+
+func TestRenderSubagentActivityLinesOmitsPriorTurnObservation(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
+		"review-123": {PrimaryOperation: &subagents.Operation{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
+	}, 100, now))
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "assistant streaming") || !strings.Contains(got, "tool open") || !strings.Contains(got, "1m") {
 		t.Fatalf("activity lines = %#v", lines)
 	}
 }

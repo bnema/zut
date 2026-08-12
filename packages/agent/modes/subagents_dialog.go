@@ -1630,9 +1630,11 @@ func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceVie
 		primary = &view.OpenOperations[0]
 	}
 	if primary != nil {
-		fact += " " + formatAge(primary.StartedAt)
-	} else if view.LastObservation != nil {
-		fact += " " + formatAge(view.LastObservation.At)
+		if observation := view.ObservationFor(*primary); observation != nil {
+			fact += " " + formatAge(observation.At)
+		} else {
+			fact += " " + formatAge(primary.StartedAt)
+		}
 	} else if view.LastEvent.Type != "" {
 		fact += " " + formatAge(view.LastEvent.Timestamp)
 	}

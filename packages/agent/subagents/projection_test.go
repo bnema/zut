@@ -79,6 +79,36 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 	}
 }
 
+func TestProjectTraceOmitsPriorTurnObservation(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "assistant.stream.observed", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "turn.started", AgentID: "agent-1", TurnID: "turn-2"},
+	})["agent-1"]
+	if view.LastObservation == nil {
+		t.Fatal("last observation missing")
+	}
+	if view.PrimaryOperation == nil {
+		t.Fatal("primary operation missing")
+	}
+	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+		t.Fatalf("prior turn observation = %#v, want omitted", observation)
+	}
+	if got, want := view.Summary(), "turn open"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestProjectTraceNewAvailableResultResetsDelivery(t *testing.T) {
+	view := ProjectTrace([]TraceEvent{
+		{Type: "result.delivered", AgentID: "agent-1", Data: map[string]any{"ref": "subagent://agent-1/result-1"}},
+		{Type: "result.available", AgentID: "agent-1", Data: map[string]any{"ref": "subagent://agent-1/result-2"}},
+	})["agent-1"]
+	if view.Result == nil || !view.Result.Available || view.Result.Delivered || view.Result.Failed || view.Result.Ref != "subagent://agent-1/result-2" {
+		t.Fatalf("result = %#v", view.Result)
+	}
+}
+
 func TestProjectTraceFailedAgentClosesOpenOperations(t *testing.T) {
 	view := ProjectTrace([]TraceEvent{
 		{Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},

@@ -114,13 +114,10 @@ func (v AgentTraceView) Summary() string {
 		primary = &v.OpenOperations[0]
 	}
 	if primary != nil {
-		if v.LastObservation != nil {
-			return primary.Label() + " · " + v.LastObservation.Label()
+		if observation := v.ObservationFor(*primary); observation != nil {
+			return primary.Label() + " · " + observation.Label()
 		}
 		return primary.Label()
-	}
-	if v.LastObservation != nil {
-		return v.LastObservation.Label()
 	}
 	if v.LastEvent.Type != "" {
 		return "last event " + v.LastEvent.Type
@@ -195,6 +192,16 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 	return views
 }
 
+// ObservationFor returns the last observation only when it belongs to this
+// operation's turn. A prior turn's stream is not live activity for a resumed
+// or subsequent turn.
+func (v AgentTraceView) ObservationFor(operation Operation) *LiveObservation {
+	if v.LastObservation == nil || operation.TurnID == "" || v.LastObservation.TurnID == "" || operation.TurnID != v.LastObservation.TurnID {
+		return nil
+	}
+	return v.LastObservation
+}
+
 func operationPriority(o Operation) int {
 	switch o.Type {
 	case "tool.started":
@@ -236,7 +243,7 @@ func traceResultFact(event TraceEvent, previous *ResultFact) *ResultFact {
 	result.At = event.Timestamp
 	switch event.Type {
 	case "result.available":
-		result.Available = true
+		result.Available, result.Delivered, result.Failed = true, false, false
 	case "result.delivered":
 		result.Available, result.Delivered, result.Failed = true, true, false
 	case "result.delivery.failed":
