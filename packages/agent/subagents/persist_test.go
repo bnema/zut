@@ -218,6 +218,55 @@ func TestResumePreservesPerAgentTimeout(t *testing.T) {
 	resumed.Wait()
 }
 
+func TestResumePreservesUnlimitedTurnTimeout(t *testing.T) {
+	root := t.TempDir()
+	first := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	a, err := first.Spawn(context.Background(), "unlimited timeout test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.StopAll()
+	a.Wait()
+
+	observedCh := make(chan time.Duration, 1)
+	second := New(Config{
+		Root: root, RepoRoot: root,
+		Policy: SubagentPolicy{DefaultTimeout: time.Hour},
+		NewRunner: func(a *Agent) Runner {
+			observedCh <- a.Timeout
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	resumed, err := second.ResumeSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case observed := <-observedCh:
+		if resumed.Timeout != 0 || observed != 0 {
+			t.Fatalf("resumed timeout = %s, runner observed %s; want unlimited", resumed.Timeout, observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resumed runner")
+	}
+	second.StopAll()
+	resumed.Wait()
+}
+
 func TestReloadRejectsMetadataPathsOutsideState(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.json")

@@ -3,6 +3,7 @@ package subagents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -134,6 +135,27 @@ func TestBatchSpawnWaitAndCollect(t *testing.T) {
 	}
 	if batch.Status() != BatchSucceeded {
 		t.Fatalf("batch status = %s", batch.Status())
+	}
+}
+
+func TestBatchResultWaitCancellationDoesNotCancelWorker(t *testing.T) {
+	f := New(Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
+	a := &Agent{
+		ID:     "worker-1",
+		status: StatusRunning,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := f.waitForBatchResult(ctx, a)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait error = %v, want context.Canceled", err)
+	}
+	if result != nil {
+		t.Fatalf("wait result = %#v, want nil", result)
+	}
+	if got := a.Status(); got != StatusRunning {
+		t.Fatalf("worker status = %s, want running", got)
 	}
 }
 

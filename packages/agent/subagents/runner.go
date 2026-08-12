@@ -79,6 +79,7 @@ type subagentWorkerArgsOpts struct {
 	FastModeSet     bool
 	Subagent        string
 	MaxTurns        int
+	MaxSteps        int
 	TurnTimeout     time.Duration
 	LifetimeTurns   int
 	RunTurns        int
@@ -118,6 +119,7 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		FastModeSet:     true,
 		Subagent:        a.Subagent,
 		MaxTurns:        a.MaxTurns,
+		MaxSteps:        a.MaxSteps,
 		TurnTimeout:     a.Timeout,
 		LifetimeTurns:   a.LifetimeTurnsValue(),
 		RunTurns:        a.CurrentRunTurnsValue(),
@@ -164,6 +166,9 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	}
 	if opts.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
+	}
+	if opts.MaxSteps > 0 {
+		args = append(args, "--max-steps", fmt.Sprint(opts.MaxSteps))
 	}
 	if opts.TurnTimeout > 0 {
 		args = append(args, "--subagent-turn-timeout", opts.TurnTimeout.String())
@@ -708,6 +713,7 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	a.markActivity(now)
 	persist := false
 	notifyIdle := false
+	var eventErr error
 	switch ev.Type {
 	case EventAgentReady, "agent_ready":
 		a.setProcessState(ProcessAlive)
@@ -759,20 +765,26 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 		a.setProcessState(ProcessAlive)
 	case EventTurnResult, "turn_result":
 		if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {
-			a.setResult(result)
-			if a.turnResults != nil {
-				select {
-				case a.turnResults <- result:
-				default:
-				}
-			}
 			if a.stateDir != "" {
-				if err := writeTurnResult(a.stateDir, result); err == nil {
+				if err := writeTurnResult(a.stateDir, result); err != nil {
+					eventErr = fmt.Errorf("write turn result: %w", err)
+					result = cloneTurnResult(result)
+					result.Status = ResultFailed
+					result.Error = &ResultError{
+						Code:    "result_persistence_failed",
+						Message: "subagent result could not be persisted; inspect the live session before retrying",
+					}
+					a.lifecycleMu.Lock()
+					a.resultRef = ""
+					a.lifecycleMu.Unlock()
+					a.recordPersistenceError(eventErr)
+				} else {
 					a.lifecycleMu.Lock()
 					a.resultRef = ResultRef(a.ID)
 					a.lifecycleMu.Unlock()
 				}
 			}
+			a.setResult(result)
 			switch result.Status {
 			case ResultCanceled:
 				a.setTurnState(TurnCanceled, result.TurnID)
@@ -850,13 +862,13 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	if persist && a.persistFn != nil {
 		if err := a.persistFn(a); err != nil {
 			a.recordPersistenceError(err)
-			return err
+			eventErr = errors.Join(eventErr, err)
 		}
 	}
 	if notifyIdle {
 		a.notifyTurnIdle()
 	}
-	return nil
+	return eventErr
 }
 
 // notifyPromptTurnEnd calls Agent.OnTurnEnd only for the subagent
@@ -955,7 +967,7 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	case "error":
 		// Error events do not necessarily belong to a provider request; the
 		// following terminal turn event closes any request factually.
-	case "tool_call", EventToolStarted:
+	case "tool_execution_started", EventToolStarted:
 		traceType = "tool.started"
 	case "tool_result", EventToolFinished:
 		traceType = "tool.finished"

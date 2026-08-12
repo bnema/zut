@@ -72,6 +72,34 @@ func TestSpawnTimeoutDoesNotLimitResumableWorkerLifetime(t *testing.T) {
 	a.Wait()
 }
 
+func TestSpawnWithoutTimeoutUsesUnlimitedTurns(t *testing.T) {
+	f := newTestSupervisor(t, func(*Agent) Runner {
+		return RunnerFunc(func(context.Context, Sink) error { return nil })
+	})
+	a, err := f.Spawn(context.Background(), "unlimited turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Timeout != 0 {
+		t.Fatalf("turn timeout = %s, want unlimited", a.Timeout)
+	}
+	a.Wait()
+}
+
+func TestSpawnUsesDefaultModelStepBudget(t *testing.T) {
+	f := newTestSupervisor(t, func(*Agent) Runner {
+		return RunnerFunc(func(context.Context, Sink) error { return nil })
+	})
+	a, err := f.Spawn(context.Background(), "bounded model loop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.MaxSteps != 128 {
+		t.Fatalf("max steps = %d, want 128", a.MaxSteps)
+	}
+	a.Wait()
+}
+
 func TestSpawnRunsAndCompletes(t *testing.T) {
 	ran := make(chan string, 1)
 	f := newTestSupervisor(t, func(a *Agent) Runner {

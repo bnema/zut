@@ -50,6 +50,7 @@ type Agent struct {
 	WorkspaceBase    string
 	WorkspaceCapture CaptureMode
 	MaxTurns         int
+	MaxSteps         int
 
 	// LifetimeTurns counts every accepted message turn for this worker across
 	// all explicit runs. CurrentRunTurns resets only when an explicit
@@ -58,8 +59,8 @@ type Agent struct {
 	LifetimeTurns   int
 	CurrentRunTurns int
 
-	// Timeout is the effective per-agent lifetime, persisted so a resumed
-	// worker keeps the timeout selected at its spawn boundary.
+	// Timeout is the effective per-turn deadline. Zero means unlimited. It is
+	// persisted so a resumed worker keeps the policy selected at spawn time.
 	Timeout           time.Duration
 	HeartbeatInterval time.Duration
 	Tools             []string
@@ -209,9 +210,9 @@ type Agent struct {
 	// done closes when the run goroutine finalises the agent's
 	// status (done / failed / killed). Wait blocks on this so
 	// callers don't have to poll.
-	done        chan struct{}
-	turnResults chan *TurnResult
-	doneOnce    sync.Once
+	done          chan struct{}
+	resultChanged chan struct{}
+	doneOnce      sync.Once
 }
 
 // Inbox exposes the supervisor-side socket handle. Returns nil for
@@ -267,6 +268,19 @@ func (a *Agent) TurnState() TurnState {
 func (a *Agent) CurrentTurnID() string {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+	return a.currentTurnID
+}
+
+// WaitTargetTurnID returns the delegated turn that a user-facing wait should
+// observe. A queued follow-up has not emitted turn.started yet, so derive its
+// stable next id from the persisted lifetime counter instead of returning the
+// previous turn's completed result.
+func (a *Agent) WaitTargetTurnID() string {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.turnState == TurnQueued {
+		return fmt.Sprintf("turn-%d", a.LifetimeTurns+1)
+	}
 	return a.currentTurnID
 }
 
@@ -447,6 +461,10 @@ func (a *Agent) setResult(result *TurnResult) {
 	a.lifecycleMu.Lock()
 	a.result = cloneTurnResult(result)
 	a.updatedAt = time.Now()
+	if a.resultChanged != nil {
+		close(a.resultChanged)
+	}
+	a.resultChanged = make(chan struct{})
 	a.lifecycleMu.Unlock()
 }
 
@@ -492,8 +510,7 @@ func (a *Agent) Err() error {
 	return a.lastErr
 }
 
-// Wait blocks until the agent reaches a terminal state. Used by tests
-// and by /subagents wait <id>.
+// Wait blocks until the agent process reaches a terminal state.
 func (a *Agent) Wait() { <-a.done }
 
 // WaitContext waits for the agent to finish or for ctx cancellation.
@@ -510,22 +527,41 @@ func (a *Agent) WaitContext(ctx context.Context) error {
 }
 
 func (a *Agent) waitForTurnResult(ctx context.Context) (*TurnResult, error) {
+	return a.WaitTurnResult(ctx, a.CurrentTurnID())
+}
+
+// WaitTurnResult observes one delegated turn without consuming its result or
+// affecting the worker when the observer is canceled. An empty turnID accepts
+// the next available result.
+func (a *Agent) WaitTurnResult(ctx context.Context, turnID string) (*TurnResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	select {
-	case result := <-a.turnResults:
-		if result == nil {
-			return nil, fmt.Errorf("subagents: nil turn result for %s", a.ID)
-		}
-		return cloneTurnResult(result), nil
-	case <-a.done:
-		if result := a.Result(); result != nil {
+	for {
+		a.lifecycleMu.Lock()
+		result := cloneTurnResult(a.result)
+		if result != nil && (turnID == "" || result.TurnID == turnID) {
+			a.lifecycleMu.Unlock()
 			return result, nil
 		}
-		return nil, fmt.Errorf("subagents: agent %s exited without a turn result", a.ID)
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		if a.resultChanged == nil {
+			a.resultChanged = make(chan struct{})
+		}
+		changed := a.resultChanged
+		done := a.done
+		a.lifecycleMu.Unlock()
+
+		select {
+		case <-changed:
+			continue
+		case <-done:
+			if result := a.Result(); result != nil && (turnID == "" || result.TurnID == turnID) {
+				return result, nil
+			}
+			return nil, fmt.Errorf("subagents: agent %s exited without turn result %q", a.ID, turnID)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 

@@ -159,6 +159,12 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if got := details["reasoning"]; got != "medium" {
 		t.Fatalf("reasoning detail = %v, want medium", got)
 	}
+	if got := details["timeout"]; got != "unlimited" {
+		t.Fatalf("timeout detail = %v, want unlimited", got)
+	}
+	if got := details["max_steps"]; got != 128 {
+		t.Fatalf("max_steps detail = %v, want 128", got)
+	}
 	text := textResult(res.Content)
 	if !strings.Contains(text, "model: gpt-5") || !strings.Contains(text, "provider: openai-codex") || !strings.Contains(text, "reasoning: medium") {
 		t.Fatalf("result text missing inherited model/provider:\n%s", text)
@@ -184,6 +190,7 @@ func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
 		Policy: subagents.SubagentPolicy{
 			DefaultTimeout: 37 * time.Minute,
 			MaxTurns:       7,
+			MaxSteps:       99,
 		},
 		NewRunner: func(*subagents.Agent) subagents.Runner {
 			return noopSupervisorRunner{}
@@ -211,6 +218,25 @@ func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
 	}
 	if got := details["max_turns"]; got != 7 {
 		t.Fatalf("max_turns detail = %v, want 7", got)
+	}
+	if got := details["max_steps"]; got != 99 {
+		t.Fatalf("max_steps detail = %v, want 99", got)
+	}
+}
+
+func TestSubagentSpawnIgnoresLegacyModelTimeoutOverride(t *testing.T) {
+	manager := newTestSupervisor(t)
+	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","timeout":"20m"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	agents := manager.List()
+	if len(agents) != 1 || agents[0].Timeout != 0 {
+		t.Fatalf("legacy model timeout changed manager policy: %#v", agents)
 	}
 }
 
@@ -365,6 +391,9 @@ func TestSubagentSpawnSchemaUsesReasoningAndKeepsProfileThinkingInternal(t *test
 	}
 	if _, ok := schema.Properties["thinking"]; ok {
 		t.Fatal("subagent_spawn schema exposes profile-only thinking")
+	}
+	if _, ok := schema.Properties["timeout"]; ok {
+		t.Fatal("subagent_spawn schema exposes manager-owned turn timeout")
 	}
 	fastMode, ok := schema.Properties["fast_mode"]
 	if !ok {

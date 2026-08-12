@@ -24,7 +24,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 		if operation == nil {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.ObservationFor(*operation), width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.TurnStartedAt(*operation), view.ObservationFor(*operation), width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}
@@ -32,7 +32,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	return lines
 }
 
-func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, observation *subagents.LiveObservation, width int, now time.Time) string {
+func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, turnStartedAt time.Time, observation *subagents.LiveObservation, width int, now time.Time) string {
 	name := sanitizeSubagentIndicatorText(snapshot.Subagent)
 	if name == "" {
 		name = sanitizeSubagentIndicatorText(snapshot.ID)
@@ -48,7 +48,13 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	if observation != nil {
 		activity += " · " + observation.Label() + " " + formatSubagentActivityAge(observation.At, now) + " ago"
 	}
-	age := formatSubagentActivityAge(operation.StartedAt, now)
+	// The rightmost age is elapsed time for the open delegated turn, stable
+	// across its nested provider/tool cycles. Fall back to the operation start
+	// only for legacy/incomplete traces without a matching turn boundary.
+	if turnStartedAt.IsZero() {
+		turnStartedAt = operation.StartedAt
+	}
+	age := formatSubagentActivityAge(turnStartedAt, now)
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {
 		return ""
@@ -63,7 +69,7 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 		name = strings.TrimPrefix(parts[0], spinnerGlyph+" ")
 		return "  " + th.FGColor(th.Spinner, spinnerGlyph) + " " +
 			th.FGColor(th.Assistant, name) + th.FGColor(th.Muted, " · ") +
-			th.FGColor(th.FG, parts[1]) + th.FGColor(th.Muted, " · "+parts[2])
+			th.FGColor(subagentOperationColor(th, operation), parts[1]) + th.FGColor(th.Muted, " · "+parts[2])
 	case subagentActivityNameAge:
 		parts := strings.SplitN(plain, " · ", 2)
 		if len(parts) != 2 {
@@ -74,6 +80,17 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 			th.FGColor(th.Assistant, name) + th.FGColor(th.Muted, " · "+parts[1])
 	default:
 		return "  " + th.FGColor(th.Muted, plain)
+	}
+}
+
+func subagentOperationColor(th tui.Theme, operation subagents.Operation) tui.TerminalColor {
+	switch operation.Type {
+	case "provider.request.started":
+		return th.Spinner
+	case "tool.started":
+		return th.Tool
+	default:
+		return th.Assistant
 	}
 }
 

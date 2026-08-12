@@ -27,6 +27,80 @@ func TestProjectTraceRetainsJSONDecodedRequestAttempts(t *testing.T) {
 	}
 }
 
+func TestProjectTraceIgnoresProtocolFactsAndShowsCompletedToolDuringNextProviderRequest(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
+		{Timestamp: started.Add(2 * time.Second), Type: "tool.finished", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
+		{Timestamp: started.Add(2500 * time.Millisecond), Type: "worker.protocol.observed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"source_event": "tool.use.args"}},
+		{Timestamp: started.Add(3 * time.Second), Type: "provider.request.started", AgentID: "agent-1", TurnID: "turn-1"},
+	})["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "provider.request.started" {
+		t.Fatalf("primary operation = %#v", view.PrimaryOperation)
+	}
+	observation := view.ObservationFor(*view.PrimaryOperation)
+	if observation == nil || observation.Label() != "finished read" {
+		t.Fatalf("observation = %#v, want finished read", observation)
+	}
+	if view.LastObservation != observation {
+		t.Fatalf("protocol fact replaced user-facing observation: %#v", view.LastObservation)
+	}
+}
+
+func TestProjectTraceSuppressesGenericUnmatchedToolFinished(t *testing.T) {
+	view := ProjectTrace([]TraceEvent{
+		{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Type: "tool.finished", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "unknown"}},
+	})["agent-1"]
+	if view.LastObservation != nil {
+		t.Fatalf("generic tool-finished observation = %#v, want omitted", view.LastObservation)
+	}
+}
+
+func TestProjectTraceKeepsShortCompletedToolVisibleBeforeNextRequest(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
+		{Timestamp: started.Add(time.Second + time.Millisecond), Type: "tool.finished", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
+	})["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "turn.started" {
+		t.Fatalf("primary operation = %#v, want turn", view.PrimaryOperation)
+	}
+	if observation := view.ObservationFor(*view.PrimaryOperation); observation == nil || observation.Label() != "finished read" {
+		t.Fatalf("completed tool observation = %#v, want finished read", observation)
+	}
+}
+
+func TestProjectTraceDoesNotDecorateToolWithProviderStream(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"},
+		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
+		{Timestamp: started.Add(2 * time.Second), Type: "assistant.stream.observed", AgentID: "agent-1", TurnID: "turn-1"},
+	})["agent-1"]
+	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" {
+		t.Fatalf("primary operation = %#v, want tool", view.PrimaryOperation)
+	}
+	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+		t.Fatalf("provider stream decorated tool operation: %#v", observation)
+	}
+}
+
+func TestAgentTraceViewTurnStartedAtMatchesOwningTurn(t *testing.T) {
+	first := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+	view := AgentTraceView{OpenOperations: []Operation{
+		{Type: "turn.started", TurnID: "turn-1", StartedAt: first},
+		{Type: "turn.started", TurnID: "turn-2", StartedAt: second},
+	}}
+	operation := Operation{Type: "provider.request.started", TurnID: "turn-2", StartedAt: second.Add(time.Second)}
+	if got := view.TurnStartedAt(operation); !got.Equal(second) {
+		t.Fatalf("turn start = %v, want %v", got, second)
+	}
+}
+
 func TestProjectTraceReportsOpenOperationInsteadOfLifecycleState(t *testing.T) {
 	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
 	views := ProjectTrace([]TraceEvent{
@@ -96,7 +170,7 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 	if view.Result == nil || !view.Result.Available || !view.Result.Delivered || view.Result.Ref != "subagent://agent-1/result" {
 		t.Fatalf("result = %#v", view.Result)
 	}
-	if got, want := view.Summary(), "running bash · assistant streaming"; got != want {
+	if got, want := view.Summary(), "running bash"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 }

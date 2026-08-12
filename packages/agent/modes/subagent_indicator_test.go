@@ -37,6 +37,26 @@ func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 	}
 }
 
+func TestRenderSubagentActivityLinesShowsRecentCompletedToolUnderProviderRequest(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
+		"review-123": {PrimaryOperation: &subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-2 * time.Second)}, LastObservation: &subagents.LiveObservation{Type: "tool.finished", Name: "read", CallID: "call-1", TurnID: "turn-1", At: now.Add(-3 * time.Second)}},
+	}, 100, now))
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "waiting for model response · finished read 3s ago · 2s") {
+		t.Fatalf("activity lines = %#v", lines)
+	}
+}
+
+func TestRenderSubagentActivityLineColorsProviderWaitAsActive(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	operation := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-2 * time.Second)}
+	line := renderSubagentActivityLine(tui.Dark, "/", subagents.AgentSnapshot{ID: "review-123", Subagent: "reviewer"}, operation, operation.StartedAt, nil, 100, now)
+	if !strings.Contains(line, tui.Dark.FGColor(tui.Dark.Spinner, "waiting for model response")) {
+		t.Fatalf("provider wait is not rendered with the active color: %q", line)
+	}
+}
+
 func TestRenderSubagentActivityLinesOmitsPriorTurnObservation(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
@@ -75,6 +95,19 @@ func TestRenderSubagentActivityLinesSanitizesWorkerText(t *testing.T) {
 func TestTruncateSubagentIndicatorTextPreservesGraphemeClusters(t *testing.T) {
 	if got, want := truncateSubagentIndicatorText("a👩‍💻abcdef", 6), "a👩‍💻..."; got != want {
 		t.Fatalf("truncated grapheme = %q, want %q", got, want)
+	}
+}
+
+func TestRenderSubagentActivityLinesUsesStableDelegatedTurnElapsedTime(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	turn := subagents.Operation{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-12 * time.Second)}
+	request := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-time.Second)}
+	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer", Started: now.Add(-5*time.Hour - 16*time.Minute)}}, map[string]subagents.AgentTraceView{
+		"review-123": {PrimaryOperation: &request, OpenOperations: []subagents.Operation{request, turn}},
+	}, 100, now))
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "waiting for model response · 12s") || strings.Contains(got, "5h16m") {
+		t.Fatalf("activity lines = %#v, want current delegated-turn elapsed time", lines)
 	}
 }
 

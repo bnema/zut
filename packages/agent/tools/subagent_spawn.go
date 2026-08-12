@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
@@ -62,8 +61,10 @@ type subagentSpawnArgs struct {
 	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Required  bool   `json:"required,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
-	Timeout   string `json:"timeout,omitempty"`
-	MaxTurns  *int   `json:"max_turns,omitempty"`
+	// Timeout remains decode-only for calls produced from an older schema.
+	// Deadline policy is manager-owned, so Execute deliberately ignores it.
+	Timeout  string `json:"timeout,omitempty"`
+	MaxTurns *int   `json:"max_turns,omitempty"`
 }
 
 const subagentSpawnSchemaTemplate = `{
@@ -102,10 +103,6 @@ const subagentSpawnSchemaTemplate = `{
       "type": "string",
       "enum": ["shared", "worktree"],
       "description": "Workspace mode. Shared preserves existing behavior; worktree captures a patch without merging it."
-    },
-    "timeout": {
-      "type": "string",
-      "description": "Optional Go duration such as 20m."
     },
     "max_turns": {
       "type": "integer",
@@ -154,14 +151,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		if workspaceMode != subagents.WorkspaceShared && workspaceMode != subagents.WorkspaceWorktree {
 			return protocolToolError(prefix + ": isolation must be shared or worktree")
 		}
-	}
-	var timeout time.Duration
-	if value := strings.TrimSpace(a.Timeout); value != "" {
-		parsed, parseErr := time.ParseDuration(value)
-		if parseErr != nil || parsed <= 0 {
-			return protocolToolError(prefix + ": timeout must be a positive duration")
-		}
-		timeout = parsed
 	}
 	if a.MaxTurns != nil {
 		if *a.MaxTurns < 1 {
@@ -254,7 +243,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		FastMode:      fastModeOverride,
 		Subagent:      agentName,
 		Required:      a.Required,
-		Timeout:       timeout,
 		MaxTurns:      maxTurns,
 		WorkspaceMode: workspaceMode,
 		Tools:         profileTools,
@@ -294,6 +282,10 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update], the only completion signal; the manager remains free for independent work. ")
 	sb.WriteString("Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. ")
 	sb.WriteString("Work on unrelated independent tasks; otherwise end or yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed.")
+	timeoutDetail := "unlimited"
+	if agent.Timeout > 0 {
+		timeoutDetail = agent.Timeout.String()
+	}
 	details := map[string]any{
 		"agent_id":      agent.ID,
 		"task":          task,
@@ -304,8 +296,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		"fast_mode":     agent.FastMode,
 		"required":      a.Required,
 		"isolation":     string(workspaceMode),
-		"timeout":       agent.Timeout.String(),
+		"timeout":       timeoutDetail,
 		"max_turns":     agent.MaxTurns,
+		"max_steps":     agent.MaxSteps,
 		"state":         agent.Status(),
 		"process_state": string(agent.ProcessState()),
 		"turn_state":    string(agent.TurnState()),

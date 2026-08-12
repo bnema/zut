@@ -66,6 +66,13 @@ func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
 	}
 }
 
+func TestResultErrorPayloadClassifiesModelStepLimit(t *testing.T) {
+	payload := resultErrorPayload(core.ErrMaxSteps, "")
+	if payload["code"] != "step_limit" {
+		t.Fatalf("step-limit error code = %v, want step_limit", payload["code"])
+	}
+}
+
 func TestResultErrorPayloadAttributesShutdownCancellation(t *testing.T) {
 	payload := resultErrorPayload(context.Canceled, subagents.ShutdownOriginSession)
 	if payload["code"] != "shutdown" || payload["message"] != "subagent stopped during session shutdown" {

@@ -53,8 +53,9 @@ func (o Operation) Label() string {
 	}
 }
 
-// LiveObservation is the last safe, factual signal received from a worker.
-// It intentionally contains no worker text, tool arguments, or output.
+// LiveObservation is the last safe, user-facing signal received from a
+// worker. It intentionally contains no worker text, tool arguments, output,
+// or low-level protocol event names.
 type LiveObservation struct {
 	Type   string
 	Source string
@@ -73,14 +74,14 @@ func (o LiveObservation) Label() string {
 		return "reasoning stream observed"
 	case "tool.output.observed":
 		if o.Name != "" {
-			return "tool output observed " + o.Name
+			return "output from " + o.Name
 		}
-		return "tool output observed"
-	case "worker.protocol.observed":
-		if o.Source != "" {
-			return "worker " + o.Source
+		return "tool output"
+	case "tool.finished":
+		if o.Name != "" {
+			return "finished " + o.Name
 		}
-		return "worker protocol event"
+		return "tool finished"
 	default:
 		return strings.ReplaceAll(o.Type, ".", " ")
 	}
@@ -168,6 +169,11 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 		view.AgentID = event.AgentID
 		view.LastEvent = event
 		key, starts, ends, terminal := traceBoundary(event)
+		var endedOperation Operation
+		var endedOperationFound bool
+		if ends {
+			endedOperation, endedOperationFound = open[event.AgentID][key]
+		}
 		if starts {
 			if event.Type == "provider.request.started" {
 				view.LastRequest = requestFact(event, "open")
@@ -197,7 +203,19 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 			delete(open[event.AgentID], key)
 		}
 		if observation := traceObservation(event); observation != nil {
-			view.LastObservation = observation
+			if observation.Type == "tool.finished" && observation.Name == "" {
+				// tool_result carries only the call ID. Recover the safe tool name
+				// from its matching open execution boundary; an unscoped generic
+				// "tool finished" fact is too low-value for the live indicator.
+				if endedOperationFound && endedOperation.Type == "tool.started" && endedOperation.Name != "" {
+					observation.Name = endedOperation.Name
+				} else {
+					observation = nil
+				}
+			}
+			if observation != nil {
+				view.LastObservation = observation
+			}
 		}
 		if result := traceResultFact(event, view.Result); result != nil {
 			view.Result = result
@@ -238,17 +256,61 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 	return views
 }
 
-// ObservationFor returns the last observation only when it belongs to this
-// operation's turn and, when identified, its tool call. A prior turn's stream
-// or another tool's output is not live activity for this operation.
+// TurnStartedAt returns the factual start of the open delegated turn owning
+// operation. It is stable across nested provider requests and tool calls.
+func (v AgentTraceView) TurnStartedAt(operation Operation) time.Time {
+	if operation.TurnID == "" {
+		return time.Time{}
+	}
+	for _, candidate := range v.OpenOperations {
+		if candidate.Type == "turn.started" && candidate.TurnID == operation.TurnID {
+			return candidate.StartedAt
+		}
+	}
+	return time.Time{}
+}
+
+// ObservationFor returns the last user-facing observation only when it belongs
+// to this operation's turn and scope. Tool observations are shown for their
+// matching open tool and may remain as a factual recent fact under the next
+// provider request in that turn. Provider-stream observations never decorate
+// a tool operation, and another tool's observation never crosses call scope.
 func (v AgentTraceView) ObservationFor(operation Operation) *LiveObservation {
-	if v.LastObservation == nil || operation.TurnID == "" || v.LastObservation.TurnID == "" || operation.TurnID != v.LastObservation.TurnID {
+	observation := v.LastObservation
+	if observation == nil || operation.TurnID == "" || observation.TurnID == "" || operation.TurnID != observation.TurnID {
 		return nil
 	}
-	if v.LastObservation.CallID != "" && v.LastObservation.CallID != operation.CallID {
-		return nil
+	switch operation.Type {
+	case "tool.started":
+		if !isToolObservation(observation.Type) || operation.CallID == "" || observation.CallID == "" || operation.CallID != observation.CallID {
+			return nil
+		}
+	case "provider.request.started":
+		// The provider request is the current primary operation. A completed
+		// tool from this turn remains useful context without pretending the
+		// closed tool is still running.
+	case "turn.started":
+		// Keep even a very short tool perceptible after its factual end boundary
+		// and before the next provider request boundary arrives. Other call-scoped
+		// facts do not decorate the broader turn operation.
+		if observation.CallID != "" && observation.Type != "tool.finished" {
+			return nil
+		}
+	default:
+		if observation.CallID != "" {
+			return nil
+		}
 	}
-	return v.LastObservation
+	return observation
+}
+
+func isToolObservation(typeName string) bool {
+	switch typeName {
+	case "tool.output.observed", "tool.finished":
+		return true
+	default:
+		return false
+	}
 }
 
 func operationPriority(o Operation) int {
@@ -273,7 +335,7 @@ func traceObservation(event TraceEvent) *LiveObservation {
 	name, _ := event.Data["name"].(string)
 	callID, _ := event.Data["call_id"].(string)
 	switch typeName {
-	case "assistant.stream.observed", "reasoning.stream.observed", "tool.output.observed", "worker.protocol.observed":
+	case "assistant.stream.observed", "reasoning.stream.observed", "tool.output.observed", "tool.finished":
 		return &LiveObservation{Type: typeName, Source: source, At: event.Timestamp, TurnID: event.TurnID, CallID: callID, Name: name}
 	}
 	return nil

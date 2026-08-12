@@ -360,6 +360,13 @@ func TestDefaultChildArgsPropagatesWebSearchPolicy(t *testing.T) {
 	}
 }
 
+func TestDefaultChildArgsPropagatesModelStepBudget(t *testing.T) {
+	args := defaultChildArgs("zut", &Agent{Task: "task", MaxSteps: 128}, "/session", "/inbox")
+	if i := indexOf(args, "--max-steps"); i < 0 || safeAt(args, i+1) != "128" {
+		t.Fatalf("argv = %v, want --max-steps 128", args)
+	}
+}
+
 func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
 	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zut", "/old/bin/zut", func(_ context.Context, candidate string) (string, error) {
 		if candidate == "/current/bin/zut" {
@@ -754,6 +761,28 @@ func TestRecordPersistenceErrorPreservesFirstFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentFromEventSurfacesTurnResultPersistenceFailure(t *testing.T) {
+	blockedStateDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedStateDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{ID: "agent-1", stateDir: blockedStateDir}
+	err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{
+		"status": "succeeded",
+		"output": "review complete",
+	}})
+	if err == nil {
+		t.Fatal("turn-result persistence failure was ignored")
+	}
+	result := a.Result()
+	if result == nil || result.Status != ResultFailed || result.Error == nil || result.Error.Code != "result_persistence_failed" {
+		t.Fatalf("in-memory result = %#v, want explicit persistence failure", result)
+	}
+	if result.Output != "review complete" {
+		t.Fatalf("failure output = %q, want preserved partial output", result.Output)
+	}
+}
+
 func TestRestoreResumePromptPreservesCommandIdentity(t *testing.T) {
 	a := &Agent{}
 	a.setResumePrompt("old prompt", time.Now())
@@ -814,12 +843,14 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	recordWorkerTrace(agent, Event{Type: EventTurnStarted, TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
 	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
 	recordWorkerTrace(agent, Event{Type: "tool_call", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash", "args": "sensitive arguments"}})
+	recordWorkerTrace(agent, Event{Type: "tool_execution_started", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash"}})
+	recordWorkerTrace(agent, Event{Type: "tool_use_args", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "delta": "sensitive argument fragment"}})
 	recordWorkerTrace(agent, Event{Type: "future_event", TurnID: "turn-1", Data: map[string]any{"secret": "hidden"}})
 	if err := trace.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	events := trace.Events()
-	if len(events) != 6 {
+	if len(events) != 8 {
 		t.Fatalf("events = %#v", events)
 	}
 	if got, want := events[0].Type, "assistant.stream.observed"; got != want {
@@ -837,23 +868,28 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 	if got, want := events[3].Type, "provider.request.finished"; got != want {
 		t.Fatalf("type = %q, want %q", got, want)
 	}
-	if got, want := events[4].Type, "tool.started"; got != want {
+	if got, want := events[4].Type, "worker.protocol.observed"; got != want {
+		t.Fatalf("tool_call type = %q, want %q", got, want)
+	}
+	if got, want := events[5].Type, "tool.started"; got != want {
 		t.Fatalf("type = %q, want %q", got, want)
 	}
-	if got, _ := events[4].Data["call_id"].(string); got != "call-1" {
+	if got, _ := events[5].Data["call_id"].(string); got != "call-1" {
 		t.Fatalf("tool call_id = %q", got)
 	}
-	if _, found := events[4].Data["args"]; found {
-		t.Fatalf("tool arguments leaked: %#v", events[2].Data)
+	if _, found := events[5].Data["args"]; found {
+		t.Fatalf("tool arguments leaked: %#v", events[5].Data)
 	}
-	if got, want := events[5].Type, "worker.protocol.observed"; got != want {
-		t.Fatalf("type = %q, want %q", got, want)
-	}
-	if got, _ := events[5].Data["source_event"].(string); got != "future.event" {
-		t.Fatalf("source_event = %q", got)
-	}
-	if _, found := events[5].Data["secret"]; found {
-		t.Fatalf("worker payload leaked: %#v", events[3].Data)
+	for _, index := range []int{6, 7} {
+		if got, want := events[index].Type, "worker.protocol.observed"; got != want {
+			t.Fatalf("events[%d].type = %q, want %q", index, got, want)
+		}
+		if _, found := events[index].Data["delta"]; found {
+			t.Fatalf("worker payload leaked: %#v", events[index].Data)
+		}
+		if _, found := events[index].Data["secret"]; found {
+			t.Fatalf("worker payload leaked: %#v", events[index].Data)
+		}
 	}
 	view := ProjectTrace(append([]TraceEvent{{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"}}, events...))["agent-1"]
 	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {

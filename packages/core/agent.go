@@ -13,7 +13,10 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-var ErrStreamIdleTimeout = errors.New("provider stream idle timeout")
+var (
+	ErrStreamIdleTimeout = errors.New("provider stream idle timeout")
+	ErrMaxSteps          = errors.New("agent model step limit exceeded")
+)
 
 type queuedMessage struct {
 	text     string
@@ -651,7 +654,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 	}
 	if a.MaxSteps > 0 {
 		sink(EvDone{})
-		return fmt.Errorf("max steps (%d) exceeded", a.MaxSteps)
+		return fmt.Errorf("%w: %d", ErrMaxSteps, a.MaxSteps)
 	}
 	return nil
 }

@@ -540,6 +540,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		WorkspaceBase:     strings.TrimSpace(req.WorkspaceBase),
 		WorkspaceCapture:  req.WorkspaceCapture,
 		MaxTurns:          maxTurns,
+		MaxSteps:          f.cfg.Policy.MaxSteps,
 		Timeout:           timeout,
 		HeartbeatInterval: f.cfg.Policy.HeartbeatInterval,
 		Tools:             tools,
@@ -561,7 +562,6 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
 		maxOutputLines:    f.cfg.Policy.MaxOutputLines,
 		done:              make(chan struct{}),
-		turnResults:       make(chan *TurnResult, 16),
 	}
 	a.fastModeOverridesHost = fastModeOverridesHost
 	if a.RootSessionID == "" {

@@ -557,7 +557,7 @@ func canonicalWorkerEvent(typ string) string {
 		return subagents.EventTurnStarted
 	case "turn_progress":
 		return subagents.EventTurnProgress
-	case "tool_call":
+	case "tool_execution_started":
 		return subagents.EventToolStarted
 	case "tool_result":
 		return subagents.EventToolFinished
@@ -711,6 +711,9 @@ func resultErrorPayload(err error, shutdownOrigin subagents.ShutdownOrigin) map[
 	}
 	if errors.Is(err, core.ErrStreamIdleTimeout) {
 		return map[string]any{"code": "stream_idle_timeout", "message": "provider stream produced no events for five minutes; the delegated turn stopped safely"}
+	}
+	if errors.Is(err, core.ErrMaxSteps) {
+		return map[string]any{"code": "step_limit", "message": "subagent model-step limit reached; partial output is preserved and the worker can be resumed"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || shutdownOrigin == subagents.ShutdownOriginDeadline {
 		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}

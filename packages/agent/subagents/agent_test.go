@@ -1,8 +1,10 @@
 package subagents
 
 import (
+	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAgentAttemptValueAndTranscriptAccounting(t *testing.T) {
@@ -75,5 +77,38 @@ func TestAgentSnapshotConcurrentTranscriptTruncation(t *testing.T) {
 
 	if !a.Snapshot().OutputTruncated {
 		t.Fatal("snapshot did not report transcript truncation")
+	}
+}
+
+func TestWaitTurnResultBroadcastsToMultipleObservers(t *testing.T) {
+	a := &Agent{ID: "worker-1", done: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	results := make(chan *TurnResult, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			result, err := a.WaitTurnResult(ctx, "turn-1")
+			results <- result
+			errs <- err
+		}()
+	}
+	a.setResult(&TurnResult{Version: ProtocolVersion, AgentID: a.ID, TurnID: "turn-1", Status: ResultSucceeded})
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("wait error = %v", err)
+		}
+		if result := <-results; result == nil || result.TurnID != "turn-1" {
+			t.Fatalf("wait result = %#v, want turn-1", result)
+		}
+	}
+}
+
+func TestWaitTargetTurnIDAdvancesQueuedResume(t *testing.T) {
+	a := &Agent{LifetimeTurns: 1, turnState: TurnQueued, currentTurnID: "turn-1"}
+	if got := a.WaitTargetTurnID(); got != "turn-2" {
+		t.Fatalf("wait target = %q, want turn-2", got)
 	}
 }
