@@ -54,6 +54,9 @@ func TestTraceWriterCreatesPrivateBundleAndDetailedPayload(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("got %d trace lines, want 1", len(lines))
 	}
+	if strings.Contains(lines[0], "sensitive result") {
+		t.Fatalf("trace event leaked detailed payload: %s", lines[0])
+	}
 	var event TraceEvent
 	if err := json.Unmarshal([]byte(lines[0]), &event); err != nil {
 		t.Fatal(err)
@@ -71,8 +74,9 @@ func TestTraceWriterCreatesPrivateBundleAndDetailedPayload(t *testing.T) {
 
 func TestMemoryTraceWriterRetainsOrderedEventsWithoutBundle(t *testing.T) {
 	writer := NewMemoryTraceWriter()
-	writer.Record(TraceEvent{Type: "agent.started"})
-	writer.Record(TraceEvent{Type: "turn.started", TurnID: "turn-1"})
+	for index := 0; index < memoryTraceEventLimit+2; index++ {
+		writer.Record(TraceEvent{Type: "event", Data: map[string]any{"index": index}})
+	}
 	if err := writer.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +84,8 @@ func TestMemoryTraceWriterRetainsOrderedEventsWithoutBundle(t *testing.T) {
 		t.Fatalf("memory trace dir = %q, want empty", got)
 	}
 	events := writer.Events()
-	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
-		t.Fatalf("memory events = %#v, want contiguous sequence", events)
+	if len(events) != memoryTraceEventLimit || events[len(events)-1].Seq != memoryTraceEventLimit+2 {
+		t.Fatalf("memory events retained %d with final seq %d", len(events), events[len(events)-1].Seq)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
@@ -95,8 +99,11 @@ func TestTraceWriterNormalRedactsSensitiveValues(t *testing.T) {
 	}
 	secret := "super-secret-value"
 	writer.Record(TraceEvent{
-		Type:    "request",
-		Data:    map[string]any{"name": "safe", "authorization": secret, "nested": map[string]any{"token": secret, "count": 2}},
+		Type: "request",
+		Data: map[string]any{
+			"name": "safe", "authorization": secret, "openai_api_key": secret,
+			"nested": map[string]any{"token": secret, "count": 2, "headers": map[string]string{"x_api_key": secret}},
+		},
 		Payload: map[string]any{"content": secret},
 	})
 	if err := writer.Close(); err != nil {

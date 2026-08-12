@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,7 @@ type TraceWriter struct {
 	payloadDir string
 	memory     bool
 	sequence   uint64
+	dropped    uint64
 	events     []TraceEvent
 
 	errorMu sync.Mutex
@@ -103,6 +105,7 @@ type traceRecord struct {
 
 const (
 	traceQueueInitialCapacity = 64
+	traceQueueLimit           = 1024
 	memoryTraceEventLimit     = 4096
 )
 
@@ -143,6 +146,11 @@ func NewTraceWriter(dir string, modes ...TraceMode) (*TraceWriter, error) {
 	// MkdirAll does not tighten an existing directory's permissions.
 	if err := os.Chmod(absolute, 0o700); err != nil {
 		return nil, fmt.Errorf("trace writer directory permissions: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(absolute, "trace.jsonl")); err == nil {
+		return nil, fmt.Errorf("trace writer: bundle already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("trace writer trace file: %w", err)
 	}
 	payloadDir := filepath.Join(absolute, "payloads")
 	if err := os.MkdirAll(payloadDir, 0o700); err != nil {
@@ -244,6 +252,18 @@ func (w *TraceWriter) Record(event TraceEvent) {
 	}
 	w.sequence++
 	record.event.Seq = w.sequence
+	if len(w.pending) >= traceQueueLimit {
+		for index, pending := range w.pending {
+			if pending.barrier == nil {
+				copy(w.pending[index:], w.pending[index+1:])
+				w.pending[len(w.pending)-1] = traceRecord{}
+				w.pending = w.pending[:len(w.pending)-1]
+				w.dropped++
+				w.setError(errors.New("trace event queue overflow"))
+				break
+			}
+		}
+	}
 	w.pending = append(w.pending, record)
 	w.cond.Signal()
 }
@@ -303,11 +323,7 @@ func (w *TraceWriter) write(record traceRecord) {
 	event := record.event
 	if w.memory {
 		w.mu.Lock()
-		w.events = append(w.events, event)
-		if overflow := len(w.events) - memoryTraceEventLimit; overflow > 0 {
-			copy(w.events, w.events[overflow:])
-			w.events = w.events[:memoryTraceEventLimit]
-		}
+		w.appendEvent(event)
 		w.mu.Unlock()
 		return
 	}
@@ -347,17 +363,24 @@ func (w *TraceWriter) write(record traceRecord) {
 		w.setError(fmt.Errorf("trace event sync: %w", err))
 	}
 	w.mu.Lock()
-	w.events = append(w.events, event)
+	w.appendEvent(event)
 	w.mu.Unlock()
 }
 
-// Events returns a stable copy of observations durably written by this writer.
-// It supports the in-process projection used by status and the dashboard.
+func (w *TraceWriter) appendEvent(event TraceEvent) {
+	w.events = append(w.events, event)
+	if overflow := len(w.events) - memoryTraceEventLimit; overflow > 0 {
+		copy(w.events, w.events[overflow:])
+		w.events = w.events[:memoryTraceEventLimit]
+	}
+}
+
+// Events returns a stable copy of events already written by this writer. It
+// never waits for queued filesystem work, keeping status and UI reads cheap.
 func (w *TraceWriter) Events() []TraceEvent {
 	if w == nil {
 		return nil
 	}
-	_ = w.Flush()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]TraceEvent(nil), w.events...)
@@ -375,48 +398,66 @@ func (w *TraceWriter) setError(err error) {
 }
 
 // Flush waits until all events recorded before the call have been written.
-// It is useful to readers that need a live, consistent view; agent recording
-// itself remains asynchronous.
-func (w *TraceWriter) Flush() error {
+func (w *TraceWriter) Flush() error { return w.FlushContext(context.Background()) }
+
+// FlushContext honors cancellation while waiting for the trace writer.
+func (w *TraceWriter) FlushContext(ctx context.Context) error {
 	if w == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	w.mu.Lock()
+	wait := w.finished
 	if !w.closed {
 		barrier := make(chan struct{})
 		w.pending = append(w.pending, traceRecord{barrier: barrier})
 		w.cond.Signal()
-		w.mu.Unlock()
-		<-barrier
-	} else {
-		w.mu.Unlock()
-		<-w.finished
+		wait = barrier
 	}
-	return w.recordingError()
+	w.mu.Unlock()
+	select {
+	case <-wait:
+		return w.recordingError()
+	case <-ctx.Done():
+		return fmt.Errorf("flush trace: %w", ctx.Err())
+	}
 }
 
-// Close drains the queue, syncs each event, and closes the bundle. It is safe
-// to call more than once. Close is the only operation that reports persistence
-// errors; Record remains best effort.
-func (w *TraceWriter) Close() error {
+// Close drains the queue, syncs each event, and closes the bundle.
+func (w *TraceWriter) Close() error { return w.CloseContext(context.Background()) }
+
+// CloseContext starts closing once and honors cancellation while waiting. A
+// later caller can retry the wait without repeating file-close work.
+func (w *TraceWriter) CloseContext(ctx context.Context) error {
 	if w == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	w.closeOnce.Do(func() {
-		w.mu.Lock()
-		w.closed = true
-		w.cond.Broadcast()
-		w.mu.Unlock()
-		<-w.finished
-		if !w.memory {
-			if err := w.traceFile.Close(); err != nil {
-				w.setError(fmt.Errorf("trace file close: %w", err))
+		go func() {
+			w.mu.Lock()
+			w.closed = true
+			w.cond.Broadcast()
+			w.mu.Unlock()
+			<-w.finished
+			if !w.memory {
+				if err := w.traceFile.Close(); err != nil {
+					w.setError(fmt.Errorf("trace file close: %w", err))
+				}
 			}
-		}
-		close(w.closeDone)
+			close(w.closeDone)
+		}()
 	})
-	<-w.closeDone
-	return w.recordingError()
+	select {
+	case <-w.closeDone:
+		return w.recordingError()
+	case <-ctx.Done():
+		return fmt.Errorf("close trace: %w", ctx.Err())
+	}
 }
 
 func (w *TraceWriter) recordingError() error {
@@ -502,7 +543,7 @@ func redactTraceMap(data map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(data))
 	for key, value := range data {
-		if _, sensitive := sensitiveTraceKeys[normalizeTraceKey(key)]; sensitive {
+		if sensitiveTraceKey(normalizeTraceKey(key)) {
 			out[key] = "[REDACTED]"
 			continue
 		}
@@ -511,7 +552,19 @@ func redactTraceMap(data map[string]any) map[string]any {
 	return out
 }
 
+func sensitiveTraceKey(key string) bool {
+	for fragment := range sensitiveTraceKeys {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func redactTraceValue(value any) any {
+	if value == nil {
+		return nil
+	}
 	switch value := value.(type) {
 	case map[string]any:
 		return redactTraceMap(value)
@@ -521,9 +574,31 @@ func redactTraceValue(value any) any {
 			out[i] = redactTraceValue(value[i])
 		}
 		return out
-	default:
-		return value
 	}
+	v := reflect.ValueOf(value)
+	if v.Kind() == reflect.Map && v.Type().Key().Kind() == reflect.String {
+		out := make(map[string]any, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			key := iter.Key().String()
+			if sensitiveTraceKey(normalizeTraceKey(key)) {
+				out[key] = "[REDACTED]"
+			} else {
+				out[key] = redactTraceValue(iter.Value().Interface())
+			}
+		}
+		return out
+	}
+	if v.Kind() == reflect.Struct {
+		encoded, err := json.Marshal(value)
+		if err == nil {
+			var data map[string]any
+			if json.Unmarshal(encoded, &data) == nil {
+				return redactTraceMap(data)
+			}
+		}
+	}
+	return value
 }
 
 func cloneTraceMap(data map[string]any) map[string]any {

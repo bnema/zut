@@ -36,10 +36,32 @@ func TestProjectTraceClosesPairedOperationsAndKeepsTerminalFact(t *testing.T) {
 		{Seq: 6, Timestamp: started.Add(5 * time.Second), Type: "agent.finished", AgentID: "agent-1"},
 	})
 	view := views["agent-1"]
-	if len(view.OpenOperations) != 1 || view.OpenOperations[0].Type != "tool.started" {
-		t.Fatalf("open operations = %#v, want unmatched tool", view.OpenOperations)
+	if len(view.OpenOperations) != 0 {
+		t.Fatalf("open operations = %#v, want none after terminal agent event", view.OpenOperations)
 	}
 	if view.Terminal != "completed" {
 		t.Fatalf("terminal = %q, want completed", view.Terminal)
+	}
+}
+
+func TestProjectTraceClosesFailedToolByCallID(t *testing.T) {
+	started := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	view := ProjectTrace([]TraceEvent{
+		{Timestamp: started, Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},
+		{Timestamp: started, Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two"}},
+		{Timestamp: started.Add(time.Second), Type: "tool.failed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},
+	})["agent-1"]
+	if len(view.OpenOperations) != 1 || view.OpenOperations[0].CallID != "two" {
+		t.Fatalf("open operations = %#v, want only call two", view.OpenOperations)
+	}
+}
+
+func TestProjectTraceFailedAgentClosesOpenOperations(t *testing.T) {
+	view := ProjectTrace([]TraceEvent{
+		{Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},
+		{Type: "agent.failed", AgentID: "agent-1"},
+	})["agent-1"]
+	if len(view.OpenOperations) != 0 || view.Terminal != "failed" {
+		t.Fatalf("view = %#v, want failed terminal with no open operations", view)
 	}
 }

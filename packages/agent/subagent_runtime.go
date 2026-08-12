@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,8 +106,19 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	if cfg.TraceDir == "" {
 		cfg.TraceDir = strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_DIR"))
 	}
-	if mode := strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_MODE")); mode == string(subagents.TraceModeDetailed) {
-		cfg.TraceMode = subagents.TraceModeDetailed
+	if cfg.TraceMode == "" {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_MODE"))) {
+		case "", string(subagents.TraceModeNormal):
+			cfg.TraceMode = subagents.TraceModeNormal
+		case string(subagents.TraceModeDetailed):
+			cfg.TraceMode = subagents.TraceModeDetailed
+		default:
+			fmt.Fprintf(os.Stderr, "zut: ignoring invalid ZUT_SUBAGENT_TRACE_MODE\n")
+			cfg.TraceMode = subagents.TraceModeNormal
+		}
+	}
+	if cfg.TraceDir == "" {
+		cfg.TraceMode = subagents.TraceModeNormal
 	}
 	rt := &subagentRuntime{
 		args:            cfg.Args,
@@ -460,10 +473,9 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 	if rt.closed {
 		return nil
 	}
-	if err := rt.supervisor.StopAllContext(ctx); err != nil {
-		return err
-	}
-	if err := rt.supervisor.Close(); err != nil {
+	stopErr := rt.supervisor.StopAllContext(ctx)
+	closeErr := rt.supervisor.CloseContext(ctx)
+	if err := errors.Join(stopErr, closeErr); err != nil {
 		return err
 	}
 	rt.closed = true

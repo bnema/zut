@@ -17,11 +17,11 @@ func runDebugCommand(rawArgs []string, stdout io.Writer) (bool, error) {
 	if len(rawArgs) != 3 || rawArgs[1] != "trace" {
 		return true, fmt.Errorf("usage: zut debug trace <bundle>")
 	}
-	events, err := subagents.ReadTrace(rawArgs[2])
-	if err != nil {
+	events, readErr := subagents.ReadTrace(rawArgs[2])
+	if err := renderTraceInspection(stdout, subagents.ProjectTrace(events), time.Now()); err != nil {
 		return true, err
 	}
-	return true, renderTraceInspection(stdout, subagents.ProjectTrace(events), time.Now())
+	return true, readErr
 }
 
 func renderTraceInspection(w io.Writer, views map[string]subagents.AgentTraceView, now time.Time) error {

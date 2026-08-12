@@ -2,36 +2,35 @@ package subagents
 
 import (
 	"sort"
+	"strings"
 	"time"
 )
 
-// Operation is a factual operation inferred from paired trace boundaries. An
-// empty FinishedAt means that no terminal boundary has been observed yet.
+// Operation is a currently open factual operation inferred from its start
+// boundary. Completed operations are deliberately not retained in the public
+// projection: their terminal trace fact remains available as LastEvent.
 type Operation struct {
-	Type       string
-	AgentID    string
-	TurnID     string
-	StartedAt  time.Time
-	FinishedAt time.Time
-	Outcome    string
+	Type      string
+	AgentID   string
+	TurnID    string
+	CallID    string
+	StartedAt time.Time
 }
 
-// Open reports whether the trace contains a start boundary without a matching
-// terminal boundary.
-func (o Operation) Open() bool { return o.FinishedAt.IsZero() }
+// Open is always true because the projection exposes only unmatched starts.
+func (o Operation) Open() bool { return true }
 
-// Duration measures an observed operation. Open operations are measured at
-// now; callers supply now to make rendering and tests deterministic.
+// Duration measures this open operation at now; callers supply now to make
+// rendering and tests deterministic.
 func (o Operation) Duration(now time.Time) time.Duration {
-	end := o.FinishedAt
-	if end.IsZero() {
-		end = now
-	}
-	if end.Before(o.StartedAt) {
+	if now.Before(o.StartedAt) {
 		return 0
 	}
-	return end.Sub(o.StartedAt)
+	return now.Sub(o.StartedAt)
 }
+
+// Label returns the shared concise label for an open operation.
+func (o Operation) Label() string { return strings.TrimSuffix(o.Type, ".started") + " open" }
 
 // AgentTraceView is the only user-facing execution state. It intentionally
 // contains operations and terminal facts rather than lifecycle guesses such as
@@ -60,17 +59,15 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 			if open[event.AgentID] == nil {
 				open[event.AgentID] = make(map[string]Operation)
 			}
-			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, StartedAt: event.Timestamp}
+			callID, _ := event.Data["call_id"].(string)
+			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, StartedAt: event.Timestamp}
 		}
 		if ends {
-			if operation, ok := open[event.AgentID][key]; ok {
-				operation.FinishedAt = event.Timestamp
-				operation.Outcome = event.Type
-				delete(open[event.AgentID], key)
-			}
+			delete(open[event.AgentID], key)
 		}
 		if terminal != "" {
 			view.Terminal = terminal
+			delete(open, event.AgentID)
 		}
 		views[event.AgentID] = view
 	}
@@ -87,7 +84,10 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 			if left.Type != right.Type {
 				return left.Type < right.Type
 			}
-			return left.TurnID < right.TurnID
+			if left.TurnID != right.TurnID {
+				return left.TurnID < right.TurnID
+			}
+			return left.CallID < right.CallID
 		})
 		views[agentID] = view
 	}
@@ -100,11 +100,11 @@ func traceBoundary(event TraceEvent) (key string, starts, ends bool, terminal st
 	switch event.Type {
 	case "turn.started":
 		return "turn:" + event.TurnID, true, false, ""
-	case "turn.finished", "turn.failed":
+	case "turn.finished", "turn.failed", "turn.cancelled":
 		return "turn:" + event.TurnID, false, true, ""
 	case "tool.started":
 		return "tool:" + event.TurnID + ":" + callID, true, false, ""
-	case "tool.finished":
+	case "tool.finished", "tool.failed", "tool.cancelled":
 		return "tool:" + event.TurnID + ":" + callID, false, true, ""
 	case "agent.finished":
 		return key, false, false, "completed"

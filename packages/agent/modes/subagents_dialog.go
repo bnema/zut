@@ -344,7 +344,7 @@ func (d *subagentsDialog) transcriptEditorCursorRow(width, popupRows, editorRowO
 	}
 
 	row += popupRows // @-file-suggest popup, if active
-	if d.agentHasOpenOperation(a.ID) {
+	if a.Status == subagents.StatusRunning && d.send != nil && d.agentHasOpenOperation(a.ID) {
 		row += 2 // blank + spinner row inserted above the editor
 	}
 	row++ // blank above editor (appendTranscriptEditor)
@@ -1462,7 +1462,7 @@ func (d *subagentsDialog) traceSummary(id string) string {
 		return view.Terminal
 	}
 	if len(view.OpenOperations) != 0 {
-		return strings.TrimSuffix(view.OpenOperations[0].Type, ".started") + " open"
+		return view.OpenOperations[0].Label()
 	}
 	if view.LastEvent.Type != "" {
 		return "last event " + view.LastEvent.Type
@@ -1618,13 +1618,7 @@ func (d *subagentsDialog) renderPromptEditor(th tui.Theme, width int, out []stri
 	return out
 }
 
-// formatSupervisorRow is the one-line summary shown per agent.
-//
-// Layout (fixed-width columns, then free-form activity):
-//
-//	OPERATION                     ID                          AGE       TASK
-//	tool open 3m                 fix-login-12345             3m        inspect main.go
-//	completed                     write-tests-67890           1h        add coverage
+// traceView retrieves the latest shared factual trace projection for id.
 func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 	if d != nil && d.traceViews != nil {
 		return d.traceViews()[id]
@@ -1632,13 +1626,20 @@ func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 	return subagents.AgentTraceView{AgentID: id}
 }
 
+// formatSupervisorRow is the one-line summary shown per agent.
+//
+// Layout (fixed-width columns, then free-form task):
+//
+//	OPERATION                     ID                          AGE       TASK
+//	tool open 3m                 fix-login-12345             3m        inspect main.go
+//	completed                     write-tests-67890           1h        add coverage
 func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
 	fact := "no observable operation"
 	if view.Terminal != "" {
 		fact = view.Terminal
 	} else if len(view.OpenOperations) != 0 {
 		operation := view.OpenOperations[0]
-		fact = strings.TrimSuffix(operation.Type, ".started") + " open " + formatAge(operation.StartedAt)
+		fact = operation.Label() + " " + formatAge(operation.StartedAt)
 	} else if view.LastEvent.Type != "" {
 		fact = "last " + view.LastEvent.Type + " " + formatAge(view.LastEvent.Timestamp)
 	}

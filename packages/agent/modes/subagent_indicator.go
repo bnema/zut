@@ -40,7 +40,7 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	if spinnerGlyph == "" {
 		spinnerGlyph = "."
 	}
-	activity := strings.TrimSuffix(operation.Type, ".started") + " open"
+	activity := operation.Label()
 	age := formatSubagentActivityAge(operation.StartedAt, now)
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {

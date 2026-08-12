@@ -119,11 +119,7 @@ func TestSubagentStatusListsLiveWorkerWithoutPrivateOutput(t *testing.T) {
 	}
 
 	var got struct {
-		Agents []struct {
-			ID          string `json:"agent_id"`
-			StartedAt   string `json:"started_at"`
-			TaskSummary string `json:"task_summary"`
-		} `json:"agents"`
+		Agents []json.RawMessage `json:"agents"`
 	}
 	text := textResult(res.Content)
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
@@ -132,14 +128,36 @@ func TestSubagentStatusListsLiveWorkerWithoutPrivateOutput(t *testing.T) {
 	if len(got.Agents) != 1 {
 		t.Fatalf("listed agents = %d, want 1", len(got.Agents))
 	}
-	if got.Agents[0].ID != agent.ID {
-		t.Fatalf("agent id = %q, want %q", got.Agents[0].ID, agent.ID)
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(got.Agents[0], &entry); err != nil {
+		t.Fatal(err)
 	}
-	if got.Agents[0].StartedAt == "" {
+	for _, forbiddenField := range []string{"state", "process_state", "turn_state", "updated_at", "finished_at"} {
+		if _, present := entry[forbiddenField]; present {
+			t.Fatalf("status response exposes removed lifecycle field %q", forbiddenField)
+		}
+	}
+	var agentID, startedAt, taskSummary string
+	if err := json.Unmarshal(entry["agent_id"], &agentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(entry["started_at"], &startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(entry["task_summary"], &taskSummary); err != nil {
+		t.Fatal(err)
+	}
+	if agentID != agent.ID {
+		t.Fatalf("agent id = %q, want %q", agentID, agent.ID)
+	}
+	if startedAt == "" {
 		t.Fatal("started_at is empty")
 	}
-	if got.Agents[0].TaskSummary != "review architecture" {
-		t.Fatalf("task summary = %q, want first task line", got.Agents[0].TaskSummary)
+	if taskSummary != "review architecture" {
+		t.Fatalf("task summary = %q, want first task line", taskSummary)
+	}
+	if _, present := entry["last_event"]; !present {
+		t.Fatal("status response omits trace-backed last_event")
 	}
 	for _, forbidden := range []string{
 		"PRIVATE_PROMPT_MARKER",

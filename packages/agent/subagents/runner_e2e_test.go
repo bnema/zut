@@ -214,7 +214,7 @@ func TestRunnerEndToEndWithStubChild(t *testing.T) {
 	// stdout is no longer duplicated into a per-agent durable event log.
 	waitFor := func(want string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(runnerProcessTimeout)
 		for time.Now().Before(deadline) {
 			if strings.Contains(strings.Join(a.Transcript(), "\n"), want) {
 				return

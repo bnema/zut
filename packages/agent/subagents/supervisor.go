@@ -648,11 +648,14 @@ func (f *Supervisor) TraceViews() map[string]AgentTraceView {
 
 // Close flushes and closes the optional trace bundle. It does not stop agents;
 // their lifetime remains controlled by the supervisor context and Stop.
-func (f *Supervisor) Close() error {
+func (f *Supervisor) Close() error { return f.CloseContext(context.Background()) }
+
+// CloseContext flushes and closes the optional trace bundle within ctx.
+func (f *Supervisor) CloseContext(ctx context.Context) error {
 	if f == nil || f.trace == nil {
 		return nil
 	}
-	return f.trace.Close()
+	return f.trace.CloseContext(ctx)
 }
 
 func (f *Supervisor) CancelTurn(id string) error {
