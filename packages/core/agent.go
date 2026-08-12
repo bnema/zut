@@ -278,6 +278,29 @@ func (a *Agent) Messages() []provider.Message {
 	return out
 }
 
+// MessageCount returns the current transcript length without copying it.
+func (a *Agent) MessageCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.messages)
+}
+
+// MessagesFrom returns a copy of the transcript suffix beginning at from and
+// the total transcript length observed under the same lock.
+func (a *Agent) MessagesFrom(from int) ([]provider.Message, int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if from < 0 {
+		from = 0
+	}
+	if from > len(a.messages) {
+		from = len(a.messages)
+	}
+	out := make([]provider.Message, len(a.messages)-from)
+	copy(out, a.messages[from:])
+	return out, len(a.messages)
+}
+
 // Revision returns a monotonically increasing transcript version.
 // It is cheap to query and changes whenever Messages() would return
 // different transcript content because of append/set operations.

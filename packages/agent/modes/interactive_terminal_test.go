@@ -41,7 +41,7 @@ func TestInteractiveRunClearsVisibleFrameOnExit(t *testing.T) {
 	cleanup := tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages +
 		tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff +
 		tui.ResetCursorColor() + tui.ResetCursorShape() +
-		tui.SeqClearScreenNoHome + tui.SeqShowCursor
+		tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor
 	if got := term.String(); !strings.HasSuffix(got, cleanup) {
 		t.Fatalf("terminal output does not end with frame cleanup\ngot suffix: %q\nwant:       %q", got, cleanup)
 	}
