@@ -457,11 +457,8 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 	if rt.resident != nil {
 		err = errors.Join(err, rt.resident.Close(ctx))
 	}
-	if err != nil {
-		return err
-	}
 	rt.closed = true
-	return nil
+	return err
 }
 
 func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {

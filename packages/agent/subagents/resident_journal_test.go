@@ -61,6 +61,16 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	}
 }
 
+func TestOpenResidentJournalRejectsDotChildIDs(t *testing.T) {
+	for _, childID := range []string{".", "..", "nested/child"} {
+		t.Run(childID, func(t *testing.T) {
+			if _, err := OpenResidentJournal(t.TempDir(), childID); err == nil {
+				t.Fatalf("OpenResidentJournal(%q) succeeded", childID)
+			}
+		})
+	}
+}
+
 func TestResidentJournalPersistsFinalizedAgentEvents(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "child-events")
@@ -256,7 +266,7 @@ func TestReconcileResidentJournalRebuildsMissingTerminalResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	resultPath := filepath.Join(root, spec.ID, residentResultName)
-	if err := os.Remove(resultPath); err != nil {
+	if err := os.WriteFile(resultPath, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ReconcileResidentJournal(filepath.Join(root, spec.ID)); err != nil {

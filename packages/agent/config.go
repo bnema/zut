@@ -22,7 +22,10 @@ type QuickModelShortcut struct {
 	Model    string `json:"model"`
 }
 
-// SubagentsConfig contains the resident manager policy.
+// SubagentsConfig contains the resident manager policy. max_concurrent limits
+// simultaneous turns, queue_timeout bounds admission waits, allowed_tools
+// limits child capabilities, and allowed_roots limits eligible workspaces.
+// Obsolete keys such as tui_subagent_position are ignored.
 type SubagentsConfig struct {
 	MaxConcurrent int      `json:"max_concurrent,omitempty"`
 	QueueTimeout  string   `json:"queue_timeout,omitempty"`

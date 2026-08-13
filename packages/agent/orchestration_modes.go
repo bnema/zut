@@ -69,8 +69,8 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 		}
 	}()
 	if resident := runtime.ResidentManager(); resident != nil {
-		if reconcileErrs := resident.Reconcile(); len(reconcileErrs) != 0 {
-			return fmt.Errorf("reconcile resident subagents: %w", errors.Join(reconcileErrs...))
+		for _, reconcileErr := range resident.Reconcile() {
+			fmt.Fprintf(os.Stderr, "zut: reconcile resident subagent: %v\n", reconcileErr)
 		}
 	}
 

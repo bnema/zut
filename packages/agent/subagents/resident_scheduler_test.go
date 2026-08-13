@@ -8,6 +8,12 @@ func TestResidentSchedulerUsesSixSlotDefault(t *testing.T) {
 	}
 }
 
+func TestResidentSchedulerNormalizesNegativeLimit(t *testing.T) {
+	if got := NewResidentScheduler(-1).limit; got != DefaultResidentConcurrency {
+		t.Fatalf("negative limit = %d, want default %d", got, DefaultResidentConcurrency)
+	}
+}
+
 func TestResidentSchedulerSelectsOldestEligibleWithoutBlockingOtherChildren(t *testing.T) {
 	scheduler := NewResidentScheduler(2)
 	first := scheduler.Enqueue("child-a", "first")

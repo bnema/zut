@@ -82,5 +82,8 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if err := t.ResidentManager.Resume(ctx, snapshot.ID, args.Prompt); err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
 	}
+	if updated, ok := t.ResidentManager.SnapshotFor(snapshot.ID); ok {
+		snapshot = updated
+	}
 	return renderResidentAction("resumed", publicResidentStatus(snapshot))
 }

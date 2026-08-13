@@ -789,7 +789,8 @@ type Interactive struct {
 	extPanel                *extPanelDialog
 	llamaConfigured         bool
 
-	// completionTracker observes resident child completion.
+	// completionTracker collects resident child terminal turns for delivery to
+	// the parent orchestration wave.
 	// turnCoordinator seals worker waves at manager-turn boundaries and decides
 	// the next wake without relying on timing or polling.
 	completionTracker         *subagents.CompletionTracker
@@ -2138,13 +2139,12 @@ func (i *Interactive) redraw() {
 	edLines, curR, curC := i.ed.Render(mainCols)
 	dashboardActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
 	var allResidentSubagentLines []string
+	residentSubagentHidden := 0
 	if !dashboardActive && i.cfg.ResidentManager != nil {
 		const residentIndicatorSnapshotLimit = 8
 		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
 		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols)
-		if hidden := total - len(snapshots); hidden > 0 {
-			allResidentSubagentLines = append(allResidentSubagentLines, residentSubagentActivityOverflowLine(i.cfg.Theme, hidden, mainCols))
-		}
+		residentSubagentHidden = total - len(snapshots)
 	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
@@ -2253,11 +2253,11 @@ func (i *Interactive) redraw() {
 
 	const rendererBottomMarginRows = 1
 	maxBottomRows := rows - rendererBottomMarginRows - 1
-	residentSubagentLines := allResidentSubagentLines
+	residentSubagentLines := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, len(allResidentSubagentLines)+1, mainCols)
 	bottom, inputStartRow := composeBottom(residentSubagentLines)
 	if !dashboardActive && len(allResidentSubagentLines) > 0 {
-		for maxRows := len(allResidentSubagentLines); maxRows >= 0; maxRows-- {
-			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, maxRows, mainCols)
+		for maxRows := len(allResidentSubagentLines) + 1; maxRows >= 0; maxRows-- {
+			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, maxRows, mainCols)
 			candidateBottom, candidateInputStartRow := composeBottom(candidate)
 			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
 				residentSubagentLines = candidate
@@ -3011,24 +3011,40 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.residentSubagentsDialog.Active() {
+	i.mu.Lock()
+	residentDialog := i.residentSubagentsDialog
+	residentDialogActive := residentDialog != nil && residentDialog.Active()
+	residentSession := i.residentChildSession
+	i.mu.Unlock()
+	if residentDialogActive {
 		if k.Kind == tui.KeyCtrlC || k.Kind == tui.KeyEsc {
-			i.residentSubagentsDialog.Close()
+			i.mu.Lock()
+			if i.residentSubagentsDialog == residentDialog {
+				residentDialog.Close()
+			}
+			i.mu.Unlock()
 			i.invalidate()
 			return false
 		}
-		if childID := i.residentSubagentsDialog.HandleKey(k); childID != "" {
+		i.mu.Lock()
+		childID := residentDialog.HandleKey(k)
+		i.mu.Unlock()
+		if childID != "" {
 			i.openResidentChildSession(childID)
 		}
 		i.invalidate()
 		return false
 	}
-	if i.residentChildSession != nil {
+	if residentSession != nil {
 		switch k.Kind {
 		case tui.KeyCtrlC, tui.KeyEsc:
-			i.residentChildSession = nil
+			i.mu.Lock()
+			if i.residentChildSession == residentSession {
+				i.residentChildSession = nil
+			}
+			i.mu.Unlock()
 		case tui.KeyPageUp:
-			session := i.residentChildSession
+			session := residentSession
 			if session.BeginLoad() {
 				go func() {
 					err := session.LoadOlder(200)
@@ -3039,16 +3055,16 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				}()
 			}
 		case tui.KeyPageDown:
-			i.residentChildSession.FollowTail()
+			residentSession.FollowTail()
 		case tui.KeyUp:
-			i.residentChildSession.Scroll(1)
+			residentSession.Scroll(1)
 		case tui.KeyDown:
-			i.residentChildSession.Scroll(-1)
+			residentSession.Scroll(-1)
 		default:
-			session := i.residentChildSession
+			session := residentSession
 			if prompt, submit := session.HandleKey(k); submit {
 				go func() {
-					err := i.cfg.ResidentManager.Resume(context.Background(), session.childID, prompt)
+					err := i.cfg.ResidentManager.Resume(ctx, session.childID, prompt)
 					session.FinishSubmission(err)
 					i.invalidate()
 				}()
@@ -8801,7 +8817,9 @@ func (i *Interactive) reloadResidentChildSession(session *residentChildSession) 
 	go func() {
 		err := session.ReloadRecent(200)
 		if session.FinishLoad(err) {
-			i.reloadResidentChildSession(session)
+			if session.RequestRecentReload() {
+				i.reloadResidentChildSession(session)
+			}
 		}
 		i.invalidate()
 	}()

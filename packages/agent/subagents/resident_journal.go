@@ -224,7 +224,7 @@ func (j *ResidentJournal) publishAgentEvent(event core.AgentEvent) {
 }
 
 func OpenResidentJournal(root, childID string) (*ResidentJournal, error) {
-	if strings.TrimSpace(childID) == "" || filepath.Base(childID) != childID {
+	if !residentChildID(childID) {
 		return nil, errors.New("resident journal: invalid child ID")
 	}
 	dir := filepath.Join(root, childID)
@@ -680,8 +680,13 @@ func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata Resident
 	if turnID == "" {
 		return nil
 	}
-	if _, err := ReadResidentResult(filepath.Join(dir, residentResultName)); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return err
+	resultPath := filepath.Join(dir, residentResultName)
+	if _, err := ReadResidentResult(resultPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		if removeErr := os.Remove(resultPath); removeErr != nil {
+			return fmt.Errorf("resident journal remove corrupt result projection: %w", removeErr)
+		}
 	}
 	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt}
 	if outcome == "failed" {
@@ -709,18 +714,23 @@ func writeResidentPatch(dir string, patch []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if _, err := tmp.Write(patch); err == nil {
-		err = tmp.Sync()
-		if closeErr := tmp.Close(); closeErr != nil {
-			err = closeErr
-		}
-	} else {
+	if _, err := tmp.Write(patch); err != nil {
 		_ = tmp.Close()
+		return err
 	}
-	if err != nil {
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, filepath.Join(dir, residentPatchName))
+}
+
+func residentChildID(childID string) bool {
+	childID = strings.TrimSpace(childID)
+	return childID != "" && childID != "." && childID != ".." && filepath.Base(childID) == childID
 }
 
 func writeResidentProjection(dir, name string, value any) error {

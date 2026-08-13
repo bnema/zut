@@ -375,3 +375,10 @@ type Client interface {
 	// returned directly; runtime errors arrive as EventDone{Err: ...}.
 	Stream(ctx context.Context, req Request) (<-chan Event, error)
 }
+
+// ClientCloser is implemented by clients that retain resources beyond one
+// Stream call. Hosts with an explicit runtime lifetime should close it when
+// that runtime stops. Most HTTP/SSE clients need no cleanup.
+type ClientCloser interface {
+	Close() error
+}

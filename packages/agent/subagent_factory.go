@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
 
@@ -121,7 +122,7 @@ func residentChildRegistry(catalogue core.Registry, names []string) (core.Regist
 		if name == "" {
 			return nil, fmt.Errorf("resident child has an empty tool name")
 		}
-		if name == "subagent_spawn" || name == "subagent_status" || name == "subagent_stop" || name == "subagent_resume" || name == "update_goal" {
+		if name == tools.SubagentSpawnToolName || name == tools.SubagentStatusToolName || name == tools.SubagentStopToolName || name == tools.SubagentResumeToolName || name == "update_goal" {
 			return nil, fmt.Errorf("resident child tool %q is not allowed", name)
 		}
 		tool, ok := catalogue[name]

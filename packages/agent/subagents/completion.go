@@ -44,9 +44,11 @@ func (t *CompletionTracker) Report(completion Completion) {
 		return
 	}
 	t.mu.Lock()
-	if t.pending > 0 {
-		t.pending--
+	if t.pending == 0 {
+		t.mu.Unlock()
+		return
 	}
+	t.pending--
 	t.ready = append(t.ready, completion)
 	t.signalLocked()
 	t.mu.Unlock()

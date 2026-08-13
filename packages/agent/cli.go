@@ -2233,10 +2233,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 
 		// Re-scope the subagent dashboard to the new session.
 		if newSess != nil {
+			runtime.SetActiveSession(newSess.ID)
 			if iv != nil {
 				iv.SetSubagentSessionScope(newSess.ID)
-			} else {
-				runtime.SetActiveSession(newSess.ID)
 			}
 		}
 		if newSess != nil {

@@ -238,7 +238,9 @@ func TestResidentManagerHistoryRejectsPathTraversal(t *testing.T) {
 	if _, err := manager.History("../escape", 10); err == nil {
 		t.Fatal("History accepted traversal")
 	}
-	if _, err := manager.HistoryPage("../escape", "", 10); err == nil {
-		t.Fatal("HistoryPage accepted traversal")
+	for _, childID := range []string{"../escape", "..", ".", "sub/child"} {
+		if _, err := manager.HistoryPage(childID, "", 10); err == nil {
+			t.Fatalf("HistoryPage(%q) accepted traversal", childID)
+		}
 	}
 }

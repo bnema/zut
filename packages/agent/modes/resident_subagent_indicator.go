@@ -47,18 +47,22 @@ func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, s
 	return lines
 }
 
-func limitResidentSubagentActivityLines(theme tui.Theme, lines []string, maxRows, width int) []string {
-	if maxRows <= 0 || len(lines) == 0 {
+func limitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden, maxRows, width int) []string {
+	if maxRows <= 0 || (len(lines) == 0 && hidden == 0) {
 		return nil
 	}
-	if len(lines) <= maxRows {
+	if hidden == 0 && len(lines) <= maxRows {
 		return lines
 	}
 	if maxRows == 1 {
-		return []string{residentSubagentActivityOverflowLine(theme, len(lines), width)}
+		return []string{residentSubagentActivityOverflowLine(theme, len(lines)+hidden, width)}
 	}
-	out := append([]string(nil), lines[:maxRows-1]...)
-	return append(out, residentSubagentActivityOverflowLine(theme, len(lines)-len(out), width))
+	visible := len(lines)
+	if visible > maxRows-1 {
+		visible = maxRows - 1
+	}
+	out := append([]string(nil), lines[:visible]...)
+	return append(out, residentSubagentActivityOverflowLine(theme, hidden+len(lines)-visible, width))
 }
 
 func residentSubagentActivityOverflowLine(theme tui.Theme, hidden, width int) string {

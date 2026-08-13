@@ -239,6 +239,12 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	m.mu.Unlock()
 	if err := child.resumeAccepted(ctx, spec.InitialTurnID, task); err != nil {
 		_ = journal.RecordTurnInterrupted(spec, spec.InitialTurnID)
+		m.mu.Lock()
+		if m.children[spec.ID] == child {
+			delete(m.children, spec.ID)
+		}
+		m.mu.Unlock()
+		_ = child.Close(context.Background())
 		return nil, err
 	}
 	return child, nil
@@ -529,14 +535,16 @@ func (m *ResidentManager) RecentSnapshotPage(offset, limit int) ([]ResidentSnaps
 			ids = append(ids, id)
 		}
 	}
+	snapshots := make(map[string]ResidentSnapshot, len(ids))
+	for _, id := range ids {
+		if child := live[id]; child != nil {
+			snapshots[id] = residentSnapshot(child)
+		} else {
+			snapshots[id] = recovered[id]
+		}
+	}
 	sort.Slice(ids, func(i, j int) bool {
-		left, right := recovered[ids[i]], recovered[ids[j]]
-		if child := live[ids[i]]; child != nil {
-			left = residentSnapshot(child)
-		}
-		if child := live[ids[j]]; child != nil {
-			right = residentSnapshot(child)
-		}
+		left, right := snapshots[ids[i]], snapshots[ids[j]]
 		if !left.UpdatedAt.Equal(right.UpdatedAt) {
 			return left.UpdatedAt.After(right.UpdatedAt)
 		}
@@ -552,11 +560,7 @@ func (m *ResidentManager) RecentSnapshotPage(offset, limit int) ([]ResidentSnaps
 	}
 	result := make([]ResidentSnapshot, 0, end-offset)
 	for _, id := range ids[offset:end] {
-		if child := live[id]; child != nil {
-			result = append(result, residentSnapshot(child))
-			continue
-		}
-		result = append(result, recovered[id])
+		result = append(result, snapshots[id])
 	}
 	return result, total
 }
@@ -782,10 +786,11 @@ func (m *ResidentManager) Close(ctx context.Context) error {
 		children = append(children, child)
 	}
 	m.mu.Unlock()
+	var errs []error
 	for _, child := range children {
 		if err := child.Close(ctx); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

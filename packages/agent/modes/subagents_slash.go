@@ -13,7 +13,7 @@ import (
 func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	if i.cfg.ResidentManager == nil {
 		i.mu.Lock()
-		i.statusErr = "subagent is disabled in this build"
+		i.statusErr = i.autoSubagentsUnavailableHint()
 		i.statusOK = ""
 		i.mu.Unlock()
 		return
@@ -24,7 +24,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 // runResidentSubagents is the production slash-command path. The list/editor
 // migration is deliberately kept separate from the legacy process dashboard;
 // details open a structured journal-backed child session immediately.
-func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
+func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 	sub := ""
 	rest := ""
 	if len(args) > 0 {
@@ -35,10 +35,12 @@ func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
 	}
 	switch sub {
 	case "", "list", "ls", "ps":
+		i.mu.Lock()
 		if i.residentSubagentsDialog == nil {
 			i.residentSubagentsDialog = newResidentSubagentsDialog()
 		}
 		i.residentSubagentsDialog.Open(i.cfg.ResidentManager)
+		i.mu.Unlock()
 		i.invalidate()
 	case "new", "spawn":
 		i.spawnResidentSubagent(rest)
@@ -64,7 +66,7 @@ func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
 			return
 		}
-		if err := i.cfg.ResidentManager.Stop(context.Background(), rest); err != nil {
+		if err := i.cfg.ResidentManager.Stop(ctx, rest); err != nil {
 			i.subagentsStatus("", "kill: "+err.Error())
 			return
 		}
@@ -75,7 +77,7 @@ func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
 			i.subagentsStatus("", "/subagents "+sub+" <id> <prompt>: missing id or prompt")
 			return
 		}
-		if err := i.cfg.ResidentManager.Resume(context.Background(), id, prompt); err != nil {
+		if err := i.cfg.ResidentManager.Resume(ctx, id, prompt); err != nil {
 			i.subagentsStatus("", sub+": "+err.Error())
 			return
 		}
@@ -95,8 +97,12 @@ func residentResultStatus(id string, result subagents.ResidentResult) string {
 
 func (i *Interactive) openResidentChildSession(childID string) {
 	session := newResidentChildSession(i.cfg.ResidentManager, childID, i.cfg.Theme)
-	i.residentSubagentsDialog.Close()
+	i.mu.Lock()
+	if i.residentSubagentsDialog != nil {
+		i.residentSubagentsDialog.Close()
+	}
 	i.residentChildSession = session
+	i.mu.Unlock()
 	i.invalidate()
 	if session.BeginLoad() {
 		go func() {

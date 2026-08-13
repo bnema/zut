@@ -32,8 +32,9 @@ type responsesWebSocketSession struct {
 
 	turn chan struct{}
 
-	conn *websocket.Conn
-	raw  chan sseEvent
+	conn       *websocket.Conn
+	raw        chan sseEvent
+	readerDone chan struct{}
 
 	lastRequest    []Message
 	lastResponseID string
@@ -49,6 +50,21 @@ func newResponsesWebSocketClient(httpClient *codexClient) Client {
 }
 
 func (c *responsesWebSocketClient) Name() string { return c.http.Name() }
+
+// Close releases all persistent sockets held by this client. Callers that
+// create a client for a bounded runtime (such as a resident child) must call
+// this when that runtime stops; otherwise a warm session can outlive its
+// owner until the process exits.
+func (c *responsesWebSocketClient) Close() error {
+	c.mu.Lock()
+	sessions := c.sessions
+	c.sessions = make(map[string]*responsesWebSocketSession)
+	c.mu.Unlock()
+	for _, session := range sessions {
+		session.invalidate()
+	}
+	return nil
+}
 
 func (c *responsesWebSocketClient) session(id string) *responsesWebSocketSession {
 	c.mu.Lock()
@@ -187,7 +203,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		defer func() { session.turn <- struct{}{} }()
 		defer close(out)
 
-		first, ok := awaitResponsesWebSocketEvent(ctx, raw)
+		first, responseID, ok := awaitResponsesWebSocketResponseStart(ctx, raw)
 		if !ok && ctx.Err() != nil {
 			session.invalidateConnection(conn)
 			c.http.runResponseEvents(ctx, req, out, make(chan sseEvent), nil)
@@ -199,12 +215,12 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			// HTTP/SSE. That keeps the stable cache key and logical IDs intact
 			// without ever reusing the invalid previous_response_id.
 			session.invalidate()
-			reconnected, reconnectRaw, reconnectFirst, err := c.reconnectFull(ctx, session, req, sessionID)
+			reconnected, reconnectRaw, reconnectFirst, reconnectResponseID, err := c.reconnectFull(ctx, session, req, sessionID)
 			if err != nil {
 				c.forwardResponsesHTTP(ctx, req, out)
 				return
 			}
-			conn, raw, first = reconnected, reconnectRaw, reconnectFirst
+			conn, raw, first, responseID = reconnected, reconnectRaw, reconnectFirst, reconnectResponseID
 		}
 		var stateMu sync.Mutex
 		terminal := false
@@ -222,7 +238,8 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		}(conn)
 
 		completed := false
-		c.http.runResponseEventsWithFirst(ctx, req, out, raw, &first, func(responseID string) {
+		turnRaw := filterResponsesWebSocketEvents(raw, responseID, finished)
+		c.http.runResponseEventsWithFirst(ctx, req, out, turnRaw, &first, func(responseID string) {
 			stateMu.Lock()
 			terminal = true
 			stateMu.Unlock()
@@ -259,29 +276,29 @@ func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, prev
 // reconnectFull establishes one replacement WebSocket turn after a cached
 // continuation failed. A fresh connection cannot rely on the previous server
 // response, so it always sends the complete local transcript.
-func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, sessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, error) {
+func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, sessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, string, error) {
 	payload, err := c.websocketPayload(req, sessionID, "")
 	if err != nil {
-		return nil, nil, sseEvent{}, err
+		return nil, nil, sseEvent{}, "", err
 	}
 	reportRequestAttempt(req.Lifecycle, 2, 2)
 	if err := session.ensureConnected(ctx, c.dial); err != nil {
-		return nil, nil, sseEvent{}, err
+		return nil, nil, sseEvent{}, "", err
 	}
 	conn, raw := session.connection()
 	if err := websocket.Message.Send(conn, string(payload)); err != nil {
 		session.invalidateConnection(conn)
-		return nil, nil, sseEvent{}, err
+		return nil, nil, sseEvent{}, "", err
 	}
-	first, ok := awaitResponsesWebSocketEvent(ctx, raw)
+	first, responseID, ok := awaitResponsesWebSocketResponseStart(ctx, raw)
 	if !ok || responseWebSocketRecoveryEvent(first) {
 		session.invalidateConnection(conn)
 		if first.Err != nil {
-			return nil, nil, sseEvent{}, first.Err
+			return nil, nil, sseEvent{}, "", first.Err
 		}
-		return nil, nil, sseEvent{}, fmt.Errorf("responses WebSocket reconnect did not produce a usable event")
+		return nil, nil, sseEvent{}, "", fmt.Errorf("responses WebSocket reconnect did not produce a usable event")
 	}
-	return conn, raw, first, nil
+	return conn, raw, first, responseID, nil
 }
 
 func awaitResponsesWebSocketEvent(ctx context.Context, raw <-chan sseEvent) (sseEvent, bool) {
@@ -291,6 +308,84 @@ func awaitResponsesWebSocketEvent(ctx context.Context, raw <-chan sseEvent) (sse
 	case event, ok := <-raw:
 		return event, ok
 	}
+}
+
+// awaitResponsesWebSocketResponseStart discards frames left behind by an
+// earlier response until the Responses protocol announces the response this
+// request created. The API runs responses sequentially on a socket, but this
+// guard keeps a late terminal frame from completing the next local turn.
+func awaitResponsesWebSocketResponseStart(ctx context.Context, raw <-chan sseEvent) (sseEvent, string, bool) {
+	for {
+		event, ok := awaitResponsesWebSocketEvent(ctx, raw)
+		if !ok || responseWebSocketRecoveryEvent(event) {
+			return event, "", ok
+		}
+		var payload struct {
+			Type     string `json:"type"`
+			Response struct {
+				ID string `json:"id"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+			continue
+		}
+		if payload.Type != "response.created" {
+			continue
+		}
+		if strings.TrimSpace(payload.Response.ID) == "" {
+			return sseEvent{Err: fmt.Errorf("responses WebSocket created event has no response ID")}, "", false
+		}
+		return event, payload.Response.ID, true
+	}
+}
+
+// filterResponsesWebSocketEvents retains only frames for the response that
+// started this turn when the protocol supplies an identity. Regular Responses
+// streaming events do not all repeat response_id; the preceding created-event
+// barrier is therefore also required by the sequential WebSocket contract.
+func filterResponsesWebSocketEvents(raw <-chan sseEvent, responseID string, done <-chan struct{}) <-chan sseEvent {
+	out := make(chan sseEvent, 16)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-done:
+				return
+			case event, ok := <-raw:
+				if !ok {
+					return
+				}
+				if !responseWebSocketEventMatches(event, responseID) {
+					continue
+				}
+				select {
+				case <-done:
+					return
+				case out <- event:
+				}
+			}
+		}
+	}()
+	return out
+}
+
+func responseWebSocketEventMatches(event sseEvent, responseID string) bool {
+	if event.Err != nil {
+		return true
+	}
+	var payload struct {
+		ResponseID string `json:"response_id"`
+		Response   struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal([]byte(event.Data), &payload) != nil {
+		return true
+	}
+	if payload.ResponseID != "" && payload.ResponseID != responseID {
+		return false
+	}
+	return payload.Response.ID == "" || payload.Response.ID == responseID
 }
 
 func responseWebSocketRecoveryEvent(event sseEvent) bool {
@@ -349,11 +444,13 @@ func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, dial fu
 		return err
 	}
 	raw := make(chan sseEvent, 16)
+	readerDone := make(chan struct{})
 	s.mu.Lock()
 	s.conn = conn
 	s.raw = raw
+	s.readerDone = readerDone
 	s.mu.Unlock()
-	go readResponsesWebSocket(conn, raw)
+	go readResponsesWebSocket(conn, raw, readerDone)
 	return nil
 }
 
@@ -386,23 +483,34 @@ func (s *responsesWebSocketSession) invalidate() {
 }
 
 func (s *responsesWebSocketSession) invalidateLocked() {
+	if s.readerDone != nil {
+		close(s.readerDone)
+	}
 	if s.conn != nil {
 		_ = s.conn.Close()
 	}
 	s.conn = nil
 	s.raw = nil
+	s.readerDone = nil
 	s.lastRequest = nil
 	s.lastResponseID = ""
 }
 
-func readResponsesWebSocket(conn *websocket.Conn, out chan<- sseEvent) {
+func readResponsesWebSocket(conn *websocket.Conn, out chan<- sseEvent, done <-chan struct{}) {
 	defer close(out)
 	for {
 		var data json.RawMessage
 		if err := websocket.JSON.Receive(conn, &data); err != nil {
-			out <- sseEvent{Err: err}
+			select {
+			case out <- sseEvent{Err: err}:
+			case <-done:
+			}
 			return
 		}
-		out <- sseEvent{Data: string(data)}
+		select {
+		case out <- sseEvent{Data: string(data)}:
+		case <-done:
+			return
+		}
 	}
 }

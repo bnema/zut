@@ -57,19 +57,7 @@ func (s *residentChildSession) LoadRecent(limit int) error {
 // pages already loaded by PgUp remain intact, so following a completed turn
 // does not discard the user's scrollback.
 func (s *residentChildSession) ReloadRecent(limit int) error {
-	if s == nil || s.manager == nil {
-		return fmt.Errorf("resident child session: unavailable")
-	}
-	page, err := s.manager.HistoryPage(s.childID, "", limit)
-	if err != nil {
-		return err
-	}
-	messages, err := subagents.ResidentHistoryMessages(page.Items)
-	if err != nil {
-		return err
-	}
-	s.replaceRecent(messages, page.OlderCursor)
-	return nil
+	return s.LoadRecent(limit)
 }
 
 func (s *residentChildSession) replaceRecent(messages []provider.Message, olderCursor string) {
@@ -119,12 +107,6 @@ func (s *residentChildSession) LoadOlder(limit int) error {
 	s.refreshLiveLocked()
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *residentChildSession) refreshLive() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refreshLiveLocked()
 }
 
 func (s *residentChildSession) refreshLiveLocked() {
@@ -303,8 +285,8 @@ func (s *residentChildSession) Render(width, height int) []string {
 	}
 	s.lastRows = len(history)
 	maxRows := height - len(lines) - len(editorLines) - 3
-	if maxRows < 3 {
-		maxRows = 3
+	if maxRows < 0 {
+		maxRows = 0
 	}
 	if s.scrollOffset > len(history)-maxRows {
 		s.scrollOffset = len(history) - maxRows
@@ -326,5 +308,11 @@ func (s *residentChildSession) Render(width, height int) []string {
 	lines = append(lines, "")
 	lines = append(lines, editorLines...)
 	lines = append(lines, "  Enter: send follow-up/resume   Esc: close   PgUp: load older history")
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) > height {
+		return lines[:height]
+	}
 	return lines
 }

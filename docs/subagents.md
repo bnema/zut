@@ -71,6 +71,9 @@ one turn for each child, and defaults to six concurrent turns. Set
 `subagents.max_concurrent` to a positive limit to override it. Queueing is
 unlimited by default; a positive `subagents.queue_timeout` cancels an accepted
 prompt that has not received a slot and records its terminal failure durably.
+`subagents.allowed_tools` is an allowlist for child-visible tools and
+`subagents.allowed_roots` limits eligible child workspaces. Removed legacy
+settings, including `tui_subagent_position`, are ignored.
 
 `required: true` makes a delegated result an obligation of the parent turn.
 Failed, cancelled, and interrupted required work remains unresolved until an

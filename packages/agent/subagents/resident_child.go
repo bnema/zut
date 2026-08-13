@@ -267,8 +267,12 @@ func (c *ResidentChild) run() {
 			return
 		}
 
+		canceled := c.ctx.Done()
+		if interrupted {
+			canceled = nil
+		}
 		select {
-		case <-c.ctx.Done():
+		case <-canceled:
 			if interrupted {
 				continue
 			}
@@ -304,11 +308,11 @@ func (c *ResidentChild) run() {
 					capture = &captured
 				}
 			}
+			persistenceFailed := false
 			if c.journal != nil {
 				if err := c.journal.RecordTurnFinishedWithCapture(c.spec, result.turnID, terminalErr, capture); err != nil {
-					c.setState(ResidentFailed)
-					c.cancel()
-					continue
+					terminalErr = fmt.Errorf("persist resident child terminal state: %w", err)
+					persistenceFailed = true
 				}
 			}
 			if terminalErr != nil {
@@ -326,6 +330,9 @@ func (c *ResidentChild) run() {
 					}
 				}
 				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr, Summary: summary})
+			}
+			if persistenceFailed {
+				return
 			}
 		}
 	}

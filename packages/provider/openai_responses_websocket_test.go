@@ -34,6 +34,7 @@ func TestResponsesWebSocketReconnectsMissingPreviousResponseWithFullContext(t *t
 			requests = append(requests, first)
 			mu.Unlock()
 			for _, event := range []map[string]any{
+				{"type": "response.created", "response": map[string]any{"id": "resp_1"}},
 				{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}},
 				{"type": "response.output_text.delta", "output_index": 0, "delta": "ok"},
 				{"type": "response.completed", "response": map[string]any{"id": "resp_1", "usage": map[string]any{}}},
@@ -60,6 +61,7 @@ func TestResponsesWebSocketReconnectsMissingPreviousResponseWithFullContext(t *t
 		mu.Lock()
 		requests = append(requests, recovered)
 		mu.Unlock()
+		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_2"}})
 		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}})
 		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "reconnected"})
 		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_2", "usage": map[string]any{}}})
@@ -122,6 +124,12 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 				"openai-beta":        conn.Request().Header.Get("openai-beta"),
 			})
 			mu.Unlock()
+			_ = websocket.JSON.Send(conn, map[string]any{
+				"type": "response.created",
+				"response": map[string]any{
+					"id": "resp_" + string(rune('1'+i)),
+				},
+			})
 			_ = websocket.JSON.Send(conn, map[string]any{
 				"type":         "response.output_item.added",
 				"output_index": 0,
@@ -216,8 +224,9 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 
 func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) {
 	closed := make(chan struct{})
+	var closeOnce sync.Once
 	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
-		defer close(closed)
+		defer closeOnce.Do(func() { close(closed) })
 		defer conn.Close()
 		var payload map[string]any
 		if err := websocket.JSON.Receive(conn, &payload); err != nil {
@@ -244,6 +253,59 @@ func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) 
 	case <-closed:
 	case <-time.After(time.Second):
 		t.Fatal("cancellation did not close active WebSocket")
+	}
+}
+
+func TestResponsesWebSocketIgnoresStaleTerminalFrameBeforeNextResponse(t *testing.T) {
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		for turn := 1; turn <= 2; turn++ {
+			var payload map[string]any
+			if err := websocket.JSON.Receive(conn, &payload); err != nil {
+				return
+			}
+			if turn == 2 {
+				// A buffered terminal from the prior response must not complete
+				// this response before its response.created frame arrives.
+				_ = websocket.JSON.Send(conn, map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_1", "usage": map[string]any{}}})
+			}
+			id := "resp_" + string(rune('0'+turn))
+			text := "first"
+			if turn == 2 {
+				text = "second"
+			}
+			for _, event := range []map[string]any{
+				{"type": "response.created", "response": map[string]any{"id": id}},
+				{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}},
+				{"type": "response.output_text.delta", "output_index": 0, "delta": text},
+				{"type": "response.completed", "response": map[string]any{"id": id, "usage": map[string]any{}}},
+			} {
+				_ = websocket.JSON.Send(conn, event)
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := newResponsesWebSocketClient(&codexClient{
+		token: "test-token", baseURL: server.URL + "/v1/responses", providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true}, http: &http.Client{},
+	})
+	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
+	assertCompletedResponseText(t, client, first, "first")
+	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "first"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
+	assertCompletedResponseText(t, client, second, "second")
+}
+
+func TestResponsesWebSocketCloseReleasesSessionSockets(t *testing.T) {
+	client := newResponsesWebSocketClient(&codexClient{}).(*responsesWebSocketClient)
+	client.session("resident-child")
+	if err := client.Close(); err != nil {
+		t.Fatalf("close responses websocket client: %v", err)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.sessions) != 0 {
+		t.Fatalf("sessions retained after close: %d", len(client.sessions))
 	}
 }
 

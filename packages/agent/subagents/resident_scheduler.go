@@ -27,11 +27,8 @@ type ResidentScheduler struct {
 }
 
 func NewResidentScheduler(limit int) *ResidentScheduler {
-	if limit == 0 {
+	if limit <= 0 {
 		limit = DefaultResidentConcurrency
-	}
-	if limit < 0 {
-		panic("resident scheduler limit must not be negative")
 	}
 	return &ResidentScheduler{limit: limit, running: make(map[string]bool)}
 }

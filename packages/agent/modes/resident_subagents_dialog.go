@@ -35,7 +35,10 @@ func (d *residentSubagentsDialog) Close() {
 }
 
 func (d *residentSubagentsDialog) refresh(limit int) {
-	if d == nil || d.manager == nil {
+	if d == nil {
+		return
+	}
+	if d.manager == nil {
 		d.rows = nil
 		d.total = 0
 		return

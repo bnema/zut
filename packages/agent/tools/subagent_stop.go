@@ -79,6 +79,9 @@ func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ f
 	if err := t.ResidentManager.Stop(ctx, snapshot.ID); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
+	if updated, ok := t.ResidentManager.SnapshotFor(snapshot.ID); ok {
+		snapshot = updated
+	}
 	return renderResidentAction("stop_requested", publicResidentStatus(snapshot))
 }
 

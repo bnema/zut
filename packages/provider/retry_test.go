@@ -282,8 +282,13 @@ func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
 	if got := lifecycle.attempts; len(got) != 2 || got[0] != (lifecycleAttempt{attempt: 1, max: maxAttempts}) || got[1] != (lifecycleAttempt{attempt: 2, max: maxAttempts}) {
 		t.Fatalf("attempts = %#v, want attempts 1 and 2 of %d", got, maxAttempts)
 	}
-	if len(lifecycle.ids) != 2 || lifecycle.ids[0] == "" || lifecycle.ids[0] == lifecycle.ids[1] {
+	if len(lifecycle.ids) != 2 || lifecycle.ids[0] == lifecycle.ids[1] {
 		t.Fatalf("request IDs = %#v, want distinct provider-local IDs per attempt", lifecycle.ids)
+	}
+	for attempt, id := range lifecycle.ids {
+		if id == "" {
+			t.Fatalf("request ID for attempt %d is empty", attempt+1)
+		}
 	}
 	if got := lifecycle.retries; len(got) != 1 || got[0].attempt != 2 || got[0].max != maxAttempts || got[0].delay != 250*time.Millisecond {
 		t.Fatalf("retries = %#v, want attempt 2 of %d after 250ms", got, maxAttempts)

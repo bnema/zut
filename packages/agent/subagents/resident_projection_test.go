@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -40,5 +41,9 @@ func TestResidentLiveProjectionBoundsToolArguments(t *testing.T) {
 	projection.Apply(core.EvToolCall{ID: "call-1", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)})
 	if got := projection.Snapshot(); len(got.Tools) != 1 || string(got.Tools[0].Args) != `{"command":"pwd"}` {
 		t.Fatalf("live tool = %#v", got)
+	}
+	projection.Apply(core.EvToolCall{ID: "call-2", Name: "bash", Args: json.RawMessage(strings.Repeat("a", residentLiveArgumentBytes+1024))})
+	if got := projection.Snapshot(); len(got.Tools) != 2 || len(got.Tools[1].Args) != residentLiveArgumentBytes {
+		t.Fatalf("oversized tool args = %d bytes", len(got.Tools[1].Args))
 	}
 }

@@ -24,8 +24,16 @@ func TestRenderResidentSubagentActivityLinesShowsOnlyActiveChildren(t *testing.T
 }
 
 func TestLimitResidentSubagentActivityLinesSummarizesOverflow(t *testing.T) {
-	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, []string{"one", "two", "three"}, 2, 80))
+	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, []string{"one", "two", "three"}, 0, 2, 80))
 	want := []string{"one", "  … 2 more active subagents"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("limited lines = %#v, want %#v", got, want)
+	}
+}
+
+func TestLimitResidentSubagentActivityLinesIncludesAlreadyHiddenChildren(t *testing.T) {
+	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, []string{"one", "two", "three"}, 4, 2, 80))
+	want := []string{"one", "  … 6 more active subagents"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("limited lines = %#v, want %#v", got, want)
 	}

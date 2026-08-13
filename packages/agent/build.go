@@ -427,14 +427,11 @@ func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
 // resolveWebSearchPolicy applies capability precedence at the owning resolver
 // boundary. Permission, tool-list, and named-profile restrictions are ceilings
 // on every caller-provided policy.
-func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subagents.Profile) subagents.WebSearchPolicy {
+func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error) subagents.WebSearchPolicy {
 	if args.NoTools || args.PermissionSet != nil {
 		return subagents.WebSearchDeny
 	}
 	if args.ToolsSet && !toolListContains(args.Tools, "web_search") {
-		return subagents.WebSearchDeny
-	}
-	if profile != nil && profile.ToolsDeclared && !toolListContains(profile.Tools, "web_search") {
 		return subagents.WebSearchDeny
 	}
 
@@ -454,9 +451,6 @@ func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subage
 	}
 	if cfgErr != nil {
 		return subagents.WebSearchDeny
-	}
-	if profile != nil {
-		return subagents.WebSearchAllow
 	}
 	if cfg.WebSearchEnabledForCLI() {
 		return subagents.WebSearchAllow
@@ -507,7 +501,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if len(args.Tools) > 0 {
 		args.ToolsSet = true
 	}
-	webSearchPolicy := resolveWebSearchPolicy(args, cfg, cfgErr, nil)
+	webSearchPolicy := resolveWebSearchPolicy(args, cfg, cfgErr)
 	args.WebSearchPolicy = webSearchPolicy
 
 	// User-requested provider (explicit > config > default).

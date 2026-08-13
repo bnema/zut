@@ -21,7 +21,7 @@ import (
 const (
 	residentHistoryDefaultLimit = 200
 	residentHistoryMaximumLimit = 1000
-	residentHistoryPageBytes    = 1 << 20
+	residentHistoryPageBytes    = residentMaxRecordBytes + 1 // largest JSON record plus newline
 	residentHistoryReadChunk    = 64 << 10
 )
 
@@ -405,7 +405,7 @@ func ReadResidentHistory(dir string, limit int) ([]ResidentHistoryItem, error) {
 // their own visibility checks before exposing history.
 func ResidentHistoryDir(root, childID string) (string, error) {
 	childID = strings.TrimSpace(childID)
-	if childID == "" || filepath.Base(childID) != childID {
+	if !residentChildID(childID) {
 		return "", errors.New("resident history: invalid child ID")
 	}
 	dir := filepath.Join(root, childID)
@@ -413,6 +413,9 @@ func ResidentHistoryDir(root, childID string) (string, error) {
 		return "", err
 	} else if !info.IsDir() {
 		return "", errors.New("resident history: child path is not a directory")
+	}
+	if !pathWithin(dir, root) {
+		return "", errors.New("resident history: child path escapes root")
 	}
 	return dir, nil
 }

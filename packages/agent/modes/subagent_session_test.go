@@ -164,6 +164,15 @@ func TestResidentChildSessionCoalescesCompletionDuringHistoryLoad(t *testing.T) 
 	}
 }
 
+func TestResidentChildSessionRenderRespectsRequestedHeight(t *testing.T) {
+	session := newResidentChildSession(nil, "child", tui.Dark)
+	for _, height := range []int{0, 1, 2} {
+		if lines := session.Render(80, height); len(lines) > height {
+			t.Fatalf("height %d rendered %d lines: %#v", height, len(lines), lines)
+		}
+	}
+}
+
 func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{})

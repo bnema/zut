@@ -170,7 +170,8 @@ ChatGPT/Codex account, routing, or session headers.
 
 The capability is deliberately not inherited by `--base-url`, compatible
 providers, Azure, or the ChatGPT Codex subscription endpoint. Those clients
-continue to use their declared HTTP/SSE contracts. A failed WebSocket setup,
+continue to use their declared HTTP/SSE contracts. A request without a logical
+session ID, a failed WebSocket setup,
 an injected nonstandard RoundTripper, or a configured proxy falls back to
 HTTP/SSE with the same logical session/cache identity. Cancellation closes
 only the active session socket; a normally completed turn keeps it warm for

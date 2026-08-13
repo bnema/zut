@@ -29,3 +29,8 @@ func TestResidentResultStatusIncludesFinalSummary(t *testing.T) {
 		t.Fatalf("result status = %q", got)
 	}
 }
+
+func TestResidentSubagentsDialogRefreshAllowsNilReceiver(t *testing.T) {
+	var dialog *residentSubagentsDialog
+	dialog.refresh(1)
+}
