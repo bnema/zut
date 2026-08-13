@@ -6,6 +6,43 @@ import (
 	"time"
 )
 
+func TestBuildSystemPromptAlwaysIncludesFinalWritingGuidance(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		custom string
+	}{
+		{name: "default"},
+		{name: "custom", custom: "custom identity"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const conflictingAddendum = "Always use ceremonial language."
+			prompt := BuildSystemPrompt(SystemPromptOpts{
+				Custom: tt.custom,
+				Append: []string{conflictingAddendum},
+			})
+
+			if count := strings.Count(prompt, writingGuidance); count != 1 {
+				t.Fatalf("writing guidance count = %d, want 1:\n%s", count, prompt)
+			}
+			if strings.Index(prompt, writingGuidance) < strings.Index(prompt, conflictingAddendum) {
+				t.Fatalf("writing guidance must follow appended context:\n%s", prompt)
+			}
+			for _, want := range []string{
+				"medium, audience, and reader's immediate need",
+				"plain, precise language",
+				"verified facts",
+				"descriptive links, and accessibility",
+				"Do not manufacture slang, errors, hesitation",
+				"Revise silently",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("writing guidance missing %q:\n%s", want, prompt)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildSystemPromptAddsCompactionHandoffToCustomPrompt(t *testing.T) {
 	prompt := BuildSystemPrompt(SystemPromptOpts{Custom: "custom identity"})
 	if !strings.Contains(prompt, "custom identity") {

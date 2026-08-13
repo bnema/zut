@@ -32,17 +32,18 @@ import (
 
 // InteractiveConfig configures the interactive loop.
 type InteractiveConfig struct {
-	Terminal     tui.Terminal
-	Theme        tui.Theme
-	Model        string
-	Provider     string
-	AuthMethod   string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
-	BaseURL      string
-	Reasoning    string
-	SystemPrompt string
-	Tools        core.Registry
-	MaxSteps     int
-	CWD          string
+	Terminal        tui.Terminal
+	Theme           tui.Theme
+	Model           string
+	Provider        string
+	AuthMethod      string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
+	BaseURL         string
+	Reasoning       string
+	SystemPrompt    string
+	WritingGuidance string
+	Tools           core.Registry
+	MaxSteps        int
+	CWD             string
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
@@ -9176,6 +9177,11 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 
 	sys, _ := i.agent.PromptConfig()
 	changed := false
+	if guidance := strings.TrimSpace(i.cfg.WritingGuidance); guidance != "" {
+		var removed bool
+		sys, removed = removeLastAutoSubagentsAddendum(sys, guidance)
+		changed = changed || removed
+	}
 	for idx := len(i.managedAutoSubagentsAddenda) - 1; idx >= 0; idx-- {
 		var removed bool
 		sys, removed = removeLastAutoSubagentsAddendum(sys, i.managedAutoSubagentsAddenda[idx])
@@ -9184,7 +9190,7 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	i.managedAutoSubagentsAddenda = nil
 
 	addenda := autoSubagentsAddenda(i.cfg, orchestrating)
-	if changed && len(addenda) > 0 {
+	if changed {
 		sys = strings.TrimRight(sys, "\n")
 	}
 	for _, addendum := range addenda {
@@ -9195,11 +9201,15 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 		i.managedAutoSubagentsAddenda = append(i.managedAutoSubagentsAddenda, addendum)
 		changed = true
 	}
+	if guidance := strings.TrimSpace(i.cfg.WritingGuidance); guidance != "" {
+		if sys != "" {
+			sys += "\n\n"
+		}
+		sys += guidance
+		changed = true
+	}
 	if !changed {
 		return
-	}
-	if len(addenda) == 0 {
-		sys = strings.TrimRight(sys, "\n") + "\n"
 	}
 	i.agent.SetSystemPrompt(sys)
 }

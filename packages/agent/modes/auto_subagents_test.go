@@ -15,6 +15,34 @@ import (
 
 const autoSubagentsTestTimeout = 10 * time.Second
 
+func TestAutoSubagentsSystemPromptKeepsWritingGuidanceLast(t *testing.T) {
+	const guidance = "universal writing guidance"
+	iv := &Interactive{
+		agent: &core.Agent{System: "base system\n\n" + guidance},
+		cfg: InteractiveConfig{
+			AutoSubagentsSystemAddendum: "auto-subagents guidance",
+			WritingGuidance:             guidance,
+			Supervisor:                  &subagents.Supervisor{},
+		},
+	}
+
+	iv.applyAutoSubagentsSystemPrompt(true)
+	if count := strings.Count(iv.agent.System, guidance); count != 1 {
+		t.Fatalf("writing guidance count = %d, want 1: %q", count, iv.agent.System)
+	}
+	if !strings.HasSuffix(iv.agent.System, guidance) {
+		t.Fatalf("writing guidance is not final after enabling: %q", iv.agent.System)
+	}
+
+	iv.applyAutoSubagentsSystemPrompt(false)
+	if count := strings.Count(iv.agent.System, guidance); count != 1 {
+		t.Fatalf("writing guidance count = %d, want 1: %q", count, iv.agent.System)
+	}
+	if !strings.HasSuffix(iv.agent.System, guidance) {
+		t.Fatalf("writing guidance is not final after disabling: %q", iv.agent.System)
+	}
+}
+
 func TestAutoSubagentsSystemPromptKeepsProfileManifestWhileTogglingDelegationGuidance(t *testing.T) {
 	const onDemand = "delegate only on an explicit user request"
 	iv := &Interactive{

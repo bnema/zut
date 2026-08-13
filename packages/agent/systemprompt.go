@@ -35,6 +35,8 @@ type SystemPromptOpts struct {
 //
 //   - A one-paragraph identity (who zut is, what the name means,
 //     what the TUI expects for output format).
+//   - Compact handoff and writing-quality guidance that must survive
+//     custom identities and appended context.
 //   - The date + cwd footer so the model has current-context.
 //
 // Everything else (tool listing, operating guidelines, "don't run
@@ -81,6 +83,11 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		sb.WriteString(a)
 	}
 
+	// Keep the universal writing policy after optional context so narrower
+	// addenda cannot accidentally disable it.
+	sb.WriteString("\n\n")
+	sb.WriteString(writingGuidance)
+
 	fmt.Fprintf(&sb, "\n\nCurrent date: %s\nCurrent working directory: %s\n", date, cwd)
 	return sb.String()
 }
@@ -92,3 +99,11 @@ Your output renders in a TUI that understands markdown for prose and plain text 
 For focused changes to an existing file, inspect its current contents and use edit with verbatim oldText taken from that same file. Include only enough context to make each match unambiguous. Use write when creating a file or replacing it wholesale. Do not mutate files through bash redirections or commands such as cat, echo, sed, or tee, because those changes appear as opaque shell output instead of a readable edit diff.`
 
 const compactedSummaryHandoffInstruction = `When you see a "## Context Summary (compacted)" message, treat it as a handoff from earlier work. Keep its active constraints and preferences in force, continue the most recent unresolved user request without waiting for the user to type "continue", and follow a newer user request when it supersedes the summary.`
+
+const writingGuidance = `Adapt every response and document to its medium, audience, and reader's immediate need. Lead with the answer or next useful action. Use plain, precise language, concrete details, and strong verbs. Prefer verified facts to vague emphasis; qualify uncertain claims. Preserve useful structure, descriptive links, and accessibility. Cut throat-clearing, ceremony, repetition, catalogue-like prose, and mechanical sentence patterns. Do not manufacture slang, errors, hesitation, or artificial variation to sound human. Revise silently unless asked to explain your writing choices.`
+
+// WritingGuidance returns the universal policy kept at the end of resolved
+// prompt context, including after interactive prompt updates.
+func WritingGuidance() string {
+	return writingGuidance
+}
