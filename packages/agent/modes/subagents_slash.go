@@ -58,7 +58,7 @@ func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
 			i.subagentsStatus("", "result: "+err.Error())
 			return
 		}
-		i.subagentsStatus(fmt.Sprintf("%s result %s", result.State, rest), "")
+		i.subagentsStatus(residentResultStatus(rest, result), "")
 	case "kill", "stop":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
@@ -83,6 +83,14 @@ func (i *Interactive) runResidentSubagents(_ context.Context, args []string) {
 	default:
 		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
 	}
+}
+
+func residentResultStatus(id string, result subagents.ResidentResult) string {
+	status := fmt.Sprintf("%s result %s", residentDisplayState(result.State), id)
+	if summary := truncateStatus(result.Summary, 240); summary != "" {
+		status += ": " + summary
+	}
+	return status
 }
 
 func (i *Interactive) openResidentChildSession(childID string) {

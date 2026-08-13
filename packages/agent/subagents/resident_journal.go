@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -34,6 +35,7 @@ const (
 	residentRecordToolResult   = "tool.result"
 	residentJournalVersion     = 1
 	residentMaxRecordBytes     = 2 << 20
+	residentResultSummaryBytes = 16 << 10
 )
 
 // Artifact references are logical names; they do not disclose journal paths.
@@ -145,6 +147,15 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 	err := j.appendSync(record)
 	j.mu.Unlock()
 	if err == nil {
+		switch message := event.(type) {
+		case core.EvAssistantMessage:
+			j.recordAssistantSummary(message.Message)
+		case core.EvToolCall:
+			// Core emits tool calls immediately after the assistant message that
+			// requested them. That text is an intermediate thought, not this
+			// turn's final response.
+			j.clearLatestSummary()
+		}
 		j.publishAgentEvent(event)
 	}
 	return err
@@ -170,6 +181,7 @@ type ResidentResult struct {
 	ID           string        `json:"id"`
 	TurnID       string        `json:"turn_id"`
 	State        ResidentState `json:"state"`
+	Summary      string        `json:"summary,omitempty"`
 	ErrorCode    string        `json:"error_code,omitempty"`
 	PatchRef     string        `json:"patch_ref,omitempty"`
 	ChangedFiles []string      `json:"changed_files,omitempty"`
@@ -182,6 +194,8 @@ type ResidentJournal struct {
 	mu            sync.Mutex
 	eventMu       sync.RWMutex
 	eventObserver func(core.AgentEvent)
+	summaryMu     sync.RWMutex
+	latestSummary string
 	dir           string
 	file          *os.File
 }
@@ -287,7 +301,13 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 }
 
 func (j *ResidentJournal) RecordTurnStarted(spec ResidentChildSpec, turnID string) error {
-	return j.recordTurnBoundary(spec, residentRecordTurnStarted, turnID, ResidentRunning, "")
+	if err := j.recordTurnBoundary(spec, residentRecordTurnStarted, turnID, ResidentRunning, ""); err != nil {
+		return err
+	}
+	j.summaryMu.Lock()
+	j.latestSummary = ""
+	j.summaryMu.Unlock()
+	return nil
 }
 
 func (j *ResidentJournal) RecordTurnFinished(spec ResidentChildSpec, turnID string, err error) error {
@@ -301,7 +321,7 @@ func (j *ResidentJournal) RecordTurnFinishedWithCapture(spec ResidentChildSpec, 
 	if turnErr != nil {
 		state, outcome = ResidentFailed, "failed"
 	}
-	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: state, CreatedAt: time.Now().UTC()}
+	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: state, Summary: j.latestAssistantSummary(), CreatedAt: time.Now().UTC()}
 	if turnErr != nil {
 		result.ErrorCode = "turn_failed"
 	}
@@ -318,6 +338,57 @@ func (j *ResidentJournal) RecordTurnFinishedWithCapture(spec ResidentChildSpec, 
 		return recordErr
 	}
 	return writeResidentResult(j.dir, result)
+}
+
+func (j *ResidentJournal) recordAssistantSummary(message provider.Message) {
+	summary := residentAssistantSummary(message)
+	if summary == "" {
+		return
+	}
+	j.summaryMu.Lock()
+	j.latestSummary = summary
+	j.summaryMu.Unlock()
+}
+
+func residentAssistantSummary(message provider.Message) string {
+	var text strings.Builder
+	for _, content := range message.Content {
+		if block, ok := content.(provider.TextBlock); ok {
+			text.WriteString(block.Text)
+		}
+	}
+	return truncateResidentResultSummary(text.String())
+}
+
+func (j *ResidentJournal) latestAssistantSummary() string {
+	if j == nil {
+		return ""
+	}
+	j.summaryMu.RLock()
+	summary := j.latestSummary
+	j.summaryMu.RUnlock()
+	return summary
+}
+
+func (j *ResidentJournal) clearLatestSummary() {
+	if j == nil {
+		return
+	}
+	j.summaryMu.Lock()
+	j.latestSummary = ""
+	j.summaryMu.Unlock()
+}
+
+func truncateResidentResultSummary(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= residentResultSummaryBytes {
+		return text
+	}
+	limit := residentResultSummaryBytes - len("…")
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return strings.TrimSpace(text[:limit]) + "…"
 }
 
 func (j *ResidentJournal) RecordTurnInterrupted(spec ResidentChildSpec, turnID string) error {
@@ -425,6 +496,14 @@ func ReadResidentResult(path string) (ResidentResult, error) {
 	return result, nil
 }
 
+// Result reads this child's bounded latest-turn projection.
+func (j *ResidentJournal) Result() (ResidentResult, error) {
+	if j == nil {
+		return ResidentResult{}, errors.New("resident journal: unavailable")
+	}
+	return ReadResidentResult(filepath.Join(j.dir, residentResultName))
+}
+
 // ReconcileResidentJournal rebuilds the durable projection from the
 // authoritative acceptance record. Work that was queued or running when the
 // host disappeared is recorded as interrupted; it is never made runnable by
@@ -442,7 +521,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 		return ResidentMetadata{}, errors.New("resident journal: invalid accepted child record")
 	}
 	state := ResidentQueued
-	lastFinishedTurn, lastFinishedOutcome := "", ""
+	lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary := "", "", ""
 	seenTurns := make(map[string]string)
 	// The initial prompt is accepted atomically with child.accepted rather than
 	// through a separate turn.accepted record. Seed it so interruption and
@@ -468,6 +547,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 			}
 			seenTurns[record.TurnID] = residentRecordTurnStarted
 			state = ResidentRunning
+			lastAssistantSummary = ""
 		case residentRecordTurnFinished:
 			if record.TurnID == "" || seenTurns[record.TurnID] != residentRecordTurnStarted {
 				return ResidentMetadata{}, errors.New("resident journal: turn finished without start")
@@ -478,6 +558,14 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 				state = ResidentFailed
 			} else {
 				state = ResidentIdle
+			}
+		case residentRecordAssistant:
+			message, err := core.DecodeMessageJSON(record.Message)
+			if err != nil {
+				return ResidentMetadata{}, fmt.Errorf("resident journal: invalid assistant message: %w", err)
+			}
+			if summary := residentAssistantSummary(message); summary != "" {
+				lastAssistantSummary = summary
 			}
 		case residentRecordInterrupted:
 			if record.TurnID != "" && seenTurns[record.TurnID] != residentRecordTurnAccepted && seenTurns[record.TurnID] != residentRecordTurnStarted {
@@ -539,7 +627,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 			if err := writeResidentMetadata(dir, metadata); err != nil {
 				return ResidentMetadata{}, err
 			}
-			if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome); err != nil {
+			if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary); err != nil {
 				return ResidentMetadata{}, err
 			}
 			return metadata, nil
@@ -570,20 +658,20 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 	if err := writeResidentMetadata(dir, metadata); err != nil {
 		return ResidentMetadata{}, err
 	}
-	if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome); err != nil {
+	if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary); err != nil {
 		return ResidentMetadata{}, err
 	}
 	return metadata, nil
 }
 
-func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata ResidentMetadata, turnID, outcome string) error {
+func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata ResidentMetadata, turnID, outcome, summary string) error {
 	if turnID == "" {
 		return nil
 	}
 	if _, err := ReadResidentResult(filepath.Join(dir, residentResultName)); err == nil || !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, CreatedAt: metadata.UpdatedAt}
+	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt}
 	if outcome == "failed" {
 		result.ErrorCode = "turn_failed"
 	}

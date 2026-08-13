@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -245,6 +246,9 @@ func TestReconcileResidentJournalRebuildsMissingTerminalResult(t *testing.T) {
 	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "recovered final answer"}}}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +266,45 @@ func TestReconcileResidentJournalRebuildsMissingTerminalResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TurnID != "turn-1" || result.State != ResidentIdle {
+	if result.TurnID != "turn-1" || result.State != ResidentIdle || result.Summary != "recovered final answer" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestResidentJournalStoresBoundedFinalAssistantSummary(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "final-summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	spec := ResidentChildSpec{ID: "final-summary", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "the child final answer"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ReadResidentResult(filepath.Join(root, spec.ID, residentResultName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary != "the child final answer" {
+		t.Fatalf("result summary = %q", result.Summary)
+	}
+}
+
+func TestTruncateResidentResultSummaryPreservesUTF8Boundary(t *testing.T) {
+	text := strings.Repeat("é", residentResultSummaryBytes)
+	summary := truncateResidentResultSummary(text)
+	if !utf8.ValidString(summary) || !strings.HasSuffix(summary, "…") || len(summary) > residentResultSummaryBytes {
+		t.Fatalf("summary = %q", summary[:min(len(summary), 32)])
 	}
 }
 

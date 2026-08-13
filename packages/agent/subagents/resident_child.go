@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/google/uuid"
@@ -31,6 +32,7 @@ type ResidentCompletion struct {
 	ChildID string
 	Task    string
 	Err     error
+	Summary string
 }
 
 // ResidentChild serializes prompt execution through one control goroutine.
@@ -52,6 +54,7 @@ type ResidentChild struct {
 
 	mu               sync.RWMutex
 	state            ResidentState
+	stateUpdatedAt   time.Time
 	live             *residentLiveProjection
 	cleanupWorkspace bool
 }
@@ -79,16 +82,17 @@ func newResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runner R
 func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runner ResidentTurnRunner) *ResidentChild {
 	ctx, cancel := context.WithCancel(context.Background())
 	child := &ResidentChild{
-		runner:    runner,
-		journal:   journal,
-		workspace: workspace,
-		spec:      spec,
-		ctx:       ctx,
-		cancel:    cancel,
-		inbox:     make(chan residentPrompt),
-		done:      make(chan struct{}),
-		state:     ResidentQueued,
-		live:      newResidentLiveProjection(),
+		runner:         runner,
+		journal:        journal,
+		workspace:      workspace,
+		spec:           spec,
+		ctx:            ctx,
+		cancel:         cancel,
+		inbox:          make(chan residentPrompt),
+		done:           make(chan struct{}),
+		state:          ResidentQueued,
+		stateUpdatedAt: time.Now().UTC(),
+		live:           newResidentLiveProjection(),
 	}
 	if journal != nil {
 		journal.SetEventObserver(func(event core.AgentEvent) {
@@ -129,9 +133,19 @@ func (c *ResidentChild) State() ResidentState {
 	return c.state
 }
 
+func (c *ResidentChild) StateUpdatedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stateUpdatedAt
+}
+
 func (c *ResidentChild) setState(state ResidentState) {
 	c.mu.Lock()
 	c.state = state
+	c.stateUpdatedAt = time.Now().UTC()
 	observer := c.onUpdate
 	c.mu.Unlock()
 	if observer != nil {
@@ -305,7 +319,13 @@ func (c *ResidentChild) run() {
 				c.setState(ResidentIdle)
 			}
 			if c.onCompletion != nil {
-				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr})
+				summary := ""
+				if c.journal != nil {
+					if result, err := c.journal.Result(); err == nil {
+						summary = result.Summary
+					}
+				}
+				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr, Summary: summary})
 			}
 		}
 	}

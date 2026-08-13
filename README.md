@@ -395,16 +395,16 @@ Resident subagents run alongside the main session as independent in-process agen
 /subagents new --reasoning high <task>          # set child reasoning
 /subagents logs <id>                            # open one agent's transcript
 /subagents send <id> <text>                     # send a follow-up turn
-/subagents result <id>                          # show the structured result reference
+/subagents result <id>                          # show the bounded final summary
 /subagents resume <id> <text>                   # explicitly continue a child session
 /subagents kill <id>                            # stop a live child
 ```
 
-**Dashboard (`/subagents` with no arg)** — a bounded list of resident children. Use `up`/`down` then `enter` to open the selected child, or `esc` to close.
+**Dashboard (`/subagents` with no arg)** — a bounded list of resident children, ordered by the latest state change. Rows lead with the profile or model, show `completed` rather than the internal success state, a relative update time, and a short ID. Use `up`/`down` then `enter` to open the selected child, or `esc` to close.
 
 **Inside an agent's transcript** — the overlay uses the main transcript renderer, combining finalized journal history with an immutable live projection. PgUp loads an older bounded page; Up/Down preserves scrollback and PgDn follows new output. Type a follow-up and press `enter`; the draft stays until the manager durably accepts it. Press `esc` to close.
 
-**Lifecycle** — acceptance and finalized transcript records live under managed subagent state as `transcript.jsonl`, with rebuildable `metadata.json`, bounded `result.json`, and optional worktree `patch.diff`. Host shutdown stops all children. A next launch marks work that was queued or running as `interrupted`; it never replays it. Use an explicit new prompt to resume.
+**Lifecycle** — acceptance and finalized transcript records live under managed subagent state as `transcript.jsonl`, with rebuildable `metadata.json`, bounded `result.json` (including up to 16 KiB of final visible assistant text), and optional worktree `patch.diff`. Completion updates carry that bounded final text; open the child transcript for complete history. Host shutdown stops all children. A next launch marks work that was queued or running as `interrupted`; it never replays it. Use an explicit new prompt to resume.
 
 The fair global scheduler defaults to six concurrent turns, one active turn per child. `subagents.max_concurrent` overrides that limit. Queueing has no default deadline; a positive `subagents.queue_timeout` durably fails a prompt that waits too long for a slot. Required child work remains an obligation until an explicit successful follow-up.
 

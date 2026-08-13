@@ -8775,7 +8775,7 @@ func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentComple
 	if completion.Err != nil {
 		status, errText = "failed", completion.Err.Error()
 	}
-	i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText})
+	i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
 	i.reloadOpenResidentChildSession(completion.ChildID)
 	i.invalidate()
 	i.requestCompletionDelivery()

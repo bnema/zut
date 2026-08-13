@@ -13,6 +13,7 @@ type Completion struct {
 	Status  string
 	Task    string
 	Error   string
+	Summary string
 }
 
 // CompletionTracker coordinates resident child completions with the parent
@@ -109,6 +110,9 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 		}
 		if completion.Task != "" {
 			fmt.Fprintf(&b, " — %s", completion.Task)
+		}
+		if completion.Summary != "" {
+			fmt.Fprintf(&b, "\n  final: %s", completion.Summary)
 		}
 		b.WriteByte('\n')
 	}

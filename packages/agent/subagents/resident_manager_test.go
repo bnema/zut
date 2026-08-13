@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
@@ -47,6 +50,28 @@ func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 			t.Fatalf("result projection was not written: %v", readErr)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
+	completed := make(chan ResidentCompletion, 1)
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "the actual child answer"}}}})
+		}, nil
+	})
+	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "summary-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case completion := <-completed:
+		if completion.Summary != "the actual child answer" {
+			t.Fatalf("completion summary = %q", completion.Summary)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resident child did not complete")
 	}
 }
 

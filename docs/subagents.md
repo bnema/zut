@@ -52,7 +52,7 @@ The manager records each accepted child under its managed state root:
 subagents/<child-id>/
   transcript.jsonl  # authoritative accepted turns and finalized messages
   metadata.json     # rebuildable bounded state
-  result.json       # bounded latest-turn result
+  result.json       # latest state plus a bounded final assistant summary
   patch.diff        # optional worktree capture
 ```
 
@@ -90,11 +90,15 @@ The model-facing tools retain their logical names:
 These calls are asynchronous. Completion arrives through the host’s typed
 completion update, not process polling. Do not use sleep loops, repeated
 status calls, journal files, or terminal UI inspection as a completion signal.
+Successful completions include the final visible assistant summary, capped at
+16 KiB; open the child session for the complete durable transcript.
 
-`/subagents` opens the resident-child list. Use arrows and Enter to open a
-child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
-opens its history; `/subagents result <id>`, `kill <id>`, and
-`resume <id> <prompt>` inspect, stop, or continue it.
+`/subagents` opens the resident-child list, ordered by the latest state change.
+Each row leads with the profile (or model), shows a human terminal state such
+as `completed`, a relative update time, and a short ID. Use arrows and Enter to
+open a child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
+opens its history; `/subagents result <id>` shows the bounded final summary;
+`kill <id>` stops it; and `resume <id> <prompt>` continues it.
 
 The child session uses the same transcript renderer as the main session.
 Recent history is bounded and loaded asynchronously; PgUp asks for an older

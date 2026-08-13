@@ -211,7 +211,7 @@ func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config
 			if completion.Err != nil {
 				status, errText = "failed", completion.Err.Error()
 			}
-			tracker.Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText})
+			tracker.Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
 		},
 		OnResidentSpawned: func(subagents.ResidentChildSpec, string) { tracker.TrackResident() },
 	})

@@ -2,6 +2,8 @@ package modes
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/tui"
@@ -58,7 +60,7 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 	if d.offset < 0 {
 		d.offset = 0
 	}
-	d.rows, d.total = d.manager.SnapshotPage(d.offset, limit)
+	d.rows, d.total = d.manager.RecentSnapshotPage(d.offset, limit)
 }
 
 func (d *residentSubagentsDialog) HandleKey(k tui.Key) (openID string) {
@@ -100,20 +102,66 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 		if d.offset+index == d.selected {
 			marker = theme.AccentBar(theme.Accent) + " "
 		}
-		label := fmt.Sprintf("%s%s  %s  %s/%s", marker, row.ID, row.State, row.Provider, row.Model)
-		if row.Profile != "" {
-			label += "  " + row.Profile
-		}
+		name := residentDisplayName(row)
+		label := fmt.Sprintf("%s  %s  %s  %s/%s  %s", name, residentDisplayState(row.State), formatResidentUpdatedAt(row.UpdatedAt, time.Now()), row.Provider, row.Model, shortResidentID(row.ID))
 		if row.WorkspaceMode != "" {
 			label += "  " + string(row.WorkspaceMode)
 		}
 		if row.Required {
 			label += "  required"
 		}
-		lines = append(lines, label)
+		lines = append(lines, marker+truncateResidentSubagentIndicator(label, width-2))
 	}
 	if d.total > len(d.rows) {
 		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.offset+1, d.offset+len(d.rows), d.total))
 	}
 	return lines
+}
+
+func residentDisplayName(row subagents.ResidentSnapshot) string {
+	if name := sanitizeSessionTreeText(row.Profile); name != "" {
+		return name
+	}
+	if model := sanitizeSessionTreeText(row.Model); model != "" {
+		return model
+	}
+	return "subagent"
+}
+
+func residentDisplayState(state subagents.ResidentState) string {
+	if state == subagents.ResidentIdle {
+		return "completed"
+	}
+	return string(state)
+}
+
+func shortResidentID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func formatResidentUpdatedAt(updatedAt, now time.Time) string {
+	if updatedAt.IsZero() {
+		return "time unknown"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	elapsed := now.Sub(updatedAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	switch {
+	case elapsed < time.Minute:
+		return fmt.Sprintf("%ds ago", int(elapsed.Seconds()))
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm ago", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
+	}
 }

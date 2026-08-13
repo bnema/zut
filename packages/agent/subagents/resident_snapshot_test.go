@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestResidentManagerSnapshotPageAndLookupAreBounded(t *testing.T) {
@@ -24,5 +25,17 @@ func TestResidentManagerSnapshotPageAndLookupAreBounded(t *testing.T) {
 	snapshot, ok := manager.SnapshotFor("child-4")
 	if !ok || snapshot.ID != "child-4" {
 		t.Fatalf("single snapshot = %#v, %t", snapshot, ok)
+	}
+}
+
+func TestResidentManagerRecentSnapshotPageOrdersLatestTransitionFirst(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	manager := &ResidentManager{children: map[string]*ResidentChild{}, recovered: map[string]ResidentSnapshot{
+		"older": {ID: "older", State: ResidentIdle, UpdatedAt: now.Add(-time.Hour)},
+		"newer": {ID: "newer", State: ResidentRunning, UpdatedAt: now.Add(-time.Minute)},
+	}, recoveredSpec: map[string]ResidentChildSpec{}, pending: map[string]struct{}{}}
+	page, total := manager.RecentSnapshotPage(0, 1)
+	if total != 2 || len(page) != 1 || page[0].ID != "newer" {
+		t.Fatalf("recent page = %#v/%d", page, total)
 	}
 }

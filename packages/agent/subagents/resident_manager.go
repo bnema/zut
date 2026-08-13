@@ -93,6 +93,17 @@ type ResidentSnapshot struct {
 	Model         string
 	WorkspaceMode WorkspaceMode
 	Required      bool
+	UpdatedAt     time.Time
+}
+
+func residentSnapshot(child *ResidentChild) ResidentSnapshot {
+	if child == nil {
+		return ResidentSnapshot{}
+	}
+	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
+		Provider: child.spec.Provider, Model: child.spec.Model,
+		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
+		UpdatedAt: child.StateUpdatedAt()}
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -479,16 +490,73 @@ func (m *ResidentManager) SnapshotPage(offset, limit int) ([]ResidentSnapshot, i
 	result := make([]ResidentSnapshot, 0, end-offset)
 	for _, id := range ids[offset:end] {
 		if child := live[id]; child != nil {
-			result = append(result, ResidentSnapshot{
-				ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
-				Provider: child.spec.Provider, Model: child.spec.Model,
-				WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
-			})
+			result = append(result, residentSnapshot(child))
 			continue
 		}
 		if snapshot, ok := recovered[id]; ok {
 			result = append(result, snapshot)
 		}
+	}
+	return result, total
+}
+
+// RecentSnapshotPage returns a bounded state projection ordered by the latest
+// visible state transition, newest first. It is intended for the interactive
+// dashboard where operators need to identify the child that just changed.
+func (m *ResidentManager) RecentSnapshotPage(offset, limit int) ([]ResidentSnapshot, int) {
+	if m == nil {
+		return nil, 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	m.mu.Lock()
+	live := make(map[string]*ResidentChild, len(m.children))
+	for id, child := range m.children {
+		live[id] = child
+	}
+	recovered := make(map[string]ResidentSnapshot, len(m.recovered))
+	for id, snapshot := range m.recovered {
+		recovered[id] = snapshot
+	}
+	m.mu.Unlock()
+	ids := make([]string, 0, len(live)+len(recovered))
+	for id := range recovered {
+		ids = append(ids, id)
+	}
+	for id := range live {
+		if _, recoveredAlready := recovered[id]; !recoveredAlready {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := recovered[ids[i]], recovered[ids[j]]
+		if child := live[ids[i]]; child != nil {
+			left = residentSnapshot(child)
+		}
+		if child := live[ids[j]]; child != nil {
+			right = residentSnapshot(child)
+		}
+		if !left.UpdatedAt.Equal(right.UpdatedAt) {
+			return left.UpdatedAt.After(right.UpdatedAt)
+		}
+		return ids[i] < ids[j]
+	})
+	total := len(ids)
+	if offset >= total || limit == 0 {
+		return nil, total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	result := make([]ResidentSnapshot, 0, end-offset)
+	for _, id := range ids[offset:end] {
+		if child := live[id]; child != nil {
+			result = append(result, residentSnapshot(child))
+			continue
+		}
+		result = append(result, recovered[id])
 	}
 	return result, total
 }
@@ -512,9 +580,7 @@ func (m *ResidentManager) ActiveSnapshotPage(limit int) ([]ResidentSnapshot, int
 
 	result := make([]ResidentSnapshot, 0, len(live)+len(recovered))
 	for _, child := range live {
-		snapshot := ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
-			Provider: child.spec.Provider, Model: child.spec.Model,
-			WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required}
+		snapshot := residentSnapshot(child)
 		if snapshot.State == ResidentQueued || snapshot.State == ResidentRunning {
 			result = append(result, snapshot)
 		}
@@ -527,7 +593,12 @@ func (m *ResidentManager) ActiveSnapshotPage(limit int) ([]ResidentSnapshot, int
 			result = append(result, snapshot)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].UpdatedAt.After(result[j].UpdatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
 	total := len(result)
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
@@ -547,9 +618,7 @@ func (m *ResidentManager) SnapshotFor(childID string) (ResidentSnapshot, bool) {
 	recovered, ok := m.recovered[childID]
 	m.mu.Unlock()
 	if child != nil {
-		return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
-			Provider: child.spec.Provider, Model: child.spec.Model,
-			WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required}, true
+		return residentSnapshot(child), true
 	}
 	return recovered, ok
 }
@@ -608,7 +677,7 @@ func (m *ResidentManager) Reconcile() []error {
 		spec := records[0].Spec
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
-			m.recovered[childID] = ResidentSnapshot{ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required}
+			m.recovered[childID] = ResidentSnapshot{ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt}
 			m.recoveredSpec[childID] = *spec
 		}
 		m.mu.Unlock()
@@ -655,8 +724,7 @@ func (m *ResidentManager) Stop(ctx context.Context, childID string) error {
 	m.mu.Lock()
 	if m.children[childID] == child {
 		delete(m.children, childID)
-		m.recovered[childID] = ResidentSnapshot{ID: childID, State: child.State(), Profile: child.spec.Profile,
-			Provider: child.spec.Provider, Model: child.spec.Model, WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required}
+		m.recovered[childID] = residentSnapshot(child)
 		m.recoveredSpec[childID] = child.spec
 	}
 	m.mu.Unlock()
