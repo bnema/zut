@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/google/uuid"
 )
 
@@ -41,6 +42,7 @@ type ResidentChild struct {
 	workspace    WorkspaceHandle
 	spec         ResidentChildSpec
 	onCompletion func(ResidentCompletion)
+	onUpdate     func()
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -89,10 +91,25 @@ func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJour
 		live:      newResidentLiveProjection(),
 	}
 	if journal != nil {
-		journal.SetEventObserver(child.live.Apply)
+		journal.SetEventObserver(func(event core.AgentEvent) {
+			child.live.Apply(event)
+			child.notifyUpdate()
+		})
 	}
 	go child.run()
 	return child
+}
+
+// SetUpdateObserver receives state and live-projection changes after they are
+// visible to readers. It is used by the host to schedule a redraw; it must not
+// block resident execution.
+func (c *ResidentChild) SetUpdateObserver(observer func()) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onUpdate = observer
+	c.mu.Unlock()
 }
 
 // Live returns an immutable copy of the unfinished visible turn.
@@ -115,7 +132,23 @@ func (c *ResidentChild) State() ResidentState {
 func (c *ResidentChild) setState(state ResidentState) {
 	c.mu.Lock()
 	c.state = state
+	observer := c.onUpdate
 	c.mu.Unlock()
+	if observer != nil {
+		observer()
+	}
+}
+
+func (c *ResidentChild) notifyUpdate() {
+	if c == nil {
+		return
+	}
+	c.mu.RLock()
+	observer := c.onUpdate
+	c.mu.RUnlock()
+	if observer != nil {
+		observer()
+	}
 }
 
 // Resume queues a prompt for the legacy in-memory construction seam. Manager
@@ -206,8 +239,8 @@ func (c *ResidentChild) run() {
 					continue
 				}
 			}
-			c.setState(ResidentRunning)
 			c.live.Start(active.turnID)
+			c.setState(ResidentRunning)
 			running = true
 			go func(request residentPrompt) {
 				results <- residentTurnResult{turnID: request.turnID, err: c.runner(c.ctx, request.prompt)}
@@ -215,8 +248,8 @@ func (c *ResidentChild) run() {
 		}
 
 		if interrupted && !running {
-			c.setState(ResidentInterrupted)
 			c.live.Finish(ResidentInterrupted)
+			c.setState(ResidentInterrupted)
 			return
 		}
 
@@ -265,11 +298,11 @@ func (c *ResidentChild) run() {
 				}
 			}
 			if terminalErr != nil {
-				c.setState(ResidentFailed)
 				c.live.Finish(ResidentFailed)
+				c.setState(ResidentFailed)
 			} else {
-				c.setState(ResidentIdle)
 				c.live.Finish(ResidentIdle)
+				c.setState(ResidentIdle)
 			}
 			if c.onCompletion != nil {
 				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr})

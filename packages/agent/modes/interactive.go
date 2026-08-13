@@ -1004,6 +1004,12 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
 	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
+	if cfg.ResidentManager != nil {
+		// Resident updates arrive from the child control goroutine. The
+		// renderer reads its immutable live projection on the next throttled
+		// frame, so this callback must only request that frame.
+		cfg.ResidentManager.SetUpdateObserver(func(string) { i.invalidate() })
+	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = filterHiddenTranscriptMessages(cfg.Agent.Messages())
@@ -2131,6 +2137,15 @@ func (i *Interactive) redraw() {
 	}
 	edLines, curR, curC := i.ed.Render(mainCols)
 	dashboardActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
+	var allResidentSubagentLines []string
+	if !dashboardActive && i.cfg.ResidentManager != nil {
+		const residentIndicatorSnapshotLimit = 8
+		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
+		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols)
+		if hidden := total - len(snapshots); hidden > 0 {
+			allResidentSubagentLines = append(allResidentSubagentLines, residentSubagentActivityOverflowLine(i.cfg.Theme, hidden, mainCols))
+		}
+	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
 		workingLines = []string{"  " + busyPrefix}
@@ -2178,8 +2193,8 @@ func (i *Interactive) redraw() {
 	// content. The status block and editor get their own dedicated
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
-	composeBottom := func() (bottom []string, inputStartRow int) {
-		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(edLines)+9)
+	composeBottom := func(residentSubagentLines []string) (bottom []string, inputStartRow int) {
+		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
 		inputStartRow = -1
 		if len(dialog) > 0 {
 			bottom = append(bottom, "")
@@ -2204,6 +2219,9 @@ func (i *Interactive) redraw() {
 			aboveInput = append(aboveInput, workingLines...)
 		}
 		var belowInput []string
+		// Background resident work belongs directly below the editor. It is
+		// deliberately independent of the main turn's busy/status placement.
+		belowInput = append(belowInput, residentSubagentLines...)
 		if workingBelow {
 			belowInput = append(belowInput, workingLines...)
 		}
@@ -2223,7 +2241,9 @@ func (i *Interactive) redraw() {
 		inputStartRow = len(bottom)
 		bottom = append(bottom, edLines...)
 		if len(belowInput) > 0 {
-			if !lineInput {
+			// Active resident work sits immediately below the prompt. Other
+			// below-input chrome keeps the usual breathing room.
+			if !lineInput && len(residentSubagentLines) == 0 {
 				bottom = append(bottom, "")
 			}
 			bottom = append(bottom, belowInput...)
@@ -2231,7 +2251,22 @@ func (i *Interactive) redraw() {
 		return bottom, inputStartRow
 	}
 
-	bottom, inputStartRow := composeBottom()
+	const rendererBottomMarginRows = 1
+	maxBottomRows := rows - rendererBottomMarginRows - 1
+	residentSubagentLines := allResidentSubagentLines
+	bottom, inputStartRow := composeBottom(residentSubagentLines)
+	if !dashboardActive && len(allResidentSubagentLines) > 0 {
+		for maxRows := len(allResidentSubagentLines); maxRows >= 0; maxRows-- {
+			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, maxRows, mainCols)
+			candidateBottom, candidateInputStartRow := composeBottom(candidate)
+			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
+				residentSubagentLines = candidate
+				bottom = candidateBottom
+				inputStartRow = candidateInputStartRow
+				break
+			}
+		}
+	}
 
 	chatRows := rows - len(bottom)
 	if chatRows < 1 {
@@ -2997,7 +3032,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if session.BeginLoad() {
 				go func() {
 					err := session.LoadOlder(200)
-					session.FinishLoad(err)
+					if session.FinishLoad(err) {
+						i.reloadResidentChildSession(session)
+					}
 					i.invalidate()
 				}()
 			}
@@ -8739,8 +8776,35 @@ func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentComple
 		status, errText = "failed", completion.Err.Error()
 	}
 	i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText})
+	i.reloadOpenResidentChildSession(completion.ChildID)
 	i.invalidate()
 	i.requestCompletionDelivery()
+}
+
+func (i *Interactive) reloadOpenResidentChildSession(childID string) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	session := i.residentChildSession
+	i.mu.Unlock()
+	if session == nil || session.childID != childID || !session.RequestRecentReload() {
+		return
+	}
+	i.reloadResidentChildSession(session)
+}
+
+func (i *Interactive) reloadResidentChildSession(session *residentChildSession) {
+	if i == nil || session == nil {
+		return
+	}
+	go func() {
+		err := session.ReloadRecent(200)
+		if session.FinishLoad(err) {
+			i.reloadResidentChildSession(session)
+		}
+		i.invalidate()
+	}()
 }
 
 func (i *Interactive) ensureCompletionTracker() *subagents.CompletionTracker {

@@ -36,6 +36,7 @@ type ResidentManager struct {
 	dispatchMu       sync.Mutex
 	onCompletion     func(ResidentCompletion)
 	onAccepted       func(ResidentChildSpec, string)
+	onUpdate         func(string)
 }
 
 func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion)) {
@@ -56,6 +57,30 @@ func (m *ResidentManager) SetAcceptedObserver(observer func(ResidentChildSpec, s
 	m.mu.Lock()
 	m.onAccepted = observer
 	m.mu.Unlock()
+}
+
+// SetUpdateObserver receives child IDs whenever their visible state or live
+// projection changes. Observers run without manager or child locks and must
+// return promptly.
+func (m *ResidentManager) SetUpdateObserver(observer func(string)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.onUpdate = observer
+	m.mu.Unlock()
+}
+
+func (m *ResidentManager) notifyUpdate(childID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	observer := m.onUpdate
+	m.mu.Unlock()
+	if observer != nil {
+		observer(childID)
+	}
 }
 
 // ResidentSnapshot is the manager's bounded public state projection. It
@@ -192,6 +217,7 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	observer := m.onCompletion
 	m.mu.Unlock()
 	child := newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
+	child.SetUpdateObserver(func() { m.notifyUpdate(spec.ID) })
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -332,6 +358,7 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 		observer := m.onCompletion
 		m.mu.Unlock()
 		child = newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
+		child.SetUpdateObserver(func() { m.notifyUpdate(spec.ID) })
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
@@ -466,6 +493,48 @@ func (m *ResidentManager) SnapshotPage(offset, limit int) ([]ResidentSnapshot, i
 	return result, total
 }
 
+// ActiveSnapshotPage returns only queued and running children for compact
+// activity surfaces. It deliberately exposes no prompt, transcript, or path.
+func (m *ResidentManager) ActiveSnapshotPage(limit int) ([]ResidentSnapshot, int) {
+	if m == nil {
+		return nil, 0
+	}
+	m.mu.Lock()
+	live := make(map[string]*ResidentChild, len(m.children))
+	for id, child := range m.children {
+		live[id] = child
+	}
+	recovered := make(map[string]ResidentSnapshot, len(m.recovered))
+	for id, snapshot := range m.recovered {
+		recovered[id] = snapshot
+	}
+	m.mu.Unlock()
+
+	result := make([]ResidentSnapshot, 0, len(live)+len(recovered))
+	for _, child := range live {
+		snapshot := ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
+			Provider: child.spec.Provider, Model: child.spec.Model,
+			WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required}
+		if snapshot.State == ResidentQueued || snapshot.State == ResidentRunning {
+			result = append(result, snapshot)
+		}
+	}
+	for id, snapshot := range recovered {
+		if _, exists := live[id]; exists {
+			continue
+		}
+		if snapshot.State == ResidentQueued || snapshot.State == ResidentRunning {
+			result = append(result, snapshot)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	total := len(result)
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, total
+}
+
 // SnapshotFor returns metadata for one child without building a dashboard
 // projection. It keeps child-session headers independent of the total number
 // of resident children.
@@ -591,6 +660,7 @@ func (m *ResidentManager) Stop(ctx context.Context, childID string) error {
 		m.recoveredSpec[childID] = child.spec
 	}
 	m.mu.Unlock()
+	m.notifyUpdate(childID)
 	return nil
 }
 

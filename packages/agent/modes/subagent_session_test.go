@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
@@ -108,6 +109,108 @@ func TestResidentChildSessionPreservesScrolledViewportAndMarksUnread(t *testing.
 	lines = session.Render(60, 12)
 	if containsLine(lines, "new updates below") {
 		t.Fatalf("following tail retained unread marker: %q", lines)
+	}
+}
+
+func TestResidentChildSessionReloadRecentShowsFinalizedTurn(t *testing.T) {
+	root := t.TempDir()
+	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	journal, err := subagents.OpenResidentJournal(root, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "first"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager := subagents.NewResidentManager(root, nil)
+	session := newResidentChildSession(manager, spec.ID, tui.Dark)
+	if err := session.LoadRecent(20); err != nil {
+		t.Fatal(err)
+	}
+	journal, err = subagents.OpenResidentJournal(root, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "finalized without scrolling"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ReloadRecent(20); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(session.View().Build(80), "\n"); !strings.Contains(got, "finalized without scrolling") {
+		t.Fatalf("reloaded child session omitted finalized turn: %q", got)
+	}
+}
+
+func TestResidentChildSessionCoalescesCompletionDuringHistoryLoad(t *testing.T) {
+	session := newResidentChildSession(nil, "child", tui.Dark)
+	if !session.BeginLoad() {
+		t.Fatal("initial history load was not accepted")
+	}
+	if session.RequestRecentReload() {
+		t.Fatal("completion refresh started alongside active history load")
+	}
+	if !session.FinishLoad(nil) {
+		t.Fatal("completion refresh was not retained after active history load")
+	}
+}
+
+func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	stream := make(chan struct{})
+	release := make(chan struct{})
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			<-stream
+			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streamed without input"}); err != nil {
+				return err
+			}
+			<-release
+			return nil
+		}, nil
+	})
+	t.Cleanup(func() {
+		close(release)
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	interactive.residentChildSession = newResidentChildSession(manager, "child", tui.Dark)
+	for {
+		select {
+		case <-interactive.dirty:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	close(stream)
+	select {
+	case <-interactive.dirty:
+	case <-time.After(time.Second):
+		t.Fatal("resident stream did not request a redraw")
+	}
+	lines := interactive.residentChildSession.Render(80, 24)
+	if !containsLine(lines, "streamed without input") {
+		t.Fatalf("open resident child session did not render streamed text: %q", lines)
 	}
 }
 

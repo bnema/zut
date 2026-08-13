@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -14,20 +15,22 @@ import (
 // has no UI lock or disk path: callers load pages asynchronously and discard
 // them when their own dialog generation no longer matches.
 type residentChildSession struct {
-	mu          sync.Mutex
-	manager     *subagents.ResidentManager
-	childID     string
-	olderCursor string
-	view        tui.View
-	composer    *tui.Editor
-	loading     bool
-	err         string
+	mu                  sync.Mutex
+	manager             *subagents.ResidentManager
+	childID             string
+	olderCursor         string
+	view                tui.View
+	composer            *tui.Editor
+	loading             bool
+	recentReloadPending bool
+	err                 string
 	// scrollOffset is measured from the rendered live tail. Keeping the
 	// viewport bottom-relative preserves the same finalized content when an
 	// older page is prepended or the active turn grows.
 	scrollOffset int
 	unread       int
 	lastRows     int
+	recentRows   int
 }
 
 func newResidentChildSession(manager *subagents.ResidentManager, childID string, theme tui.Theme) *residentChildSession {
@@ -46,15 +49,47 @@ func (s *residentChildSession) LoadRecent(limit int) error {
 	if err != nil {
 		return err
 	}
+	s.replaceRecent(messages, page.OlderCursor)
+	return nil
+}
+
+// ReloadRecent replaces only the newest bounded history page. Any older
+// pages already loaded by PgUp remain intact, so following a completed turn
+// does not discard the user's scrollback.
+func (s *residentChildSession) ReloadRecent(limit int) error {
+	if s == nil || s.manager == nil {
+		return fmt.Errorf("resident child session: unavailable")
+	}
+	page, err := s.manager.HistoryPage(s.childID, "", limit)
+	if err != nil {
+		return err
+	}
+	messages, err := subagents.ResidentHistoryMessages(page.Items)
+	if err != nil {
+		return err
+	}
+	s.replaceRecent(messages, page.OlderCursor)
+	return nil
+}
+
+func (s *residentChildSession) replaceRecent(messages []provider.Message, olderCursor string) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
-	s.view.Messages = messages
+	older := len(s.view.Messages) - s.recentRows
+	if older < 0 {
+		older = 0
+	}
+	prefix := append([]provider.Message(nil), s.view.Messages[:older]...)
+	s.view.Messages = append(prefix, messages...)
 	s.view.MessagesRevision++
-	s.olderCursor = page.OlderCursor
+	s.olderCursor = olderCursor
+	s.recentRows = len(messages)
 	s.loading = false
 	s.err = ""
 	s.refreshLiveLocked()
 	s.mu.Unlock()
-	return nil
 }
 
 func (s *residentChildSession) LoadOlder(limit int) error {
@@ -135,16 +170,39 @@ func (s *residentChildSession) BeginLoad() bool {
 	return true
 }
 
-func (s *residentChildSession) FinishLoad(err error) {
+// RequestRecentReload reserves a newest-page refresh. If another history
+// read is already in progress, it coalesces one refresh behind that read.
+func (s *residentChildSession) RequestRecentReload() bool {
 	if s == nil {
-		return
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loading {
+		s.recentReloadPending = true
+		return false
+	}
+	s.loading = true
+	s.err = ""
+	return true
+}
+
+// FinishLoad clears the current history operation and reports whether a
+// terminal child update arrived while it was loading and needs one coalesced
+// newest-page refresh.
+func (s *residentChildSession) FinishLoad(err error) bool {
+	if s == nil {
+		return false
 	}
 	s.mu.Lock()
 	s.loading = false
 	if err != nil {
 		s.err = err.Error()
 	}
+	pending := s.recentReloadPending
+	s.recentReloadPending = false
 	s.mu.Unlock()
+	return pending
 }
 
 // HandleKey updates only the child-local composer. It returns a durable prompt

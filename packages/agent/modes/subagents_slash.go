@@ -93,7 +93,9 @@ func (i *Interactive) openResidentChildSession(childID string) {
 	if session.BeginLoad() {
 		go func() {
 			err := session.LoadRecent(200)
-			session.FinishLoad(err)
+			if session.FinishLoad(err) {
+				i.reloadResidentChildSession(session)
+			}
 			i.invalidate()
 		}()
 	}
