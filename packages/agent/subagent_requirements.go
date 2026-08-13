@@ -13,7 +13,9 @@ const requiredWorkerContextHeader = "[required-subagents update]"
 // resident work remains unresolved. The manager is the sole authority; there
 // is no worker reload or process-side acknowledgement path.
 func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
-	if rt == nil || parent == nil || rt.residentManagerForTools() == nil { return }
+	if rt == nil || parent == nil || rt.residentManagerForTools() == nil {
+		return
+	}
 	previousBeforeAssistant := parent.BeforeAssistantMessage
 	parent.BeforeAssistantMessage = func(text string) (bool, string, string) {
 		unmet := rt.residentManagerForTools().UnmetRequired()
@@ -21,10 +23,14 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 			var b strings.Builder
 			b.WriteString(requiredWorkerContextHeader)
 			b.WriteString("\nTerminal completion is blocked by required resident delegated work:")
-			for _, child := range unmet { fmt.Fprintf(&b, "\n- %s: %s", child.ID, child.State) }
+			for _, child := range unmet {
+				fmt.Fprintf(&b, "\n- %s: %s", child.ID, child.State)
+			}
 			return false, b.String(), ""
 		}
-		if previousBeforeAssistant != nil { return previousBeforeAssistant(text) }
+		if previousBeforeAssistant != nil {
+			return previousBeforeAssistant(text)
+		}
 		return true, "", ""
 	}
 }

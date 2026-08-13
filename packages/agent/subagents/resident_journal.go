@@ -651,12 +651,8 @@ func writeResidentProjection(dir, name string, value any) error {
 	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {
 		return fmt.Errorf("resident projection rename: %w", err)
 	}
-	dirFile, err := os.Open(dir)
-	if err == nil {
-		defer dirFile.Close()
-		if syncErr := dirFile.Sync(); syncErr != nil {
-			return fmt.Errorf("resident projection directory sync: %w", syncErr)
-		}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("resident projection directory sync: %w", err)
 	}
 	return nil
 }
