@@ -202,38 +202,6 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 	}
 }
 
-func TestConfigSettingsStorePersistsSubagentPosition(t *testing.T) {
-	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := (configSettingsStore{}).SetTUISubagentPosition("above_input"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.TUISubagentPosition != "above_input" {
-		t.Fatalf("tui_subagent_position = %q, want above_input", cfg.TUISubagentPosition)
-	}
-	if cfg.Theme != "dark" {
-		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
-	}
-
-	if err := (configSettingsStore{}).SetTUISubagentPosition("below_input"); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.TUISubagentPosition != "" {
-		t.Fatalf("default tui_subagent_position = %q, want omitted", cfg.TUISubagentPosition)
-	}
-}
-
 func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

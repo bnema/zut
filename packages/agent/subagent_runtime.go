@@ -3,9 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,16 +12,16 @@ import (
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/google/uuid"
 )
 
 // subagentRuntime owns the manager-facing runtime assembled around a host
-// session. Keeping this state together is important: every injected manager
-// tool must use the same supervisor, model/provider selection, profile root,
-// policy, callbacks, and shutdown lifecycle.
+// session. Every injected manager tool shares the same resident manager,
+// model/provider selection, profile root, policy, and shutdown lifecycle.
 type subagentRuntime struct {
-	supervisor *subagents.Supervisor
-	args       Args
-	root       string
+	resident *subagents.ResidentManager
+	args     Args
+	root     string
 
 	provider    string
 	model       string
@@ -36,24 +35,15 @@ type subagentRuntime struct {
 	activeModel     func() string
 	activeReasoning func() string
 
-	apiKey          string
-	apiKeyProvider  string
 	webSearchPolicy subagents.WebSearchPolicy
+	policy          subagents.SubagentPolicy
+	activeSession   string
 	webSearchGuard  *webSearchSessionGuard
 
-	onSpawned       func(*subagents.Agent, string, bool)
-	onResumed       func(*subagents.Agent, string, bool)
-	beforeResumed   func(*subagents.Agent, string, bool) func()
-	onStopRequested func(*subagents.Agent)
-
-	requiredReadyMu       sync.RWMutex
-	requiredReady         <-chan struct{}
-	requiredReadyErr      func() error
-	requiredContextMu     sync.Mutex
-	reportedRequiredUnmet map[string]struct{}
-	settingsMu            sync.RWMutex
-	closeMu               sync.Mutex
-	closed                bool
+	onResidentSpawned func(subagents.ResidentChildSpec, string)
+	settingsMu        sync.RWMutex
+	closeMu           sync.Mutex
+	closed            bool
 }
 
 type subagentRuntimeConfiguration struct {
@@ -70,12 +60,9 @@ type subagentRuntimeConfiguration struct {
 // assemble a subagentRuntime. The active selection callbacks are optional;
 // when omitted, the initial Provider/Model/Reasoning values are used.
 type subagentRuntimeConfig struct {
-	Context   context.Context
-	Args      Args
-	Root      string
-	RepoRoot  string
-	TraceDir  string
-	TraceMode subagents.TraceMode
+	Args     Args
+	Root     string
+	RepoRoot string
 
 	Provider    string
 	Model       string
@@ -84,62 +71,34 @@ type subagentRuntimeConfig struct {
 	InsecureTLS bool
 	FastMode    bool
 
-	APIKey          string
-	Policy          subagents.SubagentPolicy
-	WebSearchPolicy subagents.WebSearchPolicy
-	WebSearchGuard  *webSearchSessionGuard
-	ActiveProvider  func() string
-	ActiveModel     func() string
-	ActiveReasoning func() string
-	NewRunner       func(*subagents.Agent) subagents.Runner
-
-	OnSpawned       func(*subagents.Agent, string, bool)
-	OnResumed       func(*subagents.Agent, string, bool)
-	BeforeResumed   func(*subagents.Agent, string, bool) func()
-	OnStopRequested func(*subagents.Agent)
+	Policy             subagents.SubagentPolicy
+	WebSearchPolicy    subagents.WebSearchPolicy
+	WebSearchGuard     *webSearchSessionGuard
+	ActiveProvider     func() string
+	ActiveModel        func() string
+	ActiveReasoning    func() string
+	ResidentCompletion func(subagents.ResidentCompletion)
+	OnResidentSpawned  func(subagents.ResidentChildSpec, string)
 }
 
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
-	if cfg.Context == nil {
-		cfg.Context = context.Background()
-	}
-	if cfg.TraceDir == "" {
-		cfg.TraceDir = strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_DIR"))
-	}
-	if cfg.TraceMode == "" {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_TRACE_MODE"))) {
-		case "", string(subagents.TraceModeNormal):
-			cfg.TraceMode = subagents.TraceModeNormal
-		case string(subagents.TraceModeDetailed):
-			cfg.TraceMode = subagents.TraceModeDetailed
-		default:
-			fmt.Fprintf(os.Stderr, "zut: ignoring invalid ZUT_SUBAGENT_TRACE_MODE\n")
-			cfg.TraceMode = subagents.TraceModeNormal
-		}
-	}
-	if cfg.TraceDir == "" {
-		cfg.TraceMode = subagents.TraceModeNormal
-	}
 	rt := &subagentRuntime{
-		args:            cfg.Args,
-		root:            cfg.Root,
-		provider:        strings.TrimSpace(cfg.Provider),
-		model:           strings.TrimSpace(cfg.Model),
-		reasoning:       strings.TrimSpace(cfg.Reasoning),
-		baseURL:         strings.TrimSpace(cfg.BaseURL),
-		insecureTLS:     cfg.InsecureTLS,
-		fastMode:        cfg.FastMode,
-		repoRoot:        cfg.RepoRoot,
-		activeProvider:  cfg.ActiveProvider,
-		activeModel:     cfg.ActiveModel,
-		activeReasoning: cfg.ActiveReasoning,
-		apiKey:          cfg.APIKey,
-		webSearchPolicy: cfg.WebSearchPolicy,
-		webSearchGuard:  cfg.WebSearchGuard,
-		onSpawned:       cfg.OnSpawned,
-		onResumed:       cfg.OnResumed,
-		beforeResumed:   cfg.BeforeResumed,
-		onStopRequested: cfg.OnStopRequested,
+		args:              cfg.Args,
+		root:              cfg.Root,
+		provider:          strings.TrimSpace(cfg.Provider),
+		model:             strings.TrimSpace(cfg.Model),
+		reasoning:         strings.TrimSpace(cfg.Reasoning),
+		baseURL:           strings.TrimSpace(cfg.BaseURL),
+		insecureTLS:       cfg.InsecureTLS,
+		fastMode:          cfg.FastMode,
+		repoRoot:          cfg.RepoRoot,
+		activeProvider:    cfg.ActiveProvider,
+		activeModel:       cfg.ActiveModel,
+		activeReasoning:   cfg.ActiveReasoning,
+		webSearchPolicy:   cfg.WebSearchPolicy,
+		policy:            cfg.Policy,
+		webSearchGuard:    cfg.WebSearchGuard,
+		onResidentSpawned: cfg.OnResidentSpawned,
 	}
 	if rt.activeProvider == nil {
 		rt.activeProvider = func() string {
@@ -162,45 +121,35 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 			return rt.reasoning
 		}
 	}
-	if rt.apiKey != "" {
-		// A launch-time API key belongs to the provider selected at startup. It
-		// must not follow the live provider callback through a later transition.
-		rt.apiKeyProvider = canonicalProvider(rt.provider)
-	}
-
-	// Packaged agents have an explicit capability ceiling. Until worker
-	// capability propagation exists, they cannot expose delegation tools or a
-	// fresh unrestricted supervisor.
+	// Packaged agents have an explicit capability ceiling and cannot delegate.
 	if cfg.Args.PermissionSet == nil {
 		root := rt.root
 		if strings.TrimSpace(root) == "" {
 			root = filepath.Join(ZutHome(), "subagents")
 			rt.root = root
 		}
-		rt.supervisor = subagents.New(subagents.Config{
-			Context:           cfg.Context,
-			Root:              root,
-			RepoRoot:          cfg.RepoRoot,
-			TraceDir:          cfg.TraceDir,
-			TraceMode:         cfg.TraceMode,
-			Provider:          rt.currentProvider(),
-			FastMode:          cfg.FastMode,
-			WebSearchPolicy:   cfg.WebSearchPolicy,
-			BaseURL:           cfg.BaseURL,
-			InsecureTLS:       cfg.InsecureTLS,
-			NewRunner:         cfg.NewRunner,
-			Policy:            cfg.Policy,
-			ResolveCredential: rt.resolveCredential,
+		rt.resident = subagents.NewResidentManagerWithPolicy(root, cfg.Policy, func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+			return newResidentChildRunner(rt.args, spec, journal)
 		})
+		rt.resident.SetCompletionObserver(cfg.ResidentCompletion)
+		rt.resident.SetAcceptedObserver(cfg.OnResidentSpawned)
 	}
 	return rt
 }
 
-func (rt *subagentRuntime) Supervisor() *subagents.Supervisor {
+// ResidentManager returns the in-process runtime.
+func (rt *subagentRuntime) ResidentManager() *subagents.ResidentManager {
 	if rt == nil {
 		return nil
 	}
-	return rt.supervisor
+	return rt.resident
+}
+
+func (rt *subagentRuntime) residentManagerForTools() *subagents.ResidentManager {
+	if rt == nil {
+		return nil
+	}
+	return rt.resident
 }
 
 func (rt *subagentRuntime) currentProvider() string {
@@ -250,9 +199,6 @@ func (rt *subagentRuntime) SetProvider(providerID string) {
 	rt.settingsMu.Lock()
 	rt.provider = providerID
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetProvider(providerID)
-	}
 }
 
 func (rt *subagentRuntime) SetProviderSettings(baseURL string, insecureTLS bool) {
@@ -264,9 +210,6 @@ func (rt *subagentRuntime) SetProviderSettings(baseURL string, insecureTLS bool)
 	rt.baseURL = baseURL
 	rt.insecureTLS = insecureTLS
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetProviderSettings(baseURL, insecureTLS)
-	}
 }
 
 func (rt *subagentRuntime) SetFastMode(fastMode bool) {
@@ -276,9 +219,6 @@ func (rt *subagentRuntime) SetFastMode(fastMode bool) {
 	rt.settingsMu.Lock()
 	rt.fastMode = fastMode
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetFastMode(fastMode)
-	}
 }
 
 func (rt *subagentRuntime) SetRepoRoot(repoRoot string) {
@@ -288,9 +228,6 @@ func (rt *subagentRuntime) SetRepoRoot(repoRoot string) {
 	rt.settingsMu.Lock()
 	rt.repoRoot = repoRoot
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetRepoRoot(repoRoot)
-	}
 }
 
 // snapshotConfiguration captures the runtime settings changed while an agent
@@ -326,19 +263,91 @@ func (rt *subagentRuntime) restoreConfiguration(snapshot subagentRuntimeConfigur
 	rt.repoRoot = snapshot.repoRoot
 	rt.webSearchPolicy = snapshot.webSearchPolicy
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetProvider(snapshot.provider)
-		rt.supervisor.SetProviderSettings(snapshot.baseURL, snapshot.insecureTLS)
-		rt.supervisor.SetFastMode(snapshot.fastMode)
-		rt.supervisor.SetRepoRoot(snapshot.repoRoot)
-		rt.supervisor.SetWebSearchPolicy(snapshot.webSearchPolicy)
-	}
 }
 
 func (rt *subagentRuntime) SetActiveSession(sessionID string) {
-	if rt != nil && rt.supervisor != nil {
-		rt.supervisor.SetActiveSession(sessionID)
+	if rt == nil {
+		return
 	}
+	rt.settingsMu.Lock()
+	rt.activeSession = strings.TrimSpace(sessionID)
+	rt.settingsMu.Unlock()
+}
+
+func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request tools.ResidentSpawnRequest, catalogue core.Registry) (subagents.ResidentChildSpec, error) {
+	if rt == nil {
+		return subagents.ResidentChildSpec{}, errors.New("resident runtime is unavailable")
+	}
+	rt.settingsMu.RLock()
+	activeProvider := strings.TrimSpace(rt.provider)
+	providerID, model, reasoning := activeProvider, rt.model, rt.reasoning
+	baseURL, insecureTLS := rt.baseURL, rt.insecureTLS
+	workspace, parentSession := rt.repoRoot, rt.activeSession
+	fastMode, policy := rt.fastMode, rt.policy
+	rt.settingsMu.RUnlock()
+	if strings.TrimSpace(request.Provider) != "" {
+		providerID = strings.TrimSpace(request.Provider)
+	}
+	if strings.TrimSpace(request.Model) != "" {
+		model = request.Model
+	}
+	if strings.TrimSpace(request.Reasoning) != "" {
+		reasoning = request.Reasoning
+	}
+	if request.FastMode != nil {
+		fastMode = *request.FastMode
+	}
+	if strings.TrimSpace(providerID) == "" || strings.TrimSpace(model) == "" {
+		return subagents.ResidentChildSpec{}, errors.New("resident child needs a provider and model")
+	}
+	if providerID != activeProvider {
+		// A custom endpoint and TLS exception belong to the provider that
+		// declared them. Never carry a parent route into an explicitly
+		// selected provider: Resolve must use that provider's own settings.
+		baseURL, insecureTLS = "", false
+	}
+	allTools := make([]string, 0, len(catalogue))
+	for name := range catalogue {
+		switch name {
+		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal":
+			continue
+		}
+		allTools = append(allTools, name)
+	}
+	sort.Strings(allTools)
+	permitted := func(name string) bool { return policy.AllowsTool(name) }
+	var childTools []string
+	var err error
+	if request.Profile == nil || !request.Profile.ToolsDeclared {
+		for _, name := range allTools {
+			if permitted(name) {
+				childTools = append(childTools, name)
+			}
+		}
+	} else {
+		childTools, err = subagents.ResolveProfileTools(request.Profile, allTools, permitted)
+		if err != nil {
+			return subagents.ResidentChildSpec{}, err
+		}
+	}
+	workspaceMode := request.WorkspaceMode
+	if workspaceMode == "" {
+		workspaceMode = subagents.WorkspaceShared
+	}
+	spec := subagents.ResidentChildSpec{
+		ID: uuid.NewString(), SessionID: uuid.NewString(), ParentSessionID: parentSession,
+		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
+		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode, Tools: childTools,
+		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,
+	}
+	if request.Profile != nil {
+		spec.Profile = request.Profile.Name
+		spec.SystemPrompt = request.Profile.SystemPrompt
+		spec.SystemPromptMode = request.Profile.SystemPromptMode
+		spec.InheritProjectContext = request.Profile.InheritProjectContext
+		spec.InheritSkills = request.Profile.InheritSkills
+	}
+	return spec, nil
 }
 
 func (rt *subagentRuntime) SetWebSearchPolicy(policy subagents.WebSearchPolicy) {
@@ -348,36 +357,6 @@ func (rt *subagentRuntime) SetWebSearchPolicy(policy subagents.WebSearchPolicy) 
 	rt.settingsMu.Lock()
 	rt.webSearchPolicy = policy
 	rt.settingsMu.Unlock()
-	if rt.supervisor != nil {
-		rt.supervisor.SetWebSearchPolicy(policy)
-	}
-}
-
-func (rt *subagentRuntime) resolveCredential(ctx context.Context, providerID string) (subagents.Credential, error) {
-	childProvider := canonicalProvider(providerID)
-	if childProvider == "" {
-		childProvider = canonicalProvider(rt.currentProvider())
-	}
-	explicit := ""
-	// A launch-time API key is scoped to the provider selected at startup.
-	// Never send it to an explicitly different child provider; resolve that
-	// provider's own credential instead.
-	if rt.apiKey != "" && childProvider == rt.apiKeyProvider {
-		explicit = rt.apiKey
-	}
-	if childProvider == "ollama" && explicit == "" {
-		return subagents.Credential{Value: "ollama", Method: "apikey"}, nil
-	}
-	credential, method, accountID, err := ResolveCredentialFullContext(ctx, childProvider, explicit)
-	if err != nil {
-		// Providers backed only by a local endpoint do not need a key. Leave
-		// stdin untouched and let the child resolve that endpoint.
-		if !CredentialAvailable(childProvider) {
-			return subagents.Credential{}, nil
-		}
-		return subagents.Credential{}, err
-	}
-	return subagents.Credential{Value: credential, Method: method, AccountID: accountID}, nil
 }
 
 func (rt *subagentRuntime) resolveSubagent(name string) (*subagents.Profile, error) {
@@ -394,13 +373,13 @@ func (rt *subagentRuntime) resolveSubagent(name string) (*subagents.Profile, err
 // policy. It deliberately mutates the supplied registry, matching the normal
 // interactive registry assembly path.
 func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
-	if reg == nil || rt == nil || rt.supervisor == nil || !autoSubagentsAnyToolAllowed(rt.args) {
+	if reg == nil || rt == nil || rt.resident == nil || !autoSubagentsAnyToolAllowed(rt.args) {
 		return reg
 	}
 	if autoSubagentsToolAllowed(rt.args) {
 		spawn := &tools.SubagentSpawnTool{
-			Supervisor: rt.supervisor,
-			Enabled:    func() bool { return true },
+			ResidentManager: rt.residentManagerForTools(),
+			Enabled:         func() bool { return true },
 			DefaultModel: func() string {
 				return rt.currentModel()
 			},
@@ -411,31 +390,31 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 				return rt.currentReasoning()
 			},
 			ResolveSubagent: rt.resolveSubagent,
-			OnSpawned:       rt.onSpawned,
+			BuildResidentSpec: func(ctx context.Context, request tools.ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+				return rt.buildResidentChildSpec(ctx, request, reg)
+			},
+			OnResidentSpawned: rt.onResidentSpawned,
 		}
 		reg[spawn.Name()] = spawn
 	}
 	if autoSubagentsStatusToolAllowed(rt.args) {
 		status := &tools.SubagentStatusTool{
-			Supervisor: rt.supervisor,
-			Enabled:    func() bool { return true },
+			ResidentManager: rt.residentManagerForTools(),
+			Enabled:         func() bool { return true },
 		}
 		reg[status.Name()] = status
 	}
 	if autoSubagentsStopToolAllowed(rt.args) {
 		stop := &tools.SubagentStopTool{
-			Supervisor:      rt.supervisor,
+			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
-			OnStopRequested: rt.onStopRequested,
 		}
 		reg[stop.Name()] = stop
 	}
 	if autoSubagentsResumeToolAllowed(rt.args) {
 		resume := &tools.SubagentResumeTool{
-			Supervisor:    rt.supervisor,
-			Enabled:       func() bool { return true },
-			BeforeResumed: rt.beforeResumed,
-			OnResumed:     rt.onResumed,
+			ResidentManager: rt.residentManagerForTools(),
+			Enabled:         func() bool { return true },
 		}
 		reg[resume.Name()] = resume
 	}
@@ -451,10 +430,6 @@ func (rt *subagentRuntime) PrepareRegistry(reg core.Registry) core.Registry {
 }
 
 func (rt *subagentRuntime) PrepareResolvedRegistry(reg core.Registry, policy subagents.WebSearchPolicy) core.Registry {
-	// Keep the supervisor's capability policy in lockstep with the resolved
-	// parent registry. This is especially important after entry.pre refreshes
-	// permissions: workers launched after the refresh must not retain the old
-	// parent allow decision.
 	if rt != nil {
 		rt.SetWebSearchPolicy(webSearchPolicyForRegistry(policy, reg))
 	}
@@ -465,7 +440,7 @@ func (rt *subagentRuntime) PrepareResolvedRegistry(reg core.Registry, policy sub
 }
 
 func (rt *subagentRuntime) Close(ctx context.Context) error {
-	if rt == nil || rt.supervisor == nil {
+	if rt == nil {
 		return nil
 	}
 	rt.closeMu.Lock()
@@ -473,9 +448,11 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 	if rt.closed {
 		return nil
 	}
-	stopErr := rt.supervisor.StopAllContext(ctx)
-	closeErr := rt.supervisor.CloseContext(ctx)
-	if err := errors.Join(stopErr, closeErr); err != nil {
+	var err error
+	if rt.resident != nil {
+		err = errors.Join(err, rt.resident.Close(ctx))
+	}
+	if err != nil {
 		return err
 	}
 	rt.closed = true
@@ -494,18 +471,9 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 		return parsed
 	}
 	return subagents.SubagentPolicy{
-		MaxConcurrent:          cfg.MaxConcurrent,
-		MaxConcurrentPerParent: cfg.MaxConcurrentPerParent,
-		QueueTimeout:           parseDuration(cfg.QueueTimeout),
-		StartupTimeout:         parseDuration(cfg.StartupTimeout),
-		DefaultTimeout:         parseDuration(cfg.DefaultTimeout),
-		MaxOutputBytes:         cfg.MaxOutputBytes,
-		MaxOutputLines:         cfg.MaxOutputLines,
-		AllowedTools:           append([]string(nil), cfg.AllowedTools...),
-		AllowedRoots:           append([]string(nil), cfg.AllowedRoots...),
-		HeartbeatInterval:      parseDuration(cfg.HeartbeatInterval),
-		IdleTimeout:            parseDuration(cfg.IdleTimeout),
-		ReconnectTimeout:       parseDuration(cfg.ReconnectTimeout),
-		CancelGracePeriod:      parseDuration(cfg.CancelGracePeriod),
+		MaxConcurrent: cfg.MaxConcurrent,
+		QueueTimeout:  parseDuration(cfg.QueueTimeout),
+		AllowedTools:  append([]string(nil), cfg.AllowedTools...),
+		AllowedRoots:  append([]string(nil), cfg.AllowedRoots...),
 	}
 }

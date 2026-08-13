@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // requestMaxRetries is the maximum number of retries for transient connect or
@@ -93,9 +95,7 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if lifecycle != nil {
-			lifecycle.RequestAttempt(attempt+1, maxAttempts)
-		}
+		reportRequestAttempt(lifecycle, attempt+1, maxAttempts)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -153,6 +153,16 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 		lastErr = errors.New("retry loop exhausted")
 	}
 	return nil, lastErr
+}
+
+func reportRequestAttempt(lifecycle RequestLifecycle, attempt, maxAttempts int) {
+	if lifecycle == nil {
+		return
+	}
+	lifecycle.RequestAttempt(attempt, maxAttempts)
+	if withID, ok := lifecycle.(RequestAttemptIDLifecycle); ok {
+		withID.RequestAttemptID(uuid.NewString(), attempt, maxAttempts)
+	}
 }
 
 // transientHTTPError is the placeholder error returned while we're

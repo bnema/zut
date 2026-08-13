@@ -266,6 +266,14 @@ type RequestLifecycle interface {
 	RetryScheduled(attempt, maxAttempts int, delay time.Duration)
 }
 
+// RequestAttemptIDLifecycle optionally receives a provider-generated identity
+// for each network attempt. It is deliberately separate from RequestContext:
+// SessionID and TurnID remain stable core identities, while request IDs are
+// transport-local and must never be serialized into provider payloads.
+type RequestAttemptIDLifecycle interface {
+	RequestAttemptID(requestID string, attempt, maxAttempts int)
+}
+
 // RequestFailureReason is an allowlisted request-failure category. It is safe
 // to persist; raw provider errors and response bodies are not.
 type RequestFailureReason string
@@ -288,6 +296,15 @@ type RequestFailureLifecycle interface {
 	RequestFailed(attempt, maxAttempts int, reason RequestFailureReason, terminal bool)
 }
 
+// RequestContext identifies one logical agent session and one accepted turn.
+// Values are opaque provider-neutral correlation IDs. Providers may translate
+// them into cache controls or session-affinity fields, but must not replace
+// them with transport-attempt IDs.
+type RequestContext struct {
+	SessionID string
+	TurnID    string
+}
+
 // Request is a single LLM call.
 type Request struct {
 	Model         string
@@ -307,6 +324,9 @@ type Request struct {
 	// Lifecycle receives in-memory request-attempt notifications. It is not
 	// included in any provider request payload.
 	Lifecycle RequestLifecycle
+	// Context carries the stable logical session and turn identities for this
+	// request. Provider clients own any per-network-attempt identity.
+	Context RequestContext
 }
 
 // SystemPrompt returns the stable system prompt plus optional model-only

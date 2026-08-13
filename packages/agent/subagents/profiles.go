@@ -1,5 +1,5 @@
 // Package subagents discovers named agent profiles that can be selected by
-// zut's subagent supervisor. Profiles use the common markdown/frontmatter layout:
+// zut's resident subagent runtime. Profiles use the common markdown/frontmatter layout:
 // a YAML-like metadata block followed by the agent's system prompt.
 //
 // Discovery prefers explicitly configured directories, then the shared
@@ -26,9 +26,12 @@ type Profile struct {
 	Description  string
 	SystemPrompt string
 	Tools        []string
-	Model        string
-	Provider     string
-	Thinking     string
+	// ToolsDeclared distinguishes an omitted tools key (inherit the
+	// child-safe catalogue) from an explicit empty list (grant no tools).
+	ToolsDeclared bool
+	Model         string
+	Provider      string
+	Thinking      string
 
 	// Nil means the profile did not specify whether fast mode is enabled.
 	FastMode *bool
@@ -120,6 +123,33 @@ func (p *Profile) ModelSelection() (provider, model string) {
 		}
 	}
 	return provider, model
+}
+
+// ResolveProfileTools applies a profile's exact frontmatter declaration to a
+// host-provided child-safe catalogue. An omitted declaration inherits that
+// catalogue; an explicit empty list grants no tools. Explicit names are never
+// silently dropped: each must exist and remain permitted by the current host
+// policy.
+func ResolveProfileTools(profile *Profile, childSafe []string, permitted func(string) bool) ([]string, error) {
+	if profile == nil || !profile.ToolsDeclared {
+		return append([]string(nil), childSafe...), nil
+	}
+	catalogue := make(map[string]struct{}, len(childSafe))
+	for _, name := range childSafe {
+		catalogue[name] = struct{}{}
+	}
+	resolved := make([]string, 0, len(profile.Tools))
+	for _, name := range profile.Tools {
+		name = strings.TrimSpace(name)
+		if _, ok := catalogue[name]; !ok {
+			return nil, fmt.Errorf("profile %q declares unknown tool %q", profile.Name, name)
+		}
+		if permitted != nil && !permitted(name) {
+			return nil, fmt.Errorf("profile %q tool %q is not permitted by the current policy", profile.Name, name)
+		}
+		resolved = append(resolved, name)
+	}
+	return resolved, nil
 }
 
 // SystemPromptAddendum renders the compact [subagents_list] manifest for the
@@ -238,16 +268,18 @@ func load(path, source string) (*Profile, error) {
 	if provider != "" && strings.Contains(model, "/") {
 		return nil, fmt.Errorf("model must not include a provider when provider is set")
 	}
+	_, toolsDeclared := lists["tools"]
 	profile := &Profile{
-		Name:         strings.TrimSpace(name),
-		Description:  strings.TrimSpace(unquote(values["description"])),
-		SystemPrompt: strings.TrimSpace(body),
-		Tools:        lists["tools"],
-		Model:        model,
-		Provider:     provider,
-		Thinking:     thinking,
-		Path:         path,
-		Source:       source,
+		Name:          strings.TrimSpace(name),
+		Description:   strings.TrimSpace(unquote(values["description"])),
+		SystemPrompt:  strings.TrimSpace(body),
+		Tools:         lists["tools"],
+		ToolsDeclared: toolsDeclared,
+		Model:         model,
+		Provider:      provider,
+		Thinking:      thinking,
+		Path:          path,
+		Source:        source,
 	}
 	profile.SystemPromptMode = "append"
 	if mode, ok := values["systempromptmode"]; ok {
@@ -336,7 +368,7 @@ func parseFrontmatter(front string) (map[string]string, map[string][]string) {
 				items = append(items, unquote(strings.TrimSpace(strings.TrimPrefix(next, "-"))))
 				i = j
 			}
-			if len(items) > 0 {
+			if key == "tools" || len(items) > 0 {
 				lists[key] = items
 			}
 			continue

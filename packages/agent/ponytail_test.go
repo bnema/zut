@@ -153,7 +153,7 @@ func TestResolvePonytailModeAppliesAcrossHeadlessModesAndCustomIdentity(t *testi
 	t.Setenv("ZUT_HOME", filepath.Join(root, "zut-home"))
 	t.Setenv("HOME", filepath.Join(root, "home"))
 
-	modes := []Mode{"", ModePrint, ModeStream, ModeJSON, ModeRPC, ModeSubagentWorker}
+	modes := []Mode{"", ModePrint, ModeStream, ModeJSON, ModeRPC}
 	for _, mode := range modes {
 		resolved, err := Resolve(Args{
 			Mode:         mode,

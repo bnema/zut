@@ -32,7 +32,7 @@ type WorkspaceRequest struct {
 	AllowedRoots   []string
 
 	// ExistingPath is set only when resuming a detached worktree. A valid
-	// path is reused so uncommitted edits survive a supervisor restart;
+	// path is reused so uncommitted edits survive a host restart;
 	// invalid or out-of-scope paths are rejected rather than treated as a
 	// request to remove arbitrary files.
 	ExistingPath string
@@ -48,8 +48,8 @@ type WorkspaceHandle interface {
 	Cleanup(context.Context) error
 }
 
-// SharedWorkspace leaves the host checkout untouched by the supervisor; a
-// child may edit it exactly as older subagent workers did.
+// SharedWorkspace leaves the host checkout untouched by the manager; a
+// child may edit it when the caller intentionally chooses shared mode.
 type SharedWorkspace struct {
 	Root string
 }
@@ -203,6 +203,51 @@ func validateReusableWorktree(ctx context.Context, repositoryRoot, stateDir, exp
 		}
 	}
 	return false, errors.New("subagents worktree resume checkout is not registered with Git")
+}
+
+func pathWithin(path, root string) bool {
+	pathAbs, err := containmentPath(path)
+	if err != nil {
+		return false
+	}
+	rootAbs, err := containmentPath(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(rootAbs), filepath.Clean(pathAbs))
+	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))
+}
+
+// containmentPath resolves the nearest existing ancestor so validation also
+// works for durable paths whose final component has not been created yet.
+func containmentPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	absolute = filepath.Clean(absolute)
+	current := absolute
+	var missing []string
+	for {
+		if _, statErr := os.Lstat(current); statErr == nil {
+			evaluated, evalErr := filepath.EvalSymlinks(current)
+			if evalErr != nil {
+				return "", evalErr
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				evaluated = filepath.Join(evaluated, missing[index])
+			}
+			return filepath.Clean(evaluated), nil
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return absolute, nil
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 type gitWorktreeHandle struct {

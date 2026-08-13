@@ -13,9 +13,8 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// SubagentSpawnTool lets the main agent delegate work against the host's cwd
-// via subagents.Supervisor.SpawnReq. Every spawn returns immediately and runs in
-// the background. Required work records a durable obligation that must be
+// SubagentSpawnTool lets the main agent delegate work through the resident
+// manager. Every spawn returns immediately and runs in the background. Required work records a durable obligation that must be
 // resolved before the parent can produce its terminal response.
 //
 // Available when the host's launch-time tool policy permits delegation. The
@@ -29,9 +28,9 @@ const (
 )
 
 type SubagentSpawnTool struct {
-	// Supervisor is the supervisor used to spawn agents. Nil means subagents
-	// are unavailable in this mode and the tool always errors.
-	Supervisor *subagents.Supervisor
+	ResidentManager   *subagents.ResidentManager
+	BuildResidentSpec func(context.Context, ResidentSpawnRequest) (subagents.ResidentChildSpec, error)
+	OnResidentSpawned func(subagents.ResidentChildSpec, string)
 
 	// Enabled reports whether the host currently exposes this tool. When nil,
 	// the tool is treated as disabled.
@@ -46,12 +45,20 @@ type SubagentSpawnTool struct {
 	DefaultReasoning func() string
 
 	// ResolveSubagent validates and resolves a named markdown profile.
-	// The child receives only the name and loads the profile itself.
 	ResolveSubagent func(name string) (*subagents.Profile, error)
+}
 
-	// OnSpawned, if set, is called after every successful spawn with the
-	// requirement mode. Hosts track every worker for asynchronous completion.
-	OnSpawned func(agent *subagents.Agent, task string, required bool)
+// ResidentSpawnRequest is the resolved tool input the host uses to construct
+// a complete non-secret resident ChildSpec.
+type ResidentSpawnRequest struct {
+	Task          string
+	Profile       *subagents.Profile
+	Model         string
+	Provider      string
+	Reasoning     string
+	FastMode      *bool
+	Required      bool
+	WorkspaceMode subagents.WorkspaceMode
 }
 
 type subagentSpawnArgs struct {
@@ -108,7 +115,7 @@ const subagentSpawnSchemaTemplate = `{
 
 func (t *SubagentSpawnTool) Name() string { return SubagentSpawnToolName }
 func (t *SubagentSpawnTool) Description() string {
-	return "Delegate work to a sub-agent. Every spawn returns immediately and completion is host-event-driven through [auto-subagents update]. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
+	return "Delegate work to a resident sub-agent. Every spawn returns immediately and completion is host-event-driven through [auto-subagents update]. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentSpawnSchemaTemplate)
@@ -116,20 +123,15 @@ func (t *SubagentSpawnTool) Schema() json.RawMessage {
 
 func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	prefix := t.Name()
-	if t.Supervisor == nil {
-		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
+	if t.ResidentManager == nil {
+		return protocolToolError(prefix + ": subagent runtime not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
 		return protocolToolError(prefix + ": subagent delegation is unavailable in this mode")
 	}
 	var a subagentSpawnArgs
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&a); err != nil {
-		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return core.ToolResult{}, fmt.Errorf("invalid args: trailing JSON value")
+	if err := decodeSubagentArgs(raw, &a); err != nil {
+		return core.ToolResult{}, err
 	}
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
@@ -146,7 +148,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	agentName := strings.TrimSpace(a.Agent)
 	var profile *subagents.Profile
 	var fastModeOverride *bool
-	fastModeFromProfile := false
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
 			return protocolToolError(prefix + ": named subagent profiles are unavailable")
@@ -161,19 +162,13 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		}
 		agentName = profile.Name
 		fastModeOverride = profile.FastMode
-		fastModeFromProfile = profile.FastMode != nil
 	}
 	if a.FastMode != nil {
 		fastModeOverride = a.FastMode
-		fastModeFromProfile = false
 	}
 
 	model := strings.TrimSpace(a.Model)
 	providerID := strings.TrimSpace(a.Provider)
-	var profileTools []string
-	if profile != nil {
-		profileTools = append([]string(nil), profile.Tools...)
-	}
 	if (model == "") != (providerID == "") {
 		return protocolToolError(prefix + ": omit both model/provider to inherit the host or profile, or provide both explicitly")
 	}
@@ -212,80 +207,46 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			return protocolToolError(prefix + ": host " + err.Error())
 		}
 	}
-
-	agent, err := t.Supervisor.SpawnReq(ctx, subagents.SpawnRequest{
-		Task:          task,
-		Model:         model,
-		Provider:      providerID,
-		Reasoning:     reasoning,
-		FastMode:      fastModeOverride,
-		Subagent:      agentName,
-		Required:      a.Required,
+	if t.BuildResidentSpec == nil {
+		return protocolToolError(prefix + ": resident child factory is unavailable")
+	}
+	spec, err := t.BuildResidentSpec(ctx, ResidentSpawnRequest{
+		Task: task, Profile: profile, Model: model, Provider: providerID,
+		Reasoning: reasoning, FastMode: fastModeOverride, Required: a.Required,
 		WorkspaceMode: workspaceMode,
-		Tools:         profileTools,
 	})
 	if err != nil {
+		return protocolToolError(prefix + ": " + err.Error())
+	}
+	if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
-	if t.OnSpawned != nil {
-		t.OnSpawned(agent, task, a.Required)
-	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "spawned sub-agent %s\n", agent.ID)
-	fmt.Fprintf(&sb, "state: %s/%s\n", agent.ProcessState(), agent.TurnState())
-	fmt.Fprintf(&sb, "workspace: %s\n", agent.WorkspaceMode)
-	fmt.Fprintf(&sb, "task: %s\n", truncateTask(task, 200))
-	if agentName != "" {
-		fmt.Fprintf(&sb, "agent: %s\n", agentName)
+	fmt.Fprintf(&sb, "spawned sub-agent %s\nstate: queued\nworkspace: %s\ntask: %s\n", spec.ID, spec.WorkspaceMode, truncateTask(task, 200))
+	if spec.Profile != "" {
+		fmt.Fprintf(&sb, "agent: %s\n", spec.Profile)
 	}
-	if model != "" {
-		fmt.Fprintf(&sb, "model: %s\n", model)
+	fmt.Fprintf(&sb, "model: %s\nprovider: %s\n", spec.Model, spec.Provider)
+	if spec.Reasoning != "" {
+		fmt.Fprintf(&sb, "reasoning: %s\n", spec.Reasoning)
 	}
-	if providerID != "" {
-		fmt.Fprintf(&sb, "provider: %s\n", providerID)
-	}
-	if reasoning != "" {
-		fmt.Fprintf(&sb, "reasoning: %s\n", reasoning)
-	}
-	if agent.FastMode {
-		sb.WriteString("fast mode: enabled\n")
-	}
-	if fastModeFromProfile && fastModeOverride != nil && *fastModeOverride && agent.FastModeOverridesHost() {
-		sb.WriteString("warning: subagent profile has fast mode enabled, overriding global fast mode off\n")
-	}
-	if a.Required {
+	if spec.Required {
 		sb.WriteString("required: pending\n")
 	}
-	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update], the only completion signal; the manager remains free for independent work. ")
-	sb.WriteString("Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. ")
-	sb.WriteString("Work on unrelated independent tasks; otherwise end or yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed.")
-	timeoutDetail := "unlimited"
-	if agent.Timeout > 0 {
-		timeoutDetail = agent.Timeout.String()
+	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update].")
+	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: sb.String()}}}, nil
+}
+
+func decodeSubagentArgs(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("invalid args: %w", err)
 	}
-	details := map[string]any{
-		"agent_id":      agent.ID,
-		"task":          task,
-		"agent":         agentName,
-		"model":         model,
-		"provider":      providerID,
-		"reasoning":     reasoning,
-		"fast_mode":     agent.FastMode,
-		"required":      a.Required,
-		"isolation":     string(workspaceMode),
-		"timeout":       timeoutDetail,
-		"state":         agent.Status(),
-		"process_state": string(agent.ProcessState()),
-		"turn_state":    string(agent.TurnState()),
-		"result_ref":    subagents.ResultRef(agent.ID),
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("invalid args: trailing JSON value")
 	}
-	if a.Required {
-		details["requirement_state"] = string(subagents.RequirementPending)
-	}
-	return core.ToolResult{
-		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
-		Details: details,
-	}, nil
+	return nil
 }
 
 func normalizeReasoning(value string) (string, error) {

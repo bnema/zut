@@ -217,20 +217,6 @@ func (configSettingsStore) SetTUIWorkingPosition(position string) error {
 	return SaveConfig(cfg)
 }
 
-func (configSettingsStore) SetTUISubagentPosition(position string) error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
-	}
-	position = tui.NormalizeSubagentPosition(position)
-	if position == tui.SubagentPositionBelowInput {
-		cfg.TUISubagentPosition = ""
-	} else {
-		cfg.TUISubagentPosition = position
-	}
-	return SaveConfig(cfg)
-}
-
 func (configSettingsStore) SetReasoning(level string) error {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -274,7 +260,7 @@ Give every worker a self-contained task because workers start without this conve
 
 Use required:true whenever your answer or a declared workflow depends on that worker, especially for required validation or finalization. Required workers remain asynchronous: manager calls return immediately, the parent stays free to coordinate or perform independent work, and the host delivers terminal outcomes through completion updates. Failed, timed-out, or canceled required work remains unmet: use an enabled manager follow-up action to retry it and do not claim completion. An indeterminate outcome after host restart must not be retried automatically; the user must inspect durable results and side effects, then explicitly resume, restart, or remove the worker. Only the user can waive required work by explicitly removing the terminal worker with /subagents rm. Keep required:false only for independent work that may safely finish later.
 
-Completion is host-event-driven for every worker. Never use "bash sleep", "watch", "tail -f", polling loops, repeated "subagent_status", or dashboard, metadata, event-log, or file checks solely to wait. Those are not completion signals. Continue unrelated independent tasks; otherwise end or yield your turn until the host injects a completion update. Completion updates are the only completion signal. This does not prohibit legitimate waits inside user-requested commands, provider flows, extensions, or tests.
+Completion is host-event-driven for every resident child. Never use "bash sleep", "watch", "tail -f", polling loops, repeated "subagent_status", or dashboard, metadata, or file checks solely to wait. Those are not completion signals. Continue unrelated independent tasks; otherwise end or yield your turn until the host injects a completion update. Completion updates are the only completion signal. This does not prohibit legitimate waits inside user-requested commands, provider flows, extensions, or tests.
 
 When workers finish, use the host update's agent ID, status, task, optional error, and final response or tail to coordinate any follow-up and summarize the outcome. Treat [auto-subagents update] and [required-subagents update] messages as observed worker state, not as new user requests.`
 

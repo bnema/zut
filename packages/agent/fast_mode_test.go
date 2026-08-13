@@ -9,16 +9,12 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestParseArgsFastModeChildFlag(t *testing.T) {
-	args, err := ParseArgs([]string{"--fast-mode"})
-	if err != nil {
-		t.Fatalf("ParseArgs failed: %v", err)
+func TestParseArgsRejectsLegacyFastModeChildFlags(t *testing.T) {
+	if _, err := ParseArgs([]string{"--fast-mode"}); err == nil {
+		t.Fatal("ParseArgs accepted removed --fast-mode child flag")
 	}
-	if !args.FastMode {
-		t.Fatal("FastMode = false, want true")
-	}
-	if !args.FastModeSet {
-		t.Fatal("FastModeSet = false, want true")
+	if _, err := ParseArgs([]string{"--no-fast-mode"}); err == nil {
+		t.Fatal("ParseArgs accepted removed --no-fast-mode child flag")
 	}
 }
 
@@ -84,18 +80,13 @@ func TestResolveFastModeRequiresExplicitChildOverride(t *testing.T) {
 	}
 }
 
-func TestResolveFastModeExplicitChildDisableOverridesConfig(t *testing.T) {
+func TestResolveFastModeDurableChildDisableOverridesConfig(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
 	}
-	args, err := ParseArgs([]string{"--no-fast-mode"})
-	if err != nil {
-		t.Fatalf("ParseArgs failed: %v", err)
-	}
-
-	r, err := Resolve(args, false)
+	r, err := Resolve(Args{FastModeSet: true}, false)
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}

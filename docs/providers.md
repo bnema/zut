@@ -142,11 +142,40 @@ Use `/fast` or `/settings` to enable **fast mode** for subsequent model calls.
 The setting is off by default and is stored as `fast_mode` in
 `$ZUT_HOME/config.json`.
 
-Fast mode currently requests OpenAI's Fast service tier for OpenAI, OpenAI
-Responses, and OpenAI Codex requests. Enabling it while using another provider
-currently returns an error instead of silently changing that provider's request.
-Subagent children inherit the setting from their parent unless their profile
-sets `fastMode` explicitly.
+Fast mode currently requests OpenAI's Fast service tier for OpenAI Chat,
+OpenAI Responses, and OpenAI Codex requests. Enabling it while using another
+provider currently returns an error instead of silently changing that provider's
+request. Subagent children inherit the setting from their parent unless their
+profile sets `fastMode` explicitly.
+
+## Session identity and caching
+
+zut supplies every provider request with a stable logical session ID and a
+per-prompt turn ID. They are opaque local correlations; adapters translate them
+only when their exact provider, model, and endpoint declaration supports it.
+For example, the OpenAI/Codex Responses route uses the stable session as its
+`prompt_cache_key` and, where required by the declared Codex route, its
+`session-id` header. A generic OpenAI-compatible endpoint never receives those
+extensions merely because it accepts an OpenAI-shaped request.
+
+### OpenAI Responses WebSocket mode
+
+For the exact public endpoint `https://api.openai.com/v1/responses`, zut uses
+the Responses API WebSocket mode for the OpenAI Responses route. It keeps one
+connection per logical session, sends one `response.create` at a time, and
+continues the most recent completed response with `previous_response_id` plus
+only new tool or user input. The request uses `store:false`; its only
+provider-specific handshake header is `Authorization: Bearer ...`, never the
+ChatGPT/Codex account, routing, or session headers.
+
+The capability is deliberately not inherited by `--base-url`, compatible
+providers, Azure, or the ChatGPT Codex subscription endpoint. Those clients
+continue to use their declared HTTP/SSE contracts. A failed WebSocket setup,
+an injected nonstandard RoundTripper, or a configured proxy falls back to
+HTTP/SSE with the same logical session/cache identity. Cancellation closes
+only the active session socket; a normally completed turn keeps it warm for
+the next continuation.
+
 
 ## Local llama.cpp router
 

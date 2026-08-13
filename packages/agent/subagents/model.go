@@ -3,9 +3,7 @@ package subagents
 import "time"
 
 // WebSearchPolicy is the capability decision propagated from a host agent to
-// a subagent worker. Inherit is used only before a supervisor resolves the
-// child decision; persisted and launched workers use Allow or Deny so their
-// capability does not change with a later config edit.
+// a resident child.
 type WebSearchPolicy uint8
 
 const (
@@ -17,9 +15,6 @@ const (
 func (p WebSearchPolicy) Allows() bool { return p == WebSearchAllow }
 
 // childPolicy turns an unresolved or corrupt policy into an explicit deny.
-// Inherit is useful while a supervisor is resolving a spawn request, but it
-// must never cross the worker boundary because the child may otherwise apply
-// its own default-enabled configuration.
 func (p WebSearchPolicy) childPolicy() WebSearchPolicy {
 	if p == WebSearchAllow {
 		return WebSearchAllow
@@ -42,53 +37,6 @@ func (p WebSearchPolicy) String() string {
 	}
 }
 
-func childWebSearchPolicy(policy WebSearchPolicy, subagent string, toolNames []string) WebSearchPolicy {
-	if subagent != "" && NamedWebSearchPolicy(toolNames) != WebSearchAllow {
-		return WebSearchDeny
-	}
-	return policy.childPolicy()
-}
-
-// NamedWebSearchPolicy requires a named profile to opt in explicitly. An
-// omitted or empty profile tools list therefore denies web search without
-// changing the default selection of the other built-in tools.
-func NamedWebSearchPolicy(toolNames []string) WebSearchPolicy {
-	for _, name := range toolNames {
-		if name == "web_search" {
-			return WebSearchAllow
-		}
-	}
-	return WebSearchDeny
-}
-
-// ProcessState describes the lifetime of the supervised child process. It is
-// intentionally independent from TurnState: an alive worker can be idle
-// between turns, and a disconnected supervisor does not imply that the
-// worker's current turn failed.
-type ProcessState string
-
-const (
-	ProcessPending  ProcessState = "pending"
-	ProcessStarting ProcessState = "starting"
-	ProcessAlive    ProcessState = "alive"
-	ProcessDetached ProcessState = "detached"
-	ProcessExited   ProcessState = "exited"
-	ProcessKilled   ProcessState = "killed"
-)
-
-// TurnState describes one delegated prompt inside a worker process.
-type TurnState string
-
-const (
-	TurnIdle      TurnState = "idle"
-	TurnQueued    TurnState = "queued"
-	TurnRunning   TurnState = "running"
-	TurnCanceling TurnState = "canceling"
-	TurnSucceeded TurnState = "succeeded"
-	TurnFailed    TurnState = "failed"
-	TurnCanceled  TurnState = "canceled"
-)
-
 // WorkspaceMode selects how a child is allowed to access the repository.
 type WorkspaceMode string
 
@@ -105,61 +53,12 @@ const (
 	CaptureDiff  CaptureMode = "diff"
 )
 
-// SubagentPolicy contains manager-owned safety and resource limits. normalize
-// replaces zero MaxOutputBytes, MaxOutputLines, QueueTimeout, and StartupTimeout
-// values with positive manager defaults. Zero DefaultTimeout leaves delegated
-// turns unlimited; queue, startup, stream-idle, and idle-process limits remain
-// independently bounded.
+// SubagentPolicy contains the resident manager's limits and capability ceiling.
 type SubagentPolicy struct {
-	MaxConcurrent          int
-	MaxConcurrentPerParent int
-	QueueTimeout           time.Duration
-	StartupTimeout         time.Duration
-	DefaultTimeout         time.Duration
-	MaxOutputBytes         int
-	MaxOutputLines         int
-	AllowedTools           []string
-	AllowedRoots           []string
-	HeartbeatInterval      time.Duration
-	IdleTimeout            time.Duration
-	ReconnectTimeout       time.Duration
-	CancelGracePeriod      time.Duration
-}
-
-func (p *SubagentPolicy) normalize() {
-	if p.DefaultTimeout < 0 {
-		p.DefaultTimeout = 0
-	}
-	if p.MaxConcurrent <= 0 {
-		p.MaxConcurrent = 8
-	}
-	if p.MaxConcurrentPerParent <= 0 {
-		p.MaxConcurrentPerParent = 4
-	}
-	if p.QueueTimeout <= 0 {
-		p.QueueTimeout = 5 * time.Minute
-	}
-	if p.StartupTimeout <= 0 {
-		p.StartupTimeout = time.Minute
-	}
-	if p.MaxOutputBytes <= 0 {
-		p.MaxOutputBytes = 500_000
-	}
-	if p.MaxOutputLines <= 0 {
-		p.MaxOutputLines = 5_000
-	}
-	if p.HeartbeatInterval <= 0 {
-		p.HeartbeatInterval = 10 * time.Second
-	}
-	if p.IdleTimeout <= 0 {
-		p.IdleTimeout = 7 * time.Minute
-	}
-	if p.ReconnectTimeout <= 0 {
-		p.ReconnectTimeout = 5 * time.Second
-	}
-	if p.CancelGracePeriod <= 0 {
-		p.CancelGracePeriod = 10 * time.Second
-	}
+	MaxConcurrent int
+	QueueTimeout  time.Duration
+	AllowedTools  []string
+	AllowedRoots  []string
 }
 
 func (p SubagentPolicy) allowedTool(name string) bool {
@@ -173,3 +72,7 @@ func (p SubagentPolicy) allowedTool(name string) bool {
 	}
 	return false
 }
+
+// AllowsTool reports whether a child may receive name under the host policy.
+// An empty allowlist retains the historical unrestricted policy.
+func (p SubagentPolicy) AllowsTool(name string) bool { return p.allowedTool(name) }

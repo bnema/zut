@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
-	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
@@ -14,14 +12,14 @@ import (
 )
 
 // SubagentStatusTool reports live state for background sub-agents without
-// waiting for a worker to finish. An omitted agent_id lists the workers
-// visible to the current supervisor session; an agent_id queries one worker.
+// waiting for a child to finish. An omitted agent_id lists resident children;
+// an agent_id queries one child.
 // The result deliberately contains metadata only: it does not expose
 // transcripts, result output, credentials, provider settings, or filesystem
 // paths.
 type SubagentStatusTool struct {
-	Supervisor *subagents.Supervisor
-	Enabled    func() bool
+	ResidentManager *subagents.ResidentManager
+	Enabled         func() bool
 }
 
 type subagentStatusArgs struct {
@@ -34,42 +32,13 @@ type subagentStatusResponse struct {
 }
 
 type subagentStatusEntry struct {
-	ID               string                `json:"agent_id"`
-	PrimaryOperation *statusOperation      `json:"primary_operation,omitempty"`
-	Terminal         string                `json:"terminal,omitempty"`
-	LastObservation  *statusLastEvent      `json:"last_observation,omitempty"`
-	LastEvent        *statusLastEvent      `json:"last_event,omitempty"`
-	StartedAt        time.Time             `json:"started_at"`
-	LifetimeTurns    int                   `json:"lifetime_turns"`
-	CurrentRunTurns  int                   `json:"current_run_turns"`
-	TaskSummary      string                `json:"task_summary,omitempty"`
-	Requirement      *statusRequirement    `json:"requirement,omitempty"`
-	Result           *subagentStatusResult `json:"result,omitempty"`
-}
-
-type statusOperation struct {
-	Type      string    `json:"type"`
-	StartedAt time.Time `json:"started_at"`
-}
-
-type statusLastEvent struct {
-	Type string    `json:"type"`
-	At   time.Time `json:"at"`
-}
-
-type statusRequirement struct {
-	State      string `json:"state"`
-	TargetTurn int    `json:"target_turn"`
-	Unmet      bool   `json:"unmet"`
-	ErrorCode  string `json:"error_code,omitempty"`
-}
-
-type subagentStatusResult struct {
-	State          string `json:"state"`
-	Available      bool   `json:"available"`
-	Ref            string `json:"ref,omitempty"`
-	Delivered      bool   `json:"delivered"`
-	DeliveryFailed bool   `json:"delivery_failed"`
+	ID        string                  `json:"agent_id"`
+	State     subagents.ResidentState `json:"state"`
+	Profile   string                  `json:"profile,omitempty"`
+	Provider  string                  `json:"provider"`
+	Model     string                  `json:"model"`
+	Workspace subagents.WorkspaceMode `json:"workspace_mode,omitempty"`
+	Required  bool                    `json:"required,omitempty"`
 }
 
 const subagentStatusSchema = `{
@@ -77,7 +46,7 @@ const subagentStatusSchema = `{
   "properties": {
     "agent_id": {
       "type": "string",
-      "description": "Optional worker id or unique id prefix. Omit it to list all visible background sub-agents."
+		"description": "Optional child id or unique id prefix. Omit it to list all resident sub-agents."
     }
   }
 }`
@@ -101,46 +70,41 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		}
 	}
 	prefix := t.Name()
-	if t.Supervisor == nil {
-		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
+	if t.ResidentManager == nil {
+		return protocolToolError(prefix + ": subagent runtime not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
 		return protocolToolError(prefix + ": subagent status is unavailable in this mode")
 	}
 
 	var args subagentStatusArgs
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
+	if err := decodeSubagentArgs(raw, &args); err != nil {
+		return core.ToolResult{}, err
 	}
-
-	// SnapshotAll provides identity, session scope, and durable result facts.
-	// The execution indication itself comes solely from the trace projection.
-	snapshots := t.Supervisor.SnapshotAll()
-	views := t.Supervisor.TraceViews()
+	snapshots := t.ResidentManager.Snapshot()
 	id := strings.TrimSpace(args.AgentID)
 	if id == "" {
 		entries := make([]subagentStatusEntry, 0, len(snapshots))
 		for _, snapshot := range snapshots {
-			entries = append(entries, publicSubagentStatus(snapshot, views[snapshot.ID]))
+			entries = append(entries, publicResidentStatus(snapshot))
 		}
 		return renderSubagentStatus(subagentStatusResponse{Agents: entries})
 	}
-
-	snapshot, ok := findSubagentStatusSnapshot(snapshots, id)
+	snapshot, ok := findResidentStatusSnapshot(snapshots, id)
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
-	entry := publicSubagentStatus(snapshot, views[snapshot.ID])
+	entry := publicResidentStatus(snapshot)
 	return renderSubagentStatus(subagentStatusResponse{Agent: &entry})
 }
 
-func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) (subagents.AgentSnapshot, bool) {
+func findResidentStatusSnapshot(snapshots []subagents.ResidentSnapshot, id string) (subagents.ResidentSnapshot, bool) {
 	for _, snapshot := range snapshots {
 		if snapshot.ID == id {
 			return snapshot, true
 		}
 	}
-	var match subagents.AgentSnapshot
+	var match subagents.ResidentSnapshot
 	hits := 0
 	for _, snapshot := range snapshots {
 		if strings.HasPrefix(snapshot.ID, id) {
@@ -151,88 +115,8 @@ func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) 
 	return match, hits == 1
 }
 
-func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.AgentTraceView) subagentStatusEntry {
-	entry := subagentStatusEntry{
-		ID:              snapshot.ID,
-		Terminal:        view.Terminal,
-		StartedAt:       snapshot.Started,
-		LifetimeTurns:   snapshot.LifetimeTurns,
-		CurrentRunTurns: snapshot.CurrentRunTurns,
-		TaskSummary:     summarizeSubagentTask(snapshot.Task),
-	}
-	if primary, ok := view.Primary(); ok {
-		entry.PrimaryOperation = &statusOperation{Type: primary.Type, StartedAt: primary.StartedAt}
-	}
-	if view.LastObservation != nil {
-		entry.LastObservation = &statusLastEvent{Type: view.LastObservation.Type, At: view.LastObservation.At}
-	}
-	if view.LastEvent.Type != "" {
-		entry.LastEvent = &statusLastEvent{Type: view.LastEvent.Type, At: view.LastEvent.Timestamp}
-	}
-	if snapshot.Requirement.Required {
-		entry.Requirement = &statusRequirement{
-			State:      string(snapshot.Requirement.State),
-			TargetTurn: snapshot.Requirement.TargetTurn,
-			Unmet:      snapshot.Requirement.Unmet(),
-			ErrorCode:  snapshot.Requirement.ErrorCode,
-		}
-	}
-	if snapshot.Result != nil {
-		entry.Result = &subagentStatusResult{
-			State:     publicResultState(snapshot.Result.Status),
-			Available: snapshot.ResultRef != "",
-			Ref:       snapshot.ResultRef,
-			Delivered: snapshot.Requirement.Notified,
-		}
-	}
-	if view.Result != nil {
-		if entry.Result == nil {
-			entry.Result = &subagentStatusResult{State: "unknown"}
-		}
-		entry.Result.Available = view.Result.Available
-		if view.Result.Ref != "" {
-			entry.Result.Ref = view.Result.Ref
-		}
-		entry.Result.Delivered = entry.Result.Delivered || view.Result.Delivered
-		entry.Result.DeliveryFailed = entry.Result.DeliveryFailed || view.Result.Failed
-	}
-	return entry
-}
-
-func publicResultState(status subagents.TurnStatus) string {
-	switch status {
-	case subagents.ResultSucceeded:
-		return "completed"
-	case subagents.ResultFailed:
-		return "failed"
-	case subagents.ResultCanceled:
-		return "cancelled"
-	default:
-		return "unknown"
-	}
-}
-
-// summarizeSubagentTask exposes only the first logical line and a small bound.
-// This keeps the status surface useful for identifying a worker without
-// returning the full prompt or any following context.
-func summarizeSubagentTask(task string) string {
-	firstLine := strings.TrimSpace(strings.SplitN(task, "\n", 2)[0])
-	firstLine = strings.Join(strings.Fields(firstLine), " ")
-	return truncateSubagentStatus(firstLine, 200)
-}
-
-func truncateSubagentStatus(value string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	if utf8.RuneCountInString(value) <= maxRunes {
-		return value
-	}
-	runes := []rune(value)
-	if maxRunes <= 3 {
-		return string(runes[:maxRunes])
-	}
-	return string(runes[:maxRunes-3]) + "..."
+func publicResidentStatus(snapshot subagents.ResidentSnapshot) subagentStatusEntry {
+	return subagentStatusEntry{ID: snapshot.ID, State: snapshot.State, Profile: snapshot.Profile, Provider: snapshot.Provider, Model: snapshot.Model, Workspace: snapshot.WorkspaceMode, Required: snapshot.Required}
 }
 
 func renderSubagentStatus(response subagentStatusResponse) (core.ToolResult, error) {

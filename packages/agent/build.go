@@ -424,34 +424,9 @@ func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
 	return profile, nil
 }
 
-func applySubagentProfile(args *Args, profile *subagents.Profile) {
-	if args == nil || profile == nil {
-		return
-	}
-	profileProvider, profileModel := profile.ModelSelection()
-	if args.Provider == "" && profileProvider != "" {
-		args.Provider = profileProvider
-	}
-	if args.Model == "" && profileModel != "" {
-		args.Model = profileModel
-	}
-	if args.Reasoning == "" && profile.Thinking != "" {
-		// Keep an explicit "off" value non-empty so it overrides a
-		// persisted global reasoning setting when the child resolves.
-		args.Reasoning = strings.TrimSpace(profile.Thinking)
-	}
-	if !args.NoTools && !args.ToolsSet && len(args.Tools) == 0 && len(profile.Tools) > 0 {
-		args.Tools = append([]string(nil), profile.Tools...)
-	}
-	if profile.InheritSkills != nil && !*profile.InheritSkills {
-		args.NoSkill = true
-	}
-}
-
 // resolveWebSearchPolicy applies capability precedence at the owning resolver
 // boundary. Permission, tool-list, and named-profile restrictions are ceilings
-// on every caller-provided policy. Workers additionally require an explicit,
-// valid propagated decision rather than falling back to their local config.
+// on every caller-provided policy.
 func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subagents.Profile) subagents.WebSearchPolicy {
 	if args.NoTools || args.PermissionSet != nil {
 		return subagents.WebSearchDeny
@@ -459,7 +434,7 @@ func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subage
 	if args.ToolsSet && !toolListContains(args.Tools, "web_search") {
 		return subagents.WebSearchDeny
 	}
-	if profile != nil && subagents.NamedWebSearchPolicy(profile.Tools) != subagents.WebSearchAllow {
+	if profile != nil && profile.ToolsDeclared && !toolListContains(profile.Tools, "web_search") {
 		return subagents.WebSearchDeny
 	}
 
@@ -472,9 +447,6 @@ func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subage
 		// Continue through normal-mode defaults below. Inherit is not a valid
 		// propagated worker decision.
 	default:
-		return subagents.WebSearchDeny
-	}
-	if args.Mode == ModeSubagentWorker {
 		return subagents.WebSearchDeny
 	}
 	if args.ToolsSet {
@@ -503,8 +475,7 @@ func toolListContains(names []string, target string) bool {
 
 // webSearchAllowedForRegistry is kept separate from the resolver so direct
 // registry tests and callers that build a registry without persisted config
-// still get the normal default-on behavior. Worker registries fail closed if
-// they have not first received a resolved allow decision.
+// still get the normal default-on behavior.
 func webSearchAllowedForRegistry(args Args) bool {
 	if args.NoTools || args.PermissionSet != nil {
 		return false
@@ -518,7 +489,7 @@ func webSearchAllowedForRegistry(args Args) bool {
 	case subagents.WebSearchDeny:
 		return false
 	default:
-		return args.Mode != ModeSubagentWorker
+		return true
 	}
 }
 
@@ -536,16 +507,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if len(args.Tools) > 0 {
 		args.ToolsSet = true
 	}
-	var selectedProfile *subagents.Profile
-	if strings.TrimSpace(args.Subagent) != "" {
-		var err error
-		selectedProfile, err = findSubagentProfile(args.CWD, args.Subagent)
-		if err != nil {
-			return Resolved{}, err
-		}
-		applySubagentProfile(&args, selectedProfile)
-	}
-	webSearchPolicy := resolveWebSearchPolicy(args, cfg, cfgErr, selectedProfile)
+	webSearchPolicy := resolveWebSearchPolicy(args, cfg, cfgErr, nil)
 	args.WebSearchPolicy = webSearchPolicy
 
 	// User-requested provider (explicit > config > default).
@@ -588,11 +550,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		accountID string
 		credErr   error
 	)
-	if args.inheritedCredential != "" {
-		cred = args.inheritedCredential
-		method = args.inheritedAuthMethod
-		accountID = args.inheritedAccountID
-	} else if provName == "ollama" {
+	if provName == "ollama" {
 		cred = firstNonEmpty(args.APIKey, "ollama")
 		method = "apikey"
 	} else {
@@ -807,9 +765,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.PermissionSet != nil {
 		sandbox.SetPermissions(args.PermissionSet)
 	}
-	subagentSession := args.Mode == ModeSubagentWorker || strings.TrimSpace(args.Subagent) != ""
-	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(subagentSession)
-	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(subagentSession), cfg.LSPDiagnosticsOnEditEnabled(subagentSession))
+	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(false)
+	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
 
@@ -827,7 +784,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		skillAddendum string
 		skillsEnabled bool
 	)
-	if !args.NoSkill && (selectedProfile == nil || selectedProfile.InheritSkills == nil || *selectedProfile.InheritSkills) {
+	if !args.NoSkill {
 		skillsEnabled = true
 		homeDir, _ := os.UserHomeDir()
 		discovered, _ = skills.Discover(ZutHome(), args.CWD, homeDir, args.WithSkills)
@@ -842,7 +799,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	summaries := toolSummaries(reg, args)
 
 	contextFiles := []ContextFile(nil)
-	if !args.NoContextFiles && (selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext) {
+	if !args.NoContextFiles {
 		contextFiles = loadAgentsContext(args.CWD, ZutHome())
 	}
 	append_ := []string(nil)
@@ -859,8 +816,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	primaryInteractive := selectedProfile == nil && interactiveMode
-	primaryOrchestrator := selectedProfile == nil && args.Orchestrate
+	primaryInteractive := interactiveMode
+	primaryOrchestrator := args.Orchestrate
 	if (primaryInteractive || primaryOrchestrator) && autoSubagentsToolAllowed(args) {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
@@ -885,18 +842,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	} else if primaryInteractive && autoSubagentsAnyToolAllowed(args) {
 		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
-	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
-		append_ = append(append_, selectedProfile.SystemPrompt)
-	}
-
 	// Custom system prompt resolution order:
 	//   1. --system-prompt flag (highest priority; ad-hoc per run)
 	//   2. $ZUT_HOME/SYSTEM.md (persistent user override)
 	//   3. built-in default (defaultIdentity + defaultGuidelines)
 	custom := args.SystemPrompt
-	if selectedProfile != nil && selectedProfile.SystemPromptMode == "replace" {
-		custom = selectedProfile.SystemPrompt
-	} else if custom == "" {
+	if custom == "" {
 		custom = readUserSystemPrompt(ZutHome())
 	}
 
@@ -917,13 +868,6 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.FastModeSet {
 		fastMode = args.FastMode
 	}
-	// A profile's explicit fastMode setting overrides the global setting
-	// for this child. This preserves fastMode: false as an opt-out while
-	// allowing fastMode: true to request the fast tier for a focused worker.
-	if selectedProfile != nil && selectedProfile.FastMode != nil {
-		fastMode = *selectedProfile.FastMode
-	}
-
 	max := args.MaxSteps // 0 = unlimited
 
 	return Resolved{

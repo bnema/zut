@@ -22,26 +22,12 @@ type QuickModelShortcut struct {
 	Model    string `json:"model"`
 }
 
-// SubagentsConfig contains the persisted supervisor policy. Duration values
-// use Go strings such as "20m" so config files remain readable.
+// SubagentsConfig contains the resident manager policy.
 type SubagentsConfig struct {
-	MaxConcurrent          int      `json:"max_concurrent,omitempty"`
-	MaxConcurrentPerParent int      `json:"max_concurrent_per_parent,omitempty"`
-	QueueTimeout           string   `json:"queue_timeout,omitempty"`
-	StartupTimeout         string   `json:"startup_timeout,omitempty"`
-	DefaultTimeout         string   `json:"default_timeout,omitempty"`
-	MaxOutputBytes         int      `json:"max_output_bytes,omitempty"`
-	MaxOutputLines         int      `json:"max_output_lines,omitempty"`
-	AllowedTools           []string `json:"allowed_tools,omitempty"`
-	AllowedRoots           []string `json:"allowed_roots,omitempty"`
-	HeartbeatInterval      string   `json:"heartbeat_interval,omitempty"`
-	IdleTimeout            string   `json:"idle_timeout,omitempty"`
-	ReconnectTimeout       string   `json:"reconnect_timeout,omitempty"`
-	CancelGracePeriod      string   `json:"cancel_grace_period,omitempty"`
-
-	// MaxTotalSpawned is retained only to accept existing configuration.
-	// Lifetime total-spawn budgets are no longer enforced.
-	MaxTotalSpawned int `json:"max_total_spawned,omitempty"`
+	MaxConcurrent int      `json:"max_concurrent,omitempty"`
+	QueueTimeout  string   `json:"queue_timeout,omitempty"`
+	AllowedTools  []string `json:"allowed_tools,omitempty"`
+	AllowedRoots  []string `json:"allowed_roots,omitempty"`
 }
 
 // Config is the persisted user configuration.
@@ -112,8 +98,8 @@ type Config struct {
 	// /settings.
 	LSPEnabled *bool `json:"lsp_enabled,omitempty"`
 
-	// SubagentLSPEnabled controls LSP availability in subagent worker
-	// processes. nil/missing means enabled. Toggle from /settings.
+	// SubagentLSPEnabled controls LSP availability in resident child agents.
+	// nil/missing means enabled. Toggle from /settings.
 	SubagentLSPEnabled *bool `json:"subagent_lsp_enabled,omitempty"`
 
 	// LSPDiagnosticsOnWrite enables bounded diagnostics after a successful
@@ -171,11 +157,6 @@ type Config struct {
 	// above or below the main input. Supported values: "above_input"
 	// (default) and "below_input".
 	TUIWorkingPosition string `json:"tui_working_position,omitempty"`
-
-	// TUISubagentPosition controls whether live subagent activity renders
-	// above or below the main input. Supported values: "above_input" and
-	// "below_input" (default).
-	TUISubagentPosition string `json:"tui_subagent_position,omitempty"`
 
 	// Insecure skips TLS verification for custom inference endpoints.
 	Insecure bool `json:"insecure,omitempty"`
@@ -332,12 +313,6 @@ func validateSubagentDurations(cfg SubagentsConfig) error {
 		value string
 	}{
 		{"queue_timeout", cfg.QueueTimeout},
-		{"startup_timeout", cfg.StartupTimeout},
-		{"default_timeout", cfg.DefaultTimeout},
-		{"heartbeat_interval", cfg.HeartbeatInterval},
-		{"idle_timeout", cfg.IdleTimeout},
-		{"reconnect_timeout", cfg.ReconnectTimeout},
-		{"cancel_grace_period", cfg.CancelGracePeriod},
 	}
 	for _, item := range values {
 		value := strings.TrimSpace(item.value)

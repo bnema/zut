@@ -3,9 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,7 +44,15 @@ type codexClient struct {
 	modelName         func(string) string
 	disableCLIRouting bool
 	cliRoutingAll     bool
+	capabilities      responsesCapabilities
 	http              *http.Client
+}
+
+// responsesCapabilities records extensions verified for the exact provider
+// client, rather than assuming every Responses-shaped endpoint accepts them.
+type responsesCapabilities struct {
+	StablePromptCacheKey bool
+	SessionHeader        bool
 }
 
 // NewOpenAICodex creates a client that talks to ChatGPT's Codex endpoint
@@ -69,7 +75,11 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 		// Send the Codex CLI request shape for every model on this
 		// backend.
 		cliRoutingAll: true,
-		http:          &http.Client{Timeout: 0},
+		capabilities: responsesCapabilities{
+			StablePromptCacheKey: true,
+			SessionHeader:        true,
+		},
+		http: &http.Client{Timeout: 0},
 	}
 }
 
@@ -152,18 +162,19 @@ type codexReasoningConfig struct {
 }
 
 type codexRequest struct {
-	Model             string                `json:"model"`
-	Store             bool                  `json:"store"`
-	Stream            bool                  `json:"stream"`
-	Instructions      string                `json:"instructions,omitempty"`
-	Input             []any                 `json:"input"`
-	Tools             []codexTool           `json:"tools,omitempty"`
-	ToolChoice        string                `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool                  `json:"parallel_tool_calls"`
-	Include           []string              `json:"include,omitempty"`
-	Reasoning         *codexReasoningConfig `json:"reasoning,omitempty"`
-	PromptCacheKey    string                `json:"prompt_cache_key,omitempty"`
-	ServiceTier       string                `json:"service_tier,omitempty"`
+	Model              string                `json:"model"`
+	Store              bool                  `json:"store"`
+	Stream             bool                  `json:"stream,omitempty"`
+	Instructions       string                `json:"instructions,omitempty"`
+	Input              []any                 `json:"input"`
+	Tools              []codexTool           `json:"tools,omitempty"`
+	ToolChoice         string                `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                  `json:"parallel_tool_calls"`
+	Include            []string              `json:"include,omitempty"`
+	Reasoning          *codexReasoningConfig `json:"reasoning,omitempty"`
+	PromptCacheKey     string                `json:"prompt_cache_key,omitempty"`
+	ServiceTier        string                `json:"service_tier,omitempty"`
+	PreviousResponseID string                `json:"previous_response_id,omitempty"`
 }
 
 // ---- Request building ----
@@ -361,20 +372,6 @@ func usesCodexCLIRouting(model string) bool {
 	}
 }
 
-func newCodexSessionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("zut-%d", time.Now().UnixNano())
-	}
-	return strings.Join([]string{
-		hex.EncodeToString(b[0:4]),
-		hex.EncodeToString(b[4:6]),
-		hex.EncodeToString(b[6:8]),
-		hex.EncodeToString(b[8:10]),
-		hex.EncodeToString(b[10:16]),
-	}, "-")
-}
-
 // ---- Streaming ----
 
 func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
@@ -385,10 +382,10 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 	if c.modelName != nil {
 		wire.Model = c.modelName(wire.Model)
 	}
-	var codexCLISessionID string
-	if !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model)) {
-		codexCLISessionID = newCodexSessionID()
-		wire.PromptCacheKey = codexCLISessionID
+	useCodexCLIRouting := !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model))
+	logicalSessionID := strings.TrimSpace(req.Context.SessionID)
+	if c.capabilities.StablePromptCacheKey && logicalSessionID != "" {
+		wire.PromptCacheKey = logicalSessionID
 	}
 	body, err := json.Marshal(wire)
 	if err != nil {
@@ -405,13 +402,15 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		httpReq.Header.Set("authorization", "Bearer "+c.token)
 		httpReq.Header.Set("chatgpt-account-id", c.accountID)
 		httpReq.Header.Set("openai-beta", "responses=experimental")
-		if codexCLISessionID != "" {
+		if useCodexCLIRouting {
 			// The ChatGPT Codex backend only admits (and reliably serves)
 			// requests that follow Codex CLI routing metadata; other client
 			// identities are load-shed with "servers are currently
 			// overloaded" errors even when capacity is fine.
 			httpReq.Header.Set("originator", "codex_cli_rs")
-			httpReq.Header.Set("session-id", codexCLISessionID)
+			if c.capabilities.SessionHeader && logicalSessionID != "" {
+				httpReq.Header.Set("session-id", logicalSessionID)
+			}
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 		} else {
 			// ChatGPT's backend recognizes these established values. They are
@@ -441,15 +440,26 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 	defer close(out)
 	defer resp.Body.Close()
 
+	raw := make(chan sseEvent, 16)
+	go readSSE(resp.Body, raw)
+	c.runResponseEvents(ctx, req, out, raw, nil)
+}
+
+// runResponseEvents translates the Responses streaming event protocol into
+// provider events. Both HTTP/SSE and Responses WebSocket mode use the same
+// event vocabulary, so keeping the state machine here prevents the transports
+// from drifting in tool-call, reasoning, and usage handling.
+func (c *codexClient) runResponseEvents(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, completed func(string)) {
+	c.runResponseEventsWithFirst(ctx, req, out, raw, nil, completed)
+}
+
+func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, first *sseEvent, completed func(string)) {
 	model, _ := c.findModel(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
 		providerName = "openai-codex"
 	}
 	out <- EventStart{Model: req.Model, Provider: providerName}
-
-	raw := make(chan sseEvent, 16)
-	go readSSE(resp.Body, raw)
 
 	// Accumulators. The Responses API emits output_items in order; each
 	// item is either a "message" (text) or a "function_call". We track
@@ -511,218 +521,229 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			stop = StopAborted
-			finalErr = ctx.Err()
+		var ev sseEvent
+		if first != nil {
+			ev = *first
+			first = nil
+		} else {
+			select {
+			case <-ctx.Done():
+				stop = StopAborted
+				finalErr = ctx.Err()
+				sendDone()
+				return
+			case next, ok := <-raw:
+				if !ok {
+					sendDone()
+					return
+				}
+				ev = next
+			}
+		}
+		if ev.Err != nil {
+			stop = StopError
+			finalErr = fmt.Errorf("read SSE: %w", ev.Err)
 			sendDone()
 			return
-		case ev, ok := <-raw:
-			if !ok {
-				sendDone()
-				return
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &head); err != nil {
+			continue
+		}
+
+		switch head.Type {
+		case "response.output_item.added":
+			var p struct {
+				OutputIndex int `json:"output_index"`
+				Item        struct {
+					Type             string `json:"type"` // "message" | "function_call" | "reasoning"
+					ID               string `json:"id"`
+					CallID           string `json:"call_id"`
+					Name             string `json:"name"`
+					EncryptedContent string `json:"encrypted_content"`
+				} `json:"item"`
 			}
-			if ev.Err != nil {
-				stop = StopError
-				finalErr = fmt.Errorf("read SSE: %w", ev.Err)
-				sendDone()
-				return
-			}
-			var head struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal([]byte(ev.Data), &head); err != nil {
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			it := &itemState{}
+			switch p.Item.Type {
+			case "message":
+				it.kind = "message"
+			case "function_call":
+				it.kind = "function_call"
+				it.callID = p.Item.CallID
+				it.name = p.Item.Name
+				if !it.announced {
+					it.announced = true
+					out <- EventToolStart{ID: it.callID, Name: it.name}
+				}
+			case "reasoning":
+				it.kind = "reasoning"
+				it.rawID = p.Item.ID
+				it.encrypted = p.Item.EncryptedContent
+			default:
 				continue
 			}
-
-			switch head.Type {
-			case "response.output_item.added":
-				var p struct {
-					OutputIndex int `json:"output_index"`
-					Item        struct {
-						Type             string `json:"type"` // "message" | "function_call" | "reasoning"
-						ID               string `json:"id"`
-						CallID           string `json:"call_id"`
-						Name             string `json:"name"`
-						EncryptedContent string `json:"encrypted_content"`
-					} `json:"item"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				it := &itemState{}
-				switch p.Item.Type {
-				case "message":
-					it.kind = "message"
+			items[p.OutputIndex] = it
+			order = append(order, p.OutputIndex)
+		case "response.output_text.delta":
+			var p struct {
+				OutputIndex int    `json:"output_index"`
+				Delta       string `json:"delta"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			if it, ok := items[p.OutputIndex]; ok && it.kind == "message" {
+				it.textBuf.WriteString(p.Delta)
+				out <- EventTextDelta{Delta: p.Delta}
+			}
+		case "response.reasoning_summary_text.delta":
+			var p struct {
+				OutputIndex int    `json:"output_index"`
+				Delta       string `json:"delta"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			if it, ok := items[p.OutputIndex]; ok && it.kind == "reasoning" {
+				it.summary.WriteString(p.Delta)
+			}
+		case "response.reasoning_summary_text.done":
+			// summary text already accumulated via deltas
+		case "response.function_call_arguments.delta":
+			var p struct {
+				OutputIndex int    `json:"output_index"`
+				Delta       string `json:"delta"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			if it, ok := items[p.OutputIndex]; ok && it.kind == "function_call" {
+				it.argsBuf.WriteString(p.Delta)
+				out <- EventToolArgs{ID: it.callID, Delta: p.Delta}
+			}
+		case "response.output_item.done":
+			var p struct {
+				OutputIndex int `json:"output_index"`
+				Item        struct {
+					Type             string `json:"type"`
+					ID               string `json:"id"`
+					EncryptedContent string `json:"encrypted_content"`
+					Summary          []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"summary"`
+				} `json:"item"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			if it, ok := items[p.OutputIndex]; ok {
+				switch it.kind {
 				case "function_call":
-					it.kind = "function_call"
-					it.callID = p.Item.CallID
-					it.name = p.Item.Name
-					if !it.announced {
-						it.announced = true
-						out <- EventToolStart{ID: it.callID, Name: it.name}
-					}
+					out <- EventToolEnd{ID: it.callID}
 				case "reasoning":
-					it.kind = "reasoning"
-					it.rawID = p.Item.ID
-					it.encrypted = p.Item.EncryptedContent
-				default:
-					continue
-				}
-				items[p.OutputIndex] = it
-				order = append(order, p.OutputIndex)
-			case "response.output_text.delta":
-				var p struct {
-					OutputIndex int    `json:"output_index"`
-					Delta       string `json:"delta"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				if it, ok := items[p.OutputIndex]; ok && it.kind == "message" {
-					it.textBuf.WriteString(p.Delta)
-					out <- EventTextDelta{Delta: p.Delta}
-				}
-			case "response.reasoning_summary_text.delta":
-				var p struct {
-					OutputIndex int    `json:"output_index"`
-					Delta       string `json:"delta"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				if it, ok := items[p.OutputIndex]; ok && it.kind == "reasoning" {
-					it.summary.WriteString(p.Delta)
-				}
-			case "response.reasoning_summary_text.done":
-				// summary text already accumulated via deltas
-			case "response.function_call_arguments.delta":
-				var p struct {
-					OutputIndex int    `json:"output_index"`
-					Delta       string `json:"delta"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				if it, ok := items[p.OutputIndex]; ok && it.kind == "function_call" {
-					it.argsBuf.WriteString(p.Delta)
-					out <- EventToolArgs{ID: it.callID, Delta: p.Delta}
-				}
-			case "response.output_item.done":
-				var p struct {
-					OutputIndex int `json:"output_index"`
-					Item        struct {
-						Type             string `json:"type"`
-						ID               string `json:"id"`
-						EncryptedContent string `json:"encrypted_content"`
-						Summary          []struct {
-							Type string `json:"type"`
-							Text string `json:"text"`
-						} `json:"summary"`
-					} `json:"item"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				if it, ok := items[p.OutputIndex]; ok {
-					switch it.kind {
-					case "function_call":
-						out <- EventToolEnd{ID: it.callID}
-					case "reasoning":
-						if p.Item.EncryptedContent != "" {
-							it.encrypted = p.Item.EncryptedContent
+					if p.Item.EncryptedContent != "" {
+						it.encrypted = p.Item.EncryptedContent
+					}
+					if it.rawID == "" && p.Item.ID != "" {
+						it.rawID = p.Item.ID
+					}
+					for _, s := range p.Item.Summary {
+						if s.Text == "" {
+							continue
 						}
-						if it.rawID == "" && p.Item.ID != "" {
-							it.rawID = p.Item.ID
+						if it.summary.Len() > 0 {
+							it.summary.WriteString("\n")
 						}
-						for _, s := range p.Item.Summary {
-							if s.Text == "" {
-								continue
-							}
-							if it.summary.Len() > 0 {
-								it.summary.WriteString("\n")
-							}
-							it.summary.WriteString(s.Text)
-						}
+						it.summary.WriteString(s.Text)
 					}
 				}
-			case "response.completed", "response.done":
-				var p struct {
-					Response struct {
-						Usage struct {
-							InputTokens        int `json:"input_tokens"`
-							OutputTokens       int `json:"output_tokens"`
-							InputTokensDetails struct {
-								CachedTokens int `json:"cached_tokens"`
-							} `json:"input_tokens_details"`
-							OutputTokensDetails *struct {
-								ReasoningTokens int `json:"reasoning_tokens"`
-							} `json:"output_tokens_details"`
-						} `json:"usage"`
-						Status string `json:"status"`
-					} `json:"response"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				usage.InputTokens = p.Response.Usage.InputTokens - p.Response.Usage.InputTokensDetails.CachedTokens
-				if usage.InputTokens < 0 {
-					usage.InputTokens = p.Response.Usage.InputTokens
-				}
-				usage.OutputTokens = p.Response.Usage.OutputTokens
-				usage.CacheReadTokens = p.Response.Usage.InputTokensDetails.CachedTokens
-				if details := p.Response.Usage.OutputTokensDetails; details != nil {
-					usage.ReasoningTokens = details.ReasoningTokens
-					usage.ReasoningTokensKnown = true
-				}
+			}
+		case "response.completed", "response.done":
+			var p struct {
+				Response struct {
+					ID    string `json:"id"`
+					Usage struct {
+						InputTokens        int `json:"input_tokens"`
+						OutputTokens       int `json:"output_tokens"`
+						InputTokensDetails struct {
+							CachedTokens int `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
+						OutputTokensDetails *struct {
+							ReasoningTokens int `json:"reasoning_tokens"`
+						} `json:"output_tokens_details"`
+					} `json:"usage"`
+					Status string `json:"status"`
+				} `json:"response"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			usage.InputTokens = p.Response.Usage.InputTokens - p.Response.Usage.InputTokensDetails.CachedTokens
+			if usage.InputTokens < 0 {
+				usage.InputTokens = p.Response.Usage.InputTokens
+			}
+			usage.OutputTokens = p.Response.Usage.OutputTokens
+			usage.CacheReadTokens = p.Response.Usage.InputTokensDetails.CachedTokens
+			if details := p.Response.Usage.OutputTokensDetails; details != nil {
+				usage.ReasoningTokens = details.ReasoningTokens
+				usage.ReasoningTokensKnown = true
+			}
 
-				hadTool := false
-				for _, it := range items {
-					if it.kind == "function_call" {
-						hadTool = true
-						break
-					}
+			hadTool := false
+			for _, it := range items {
+				if it.kind == "function_call" {
+					hadTool = true
+					break
 				}
-				if hadTool {
-					stop = StopToolUse
-				} else {
-					stop = StopEnd
-				}
-				sendDone()
-				return
-			case "response.failed":
-				var p struct {
-					Response struct {
-						Error struct {
-							Message string `json:"message"`
-						} `json:"error"`
-					} `json:"response"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				stop = StopError
-				finalErr = fmt.Errorf("codex: %s", p.Response.Error.Message)
-				sendDone()
-				return
-			case "error":
-				var p struct {
+			}
+			if hadTool {
+				stop = StopToolUse
+			} else {
+				stop = StopEnd
+			}
+			if completed != nil && p.Response.ID != "" {
+				completed(p.Response.ID)
+			}
+			sendDone()
+			return
+		case "response.failed":
+			var p struct {
+				Response struct {
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				} `json:"response"`
+			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			stop = StopError
+			finalErr = fmt.Errorf("codex: %s", p.Response.Error.Message)
+			sendDone()
+			return
+		case "error":
+			var p struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+				Error   struct {
 					Message string `json:"message"`
 					Code    string `json:"code"`
-					Error   struct {
-						Message string `json:"message"`
-						Code    string `json:"code"`
-					} `json:"error"`
-				}
-				_ = json.Unmarshal([]byte(ev.Data), &p)
-				msg := p.Message
-				if msg == "" {
-					msg = p.Error.Message
-				}
-				if msg == "" {
-					msg = p.Code
-				}
-				if msg == "" {
-					msg = p.Error.Code
-				}
-				if msg == "" {
-					msg = strings.TrimSpace(ev.Data)
-				}
-				stop = StopError
-				label := c.errorLabel
-				if label == "" {
-					label = "codex"
-				}
-				finalErr = fmt.Errorf("%s error: %s", label, msg)
-				sendDone()
-				return
+				} `json:"error"`
 			}
+			_ = json.Unmarshal([]byte(ev.Data), &p)
+			msg := p.Message
+			if msg == "" {
+				msg = p.Error.Message
+			}
+			if msg == "" {
+				msg = p.Code
+			}
+			if msg == "" {
+				msg = p.Error.Code
+			}
+			if msg == "" {
+				msg = strings.TrimSpace(ev.Data)
+			}
+			stop = StopError
+			label := c.errorLabel
+			if label == "" {
+				label = "codex"
+			}
+			finalErr = fmt.Errorf("%s error: %s", label, msg)
+			sendDone()
+			return
 		}
 	}
 }

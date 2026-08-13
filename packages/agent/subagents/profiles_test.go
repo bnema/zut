@@ -190,6 +190,58 @@ func TestProfileModelSelection(t *testing.T) {
 	}
 }
 
+func TestProfileToolsPreserveDeclarationAndResolveStrictly(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, filepath.Join(dir, "absent.md"), "---\nname: absent\n---\nInstructions.\n")
+	writeProfile(t, filepath.Join(dir, "empty.md"), "---\nname: empty\ntools: []\n---\nInstructions.\n")
+	writeProfile(t, filepath.Join(dir, "listed.md"), "---\nname: listed\ntools: [read, bash]\n---\nInstructions.\n")
+
+	for _, tc := range []struct {
+		name     string
+		declared bool
+		want     []string
+	}{
+		{name: "absent", declared: false, want: []string{"read", "bash", "lsp"}},
+		{name: "empty", declared: true, want: []string{}},
+		{name: "listed", declared: true, want: []string{"read", "bash"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := load(filepath.Join(dir, tc.name+".md"), "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.ToolsDeclared != tc.declared {
+				t.Fatalf("ToolsDeclared = %v, want %v", profile.ToolsDeclared, tc.declared)
+			}
+			got, err := ResolveProfileTools(profile, []string{"read", "bash", "lsp"}, func(name string) bool { return name != "lsp" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("resolved tools = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveProfileToolsRejectsUnknownAndDeniedNames(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		profile *Profile
+		want    string
+	}{
+		{name: "unknown", profile: &Profile{Name: "reviewer", ToolsDeclared: true, Tools: []string{"read", "grep"}}, want: "unknown tool \"grep\""},
+		{name: "denied", profile: &Profile{Name: "reviewer", ToolsDeclared: true, Tools: []string{"bash"}}, want: "not permitted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResolveProfileTools(tc.profile, []string{"read", "bash"}, func(name string) bool { return name != "bash" })
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ResolveProfileTools error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSystemPromptAddendumIsCompactAndDoesNotExposeBodyOrPath(t *testing.T) {
 	profiles := []*Profile{{
 		Name:         "reviewer",
