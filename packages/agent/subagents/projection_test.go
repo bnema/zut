@@ -263,6 +263,16 @@ func TestProjectTraceNewAvailableResultResetsDelivery(t *testing.T) {
 	}
 }
 
+func TestProjectTraceDeliveryFailureClearsDelivered(t *testing.T) {
+	view := ProjectTrace([]TraceEvent{
+		{Type: "result.delivered", AgentID: "agent-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
+		{Type: "result.delivery.failed", AgentID: "agent-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
+	})["agent-1"]
+	if view.Result == nil || !view.Result.Available || view.Result.Delivered || !view.Result.Failed {
+		t.Fatalf("result = %#v, want available undelivered failure", view.Result)
+	}
+}
+
 func TestProjectTraceFailedAgentClosesOpenOperations(t *testing.T) {
 	view := ProjectTrace([]TraceEvent{
 		{Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "one"}},

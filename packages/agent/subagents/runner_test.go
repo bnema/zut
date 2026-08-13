@@ -785,6 +785,23 @@ func TestUpdateAgentFromEventSurfacesTurnResultPersistenceFailure(t *testing.T) 
 	}
 }
 
+func TestUpdateAgentFromEventRetainsPersistenceFailureAfterTurnEnd(t *testing.T) {
+	blockedStateDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedStateDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{ID: "agent-1", stateDir: blockedStateDir}
+	if err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{"status": "succeeded"}}); err == nil {
+		t.Fatal("turn-result persistence failure was ignored")
+	}
+	if err := updateAgentFromEvent(a, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"step": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnFailed {
+		t.Fatalf("turn state = %q, want %q", got, TurnFailed)
+	}
+}
+
 func TestUpdateAgentFromEventRecordsDurableResultAvailability(t *testing.T) {
 	trace := NewMemoryTraceWriter()
 	t.Cleanup(func() { _ = trace.Close() })
@@ -933,6 +950,20 @@ func TestRecordWorkerTraceClosesProviderRequestWhenTurnEnds(t *testing.T) {
 	}
 	if view.LastEvent.Type != "provider.request.failed" {
 		t.Fatalf("last event = %#v, want provider request failure", view.LastEvent)
+	}
+}
+
+func TestRecordWorkerTracePreservesStructuredErrorCode(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{"status": "failed", "error": map[string]any{"code": "stream_idle_timeout"}}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := trace.Events()
+	if len(events) != 1 || events[0].Data["error_code"] != "stream_idle_timeout" {
+		t.Fatalf("trace events = %#v", events)
 	}
 }
 

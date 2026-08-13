@@ -46,6 +46,17 @@ func TestFormatSupervisorRowOmitsPriorTurnObservationAge(t *testing.T) {
 	}
 }
 
+func TestFormatSupervisorRowPreservesAgeAfterLongSummary(t *testing.T) {
+	now := time.Now()
+	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: now.Add(-time.Hour)}, subagents.AgentTraceView{
+		Terminal:  strings.Repeat("completed ", 8),
+		LastEvent: subagents.TraceEvent{Type: "agent.completed", Timestamp: now.Add(-2 * time.Minute)},
+	}, 120)
+	if !strings.Contains(got, "2m") {
+		t.Fatalf("row lost fact age: %q", got)
+	}
+}
+
 func TestSubagentsDialogTranscriptShowsProviderRequestDiagnostic(t *testing.T) {
 	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
 	d := newSubagentsDialog()

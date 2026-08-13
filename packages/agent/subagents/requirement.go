@@ -103,11 +103,19 @@ func (a *Agent) restoreRequirement(previous RequirementSnapshot) {
 	a.lifecycleMu.Unlock()
 }
 
-func (a *Agent) markRequirementNotified() (bool, error) {
+func (a *Agent) markRequirementNotified(expectedTurnID string) (bool, error) {
 	if a == nil {
 		return false, nil
 	}
 	a.lifecycleMu.Lock()
+	currentTurnID := strings.TrimSpace(a.requirement.ResultTurnID)
+	if currentTurnID == "" && a.requirement.TargetTurn > 0 {
+		currentTurnID = fmt.Sprintf("turn-%d", a.requirement.TargetTurn)
+	}
+	if expectedTurnID == "" || currentTurnID != expectedTurnID || a.result == nil || strings.TrimSpace(a.result.TurnID) != expectedTurnID || strings.TrimSpace(a.resultRef) == "" {
+		a.lifecycleMu.Unlock()
+		return false, fmt.Errorf("subagents: durable required result no longer matches %s", expectedTurnID)
+	}
 	if !a.requirement.Required || a.requirement.Notified {
 		a.lifecycleMu.Unlock()
 		return false, nil
@@ -328,7 +336,7 @@ func (f *Supervisor) MarkRequirementNotified(id string) error {
 	if result == nil || strings.TrimSpace(result.TurnID) != expectedTurnID {
 		return fmt.Errorf("subagents: durable required result does not match %s", expectedTurnID)
 	}
-	marked, err := a.markRequirementNotified()
+	marked, err := a.markRequirementNotified(expectedTurnID)
 	if err != nil {
 		a.recordTrace(TraceEvent{Type: "result.delivery.failed", TurnID: expectedTurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 		return fmt.Errorf("subagents: persist required result delivery: %w", err)

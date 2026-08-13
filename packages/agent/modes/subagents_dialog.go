@@ -1642,12 +1642,14 @@ func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
 	fact := view.Summary()
 	if primary, ok := view.Primary(); ok {
+		fact = truncateLineSafe(fact, 24)
 		if observation := view.ObservationFor(primary); observation != nil {
 			fact += " " + formatAge(observation.At)
 		} else {
 			fact += " " + formatAge(primary.StartedAt)
 		}
 	} else if view.LastEvent.Type != "" {
+		fact = truncateLineSafe(fact, 24)
 		fact += " " + formatAge(view.LastEvent.Timestamp)
 	}
 	age := formatAge(r.Started)

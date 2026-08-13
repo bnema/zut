@@ -818,7 +818,9 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 			break
 		}
 		message, _ := ev.Data["error"].(string)
-		if message != "" {
+		if result := a.Result(); result != nil && result.Error != nil && result.Error.Code == "result_persistence_failed" {
+			a.setTurnState(TurnFailed, ev.TurnID)
+		} else if message != "" {
 			a.setTurnState(TurnFailed, ev.TurnID)
 		} else {
 			a.setTurnState(TurnSucceeded, ev.TurnID)
@@ -988,6 +990,11 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 }
 
 func traceErrorCode(data map[string]any) string {
+	if structured, ok := data["error"].(map[string]any); ok {
+		if code, _ := structured["code"].(string); isTraceErrorCode(code) {
+			return code
+		}
+	}
 	value, _ := data["error"].(string)
 	value = strings.ToLower(value)
 	switch {
@@ -1005,6 +1012,15 @@ func traceErrorCode(data map[string]any) string {
 		return "provider_error"
 	default:
 		return ""
+	}
+}
+
+func isTraceErrorCode(code string) bool {
+	switch code {
+	case "deadline_exceeded", "stream_idle_timeout", "cancelled", "quota", "rate_limit", "context_limit", "provider_error":
+		return true
+	default:
+		return false
 	}
 }
 

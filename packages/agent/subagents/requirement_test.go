@@ -244,6 +244,27 @@ func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRequirementNotificationRejectsResultSupersededByNewRequiredTurn(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{
+		ID:          "agent-1",
+		trace:       trace,
+		result:      &TurnResult{AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded},
+		resultRef:   ResultRef("agent-1"),
+		requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1, ResultTurnID: "turn-1"},
+	}
+	// A new required run begins after the caller observed turn-1 but before it
+	// can publish delivery. The guarded transition must reject that stale turn.
+	a.prepareRequired(2)
+	if _, err := a.markRequirementNotified("turn-1"); err == nil {
+		t.Fatal("stale result delivery was accepted")
+	}
+	if got := a.requirementSnapshot(); got.Notified || got.TargetTurn != 2 {
+		t.Fatalf("requirement = %+v, want unnotified target turn 2", got)
+	}
+}
+
 func TestRequirementNotificationPersistenceFailureIsReported(t *testing.T) {
 	trace := NewMemoryTraceWriter()
 	t.Cleanup(func() { _ = trace.Close() })

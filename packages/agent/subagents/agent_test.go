@@ -146,6 +146,41 @@ func TestWaitTurnResultRetainsEarlierCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestWaitTurnResultReturnsRequestedResultAfterAgentExit(t *testing.T) {
+	a := &Agent{ID: "worker-1", done: make(chan struct{}), resultChanged: make(chan struct{})}
+	resultReady := make(chan *TurnResult, 1)
+	errReady := make(chan error, 1)
+	go func() {
+		result, err := a.WaitTurnResult(context.Background(), "turn-1")
+		resultReady <- result
+		errReady <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		a.lifecycleMu.Lock()
+		registered := a.resultWaiters["turn-1"] > 0
+		a.lifecycleMu.Unlock()
+		if registered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("turn-1 waiter did not register")
+		}
+		runtime.Gosched()
+	}
+	a.lifecycleMu.Lock()
+	a.results = map[string]*TurnResult{"turn-1": {Version: ProtocolVersion, AgentID: a.ID, TurnID: "turn-1", Status: ResultSucceeded}}
+	a.result = &TurnResult{Version: ProtocolVersion, AgentID: a.ID, TurnID: "turn-2", Status: ResultSucceeded}
+	a.lifecycleMu.Unlock()
+	a.closeDone()
+	if err := <-errReady; err != nil {
+		t.Fatal(err)
+	}
+	if result := <-resultReady; result == nil || result.TurnID != "turn-1" {
+		t.Fatalf("wait result = %#v, want retained turn-1", result)
+	}
+}
+
 func TestWaitTargetTurnIDAdvancesQueuedResume(t *testing.T) {
 	a := &Agent{LifetimeTurns: 1, turnState: TurnQueued, currentTurnID: "turn-1"}
 	if got := a.WaitTargetTurnID(); got != "turn-2" {

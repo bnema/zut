@@ -581,7 +581,13 @@ func (a *Agent) WaitTurnResult(ctx context.Context, turnID string) (*TurnResult,
 		case <-changed:
 			continue
 		case <-done:
-			if result := a.Result(); result != nil && (turnID == "" || result.TurnID == turnID) {
+			a.lifecycleMu.Lock()
+			result := cloneTurnResult(a.result)
+			if turnID != "" && a.results != nil {
+				result = cloneTurnResult(a.results[turnID])
+			}
+			a.lifecycleMu.Unlock()
+			if result != nil && (turnID == "" || result.TurnID == turnID) {
 				return result, nil
 			}
 			return nil, fmt.Errorf("subagents: agent %s exited without turn result %q", a.ID, turnID)

@@ -423,7 +423,7 @@ func traceResultFact(event TraceEvent, previous *ResultFact) *ResultFact {
 	case "result.delivered":
 		result.Available, result.Delivered, result.Failed = true, true, false
 	case "result.delivery.failed":
-		result.Available, result.Failed = true, true
+		result.Available, result.Delivered, result.Failed = true, false, true
 	}
 	return &result
 }
