@@ -98,6 +98,26 @@ func TestResidentManagerRecordsFactoryFailureAfterAcceptance(t *testing.T) {
 	}
 }
 
+func TestResidentManagerReconcileIgnoresLegacyAgentsContainer(t *testing.T) {
+	root := t.TempDir()
+	legacyChild := filepath.Join(root, "agents", "old-child")
+	if err := os.MkdirAll(legacyChild, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyChild, "events.jsonl"), []byte("legacy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return nil, nil
+	})
+	if errs := manager.Reconcile(); len(errs) != 0 {
+		t.Fatalf("Reconcile errors = %v", errs)
+	}
+	if snapshots := manager.Snapshot(); len(snapshots) != 0 {
+		t.Fatalf("Reconcile recovered legacy child: %#v", snapshots)
+	}
+}
+
 func TestResidentManagerPreparesWorkspaceBeforeAcceptance(t *testing.T) {
 	root := t.TempDir()
 	prepared := false

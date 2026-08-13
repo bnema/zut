@@ -512,6 +512,12 @@ func (m *ResidentManager) Reconcile() []error {
 		if !entry.IsDir() {
 			continue
 		}
+		// The old subprocess runtime stored children beneath an "agents"
+		// container. Resident children are direct entries in this root. Leave
+		// that legacy state untouched: it is neither read nor migrated.
+		if entry.Name() == "agents" {
+			continue
+		}
 		childID := entry.Name()
 		m.mu.Lock()
 		_, live := m.children[childID]

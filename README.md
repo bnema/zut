@@ -384,7 +384,7 @@ Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes th
 
 Resident subagents run alongside the main session as independent in-process agent conversations. Each has its own stable session identity, provider client, tool registry, cancellation boundary, durable journal, and structured latest-turn result. Starting one never starts another `zut` process.
 
-> **V0.x breaking change:** previous subprocess subagent state is unsupported. Remove the old subagent state directory before running this version; outstanding jobs are never migrated or replayed.
+> **V0.x breaking change:** previous subprocess subagent state is unsupported and ignored. Outstanding jobs are never migrated or replayed; remove the old state directory when you no longer need it.
 
 > **Choose the workspace deliberately.** Use `isolation:"worktree"` for parallel coding so children cannot edit the host checkout. Use shared mode for read-only review or explicitly coordinated work. Worktree isolation is an accident-prevention guardrail, not a security sandbox.
 

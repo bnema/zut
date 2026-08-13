@@ -1,8 +1,8 @@
 # Resident subagents
 
 > **V0.x breaking change:** zut no longer supports subprocess subagent state.
-> Remove the previous subagent state directory before starting this version.
-> Existing child jobs are neither migrated nor resumed.
+> Previous state is ignored rather than read or migrated; remove it when you
+> no longer need it. Existing child jobs are never resumed.
 
 Subagents are independent `core.Agent` conversations resident in the same zut
 process as their parent. A child has a stable, private session identity, its own
