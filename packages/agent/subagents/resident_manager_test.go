@@ -118,6 +118,44 @@ func TestResidentManagerReconcileIgnoresLegacyAgentsContainer(t *testing.T) {
 	}
 }
 
+func TestResidentManagerResumeRebuildsStoppedChild(t *testing.T) {
+	runs := make(chan string, 2)
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(ctx context.Context, prompt string) error {
+			runs <- prompt
+			if prompt == "initial" {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		}, nil
+	})
+	defer manager.Close(context.Background())
+	spec := ResidentChildSpec{ID: "stopped-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5", Required: true}
+	if _, err := manager.Spawn(context.Background(), spec, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-runs; got != "initial" {
+		t.Fatalf("initial prompt = %q", got)
+	}
+	if err := manager.Stop(context.Background(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Resume(context.Background(), spec.ID, "follow up"); err != nil {
+		t.Fatalf("Resume stopped child: %v", err)
+	}
+	if got := <-runs; got != "follow up" {
+		t.Fatalf("follow-up prompt = %q", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(manager.UnmetRequired()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("required child remained unmet: %#v", manager.UnmetRequired())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestResidentManagerPreparesWorkspaceBeforeAcceptance(t *testing.T) {
 	root := t.TempDir()
 	prepared := false

@@ -564,11 +564,34 @@ func (m *ResidentManager) UnmetRequired() []ResidentSnapshot {
 // Stop cancels one live child and waits for its control loop. A disk-only
 // interrupted child must be explicitly resumed by host construction instead.
 func (m *ResidentManager) Stop(ctx context.Context, childID string) error {
-	child := m.Get(strings.TrimSpace(childID))
+	if m == nil {
+		return errors.New("resident manager: unavailable")
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	childID = strings.TrimSpace(childID)
+	m.mu.Lock()
+	child := m.children[childID]
+	m.mu.Unlock()
 	if child == nil {
 		return errors.New("resident manager: child is not live")
 	}
-	return child.Close(ctx)
+	if err := child.Close(ctx); err != nil {
+		return err
+	}
+	// A stopped child has released its resident agent and journal. Retain only
+	// its durable spec so an explicit follow-up can rebuild a fresh resident
+	// child; keeping the closed child live would make Resume append to a closed
+	// journal.
+	m.mu.Lock()
+	if m.children[childID] == child {
+		delete(m.children, childID)
+		m.recovered[childID] = ResidentSnapshot{ID: childID, State: child.State(), Profile: child.spec.Profile,
+			Provider: child.spec.Provider, Model: child.spec.Model, WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required}
+		m.recoveredSpec[childID] = child.spec
+	}
+	m.mu.Unlock()
+	return nil
 }
 
 // History reads bounded finalized resident history through the manager-owned
