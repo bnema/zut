@@ -35,7 +35,7 @@ const (
 	residentRecordToolResult   = "tool.result"
 	residentJournalVersion     = 1
 	residentMaxRecordBytes     = 2 << 20
-	residentResultSummaryBytes = 16 << 10
+	residentResultSummaryBytes = 256 << 10
 )
 
 // Artifact references are logical names; they do not disclose journal paths.

@@ -91,7 +91,7 @@ These calls are asynchronous. Completion arrives through the host’s typed
 completion update, not process polling. Do not use sleep loops, repeated
 status calls, journal files, or terminal UI inspection as a completion signal.
 Successful completions include the final visible assistant summary, capped at
-16 KiB; open the child session for the complete durable transcript.
+256 KiB; open the child session for the complete durable transcript.
 
 `/subagents` opens the resident-child list, ordered by the latest state change.
 Each row leads with the profile (or model), shows a human terminal state such

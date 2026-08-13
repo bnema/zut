@@ -301,6 +301,9 @@ func TestResidentJournalStoresBoundedFinalAssistantSummary(t *testing.T) {
 }
 
 func TestTruncateResidentResultSummaryPreservesUTF8Boundary(t *testing.T) {
+	if residentResultSummaryBytes != 256<<10 {
+		t.Fatalf("summary limit = %d, want %d", residentResultSummaryBytes, 256<<10)
+	}
 	text := strings.Repeat("é", residentResultSummaryBytes)
 	summary := truncateResidentResultSummary(text)
 	if !utf8.ValidString(summary) || !strings.HasSuffix(summary, "…") || len(summary) > residentResultSummaryBytes {
