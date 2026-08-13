@@ -2414,6 +2414,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		Reasoning:                       r.Reasoning,
 		OnReasoningChanged:              runtime.SetReasoning,
 		SystemPrompt:                    r.SystemPrompt,
+		WritingGuidance:                 WritingGuidance(),
 		Tools:                           r.ToolRegistry,
 		MaxSteps:                        r.MaxSteps,
 		CWD:                             r.CWD,
