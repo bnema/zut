@@ -23,13 +23,17 @@ type subagentRuntime struct {
 	args     Args
 	root     string
 
-	provider    string
-	model       string
-	reasoning   string
-	baseURL     string
-	insecureTLS bool
-	fastMode    bool
-	repoRoot    string
+	provider string
+	// credentialProvider is immutable: an explicit CLI key belongs to the
+	// provider resolved when this runtime was assembled, not to later UI
+	// provider selections.
+	credentialProvider string
+	model              string
+	reasoning          string
+	baseURL            string
+	insecureTLS        bool
+	fastMode           bool
+	repoRoot           string
 
 	activeProvider  func() string
 	activeModel     func() string
@@ -83,22 +87,23 @@ type subagentRuntimeConfig struct {
 
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	rt := &subagentRuntime{
-		args:              cfg.Args,
-		root:              cfg.Root,
-		provider:          strings.TrimSpace(cfg.Provider),
-		model:             strings.TrimSpace(cfg.Model),
-		reasoning:         strings.TrimSpace(cfg.Reasoning),
-		baseURL:           strings.TrimSpace(cfg.BaseURL),
-		insecureTLS:       cfg.InsecureTLS,
-		fastMode:          cfg.FastMode,
-		repoRoot:          cfg.RepoRoot,
-		activeProvider:    cfg.ActiveProvider,
-		activeModel:       cfg.ActiveModel,
-		activeReasoning:   cfg.ActiveReasoning,
-		webSearchPolicy:   cfg.WebSearchPolicy,
-		policy:            cfg.Policy,
-		webSearchGuard:    cfg.WebSearchGuard,
-		onResidentSpawned: cfg.OnResidentSpawned,
+		args:               cfg.Args,
+		root:               cfg.Root,
+		provider:           strings.TrimSpace(cfg.Provider),
+		credentialProvider: strings.TrimSpace(cfg.Provider),
+		model:              strings.TrimSpace(cfg.Model),
+		reasoning:          strings.TrimSpace(cfg.Reasoning),
+		baseURL:            strings.TrimSpace(cfg.BaseURL),
+		insecureTLS:        cfg.InsecureTLS,
+		fastMode:           cfg.FastMode,
+		repoRoot:           cfg.RepoRoot,
+		activeProvider:     cfg.ActiveProvider,
+		activeModel:        cfg.ActiveModel,
+		activeReasoning:    cfg.ActiveReasoning,
+		webSearchPolicy:    cfg.WebSearchPolicy,
+		policy:             cfg.Policy,
+		webSearchGuard:     cfg.WebSearchGuard,
+		onResidentSpawned:  cfg.OnResidentSpawned,
 	}
 	if rt.activeProvider == nil {
 		rt.activeProvider = func() string {
@@ -129,7 +134,7 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 			rt.root = root
 		}
 		rt.resident = subagents.NewResidentManagerWithPolicy(root, cfg.Policy, func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-			return newResidentChildRunner(rt.args, spec, journal)
+			return newResidentChildRunner(residentChildArgs(rt.args, rt.credentialProvider, spec), spec, journal)
 		})
 		rt.resident.SetCompletionObserver(cfg.ResidentCompletion)
 		rt.resident.SetAcceptedObserver(cfg.OnResidentSpawned)

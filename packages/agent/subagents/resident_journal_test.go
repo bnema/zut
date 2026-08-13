@@ -271,6 +271,39 @@ func TestReconcileResidentJournalRebuildsMissingTerminalResult(t *testing.T) {
 	}
 }
 
+func TestReconcileResidentJournalPreservesTerminalLifecycleTime(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "terminal-time")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "terminal-time", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadResidentJournal(filepath.Join(root, spec.ID, residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := records[len(records)-1].Time
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !metadata.UpdatedAt.Equal(want) {
+		t.Fatalf("updated_at = %s, want terminal record time %s", metadata.UpdatedAt, want)
+	}
+}
+
 func TestResidentJournalStoresBoundedFinalAssistantSummary(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "final-summary")

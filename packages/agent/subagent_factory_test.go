@@ -32,11 +32,23 @@ func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T
 
 func TestResidentChildArgsPreserveDurableProfileInheritance(t *testing.T) {
 	no := false
-	next := residentChildArgs(Args{NoSkill: false, NoContextFiles: false, BaseURL: "https://stale.example/v1", InsecureTLS: false}, subagents.ResidentChildSpec{
+	next := residentChildArgs(Args{NoSkill: false, NoContextFiles: false, BaseURL: "https://stale.example/v1", InsecureTLS: false}, "openai", subagents.ResidentChildSpec{
 		Provider: "openai", BaseURL: "https://current.example/v1", InsecureTLS: true, Model: "gpt-5", Workspace: "/repo/child",
 		InheritSkills: &no, InheritProjectContext: &no,
 	})
 	if next.Provider != "openai" || next.BaseURL != "https://current.example/v1" || !next.InsecureTLS || next.Model != "gpt-5" || next.CWD != "/repo/child" || !next.NoSkill || !next.NoContextFiles {
 		t.Fatalf("resident child args = %#v", next)
+	}
+}
+
+func TestResidentChildArgsDoNotForwardCLIKeyAcrossProviders(t *testing.T) {
+	parent := Args{Provider: "openai", APIKey: "parent-key"}
+	child := subagents.ResidentChildSpec{Provider: "anthropic", Model: "claude"}
+	if next := residentChildArgs(parent, "openai", child); next.APIKey != "" {
+		t.Fatalf("cross-provider child inherited API key %q", next.APIKey)
+	}
+	child.Provider = "openai"
+	if next := residentChildArgs(parent, "openai", child); next.APIKey != "parent-key" {
+		t.Fatalf("same-provider child API key = %q, want parent key", next.APIKey)
 	}
 }

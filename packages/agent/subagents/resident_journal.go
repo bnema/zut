@@ -521,6 +521,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 		return ResidentMetadata{}, errors.New("resident journal: invalid accepted child record")
 	}
 	state := ResidentQueued
+	lastStateAt := records[0].Time
 	lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary := "", "", ""
 	seenTurns := make(map[string]string)
 	// The initial prompt is accepted atomically with child.accepted rather than
@@ -541,12 +542,14 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 				return ResidentMetadata{}, errors.New("resident journal: invalid accepted turn record")
 			}
 			seenTurns[record.TurnID] = residentRecordTurnAccepted
+			lastStateAt = record.Time
 		case residentRecordTurnStarted:
 			if record.TurnID == "" || (seenTurns[record.TurnID] != residentRecordTurnAccepted && record.TurnID != spec.InitialTurnID) {
 				return ResidentMetadata{}, errors.New("resident journal: turn started without acceptance")
 			}
 			seenTurns[record.TurnID] = residentRecordTurnStarted
 			state = ResidentRunning
+			lastStateAt = record.Time
 			lastAssistantSummary = ""
 		case residentRecordTurnFinished:
 			if record.TurnID == "" || seenTurns[record.TurnID] != residentRecordTurnStarted {
@@ -559,6 +562,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 			} else {
 				state = ResidentIdle
 			}
+			lastStateAt = record.Time
 		case residentRecordAssistant:
 			message, err := core.DecodeMessageJSON(record.Message)
 			if err != nil {
@@ -575,8 +579,10 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 				seenTurns[record.TurnID] = residentRecordInterrupted
 			}
 			state = ResidentInterrupted
+			lastStateAt = record.Time
 		case residentRecordFailed:
 			state = ResidentFailed
+			lastStateAt = record.Time
 		case residentRecordToolCall:
 			if record.ToolID == "" || record.ToolName == "" || !json.Valid(record.ToolArgs) {
 				return ResidentMetadata{}, errors.New("resident journal: invalid tool call record")
@@ -598,10 +604,16 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 			toolResults[record.ToolID] = struct{}{}
 		}
 	}
-	metadata := ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: time.Now().UTC()}
+	if lastStateAt.IsZero() {
+		lastStateAt = time.Now().UTC()
+	}
+	metadata := ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt}
 	needsInterruption := state == ResidentQueued || state == ResidentRunning
 	needsToolRepair := len(toolCalls) != len(toolResults)
 	if needsInterruption || needsToolRepair {
+		// A recorded repair is new observable work. A no-op reconciliation,
+		// however, must retain the last durable lifecycle time.
+		metadata.UpdatedAt = time.Now().UTC()
 		journal, err := OpenResidentJournal(filepath.Dir(dir), filepath.Base(dir))
 		if err != nil {
 			return ResidentMetadata{}, err

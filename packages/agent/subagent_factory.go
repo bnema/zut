@@ -18,8 +18,7 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	if strings.TrimSpace(spec.SessionID) == "" {
 		return nil, fmt.Errorf("resident child %q has no session identity", spec.ID)
 	}
-	next := residentChildArgs(args, spec)
-	resolved, err := Resolve(next, true)
+	resolved, err := Resolve(args, true)
 	if err != nil {
 		return nil, fmt.Errorf("resolve resident child %q: %w", spec.ID, err)
 	}
@@ -85,8 +84,14 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 // residentChildArgs applies the complete durable child specification without
 // rediscovering a mutable profile file. That preserves the profile inheritance
 // decision accepted at spawn time across explicit resume and restart.
-func residentChildArgs(args Args, spec subagents.ResidentChildSpec) Args {
+func residentChildArgs(args Args, parentProvider string, spec subagents.ResidentChildSpec) Args {
 	next := args
+	// An explicit CLI key belongs to the provider that resolved the parent.
+	// A child can select another provider, but it must resolve that provider's
+	// own credential rather than forwarding or persisting the parent's key.
+	if canonicalProvider(parentProvider) != canonicalProvider(spec.Provider) {
+		next.APIKey = ""
+	}
 	next.Provider = spec.Provider
 	next.BaseURL = spec.BaseURL
 	next.InsecureTLS = spec.InsecureTLS
