@@ -127,9 +127,9 @@ func (p *Profile) ModelSelection() (provider, model string) {
 
 // ResolveProfileTools applies a profile's exact frontmatter declaration to a
 // host-provided child-safe catalogue. An omitted declaration inherits that
-// catalogue; an explicit empty list grants no tools. Explicit names are never
-// silently dropped: each must exist and remain permitted by the current host
-// policy.
+// catalogue; an explicit empty list grants no tools. Explicit names outside
+// the child catalogue or denied by host policy are omitted so portable profile
+// files can name host-only extensions without granting them to a child.
 func ResolveProfileTools(profile *Profile, childSafe []string, permitted func(string) bool) ([]string, error) {
 	if profile == nil || !profile.ToolsDeclared {
 		return append([]string(nil), childSafe...), nil
@@ -142,10 +142,10 @@ func ResolveProfileTools(profile *Profile, childSafe []string, permitted func(st
 	for _, name := range profile.Tools {
 		name = strings.TrimSpace(name)
 		if _, ok := catalogue[name]; !ok {
-			return nil, fmt.Errorf("profile %q declares unknown tool %q", profile.Name, name)
+			continue
 		}
 		if permitted != nil && !permitted(name) {
-			return nil, fmt.Errorf("profile %q tool %q is not permitted by the current policy", profile.Name, name)
+			continue
 		}
 		resolved = append(resolved, name)
 	}

@@ -190,7 +190,7 @@ func TestProfileModelSelection(t *testing.T) {
 	}
 }
 
-func TestProfileToolsPreserveDeclarationAndResolveStrictly(t *testing.T) {
+func TestProfileToolsPreserveDeclarationAndResolve(t *testing.T) {
 	dir := t.TempDir()
 	writeProfile(t, filepath.Join(dir, "absent.md"), "---\nname: absent\n---\nInstructions.\n")
 	writeProfile(t, filepath.Join(dir, "empty.md"), "---\nname: empty\ntools: []\n---\nInstructions.\n")
@@ -224,21 +224,14 @@ func TestProfileToolsPreserveDeclarationAndResolveStrictly(t *testing.T) {
 	}
 }
 
-func TestResolveProfileToolsRejectsUnknownAndDeniedNames(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		profile *Profile
-		want    string
-	}{
-		{name: "unknown", profile: &Profile{Name: "reviewer", ToolsDeclared: true, Tools: []string{"read", "grep"}}, want: "unknown tool \"grep\""},
-		{name: "denied", profile: &Profile{Name: "reviewer", ToolsDeclared: true, Tools: []string{"bash"}}, want: "not permitted"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := ResolveProfileTools(tc.profile, []string{"read", "bash"}, func(name string) bool { return name != "bash" })
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ResolveProfileTools error = %v, want %q", err, tc.want)
-			}
-		})
+func TestResolveProfileToolsIgnoresUnknownAndDeniedNames(t *testing.T) {
+	profile := &Profile{Name: "reviewer", ToolsDeclared: true, Tools: []string{"read", "grep", "bash", "tasked_phases"}}
+	got, err := ResolveProfileTools(profile, []string{"read", "bash"}, func(name string) bool { return name != "bash" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"read"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("resolved tools = %#v, want %#v", got, want)
 	}
 }
 
