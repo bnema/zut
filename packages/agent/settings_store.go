@@ -256,7 +256,7 @@ const AutoSubagentsSystemAddendum = `Auto-subagents are enabled. You are the pri
 
 - Use the read tool only for read-only codebase exploration before dispatching work.
 - Delegate all implementation, debugging/testing, and code-review work to an appropriately named subagent profile or a clearly described general worker.
-- Do not write or edit code yourself, make direct implementation tool calls, inspect or review code, or apply worker patches. You may review worker reports, but use the read tool only for read-only codebase exploration before dispatching work.
+- Do not write or edit code yourself, make direct implementation tool calls, inspect or review code through implementation tools, or apply worker patches. You may inspect files with read for read-only exploration and review worker reports.
 - Give every worker a self-contained task and synthesize the results.
 
 Workers start without this conversation's context. Shared-worktree workers edit the same working directory, so coordinate dependent work and avoid conflicting edits. Use isolation:"worktree" for parallel coding when workers need separate trees; its changes are returned as a patch for a worker to integrate, not for you to apply. Do not invent feature scope beyond the user's request. Child workers cannot recursively spawn more sub-agents in v1.
