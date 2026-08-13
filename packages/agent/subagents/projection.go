@@ -159,75 +159,100 @@ func (v AgentTraceView) Summary() string {
 // Unknown worker protocol events remain factual observations and are never
 // guessed into operations.
 func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
-	views := make(map[string]AgentTraceView)
-	open := make(map[string]map[string]Operation)
+	projection := newTraceProjection()
 	for _, event := range events {
-		if event.AgentID == "" {
-			continue
-		}
-		view := views[event.AgentID]
-		view.AgentID = event.AgentID
-		view.LastEvent = event
-		key, starts, ends, terminal := traceBoundary(event)
-		var endedOperation Operation
-		var endedOperationFound bool
-		if ends {
-			endedOperation, endedOperationFound = open[event.AgentID][key]
-		}
-		if starts {
-			if event.Type == "provider.request.started" {
-				view.LastRequest = requestFact(event, "open")
-			}
-			if open[event.AgentID] == nil {
-				open[event.AgentID] = make(map[string]Operation)
-			}
-			callID, _ := event.Data["call_id"].(string)
-			name, _ := event.Data["name"].(string)
-			provider, _ := event.Data["provider"].(string)
-			model, _ := event.Data["model"].(string)
-			attempt := traceInt(event.Data["attempt"])
-			maxAttempts := traceInt(event.Data["max_attempts"])
-			open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
-		}
-		if ends {
-			if event.Type == "provider.request.finished" || event.Type == "provider.request.failed" || event.Type == "provider.request.cancelled" || event.Type == "provider.request.retry.scheduled" {
-				if active, found := open[event.AgentID][key]; found {
-					outcome := strings.TrimPrefix(event.Type, "provider.request.")
-					request := requestFact(event, outcome)
-					request.Provider, request.Model = active.Provider, active.Model
-					request.Attempt, request.MaxAttempts = active.Attempt, active.MaxAttempts
-					request.StartedAt = active.StartedAt
-					view.LastRequest = request
-				}
-			}
-			delete(open[event.AgentID], key)
-		}
-		if observation := traceObservation(event); observation != nil {
-			if observation.Type == "tool.finished" && observation.Name == "" {
-				// tool_result carries only the call ID. Recover the safe tool name
-				// from its matching open execution boundary; an unscoped generic
-				// "tool finished" fact is too low-value for the live indicator.
-				if endedOperationFound && endedOperation.Type == "tool.started" && endedOperation.Name != "" {
-					observation.Name = endedOperation.Name
-				} else {
-					observation = nil
-				}
-			}
-			if observation != nil {
-				view.LastObservation = observation
-			}
-		}
-		if result := traceResultFact(event, view.Result); result != nil {
-			view.Result = result
-		}
-		if terminal != "" {
-			view.Terminal = terminal
-			delete(open, event.AgentID)
-		}
-		views[event.AgentID] = view
+		projection.apply(event)
 	}
-	for agentID, operations := range open {
-		view := views[agentID]
+	return projection.snapshot()
+}
+
+// traceProjection incrementally derives user-facing facts from the trace. It
+// deliberately stores only compact facts and currently open operations, so a
+// TraceWriter can evict old raw events without losing the start boundary of a
+// long-running delegated turn.
+type traceProjection struct {
+	views map[string]AgentTraceView
+	open  map[string]map[string]Operation
+}
+
+func newTraceProjection() *traceProjection {
+	return &traceProjection{
+		views: make(map[string]AgentTraceView),
+		open:  make(map[string]map[string]Operation),
+	}
+}
+
+func (p *traceProjection) apply(event TraceEvent) {
+	if event.AgentID == "" {
+		return
+	}
+	view := p.views[event.AgentID]
+	view.AgentID = event.AgentID
+	view.LastEvent = event
+	key, starts, ends, terminal := traceBoundary(event)
+	var endedOperation Operation
+	var endedOperationFound bool
+	if ends {
+		endedOperation, endedOperationFound = p.open[event.AgentID][key]
+	}
+	if starts {
+		if event.Type == "provider.request.started" {
+			view.LastRequest = requestFact(event, "open")
+		}
+		if p.open[event.AgentID] == nil {
+			p.open[event.AgentID] = make(map[string]Operation)
+		}
+		callID, _ := event.Data["call_id"].(string)
+		name, _ := event.Data["name"].(string)
+		provider, _ := event.Data["provider"].(string)
+		model, _ := event.Data["model"].(string)
+		attempt := traceInt(event.Data["attempt"])
+		maxAttempts := traceInt(event.Data["max_attempts"])
+		p.open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
+	}
+	if ends {
+		if event.Type == "provider.request.finished" || event.Type == "provider.request.failed" || event.Type == "provider.request.cancelled" || event.Type == "provider.request.retry.scheduled" {
+			if active, found := p.open[event.AgentID][key]; found {
+				outcome := strings.TrimPrefix(event.Type, "provider.request.")
+				request := requestFact(event, outcome)
+				request.Provider, request.Model = active.Provider, active.Model
+				request.Attempt, request.MaxAttempts = active.Attempt, active.MaxAttempts
+				request.StartedAt = active.StartedAt
+				view.LastRequest = request
+			}
+		}
+		delete(p.open[event.AgentID], key)
+	}
+	if observation := traceObservation(event); observation != nil {
+		if observation.Type == "tool.finished" && observation.Name == "" {
+			// tool_result carries only the call ID. Recover the safe tool name
+			// from its matching open execution boundary; an unscoped generic
+			// "tool finished" fact is too low-value for the live indicator.
+			if endedOperationFound && endedOperation.Type == "tool.started" && endedOperation.Name != "" {
+				observation.Name = endedOperation.Name
+			} else {
+				observation = nil
+			}
+		}
+		if observation != nil {
+			view.LastObservation = observation
+		}
+	}
+	if result := traceResultFact(event, view.Result); result != nil {
+		view.Result = result
+	}
+	if terminal != "" {
+		view.Terminal = terminal
+		delete(p.open, event.AgentID)
+	}
+	p.views[event.AgentID] = view
+}
+
+func (p *traceProjection) snapshot() map[string]AgentTraceView {
+	views := make(map[string]AgentTraceView, len(p.views))
+	for agentID, stored := range p.views {
+		view := cloneAgentTraceView(stored)
+		operations := p.open[agentID]
 		for _, operation := range operations {
 			view.OpenOperations = append(view.OpenOperations, operation)
 		}
@@ -254,6 +279,24 @@ func ProjectTrace(events []TraceEvent) map[string]AgentTraceView {
 		views[agentID] = view
 	}
 	return views
+}
+
+func cloneAgentTraceView(view AgentTraceView) AgentTraceView {
+	view.OpenOperations = nil
+	view.PrimaryOperation = nil
+	if view.LastObservation != nil {
+		observation := *view.LastObservation
+		view.LastObservation = &observation
+	}
+	if view.Result != nil {
+		result := *view.Result
+		view.Result = &result
+	}
+	if view.LastRequest != nil {
+		request := *view.LastRequest
+		view.LastRequest = &request
+	}
+	return view
 }
 
 // TurnStartedAt returns the factual start of the open delegated turn owning

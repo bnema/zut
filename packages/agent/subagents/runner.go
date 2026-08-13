@@ -782,6 +782,7 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 					a.lifecycleMu.Lock()
 					a.resultRef = ResultRef(a.ID)
 					a.lifecycleMu.Unlock()
+					a.recordTrace(TraceEvent{Type: "result.available", TurnID: result.TurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 				}
 			}
 			a.setResult(result)

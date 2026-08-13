@@ -61,6 +61,15 @@ func (silentStreamClient) Stream(ctx context.Context, _ provider.Request) (<-cha
 	return out, nil
 }
 
+type requestOpenFailureClient struct{ calls int32 }
+
+func (c *requestOpenFailureClient) Name() string { return "request-open-failure" }
+
+func (c *requestOpenFailureClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return nil, errors.New("provider returned error: 503 service unavailable")
+}
+
 type readableAfterCancellationClient struct {
 	cancel context.CancelFunc
 }
@@ -72,6 +81,19 @@ func (c readableAfterCancellationClient) Stream(_ context.Context, _ provider.Re
 	out <- provider.EventStart{}
 	c.cancel()
 	return out, nil
+}
+
+func TestNewAgentUsesCodexStreamGuardDefaults(t *testing.T) {
+	a := NewAgent(&retryFakeClient{}, "fake-model", "system", Registry{})
+	if a.MaxSteps != 0 {
+		t.Fatalf("max steps = %d, want unlimited", a.MaxSteps)
+	}
+	if a.MaxRetries != 5 {
+		t.Fatalf("stream retries = %d, want 5", a.MaxRetries)
+	}
+	if a.StreamIdleTimeout != 5*time.Minute {
+		t.Fatalf("stream idle timeout = %s, want 5m", a.StreamIdleTimeout)
+	}
 }
 
 func TestAgentStopsReadingStreamAfterCancellation(t *testing.T) {
@@ -142,6 +164,20 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 }
 
+func TestAgentDoesNotReplayProviderRequestRetriesAtStreamLayer(t *testing.T) {
+	client := &requestOpenFailureClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	err := a.Prompt(context.Background(), "hello", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("Prompt error = %v, want provider failure", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 1 {
+		t.Fatalf("Stream calls = %d, want one provider-owned request sequence", got)
+	}
+}
+
 func TestAgentRetriesUnexpectedEOFStreamError(t *testing.T) {
 	client := &retryFakeClient{firstErr: fmt.Errorf("read SSE: %w", io.ErrUnexpectedEOF)}
 	a := NewAgent(client, "fake-model", "system", Registry{})
@@ -173,10 +209,10 @@ func TestAgentEmitsRetryLifecycleEvents(t *testing.T) {
 	}
 
 	want := []string{
-		"request:agent:1/4",
+		"request:agent:1/6",
 		"request:provider:1/1",
-		"retry:agent:2/4",
-		"request:agent:2/4",
+		"retry:agent:2/6",
+		"request:agent:2/6",
 		"request:provider:1/1",
 	}
 	if strings.Join(lifecycle, ",") != strings.Join(want, ",") {
@@ -200,11 +236,11 @@ func TestAgentReportsSanitizedRetryLifecycle(t *testing.T) {
 	want := []RetryLifecycleRecord{
 		{
 			Event: RetryLifecycleRequestFailed, Scope: RetryScopeAgent,
-			Attempt: 1, MaxAttempts: 4, Reason: RetryReasonOverload,
+			Attempt: 1, MaxAttempts: 6, Reason: RetryReasonOverload,
 		},
 		{
 			Event: RetryLifecycleRetryScheduled, Scope: RetryScopeAgent,
-			Attempt: 2, MaxAttempts: 4, Reason: RetryReasonOverload, DelayMS: 1,
+			Attempt: 2, MaxAttempts: 6, Reason: RetryReasonOverload, DelayMS: 1,
 		},
 	}
 	if !reflect.DeepEqual(records, want) {

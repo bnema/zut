@@ -61,10 +61,11 @@ type subagentSpawnArgs struct {
 	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Required  bool   `json:"required,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
-	// Timeout remains decode-only for calls produced from an older schema.
-	// Deadline policy is manager-owned, so Execute deliberately ignores it.
-	Timeout  string `json:"timeout,omitempty"`
-	MaxTurns *int   `json:"max_turns,omitempty"`
+	// Decode removed fields so stale callers receive an explicit policy error
+	// instead of silently spawning with a different, unlimited budget.
+	Timeout  json.RawMessage `json:"timeout,omitempty"`
+	MaxTurns json.RawMessage `json:"max_turns,omitempty"`
+	MaxSteps json.RawMessage `json:"max_steps,omitempty"`
 }
 
 const subagentSpawnSchemaTemplate = `{
@@ -103,12 +104,6 @@ const subagentSpawnSchemaTemplate = `{
       "type": "string",
       "enum": ["shared", "worktree"],
       "description": "Workspace mode. Shared preserves existing behavior; worktree captures a patch without merging it."
-    },
-    "max_turns": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": %d,
-      "description": "Optional maximum prompt-level turns for this worker. Omit to use the supervisor default; the effective policy allows 1 through %d."
     }
   },
   "required": ["task"]
@@ -119,13 +114,7 @@ func (t *SubagentSpawnTool) Description() string {
 	return "Delegate work to a sub-agent. Every spawn returns immediately and completion is host-event-driven through [auto-subagents update]. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
-	maxTurns := 3
-	if t.Supervisor != nil {
-		if limit := t.Supervisor.MaxTurns(); limit > 0 {
-			maxTurns = limit
-		}
-	}
-	return json.RawMessage(fmt.Sprintf(subagentSpawnSchemaTemplate, maxTurns, maxTurns))
+	return json.RawMessage(subagentSpawnSchemaTemplate)
 }
 
 func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
@@ -140,6 +129,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
 	}
+	if len(a.Timeout) != 0 || len(a.MaxTurns) != 0 || len(a.MaxSteps) != 0 {
+		return protocolToolError(prefix + ": timeout, max_turns, and max_steps are manager-owned budgets and cannot be set by this tool")
+	}
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
 		return protocolToolError(prefix + ": task is required")
@@ -152,15 +144,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			return protocolToolError(prefix + ": isolation must be shared or worktree")
 		}
 	}
-	if a.MaxTurns != nil {
-		if *a.MaxTurns < 1 {
-			return protocolToolError(prefix + ": max_turns must be positive")
-		}
-		if limit := t.Supervisor.MaxTurns(); limit > 0 && *a.MaxTurns > limit {
-			return protocolToolError(fmt.Sprintf("%s: max_turns must be 1 through %d; omit it to use the supervisor default", prefix, limit))
-		}
-	}
-
 	agentName := strings.TrimSpace(a.Agent)
 	var profile *subagents.Profile
 	var fastModeOverride *bool
@@ -231,10 +214,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		}
 	}
 
-	maxTurns := 0
-	if a.MaxTurns != nil {
-		maxTurns = *a.MaxTurns
-	}
 	agent, err := t.Supervisor.SpawnReq(ctx, subagents.SpawnRequest{
 		Task:          task,
 		Model:         model,
@@ -243,7 +222,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		FastMode:      fastModeOverride,
 		Subagent:      agentName,
 		Required:      a.Required,
-		MaxTurns:      maxTurns,
 		WorkspaceMode: workspaceMode,
 		Tools:         profileTools,
 	})

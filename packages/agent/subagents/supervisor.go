@@ -643,7 +643,7 @@ func (f *Supervisor) TraceViews() map[string]AgentTraceView {
 	if f == nil || f.trace == nil {
 		return map[string]AgentTraceView{}
 	}
-	return ProjectTrace(f.trace.Events())
+	return f.trace.Views()
 }
 
 // Close flushes and closes the optional trace bundle. It does not stop agents;

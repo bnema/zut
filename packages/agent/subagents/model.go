@@ -107,9 +107,9 @@ const (
 
 // SubagentPolicy contains manager-owned safety and resource limits. normalize
 // replaces zero MaxOutputBytes, MaxOutputLines, QueueTimeout, and StartupTimeout
-// values with positive manager defaults. A zero DefaultTimeout leaves delegated
-// turns unlimited; queue, startup, stream-idle, and idle-process limits remain
-// independently bounded.
+// values with positive manager defaults. Zero DefaultTimeout, MaxTurns, and
+// MaxSteps leave delegated turns and model loops unlimited; queue, startup,
+// stream-idle, and idle-process limits remain independently bounded.
 type SubagentPolicy struct {
 	MaxConcurrent          int
 	MaxConcurrentPerParent int
@@ -129,6 +129,15 @@ type SubagentPolicy struct {
 }
 
 func (p *SubagentPolicy) normalize() {
+	if p.DefaultTimeout < 0 {
+		p.DefaultTimeout = 0
+	}
+	if p.MaxTurns < 0 {
+		p.MaxTurns = 0
+	}
+	if p.MaxSteps < 0 {
+		p.MaxSteps = 0
+	}
 	if p.MaxConcurrent <= 0 {
 		p.MaxConcurrent = 8
 	}
@@ -140,12 +149,6 @@ func (p *SubagentPolicy) normalize() {
 	}
 	if p.StartupTimeout <= 0 {
 		p.StartupTimeout = time.Minute
-	}
-	if p.MaxTurns <= 0 {
-		p.MaxTurns = 3
-	}
-	if p.MaxSteps <= 0 {
-		p.MaxSteps = 128
 	}
 	if p.MaxOutputBytes <= 0 {
 		p.MaxOutputBytes = 500_000

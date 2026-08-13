@@ -67,7 +67,7 @@ type Config struct {
 	Temperature *float32
 
 	// MaxSteps caps the agent loop iterations per Prompt call.
-	// 0 uses the default (50).
+	// 0 leaves the loop unlimited.
 	MaxSteps int
 
 	// APIKey overrides the credential lookup chain.
@@ -133,9 +133,6 @@ func New(cfg Config) (*Runtime, error) {
 		NoTools:            cfg.NoTools,
 		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
-	}
-	if args.MaxSteps == 0 {
-		args.MaxSteps = 50
 	}
 	r, err := agent.Resolve(args, true)
 	if err != nil {

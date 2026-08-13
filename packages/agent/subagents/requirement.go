@@ -27,12 +27,13 @@ const (
 // delegated message turn rather than a process attempt because resumable
 // workers may execute several turns in one process.
 type RequirementSnapshot struct {
-	Required   bool             `json:"required"`
-	State      RequirementState `json:"state,omitempty"`
-	TargetTurn int              `json:"target_turn,omitempty"`
-	UpdatedAt  time.Time        `json:"updated_at,omitempty"`
-	ErrorCode  string           `json:"error_code,omitempty"`
-	Notified   bool             `json:"notified,omitempty"`
+	Required     bool             `json:"required"`
+	State        RequirementState `json:"state,omitempty"`
+	TargetTurn   int              `json:"target_turn,omitempty"`
+	ResultTurnID string           `json:"result_turn_id,omitempty"`
+	UpdatedAt    time.Time        `json:"updated_at,omitempty"`
+	ErrorCode    string           `json:"error_code,omitempty"`
+	Notified     bool             `json:"notified,omitempty"`
 }
 
 // Unmet reports whether this requirement still prevents parent completion.
@@ -102,14 +103,14 @@ func (a *Agent) restoreRequirement(previous RequirementSnapshot) {
 	a.lifecycleMu.Unlock()
 }
 
-func (a *Agent) markRequirementNotified() bool {
+func (a *Agent) markRequirementNotified() (bool, error) {
 	if a == nil {
-		return false
+		return false, nil
 	}
 	a.lifecycleMu.Lock()
 	if !a.requirement.Required || a.requirement.Notified {
 		a.lifecycleMu.Unlock()
-		return false
+		return false, nil
 	}
 	previous := a.requirement
 	a.requirement.Notified = true
@@ -124,7 +125,7 @@ func (a *Agent) markRequirementNotified() bool {
 			}
 			a.lifecycleMu.Unlock()
 			a.recordPersistenceError(err)
-			return false
+			return false, err
 		}
 	}
 	a.lifecycleMu.Lock()
@@ -132,7 +133,7 @@ func (a *Agent) markRequirementNotified() bool {
 		a.signalRequirementLocked()
 	}
 	a.lifecycleMu.Unlock()
-	return true
+	return true, nil
 }
 
 func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, force bool) RequirementSnapshot {
@@ -182,6 +183,9 @@ func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, 
 	state, errorCode := classifyRequirementOutcome(result, errMsg)
 	a.requirement.State = state
 	a.requirement.ErrorCode = errorCode
+	if result != nil {
+		a.requirement.ResultTurnID = strings.TrimSpace(result.TurnID)
+	}
 	a.requirement.Notified = false
 	a.requirement.UpdatedAt = time.Now().UTC()
 	resolved := a.requirement
@@ -311,11 +315,26 @@ func (f *Supervisor) MarkRequirementNotified(id string) error {
 	if a == nil {
 		return fmt.Errorf("subagents: no such agent %q", id)
 	}
-	if strings.TrimSpace(a.Snapshot().ResultRef) == "" {
+	snapshot := a.Snapshot()
+	if strings.TrimSpace(snapshot.ResultRef) == "" {
 		return errors.New("subagents: required result is not durably available")
 	}
-	if a.markRequirementNotified() {
-		a.recordTrace(TraceEvent{Type: "result.delivered", TurnID: a.CurrentTurnID(), Data: map[string]any{"ref": ResultRef(a.ID)}})
+	requirement := snapshot.Requirement
+	expectedTurnID := strings.TrimSpace(requirement.ResultTurnID)
+	if expectedTurnID == "" && requirement.TargetTurn > 0 {
+		expectedTurnID = fmt.Sprintf("turn-%d", requirement.TargetTurn)
+	}
+	result := snapshot.Result
+	if result == nil || strings.TrimSpace(result.TurnID) != expectedTurnID {
+		return fmt.Errorf("subagents: durable required result does not match %s", expectedTurnID)
+	}
+	marked, err := a.markRequirementNotified()
+	if err != nil {
+		a.recordTrace(TraceEvent{Type: "result.delivery.failed", TurnID: expectedTurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
+		return fmt.Errorf("subagents: persist required result delivery: %w", err)
+	}
+	if marked {
+		a.recordTrace(TraceEvent{Type: "result.delivered", TurnID: expectedTurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 	}
 	return nil
 }

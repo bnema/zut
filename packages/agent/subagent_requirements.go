@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -65,10 +66,14 @@ func (rt *subagentRuntime) WireRequiredWorkerGate(parent *core.Agent) {
 			if !allowed {
 				return false, reason, replacement
 			}
-			rt.acknowledgeSatisfiedRequirements()
+			if err := rt.acknowledgeSatisfiedRequirements(); err != nil {
+				return false, err.Error(), ""
+			}
 			return true, reason, replacement
 		}
-		rt.acknowledgeSatisfiedRequirements()
+		if err := rt.acknowledgeSatisfiedRequirements(); err != nil {
+			return false, err.Error(), ""
+		}
 		return true, "", ""
 	}
 }
@@ -105,12 +110,14 @@ func (rt *subagentRuntime) waitRequiredWorkerReady(ctx context.Context) error {
 	}
 }
 
-func (rt *subagentRuntime) acknowledgeSatisfiedRequirements() {
+func (rt *subagentRuntime) acknowledgeSatisfiedRequirements() error {
+	var result error
 	for _, snapshot := range rt.supervisor.RequiredSnapshots() {
 		if snapshot.Requirement.State == subagents.RequirementSatisfied && !snapshot.Requirement.Notified {
-			_ = rt.supervisor.MarkRequirementNotified(snapshot.ID)
+			result = errors.Join(result, rt.supervisor.MarkRequirementNotified(snapshot.ID))
 		}
 	}
+	return result
 }
 
 const requiredWorkerContextRuneBudget = 6000

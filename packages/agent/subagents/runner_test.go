@@ -783,6 +783,25 @@ func TestUpdateAgentFromEventSurfacesTurnResultPersistenceFailure(t *testing.T) 
 	}
 }
 
+func TestUpdateAgentFromEventRecordsDurableResultAvailability(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{ID: "agent-1", stateDir: t.TempDir(), trace: trace}
+	if err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{
+		"status": "succeeded",
+		"output": "review complete",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := trace.Views()[a.ID]
+	if view.Result == nil || !view.Result.Available || view.Result.Ref != ResultRef(a.ID) {
+		t.Fatalf("live result trace = %#v, want durable availability", view.Result)
+	}
+}
+
 func TestRestoreResumePromptPreservesCommandIdentity(t *testing.T) {
 	a := &Agent{}
 	a.setResumePrompt("old prompt", time.Now())

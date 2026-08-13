@@ -18,10 +18,23 @@ var (
 	ErrMaxSteps          = errors.New("agent model step limit exceeded")
 )
 
+const (
+	DefaultStreamIdleTimeout = 5 * time.Minute
+	DefaultStreamMaxRetries  = 5
+)
+
 type queuedMessage struct {
 	text     string
 	accepted time.Time
 }
+
+// requestOpenError marks a failure returned before a provider stream exists.
+// Provider clients own retries for this phase; the agent retry budget is only
+// for reconnecting a stream that opened and then failed.
+type requestOpenError struct{ err error }
+
+func (e *requestOpenError) Error() string { return e.err.Error() }
+func (e *requestOpenError) Unwrap() error { return e.err }
 
 // Agent is a stateful conversation bound to a provider client, a model,
 // and a set of tools.
@@ -94,9 +107,8 @@ type Agent struct {
 	// model can still see what it said in subsequent turns).
 	BeforeAssistantMessage func(text string) (allowed bool, reason, replacement string)
 
-	// MaxRetries controls agent-level retries for transient provider
-	// failures that arrive after the HTTP stream opens (for example
-	// Anthropic overloaded_error). Zero disables this retry layer.
+	// MaxRetries controls reconnection attempts for transient failures after the
+	// provider stream opens. Zero disables this retry layer.
 	// RetryBaseDelay is doubled for each attempt; zero uses 2s.
 	MaxRetries     int
 	RetryBaseDelay time.Duration
@@ -158,14 +170,15 @@ type Agent struct {
 // NewAgent returns an Agent with sensible defaults.
 func NewAgent(client provider.Client, model, system string, tools Registry) *Agent {
 	return &Agent{
-		Client:         client,
-		Model:          model,
-		System:         system,
-		Tools:          tools,
-		MaxSteps:       0, // 0 = unlimited
-		MaxRetries:     3,
-		RetryBaseDelay: 2 * time.Second,
-		timeContext:    newAgentTimeContext(time.Now()),
+		Client:            client,
+		Model:             model,
+		System:            system,
+		Tools:             tools,
+		MaxSteps:          0, // 0 = unlimited
+		MaxRetries:        DefaultStreamMaxRetries,
+		RetryBaseDelay:    2 * time.Second,
+		StreamIdleTimeout: DefaultStreamIdleTimeout,
+		timeContext:       newAgentTimeContext(time.Now()),
 	}
 }
 
@@ -663,6 +676,10 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 	if err == nil || a.MaxRetries <= 0 || attempt >= a.MaxRetries {
 		return false
 	}
+	var openErr *requestOpenError
+	if errors.As(err, &openErr) {
+		return false
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
@@ -944,7 +961,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	defer cancelStream()
 	stream, err := a.Client.Stream(streamCtx, req)
 	if err != nil {
-		return provider.StopError, provider.Message{}, err
+		return provider.StopError, provider.Message{}, &requestOpenError{err: err}
 	}
 
 	sink(EvAssistantStart{})

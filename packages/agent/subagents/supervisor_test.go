@@ -86,18 +86,30 @@ func TestSpawnWithoutTimeoutUsesUnlimitedTurns(t *testing.T) {
 	a.Wait()
 }
 
-func TestSpawnUsesDefaultModelStepBudget(t *testing.T) {
+func TestSpawnLeavesModelAndTurnBudgetsUnlimitedByDefault(t *testing.T) {
 	f := newTestSupervisor(t, func(*Agent) Runner {
 		return RunnerFunc(func(context.Context, Sink) error { return nil })
 	})
-	a, err := f.Spawn(context.Background(), "bounded model loop")
+	a, err := f.Spawn(context.Background(), "unlimited model loop")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.MaxSteps != 128 {
-		t.Fatalf("max steps = %d, want 128", a.MaxSteps)
+	if a.MaxSteps != 0 || a.MaxTurns != 0 {
+		t.Fatalf("model/turn budgets = %d/%d, want unlimited", a.MaxSteps, a.MaxTurns)
 	}
 	a.Wait()
+}
+
+func TestSubagentPolicyCanonicalizesNegativeUnlimitedBudgets(t *testing.T) {
+	policy := SubagentPolicy{
+		DefaultTimeout: -time.Second,
+		MaxTurns:       -1,
+		MaxSteps:       -1,
+	}
+	policy.normalize()
+	if policy.DefaultTimeout != 0 || policy.MaxTurns != 0 || policy.MaxSteps != 0 {
+		t.Fatalf("normalized budgets = %s/%d/%d, want unlimited zeros", policy.DefaultTimeout, policy.MaxTurns, policy.MaxSteps)
+	}
 }
 
 func TestSpawnRunsAndCompletes(t *testing.T) {

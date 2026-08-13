@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -221,7 +222,7 @@ func TestRequiredOutcomePersistsAcrossReload(t *testing.T) {
 func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
 	trace := NewMemoryTraceWriter()
 	t.Cleanup(func() { _ = trace.Close() })
-	a := &Agent{ID: "agent-1", trace: trace, resultRef: ResultRef("agent-1"), requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1}}
+	a := &Agent{ID: "agent-1", trace: trace, result: &TurnResult{AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded}, resultRef: ResultRef("agent-1"), requirement: RequirementSnapshot{Required: true, State: RequirementSatisfied, TargetTurn: 1, ResultTurnID: "turn-1"}}
 	s := &Supervisor{agents: map[string]*Agent{a.ID: a}}
 	if err := s.MarkRequirementNotified(a.ID); err != nil {
 		t.Fatal(err)
@@ -240,6 +241,35 @@ func TestRequirementNotificationRecordsDeliveryExactlyOnce(t *testing.T) {
 	}
 	if delivered != 1 {
 		t.Fatalf("result.delivered count = %d, want 1", delivered)
+	}
+}
+
+func TestRequirementNotificationPersistenceFailureIsReported(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{
+		ID:        "agent-1",
+		trace:     trace,
+		result:    &TurnResult{AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded},
+		resultRef: ResultRef("agent-1"),
+		requirement: RequirementSnapshot{
+			Required: true, State: RequirementSatisfied, TargetTurn: 1, ResultTurnID: "turn-1",
+		},
+		persistFn: func(*Agent) error { return errors.New("disk full") },
+	}
+	s := &Supervisor{agents: map[string]*Agent{a.ID: a}}
+	if err := s.MarkRequirementNotified(a.ID); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("MarkRequirementNotified error = %v, want persistence failure", err)
+	}
+	if a.Snapshot().Requirement.Notified {
+		t.Fatal("requirement remained notified after persistence failure")
+	}
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := trace.Views()[a.ID]
+	if view.Result == nil || !view.Result.Failed {
+		t.Fatalf("delivery failure trace = %#v", view.Result)
 	}
 }
 

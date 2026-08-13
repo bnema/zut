@@ -322,7 +322,35 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("parse config: %w", err)
 	}
+	if err := validateSubagentDurations(c.Subagents); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+func validateSubagentDurations(cfg SubagentsConfig) error {
+	values := []struct {
+		name  string
+		value string
+	}{
+		{"queue_timeout", cfg.QueueTimeout},
+		{"startup_timeout", cfg.StartupTimeout},
+		{"default_timeout", cfg.DefaultTimeout},
+		{"heartbeat_interval", cfg.HeartbeatInterval},
+		{"idle_timeout", cfg.IdleTimeout},
+		{"reconnect_timeout", cfg.ReconnectTimeout},
+		{"cancel_grace_period", cfg.CancelGracePeriod},
+	}
+	for _, item := range values {
+		value := strings.TrimSpace(item.value)
+		if value == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("parse config: subagents.%s: %w", item.name, err)
+		}
+	}
+	return nil
 }
 
 // SaveConfig writes the config file, creating parent dirs.

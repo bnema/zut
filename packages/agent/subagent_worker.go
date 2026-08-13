@@ -251,11 +251,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		mu.Unlock()
 
 		turnStarted := false
-		// Match Codex's Responses stream policy: five minutes without an
-		// event marks only the current stream as lost, and up to five retries
-		// reconnect the sampling request without ending the delegated turn.
-		ag.StreamIdleTimeout = 5 * time.Minute
-		ag.MaxRetries = 5
 		sink := func(ev core.AgentEvent) {
 			data := subagentEventData(ev)
 			if ev.Type() == "user_message" && !turnStarted {

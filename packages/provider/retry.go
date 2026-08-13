@@ -12,13 +12,10 @@ import (
 	"time"
 )
 
-// streamRetryAttempts is the maximum number of silent retries for
-// transient connect failures before the streaming request is opened.
-// 2 retries (so up to 3 total attempts) covers the common case where
-// the upstream provider's edge proxy briefly returns 502/503/504 or
-// resets the connection before headers, without making the user wait
-// noticeably long if the outage is real.
-const streamRetryAttempts = 2
+// requestMaxRetries is the maximum number of retries for transient connect or
+// HTTP failures before a streaming response opens. It matches Codex's default
+// request retry guard and remains separate from agent-level stream reconnects.
+const requestMaxRetries = 4
 
 // maxServerRetryDelay caps how long we are willing to honor a
 // server-requested Retry-After delay. When a provider asks for a
@@ -27,9 +24,9 @@ const streamRetryAttempts = 2
 const maxServerRetryDelay = 60 * time.Second
 
 // streamRetryBackoff returns the wait duration before retry attempt n
-// (1-based). Short, fixed backoff: 250ms, then 750ms. Anything longer
-// would feel like the agent froze; anything shorter starts hammering
-// the provider when it's actually struggling.
+// (1-based). Short, fixed backoff: 250ms, then 750ms for later retries.
+// Anything longer would feel like the agent froze; anything shorter starts
+// hammering the provider when it's actually struggling.
 func streamRetryBackoff(attempt int) time.Duration {
 	switch attempt {
 	case 1:
@@ -40,7 +37,7 @@ func streamRetryBackoff(attempt int) time.Duration {
 }
 
 // doStreamWithRetry performs an HTTP request that begins a streaming
-// response, with up to streamRetryAttempts silent retries for transient
+// response, with up to requestMaxRetries silent retries for transient
 // connect failures. Successful responses (status 200) and non-transient
 // failures (4xx, malformed bodies, etc.) are returned immediately.
 //
@@ -66,8 +63,8 @@ func streamRetryBackoff(attempt int) time.Duration {
 func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (*http.Request, error), lifecycle RequestLifecycle) (*http.Response, error) {
 	var lastErr error
 	serverDelay := time.Duration(-1) // <0: use the default fixed backoff
-	maxAttempts := streamRetryAttempts + 1
-	for attempt := 0; attempt <= streamRetryAttempts; attempt++ {
+	maxAttempts := requestMaxRetries + 1
+	for attempt := 0; attempt <= requestMaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := streamRetryBackoff(attempt)
 			if serverDelay >= 0 {
@@ -106,7 +103,7 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 				return nil, err
 			}
 			transient := isTransientConnectError(err)
-			reportRequestFailure(lifecycle, attempt+1, maxAttempts, requestFailureReasonForError(err), !transient || attempt == streamRetryAttempts)
+			reportRequestFailure(lifecycle, attempt+1, maxAttempts, requestFailureReasonForError(err), !transient || attempt == requestMaxRetries)
 			if !transient {
 				return nil, err
 			}
@@ -129,7 +126,7 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 				return synthesizeResponse(resp.StatusCode, body), nil
 			}
 			lastErr = &transientHTTPError{Status: resp.StatusCode, Body: trimmed}
-			if attempt == streamRetryAttempts {
+			if attempt == requestMaxRetries {
 				reportRequestFailure(lifecycle, attempt+1, maxAttempts, reason, true)
 				// Wrap as a real *http.Response shape the caller
 				// expects so it formats the error identically to a
