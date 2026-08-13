@@ -30,8 +30,6 @@ type SubagentsConfig struct {
 	QueueTimeout           string   `json:"queue_timeout,omitempty"`
 	StartupTimeout         string   `json:"startup_timeout,omitempty"`
 	DefaultTimeout         string   `json:"default_timeout,omitempty"`
-	MaxTurns               int      `json:"max_turns,omitempty"`
-	MaxSteps               int      `json:"max_steps,omitempty"`
 	MaxOutputBytes         int      `json:"max_output_bytes,omitempty"`
 	MaxOutputLines         int      `json:"max_output_lines,omitempty"`
 	AllowedTools           []string `json:"allowed_tools,omitempty"`

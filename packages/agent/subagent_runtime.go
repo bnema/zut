@@ -499,8 +499,6 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 		QueueTimeout:           parseDuration(cfg.QueueTimeout),
 		StartupTimeout:         parseDuration(cfg.StartupTimeout),
 		DefaultTimeout:         parseDuration(cfg.DefaultTimeout),
-		MaxTurns:               cfg.MaxTurns,
-		MaxSteps:               cfg.MaxSteps,
 		MaxOutputBytes:         cfg.MaxOutputBytes,
 		MaxOutputLines:         cfg.MaxOutputLines,
 		AllowedTools:           append([]string(nil), cfg.AllowedTools...),

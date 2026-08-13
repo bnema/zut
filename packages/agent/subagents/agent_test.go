@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -103,6 +104,45 @@ func TestWaitTurnResultBroadcastsToMultipleObservers(t *testing.T) {
 		if result := <-results; result == nil || result.TurnID != "turn-1" {
 			t.Fatalf("wait result = %#v, want turn-1", result)
 		}
+	}
+}
+
+func TestWaitTurnResultRetainsEarlierCompletedTurn(t *testing.T) {
+	a := &Agent{ID: "worker-1", done: make(chan struct{})}
+	resultReady := make(chan *TurnResult, 1)
+	errReady := make(chan error, 1)
+	go func() {
+		result, err := a.WaitTurnResult(context.Background(), "turn-1")
+		resultReady <- result
+		errReady <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		a.lifecycleMu.Lock()
+		registered := a.resultWaiters["turn-1"] > 0
+		a.lifecycleMu.Unlock()
+		if registered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("turn-1 waiter did not register")
+		}
+		runtime.Gosched()
+	}
+	a.setResult(&TurnResult{Version: ProtocolVersion, AgentID: a.ID, TurnID: "turn-1", Status: ResultSucceeded})
+	a.setResult(&TurnResult{Version: ProtocolVersion, AgentID: a.ID, TurnID: "turn-2", Status: ResultSucceeded})
+
+	if err := <-errReady; err != nil {
+		t.Fatal(err)
+	}
+	result := <-resultReady
+	if result == nil || result.TurnID != "turn-1" {
+		t.Fatalf("wait result = %#v, want retained turn-1", result)
+	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if len(a.results) != 0 || len(a.resultWaiters) != 0 {
+		t.Fatalf("completed waiter state leaked: results=%d waiters=%d", len(a.results), len(a.resultWaiters))
 	}
 }
 

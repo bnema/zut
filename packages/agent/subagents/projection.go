@@ -17,6 +17,7 @@ type Operation struct {
 	Name        string
 	Provider    string
 	Model       string
+	Step        int
 	Attempt     int
 	MaxAttempts int
 	StartedAt   time.Time
@@ -115,14 +116,13 @@ type RequestFact struct {
 // contains operations and terminal facts rather than lifecycle guesses such as
 // working, idle, or alive.
 type AgentTraceView struct {
-	AgentID          string
-	LastEvent        TraceEvent
-	LastObservation  *LiveObservation
-	OpenOperations   []Operation
-	PrimaryOperation *Operation
-	Terminal         string
-	Result           *ResultFact
-	LastRequest      *RequestFact
+	AgentID         string
+	LastEvent       TraceEvent
+	LastObservation *LiveObservation
+	OpenOperations  []Operation
+	Terminal        string
+	Result          *ResultFact
+	LastRequest     *RequestFact
 }
 
 // Summary returns the most specific factual activity or terminal result fact.
@@ -139,12 +139,8 @@ func (v AgentTraceView) Summary() string {
 		}
 		return v.Terminal
 	}
-	primary := v.PrimaryOperation
-	if primary == nil && len(v.OpenOperations) != 0 {
-		primary = &v.OpenOperations[0]
-	}
-	if primary != nil {
-		if observation := v.ObservationFor(*primary); observation != nil {
+	if primary, ok := v.Primary(); ok {
+		if observation := v.ObservationFor(primary); observation != nil {
 			return primary.Label() + " · " + observation.Label()
 		}
 		return primary.Label()
@@ -208,7 +204,8 @@ func (p *traceProjection) apply(event TraceEvent) {
 		model, _ := event.Data["model"].(string)
 		attempt := traceInt(event.Data["attempt"])
 		maxAttempts := traceInt(event.Data["max_attempts"])
-		p.open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
+		step := traceInt(event.Data["step"])
+		p.open[event.AgentID][key] = Operation{Type: event.Type, AgentID: event.AgentID, TurnID: event.TurnID, CallID: callID, Name: name, Provider: provider, Model: model, Step: step, Attempt: attempt, MaxAttempts: maxAttempts, StartedAt: event.Timestamp}
 	}
 	if ends {
 		if event.Type == "provider.request.finished" || event.Type == "provider.request.failed" || event.Type == "provider.request.cancelled" || event.Type == "provider.request.retry.scheduled" {
@@ -272,10 +269,6 @@ func (p *traceProjection) snapshot() map[string]AgentTraceView {
 			}
 			return left.CallID < right.CallID
 		})
-		if len(view.OpenOperations) != 0 {
-			primary := view.OpenOperations[0]
-			view.PrimaryOperation = &primary
-		}
 		views[agentID] = view
 	}
 	return views
@@ -283,7 +276,6 @@ func (p *traceProjection) snapshot() map[string]AgentTraceView {
 
 func cloneAgentTraceView(view AgentTraceView) AgentTraceView {
 	view.OpenOperations = nil
-	view.PrimaryOperation = nil
 	if view.LastObservation != nil {
 		observation := *view.LastObservation
 		view.LastObservation = &observation
@@ -297,6 +289,15 @@ func cloneAgentTraceView(view AgentTraceView) AgentTraceView {
 		view.LastRequest = &request
 	}
 	return view
+}
+
+// Primary returns the highest-priority factual operation from the ordered
+// open-operation projection.
+func (v AgentTraceView) Primary() (Operation, bool) {
+	if len(v.OpenOperations) == 0 {
+		return Operation{}, false
+	}
+	return v.OpenOperations[0], true
 }
 
 // TurnStartedAt returns the factual start of the open delegated turn owning

@@ -30,7 +30,7 @@ func TestRenderSubagentActivityLinesShowsOnlyTraceOpenOperations(t *testing.T) {
 func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
-		"review-123": {PrimaryOperation: &subagents.Operation{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
+		"review-123": {OpenOperations: []subagents.Operation{{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-time.Minute)}}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
 	}, 100, now))
 	if got := strings.Join(lines, "\n"); !strings.Contains(got, "processing turn · assistant streaming 1s ago") || strings.Contains(got, "delta") {
 		t.Fatalf("activity lines = %#v", lines)
@@ -40,10 +40,10 @@ func TestRenderSubagentActivityLinesShowsSafeLastObservation(t *testing.T) {
 func TestRenderSubagentActivityLinesShowsRecentCompletedToolUnderProviderRequest(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
-		"review-123": {PrimaryOperation: &subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-2 * time.Second)}, LastObservation: &subagents.LiveObservation{Type: "tool.finished", Name: "read", CallID: "call-1", TurnID: "turn-1", At: now.Add(-3 * time.Second)}},
+		"review-123": {OpenOperations: []subagents.Operation{{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-2 * time.Second)}}, LastObservation: &subagents.LiveObservation{Type: "tool.finished", Name: "read", CallID: "call-1", TurnID: "turn-1", At: now.Add(-3 * time.Second)}},
 	}, 100, now))
 	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "waiting for model response · finished read 3s ago · 2s") {
+	if !strings.Contains(got, "zzZz · finished read 3s ago · 2s") {
 		t.Fatalf("activity lines = %#v", lines)
 	}
 }
@@ -52,15 +52,40 @@ func TestRenderSubagentActivityLineColorsProviderWaitAsActive(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	operation := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-2 * time.Second)}
 	line := renderSubagentActivityLine(tui.Dark, "/", subagents.AgentSnapshot{ID: "review-123", Subagent: "reviewer"}, operation, operation.StartedAt, nil, 100, now)
-	if !strings.Contains(line, tui.Dark.FGColor(tui.Dark.Spinner, "waiting for model response")) {
+	if !strings.Contains(line, tui.Dark.FGColor(tui.Dark.Spinner, "zzZz")) {
 		t.Fatalf("provider wait is not rendered with the active color: %q", line)
+	}
+}
+
+func TestRenderSubagentActivityLineAnimatesProviderWaitAtOneHertz(t *testing.T) {
+	started := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	operation := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: started}
+	snapshot := subagents.AgentSnapshot{ID: "review-123", Subagent: "reviewer"}
+
+	wants := []string{"Zzzz", "zZzz", "zzZz", "zzzZ", "Zzzz"}
+	for second, want := range wants {
+		line := stripANSIBytes(renderSubagentActivityLine(tui.Dark, "/", snapshot, operation, started, nil, 100, started.Add(time.Duration(second)*time.Second)))
+		if !strings.Contains(line, "reviewer · "+want+" · ") {
+			t.Fatalf("provider wait at %ds = %q, want frame %q", second, line, want)
+		}
+	}
+}
+
+func TestRenderSubagentActivityLineShowsModelStepBesideElapsedTurnTime(t *testing.T) {
+	started := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	operation := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", Step: 3, StartedAt: started.Add(8 * time.Second)}
+	snapshot := subagents.AgentSnapshot{ID: "review-123", Subagent: "reviewer"}
+
+	line := stripANSIBytes(renderSubagentActivityLine(tui.Dark, "/", snapshot, operation, started, nil, 100, started.Add(12*time.Second)))
+	if !strings.Contains(line, "reviewer · Zzzz · 3 steps · 12s") {
+		t.Fatalf("provider wait line = %q, want model step beside delegated-turn elapsed time", line)
 	}
 }
 
 func TestRenderSubagentActivityLinesOmitsPriorTurnObservation(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer"}}, map[string]subagents.AgentTraceView{
-		"review-123": {PrimaryOperation: &subagents.Operation{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
+		"review-123": {OpenOperations: []subagents.Operation{{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}}, LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)}},
 	}, 100, now))
 	if got := strings.Join(lines, "\n"); strings.Contains(got, "assistant streaming") || !strings.Contains(got, "running tool") || !strings.Contains(got, "1m") {
 		t.Fatalf("activity lines = %#v", lines)
@@ -103,10 +128,10 @@ func TestRenderSubagentActivityLinesUsesStableDelegatedTurnElapsedTime(t *testin
 	turn := subagents.Operation{Type: "turn.started", TurnID: "turn-1", StartedAt: now.Add(-12 * time.Second)}
 	request := subagents.Operation{Type: "provider.request.started", TurnID: "turn-1", StartedAt: now.Add(-time.Second)}
 	lines := plainActivityLines(renderSubagentActivityLines(tui.Dark, "/", []subagents.AgentSnapshot{{ID: "review-123", Subagent: "reviewer", Started: now.Add(-5*time.Hour - 16*time.Minute)}}, map[string]subagents.AgentTraceView{
-		"review-123": {PrimaryOperation: &request, OpenOperations: []subagents.Operation{request, turn}},
+		"review-123": {OpenOperations: []subagents.Operation{request, turn}},
 	}, 100, now))
 	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "waiting for model response · 12s") || strings.Contains(got, "5h16m") {
+	if !strings.Contains(got, "zZzz · 12s") || strings.Contains(got, "5h16m") {
 		t.Fatalf("activity lines = %#v, want current delegated-turn elapsed time", lines)
 	}
 }

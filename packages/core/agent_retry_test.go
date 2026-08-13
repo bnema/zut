@@ -61,6 +61,18 @@ func (silentStreamClient) Stream(ctx context.Context, _ provider.Request) (<-cha
 	return out, nil
 }
 
+type activeStreamClient struct{}
+
+func (activeStreamClient) Name() string { return "active-stream" }
+
+func (activeStreamClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 2)
+	out <- provider.EventStart{}
+	out <- provider.EventDone{Stop: provider.StopEnd}
+	close(out)
+	return out, nil
+}
+
 type requestOpenFailureClient struct{ calls int32 }
 
 func (c *requestOpenFailureClient) Name() string { return "request-open-failure" }
@@ -71,7 +83,8 @@ func (c *requestOpenFailureClient) Stream(context.Context, provider.Request) (<-
 }
 
 type readableAfterCancellationClient struct {
-	cancel context.CancelFunc
+	cancel  context.CancelFunc
+	drained chan struct{}
 }
 
 func (c readableAfterCancellationClient) Name() string { return "readable-after-cancellation" }
@@ -80,6 +93,11 @@ func (c readableAfterCancellationClient) Stream(_ context.Context, _ provider.Re
 	out := make(chan provider.Event, 1)
 	out <- provider.EventStart{}
 	c.cancel()
+	go func() {
+		out <- provider.EventTextDelta{Delta: "discard after cancellation"}
+		close(out)
+		close(c.drained)
+	}()
 	return out, nil
 }
 
@@ -98,10 +116,16 @@ func TestNewAgentUsesCodexStreamGuardDefaults(t *testing.T) {
 
 func TestAgentStopsReadingStreamAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	a := NewAgent(readableAfterCancellationClient{cancel: cancel}, "fake-model", "system", Registry{})
+	drained := make(chan struct{})
+	a := NewAgent(readableAfterCancellationClient{cancel: cancel, drained: drained}, "fake-model", "system", Registry{})
 	a.MaxRetries = 0
 	if err := a.Prompt(ctx, "hello", nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Prompt error = %v, want context.Canceled", err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("provider producer remained blocked after turn cancellation")
 	}
 }
 
@@ -116,6 +140,22 @@ func TestAgentStopsSilentStreamAtIdleDeadline(t *testing.T) {
 	}
 	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	}
+}
+
+func TestAgentResetsIdleDeadlineForEveryStreamEvent(t *testing.T) {
+	a := NewAgent(activeStreamClient{}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	a.StreamIdleTimeout = time.Minute
+	var resets atomic.Int32
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		return make(chan time.Time), func() {}, func() { resets.Add(1) }
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := resets.Load(); got != 2 {
+		t.Fatalf("idle timer resets = %d, want one for each stream event", got)
 	}
 }
 

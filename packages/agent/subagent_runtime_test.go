@@ -59,7 +59,6 @@ func newRuntimeTestConfig(root, repoRoot string, runner func(*subagents.Agent) s
 		FastMode:    true,
 		Policy: subagents.SubagentPolicy{
 			MaxConcurrent:     2,
-			MaxTurns:          4,
 			DefaultTimeout:    time.Minute,
 			CancelGracePeriod: time.Second,
 		},

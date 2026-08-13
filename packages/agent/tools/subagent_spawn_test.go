@@ -128,9 +128,6 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if got := details["timeout"]; got != "unlimited" {
 		t.Fatalf("timeout detail = %v, want unlimited", got)
 	}
-	if got := details["max_steps"]; got != 0 {
-		t.Fatalf("max_steps detail = %v, want unlimited", got)
-	}
 	text := textResult(res.Content)
 	if !strings.Contains(text, "model: gpt-5") || !strings.Contains(text, "provider: openai-codex") || !strings.Contains(text, "reasoning: medium") {
 		t.Fatalf("result text missing inherited model/provider:\n%s", text)
@@ -143,20 +140,15 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if agents[0].Model != "gpt-5" || agents[0].Provider != "openai-codex" || agents[0].Reasoning != "medium" {
 		t.Fatalf("agent model/provider/reasoning = %q/%q/%q, want gpt-5/openai-codex/medium", agents[0].Model, agents[0].Provider, agents[0].Reasoning)
 	}
-	if agents[0].MaxTurns != 0 {
-		t.Fatalf("omitted max_turns = %d, want unlimited", agents[0].MaxTurns)
-	}
 }
 
-func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
+func TestSubagentSpawnDetailsUseEffectiveTimeout(t *testing.T) {
 	root := t.TempDir()
 	manager := subagents.New(subagents.Config{
 		Root:     filepath.Join(root, "subagents"),
 		RepoRoot: root,
 		Policy: subagents.SubagentPolicy{
 			DefaultTimeout: 37 * time.Minute,
-			MaxTurns:       7,
-			MaxSteps:       99,
 		},
 		NewRunner: func(*subagents.Agent) subagents.Runner {
 			return noopSupervisorRunner{}
@@ -182,41 +174,25 @@ func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
 	if got := details["timeout"]; got != (37 * time.Minute).String() {
 		t.Fatalf("omitted timeout detail = %v, want %s", got, (37 * time.Minute).String())
 	}
-	if got := details["max_turns"]; got != 7 {
-		t.Fatalf("max_turns detail = %v, want 7", got)
+	if _, found := details["max_turns"]; found {
+		t.Fatalf("details retain removed max_turns: %#v", details)
 	}
-	if got := details["max_steps"]; got != 99 {
-		t.Fatalf("max_steps detail = %v, want 99", got)
-	}
-}
-
-func TestSubagentSpawnRejectsLegacyModelTimeoutOverride(t *testing.T) {
-	manager := newTestSupervisor(t)
-	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","timeout":"20m"}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError || !strings.Contains(textResult(res.Content), "manager-owned") {
-		t.Fatalf("result = %#v, want manager-owned budget error", res)
-	}
-	if agents := manager.List(); len(agents) != 0 {
-		t.Fatalf("legacy timeout spawned agents: %#v", agents)
+	if _, found := details["max_steps"]; found {
+		t.Fatalf("details retain removed max_steps: %#v", details)
 	}
 }
 
-func TestSubagentSpawnRejectsLegacyModelMaxTurnsOverride(t *testing.T) {
+func TestSubagentSpawnRejectsUnknownExecutionLimitFields(t *testing.T) {
 	manager := newTestSupervisor(t)
 	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","max_turns":1}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError || !strings.Contains(textResult(res.Content), "manager-owned") {
-		t.Fatalf("result = %#v, want manager-owned budget error", res)
+	for _, field := range []string{"timeout", "max_turns", "max_steps"} {
+		_, err := tool.Execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"task":"research docs",%q:1}`, field)), nil)
+		if err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("field %q error = %v, want unknown field", field, err)
+		}
 	}
 	if agents := manager.List(); len(agents) != 0 {
-		t.Fatalf("legacy max_turns spawned agents: %#v", agents)
+		t.Fatalf("unknown execution limits spawned agents: %#v", agents)
 	}
 }
 

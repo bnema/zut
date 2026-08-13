@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+func primaryOperation(t testing.TB, view AgentTraceView) *Operation {
+	t.Helper()
+	operation, ok := view.Primary()
+	if !ok {
+		t.Fatal("trace view has no primary operation")
+	}
+	return &operation
+}
+
 func TestProjectTraceRetainsJSONDecodedRequestAttempts(t *testing.T) {
 	bundle := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bundle, "manifest.json"), []byte(`{"version":1,"trace_file":"trace.jsonl"}`), 0o600); err != nil {
@@ -21,7 +30,7 @@ func TestProjectTraceRetainsJSONDecodedRequestAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation := ProjectTrace(events)["agent-1"].PrimaryOperation
+	operation := primaryOperation(t, ProjectTrace(events)["agent-1"])
 	if operation == nil || operation.Attempt != 2 || operation.MaxAttempts != 6 {
 		t.Fatalf("projected operation = %#v, want attempt 2/6", operation)
 	}
@@ -36,10 +45,10 @@ func TestProjectTraceIgnoresProtocolFactsAndShowsCompletedToolDuringNextProvider
 		{Timestamp: started.Add(2500 * time.Millisecond), Type: "worker.protocol.observed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"source_event": "tool.use.args"}},
 		{Timestamp: started.Add(3 * time.Second), Type: "provider.request.started", AgentID: "agent-1", TurnID: "turn-1"},
 	})["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "provider.request.started" {
-		t.Fatalf("primary operation = %#v", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "provider.request.started" {
+		t.Fatalf("primary operation = %#v", primaryOperation(t, view))
 	}
-	observation := view.ObservationFor(*view.PrimaryOperation)
+	observation := view.ObservationFor(*primaryOperation(t, view))
 	if observation == nil || observation.Label() != "finished read" {
 		t.Fatalf("observation = %#v, want finished read", observation)
 	}
@@ -65,10 +74,10 @@ func TestProjectTraceKeepsShortCompletedToolVisibleBeforeNextRequest(t *testing.
 		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
 		{Timestamp: started.Add(time.Second + time.Millisecond), Type: "tool.finished", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
 	})["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "turn.started" {
-		t.Fatalf("primary operation = %#v, want turn", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "turn.started" {
+		t.Fatalf("primary operation = %#v, want turn", primaryOperation(t, view))
 	}
-	if observation := view.ObservationFor(*view.PrimaryOperation); observation == nil || observation.Label() != "finished read" {
+	if observation := view.ObservationFor(*primaryOperation(t, view)); observation == nil || observation.Label() != "finished read" {
 		t.Fatalf("completed tool observation = %#v, want finished read", observation)
 	}
 }
@@ -80,10 +89,10 @@ func TestProjectTraceDoesNotDecorateToolWithProviderStream(t *testing.T) {
 		{Timestamp: started.Add(time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "call-1", "name": "read"}},
 		{Timestamp: started.Add(2 * time.Second), Type: "assistant.stream.observed", AgentID: "agent-1", TurnID: "turn-1"},
 	})["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" {
-		t.Fatalf("primary operation = %#v, want tool", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "tool.started" {
+		t.Fatalf("primary operation = %#v, want tool", primaryOperation(t, view))
 	}
-	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+	if observation := view.ObservationFor(*primaryOperation(t, view)); observation != nil {
 		t.Fatalf("provider stream decorated tool operation: %#v", observation)
 	}
 }
@@ -161,8 +170,8 @@ func TestProjectTraceSelectsSpecificActivityAndProjectsResultDelivery(t *testing
 		{Timestamp: started.Add(3 * time.Second), Type: "result.available", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
 		{Timestamp: started.Add(4 * time.Second), Type: "result.delivered", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"ref": "subagent://agent-1/result"}},
 	})["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {
-		t.Fatalf("primary operation = %#v, want bash tool", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "tool.started" || primaryOperation(t, view).Name != "bash" {
+		t.Fatalf("primary operation = %#v, want bash tool", primaryOperation(t, view))
 	}
 	if view.LastObservation == nil || view.LastObservation.Type != "assistant.stream.observed" || view.LastObservation.Label() != "assistant streaming" {
 		t.Fatalf("last observation = %#v", view.LastObservation)
@@ -213,10 +222,10 @@ func TestProjectTraceOmitsObservationForAnotherToolInSameTurn(t *testing.T) {
 		{Timestamp: started.Add(2 * time.Second), Type: "tool.started", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two", "name": "read"}},
 		{Timestamp: started.Add(3 * time.Second), Type: "tool.output.observed", AgentID: "agent-1", TurnID: "turn-1", Data: map[string]any{"call_id": "two", "name": "read"}},
 	})["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.CallID != "one" {
-		t.Fatalf("primary operation = %#v, want call one", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).CallID != "one" {
+		t.Fatalf("primary operation = %#v, want call one", primaryOperation(t, view))
 	}
-	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+	if observation := view.ObservationFor(*primaryOperation(t, view)); observation != nil {
 		t.Fatalf("another tool's observation = %#v, want omitted", observation)
 	}
 	if got, want := view.Summary(), "running bash"; got != want {
@@ -233,10 +242,10 @@ func TestProjectTraceOmitsPriorTurnObservation(t *testing.T) {
 	if view.LastObservation == nil {
 		t.Fatal("last observation missing")
 	}
-	if view.PrimaryOperation == nil {
+	if primaryOperation(t, view) == nil {
 		t.Fatal("primary operation missing")
 	}
-	if observation := view.ObservationFor(*view.PrimaryOperation); observation != nil {
+	if observation := view.ObservationFor(*primaryOperation(t, view)); observation != nil {
 		t.Fatalf("prior turn observation = %#v, want omitted", observation)
 	}
 	if got, want := view.Summary(), "processing turn"; got != want {

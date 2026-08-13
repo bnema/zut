@@ -10,6 +10,11 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+var providerWaitingSpinner = tui.NewStringSpinner(
+	[]string{"Zzzz", "zZzz", "zzZz", "zzzZ"},
+	time.Second,
+)
+
 // renderSubagentActivityLines renders only trace-observed open operations.
 // A living process, generic lifecycle state, or heartbeat never starts a
 // spinner because none proves that an operation is progressing.
@@ -17,14 +22,11 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		view := views[snapshot.ID]
-		operation := view.PrimaryOperation
-		if operation == nil && len(view.OpenOperations) != 0 {
-			operation = &view.OpenOperations[0]
-		}
-		if operation == nil {
+		operation, ok := view.Primary()
+		if !ok {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, *operation, view.TurnStartedAt(*operation), view.ObservationFor(*operation), width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, operation, view.TurnStartedAt(operation), view.ObservationFor(operation), width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}
@@ -44,7 +46,7 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	if spinnerGlyph == "" {
 		spinnerGlyph = "."
 	}
-	activity := operation.Label()
+	activity := subagentOperationActivity(operation, now)
 	if observation != nil {
 		activity += " · " + observation.Label() + " " + formatSubagentActivityAge(observation.At, now) + " ago"
 	}
@@ -55,6 +57,13 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 		turnStartedAt = operation.StartedAt
 	}
 	age := formatSubagentActivityAge(turnStartedAt, now)
+	if operation.Step > 0 {
+		label := "steps"
+		if operation.Step == 1 {
+			label = "step"
+		}
+		age = fmt.Sprintf("%d %s · %s", operation.Step, label, age)
+	}
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {
 		return ""
@@ -81,6 +90,13 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	default:
 		return "  " + th.FGColor(th.Muted, plain)
 	}
+}
+
+func subagentOperationActivity(operation subagents.Operation, now time.Time) string {
+	if operation.Type == "provider.request.started" {
+		return providerWaitingSpinner.FrameAt(operation.StartedAt, now)
+	}
+	return operation.Label()
 }
 
 func subagentOperationColor(th tui.Theme, operation subagents.Operation) tui.TerminalColor {
@@ -192,7 +208,7 @@ func (i *Interactive) activeSubagentActivitySnapshots() ([]subagents.AgentSnapsh
 			continue
 		}
 		view := views[agent.ID]
-		if view.PrimaryOperation == nil && len(view.OpenOperations) == 0 {
+		if _, ok := view.Primary(); !ok {
 			continue
 		}
 		out = append(out, subagents.AgentSnapshot{ID: agent.ID, Started: agent.Started, Subagent: agent.Subagent})

@@ -57,8 +57,6 @@ type agentMeta struct {
 	WorkspacePath    string          `json:"workspace_path,omitempty"`
 	WorkspaceBase    string          `json:"workspace_base,omitempty"`
 	WorkspaceCapture CaptureMode     `json:"workspace_capture,omitempty"`
-	MaxTurns         int             `json:"max_turns,omitempty"`
-	MaxSteps         int             `json:"max_steps,omitempty"`
 	LifetimeTurns    int             `json:"lifetime_turns,omitempty"`
 	CurrentRunTurns  int             `json:"current_run_turns,omitempty"`
 	Timeout          time.Duration   `json:"timeout,omitempty"`
@@ -128,13 +126,6 @@ func resolvePersistedTurnTimeout(m agentMeta, fallback time.Duration) time.Durat
 	}
 }
 
-func resolvePersistedMaxSteps(value, fallback int) int {
-	if value > 0 {
-		return value
-	}
-	return fallback
-}
-
 func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.json") }
 
 // writeAgentMeta serialises a's identity into stateDir/meta.json. The
@@ -198,8 +189,6 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		WorkspacePath:    a.WorkspacePath,
 		WorkspaceBase:    a.WorkspaceBase,
 		WorkspaceCapture: a.WorkspaceCapture,
-		MaxTurns:         a.MaxTurns,
-		MaxSteps:         a.MaxSteps,
 		LifetimeTurns:    lifetimeTurns,
 		CurrentRunTurns:  currentRunTurns,
 		Timeout:          a.Timeout,
@@ -542,8 +531,6 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) (*Agent, bool) {
 		WorkspacePath:     m.WorkspacePath,
 		WorkspaceBase:     m.WorkspaceBase,
 		WorkspaceCapture:  m.WorkspaceCapture,
-		MaxTurns:          m.MaxTurns,
-		MaxSteps:          resolvePersistedMaxSteps(m.MaxSteps, f.cfg.Policy.MaxSteps),
 		LifetimeTurns:     m.LifetimeTurns,
 		CurrentRunTurns:   m.CurrentRunTurns,
 		Timeout:           resolvePersistedTurnTimeout(m, f.cfg.Policy.DefaultTimeout),
@@ -1240,7 +1227,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		Subagent:      existing.Subagent,
 		WorkspaceMode: existing.WorkspaceMode, WorkspacePath: existing.WorkspacePath,
 		WorkspaceBase: existing.WorkspaceBase, WorkspaceCapture: existing.WorkspaceCapture,
-		MaxTurns: existing.MaxTurns, MaxSteps: existing.MaxSteps, LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Timeout: existing.Timeout, TurnTimeoutMode: timeoutModeFor(existing.Timeout), Tools: append([]string(nil), existing.Tools...),
+		LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Timeout: existing.Timeout, TurnTimeoutMode: timeoutModeFor(existing.Timeout), Tools: append([]string(nil), existing.Tools...),
 		WebSearchPolicy: childWebSearchPolicy(existing.WebSearchPolicy, existing.Subagent, existing.Tools),
 		CurrentTurnID:   existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
 		Requirement: existingSnapshot.Requirement,
@@ -1256,7 +1243,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	if len(m.Tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
 		m.Tools = append([]string(nil), f.cfg.Policy.AllowedTools...)
 	}
-	if err := f.validateSpawnOptions(SpawnRequest{MaxTurns: m.MaxTurns, Tools: m.Tools}); err != nil {
+	if err := f.validateSpawnOptions(SpawnRequest{Tools: m.Tools}); err != nil {
 		return nil, err
 	}
 	workspaceMode := m.WorkspaceMode
@@ -1275,10 +1262,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	repositoryRoot := firstNonEmpty(m.RepositoryRoot, m.Dir, f.cfg.RepoRoot)
 	if err := validateWorkspaceRoot(repositoryRoot, workspaceMode, allowedRoots); err != nil {
 		return nil, err
-	}
-	maxTurns := m.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = f.cfg.Policy.MaxTurns
 	}
 	existingWorkspacePath := ""
 	if workspaceMode == WorkspaceWorktree {
@@ -1325,8 +1308,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		WorkspacePath:     m.WorkspacePath,
 		WorkspaceBase:     m.WorkspaceBase,
 		WorkspaceCapture:  m.WorkspaceCapture,
-		MaxTurns:          maxTurns,
-		MaxSteps:          resolvePersistedMaxSteps(m.MaxSteps, f.cfg.Policy.MaxSteps),
 		LifetimeTurns:     m.LifetimeTurns,
 		CurrentRunTurns:   m.CurrentRunTurns,
 		Timeout:           timeout,

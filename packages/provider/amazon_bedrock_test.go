@@ -2,12 +2,43 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestBedrockRetriesTransientRequestOpenFailures(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) < 5 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &bedrockClient{
+		bearerToken: "synthetic-token",
+		region:      "us-east-1",
+		baseURL:     server.URL,
+		http:        server.Client(),
+	}
+	events, err := client.Stream(context.Background(), Request{Model: "anthropic.claude-sonnet-4-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if got := attempts.Load(); got != 5 {
+		t.Fatalf("request attempts = %d, want initial request plus four retries", got)
+	}
+}
 
 // TestSigV4Known checks our signer against AWS's published test vector
 // from the SigV4 documentation. The expected Authorization header below

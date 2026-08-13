@@ -38,8 +38,8 @@ func TestFormatSupervisorRowShowsTerminalResultDelivery(t *testing.T) {
 func TestFormatSupervisorRowOmitsPriorTurnObservationAge(t *testing.T) {
 	now := time.Now()
 	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: now.Add(-time.Hour)}, subagents.AgentTraceView{
-		PrimaryOperation: &subagents.Operation{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)},
-		LastObservation:  &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)},
+		OpenOperations:  []subagents.Operation{{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}},
+		LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)},
 	}, 120)
 	if strings.Contains(got, "assistant streaming") || !strings.Contains(got, "running tool") || !strings.Contains(got, "1m") {
 		t.Fatalf("row = %q", got)

@@ -63,9 +63,6 @@ func (f *Supervisor) validateSpawnRequest(req SpawnRequest) error {
 
 func (f *Supervisor) validateSpawnOptions(req SpawnRequest) error {
 	p := f.cfg.Policy
-	if req.MaxTurns < 0 || (p.MaxTurns > 0 && req.MaxTurns > p.MaxTurns) {
-		return fmt.Errorf("subagents: max_turns must be 0 through %d (zero uses the policy default)", p.MaxTurns)
-	}
 	if req.Timeout < 0 {
 		return errorsInvalid("timeout must not be negative")
 	}

@@ -144,11 +144,11 @@ func TestSupervisorTraceViewsRetainOpenTurnAcrossEventEviction(t *testing.T) {
 	}
 
 	view := supervisor.TraceViews()["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "turn.started" {
-		t.Fatalf("primary operation after request = %#v, want open delegated turn", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "turn.started" {
+		t.Fatalf("primary operation after request = %#v, want open delegated turn", primaryOperation(t, view))
 	}
-	if !view.PrimaryOperation.StartedAt.Equal(started) {
-		t.Fatalf("delegated turn started at %v, want %v", view.PrimaryOperation.StartedAt, started)
+	if !primaryOperation(t, view).StartedAt.Equal(started) {
+		t.Fatalf("delegated turn started at %v, want %v", primaryOperation(t, view).StartedAt, started)
 	}
 
 	nextRequestStarted := requestStarted.Add(2 * time.Second)
@@ -162,10 +162,10 @@ func TestSupervisorTraceViewsRetainOpenTurnAcrossEventEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 	view = supervisor.TraceViews()["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "provider.request.started" {
-		t.Fatalf("primary operation during next request = %#v, want provider request", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "provider.request.started" {
+		t.Fatalf("primary operation during next request = %#v, want provider request", primaryOperation(t, view))
 	}
-	if got := view.TurnStartedAt(*view.PrimaryOperation); !got.Equal(started) {
+	if got := view.TurnStartedAt(*primaryOperation(t, view)); !got.Equal(started) {
 		t.Fatalf("elapsed timer anchor = %v, want delegated turn start %v", got, started)
 	}
 }
@@ -183,8 +183,8 @@ func TestTraceViewsObserveIngestedBoundariesBeforeAsyncWrite(t *testing.T) {
 	})
 
 	view := writer.Views()["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "turn.started" {
-		t.Fatalf("primary operation before async write = %#v, want delegated turn", view.PrimaryOperation)
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "turn.started" {
+		t.Fatalf("primary operation before async write = %#v, want delegated turn", primaryOperation(t, view))
 	}
 }
 

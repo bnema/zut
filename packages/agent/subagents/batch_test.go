@@ -139,23 +139,45 @@ func TestBatchSpawnWaitAndCollect(t *testing.T) {
 }
 
 func TestBatchResultWaitCancellationDoesNotCancelWorker(t *testing.T) {
-	f := New(Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
-	a := &Agent{
-		ID:     "worker-1",
-		status: StatusRunning,
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f := New(Config{
+		Root: t.TempDir(), RepoRoot: t.TempDir(),
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error {
+				close(started)
+				<-release
+				return nil
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+	batch, err := f.SpawnBatch(context.Background(), BatchRequest{Tasks: []string{"one"}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	<-started
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result, err := f.waitForBatchResult(ctx, a)
+	result, err := f.WaitBatchContext(ctx, batch.ID)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait error = %v, want context.Canceled", err)
 	}
 	if result != nil {
 		t.Fatalf("wait result = %#v, want nil", result)
 	}
-	if got := a.Status(); got != StatusRunning {
-		t.Fatalf("worker status = %s, want running", got)
+	child := f.Get(batch.ChildIDs[0])
+	if child == nil || child.Status() != StatusRunning {
+		t.Fatalf("worker after observer cancellation = %#v, want running", child)
+	}
+	close(release)
+	completed, err := f.WaitBatch(batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != BatchSucceeded || completed.Results[child.ID] == nil {
+		t.Fatalf("completed batch = %#v, want successful retained worker result", completed)
 	}
 }
 

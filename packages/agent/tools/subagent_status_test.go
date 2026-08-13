@@ -61,11 +61,13 @@ func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
 	}
 }
 
-func TestPublicSubagentStatusUsesOnlyPrimaryOperation(t *testing.T) {
+func TestPublicSubagentStatusUsesOrderedPrimaryOperation(t *testing.T) {
 	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
 	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
-		OpenOperations:   []subagents.Operation{{Type: "turn.started", StartedAt: at}},
-		PrimaryOperation: &subagents.Operation{Type: "tool.started", StartedAt: at.Add(time.Second)},
+		OpenOperations: []subagents.Operation{
+			{Type: "tool.started", StartedAt: at.Add(time.Second)},
+			{Type: "turn.started", StartedAt: at},
+		},
 	})
 	if entry.PrimaryOperation == nil || entry.PrimaryOperation.Type != "tool.started" {
 		t.Fatalf("primary operation = %#v", entry.PrimaryOperation)
@@ -117,6 +119,18 @@ func TestPublicSubagentStatusIncludesResultDeliveryFacts(t *testing.T) {
 	}
 	if result["delivered"] != false || result["delivery_failed"] != false {
 		t.Fatalf("result JSON = %#v", result)
+	}
+}
+
+func TestPublicSubagentStatusKeepsDurableDeliveryAfterTraceRestart(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{
+		ID:          "agent-1",
+		Result:      &subagents.TurnResult{Status: subagents.ResultSucceeded},
+		ResultRef:   "subagent://agent-1/result",
+		Requirement: subagents.RequirementSnapshot{Required: true, Notified: true},
+	}, subagents.AgentTraceView{})
+	if entry.Result == nil || !entry.Result.Available || !entry.Result.Delivered {
+		t.Fatalf("result = %#v, want durable delivered fact without transient trace", entry.Result)
 	}
 }
 

@@ -963,6 +963,10 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	if err != nil {
 		return provider.StopError, provider.Message{}, &requestOpenError{err: err}
 	}
+	// A provider may already have queued events when cancellation wins. Keep a
+	// consumer attached after this turn returns so bounded producer channels
+	// cannot strand the provider goroutine and its response body.
+	defer func() { go drainProviderStream(stream) }()
 
 	sink(EvAssistantStart{})
 
@@ -1095,6 +1099,11 @@ streamDone:
 	}
 
 	return stop, finalMsg, finalErr
+}
+
+func drainProviderStream(stream <-chan provider.Event) {
+	for range stream {
+	}
 }
 
 // executeTools runs every tool call in the assistant message and returns

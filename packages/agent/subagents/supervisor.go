@@ -228,14 +228,6 @@ func (f *Supervisor) RepoRoot() string {
 	return f.cfg.RepoRoot
 }
 
-// MaxTurns returns the maximum prompt-level turns allowed for subsequently
-// spawned agents.
-func (f *Supervisor) MaxTurns() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.cfg.Policy.MaxTurns
-}
-
 // SetFastMode updates the fast-mode setting for subsequently spawned
 // children. Existing agents keep the setting captured at their spawn
 // boundary so resumes remain deterministic.
@@ -382,7 +374,6 @@ type SpawnRequest struct {
 	// supervisor persists its outcome while the manager remains asynchronous.
 	Required         bool
 	Timeout          time.Duration
-	MaxTurns         int
 	Tools            []string
 	WorkspaceMode    WorkspaceMode
 	WorkspaceBase    string
@@ -502,10 +493,6 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		return nil, err
 	}
 	dir = workspace.Dir()
-	maxTurns := req.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = f.cfg.Policy.MaxTurns
-	}
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = f.cfg.Policy.DefaultTimeout
@@ -539,8 +526,6 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		WorkspaceMode:     workspaceMode,
 		WorkspaceBase:     strings.TrimSpace(req.WorkspaceBase),
 		WorkspaceCapture:  req.WorkspaceCapture,
-		MaxTurns:          maxTurns,
-		MaxSteps:          f.cfg.Policy.MaxSteps,
 		Timeout:           timeout,
 		HeartbeatInterval: f.cfg.Policy.HeartbeatInterval,
 		Tools:             tools,

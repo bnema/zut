@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -61,11 +63,6 @@ type subagentSpawnArgs struct {
 	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Required  bool   `json:"required,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
-	// Decode removed fields so stale callers receive an explicit policy error
-	// instead of silently spawning with a different, unlimited budget.
-	Timeout  json.RawMessage `json:"timeout,omitempty"`
-	MaxTurns json.RawMessage `json:"max_turns,omitempty"`
-	MaxSteps json.RawMessage `json:"max_steps,omitempty"`
 }
 
 const subagentSpawnSchemaTemplate = `{
@@ -126,11 +123,13 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		return protocolToolError(prefix + ": subagent delegation is unavailable in this mode")
 	}
 	var a subagentSpawnArgs
-	if err := json.Unmarshal(raw, &a); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
 	}
-	if len(a.Timeout) != 0 || len(a.MaxTurns) != 0 || len(a.MaxSteps) != 0 {
-		return protocolToolError(prefix + ": timeout, max_turns, and max_steps are manager-owned budgets and cannot be set by this tool")
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return core.ToolResult{}, fmt.Errorf("invalid args: trailing JSON value")
 	}
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
@@ -275,8 +274,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		"required":      a.Required,
 		"isolation":     string(workspaceMode),
 		"timeout":       timeoutDetail,
-		"max_turns":     agent.MaxTurns,
-		"max_steps":     agent.MaxSteps,
 		"state":         agent.Status(),
 		"process_state": string(agent.ProcessState()),
 		"turn_state":    string(agent.TurnState()),

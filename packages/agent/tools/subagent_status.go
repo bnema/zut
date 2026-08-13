@@ -160,11 +160,7 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 		CurrentRunTurns: snapshot.CurrentRunTurns,
 		TaskSummary:     summarizeSubagentTask(snapshot.Task),
 	}
-	primary := view.PrimaryOperation
-	if primary == nil && len(view.OpenOperations) != 0 {
-		primary = &view.OpenOperations[0]
-	}
-	if primary != nil {
+	if primary, ok := view.Primary(); ok {
 		entry.PrimaryOperation = &statusOperation{Type: primary.Type, StartedAt: primary.StartedAt}
 	}
 	if view.LastObservation != nil {
@@ -186,6 +182,7 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 			State:     publicResultState(snapshot.Result.Status),
 			Available: snapshot.ResultRef != "",
 			Ref:       snapshot.ResultRef,
+			Delivered: snapshot.Requirement.Notified,
 		}
 	}
 	if view.Result != nil {
@@ -196,8 +193,8 @@ func publicSubagentStatus(snapshot subagents.AgentSnapshot, view subagents.Agent
 		if view.Result.Ref != "" {
 			entry.Result.Ref = view.Result.Ref
 		}
-		entry.Result.Delivered = view.Result.Delivered
-		entry.Result.DeliveryFailed = view.Result.Failed
+		entry.Result.Delivered = entry.Result.Delivered || view.Result.Delivered
+		entry.Result.DeliveryFailed = entry.Result.DeliveryFailed || view.Result.Failed
 	}
 	return entry
 }

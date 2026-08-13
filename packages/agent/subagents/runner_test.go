@@ -360,10 +360,12 @@ func TestDefaultChildArgsPropagatesWebSearchPolicy(t *testing.T) {
 	}
 }
 
-func TestDefaultChildArgsPropagatesModelStepBudget(t *testing.T) {
-	args := defaultChildArgs("zut", &Agent{Task: "task", MaxSteps: 128}, "/session", "/inbox")
-	if i := indexOf(args, "--max-steps"); i < 0 || safeAt(args, i+1) != "128" {
-		t.Fatalf("argv = %v, want --max-steps 128", args)
+func TestDefaultChildArgsDoNotImposeModelStepOrTurnLimits(t *testing.T) {
+	args := defaultChildArgs("zut", &Agent{Task: "task"}, "/session", "/inbox")
+	for _, flag := range []string{"--max-steps", "--max-turns"} {
+		if indexOf(args, flag) >= 0 {
+			t.Fatalf("argv = %v, contains removed subagent limit %s", args, flag)
+		}
 	}
 }
 
@@ -911,7 +913,7 @@ func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
 		}
 	}
 	view := ProjectTrace(append([]TraceEvent{{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"}}, events...))["agent-1"]
-	if view.PrimaryOperation == nil || view.PrimaryOperation.Type != "tool.started" || view.PrimaryOperation.Name != "bash" {
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "tool.started" || primaryOperation(t, view).Name != "bash" {
 		t.Fatalf("current-turn tool activity was not projected: %#v", view)
 	}
 }
@@ -931,6 +933,24 @@ func TestRecordWorkerTraceClosesProviderRequestWhenTurnEnds(t *testing.T) {
 	}
 	if view.LastEvent.Type != "provider.request.failed" {
 		t.Fatalf("last event = %#v, want provider request failure", view.LastEvent)
+	}
+}
+
+func TestRecordWorkerTraceProjectsCurrentModelStep(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{
+		Type:   EventTurnStarted,
+		TurnID: "turn-1",
+		Data:   map[string]any{"nested_turn": true, "step": float64(3)},
+	})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	operation := primaryOperation(t, ProjectTrace(trace.Events())["agent-1"])
+	if operation.Type != "provider.request.started" || operation.Step != 3 {
+		t.Fatalf("provider operation = %#v, want model step 3", operation)
 	}
 }
 

@@ -66,13 +66,6 @@ func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
 	}
 }
 
-func TestResultErrorPayloadClassifiesModelStepLimit(t *testing.T) {
-	payload := resultErrorPayload(core.ErrMaxSteps, "")
-	if payload["code"] != "step_limit" {
-		t.Fatalf("step-limit error code = %v, want step_limit", payload["code"])
-	}
-}
-
 func TestResultErrorPayloadAttributesShutdownCancellation(t *testing.T) {
 	payload := resultErrorPayload(context.Canceled, subagents.ShutdownOriginSession)
 	if payload["code"] != "shutdown" || payload["message"] != "subagent stopped during session shutdown" {
@@ -865,24 +858,24 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	}
 }
 
-func TestWorkerTurnBudgetFreshAllowanceOnlyForExplicitRun(t *testing.T) {
-	var budget workerTurnBudget
+func TestWorkerTurnCountersRemainObservableWithoutAdmissionLimit(t *testing.T) {
+	var counters workerTurnCounters
 
-	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 1 || current != 1 {
-		t.Fatalf("first turn = (%d, %d, %v), want (1, 1, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 1 || lifetime != 1 || current != 1 {
+		t.Fatalf("first turn = (%d, %d, %d), want (1, 1, 1)", step, lifetime, current)
 	}
-	// Provider retries, model loops, and compaction stay inside the admitted
-	// turn and therefore do not call start or consume another allowance.
-	if budget.lifetime != 1 || budget.current != 1 {
-		t.Fatalf("nested work changed budget to (lifetime=%d, current=%d)", budget.lifetime, budget.current)
+	// Provider retries, model loops, and compaction stay inside the delegated
+	// turn and therefore do not advance the message-turn counters.
+	if counters.lifetime != 1 || counters.current != 1 {
+		t.Fatalf("nested work changed counters to (lifetime=%d, current=%d)", counters.lifetime, counters.current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 2 || current != 2 {
-		t.Fatalf("second turn = (%d, %d, %v), want (2, 2, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 2 || lifetime != 2 || current != 2 {
+		t.Fatalf("second turn = (%d, %d, %d), want (2, 2, 2)", step, lifetime, current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, false); admitted || lifetime != 2 || current != 2 {
-		t.Fatalf("exhausted turn = (%d, %d, %v), want (2, 2, false)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 3 || lifetime != 3 || current != 3 {
+		t.Fatalf("third turn = (%d, %d, %d), want (3, 3, 3)", step, lifetime, current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, true); !admitted || lifetime != 3 || current != 1 {
-		t.Fatalf("explicit resumed turn = (%d, %d, %v), want (3, 1, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(true); step != 4 || lifetime != 4 || current != 1 {
+		t.Fatalf("explicit resumed turn = (%d, %d, %d), want (4, 4, 1)", step, lifetime, current)
 	}
 }

@@ -1641,12 +1641,8 @@ func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 //	completed                     write-tests-67890           1h        add coverage
 func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
 	fact := view.Summary()
-	primary := view.PrimaryOperation
-	if primary == nil && len(view.OpenOperations) != 0 {
-		primary = &view.OpenOperations[0]
-	}
-	if primary != nil {
-		if observation := view.ObservationFor(*primary); observation != nil {
+	if primary, ok := view.Primary(); ok {
+		if observation := view.ObservationFor(primary); observation != nil {
 			fact += " " + formatAge(observation.At)
 		} else {
 			fact += " " + formatAge(primary.StartedAt)

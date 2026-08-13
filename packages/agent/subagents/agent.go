@@ -49,8 +49,6 @@ type Agent struct {
 	WorkspacePath    string
 	WorkspaceBase    string
 	WorkspaceCapture CaptureMode
-	MaxTurns         int
-	MaxSteps         int
 
 	// LifetimeTurns counts every accepted message turn for this worker across
 	// all explicit runs. CurrentRunTurns resets only when an explicit
@@ -211,6 +209,8 @@ type Agent struct {
 	// status (done / failed / killed). Wait blocks on this so
 	// callers don't have to poll.
 	done          chan struct{}
+	results       map[string]*TurnResult
+	resultWaiters map[string]int
 	resultChanged chan struct{}
 	doneOnce      sync.Once
 }
@@ -460,6 +460,12 @@ func (a *Agent) markActivity(now time.Time) {
 func (a *Agent) setResult(result *TurnResult) {
 	a.lifecycleMu.Lock()
 	a.result = cloneTurnResult(result)
+	if result != nil && result.TurnID != "" && a.resultWaiters[result.TurnID] > 0 {
+		if a.results == nil {
+			a.results = make(map[string]*TurnResult)
+		}
+		a.results[result.TurnID] = cloneTurnResult(result)
+	}
 	a.updatedAt = time.Now()
 	if a.resultChanged != nil {
 		close(a.resultChanged)
@@ -537,9 +543,29 @@ func (a *Agent) WaitTurnResult(ctx context.Context, turnID string) (*TurnResult,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if turnID != "" {
+		a.lifecycleMu.Lock()
+		if a.resultWaiters == nil {
+			a.resultWaiters = make(map[string]int)
+		}
+		a.resultWaiters[turnID]++
+		a.lifecycleMu.Unlock()
+		defer func() {
+			a.lifecycleMu.Lock()
+			a.resultWaiters[turnID]--
+			if a.resultWaiters[turnID] == 0 {
+				delete(a.resultWaiters, turnID)
+				delete(a.results, turnID)
+			}
+			a.lifecycleMu.Unlock()
+		}()
+	}
 	for {
 		a.lifecycleMu.Lock()
 		result := cloneTurnResult(a.result)
+		if turnID != "" && a.results != nil {
+			result = cloneTurnResult(a.results[turnID])
+		}
 		if result != nil && (turnID == "" || result.TurnID == turnID) {
 			a.lifecycleMu.Unlock()
 			return result, nil

@@ -78,8 +78,6 @@ type subagentWorkerArgsOpts struct {
 	FastMode        bool
 	FastModeSet     bool
 	Subagent        string
-	MaxTurns        int
-	MaxSteps        int
 	TurnTimeout     time.Duration
 	LifetimeTurns   int
 	RunTurns        int
@@ -118,8 +116,6 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		FastMode:        a.FastMode,
 		FastModeSet:     true,
 		Subagent:        a.Subagent,
-		MaxTurns:        a.MaxTurns,
-		MaxSteps:        a.MaxSteps,
 		TurnTimeout:     a.Timeout,
 		LifetimeTurns:   a.LifetimeTurnsValue(),
 		RunTurns:        a.CurrentRunTurnsValue(),
@@ -163,12 +159,6 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	}
 	if opts.Subagent != "" {
 		args = append(args, "--subagent", opts.Subagent)
-	}
-	if opts.MaxTurns > 0 {
-		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", fmt.Sprint(opts.MaxSteps))
 	}
 	if opts.TurnTimeout > 0 {
 		args = append(args, "--subagent-turn-timeout", opts.TurnTimeout.String())
@@ -814,13 +804,8 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	case "error":
 		if code, _ := ev.Data["code"].(string); code == "turn_rejected" && eventMatchesPendingResume(a, ev) {
 			if a.rejectActiveResumePrompt() {
-				reason, _ := ev.Data["reason"].(string)
-				if reason == "max_turns" {
-					a.setTurnState(TurnFailed, ev.TurnID)
-				} else {
-					a.setTurnState(TurnIdle, ev.TurnID)
-					notifyIdle = true
-				}
+				a.setTurnState(TurnIdle, ev.TurnID)
+				notifyIdle = true
 				persist = true
 			}
 		}
@@ -926,7 +911,7 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	traceType := "worker.protocol.observed"
 	nestedTurn, _ := ev.Data["nested_turn"].(bool)
 	switch ev.Type {
-	case "turn_start":
+	case "turn_start", EventTurnStarted:
 		if nestedTurn {
 			traceType = "provider.request.started"
 		} else {
@@ -940,15 +925,6 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 			traceType = "provider.request.failed"
 		} else {
 			traceType = "provider.request.finished"
-		}
-	case EventTurnStarted:
-		// The worker canonicalizes core turn_start to turn.started. Its
-		// nested_turn marker keeps that provider-loop boundary distinct from
-		// the delegated worker turn, which also uses turn.started.
-		if nestedTurn {
-			traceType = "provider.request.started"
-		} else {
-			traceType = "turn.started"
 		}
 	case EventTurnResult:
 		traceType = "turn.finished"
@@ -991,7 +967,7 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 			data[key] = value
 		}
 	}
-	for _, key := range []string{"attempt", "max_attempts"} {
+	for _, key := range []string{"step", "attempt", "max_attempts"} {
 		if value, ok := ev.Data[key].(float64); ok && value > 0 {
 			data[key] = int(value)
 		} else if value, ok := ev.Data[key].(int); ok && value > 0 {
