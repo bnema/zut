@@ -7541,6 +7541,8 @@ func shellEscapeCommand(text string) (string, bool) {
 // surrounding whitespace) stripped. A bare "!" with no command is
 // treated as not an escape so it falls through to the normal prompt
 // path rather than running an empty shell.
+const ShellEscapeTimeoutSeconds = 600
+
 func ShellEscapeCommand(text string) (string, bool) {
 	trimmed := strings.TrimLeft(text, " \t")
 	if !strings.HasPrefix(trimmed, "!") {
@@ -7597,7 +7599,10 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 
 	go func() {
 		defer cancel()
-		raw, _ := json.Marshal(map[string]any{"command": cmd})
+		raw, _ := json.Marshal(map[string]any{
+			"command": cmd,
+			"timeout": ShellEscapeTimeoutSeconds,
+		})
 		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
 		progress := func(chunk string) {
 			i.mu.Lock()

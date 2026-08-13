@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,10 @@ import (
 const (
 	maxBashLines = 2000
 	maxBashBytes = 50 * 1024
+
+	// maxBashTimeoutSeconds is the largest whole-second timeout that can be
+	// converted to a time.Duration without overflowing it.
+	maxBashTimeoutSeconds int64 = int64(time.Duration(1<<63-1) / time.Second)
 )
 
 // BashTool runs a shell command in the agent's cwd.
@@ -32,14 +37,21 @@ type BashTool struct {
 
 type bashArgs struct {
 	Command string `json:"command"`
-	Timeout int    `json:"timeout,omitempty"`
+	Timeout *int64 `json:"timeout"`
 }
 
-const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
+var bashSchema = fmt.Sprintf(`{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum command runtime in seconds."}},"required":["command","timeout"]}`, maxBashTimeoutSeconds)
 
 func (t *BashTool) Name() string            { return "bash" }
 func (t *BashTool) Description() string     { return shellDescription(currentShell()) }
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
+
+func bashTimeoutDuration(seconds int64) (time.Duration, error) {
+	if seconds < 1 || seconds > maxBashTimeoutSeconds {
+		return 0, fmt.Errorf("timeout must be between 1 and %d seconds", maxBashTimeoutSeconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	var a bashArgs
@@ -48,6 +60,13 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 	if strings.TrimSpace(a.Command) == "" {
 		return core.ToolResult{}, fmt.Errorf("command is required")
+	}
+	if a.Timeout == nil {
+		return core.ToolResult{}, fmt.Errorf("timeout is required")
+	}
+	timeout, err := bashTimeoutDuration(*a.Timeout)
+	if err != nil {
+		return core.ToolResult{}, err
 	}
 	if err := t.Sandbox.CheckCommand(a.Command); err != nil {
 		return core.ToolResult{}, err
@@ -60,46 +79,30 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		cwd, _ = os.Getwd()
 	}
 
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if a.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
-		defer cancel()
-	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	cmd := newShellCmd(runCtx, a.Command)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
-	setProcessGroup(cmd)
 
 	// Capture merged stdout+stderr with line-by-line streaming.
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+	closeOutput := configureBashProcess(cmd, pw)
 
 	if err := cmd.Start(); err != nil {
+		closeOutput()
 		return core.ToolResult{}, fmt.Errorf("start: %w", err)
 	}
 
 	// Writer to both the buffer (trimmed) and progress callback.
 	captured := &bytes.Buffer{}
-	done := make(chan struct{})
+	readerDone := make(chan struct{})
 
-	// Watch for context cancellation and kill the entire process
-	// group immediately. exec.CommandContext only kills the direct
-	// process, but child processes (e.g. grep spawned by the shell)
-	// keep the output pipe open and block cmd.Wait() indefinitely.
 	go func() {
-		select {
-		case <-runCtx.Done():
-			killProcessGroup(cmd)
-			// Close the write end so the reader goroutine unblocks.
-			pw.Close()
-		case <-done:
-		}
-	}()
-	go func() {
-		defer close(done)
+		defer close(readerDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := pr.Read(buf)
@@ -124,8 +127,8 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}()
 
 	waitErr := cmd.Wait()
-	pw.Close()
-	<-done
+	closeOutput()
+	<-readerDone
 
 	output := captured.String()
 	truncBytes := captured.Len() >= maxBashBytes
@@ -166,7 +169,13 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		fmt.Fprintf(&sb, "... [truncated at %d bytes]\n", maxBashBytes)
 	}
 	sb.WriteString("\n")
-	if exitCode == 0 {
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		fmt.Fprintf(&sb, "[timed out after %d second", *a.Timeout)
+		if *a.Timeout != 1 {
+			sb.WriteByte('s')
+		}
+		sb.WriteByte(']')
+	} else if exitCode == 0 {
 		fmt.Fprintf(&sb, "[exit 0]")
 	} else {
 		fmt.Fprintf(&sb, "[exit %d]", exitCode)
@@ -180,7 +189,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 	}
 
-	isErr := exitCode != 0 || ctx.Err() != nil
+	isErr := exitCode != 0 || runCtx.Err() != nil
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		IsError: isErr,

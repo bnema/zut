@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -337,12 +338,90 @@ func TestShellDescription(t *testing.T) {
 	}
 }
 
+func TestBashSchemaRequiresTimeoutInSeconds(t *testing.T) {
+	var schema struct {
+		Properties map[string]struct {
+			Type        string `json:"type"`
+			Minimum     *int64 `json:"minimum"`
+			Maximum     *int64 `json:"maximum"`
+			Description string `json:"description"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal((&BashTool{}).Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+
+	timeout, ok := schema.Properties["timeout"]
+	if !ok {
+		t.Fatal("timeout property missing from schema")
+	}
+	if timeout.Type != "integer" {
+		t.Fatalf("timeout type = %q, want integer", timeout.Type)
+	}
+	if timeout.Minimum == nil || *timeout.Minimum != 1 {
+		if timeout.Minimum == nil {
+			t.Fatal("timeout minimum missing from schema")
+		}
+		t.Fatalf("timeout minimum = %d, want 1", *timeout.Minimum)
+	}
+	if timeout.Maximum == nil {
+		t.Fatal("timeout maximum missing from schema")
+	}
+	if *timeout.Maximum != maxBashTimeoutSeconds {
+		t.Fatalf("timeout maximum = %d, want %d", *timeout.Maximum, maxBashTimeoutSeconds)
+	}
+	if !strings.Contains(strings.ToLower(timeout.Description), "second") {
+		t.Fatalf("timeout description = %q, want seconds wording", timeout.Description)
+	}
+
+	required := make(map[string]bool, len(schema.Required))
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+	for _, name := range []string{"command", "timeout"} {
+		if !required[name] {
+			t.Errorf("required fields missing %q: %v", name, schema.Required)
+		}
+	}
+}
+
+func TestBashTimeoutDurationBounds(t *testing.T) {
+	tests := []struct {
+		name    string
+		seconds int64
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "minimum", seconds: 1, want: time.Second},
+		{name: "maximum", seconds: maxBashTimeoutSeconds, want: time.Duration(maxBashTimeoutSeconds) * time.Second},
+		{name: "one over maximum", seconds: maxBashTimeoutSeconds + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := bashTimeoutDuration(tt.seconds)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("bashTimeoutDuration(%d) returned nil error", tt.seconds)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("bashTimeoutDuration(%d): %v", tt.seconds, err)
+			}
+			if got != tt.want {
+				t.Fatalf("bashTimeoutDuration(%d) = %s, want %s", tt.seconds, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBashSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix shell only")
 	}
 	tool := &BashTool{CWD: t.TempDir()}
-	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "echo hi"}), nil)
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "echo hi", "timeout": 1}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +454,7 @@ func TestBashSyntax(t *testing.T) {
 	tool := &BashTool{CWD: t.TempDir()}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"command": `items=(one two); [[ ${#items[@]} -eq 2 ]] && printf 'bash syntax works\n'`,
+		"timeout": 1,
 	}), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -390,12 +470,68 @@ func TestBashFailure(t *testing.T) {
 		t.Skip("posix shell only")
 	}
 	tool := &BashTool{CWD: t.TempDir()}
-	res, _ := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "false"}), nil)
+	res, _ := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "false", "timeout": 1}), nil)
 	if !res.IsError {
 		t.Fatal("want error")
 	}
 	got := res.Content[0].(provider.TextBlock).Text
 	if !strings.Contains(got, "[exit 1]") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBashRejectsInvalidTimeout(t *testing.T) {
+	tool := &BashTool{CWD: t.TempDir()}
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{name: "missing", args: map[string]any{"command": "echo hi"}, want: "timeout is required"},
+		{name: "null", args: map[string]any{"command": "echo hi", "timeout": nil}, want: "timeout is required"},
+		{name: "zero", args: map[string]any{"command": "echo hi", "timeout": 0}, want: "timeout must be between 1 and"},
+		{name: "negative", args: map[string]any{"command": "echo hi", "timeout": -1}, want: "timeout must be between 1 and"},
+		{name: "one over maximum", args: map[string]any{"command": "echo hi", "timeout": maxBashTimeoutSeconds + 1}, want: "timeout must be between 1 and"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), mustJSON(t, tt.args), nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+
+	_, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
+		"command": "echo hi",
+		"timeout": "1",
+	}), nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid args") {
+		t.Fatalf("wrong-type error = %v, want invalid args", err)
+	}
+}
+
+func TestBashTimeoutCancelsCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix shell only")
+	}
+	tool := &BashTool{CWD: t.TempDir()}
+	start := time.Now()
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
+		"command": "sleep 5",
+		"timeout": 1,
+	}), nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("timed-out command should be an error")
+	}
+	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "[timed out after 1 second]") {
+		t.Fatalf("timeout result = %q, want timeout diagnostic", got)
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("timeout took %s; command was not cancelled promptly", elapsed)
 	}
 }
