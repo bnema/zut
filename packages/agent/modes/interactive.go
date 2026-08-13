@@ -2260,20 +2260,20 @@ func (i *Interactive) redraw() {
 
 	const rendererBottomMarginRows = 1
 	maxBottomRows := rows - rendererBottomMarginRows - 1
-	residentSubagentLines := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, len(allResidentSubagentLines)+1, mainCols)
-	bottom, inputStartRow := composeBottom(residentSubagentLines)
+	var residentSubagentLines []string
+	var bottom []string
+	var inputStartRow int
 	if !dashboardActive && len(allResidentSubagentLines) > 0 {
 		for maxRows := len(allResidentSubagentLines) + 1; maxRows >= 0; maxRows-- {
 			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, maxRows, mainCols)
-			candidateBottom, candidateInputStartRow := composeBottom(candidate)
+			candidateBottom, _ := composeBottom(candidate)
 			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
 				residentSubagentLines = candidate
-				bottom = candidateBottom
-				inputStartRow = candidateInputStartRow
 				break
 			}
 		}
 	}
+	bottom, inputStartRow = composeBottom(residentSubagentLines)
 
 	chatRows := rows - len(bottom)
 	if chatRows < 1 {

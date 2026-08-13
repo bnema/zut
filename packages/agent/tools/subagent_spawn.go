@@ -160,7 +160,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		if profile == nil {
 			return protocolToolError(prefix + ": unknown subagent profile " + agentName)
 		}
-		agentName = profile.Name
 		fastModeOverride = profile.FastMode
 	}
 	if a.FastMode != nil {

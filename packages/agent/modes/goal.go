@@ -45,19 +45,6 @@ func (i *Interactive) goalIdleLocked() bool {
 	return !i.busy && i.agent != nil && len(i.queued) == 0 && i.agent.QueuedMessageCount() == 0
 }
 
-func (i *Interactive) goalContinuationIfIdle() (provider.Message, bool) {
-	message, ok := i.goalContinuationMessage()
-	if !ok {
-		return provider.Message{}, false
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if !i.goalIdleLocked() {
-		return provider.Message{}, false
-	}
-	return message, true
-}
-
 func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool {
 	message, ok := i.goalContinuationMessage()
 	if !ok || i.coordinatorHasPendingWorkers() {

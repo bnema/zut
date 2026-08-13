@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("transcript permissions = %o, want no group/other access", info.Mode().Perm())
 	}
 }

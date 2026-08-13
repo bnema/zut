@@ -277,20 +277,6 @@ func splitIDAndRest(s string) (id, text string) {
 	return s[:cut], strings.TrimLeft(s[cut+1:], " \t")
 }
 
-// firstWord returns the first whitespace-separated token of s, or
-// "<id>" when s is empty. Used to keep the "/subagents attach" hint
-// readable even when the user typed no argument.
-func firstWord(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "<id>"
-	}
-	if i := strings.IndexAny(s, " \t"); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
 func truncateStatus(value string, max int) string {
 	value = strings.ReplaceAll(strings.TrimSpace(value), "\n", " ")
 	if len([]rune(value)) <= max {

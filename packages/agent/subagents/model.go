@@ -14,14 +14,6 @@ const (
 
 func (p WebSearchPolicy) Allows() bool { return p == WebSearchAllow }
 
-// childPolicy turns an unresolved or corrupt policy into an explicit deny.
-func (p WebSearchPolicy) childPolicy() WebSearchPolicy {
-	if p == WebSearchAllow {
-		return WebSearchAllow
-	}
-	return WebSearchDeny
-}
-
 func (p WebSearchPolicy) String() string {
 	switch p {
 	case WebSearchAllow:
