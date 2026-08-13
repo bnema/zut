@@ -1254,6 +1254,9 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 			reg[name] = t
 		}
 	}
+	if orchestratorReadToolAllowed(args) {
+		reg["read"] = all["read"]
+	}
 	return reg
 }
 
@@ -1280,6 +1283,12 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 
 func autoSubagentsToolAllowed(args Args) bool {
 	return autoSubagentsToolAllowedFor(args, "subagent_spawn")
+}
+
+// orchestratorReadToolAllowed keeps read-only codebase exploration available
+// to the primary orchestrator without widening its launch-time tool policy.
+func orchestratorReadToolAllowed(args Args) bool {
+	return args.Orchestrate && !args.NoTools
 }
 
 func autoSubagentsStatusToolAllowed(args Args) bool {
