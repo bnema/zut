@@ -1267,7 +1267,10 @@ func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 		return nil
 	}
 	if cmd, ok := modes.ShellEscapeCommand(pre); ok {
-		raw, err := json.Marshal(map[string]any{"command": cmd})
+		raw, err := json.Marshal(map[string]any{
+			"command": cmd,
+			"timeout": modes.ShellEscapeTimeoutSeconds,
+		})
 		if err != nil {
 			return err
 		}

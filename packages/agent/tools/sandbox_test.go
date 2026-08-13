@@ -69,7 +69,7 @@ func TestBashToolRejectsOutsidePathWhenLocked(t *testing.T) {
 	sb.Lock()
 	tool := &BashTool{CWD: root, Sandbox: sb}
 
-	_, err := tool.Execute(context.Background(), mustJSONRaw(t, map[string]any{"command": "cat " + outsideFile}), nil)
+	_, err := tool.Execute(context.Background(), mustJSONRaw(t, map[string]any{"command": "cat " + outsideFile, "timeout": 1}), nil)
 	if err == nil {
 		t.Fatal("expected jailed bash to reject outside path")
 	}

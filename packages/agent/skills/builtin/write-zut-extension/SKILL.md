@@ -140,7 +140,7 @@ process itself runs from the extension directory, so do not use
 {"type":"tool_call","id":"def","name":"weather","args":{"city":"Berlin"}}
 {"type":"event","event":"turn_start","step":1}
 {"type":"event_intercept","id":"ghi","event":"tool_call",
- "tool_name":"bash","tool_args":{"command":"rm -rf /tmp/foo"}}
+ "tool_name":"bash","tool_args":{"command":"rm -rf /tmp/foo","timeout":30}}
 {"type":"shutdown"}
 ```
 

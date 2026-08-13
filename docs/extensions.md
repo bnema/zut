@@ -318,7 +318,7 @@ Reply to an `event_intercept` from the host. All fields default to
 |---|---|
 | `block` | `true` refuses the action. For `tool_call`, `reason` is shown to the model; for `turn_start` / `assistant_message`, `reason` is shown to the user. |
 | `reason` | refusal text (on block) or pass-through note. |
-| `modified_args` | for `tool_call`: rewritten JSON args the tool will actually see. Must be a valid JSON object. Ignored when `block` is true. |
+| `modified_args` | for `tool_call`: rewritten JSON args the tool will actually see. Must be a valid JSON object. Ignored when `block` is true. Rewrites replace the complete argument object; for `bash`, preserve the required positive integer `timeout` when changing `command`. |
 | `replace_text` | for `assistant_message`: replaces the user-visible text. The model's original output still lives in the transcript. Ignored when `block` is true. |
 | `context` | for `turn_start`: bounded hidden context sent only in the upcoming provider request. It is not a user message and is not persisted in the transcript. |
 
@@ -333,7 +333,7 @@ subsequent interceptor sees the previous one's output.
  "block":true,"reason":"refused: matches danger pattern \"rm -rf\""}
 
 {"type":"event_intercept_response","id":"...",
- "modified_args":{"command":"echo GUARDED: ls"}}
+ "modified_args":{"command":"echo GUARDED: ls","timeout":30}}
 
 {"type":"event_intercept_response","id":"...",
  "replace_text":"[redacted]"}
@@ -579,7 +579,7 @@ Payload fields depend on the event:
 // tool_call: includes the tool id, name, and parsed args
 {"type":"event_intercept","id":"...","event":"tool_call",
  "tool_id":"...","tool_name":"bash",
- "tool_args":{"command":"rm -rf /tmp/foo"}}
+ "tool_args":{"command":"rm -rf /tmp/foo","timeout":30}}
 
 // turn_start: includes the step number
 {"type":"event_intercept","id":"...","event":"turn_start",
@@ -743,7 +743,7 @@ e.InterceptToolCall(func(tool string, args json.RawMessage) (bool, string) {
 // args via ModifiedArgs.
 e.InterceptToolCallX(func(tool string, args json.RawMessage) ext.ToolCallDecision {
     return ext.ToolCallDecision{
-        ModifiedArgs: json.RawMessage(`{"command":"echo GUARDED"}`),
+        ModifiedArgs: json.RawMessage(`{"command":"echo GUARDED","timeout":30}`),
     }
 })
 

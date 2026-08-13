@@ -56,7 +56,8 @@ while IFS= read -r line; do
       if [[ "$name" == "bash" && "$cmd" == *"rm -rf"* ]]; then
         emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\",\"block\":true,\"reason\":\"refused: rm -rf\"}"
       elif [[ "$name" == "bash" && -n "$cmd" ]]; then
-        new=$(python3 -c "import json,sys;print(json.dumps({'command':'echo GUARDED: '+sys.argv[1]}))" "$cmd")
+        timeout=$(printf '%s' "$args" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("timeout",0))')
+        new=$(python3 -c "import json,sys;print(json.dumps({'command':'echo GUARDED: '+sys.argv[1], 'timeout': int(sys.argv[2])}))" "$cmd" "$timeout")
         emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\",\"modified_args\":$new}"
       else
         emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\"}"
@@ -95,24 +96,32 @@ done
 	m.WaitForReady(3 * time.Second)
 
 	// tool_call: rm -rf is blocked
-	res := m.InterceptToolCall(ctx, "T1", "bash", json.RawMessage(`{"command":"rm -rf /tmp/foo"}`))
+	res := m.InterceptToolCall(ctx, "T1", "bash", json.RawMessage(`{"command":"rm -rf /tmp/foo","timeout":30}`))
 	if !res.Block || !strings.Contains(res.Reason, "refused") {
 		t.Errorf("rm -rf: want block+reason, got %+v", res)
 	}
 
 	// tool_call: non-dangerous bash gets args rewritten
-	res = m.InterceptToolCall(ctx, "T2", "bash", json.RawMessage(`{"command":"ls -la"}`))
+	res = m.InterceptToolCall(ctx, "T2", "bash", json.RawMessage(`{"command":"ls -la","timeout":30}`))
 	if res.Block {
 		t.Errorf("ls -la: want allow, got block %q", res.Reason)
 	}
 	if len(res.ModifiedArgs) == 0 {
 		t.Errorf("ls -la: want modified_args, got nothing")
 	} else {
-		var obj map[string]string
+		var obj struct {
+			Command string `json:"command"`
+			Timeout int    `json:"timeout"`
+		}
 		if err := json.Unmarshal(res.ModifiedArgs, &obj); err != nil {
 			t.Errorf("modified_args: %v", err)
-		} else if !strings.HasPrefix(obj["command"], "echo GUARDED") {
-			t.Errorf("modified_args command=%q, want echo GUARDED prefix", obj["command"])
+		} else {
+			if !strings.HasPrefix(obj.Command, "echo GUARDED") {
+				t.Errorf("modified_args command=%q, want echo GUARDED prefix", obj.Command)
+			}
+			if obj.Timeout != 30 {
+				t.Errorf("modified_args timeout=%d, want 30", obj.Timeout)
+			}
 		}
 	}
 
