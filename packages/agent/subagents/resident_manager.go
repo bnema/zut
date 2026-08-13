@@ -30,6 +30,7 @@ type ResidentManager struct {
 	recovered        map[string]ResidentSnapshot
 	recoveredSpec    map[string]ResidentChildSpec
 	pending          map[string]struct{}
+	activeChildren   map[string]struct{}
 	scheduler        *ResidentScheduler
 	queueTimeout     time.Duration
 	allowedRoots     []string
@@ -37,6 +38,8 @@ type ResidentManager struct {
 	onCompletion     func(ResidentCompletion)
 	onAccepted       func(ResidentChildSpec, string)
 	onUpdate         func(string)
+	onHistoryUpdate  func(string)
+	onActivity       func(bool)
 }
 
 func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion)) {
@@ -71,39 +74,99 @@ func (m *ResidentManager) SetUpdateObserver(observer func(string)) {
 	m.mu.Unlock()
 }
 
-func (m *ResidentManager) notifyUpdate(childID string) {
+// SetHistoryUpdateObserver receives a child ID after a finalized event is
+// durably appended to its transcript. Stream deltas and state changes do not
+// trigger it, so observers can safely schedule bounded history reloads.
+func (m *ResidentManager) SetHistoryUpdateObserver(observer func(string)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.onHistoryUpdate = observer
+	m.mu.Unlock()
+}
+
+// SetActivityObserver receives the aggregate running-child state immediately
+// and after each lifecycle transition. It does not receive stream events, so
+// UI tickers can consume it without polling resident state.
+func (m *ResidentManager) SetActivityObserver(observer func(active bool)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.onActivity = observer
+	active := len(m.activeChildren) > 0
+	m.mu.Unlock()
+	if observer != nil {
+		observer(active)
+	}
+}
+
+func (m *ResidentManager) notifyActivity(childID string, state ResidentState) {
+	if m == nil {
+		return
+	}
+	activeChild := state == ResidentRunning
+	m.mu.Lock()
+	if m.activeChildren == nil {
+		m.activeChildren = make(map[string]struct{})
+	}
+	_, wasActive := m.activeChildren[childID]
+	if activeChild {
+		m.activeChildren[childID] = struct{}{}
+	} else {
+		delete(m.activeChildren, childID)
+	}
+	observer := m.onActivity
+	active := len(m.activeChildren) > 0
+	m.mu.Unlock()
+	if wasActive != activeChild && observer != nil {
+		observer(active)
+	}
+}
+
+func (m *ResidentManager) notifyUpdate(childID string, historyChanged bool) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	observer := m.onUpdate
+	historyObserver := m.onHistoryUpdate
 	m.mu.Unlock()
 	if observer != nil {
 		observer(childID)
+	}
+	if historyChanged && historyObserver != nil {
+		historyObserver(childID)
 	}
 }
 
 // ResidentSnapshot is the manager's bounded public state projection. It
 // deliberately omits prompts, provider credentials, and filesystem paths.
 type ResidentSnapshot struct {
-	ID            string
-	State         ResidentState
-	Profile       string
-	Provider      string
-	Model         string
-	WorkspaceMode WorkspaceMode
-	Required      bool
-	UpdatedAt     time.Time
+	ID                string
+	State             ResidentState
+	Profile           string
+	Provider          string
+	Model             string
+	WorkspaceMode     WorkspaceMode
+	Required          bool
+	UpdatedAt         time.Time
+	TurnStartedAt     time.Time
+	ActivityUpdatedAt time.Time
+	WaitingForModel   bool
 }
 
 func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 	if child == nil {
 		return ResidentSnapshot{}
 	}
+	live := child.Live()
 	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
-		UpdatedAt: child.StateUpdatedAt()}
+		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
+		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel}
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -138,6 +201,7 @@ func newResidentManager(root string, policy SubagentPolicy, prepare func(context
 		recovered:        make(map[string]ResidentSnapshot),
 		recoveredSpec:    make(map[string]ResidentChildSpec),
 		pending:          make(map[string]struct{}),
+		activeChildren:   make(map[string]struct{}),
 		scheduler:        NewResidentScheduler(policy.MaxConcurrent),
 		queueTimeout:     policy.QueueTimeout,
 		allowedRoots:     append([]string(nil), policy.AllowedRoots...),
@@ -228,7 +292,8 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	observer := m.onCompletion
 	m.mu.Unlock()
 	child := newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
-	child.SetUpdateObserver(func() { m.notifyUpdate(spec.ID) })
+	child.setUpdateObserver(func(historyChanged bool) { m.notifyUpdate(spec.ID, historyChanged) })
+	child.setStateObserver(func(state ResidentState) { m.notifyActivity(spec.ID, state) })
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -375,7 +440,8 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 		observer := m.onCompletion
 		m.mu.Unlock()
 		child = newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
-		child.SetUpdateObserver(func() { m.notifyUpdate(spec.ID) })
+		child.setUpdateObserver(func(historyChanged bool) { m.notifyUpdate(spec.ID, historyChanged) })
+		child.setStateObserver(func(state ResidentState) { m.notifyActivity(spec.ID, state) })
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
@@ -732,7 +798,7 @@ func (m *ResidentManager) Stop(ctx context.Context, childID string) error {
 		m.recoveredSpec[childID] = child.spec
 	}
 	m.mu.Unlock()
-	m.notifyUpdate(childID)
+	m.notifyUpdate(childID, false)
 	return nil
 }
 

@@ -806,10 +806,11 @@ type Interactive struct {
 	// jump-picker selection should branch off that message instead
 	// of scrolling. Flag resets after the action fires or the dialog
 	// is dismissed, so repeated /jump calls don't turn into forks.
-	pendingFork bool
-	suggest     *slashSuggester
-	fileSuggest *fileSuggester
-	spin        *spinner
+	pendingFork       bool
+	suggest           *slashSuggester
+	fileSuggest       *fileSuggester
+	spin              *spinner
+	residentAnimating atomic.Bool
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -1010,6 +1011,12 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		// renderer reads its immutable live projection on the next throttled
 		// frame, so this callback must only request that frame.
 		cfg.ResidentManager.SetUpdateObserver(func(string) { i.invalidate() })
+		cfg.ResidentManager.SetHistoryUpdateObserver(func(childID string) {
+			i.reloadOpenResidentChildSession(childID)
+		})
+		cfg.ResidentManager.SetActivityObserver(func(active bool) {
+			i.residentAnimating.Store(active)
+		})
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -1363,7 +1370,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			busy := i.busy
 			sessionLoading := i.sessionDialog.Loading()
 			i.mu.Unlock()
-			if busy || sessionLoading || i.btwDialog.Loading() {
+			if busy || sessionLoading || i.btwDialog.Loading() || i.residentAnimating.Load() {
 				requestRedraw()
 			}
 		}
@@ -2143,7 +2150,7 @@ func (i *Interactive) redraw() {
 	if !dashboardActive && i.cfg.ResidentManager != nil {
 		const residentIndicatorSnapshotLimit = 8
 		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
-		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols)
+		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock())
 		residentSubagentHidden = total - len(snapshots)
 	}
 	var workingLines []string

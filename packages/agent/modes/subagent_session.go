@@ -74,7 +74,6 @@ func (s *residentChildSession) replaceRecent(messages []provider.Message, olderC
 	s.view.MessagesRevision++
 	s.olderCursor = olderCursor
 	s.recentRows = len(messages)
-	s.loading = false
 	s.err = ""
 	s.refreshLiveLocked()
 	s.mu.Unlock()
@@ -102,7 +101,6 @@ func (s *residentChildSession) LoadOlder(limit int) error {
 	s.view.Messages = append(messages, s.view.Messages...)
 	s.view.MessagesRevision++
 	s.olderCursor = page.OlderCursor
-	s.loading = false
 	s.err = ""
 	s.refreshLiveLocked()
 	s.mu.Unlock()

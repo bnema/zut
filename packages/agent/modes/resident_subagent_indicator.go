@@ -3,17 +3,23 @@ package modes
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
 )
 
+var residentProviderWaitingSpinner = tui.NewStringSpinner(
+	[]string{"Zzzz", "zZzz", "zzZz", "zzzZ"},
+	time.Second,
+)
+
 // renderResidentSubagentActivityLines renders the bounded, non-sensitive
 // background work indicator shown directly below the main editor. A queued
 // child is waiting for a resident scheduler slot; only running children use
 // the animated glyph.
-func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, snapshots []subagents.ResidentSnapshot, width int) []string {
+func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, snapshots []subagents.ResidentSnapshot, width int, now time.Time) []string {
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		if snapshot.State != subagents.ResidentQueued && snapshot.State != subagents.ResidentRunning {
@@ -28,16 +34,22 @@ func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, s
 		}
 		glyph := "…"
 		color := theme.Muted
-		state := "queued"
+		activity := "queued"
 		if snapshot.State == subagents.ResidentRunning {
 			glyph = strings.TrimSpace(spinnerGlyph)
 			if glyph == "" {
 				glyph = "."
 			}
 			color = theme.Spinner
-			state = "running"
+			if snapshot.WaitingForModel {
+				activity = residentProviderWaitingSpinner.FrameAt(activityTime(snapshot), now)
+			} else {
+				activity = "running"
+			}
 		}
-		plain := fmt.Sprintf("%s %s · %s", glyph, name, state)
+		plain := fmt.Sprintf("%s %s · %s · activity %s ago · %s", glyph, name, activity,
+			formatResidentSubagentActivityAge(activityTime(snapshot), now),
+			formatResidentSubagentActivityAge(turnStartTime(snapshot), now))
 		plain = truncateResidentSubagentIndicator(plain, width-2)
 		if plain == "" {
 			continue
@@ -45,6 +57,44 @@ func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, s
 		lines = append(lines, "  "+theme.FGColor(color, plain))
 	}
 	return lines
+}
+
+func turnStartTime(snapshot subagents.ResidentSnapshot) time.Time {
+	if !snapshot.TurnStartedAt.IsZero() {
+		return snapshot.TurnStartedAt
+	}
+	return snapshot.UpdatedAt
+}
+
+func activityTime(snapshot subagents.ResidentSnapshot) time.Time {
+	if !snapshot.ActivityUpdatedAt.IsZero() {
+		return snapshot.ActivityUpdatedAt
+	}
+	return snapshot.UpdatedAt
+}
+
+func formatResidentSubagentActivityAge(started, now time.Time) string {
+	if started.IsZero() {
+		return "-"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	elapsed := now.Sub(started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	seconds := int(elapsed.Seconds())
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < 60*60:
+		return fmt.Sprintf("%dm%02ds", seconds/60, seconds%60)
+	case seconds < 24*60*60:
+		return fmt.Sprintf("%dh%02dm", seconds/(60*60), (seconds%(60*60))/60)
+	default:
+		return fmt.Sprintf("%dd%02dh", seconds/(24*60*60), (seconds%(24*60*60))/(60*60))
+	}
 }
 
 func limitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden, maxRows, width int) []string {

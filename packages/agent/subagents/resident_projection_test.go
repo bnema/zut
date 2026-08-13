@@ -27,6 +27,10 @@ func TestResidentLiveProjectionPublishesCopiesAndFinalizesLiveItems(t *testing.T
 	}
 
 	projection.Apply(core.EvToolResult{ID: "call-1", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "done"}}}})
+	projection.Apply(core.EvRequestStarted{})
+	if !projection.Snapshot().WaitingForModel {
+		t.Fatal("provider request did not mark the resident as waiting for the model")
+	}
 	projection.Apply(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "final"}}}})
 	projection.Finish(ResidentIdle)
 	final := projection.Snapshot()

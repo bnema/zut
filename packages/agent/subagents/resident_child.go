@@ -39,12 +39,13 @@ type ResidentCompletion struct {
 // No mutex is held while a runner performs provider or tool I/O. When a
 // journal is configured, every state boundary is committed by that goroutine.
 type ResidentChild struct {
-	runner       ResidentTurnRunner
-	journal      *ResidentJournal
-	workspace    WorkspaceHandle
-	spec         ResidentChildSpec
-	onCompletion func(ResidentCompletion)
-	onUpdate     func()
+	runner        ResidentTurnRunner
+	journal       *ResidentJournal
+	workspace     WorkspaceHandle
+	spec          ResidentChildSpec
+	onCompletion  func(ResidentCompletion)
+	onUpdate      func(historyChanged bool)
+	onStateChange func(ResidentState)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -52,11 +53,13 @@ type ResidentChild struct {
 	done   chan struct{}
 	once   sync.Once
 
-	mu               sync.RWMutex
-	state            ResidentState
-	stateUpdatedAt   time.Time
-	live             *residentLiveProjection
-	cleanupWorkspace bool
+	mu                sync.RWMutex
+	state             ResidentState
+	stateUpdatedAt    time.Time
+	turnStartedAt     time.Time
+	activityUpdatedAt time.Time
+	live              *residentLiveProjection
+	cleanupWorkspace  bool
 }
 
 func NewResidentChild(runner ResidentTurnRunner) *ResidentChild {
@@ -81,38 +84,53 @@ func newResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runner R
 
 func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runner ResidentTurnRunner) *ResidentChild {
 	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Now().UTC()
 	child := &ResidentChild{
-		runner:         runner,
-		journal:        journal,
-		workspace:      workspace,
-		spec:           spec,
-		ctx:            ctx,
-		cancel:         cancel,
-		inbox:          make(chan residentPrompt),
-		done:           make(chan struct{}),
-		state:          ResidentQueued,
-		stateUpdatedAt: time.Now().UTC(),
-		live:           newResidentLiveProjection(),
+		runner:            runner,
+		journal:           journal,
+		workspace:         workspace,
+		spec:              spec,
+		ctx:               ctx,
+		cancel:            cancel,
+		inbox:             make(chan residentPrompt),
+		done:              make(chan struct{}),
+		state:             ResidentQueued,
+		stateUpdatedAt:    now,
+		activityUpdatedAt: now,
+		live:              newResidentLiveProjection(),
 	}
 	if journal != nil {
 		journal.SetEventObserver(func(event core.AgentEvent) {
 			child.live.Apply(event)
-			child.notifyUpdate()
+			child.recordActivity()
+			child.notifyUpdate(residentEventChangesHistory(event))
 		})
 	}
 	go child.run()
 	return child
 }
 
-// SetUpdateObserver receives state and live-projection changes after they are
-// visible to readers. It is used by the host to schedule a redraw; it must not
-// block resident execution.
-func (c *ResidentChild) SetUpdateObserver(observer func()) {
+// setUpdateObserver receives state and live-projection changes after they are
+// visible to readers. historyChanged is true only after a finalized event was
+// appended to the resident transcript. It must not block resident execution.
+func (c *ResidentChild) setUpdateObserver(observer func(historyChanged bool)) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	c.onUpdate = observer
+	c.mu.Unlock()
+}
+
+// setStateObserver receives lifecycle transitions after the child state lock
+// has been released. It is used by the manager to maintain cheap activity
+// notifications for independent UI animation.
+func (c *ResidentChild) setStateObserver(observer func(ResidentState)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onStateChange = observer
 	c.mu.Unlock()
 }
 
@@ -142,18 +160,76 @@ func (c *ResidentChild) StateUpdatedAt() time.Time {
 	return c.stateUpdatedAt
 }
 
+// TurnStartedAt is the start time of the active or most recent resident turn.
+func (c *ResidentChild) TurnStartedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.turnStartedAt
+}
+
+// ActivityUpdatedAt is refreshed by visible turn events so callers can show
+// how long the child has been waiting for its next observable action.
+func (c *ResidentChild) ActivityUpdatedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.activityUpdatedAt
+}
+
 func (c *ResidentChild) setState(state ResidentState) {
 	c.mu.Lock()
+	now := time.Now().UTC()
 	c.state = state
-	c.stateUpdatedAt = time.Now().UTC()
+	c.stateUpdatedAt = now
+	c.activityUpdatedAt = now
 	observer := c.onUpdate
+	stateObserver := c.onStateChange
 	c.mu.Unlock()
+	if stateObserver != nil {
+		stateObserver(state)
+	}
 	if observer != nil {
-		observer()
+		observer(false)
 	}
 }
 
-func (c *ResidentChild) notifyUpdate() {
+func (c *ResidentChild) startTurn(turnID string) {
+	if c == nil {
+		return
+	}
+	c.live.Start(turnID)
+	c.mu.Lock()
+	now := time.Now().UTC()
+	c.state = ResidentRunning
+	c.stateUpdatedAt = now
+	c.turnStartedAt = now
+	c.activityUpdatedAt = now
+	observer := c.onUpdate
+	stateObserver := c.onStateChange
+	c.mu.Unlock()
+	if stateObserver != nil {
+		stateObserver(ResidentRunning)
+	}
+	if observer != nil {
+		observer(false)
+	}
+}
+
+func (c *ResidentChild) recordActivity() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.activityUpdatedAt = time.Now().UTC()
+	c.mu.Unlock()
+}
+
+func (c *ResidentChild) notifyUpdate(historyChanged bool) {
 	if c == nil {
 		return
 	}
@@ -161,7 +237,16 @@ func (c *ResidentChild) notifyUpdate() {
 	observer := c.onUpdate
 	c.mu.RUnlock()
 	if observer != nil {
-		observer()
+		observer(historyChanged)
+	}
+}
+
+func residentEventChangesHistory(event core.AgentEvent) bool {
+	switch event.(type) {
+	case core.EvUserMessage, core.EvAssistantMessage, core.EvToolCall, core.EvToolResult:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -253,8 +338,7 @@ func (c *ResidentChild) run() {
 					continue
 				}
 			}
-			c.live.Start(active.turnID)
-			c.setState(ResidentRunning)
+			c.startTurn(active.turnID)
 			running = true
 			go func(request residentPrompt) {
 				results <- residentTurnResult{turnID: request.turnID, err: c.runner(c.ctx, request.prompt)}

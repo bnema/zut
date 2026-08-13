@@ -164,6 +164,29 @@ func TestResidentChildSessionCoalescesCompletionDuringHistoryLoad(t *testing.T) 
 	}
 }
 
+func TestResidentChildSessionKeepsReloadReservationUntilFinishLoad(t *testing.T) {
+	session := newResidentChildSession(nil, "child", tui.Dark)
+	if !session.BeginLoad() {
+		t.Fatal("initial history load was not accepted")
+	}
+	if session.RequestRecentReload() {
+		t.Fatal("second history load started alongside active history load")
+	}
+	// replaceRecent is the tail of the first reader. Its reservation must
+	// remain held until the controller consumes the pending reload through
+	// FinishLoad, otherwise another durable event can start a concurrent read.
+	session.replaceRecent(nil, "")
+	if session.RequestRecentReload() {
+		t.Fatal("history reload started before the first reader finished")
+	}
+	if !session.FinishLoad(nil) {
+		t.Fatal("coalesced history reload was lost")
+	}
+	if !session.RequestRecentReload() {
+		t.Fatal("coalesced history reload did not reserve after first reader finished")
+	}
+}
+
 func TestResidentChildSessionRenderRespectsRequestedHeight(t *testing.T) {
 	session := newResidentChildSession(nil, "child", tui.Dark)
 	for _, height := range []int{0, 1, 2} {
@@ -220,6 +243,92 @@ drained:
 	lines := interactive.residentChildSession.Render(80, 24)
 	if !containsLine(lines, "streamed without input") {
 		t.Fatalf("open resident child session did not render streamed text: %q", lines)
+	}
+}
+
+func TestInteractiveResidentHistoryUpdatesRefreshOpenChildSession(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	persist := make(chan struct{})
+	release := make(chan struct{})
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			<-persist
+			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "bash", Arguments: json.RawMessage(`{"command":"printf fresh"}`)}}}}); err != nil {
+				return err
+			}
+			if err := journal.RecordAgentEvent(core.EvToolResult{ID: "call-1", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "fresh resident output"}}}}); err != nil {
+				return err
+			}
+			<-release
+			return nil
+		}, nil
+	})
+	t.Cleanup(func() {
+		close(release)
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	session := newResidentChildSession(manager, spec.ID, tui.Dark)
+	if err := session.LoadRecent(200); err != nil {
+		t.Fatal(err)
+	}
+	interactive.residentChildSession = session
+	close(persist)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if lines := session.Render(100, 30); containsLine(lines, "fresh resident output") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable resident history did not refresh while running: %q", session.Render(100, 30))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestInteractiveResidentActivityDrivesIndependentAnimation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			<-release
+			return nil
+		}, nil
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	if interactive.residentAnimating.Load() {
+		t.Fatal("new interactive reported resident animation")
+	}
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "indicator", SessionID: "session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if !interactive.residentAnimating.Load() {
+		t.Fatal("running resident did not enable independent animation")
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for interactive.residentAnimating.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("completed resident did not disable independent animation")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

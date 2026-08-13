@@ -105,6 +105,103 @@ func TestResidentManagerLiveReturnsChildSnapshot(t *testing.T) {
 	}
 }
 
+func TestResidentManagerHistoryObserverSkipsTransientStreamEvents(t *testing.T) {
+	started := make(chan struct{})
+	publishedDelta := make(chan struct{})
+	persist := make(chan struct{})
+	release := make(chan struct{})
+	historyUpdates := make(chan string, 1)
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streaming"}); err != nil {
+				return err
+			}
+			close(publishedDelta)
+			<-persist
+			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "finalized"}}}}); err != nil {
+				return err
+			}
+			<-release
+			return nil
+		}, nil
+	})
+	manager.SetHistoryUpdateObserver(func(childID string) { historyUpdates <- childID })
+	t.Cleanup(func() {
+		close(release)
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "history-observer", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	<-publishedDelta
+	select {
+	case got := <-historyUpdates:
+		t.Fatalf("transient stream event requested history reload for %q", got)
+	default:
+	}
+	close(persist)
+	select {
+	case got := <-historyUpdates:
+		if got != "history-observer" {
+			t.Fatalf("history update child = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("finalized event did not request history reload")
+	}
+}
+
+func TestResidentManagerActivityObserverTracksRunningChildrenWithoutPolling(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	activity := make(chan bool, 2)
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			<-release
+			return nil
+		}, nil
+	})
+	manager.SetActivityObserver(func(active bool) { activity <- active })
+	t.Cleanup(func() {
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	select {
+	case got := <-activity:
+		if got {
+			t.Fatal("new manager reported active resident")
+		}
+	default:
+		t.Fatal("activity observer did not receive its initial state")
+	}
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "activity-observer", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-activity:
+		if !got {
+			t.Fatal("spawn marked resident activity inactive")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn did not report resident activity")
+	}
+	<-started
+	close(release)
+	select {
+	case got := <-activity:
+		if got {
+			t.Fatal("completed resident remained active")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion did not clear resident activity")
+	}
+}
+
 func TestResidentManagerRecordsFactoryFailureAfterAcceptance(t *testing.T) {
 	root := t.TempDir()
 	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {

@@ -15,12 +15,19 @@ func TestJournaledResidentChildReceivesLiveJournalEvents(t *testing.T) {
 	}
 	child := newJournaledResidentChild(ResidentChildSpec{}, journal, func(context.Context, string) error { return nil }, nil)
 	defer child.Close(context.Background())
+	oldActivity := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	child.mu.Lock()
+	child.activityUpdatedAt = oldActivity
+	child.mu.Unlock()
 	child.live.Start("turn-1")
 	if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streaming"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := child.Live(); got.AssistantText != "streaming" || got.Revision == 0 {
 		t.Fatalf("live child = %#v", got)
+	}
+	if got := child.ActivityUpdatedAt(); !got.After(oldActivity) {
+		t.Fatalf("activity time = %s, want after %s", got, oldActivity)
 	}
 }
 
