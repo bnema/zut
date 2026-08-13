@@ -1306,6 +1306,22 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 		"  " + th.FGColor(th.Muted, "dir:    "+a.Dir),
 		"  " + th.FGColor(th.Muted, "observation: "+d.traceSummary(a.ID)),
 	}
+	if request := d.traceView(a.ID).LastRequest; request != nil {
+		diagnostic := "provider request: " + request.Outcome
+		if request.Provider != "" || request.Model != "" {
+			diagnostic += " · " + strings.Trim(strings.TrimSpace(request.Provider+" / "+request.Model), " /")
+		}
+		if request.Attempt > 0 {
+			diagnostic += fmt.Sprintf(" · attempt %d", request.Attempt)
+			if request.MaxAttempts > 0 {
+				diagnostic += fmt.Sprintf("/%d", request.MaxAttempts)
+			}
+		}
+		if request.ErrorCode != "" {
+			diagnostic += " · " + request.ErrorCode
+		}
+		header = append(header, "  "+th.FGColor(th.Muted, diagnostic))
+	}
 	if a.Model != "" {
 		modelLine := "model:  " + a.Model
 		if a.Provider != "" {
@@ -1457,17 +1473,7 @@ func (d *subagentsDialog) agentHasOpenOperation(id string) bool {
 }
 
 func (d *subagentsDialog) traceSummary(id string) string {
-	view := d.traceView(id)
-	if view.Terminal != "" {
-		return view.Terminal
-	}
-	if len(view.OpenOperations) != 0 {
-		return view.OpenOperations[0].Label()
-	}
-	if view.LastEvent.Type != "" {
-		return "last event " + view.LastEvent.Type
-	}
-	return "no observable operation"
+	return d.traceView(id).Summary()
 }
 
 // renderSupervisorTranscriptBlocks converts the agent's flat transcript
@@ -1634,14 +1640,17 @@ func (d *subagentsDialog) traceView(id string) subagents.AgentTraceView {
 //	tool open 3m                 fix-login-12345             3m        inspect main.go
 //	completed                     write-tests-67890           1h        add coverage
 func formatSupervisorRow(r subagents.AgentSnapshot, view subagents.AgentTraceView, maxWidth int) string {
-	fact := "no observable operation"
-	if view.Terminal != "" {
-		fact = view.Terminal
-	} else if len(view.OpenOperations) != 0 {
-		operation := view.OpenOperations[0]
-		fact = operation.Label() + " " + formatAge(operation.StartedAt)
+	fact := view.Summary()
+	if primary, ok := view.Primary(); ok {
+		fact = truncateLineSafe(fact, 24)
+		if observation := view.ObservationFor(primary); observation != nil {
+			fact += " " + formatAge(observation.At)
+		} else {
+			fact += " " + formatAge(primary.StartedAt)
+		}
 	} else if view.LastEvent.Type != "" {
-		fact = "last " + view.LastEvent.Type + " " + formatAge(view.LastEvent.Timestamp)
+		fact = truncateLineSafe(fact, 24)
+		fact += " " + formatAge(view.LastEvent.Timestamp)
 	}
 	age := formatAge(r.Started)
 	left := fmt.Sprintf("%-30s  %-26s  %-8s  ", truncateLineSafe(fact, 30), truncateLineSafe(r.ID, 26), age)

@@ -182,6 +182,41 @@ func TestWriteTurnResultCleansTemporaryFileAfterRenameFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureResultRecordsAvailabilityAfterDurableWrite(t *testing.T) {
+	state := t.TempDir()
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", stateDir: state, trace: trace, maxOutputBytes: 1024, maxOutputLines: 10}
+	(&Supervisor{}).ensureResult(agent, StatusDone, nil)
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := ProjectTrace(trace.Events())[agent.ID]
+	if view.Result == nil || !view.Result.Available || view.Result.Ref != ResultRef(agent.ID) {
+		t.Fatalf("result trace = %#v", view.Result)
+	}
+	if _, err := os.Stat(resultPath(state)); err != nil {
+		t.Fatalf("durable result missing: %v", err)
+	}
+
+	failedState := t.TempDir()
+	if err := os.Mkdir(resultPath(failedState), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failedTrace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = failedTrace.Close() })
+	failedAgent := &Agent{ID: "agent-2", stateDir: failedState, trace: failedTrace, maxOutputBytes: 1024, maxOutputLines: 10}
+	(&Supervisor{}).ensureResult(failedAgent, StatusDone, nil)
+	if err := failedTrace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range failedTrace.Events() {
+		if event.Type == "result.available" {
+			t.Fatalf("result.available recorded after failed write: %#v", event)
+		}
+	}
+}
+
 func TestCaptureWorkspaceFailureIsDurableAndPrivate(t *testing.T) {
 	makeAgent := func(stateDir string, capture func() (WorkspaceCapture, error)) *Agent {
 		return &Agent{ID: "agent-1", stateDir: stateDir, workspaceCapture: capture}

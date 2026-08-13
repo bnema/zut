@@ -52,6 +52,13 @@ func TestSubagentTurnContextResetsDeadlineAndHonorsShutdown(t *testing.T) {
 	}
 }
 
+func TestResultErrorPayloadClassifiesStreamIdleTimeout(t *testing.T) {
+	payload := resultErrorPayload(core.ErrStreamIdleTimeout, "")
+	if payload["code"] != "stream_idle_timeout" {
+		t.Fatalf("idle timeout error code = %v, want stream_idle_timeout", payload["code"])
+	}
+}
+
 func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
 	payload := resultErrorPayload(context.DeadlineExceeded, "")
 	if payload["code"] != "deadline_exceeded" {
@@ -819,7 +826,8 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	defer r.Close()
 
 	em := newSubagentEmitter(w)
-	em.emit("turn_start", map[string]any{"step": 1})
+	em.setTurnID("turn-1")
+	em.emit("text_delta", map[string]any{"delta": "sensitive partial answer"})
 	_ = w.Close()
 
 	body, err := io.ReadAll(r)
@@ -835,36 +843,39 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	if err := json.Unmarshal(lines[0], &object); err != nil {
 		t.Fatalf("not valid json: %v\n%s", err, lines[0])
 	}
-	if object["type"] != "turn.started" {
+	if object["type"] != "message.delta" {
 		t.Errorf("type field missing or wrong: %v", object["type"])
+	}
+	if object["turn_id"] != "turn-1" {
+		t.Errorf("turn_id = %v, want turn-1", object["turn_id"])
 	}
 	if _, ok := object["timestamp"].(string); !ok {
 		t.Errorf("timestamp field missing: %v", object["timestamp"])
 	}
 	payload, ok := object["payload"].(map[string]any)
-	if !ok || payload["step"] != float64(1) {
-		t.Errorf("payload step field missing or wrong: %v", object["payload"])
+	if !ok || payload["delta"] != "sensitive partial answer" {
+		t.Errorf("payload delta field missing or wrong: %v", object["payload"])
 	}
 }
 
-func TestWorkerTurnBudgetFreshAllowanceOnlyForExplicitRun(t *testing.T) {
-	var budget workerTurnBudget
+func TestWorkerTurnCountersRemainObservableWithoutAdmissionLimit(t *testing.T) {
+	var counters workerTurnCounters
 
-	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 1 || current != 1 {
-		t.Fatalf("first turn = (%d, %d, %v), want (1, 1, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 1 || lifetime != 1 || current != 1 {
+		t.Fatalf("first turn = (%d, %d, %d), want (1, 1, 1)", step, lifetime, current)
 	}
-	// Provider retries, model loops, and compaction stay inside the admitted
-	// turn and therefore do not call start or consume another allowance.
-	if budget.lifetime != 1 || budget.current != 1 {
-		t.Fatalf("nested work changed budget to (lifetime=%d, current=%d)", budget.lifetime, budget.current)
+	// Provider retries, model loops, and compaction stay inside the delegated
+	// turn and therefore do not advance the message-turn counters.
+	if counters.lifetime != 1 || counters.current != 1 {
+		t.Fatalf("nested work changed counters to (lifetime=%d, current=%d)", counters.lifetime, counters.current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 2 || current != 2 {
-		t.Fatalf("second turn = (%d, %d, %v), want (2, 2, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 2 || lifetime != 2 || current != 2 {
+		t.Fatalf("second turn = (%d, %d, %d), want (2, 2, 2)", step, lifetime, current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, false); admitted || lifetime != 2 || current != 2 {
-		t.Fatalf("exhausted turn = (%d, %d, %v), want (2, 2, false)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(false); step != 3 || lifetime != 3 || current != 3 {
+		t.Fatalf("third turn = (%d, %d, %d), want (3, 3, 3)", step, lifetime, current)
 	}
-	if _, lifetime, current, admitted := budget.start(2, true); !admitted || lifetime != 3 || current != 1 {
-		t.Fatalf("explicit resumed turn = (%d, %d, %v), want (3, 1, true)", lifetime, current, admitted)
+	if step, lifetime, current := counters.start(true); step != 4 || lifetime != 4 || current != 1 {
+		t.Fatalf("explicit resumed turn = (%d, %d, %d), want (4, 4, 1)", step, lifetime, current)
 	}
 }

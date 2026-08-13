@@ -10,6 +10,11 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+var providerWaitingSpinner = tui.NewStringSpinner(
+	[]string{"Zzzz", "zZzz", "zzZz", "zzzZ"},
+	time.Second,
+)
+
 // renderSubagentActivityLines renders only trace-observed open operations.
 // A living process, generic lifecycle state, or heartbeat never starts a
 // spinner because none proves that an operation is progressing.
@@ -17,10 +22,11 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		view := views[snapshot.ID]
-		if len(view.OpenOperations) == 0 {
+		operation, ok := view.Primary()
+		if !ok {
 			continue
 		}
-		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, view.OpenOperations[0], width, now)
+		line := renderSubagentActivityLine(th, spinnerGlyph, snapshot, operation, view.TurnStartedAt(operation), view.ObservationFor(operation), width, now)
 		if line != "" {
 			lines = append(lines, line)
 		}
@@ -28,7 +34,7 @@ func renderSubagentActivityLines(th tui.Theme, spinnerGlyph string, snapshots []
 	return lines
 }
 
-func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, width int, now time.Time) string {
+func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot subagents.AgentSnapshot, operation subagents.Operation, turnStartedAt time.Time, observation *subagents.LiveObservation, width int, now time.Time) string {
 	name := sanitizeSubagentIndicatorText(snapshot.Subagent)
 	if name == "" {
 		name = sanitizeSubagentIndicatorText(snapshot.ID)
@@ -40,8 +46,24 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 	if spinnerGlyph == "" {
 		spinnerGlyph = "."
 	}
-	activity := operation.Label()
-	age := formatSubagentActivityAge(operation.StartedAt, now)
+	activity := subagentOperationActivity(operation, now)
+	if observation != nil {
+		activity += " · " + observation.Label() + " " + formatSubagentActivityAge(observation.At, now) + " ago"
+	}
+	// The rightmost age is elapsed time for the open delegated turn, stable
+	// across its nested provider/tool cycles. Fall back to the operation start
+	// only for legacy/incomplete traces without a matching turn boundary.
+	if turnStartedAt.IsZero() {
+		turnStartedAt = operation.StartedAt
+	}
+	age := formatSubagentActivityAge(turnStartedAt, now)
+	if operation.Step > 0 {
+		label := "steps"
+		if operation.Step == 1 {
+			label = "step"
+		}
+		age = fmt.Sprintf("%d %s · %s", operation.Step, label, age)
+	}
 	plain, layout := fitSubagentActivityLine(spinnerGlyph, name, activity, age, width-2)
 	if plain == "" {
 		return ""
@@ -56,7 +78,7 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 		name = strings.TrimPrefix(parts[0], spinnerGlyph+" ")
 		return "  " + th.FGColor(th.Spinner, spinnerGlyph) + " " +
 			th.FGColor(th.Assistant, name) + th.FGColor(th.Muted, " · ") +
-			th.FGColor(th.FG, parts[1]) + th.FGColor(th.Muted, " · "+parts[2])
+			th.FGColor(subagentOperationColor(th, operation), parts[1]) + th.FGColor(th.Muted, " · "+parts[2])
 	case subagentActivityNameAge:
 		parts := strings.SplitN(plain, " · ", 2)
 		if len(parts) != 2 {
@@ -67,6 +89,24 @@ func renderSubagentActivityLine(th tui.Theme, spinnerGlyph string, snapshot suba
 			th.FGColor(th.Assistant, name) + th.FGColor(th.Muted, " · "+parts[1])
 	default:
 		return "  " + th.FGColor(th.Muted, plain)
+	}
+}
+
+func subagentOperationActivity(operation subagents.Operation, now time.Time) string {
+	if operation.Type == "provider.request.started" {
+		return providerWaitingSpinner.FrameAt(operation.StartedAt, now)
+	}
+	return operation.Label()
+}
+
+func subagentOperationColor(th tui.Theme, operation subagents.Operation) tui.TerminalColor {
+	switch operation.Type {
+	case "provider.request.started":
+		return th.Spinner
+	case "tool.started":
+		return th.Tool
+	default:
+		return th.Assistant
 	}
 }
 
@@ -167,7 +207,8 @@ func (i *Interactive) activeSubagentActivitySnapshots() ([]subagents.AgentSnapsh
 		if activeSession != "" && agent.SessionID != "" && agent.SessionID != activeSession {
 			continue
 		}
-		if len(views[agent.ID].OpenOperations) == 0 {
+		view := views[agent.ID]
+		if _, ok := view.Primary(); !ok {
 			continue
 		}
 		out = append(out, subagents.AgentSnapshot{ID: agent.ID, Started: agent.Started, Subagent: agent.Subagent})

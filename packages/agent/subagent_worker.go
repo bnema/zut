@@ -34,10 +34,9 @@ import (
 // production; tests use the stubchild binary under
 // packages/agent/subagents/testdata/cmd/stubchild instead of the real model
 // loop.
-// workerTurnBudget is deliberately independent of the model loop: one
-// admitted message turn consumes one current-run and lifetime turn, while
-// retries, compaction, and provider/tool loops remain inside that turn.
-type workerTurnBudget struct {
+// workerTurnCounters track stable delegated-turn identity and observability.
+// Retries, compaction, and provider/tool loops remain inside one message turn.
+type workerTurnCounters struct {
 	sequence int
 	lifetime int
 	current  int
@@ -71,17 +70,14 @@ func (s *sessionPersistenceState) err() error {
 	return s.errValue
 }
 
-func (b *workerTurnBudget) start(maxTurns int, newRun bool) (step, lifetime, current int, admitted bool) {
+func (b *workerTurnCounters) start(newRun bool) (step, lifetime, current int) {
 	if newRun {
 		b.current = 0
 	}
 	b.sequence++
-	if maxTurns > 0 && b.current >= maxTurns {
-		return b.sequence, b.lifetime, b.current, false
-	}
 	b.lifetime++
 	b.current++
-	return b.sequence, b.lifetime, b.current, true
+	return b.sequence, b.lifetime, b.current
 }
 
 func subagentTurnContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -117,9 +113,10 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	if err != nil {
 		return err
 	}
-	extMgr, stopExt := setupNonInteractiveExtensions(ctx, args, &r, version)
-	defer stopExt()
-
+	// A delegated worker has one bounded task and must not inherit arbitrary
+	// local extensions, their tools, hooks, or persisted extension state.
+	// Extensions remain available to explicitly selected skills only through
+	// the parent process; the worker runs with its resolved built-in registry.
 	ag := r.NewAgent()
 	initialAg := ag
 	defer func() {
@@ -128,7 +125,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			closeAgentLSP(initialAg)
 		}
 	}()
-	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
@@ -136,12 +132,11 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 	var sessionPersistence sessionPersistenceState
 	if sess != nil {
 		var providerName, model string
-		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, nil, sess, ag)
 		if err != nil {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
-		ag.CommitToolResult = func(_ string, result core.ToolResult) error { return persistToolResultState(extMgr, sess, result) }
 		// A prompt is acknowledged by the supervisor only after this callback
 		// has appended and synced the matching user message. This closes the
 		// crash window between accepting a follow-up and writing session.json.
@@ -165,8 +160,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			runErr = joinSessionCloseError(runErr, sess)
 		}()
 	}
-	announceSession(extMgr, sess)
-
 	// Resolve retains metadata for catalog models and for valid synthesized
 	// local/routed/open-catalog models. The active agent also survives a session
 	// resume that rebuilt it for a different provider/model pair.
@@ -191,7 +184,6 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		"model":             r.Model,
 		"lifetime_turns":    args.SubagentLifetimeTurns,
 		"current_run_turns": args.SubagentRunTurns,
-		"max_turns":         args.SubagentMaxTurns,
 	})
 
 	// Keep a per-turn cancel so the "cancel" inbox message can interrupt
@@ -200,7 +192,8 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		mu       sync.Mutex
 		cancelFn context.CancelFunc
 		busyTurn bool
-		budget   = workerTurnBudget{
+		counters = workerTurnCounters{
+			sequence: args.SubagentLifetimeTurns,
 			lifetime: args.SubagentLifetimeTurns,
 			current:  args.SubagentRunTurns,
 		}
@@ -228,26 +221,9 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		}
 		busyTurn = true
 		turnPending = false
-		step, lifetime, currentRun, admitted := budget.start(args.SubagentMaxTurns, newRun)
-		if !admitted {
-			busyTurn = false
-			mu.Unlock()
-			turnID := fmt.Sprintf("turn-%d", step)
-			errPayload := map[string]any{"code": "turn_rejected", "reason": "max_turns", "command_id": commandID, "message": "maximum subagent turns reached"}
-			em.emit("error", errPayload)
-			em.emit("turn.result", map[string]any{"status": "failed", "turn_id": turnID, "error": errPayload})
-			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": errPayload})
-			em.emit("turn_end", map[string]any{"step": step, "turn_id": turnID, "error": errPayload["message"]})
-			// Max-turn rejection ends the current run, but the worker remains
-			// alive and can accept a queued follow-up as a fresh run.
-			em.emit("agent.idle", map[string]any{
-				"turn_id":           turnID,
-				"lifetime_turns":    lifetime,
-				"current_run_turns": currentRun,
-			})
-			return
-		}
+		step, lifetime, currentRun := counters.start(newRun)
 		turnID := fmt.Sprintf("turn-%d", step)
+		em.setTurnID(turnID)
 		c, cancel := subagentTurnContext(ctx, args.SubagentTurnTimeout)
 		cancelFn = cancel
 		mu.Unlock()
@@ -354,6 +330,9 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 
 		cancel()
 		mu.Lock()
+		// Clear the emitter identity before reopening the busy gate: a newly
+		// admitted turn must not race this completed turn's cleanup.
+		em.setTurnID("")
 		busyTurn = false
 		cancelFn = nil
 		mu.Unlock()
@@ -487,6 +466,7 @@ type subagentEmitter struct {
 	mu      sync.Mutex
 	w       *os.File
 	agentID string
+	turnID  string
 }
 
 func newSubagentEmitter(w *os.File) *subagentEmitter {
@@ -496,6 +476,14 @@ func newSubagentEmitter(w *os.File) *subagentEmitter {
 func (e *subagentEmitter) setProtocolIdentity(agentID string) {
 	e.mu.Lock()
 	e.agentID = agentID
+	e.mu.Unlock()
+}
+
+// setTurnID associates subsequent worker events with the currently admitted
+// delegated turn. Core events do not carry the worker protocol turn ID.
+func (e *subagentEmitter) setTurnID(turnID string) {
+	e.mu.Lock()
+	e.turnID = turnID
 	e.mu.Unlock()
 }
 
@@ -511,6 +499,9 @@ func (e *subagentEmitter) emit(typ string, data map[string]any) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if turnID == "" {
+		turnID = e.turnID
+	}
 
 	wireType := canonicalWorkerEvent(typ)
 	envelope := subagents.NewEventEnvelope(wireType, e.agentID, turnID, payload)
@@ -539,7 +530,7 @@ func canonicalWorkerEvent(typ string) string {
 		return subagents.EventTurnStarted
 	case "turn_progress":
 		return subagents.EventTurnProgress
-	case "tool_call":
+	case "tool_execution_started":
 		return subagents.EventToolStarted
 	case "tool_result":
 		return subagents.EventToolFinished
@@ -690,6 +681,9 @@ func resultErrorPayload(err error, shutdownOrigin subagents.ShutdownOrigin) map[
 	}
 	if provider.IsContextOverflowError(err) {
 		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
+	}
+	if errors.Is(err, core.ErrStreamIdleTimeout) {
+		return map[string]any{"code": "stream_idle_timeout", "message": "provider stream produced no events for five minutes; the delegated turn stopped safely"}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || shutdownOrigin == subagents.ShutdownOriginDeadline {
 		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}

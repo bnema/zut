@@ -57,10 +57,10 @@ type agentMeta struct {
 	WorkspacePath    string          `json:"workspace_path,omitempty"`
 	WorkspaceBase    string          `json:"workspace_base,omitempty"`
 	WorkspaceCapture CaptureMode     `json:"workspace_capture,omitempty"`
-	MaxTurns         int             `json:"max_turns,omitempty"`
 	LifetimeTurns    int             `json:"lifetime_turns,omitempty"`
 	CurrentRunTurns  int             `json:"current_run_turns,omitempty"`
 	Timeout          time.Duration   `json:"timeout,omitempty"`
+	TurnTimeoutMode  turnTimeoutMode `json:"turn_timeout_mode,omitempty"`
 	Tools            []string        `json:"tools,omitempty"`
 	WebSearchPolicy  WebSearchPolicy `json:"web_search_policy,omitempty"`
 	Status           Status          `json:"status,omitempty"`
@@ -94,6 +94,36 @@ type agentMeta struct {
 	// older unscoped metadata remains reachable through its all-sessions
 	// filter.
 	SessionID string `json:"session_id,omitempty"`
+}
+
+type turnTimeoutMode string
+
+const (
+	turnTimeoutUnlimited turnTimeoutMode = "unlimited"
+	turnTimeoutLimited   turnTimeoutMode = "limited"
+)
+
+func timeoutModeFor(timeout time.Duration) turnTimeoutMode {
+	if timeout > 0 {
+		return turnTimeoutLimited
+	}
+	return turnTimeoutUnlimited
+}
+
+func resolvePersistedTurnTimeout(m agentMeta, fallback time.Duration) time.Duration {
+	switch m.TurnTimeoutMode {
+	case turnTimeoutUnlimited:
+		return 0
+	case turnTimeoutLimited:
+		return m.Timeout
+	default:
+		// Legacy metadata stored the effective positive timeout. A missing
+		// value inherited the then-current supervisor policy.
+		if m.Timeout > 0 {
+			return m.Timeout
+		}
+		return fallback
+	}
 }
 
 func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.json") }
@@ -159,10 +189,10 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		WorkspacePath:    a.WorkspacePath,
 		WorkspaceBase:    a.WorkspaceBase,
 		WorkspaceCapture: a.WorkspaceCapture,
-		MaxTurns:         a.MaxTurns,
 		LifetimeTurns:    lifetimeTurns,
 		CurrentRunTurns:  currentRunTurns,
 		Timeout:          a.Timeout,
+		TurnTimeoutMode:  timeoutModeFor(a.Timeout),
 		Tools:            append([]string(nil), a.Tools...),
 		WebSearchPolicy:  webSearchPolicy,
 		Status:           status,
@@ -250,6 +280,12 @@ func readAgentMeta(stateDir string) (agentMeta, error) {
 	}
 	if m.ID == "" {
 		return m, fmt.Errorf("subagent meta %s: missing id", stateDir)
+	}
+	if m.TurnTimeoutMode != "" && m.TurnTimeoutMode != turnTimeoutUnlimited && m.TurnTimeoutMode != turnTimeoutLimited {
+		return m, fmt.Errorf("subagent meta %s: invalid turn_timeout_mode %q", stateDir, m.TurnTimeoutMode)
+	}
+	if m.TurnTimeoutMode == turnTimeoutLimited && m.Timeout <= 0 {
+		return m, fmt.Errorf("subagent meta %s: limited turn timeout must be positive", stateDir)
 	}
 	return m, nil
 }
@@ -495,10 +531,9 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) (*Agent, bool) {
 		WorkspacePath:     m.WorkspacePath,
 		WorkspaceBase:     m.WorkspaceBase,
 		WorkspaceCapture:  m.WorkspaceCapture,
-		MaxTurns:          m.MaxTurns,
 		LifetimeTurns:     m.LifetimeTurns,
 		CurrentRunTurns:   m.CurrentRunTurns,
-		Timeout:           m.Timeout,
+		Timeout:           resolvePersistedTurnTimeout(m, f.cfg.Policy.DefaultTimeout),
 		Tools:             append([]string(nil), m.Tools...),
 		WebSearchPolicy:   childWebSearchPolicy(m.WebSearchPolicy, m.Subagent, m.Tools),
 		Attempt:           m.Attempt,
@@ -530,7 +565,6 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) (*Agent, bool) {
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
 		maxOutputLines:    f.cfg.Policy.MaxOutputLines,
 		done:              make(chan struct{}),
-		turnResults:       make(chan *TurnResult, 16),
 		persistFn:         f.persistAgent,
 	}
 	if a.updatedAt.IsZero() {
@@ -1193,7 +1227,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		Subagent:      existing.Subagent,
 		WorkspaceMode: existing.WorkspaceMode, WorkspacePath: existing.WorkspacePath,
 		WorkspaceBase: existing.WorkspaceBase, WorkspaceCapture: existing.WorkspaceCapture,
-		MaxTurns: existing.MaxTurns, LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Timeout: existing.Timeout, Tools: append([]string(nil), existing.Tools...),
+		LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Timeout: existing.Timeout, TurnTimeoutMode: timeoutModeFor(existing.Timeout), Tools: append([]string(nil), existing.Tools...),
 		WebSearchPolicy: childWebSearchPolicy(existing.WebSearchPolicy, existing.Subagent, existing.Tools),
 		CurrentTurnID:   existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
 		Requirement: existingSnapshot.Requirement,
@@ -1209,7 +1243,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	if len(m.Tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
 		m.Tools = append([]string(nil), f.cfg.Policy.AllowedTools...)
 	}
-	if err := f.validateSpawnOptions(SpawnRequest{MaxTurns: m.MaxTurns, Tools: m.Tools}); err != nil {
+	if err := f.validateSpawnOptions(SpawnRequest{Tools: m.Tools}); err != nil {
 		return nil, err
 	}
 	workspaceMode := m.WorkspaceMode
@@ -1228,10 +1262,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	repositoryRoot := firstNonEmpty(m.RepositoryRoot, m.Dir, f.cfg.RepoRoot)
 	if err := validateWorkspaceRoot(repositoryRoot, workspaceMode, allowedRoots); err != nil {
 		return nil, err
-	}
-	maxTurns := m.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = f.cfg.Policy.MaxTurns
 	}
 	existingWorkspacePath := ""
 	if workspaceMode == WorkspaceWorktree {
@@ -1254,10 +1284,7 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	m.RepositoryRoot = workspace.RepositoryRoot()
 	m.WorkspacePath = workspace.Dir()
 	m.WorkspaceMode = workspace.Mode()
-	timeout := m.Timeout
-	if timeout <= 0 {
-		timeout = f.cfg.Policy.DefaultTimeout
-	}
+	timeout := resolvePersistedTurnTimeout(m, f.cfg.Policy.DefaultTimeout)
 	runCtx, cancel := f.workerContext()
 	a := &Agent{
 		ID:                m.ID,
@@ -1281,7 +1308,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		WorkspacePath:     m.WorkspacePath,
 		WorkspaceBase:     m.WorkspaceBase,
 		WorkspaceCapture:  m.WorkspaceCapture,
-		MaxTurns:          maxTurns,
 		LifetimeTurns:     m.LifetimeTurns,
 		CurrentRunTurns:   m.CurrentRunTurns,
 		Timeout:           timeout,
@@ -1312,7 +1338,6 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
 		maxOutputLines:    f.cfg.Policy.MaxOutputLines,
 		done:              make(chan struct{}),
-		turnResults:       make(chan *TurnResult, 16),
 	}
 	// Carry the previous transcript forward so the dashboard doesn't
 	// flash empty between resume and the first new event.

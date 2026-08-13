@@ -571,16 +571,21 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		result.Summary = strings.Split(strings.TrimSpace(result.Output), "\n")[0]
 	}
 	result = result.Bounded(a.maxOutputBytes, a.maxOutputLines)
-	a.setResult(result)
 	stateDir := a.stateDirectory(f.cfg.Root)
 	if err := writeTurnResult(stateDir, result); err != nil {
 		a.recordPersistenceError(fmt.Errorf("write turn result: %w", err))
+		failed := cloneTurnResult(result)
+		failed.Status = ResultFailed
+		failed.Error = &ResultError{Code: "result_persistence_failed", Message: "failed to persist delegated turn result"}
+		a.setResult(failed)
 		a.resolveRequirement(0, nil, fmt.Sprintf("write turn result: %v", err), true)
 		return
 	}
+	a.setResult(result)
 	a.lifecycleMu.Lock()
 	a.resultRef = ResultRef(a.ID)
 	a.lifecycleMu.Unlock()
+	a.recordTrace(TraceEvent{Type: "result.available", TurnID: result.TurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 	a.resolveRequirement(0, result, "", true)
 }
 

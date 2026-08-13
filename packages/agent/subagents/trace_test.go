@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestTraceContextZeroValueIsNoOp(t *testing.T) {
@@ -97,6 +98,93 @@ func TestMemoryTraceWriterRetainsOrderedEventsWithoutBundle(t *testing.T) {
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSupervisorTraceViewsRetainOpenTurnAcrossEventEviction(t *testing.T) {
+	writer := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = writer.Close() })
+	supervisor := &Supervisor{trace: writer}
+	started := time.Date(2026, time.August, 13, 1, 52, 0, 0, time.UTC)
+
+	writer.Record(TraceEvent{
+		Timestamp: started,
+		Type:      "turn.started",
+		AgentID:   "agent-1",
+		TurnID:    "turn-1",
+	})
+	for index := 0; index < memoryTraceEventLimit; index++ {
+		writer.Record(TraceEvent{
+			Timestamp: started.Add(time.Duration(index+1) * time.Millisecond),
+			Type:      "assistant.stream.observed",
+			AgentID:   "agent-1",
+			TurnID:    "turn-1",
+		})
+		if (index+1)%traceQueueInitialCapacity == 0 {
+			if err := writer.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	requestStarted := started.Add(time.Minute)
+	writer.Record(TraceEvent{
+		Timestamp: requestStarted,
+		Type:      "provider.request.started",
+		AgentID:   "agent-1",
+		TurnID:    "turn-1",
+	})
+	writer.Record(TraceEvent{
+		Timestamp: requestStarted.Add(time.Second),
+		Type:      "provider.request.finished",
+		AgentID:   "agent-1",
+		TurnID:    "turn-1",
+	})
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	view := supervisor.TraceViews()["agent-1"]
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "turn.started" {
+		t.Fatalf("primary operation after request = %#v, want open delegated turn", primaryOperation(t, view))
+	}
+	if !primaryOperation(t, view).StartedAt.Equal(started) {
+		t.Fatalf("delegated turn started at %v, want %v", primaryOperation(t, view).StartedAt, started)
+	}
+
+	nextRequestStarted := requestStarted.Add(2 * time.Second)
+	writer.Record(TraceEvent{
+		Timestamp: nextRequestStarted,
+		Type:      "provider.request.started",
+		AgentID:   "agent-1",
+		TurnID:    "turn-1",
+	})
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view = supervisor.TraceViews()["agent-1"]
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "provider.request.started" {
+		t.Fatalf("primary operation during next request = %#v, want provider request", primaryOperation(t, view))
+	}
+	if got := view.TurnStartedAt(*primaryOperation(t, view)); !got.Equal(started) {
+		t.Fatalf("elapsed timer anchor = %v, want delegated turn start %v", got, started)
+	}
+}
+
+func TestTraceViewsObserveIngestedBoundariesBeforeAsyncWrite(t *testing.T) {
+	writer := &TraceWriter{
+		pending: make([]traceRecord, 0, traceQueueInitialCapacity),
+	}
+	writer.cond = sync.NewCond(&writer.mu)
+	writer.Record(TraceEvent{
+		Timestamp: time.Date(2026, time.August, 13, 2, 0, 0, 0, time.UTC),
+		Type:      "turn.started",
+		AgentID:   "agent-1",
+		TurnID:    "turn-1",
+	})
+
+	view := writer.Views()["agent-1"]
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "turn.started" {
+		t.Fatalf("primary operation before async write = %#v, want delegated turn", primaryOperation(t, view))
 	}
 }
 

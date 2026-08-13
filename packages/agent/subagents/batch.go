@@ -76,6 +76,18 @@ func (b *Batch) Result() *BatchResult {
 func (b *Batch) Wait()      { <-b.done }
 func (b *Batch) closeDone() { b.once.Do(func() { close(b.done) }) }
 
+func (b *Batch) WaitContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-b.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (f *Supervisor) SpawnBatch(ctx context.Context, req BatchRequest) (*Batch, error) {
 	if len(req.Tasks) == 0 {
 		return nil, fmt.Errorf("subagents: batch requires at least one task")
@@ -186,7 +198,7 @@ func (f *Supervisor) collectBatch(batch *Batch) {
 			}
 			continue
 		}
-		result, err := f.waitForBatchResult(a)
+		result, err := f.waitForBatchResult(f.lifetimeCtx, a)
 		if err == nil {
 			results[id] = result
 			switch result.Status {
@@ -222,15 +234,18 @@ func (f *Supervisor) collectBatch(batch *Batch) {
 	batch.closeDone()
 }
 
-func (f *Supervisor) waitForBatchResult(a *Agent) (*TurnResult, error) {
+func (f *Supervisor) waitForBatchResult(ctx context.Context, a *Agent) (*TurnResult, error) {
 	if a == nil {
 		return nil, errors.New("subagents: missing batch child")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if result := a.Result(); result != nil {
 		return result, nil
 	}
 	if a.Status() != StatusDetached {
-		return a.waitForTurnResult(context.Background())
+		return a.waitForTurnResult(ctx)
 	}
 
 	// A reloaded worker has a closed supervisor-side done channel even when
@@ -268,8 +283,6 @@ func (f *Supervisor) waitForBatchResult(a *Agent) (*TurnResult, error) {
 	}
 
 	interval := 100 * time.Millisecond
-	deadline := time.NewTimer(f.cfg.Policy.DefaultTimeout)
-	defer deadline.Stop()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -281,20 +294,28 @@ func (f *Supervisor) waitForBatchResult(a *Agent) (*TurnResult, error) {
 			if !inboxLive(a.InboxPath) {
 				return nil, fmt.Errorf("subagents: agent %s exited without a turn result", a.ID)
 			}
-		case <-deadline.C:
-			return nil, fmt.Errorf("subagents: agent %s batch result timed out", a.ID)
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 }
 
 func (f *Supervisor) WaitBatch(id string) (*BatchResult, error) {
+	return f.WaitBatchContext(context.Background(), id)
+}
+
+// WaitBatchContext waits for the aggregate result without changing the batch
+// or any child when the observer's context ends.
+func (f *Supervisor) WaitBatchContext(ctx context.Context, id string) (*BatchResult, error) {
 	f.mu.Lock()
 	batch := f.batches[id]
 	f.mu.Unlock()
 	if batch == nil {
 		return nil, fmt.Errorf("subagents: no such batch %q", id)
 	}
-	batch.Wait()
+	if err := batch.WaitContext(ctx); err != nil {
+		return nil, err
+	}
 	return batch.Result(), nil
 }
 

@@ -585,28 +585,24 @@ func (c *bedrockClient) Stream(ctx context.Context, req Request) (<-chan Event, 
 	}
 	modelID := resolveBedrockInferenceProfileID(req.Model, c.region)
 	url := c.baseURL + "/model/" + modelID + "/converse-stream"
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "application/vnd.amazon.eventstream")
-	if c.bearerToken != "" {
-		httpReq.Header.Set("authorization", "Bearer "+c.bearerToken)
-	} else if c.sigv4 != nil {
-		if err := signSigV4(httpReq, body, "bedrock", c.region, c.sigv4, time.Now().UTC()); err != nil {
-			return nil, fmt.Errorf("bedrock: sigv4 sign: %w", err)
-		}
-	} else {
+	if c.bearerToken == "" && c.sigv4 == nil {
 		return nil, fmt.Errorf("bedrock: no auth configured")
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	newRequest := func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("accept", "application/vnd.amazon.eventstream")
+		if c.bearerToken != "" {
+			httpReq.Header.Set("authorization", "Bearer "+c.bearerToken)
+		} else if err := signSigV4(httpReq, body, "bedrock", c.region, c.sigv4, time.Now().UTC()); err != nil {
+			return nil, fmt.Errorf("bedrock: sigv4 sign: %w", err)
+		}
+		return httpReq, nil
 	}
-	if req.Lifecycle != nil {
-		req.Lifecycle.RequestAttempt(1, 1)
-	}
-	resp, err := c.http.Do(httpReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newRequest, req.Lifecycle)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: %w", err)
 	}

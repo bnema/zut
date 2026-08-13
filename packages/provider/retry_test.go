@@ -19,7 +19,7 @@ func TestOpenAIStreamRetriesOn503(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
-		if n < 3 {
+		if n < 5 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte("upstream connect error"))
 			return
@@ -53,14 +53,14 @@ func TestOpenAIStreamRetriesOn503(t *testing.T) {
 	if gotText != "ok" {
 		t.Fatalf("text=%q", gotText)
 	}
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("attempts=%d want 3", got)
+	if got := attempts.Load(); got != 5 {
+		t.Fatalf("attempts=%d want 5", got)
 	}
-	if got := lifecycle.attempts; len(got) != 3 || got[0] != (lifecycleAttempt{attempt: 1, max: 3}) || got[2] != (lifecycleAttempt{attempt: 3, max: 3}) {
-		t.Fatalf("lifecycle attempts = %#v, want 1 through 3", got)
+	if got := lifecycle.attempts; len(got) != 5 || got[0] != (lifecycleAttempt{attempt: 1, max: 5}) || got[4] != (lifecycleAttempt{attempt: 5, max: 5}) {
+		t.Fatalf("lifecycle attempts = %#v, want 1 through 5", got)
 	}
-	if got := lifecycle.retries; len(got) != 2 || got[0].attempt != 2 || got[1].attempt != 3 {
-		t.Fatalf("lifecycle retries = %#v, want retries before attempts 2 and 3", got)
+	if got := lifecycle.retries; len(got) != 4 || got[0].attempt != 2 || got[3].attempt != 5 {
+		t.Fatalf("lifecycle retries = %#v, want retries before attempts 2 through 5", got)
 	}
 }
 
@@ -85,8 +85,8 @@ func TestOpenAIStreamSurfaces503AfterRetriesExhausted(t *testing.T) {
 	if !strings.Contains(err.Error(), "503") {
 		t.Fatalf("error %q should mention 503", err)
 	}
-	if got := attempts.Load(); got != streamRetryAttempts+1 {
-		t.Fatalf("attempts=%d want %d", got, streamRetryAttempts+1)
+	if got := attempts.Load(); got != requestMaxRetries+1 {
+		t.Fatalf("attempts=%d want %d", got, requestMaxRetries+1)
 	}
 }
 
@@ -273,13 +273,14 @@ func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if got := lifecycle.attempts; len(got) != 2 || got[0] != (lifecycleAttempt{attempt: 1, max: 3}) || got[1] != (lifecycleAttempt{attempt: 2, max: 3}) {
-		t.Fatalf("attempts = %#v, want attempts 1 and 2 of 3", got)
+	maxAttempts := requestMaxRetries + 1
+	if got := lifecycle.attempts; len(got) != 2 || got[0] != (lifecycleAttempt{attempt: 1, max: maxAttempts}) || got[1] != (lifecycleAttempt{attempt: 2, max: maxAttempts}) {
+		t.Fatalf("attempts = %#v, want attempts 1 and 2 of %d", got, maxAttempts)
 	}
-	if got := lifecycle.retries; len(got) != 1 || got[0].attempt != 2 || got[0].max != 3 || got[0].delay != 250*time.Millisecond {
-		t.Fatalf("retries = %#v, want attempt 2 of 3 after 250ms", got)
+	if got := lifecycle.retries; len(got) != 1 || got[0].attempt != 2 || got[0].max != maxAttempts || got[0].delay != 250*time.Millisecond {
+		t.Fatalf("retries = %#v, want attempt 2 of %d after 250ms", got, maxAttempts)
 	}
-	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureOverload}) {
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: maxAttempts, reason: RequestFailureOverload}) {
 		t.Fatalf("failures = %#v, want one non-terminal overload", got)
 	}
 }
@@ -302,7 +303,7 @@ func TestDoStreamWithRetryReportsTerminalClientFailure(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
-	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureClient, terminal: true}) {
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: requestMaxRetries + 1, reason: RequestFailureClient, terminal: true}) {
 		t.Fatalf("failures = %#v, want one terminal client failure", got)
 	}
 	if len(lifecycle.retries) != 0 {
@@ -329,7 +330,7 @@ func TestDoStreamWithRetryReportsTerminalQuota(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", resp.StatusCode)
 	}
-	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: 3, reason: RequestFailureQuota, terminal: true}) {
+	if got := lifecycle.failures; len(got) != 1 || got[0] != (lifecycleFailure{attempt: 1, max: requestMaxRetries + 1, reason: RequestFailureQuota, terminal: true}) {
 		t.Fatalf("failures = %#v, want one terminal quota failure", got)
 	}
 }

@@ -360,6 +360,15 @@ func TestDefaultChildArgsPropagatesWebSearchPolicy(t *testing.T) {
 	}
 }
 
+func TestDefaultChildArgsDoNotImposeModelStepOrTurnLimits(t *testing.T) {
+	args := defaultChildArgs("zut", &Agent{Task: "task"}, "/session", "/inbox")
+	for _, flag := range []string{"--max-steps", "--max-turns"} {
+		if indexOf(args, flag) >= 0 {
+			t.Fatalf("argv = %v, contains removed subagent limit %s", args, flag)
+		}
+	}
+}
+
 func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
 	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zut", "/old/bin/zut", func(_ context.Context, candidate string) (string, error) {
 		if candidate == "/current/bin/zut" {
@@ -754,6 +763,64 @@ func TestRecordPersistenceErrorPreservesFirstFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentFromEventSurfacesTurnResultPersistenceFailure(t *testing.T) {
+	blockedStateDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedStateDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{ID: "agent-1", stateDir: blockedStateDir}
+	err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{
+		"status": "succeeded",
+		"output": "review complete",
+	}})
+	if err == nil {
+		t.Fatal("turn-result persistence failure was ignored")
+	}
+	result := a.Result()
+	if result == nil || result.Status != ResultFailed || result.Error == nil || result.Error.Code != "result_persistence_failed" {
+		t.Fatalf("in-memory result = %#v, want explicit persistence failure", result)
+	}
+	if result.Output != "review complete" {
+		t.Fatalf("failure output = %q, want preserved partial output", result.Output)
+	}
+}
+
+func TestUpdateAgentFromEventRetainsPersistenceFailureAfterTurnEnd(t *testing.T) {
+	blockedStateDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedStateDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{ID: "agent-1", stateDir: blockedStateDir}
+	if err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{"status": "succeeded"}}); err == nil {
+		t.Fatal("turn-result persistence failure was ignored")
+	}
+	if err := updateAgentFromEvent(a, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"step": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnFailed {
+		t.Fatalf("turn state = %q, want %q", got, TurnFailed)
+	}
+}
+
+func TestUpdateAgentFromEventRecordsDurableResultAvailability(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	a := &Agent{ID: "agent-1", stateDir: t.TempDir(), trace: trace}
+	if err := updateAgentFromEvent(a, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{
+		"status": "succeeded",
+		"output": "review complete",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := trace.Views()[a.ID]
+	if view.Result == nil || !view.Result.Available || view.Result.Ref != ResultRef(a.ID) {
+		t.Fatalf("live result trace = %#v, want durable availability", view.Result)
+	}
+}
+
 func TestRestoreResumePromptPreservesCommandIdentity(t *testing.T) {
 	a := &Agent{}
 	a.setResumePrompt("old prompt", time.Now())
@@ -798,6 +865,123 @@ func TestEventCounterRejectsNegativeFractionalAndOverflowValues(t *testing.T) {
 				t.Fatalf("eventCounter ok = %t, want %t (value %v, got %d)", ok, tc.ok, tc.value, got)
 			}
 		})
+	}
+}
+
+func TestRecordWorkerTraceNormalizesSafeLiveObservations(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: EventMessageDelta, TurnID: "turn-1", Data: map[string]any{"delta": "sensitive answer"}})
+	recordWorkerTrace(agent, Event{Type: "assistant_start", TurnID: "turn-1"})
+	recordWorkerTrace(agent, Event{Type: EventAgentHeartbeat, TurnID: "turn-1"})
+	recordWorkerTrace(agent, Event{Type: "request_started", TurnID: "turn-1", Data: map[string]any{"provider": "test", "model": "test"}})
+	// The worker canonicalizes core turn_start to EventTurnStarted while
+	// retaining nested_turn, so this exercises the supervisor's real input.
+	recordWorkerTrace(agent, Event{Type: EventTurnStarted, TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
+	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"nested_turn": true}})
+	recordWorkerTrace(agent, Event{Type: "tool_call", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash", "args": "sensitive arguments"}})
+	recordWorkerTrace(agent, Event{Type: "tool_execution_started", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "name": "bash"}})
+	recordWorkerTrace(agent, Event{Type: "tool_use_args", TurnID: "turn-1", Data: map[string]any{"id": "call-1", "delta": "sensitive argument fragment"}})
+	recordWorkerTrace(agent, Event{Type: "future_event", TurnID: "turn-1", Data: map[string]any{"secret": "hidden"}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := trace.Events()
+	if len(events) != 8 {
+		t.Fatalf("events = %#v", events)
+	}
+	if got, want := events[0].Type, "assistant.stream.observed"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if _, found := events[0].Data["delta"]; found {
+		t.Fatalf("stream payload leaked: %#v", events[0].Data)
+	}
+	if got, want := events[1].Type, "provider.request.started"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, want := events[2].Type, "provider.request.started"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, want := events[3].Type, "provider.request.finished"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, want := events[4].Type, "worker.protocol.observed"; got != want {
+		t.Fatalf("tool_call type = %q, want %q", got, want)
+	}
+	if got, want := events[5].Type, "tool.started"; got != want {
+		t.Fatalf("type = %q, want %q", got, want)
+	}
+	if got, _ := events[5].Data["call_id"].(string); got != "call-1" {
+		t.Fatalf("tool call_id = %q", got)
+	}
+	if _, found := events[5].Data["args"]; found {
+		t.Fatalf("tool arguments leaked: %#v", events[5].Data)
+	}
+	for _, index := range []int{6, 7} {
+		if got, want := events[index].Type, "worker.protocol.observed"; got != want {
+			t.Fatalf("events[%d].type = %q, want %q", index, got, want)
+		}
+		if _, found := events[index].Data["delta"]; found {
+			t.Fatalf("worker payload leaked: %#v", events[index].Data)
+		}
+		if _, found := events[index].Data["secret"]; found {
+			t.Fatalf("worker payload leaked: %#v", events[index].Data)
+		}
+	}
+	view := ProjectTrace(append([]TraceEvent{{Type: "turn.started", AgentID: "agent-1", TurnID: "turn-1"}}, events...))["agent-1"]
+	if primaryOperation(t, view) == nil || primaryOperation(t, view).Type != "tool.started" || primaryOperation(t, view).Name != "bash" {
+		t.Fatalf("current-turn tool activity was not projected: %#v", view)
+	}
+}
+
+func TestRecordWorkerTraceClosesProviderRequestWhenTurnEnds(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: "request_started", TurnID: "turn-1"})
+	recordWorkerTrace(agent, Event{Type: "turn_end", TurnID: "turn-1", Data: map[string]any{"error": "provider unavailable"}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	view := ProjectTrace(trace.Events())["agent-1"]
+	if len(view.OpenOperations) != 0 {
+		t.Fatalf("open operations = %#v, want none", view.OpenOperations)
+	}
+	if view.LastEvent.Type != "provider.request.failed" {
+		t.Fatalf("last event = %#v, want provider request failure", view.LastEvent)
+	}
+}
+
+func TestRecordWorkerTracePreservesStructuredErrorCode(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{Type: EventTurnResult, TurnID: "turn-1", Data: map[string]any{"status": "failed", "error": map[string]any{"code": "stream_idle_timeout"}}})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := trace.Events()
+	if len(events) != 1 || events[0].Data["error_code"] != "stream_idle_timeout" {
+		t.Fatalf("trace events = %#v", events)
+	}
+}
+
+func TestRecordWorkerTraceProjectsCurrentModelStep(t *testing.T) {
+	trace := NewMemoryTraceWriter()
+	t.Cleanup(func() { _ = trace.Close() })
+	agent := &Agent{ID: "agent-1", trace: trace}
+	recordWorkerTrace(agent, Event{
+		Type:   EventTurnStarted,
+		TurnID: "turn-1",
+		Data:   map[string]any{"nested_turn": true, "step": float64(3)},
+	})
+	if err := trace.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	operation := primaryOperation(t, ProjectTrace(trace.Events())["agent-1"])
+	if operation.Type != "provider.request.started" || operation.Step != 3 {
+		t.Fatalf("provider operation = %#v, want model step 3", operation)
 	}
 }
 

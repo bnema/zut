@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -26,12 +27,13 @@ const (
 // delegated message turn rather than a process attempt because resumable
 // workers may execute several turns in one process.
 type RequirementSnapshot struct {
-	Required   bool             `json:"required"`
-	State      RequirementState `json:"state,omitempty"`
-	TargetTurn int              `json:"target_turn,omitempty"`
-	UpdatedAt  time.Time        `json:"updated_at,omitempty"`
-	ErrorCode  string           `json:"error_code,omitempty"`
-	Notified   bool             `json:"notified,omitempty"`
+	Required     bool             `json:"required"`
+	State        RequirementState `json:"state,omitempty"`
+	TargetTurn   int              `json:"target_turn,omitempty"`
+	ResultTurnID string           `json:"result_turn_id,omitempty"`
+	UpdatedAt    time.Time        `json:"updated_at,omitempty"`
+	ErrorCode    string           `json:"error_code,omitempty"`
+	Notified     bool             `json:"notified,omitempty"`
 }
 
 // Unmet reports whether this requirement still prevents parent completion.
@@ -101,14 +103,22 @@ func (a *Agent) restoreRequirement(previous RequirementSnapshot) {
 	a.lifecycleMu.Unlock()
 }
 
-func (a *Agent) markRequirementNotified() {
+func (a *Agent) markRequirementNotified(expectedTurnID string) (bool, error) {
 	if a == nil {
-		return
+		return false, nil
 	}
 	a.lifecycleMu.Lock()
+	currentTurnID := strings.TrimSpace(a.requirement.ResultTurnID)
+	if currentTurnID == "" && a.requirement.TargetTurn > 0 {
+		currentTurnID = fmt.Sprintf("turn-%d", a.requirement.TargetTurn)
+	}
+	if expectedTurnID == "" || currentTurnID != expectedTurnID || a.result == nil || strings.TrimSpace(a.result.TurnID) != expectedTurnID || strings.TrimSpace(a.resultRef) == "" {
+		a.lifecycleMu.Unlock()
+		return false, fmt.Errorf("subagents: durable required result no longer matches %s", expectedTurnID)
+	}
 	if !a.requirement.Required || a.requirement.Notified {
 		a.lifecycleMu.Unlock()
-		return
+		return false, nil
 	}
 	previous := a.requirement
 	a.requirement.Notified = true
@@ -123,7 +133,7 @@ func (a *Agent) markRequirementNotified() {
 			}
 			a.lifecycleMu.Unlock()
 			a.recordPersistenceError(err)
-			return
+			return false, err
 		}
 	}
 	a.lifecycleMu.Lock()
@@ -131,6 +141,7 @@ func (a *Agent) markRequirementNotified() {
 		a.signalRequirementLocked()
 	}
 	a.lifecycleMu.Unlock()
+	return true, nil
 }
 
 func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, force bool) RequirementSnapshot {
@@ -180,6 +191,9 @@ func (a *Agent) resolveRequirement(step int, result *TurnResult, errMsg string, 
 	state, errorCode := classifyRequirementOutcome(result, errMsg)
 	a.requirement.State = state
 	a.requirement.ErrorCode = errorCode
+	if result != nil {
+		a.requirement.ResultTurnID = strings.TrimSpace(result.TurnID)
+	}
 	a.requirement.Notified = false
 	a.requirement.UpdatedAt = time.Now().UTC()
 	resolved := a.requirement
@@ -309,7 +323,27 @@ func (f *Supervisor) MarkRequirementNotified(id string) error {
 	if a == nil {
 		return fmt.Errorf("subagents: no such agent %q", id)
 	}
-	a.markRequirementNotified()
+	snapshot := a.Snapshot()
+	if strings.TrimSpace(snapshot.ResultRef) == "" {
+		return errors.New("subagents: required result is not durably available")
+	}
+	requirement := snapshot.Requirement
+	expectedTurnID := strings.TrimSpace(requirement.ResultTurnID)
+	if expectedTurnID == "" && requirement.TargetTurn > 0 {
+		expectedTurnID = fmt.Sprintf("turn-%d", requirement.TargetTurn)
+	}
+	result := snapshot.Result
+	if result == nil || strings.TrimSpace(result.TurnID) != expectedTurnID {
+		return fmt.Errorf("subagents: durable required result does not match %s", expectedTurnID)
+	}
+	marked, err := a.markRequirementNotified(expectedTurnID)
+	if err != nil {
+		a.recordTrace(TraceEvent{Type: "result.delivery.failed", TurnID: expectedTurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
+		return fmt.Errorf("subagents: persist required result delivery: %w", err)
+	}
+	if marked {
+		a.recordTrace(TraceEvent{Type: "result.delivered", TurnID: expectedTurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
+	}
 	return nil
 }
 

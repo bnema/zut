@@ -600,7 +600,7 @@ type AgentHeartbeatPayload struct {
 }
 type TurnStartPayload struct {
 	Prompt string `json:"prompt"`
-	// NewRun starts a fresh max_turns budget while retaining the worker's
+	// NewRun starts a fresh observable run while retaining the worker's
 	// existing session and transcript. It is set only for explicit
 	// subagent_resume follow-ups.
 	NewRun bool `json:"new_run,omitempty"`

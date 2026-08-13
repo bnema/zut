@@ -11,8 +11,8 @@ import (
 )
 
 // SubagentResumeTool gives a sub-agent a follow-up turn while preserving its
-// existing session context. Every explicit follow-up starts a fresh max_turns
-// budget. For an idle live worker, the follow-up is delivered directly; for an
+// existing session context. Every explicit follow-up starts a fresh observable
+// run. For an idle live worker, the follow-up is delivered directly; for an
 // active live worker, it is queued for the next available message turn; for a
 // terminal worker, the supervisor restarts the retained session with the
 // follow-up as its initial turn.

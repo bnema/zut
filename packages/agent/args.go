@@ -147,8 +147,6 @@ type Args struct {
 	// --subagent-worker.
 	SubagentWorker string
 
-	// SubagentMaxTurns limits message turns in one worker run.
-	SubagentMaxTurns int
 	// SubagentTurnTimeout limits each active delegated turn while leaving the
 	// worker process alive between turns for explicit follow-ups.
 	SubagentTurnTimeout time.Duration
@@ -387,16 +385,6 @@ func ParseArgs(in []string) (Args, error) {
 				return a, fmt.Errorf("--max-steps must be a positive integer")
 			}
 			a.MaxSteps = n
-		case "--max-turns":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			var n int
-			if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
-				return a, fmt.Errorf("--max-turns must be a positive integer")
-			}
-			a.SubagentMaxTurns = n
 		case "--subagent-turn-timeout":
 			v, err := want(&i, arg)
 			if err != nil {

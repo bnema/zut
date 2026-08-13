@@ -48,6 +48,133 @@ func (c *retryFakeClient) Stream(ctx context.Context, req provider.Request) (<-c
 	return out, nil
 }
 
+type silentStreamClient struct{}
+
+func (silentStreamClient) Name() string { return "silent-stream" }
+
+func (silentStreamClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event)
+	go func() {
+		defer close(out)
+		<-ctx.Done()
+	}()
+	return out, nil
+}
+
+type activeStreamClient struct{}
+
+func (activeStreamClient) Name() string { return "active-stream" }
+
+func (activeStreamClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 2)
+	out <- provider.EventStart{}
+	out <- provider.EventDone{Stop: provider.StopEnd}
+	close(out)
+	return out, nil
+}
+
+type requestOpenFailureClient struct{ calls int32 }
+
+func (c *requestOpenFailureClient) Name() string { return "request-open-failure" }
+
+func (c *requestOpenFailureClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return nil, errors.New("provider returned error: 503 service unavailable")
+}
+
+type readableAfterCancellationClient struct {
+	cancel  context.CancelFunc
+	drained chan struct{}
+}
+
+func (c readableAfterCancellationClient) Name() string { return "readable-after-cancellation" }
+
+func (c readableAfterCancellationClient) Stream(_ context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 1)
+	out <- provider.EventStart{}
+	c.cancel()
+	go func() {
+		out <- provider.EventTextDelta{Delta: "discard after cancellation"}
+		close(out)
+		close(c.drained)
+	}()
+	return out, nil
+}
+
+func TestNewAgentUsesCodexStreamGuardDefaults(t *testing.T) {
+	a := NewAgent(&retryFakeClient{}, "fake-model", "system", Registry{})
+	if a.MaxSteps != 0 {
+		t.Fatalf("max steps = %d, want unlimited", a.MaxSteps)
+	}
+	if a.MaxRetries != 5 {
+		t.Fatalf("stream retries = %d, want 5", a.MaxRetries)
+	}
+	if a.StreamIdleTimeout != 5*time.Minute {
+		t.Fatalf("stream idle timeout = %s, want 5m", a.StreamIdleTimeout)
+	}
+}
+
+func TestAgentStopsReadingStreamAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	drained := make(chan struct{})
+	a := NewAgent(readableAfterCancellationClient{cancel: cancel, drained: drained}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	if err := a.Prompt(ctx, "hello", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prompt error = %v, want context.Canceled", err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("provider producer remained blocked after turn cancellation")
+	}
+}
+
+func TestAgentStopsSilentStreamAtIdleDeadline(t *testing.T) {
+	a := NewAgent(silentStreamClient{}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	a.StreamIdleTimeout = time.Minute
+	idle := make(chan time.Time, 1)
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		idle <- time.Now()
+		return idle, func() {}, func() {}
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	}
+}
+
+func TestAgentResetsIdleDeadlineForEveryStreamEvent(t *testing.T) {
+	a := NewAgent(activeStreamClient{}, "fake-model", "system", Registry{})
+	a.MaxRetries = 0
+	a.StreamIdleTimeout = time.Minute
+	var resets atomic.Int32
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		return make(chan time.Time), func() {}, func() { resets.Add(1) }
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := resets.Load(); got != 2 {
+		t.Fatalf("idle timer resets = %d, want one for each stream event", got)
+	}
+}
+
+func TestAgentRetriesSilentStreamWithoutEndingTurn(t *testing.T) {
+	client := &retryFakeClient{firstErr: ErrStreamIdleTimeout}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.MaxRetries = 1
+	a.RetryBaseDelay = time.Millisecond
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("Stream calls = %d; want reconnect after idle timeout", got)
+	}
+	if got := extractText(a.Messages()[1]); got != "ok" {
+		t.Fatalf("final assistant text = %q; want ok", got)
+	}
+}
+
 func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	client := &retryFakeClient{}
 	a := NewAgent(client, "fake-model", "system", Registry{})
@@ -74,6 +201,20 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 	if got := extractText(msgs[1]); got != "ok" {
 		t.Fatalf("final assistant text = %q; want ok", got)
+	}
+}
+
+func TestAgentDoesNotReplayProviderRequestRetriesAtStreamLayer(t *testing.T) {
+	client := &requestOpenFailureClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	err := a.Prompt(context.Background(), "hello", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("Prompt error = %v, want provider failure", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 1 {
+		t.Fatalf("Stream calls = %d, want one provider-owned request sequence", got)
 	}
 }
 
@@ -108,10 +249,10 @@ func TestAgentEmitsRetryLifecycleEvents(t *testing.T) {
 	}
 
 	want := []string{
-		"request:agent:1/4",
+		"request:agent:1/6",
 		"request:provider:1/1",
-		"retry:agent:2/4",
-		"request:agent:2/4",
+		"retry:agent:2/6",
+		"request:agent:2/6",
 		"request:provider:1/1",
 	}
 	if strings.Join(lifecycle, ",") != strings.Join(want, ",") {
@@ -135,11 +276,11 @@ func TestAgentReportsSanitizedRetryLifecycle(t *testing.T) {
 	want := []RetryLifecycleRecord{
 		{
 			Event: RetryLifecycleRequestFailed, Scope: RetryScopeAgent,
-			Attempt: 1, MaxAttempts: 4, Reason: RetryReasonOverload,
+			Attempt: 1, MaxAttempts: 6, Reason: RetryReasonOverload,
 		},
 		{
 			Event: RetryLifecycleRetryScheduled, Scope: RetryScopeAgent,
-			Attempt: 2, MaxAttempts: 4, Reason: RetryReasonOverload, DelayMS: 1,
+			Attempt: 2, MaxAttempts: 6, Reason: RetryReasonOverload, DelayMS: 1,
 		},
 	}
 	if !reflect.DeepEqual(records, want) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,17 @@ func TestSubagentPolicyParsesStartupTimeout(t *testing.T) {
 	policy := subagentPolicyFromConfig(SubagentsConfig{StartupTimeout: "42s"})
 	if got := policy.StartupTimeout; got != 42*time.Second {
 		t.Fatalf("StartupTimeout = %s, want 42s", got)
+	}
+}
+
+func TestLoadConfigRejectsMalformedSubagentDuration(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	if err := os.WriteFile(ConfigPath(), []byte(`{"subagents":{"default_timeout":"20"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig()
+	if err == nil || !strings.Contains(err.Error(), "subagents.default_timeout") {
+		t.Fatalf("LoadConfig error = %v, want field-qualified duration error", err)
 	}
 }
 

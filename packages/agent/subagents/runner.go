@@ -78,7 +78,6 @@ type subagentWorkerArgsOpts struct {
 	FastMode        bool
 	FastModeSet     bool
 	Subagent        string
-	MaxTurns        int
 	TurnTimeout     time.Duration
 	LifetimeTurns   int
 	RunTurns        int
@@ -117,7 +116,6 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		FastMode:        a.FastMode,
 		FastModeSet:     true,
 		Subagent:        a.Subagent,
-		MaxTurns:        a.MaxTurns,
 		TurnTimeout:     a.Timeout,
 		LifetimeTurns:   a.LifetimeTurnsValue(),
 		RunTurns:        a.CurrentRunTurnsValue(),
@@ -161,9 +159,6 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	}
 	if opts.Subagent != "" {
 		args = append(args, "--subagent", opts.Subagent)
-	}
-	if opts.MaxTurns > 0 {
-		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
 	}
 	if opts.TurnTimeout > 0 {
 		args = append(args, "--subagent-turn-timeout", opts.TurnTimeout.String())
@@ -708,6 +703,7 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	a.markActivity(now)
 	persist := false
 	notifyIdle := false
+	var eventErr error
 	switch ev.Type {
 	case EventAgentReady, "agent_ready":
 		a.setProcessState(ProcessAlive)
@@ -759,20 +755,27 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 		a.setProcessState(ProcessAlive)
 	case EventTurnResult, "turn_result":
 		if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {
-			a.setResult(result)
-			if a.turnResults != nil {
-				select {
-				case a.turnResults <- result:
-				default:
-				}
-			}
 			if a.stateDir != "" {
-				if err := writeTurnResult(a.stateDir, result); err == nil {
+				if err := writeTurnResult(a.stateDir, result); err != nil {
+					eventErr = fmt.Errorf("write turn result: %w", err)
+					result = cloneTurnResult(result)
+					result.Status = ResultFailed
+					result.Error = &ResultError{
+						Code:    "result_persistence_failed",
+						Message: "subagent result could not be persisted; inspect the live session before retrying",
+					}
+					a.lifecycleMu.Lock()
+					a.resultRef = ""
+					a.lifecycleMu.Unlock()
+					a.recordPersistenceError(eventErr)
+				} else {
 					a.lifecycleMu.Lock()
 					a.resultRef = ResultRef(a.ID)
 					a.lifecycleMu.Unlock()
+					a.recordTrace(TraceEvent{Type: "result.available", TurnID: result.TurnID, Data: map[string]any{"ref": ResultRef(a.ID)}})
 				}
 			}
+			a.setResult(result)
 			switch result.Status {
 			case ResultCanceled:
 				a.setTurnState(TurnCanceled, result.TurnID)
@@ -801,13 +804,8 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	case "error":
 		if code, _ := ev.Data["code"].(string); code == "turn_rejected" && eventMatchesPendingResume(a, ev) {
 			if a.rejectActiveResumePrompt() {
-				reason, _ := ev.Data["reason"].(string)
-				if reason == "max_turns" {
-					a.setTurnState(TurnFailed, ev.TurnID)
-				} else {
-					a.setTurnState(TurnIdle, ev.TurnID)
-					notifyIdle = true
-				}
+				a.setTurnState(TurnIdle, ev.TurnID)
+				notifyIdle = true
 				persist = true
 			}
 		}
@@ -820,7 +818,9 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 			break
 		}
 		message, _ := ev.Data["error"].(string)
-		if message != "" {
+		if result := a.Result(); result != nil && result.Error != nil && result.Error.Code == "result_persistence_failed" {
+			a.setTurnState(TurnFailed, ev.TurnID)
+		} else if message != "" {
 			a.setTurnState(TurnFailed, ev.TurnID)
 		} else {
 			a.setTurnState(TurnSucceeded, ev.TurnID)
@@ -850,13 +850,13 @@ func updateAgentFromEvent(a *Agent, ev Event) error {
 	if persist && a.persistFn != nil {
 		if err := a.persistFn(a); err != nil {
 			a.recordPersistenceError(err)
-			return err
+			eventErr = errors.Join(eventErr, err)
 		}
 	}
 	if notifyIdle {
 		a.notifyTurnIdle()
 	}
-	return nil
+	return eventErr
 }
 
 // notifyPromptTurnEnd calls Agent.OnTurnEnd only for the subagent
@@ -903,35 +903,125 @@ func recordWorkerTrace(agent *Agent, ev Event) {
 	if agent == nil {
 		return
 	}
+	// assistant_start only marks the beginning of a provider response. It is
+	// neither streamed content nor an open operation, and recording it as an
+	// unknown protocol observation makes it replace useful live activity.
+	if ev.Type == "assistant_start" || ev.Type == EventAgentHeartbeat || ev.Type == "agent_heartbeat" {
+		return
+	}
 	typeName := strings.ReplaceAll(ev.Type, "_", ".")
-	traceType := "worker.event"
+	traceType := "worker.protocol.observed"
+	nestedTurn, _ := ev.Data["nested_turn"].(bool)
 	switch ev.Type {
 	case "turn_start", EventTurnStarted:
-		traceType = "turn.started"
-	case "turn_end", EventTurnResult:
+		if nestedTurn {
+			traceType = "provider.request.started"
+		} else {
+			traceType = "turn.started"
+		}
+	case "turn_end":
+		// Each delegated turn has completed its provider/model loop by this
+		// point. Close the provider operation even when the terminal result was
+		// emitted through a separate turn.result event.
+		if errMsg, _ := ev.Data["error"].(string); errMsg != "" {
+			traceType = "provider.request.failed"
+		} else {
+			traceType = "provider.request.finished"
+		}
+	case EventTurnResult:
 		traceType = "turn.finished"
+		if status, _ := ev.Data["status"].(string); status == "failed" {
+			traceType = "turn.failed"
+		} else if status == "canceled" {
+			traceType = "turn.cancelled"
+		}
 	case "turn_failed", EventTurnFailed:
 		traceType = "turn.failed"
-	case "tool_call", EventToolStarted:
+	case "turn_cancelled", "turn.canceled":
+		traceType = "turn.cancelled"
+	case "request_started":
+		traceType = "provider.request.started"
+	case "retry_scheduled":
+		traceType = "provider.request.retry.scheduled"
+	case "error":
+		// Error events do not necessarily belong to a provider request; the
+		// following terminal turn event closes any request factually.
+	case "tool_execution_started", EventToolStarted:
 		traceType = "tool.started"
 	case "tool_result", EventToolFinished:
 		traceType = "tool.finished"
+	case EventMessageDelta:
+		traceType = "assistant.stream.observed"
 	case "agent_ready", EventAgentReady:
 		traceType = "agent.ready"
 	case "agent_stopped":
 		traceType = "agent.stopped"
 	}
-	data := map[string]any{"worker_event": typeName}
+	data := map[string]any{"source_event": typeName}
 	if name, ok := ev.Data["name"].(string); ok && name != "" {
 		data["name"] = name
 	}
 	if status, ok := ev.Data["status"].(string); ok && status != "" {
 		data["status"] = status
 	}
-	if callID, ok := ev.Data["call_id"].(string); ok && callID != "" {
+	for _, key := range []string{"provider", "model"} {
+		if value, ok := ev.Data[key].(string); ok && value != "" {
+			data[key] = value
+		}
+	}
+	for _, key := range []string{"step", "attempt", "max_attempts"} {
+		if value, ok := ev.Data[key].(float64); ok && value > 0 {
+			data[key] = int(value)
+		} else if value, ok := ev.Data[key].(int); ok && value > 0 {
+			data[key] = value
+		}
+	}
+	if errorCode := traceErrorCode(ev.Data); errorCode != "" {
+		data["error_code"] = errorCode
+	}
+	callID, _ := ev.Data["call_id"].(string)
+	if callID == "" {
+		callID, _ = ev.Data["id"].(string)
+	}
+	if callID != "" {
 		data["call_id"] = callID
 	}
 	agent.recordTrace(TraceEvent{Type: traceType, Timestamp: ev.Time, TurnID: ev.TurnID, Data: data})
+}
+
+func traceErrorCode(data map[string]any) string {
+	if structured, ok := data["error"].(map[string]any); ok {
+		if code, _ := structured["code"].(string); isTraceErrorCode(code) {
+			return code
+		}
+	}
+	value, _ := data["error"].(string)
+	value = strings.ToLower(value)
+	switch {
+	case strings.Contains(value, "deadline") || strings.Contains(value, "timeout"):
+		return "deadline_exceeded"
+	case strings.Contains(value, "canceled") || strings.Contains(value, "cancelled"):
+		return "cancelled"
+	case strings.Contains(value, "quota") || strings.Contains(value, "billing"):
+		return "quota"
+	case strings.Contains(value, "rate limit") || strings.Contains(value, "429"):
+		return "rate_limit"
+	case strings.Contains(value, "context") && strings.Contains(value, "limit"):
+		return "context_limit"
+	case value != "":
+		return "provider_error"
+	default:
+		return ""
+	}
+}
+
+func isTraceErrorCode(code string) bool {
+	switch code {
+	case "deadline_exceeded", "stream_idle_timeout", "cancelled", "quota", "rate_limit", "context_limit", "provider_error":
+		return true
+	default:
+		return false
+	}
 }
 
 // applyEventToSink translates an Event into Sink updates. Only a

@@ -92,6 +92,7 @@ type TraceWriter struct {
 	sequence   uint64
 	dropped    uint64
 	events     []TraceEvent
+	projection *traceProjection
 
 	errorMu sync.Mutex
 	err     error
@@ -252,6 +253,13 @@ func (w *TraceWriter) Record(event TraceEvent) {
 	}
 	w.sequence++
 	record.event.Seq = w.sequence
+	if w.projection == nil {
+		w.projection = newTraceProjection()
+	}
+	// Derive live state at ingestion rather than after asynchronous disk I/O.
+	// This preserves operation boundaries even when the bounded write queue
+	// drops an old raw event under sustained streaming pressure.
+	w.projection.apply(record.event)
 	if len(w.pending) >= traceQueueLimit {
 		for index, pending := range w.pending {
 			if pending.barrier == nil {
@@ -373,6 +381,21 @@ func (w *TraceWriter) appendEvent(event TraceEvent) {
 		copy(w.events, w.events[overflow:])
 		w.events = w.events[:memoryTraceEventLimit]
 	}
+}
+
+// Views returns the incrementally derived trace projection. Unlike replaying
+// Events, it retains open operation boundaries after old raw events are evicted
+// from the bounded in-memory window.
+func (w *TraceWriter) Views() map[string]AgentTraceView {
+	if w == nil {
+		return map[string]AgentTraceView{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.projection == nil {
+		return map[string]AgentTraceView{}
+	}
+	return w.projection.snapshot()
 }
 
 // Events returns a stable copy of events already written by this writer. It

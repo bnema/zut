@@ -81,52 +81,18 @@ func TestSubagentSpawnGuidanceUsesHostCompletionUpdatesWithoutPolling(t *testing
 	}
 }
 
-func TestSubagentSpawnSchemaAdvertisesEffectiveMaxTurns(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		policy int
-		want   int
-	}{
-		{name: "default", want: 3},
-		{name: "negative-default", policy: -1, want: 3},
-		{name: "configured", policy: 7, want: 7},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			manager := subagents.New(subagents.Config{
-				Root:     filepath.Join(root, "subagents"),
-				RepoRoot: root,
-				Policy:   subagents.SubagentPolicy{MaxTurns: tc.policy},
-				NewRunner: func(*subagents.Agent) subagents.Runner {
-					return noopSupervisorRunner{}
-				},
-			})
-			t.Cleanup(manager.StopAll)
-			tool := &SubagentSpawnTool{Supervisor: manager}
-
-			var schema struct {
-				Properties struct {
-					MaxTurns struct {
-						Minimum     int    `json:"minimum"`
-						Maximum     int    `json:"maximum"`
-						Description string `json:"description"`
-					} `json:"max_turns"`
-				} `json:"properties"`
-			}
-			if err := json.Unmarshal(tool.Schema(), &schema); err != nil {
-				t.Fatal(err)
-			}
-			maxTurns := schema.Properties.MaxTurns
-			if maxTurns.Minimum != 1 {
-				t.Fatalf("max_turns minimum = %d, want 1", maxTurns.Minimum)
-			}
-			if maxTurns.Maximum != tc.want {
-				t.Fatalf("max_turns maximum = %d, want %d", maxTurns.Maximum, tc.want)
-			}
-			if !strings.Contains(strings.ToLower(maxTurns.Description), "omit") {
-				t.Fatalf("max_turns description = %q, want omit-to-default guidance", maxTurns.Description)
-			}
-		})
+func TestSubagentSpawnSchemaKeepsManagerBudgetsOutOfModelControl(t *testing.T) {
+	tool := &SubagentSpawnTool{Supervisor: newTestSupervisor(t)}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(tool.Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, property := range []string{"timeout", "max_turns", "max_steps"} {
+		if _, found := schema.Properties[property]; found {
+			t.Fatalf("spawn schema exposes manager-owned property %q", property)
+		}
 	}
 }
 
@@ -159,6 +125,9 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if got := details["reasoning"]; got != "medium" {
 		t.Fatalf("reasoning detail = %v, want medium", got)
 	}
+	if got := details["timeout"]; got != "unlimited" {
+		t.Fatalf("timeout detail = %v, want unlimited", got)
+	}
 	text := textResult(res.Content)
 	if !strings.Contains(text, "model: gpt-5") || !strings.Contains(text, "provider: openai-codex") || !strings.Contains(text, "reasoning: medium") {
 		t.Fatalf("result text missing inherited model/provider:\n%s", text)
@@ -171,19 +140,15 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if agents[0].Model != "gpt-5" || agents[0].Provider != "openai-codex" || agents[0].Reasoning != "medium" {
 		t.Fatalf("agent model/provider/reasoning = %q/%q/%q, want gpt-5/openai-codex/medium", agents[0].Model, agents[0].Provider, agents[0].Reasoning)
 	}
-	if agents[0].MaxTurns != 3 {
-		t.Fatalf("omitted max_turns = %d, want default 3", agents[0].MaxTurns)
-	}
 }
 
-func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
+func TestSubagentSpawnDetailsUseEffectiveTimeout(t *testing.T) {
 	root := t.TempDir()
 	manager := subagents.New(subagents.Config{
 		Root:     filepath.Join(root, "subagents"),
 		RepoRoot: root,
 		Policy: subagents.SubagentPolicy{
 			DefaultTimeout: 37 * time.Minute,
-			MaxTurns:       7,
 		},
 		NewRunner: func(*subagents.Agent) subagents.Runner {
 			return noopSupervisorRunner{}
@@ -209,67 +174,25 @@ func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
 	if got := details["timeout"]; got != (37 * time.Minute).String() {
 		t.Fatalf("omitted timeout detail = %v, want %s", got, (37 * time.Minute).String())
 	}
-	if got := details["max_turns"]; got != 7 {
-		t.Fatalf("max_turns detail = %v, want 7", got)
+	if _, found := details["max_turns"]; found {
+		t.Fatalf("details retain removed max_turns: %#v", details)
+	}
+	if _, found := details["max_steps"]; found {
+		t.Fatalf("details retain removed max_steps: %#v", details)
 	}
 }
 
-func TestSubagentSpawnRejectsExplicitZeroMaxTurns(t *testing.T) {
-	tool := &SubagentSpawnTool{
-		Supervisor: newTestSupervisor(t),
-		Enabled:    func() bool { return true },
+func TestSubagentSpawnRejectsUnknownExecutionLimitFields(t *testing.T) {
+	manager := newTestSupervisor(t)
+	tool := &SubagentSpawnTool{Supervisor: manager, Enabled: func() bool { return true }}
+	for _, field := range []string{"timeout", "max_turns", "max_steps"} {
+		_, err := tool.Execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"task":"research docs",%q:1}`, field)), nil)
+		if err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("field %q error = %v, want unknown field", field, err)
+		}
 	}
-
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","max_turns":0}`), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError || !strings.Contains(textResult(res.Content), "max_turns must be positive") {
-		t.Fatalf("result = %#v, want max_turns validation error", res)
-	}
-	if got := len(tool.Supervisor.List()); got != 0 {
-		t.Fatalf("spawned agents = %d, want 0", got)
-	}
-}
-
-func TestSubagentSpawnRejectsMaxTurnsAbovePolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		policy    int
-		wantLimit string
-	}{
-		{name: "default", wantLimit: "3"},
-		{name: "configured", policy: 7, wantLimit: "7"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			manager := subagents.New(subagents.Config{
-				Root:     filepath.Join(root, "subagents"),
-				RepoRoot: root,
-				Policy:   subagents.SubagentPolicy{MaxTurns: tc.policy},
-				NewRunner: func(*subagents.Agent) subagents.Runner {
-					return noopSupervisorRunner{}
-				},
-			})
-			t.Cleanup(manager.StopAll)
-			tool := &SubagentSpawnTool{
-				Supervisor: manager,
-				Enabled:    func() bool { return true },
-			}
-
-			res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","max_turns":8}`), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			text := textResult(res.Content)
-			want := "max_turns must be 1 through " + tc.wantLimit
-			if !res.IsError || !strings.Contains(text, want) || !strings.Contains(text, "omit") {
-				t.Fatalf("result = %#v, want model-visible policy guidance", res)
-			}
-			if got := len(tool.Supervisor.List()); got != 0 {
-				t.Fatalf("spawned agents = %d, want 0", got)
-			}
-		})
+	if agents := manager.List(); len(agents) != 0 {
+		t.Fatalf("unknown execution limits spawned agents: %#v", agents)
 	}
 }
 
@@ -365,6 +288,9 @@ func TestSubagentSpawnSchemaUsesReasoningAndKeepsProfileThinkingInternal(t *test
 	}
 	if _, ok := schema.Properties["thinking"]; ok {
 		t.Fatal("subagent_spawn schema exposes profile-only thinking")
+	}
+	if _, ok := schema.Properties["timeout"]; ok {
+		t.Fatal("subagent_spawn schema exposes manager-owned turn timeout")
 	}
 	fastMode, ok := schema.Properties["fast_mode"]
 	if !ok {

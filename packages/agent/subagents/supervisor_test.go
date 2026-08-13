@@ -72,6 +72,30 @@ func TestSpawnTimeoutDoesNotLimitResumableWorkerLifetime(t *testing.T) {
 	a.Wait()
 }
 
+func TestSpawnWithoutTimeoutUsesUnlimitedTurns(t *testing.T) {
+	f := newTestSupervisor(t, func(*Agent) Runner {
+		return RunnerFunc(func(context.Context, Sink) error { return nil })
+	})
+	a, err := f.Spawn(context.Background(), "unlimited turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Timeout != 0 {
+		t.Fatalf("turn timeout = %s, want unlimited", a.Timeout)
+	}
+	a.Wait()
+}
+
+func TestSubagentPolicyCanonicalizesNegativeUnlimitedTimeout(t *testing.T) {
+	policy := SubagentPolicy{
+		DefaultTimeout: -time.Second,
+	}
+	policy.normalize()
+	if policy.DefaultTimeout != 0 {
+		t.Fatalf("normalized timeout = %s, want unlimited zero", policy.DefaultTimeout)
+	}
+}
+
 func TestSpawnRunsAndCompletes(t *testing.T) {
 	ran := make(chan string, 1)
 	f := newTestSupervisor(t, func(a *Agent) Runner {

@@ -24,6 +24,53 @@ func staticSnapshots(rows ...subagents.AgentSnapshot) func() []subagents.AgentSn
 	}
 }
 
+func TestFormatSupervisorRowShowsTerminalResultDelivery(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: at}, subagents.AgentTraceView{
+		Terminal: "completed",
+		Result:   &subagents.ResultFact{Available: true, Delivered: true, At: at},
+	}, 120)
+	if !strings.Contains(got, "completed · result delivered") {
+		t.Fatalf("row = %q", got)
+	}
+}
+
+func TestFormatSupervisorRowOmitsPriorTurnObservationAge(t *testing.T) {
+	now := time.Now()
+	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: now.Add(-time.Hour)}, subagents.AgentTraceView{
+		OpenOperations:  []subagents.Operation{{Type: "tool.started", TurnID: "turn-2", StartedAt: now.Add(-time.Minute)}},
+		LastObservation: &subagents.LiveObservation{Type: "assistant.stream.observed", TurnID: "turn-1", At: now.Add(-time.Second)},
+	}, 120)
+	if strings.Contains(got, "assistant streaming") || !strings.Contains(got, "running tool") || !strings.Contains(got, "1m") {
+		t.Fatalf("row = %q", got)
+	}
+}
+
+func TestFormatSupervisorRowPreservesAgeAfterLongSummary(t *testing.T) {
+	now := time.Now()
+	got := formatSupervisorRow(subagents.AgentSnapshot{ID: "review-1", Started: now.Add(-time.Hour)}, subagents.AgentTraceView{
+		Terminal:  strings.Repeat("completed ", 8),
+		LastEvent: subagents.TraceEvent{Type: "agent.completed", Timestamp: now.Add(-2 * time.Minute)},
+	}, 120)
+	if !strings.Contains(got, "2m") {
+		t.Fatalf("row lost fact age: %q", got)
+	}
+}
+
+func TestSubagentsDialogTranscriptShowsProviderRequestDiagnostic(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	d := newSubagentsDialog()
+	d.Open(staticSnapshots(subagents.AgentSnapshot{ID: "review-1", Task: "review", Started: at}), nil, nil, nil, nil, nil, "")
+	d.SetTraceViews(func() map[string]subagents.AgentTraceView {
+		return map[string]subagents.AgentTraceView{"review-1": {LastRequest: &subagents.RequestFact{Provider: "openai-codex", Model: "gpt-5.6", Attempt: 2, MaxAttempts: 3, Outcome: "failed", ErrorCode: "deadline_exceeded"}}}
+	})
+	d.viewing = true
+	joined := strings.Join(d.Render(tui.Theme{}, 120), "\n")
+	if !strings.Contains(joined, "provider request: failed · openai-codex / gpt-5.6 · attempt 2/3 · deadline_exceeded") {
+		t.Fatalf("diagnostic missing:\n%s", joined)
+	}
+}
+
 func TestSubagentsDialogEmptyState(t *testing.T) {
 	d := newSubagentsDialog()
 	d.Open(staticSnapshots(), nil, nil, nil, nil, nil, "")
@@ -52,7 +99,7 @@ func TestSubagentsDialogRendersRows(t *testing.T) {
 	})
 	d.Open(staticSnapshots(rows...), nil, nil, nil, nil, nil, "")
 	out := strings.Join(d.Render(tui.Theme{}, 100), "\n")
-	for _, want := range []string{"alpha-1", "beta-2", "tool open", "completed", "OPERATION", "TASK"} {
+	for _, want := range []string{"alpha-1", "beta-2", "running tool", "completed", "OPERATION", "TASK"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render missing %q:\n%s", want, out)
 		}
@@ -1314,7 +1361,7 @@ func TestSupervisorTranscriptBusySpinnerRenders(t *testing.T) {
 	d.HandleKey(tui.Key{Kind: tui.KeyEnter})
 
 	out := strings.Join(d.Render(tui.Theme{}, 80), "\n")
-	if !strings.Contains(out, "tool open") {
+	if !strings.Contains(out, "running tool") {
 		t.Fatalf("busy spinner did not surface an open tool near the editor:\n%s", out)
 	}
 	if d.transcriptSpin == nil {
@@ -1327,7 +1374,7 @@ func TestSupervisorTranscriptBusySpinnerRenders(t *testing.T) {
 	if d.transcriptSpin != nil {
 		t.Error("spinner stayed live after agent reported idle")
 	}
-	if strings.Contains(out, "tool open, ") {
+	if strings.Contains(out, "running tool, ") {
 		t.Errorf("busy line still rendered after operation finished:\n%s", out)
 	}
 }

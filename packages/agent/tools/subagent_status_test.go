@@ -61,6 +61,79 @@ func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
 	}
 }
 
+func TestPublicSubagentStatusUsesOrderedPrimaryOperation(t *testing.T) {
+	at := time.Date(2026, 8, 12, 7, 0, 0, 0, time.UTC)
+	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
+		OpenOperations: []subagents.Operation{
+			{Type: "tool.started", StartedAt: at.Add(time.Second)},
+			{Type: "turn.started", StartedAt: at},
+		},
+	})
+	if entry.PrimaryOperation == nil || entry.PrimaryOperation.Type != "tool.started" {
+		t.Fatalf("primary operation = %#v", entry.PrimaryOperation)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := fields["operation"]; found {
+		t.Fatalf("obsolete operation field in %#v", fields)
+	}
+	if _, found := fields["primary_operation"]; !found {
+		t.Fatalf("primary operation missing from %#v", fields)
+	}
+}
+
+func TestPublicSubagentStatusDoesNotInferAvailabilityWithoutResultReference(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{
+		ID:     "agent-1",
+		Result: &subagents.TurnResult{Status: subagents.ResultFailed},
+	}, subagents.AgentTraceView{})
+	if entry.Result == nil || entry.Result.Available {
+		t.Fatalf("result availability = %#v, want unavailable without result ref", entry.Result)
+	}
+}
+
+func TestPublicSubagentStatusIncludesResultDeliveryFacts(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{ID: "agent-1"}, subagents.AgentTraceView{
+		Result: &subagents.ResultFact{Available: true, Ref: "subagent://agent-1/result"},
+	})
+	if entry.Result == nil || entry.Result.State != "unknown" || entry.Result.Delivered || entry.Result.DeliveryFailed {
+		t.Fatalf("result = %#v", entry.Result)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(fields["result"], &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["delivered"] != false || result["delivery_failed"] != false {
+		t.Fatalf("result JSON = %#v", result)
+	}
+}
+
+func TestPublicSubagentStatusKeepsDurableDeliveryAfterTraceRestart(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{
+		ID:          "agent-1",
+		Result:      &subagents.TurnResult{Status: subagents.ResultSucceeded},
+		ResultRef:   "subagent://agent-1/result",
+		Requirement: subagents.RequirementSnapshot{Required: true, Notified: true},
+	}, subagents.AgentTraceView{})
+	if entry.Result == nil || !entry.Result.Available || !entry.Result.Delivered {
+		t.Fatalf("result = %#v, want durable delivered fact without transient trace", entry.Result)
+	}
+}
+
 func TestSubagentStatusSchemaHasOptionalAgentID(t *testing.T) {
 	var schema struct {
 		Type       string `json:"type"`

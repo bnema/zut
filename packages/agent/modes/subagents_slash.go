@@ -261,7 +261,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 					waitWatcherDone()
 				}
 			}()
-			if err := a.WaitContext(ctx); err != nil {
+			if _, err := a.WaitTurnResult(ctx, a.WaitTargetTurnID()); err != nil {
 				return
 			}
 			// If cancellation became observable at the same time as
