@@ -43,8 +43,8 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 		d.total = 0
 		return
 	}
-	if limit < 1 {
-		limit = 1
+	if limit < 0 {
+		limit = 0
 	}
 	_, total := d.manager.SnapshotPage(0, 0)
 	d.total = total
@@ -53,6 +53,10 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 	}
 	if d.selected < 0 || d.total == 0 {
 		d.selected = 0
+	}
+	if limit == 0 {
+		d.rows = nil
+		return
 	}
 	if d.selected < d.offset {
 		d.offset = d.selected
@@ -94,12 +98,15 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	// Reserve two lines per child so usage metadata never pushes the dialog
 	// beyond its content height. Children without usage simply consume less.
 	maxRows := (height - 3) / 2 // title, hint, and page indicator/empty state
-	if maxRows < 1 {
-		maxRows = 1
+	if maxRows < 0 {
+		maxRows = 0
 	}
 	d.refresh(maxRows)
 	lines := []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}
 	if len(d.rows) == 0 {
+		if d.total > 0 {
+			return lines
+		}
 		return append(lines, "", "  No resident subagents.")
 	}
 	for index, row := range d.rows {
@@ -117,7 +124,10 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 		}
 		lines = append(lines, marker+truncateResidentSubagentIndicator(label, width-2))
 		if metadata := residentUsageMetadata(row); metadata != "" {
-			lines = append(lines, "    "+truncateResidentSubagentIndicator(metadata, width-4))
+			metadata = truncateResidentSubagentIndicator(metadata, width-4)
+			if metadata != "" {
+				lines = append(lines, "    "+metadata)
+			}
 		}
 	}
 	if d.total > len(d.rows) {
