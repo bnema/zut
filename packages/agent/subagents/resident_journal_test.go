@@ -355,6 +355,93 @@ func TestTruncateResidentResultSummaryPreservesUTF8Boundary(t *testing.T) {
 	}
 }
 
+func TestReconcileResidentJournalRepairsLegacyFalseRecovery(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "legacy-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "legacy-race", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, spec.InitialTurnID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolCall, Time: time.Now().UTC(), ToolID: "call-1", ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"pwd"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolResult, Time: time.Now().UTC(), ToolID: "call-1", ToolResult: json.RawMessage(`{"Content":[{"text":"tool interrupted by resident host restart"}],"IsError":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnInterrupted(spec, spec.InitialTurnID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolResult, Time: time.Now().UTC(), ToolID: "call-1", ToolResult: json.RawMessage(`{"Content":[{"text":"ok"}],"IsError":false}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, spec.InitialTurnID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.State != ResidentIdle {
+		t.Fatalf("state = %q, want idle", metadata.State)
+	}
+	records, err := ReadResidentJournal(filepath.Join(root, spec.ID, residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Type == residentRecordInterrupted || isSyntheticInterruption(record.ToolResult) {
+			t.Fatalf("repaired records retained false recovery: %#v", record)
+		}
+	}
+	backups, err := filepath.Glob(filepath.Join(root, spec.ID, ".transcript-backup-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backups = %v, want one", backups)
+	}
+}
+
+func TestRepairLegacyFalseRecoveryRefusesAmbiguousBlock(t *testing.T) {
+	synthetic := json.RawMessage(`{"Content":[{"text":"tool interrupted by resident host restart"}],"IsError":true}`)
+	real := json.RawMessage(`{"Content":[{"text":"ok"}],"IsError":false}`)
+	records := []residentRecord{
+		{Type: residentRecordTurnStarted, TurnID: "turn-1"},
+		{Type: residentRecordToolResult, ToolID: "call-1", ToolResult: synthetic},
+		{Type: residentRecordToolResult, ToolID: "call-2", ToolResult: synthetic},
+		{Type: residentRecordInterrupted, TurnID: "turn-1"},
+		{Type: residentRecordToolResult, ToolID: "call-1", ToolResult: real},
+	}
+	if repaired, ok := repairLegacyFalseRecovery(records); ok || repaired != nil {
+		t.Fatalf("repairLegacyFalseRecovery = %#v, %v; want no repair", repaired, ok)
+	}
+}
+
+func TestRepairLegacyFalseRecoveryPreservesOtherTurnInterruption(t *testing.T) {
+	synthetic := json.RawMessage(`{"Content":[{"text":"tool interrupted by resident host restart"}],"IsError":true}`)
+	real := json.RawMessage(`{"Content":[{"text":"ok"}],"IsError":false}`)
+	records := []residentRecord{
+		{Type: residentRecordTurnStarted, TurnID: "turn-1"},
+		{Type: residentRecordToolResult, ToolID: "call-1", ToolResult: synthetic},
+		{Type: residentRecordInterrupted, TurnID: "turn-1"},
+		{Type: residentRecordInterrupted, TurnID: "turn-2"},
+		{Type: residentRecordToolResult, ToolID: "call-1", ToolResult: real},
+	}
+	if repaired, ok := repairLegacyFalseRecovery(records); ok || repaired != nil {
+		t.Fatalf("repairLegacyFalseRecovery = %#v, %v; want no repair", repaired, ok)
+	}
+}
+
 func TestReconcileResidentJournalRejectsConflictingToolPairs(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -34,6 +34,7 @@ const (
 	residentRecordToolCall     = "tool.call"
 	residentRecordToolResult   = "tool.result"
 	residentJournalVersion     = 1
+	residentInterruptedText    = "tool interrupted by resident host restart"
 	residentMaxRecordBytes     = 2 << 20
 	residentResultSummaryBytes = 256 << 10
 )
@@ -101,6 +102,7 @@ type residentRecord struct {
 	ToolName   string             `json:"tool_name,omitempty"`
 	ToolArgs   json.RawMessage    `json:"tool_args,omitempty"`
 	ToolResult json.RawMessage    `json:"tool_result,omitempty"`
+	raw        json.RawMessage    `json:"-"`
 }
 
 // RecordAgentEvent persists finalized provider-neutral transcript events. It
@@ -198,6 +200,7 @@ type ResidentJournal struct {
 	latestSummary string
 	dir           string
 	file          *os.File
+	lease         *residentLease
 }
 
 // SetEventObserver publishes in-memory agent events without creating another
@@ -232,12 +235,17 @@ func OpenResidentJournal(root, childID string) (*ResidentJournal, error) {
 		return nil, fmt.Errorf("resident journal directory: %w", err)
 	}
 	_ = os.Chmod(dir, 0o700)
+	lease, err := acquireResidentLease(dir)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(filepath.Join(dir, residentTranscriptName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
+		_ = lease.Close()
 		return nil, fmt.Errorf("resident journal transcript: %w", err)
 	}
 	_ = f.Chmod(0o600)
-	return &ResidentJournal{dir: dir, file: f}, nil
+	return &ResidentJournal{dir: dir, file: f, lease: lease}, nil
 }
 
 // Dir is the child-owned state directory. It is exposed only to host factory
@@ -412,6 +420,9 @@ func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, recordType,
 }
 
 func (j *ResidentJournal) appendSync(record residentRecord) error {
+	if j == nil || j.file == nil {
+		return errors.New("resident journal: closed")
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("resident journal encode: %w", err)
@@ -430,14 +441,23 @@ func (j *ResidentJournal) appendSync(record residentRecord) error {
 }
 
 func (j *ResidentJournal) Close() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.file == nil {
+	if j == nil {
 		return nil
 	}
-	err := j.file.Close()
+	j.mu.Lock()
+	file := j.file
+	lease := j.lease
 	j.file = nil
-	return err
+	j.lease = nil
+	j.mu.Unlock()
+	var errs []error
+	if file != nil {
+		errs = append(errs, file.Close())
+	}
+	if lease != nil {
+		errs = append(errs, lease.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func ReadResidentJournal(path string) ([]residentRecord, error) {
@@ -458,6 +478,7 @@ func ReadResidentJournal(path string) ([]residentRecord, error) {
 			if decodeErr := json.Unmarshal(line, &record); decodeErr != nil {
 				return nil, fmt.Errorf("resident journal decode: %w", decodeErr)
 			}
+			record.raw = append(record.raw[:0], line...)
 			records = append(records, record)
 		}
 		if err == io.EOF {
@@ -508,10 +529,60 @@ func (j *ResidentJournal) Result() (ResidentResult, error) {
 // authoritative acceptance record. Work that was queued or running when the
 // host disappeared is recorded as interrupted; it is never made runnable by
 // reconciliation and must receive an explicit new resume prompt later.
+//
+// It first takes exclusive resident ownership. A busy lease means another
+// host may still append records, so this function intentionally performs no
+// transcript inspection or recovery.
 func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
+	metadata, _, err := reconcileResidentJournalWithSpec(dir)
+	return metadata, err
+}
+
+// reconcileResidentJournalWithSpec returns the accepted specification from the
+// same ownership interval as reconciliation. Callers must not use a prior
+// snapshot to resume a child because another host could have changed the
+// journal after that snapshot was built.
+func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChildSpec, error) {
+	journal, err := OpenResidentJournal(filepath.Dir(dir), filepath.Base(dir))
+	if err != nil {
+		return ResidentMetadata{}, ResidentChildSpec{}, err
+	}
+	metadata, reconcileErr := reconcileOwnedResidentJournal(journal)
+	var spec ResidentChildSpec
+	if reconcileErr == nil {
+		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
+		if err != nil || len(records) == 0 || records[0].Spec == nil {
+			reconcileErr = errors.New("resident journal: invalid accepted child record")
+		} else {
+			spec = *records[0].Spec
+		}
+	}
+	if closeErr := journal.Close(); closeErr != nil {
+		reconcileErr = errors.Join(reconcileErr, closeErr)
+	}
+	if reconcileErr != nil {
+		return ResidentMetadata{}, ResidentChildSpec{}, reconcileErr
+	}
+	return metadata, spec, nil
+}
+
+// reconcileOwnedResidentJournal requires the resident journal lease held by
+// journal. It is the sole reconciliation implementation so reads and writes
+// share one ownership interval.
+func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, error) {
+	if journal == nil {
+		return ResidentMetadata{}, errors.New("resident journal: unavailable")
+	}
+	dir := journal.Dir()
 	records, err := ReadResidentJournal(filepath.Join(dir, residentTranscriptName))
 	if err != nil {
 		return ResidentMetadata{}, err
+	}
+	if repaired, ok := repairLegacyFalseRecovery(records); ok {
+		if err := journal.rewriteTranscript(repaired); err != nil {
+			return ResidentMetadata{}, err
+		}
+		records = repaired
 	}
 	if len(records) == 0 || records[0].Type != residentRecordAccepted || records[0].Spec == nil {
 		return ResidentMetadata{}, errors.New("resident journal: missing accepted child record")
@@ -614,11 +685,6 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 		// A recorded repair is new observable work. A no-op reconciliation,
 		// however, must retain the last durable lifecycle time.
 		metadata.UpdatedAt = time.Now().UTC()
-		journal, err := OpenResidentJournal(filepath.Dir(dir), filepath.Base(dir))
-		if err != nil {
-			return ResidentMetadata{}, err
-		}
-		defer journal.Close()
 		dangling := make([]string, 0, len(toolCalls))
 		for toolID := range toolCalls {
 			if _, finished := toolResults[toolID]; !finished {
@@ -627,7 +693,7 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 		}
 		sort.Strings(dangling)
 		for _, toolID := range dangling {
-			result, marshalErr := json.Marshal(core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: "tool interrupted by resident host restart"}}})
+			result, marshalErr := json.Marshal(core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: residentInterruptedText}}})
 			if marshalErr != nil {
 				return ResidentMetadata{}, fmt.Errorf("resident journal encode interrupted tool result: %w", marshalErr)
 			}
@@ -676,14 +742,177 @@ func ReconcileResidentJournal(dir string) (ResidentMetadata, error) {
 	return metadata, nil
 }
 
+// repairLegacyFalseRecovery removes the exact false-recovery sequence produced
+// before resident journals had host ownership: a synthetic interruption result,
+// followed only by interruption records, before the live owner records the real
+// result for the same call. It deliberately refuses broader or ambiguous
+// duplicate histories.
+func repairLegacyFalseRecovery(records []residentRecord) ([]residentRecord, bool) {
+	for start, record := range records {
+		if record.Type != residentRecordToolResult || !isSyntheticInterruption(record.ToolResult) {
+			continue
+		}
+		turnID := activeResidentTurn(records[:start])
+		if turnID == "" {
+			continue
+		}
+		end := -1
+		interrupted := false
+		for index := start + 1; index < len(records); index++ {
+			next := records[index]
+			if next.Type == residentRecordInterrupted && next.TurnID == turnID {
+				interrupted = true
+			}
+			if next.Type == residentRecordToolResult && next.ToolID == record.ToolID && !isSyntheticInterruption(next.ToolResult) {
+				end = index
+				break
+			}
+			if next.Type != residentRecordInterrupted && (next.Type != residentRecordToolResult || next.ToolID != record.ToolID || !isSyntheticInterruption(next.ToolResult)) {
+				break
+			}
+		}
+		if end < 0 || !interrupted {
+			continue
+		}
+		repaired := make([]residentRecord, 0, len(records)-(end-start))
+		repaired = append(repaired, records[:start]...)
+		for _, candidate := range records[start:end] {
+			if candidate.Type == residentRecordInterrupted && candidate.TurnID != turnID {
+				return nil, false
+			}
+		}
+		repaired = append(repaired, records[end:]...)
+		return repaired, true
+	}
+	return nil, false
+}
+
+func activeResidentTurn(records []residentRecord) string {
+	active := ""
+	for _, record := range records {
+		switch record.Type {
+		case residentRecordTurnStarted:
+			active = record.TurnID
+		case residentRecordTurnFinished, residentRecordInterrupted:
+			if record.TurnID == active {
+				active = ""
+			}
+		}
+	}
+	return active
+}
+
+func isSyntheticInterruption(raw json.RawMessage) bool {
+	var result struct {
+		Content []struct {
+			Text string
+		}
+		IsError bool
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || !result.IsError || len(result.Content) != 1 {
+		return false
+	}
+	return result.Content[0].Text == residentInterruptedText
+}
+
+// rewriteTranscript replaces the authoritative transcript while the caller
+// owns its lease. The old transcript is retained as a private recovery backup.
+func (j *ResidentJournal) rewriteTranscript(records []residentRecord) error {
+	if j == nil {
+		return errors.New("resident journal: unavailable")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.file == nil || j.lease == nil {
+		return errors.New("resident journal: closed")
+	}
+	transcript := filepath.Join(j.dir, residentTranscriptName)
+	backup, err := os.CreateTemp(j.dir, ".transcript-backup-*")
+	if err != nil {
+		return fmt.Errorf("resident journal backup: %w", err)
+	}
+	backupName := backup.Name()
+	if err := backup.Chmod(0o600); err != nil {
+		_ = backup.Close()
+		_ = os.Remove(backupName)
+		return fmt.Errorf("resident journal backup permissions: %w", err)
+	}
+	source, err := os.Open(transcript)
+	if err != nil {
+		_ = backup.Close()
+		_ = os.Remove(backupName)
+		return fmt.Errorf("resident journal backup source: %w", err)
+	}
+	_, copyErr := io.Copy(backup, source)
+	closeSourceErr := source.Close()
+	if copyErr == nil {
+		copyErr = backup.Sync()
+	}
+	if closeErr := backup.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		_ = os.Remove(backupName)
+		return fmt.Errorf("resident journal backup write: %w", errors.Join(copyErr, closeSourceErr))
+	}
+
+	tmp, err := os.CreateTemp(j.dir, ".transcript-repair-*")
+	if err != nil {
+		return fmt.Errorf("resident journal repair: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("resident journal repair permissions: %w", err)
+	}
+	encoder := json.NewEncoder(tmp)
+	for _, record := range records {
+		if len(record.raw) > 0 {
+			if _, err := tmp.Write(record.raw); err != nil {
+				_ = tmp.Close()
+				return fmt.Errorf("resident journal repair write: %w", err)
+			}
+			continue
+		}
+		if err := encoder.Encode(record); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("resident journal repair encode: %w", err)
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("resident journal repair sync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("resident journal repair close: %w", err)
+	}
+	if err := j.file.Close(); err != nil {
+		return fmt.Errorf("resident journal repair close transcript: %w", err)
+	}
+	j.file = nil
+	if err := os.Rename(tmpName, transcript); err != nil {
+		return fmt.Errorf("resident journal repair rename: %w", err)
+	}
+	if err := syncDirectory(j.dir); err != nil {
+		return fmt.Errorf("resident journal repair directory sync: %w", err)
+	}
+	file, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("resident journal repair reopen: %w", err)
+	}
+	j.file = file
+	return nil
+}
+
 func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata ResidentMetadata, turnID, outcome, summary string) error {
 	if turnID == "" {
 		return nil
 	}
 	resultPath := filepath.Join(dir, residentResultName)
-	if _, err := ReadResidentResult(resultPath); err == nil {
+	if existing, err := ReadResidentResult(resultPath); err == nil && existing.ID == spec.ID && existing.TurnID == turnID && existing.State == metadata.State {
 		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if removeErr := os.Remove(resultPath); removeErr != nil {
 			return fmt.Errorf("resident journal remove corrupt result projection: %w", removeErr)
 		}

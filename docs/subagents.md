@@ -51,6 +51,8 @@ The manager records each accepted child under its managed state root:
 ```text
 subagents/<child-id>/
   transcript.jsonl  # authoritative accepted turns and finalized messages
+  owner.lock        # host-ownership coordination; do not modify or remove
+  .transcript-backup-* # retained private pre-repair transcript, when repaired
   metadata.json     # rebuildable bounded state
   result.json       # latest state plus a bounded final assistant summary
   patch.diff        # optional worktree capture
@@ -65,6 +67,19 @@ All children stop when the host exits. On the next start, queued or running
 turns are marked `interrupted`; zut never replays their task. Resume only with
 an explicit new prompt through `subagent_resume`, the child-session composer,
 or `/subagents resume <id> <prompt>`.
+
+Multiple zut processes may share a state root. Each resident journal has one
+host owner at a time. A process that finds a child owned elsewhere reports it
+as such and does not inspect, recover, or modify its transcript. Resume that
+child from its owning host or after the owner exits. On a subsequent safe
+reconciliation, zut repairs only the known legacy false-recovery sequence; it
+leaves any ambiguous journal corruption untouched. A repair retains the
+pre-repair transcript as `.transcript-backup-*`; it can contain private session
+data and is intentionally not removed automatically.
+
+`subagent_status` reports `owned_elsewhere: true` when another process owns a
+child. The field is omitted when false. A foreign-owned child cannot be resumed,
+or have its history or result read, from this process.
 
 The global scheduler admits the oldest eligible accepted prompt, runs at most
 one turn for each child, and defaults to six concurrent turns. Set
