@@ -105,9 +105,14 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	lines := []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}
 	if len(d.rows) == 0 {
 		if d.total > 0 {
-			return lines
+			return limitResidentSubagentsDialogHeight(lines, height)
 		}
-		return append(lines, "", "  No resident subagents.")
+		if height == len(lines)+1 {
+			lines = append(lines, "  No resident subagents.")
+		} else {
+			lines = append(lines, "", "  No resident subagents.")
+		}
+		return limitResidentSubagentsDialogHeight(lines, height)
 	}
 	for index, row := range d.rows {
 		marker := "  "
@@ -133,7 +138,17 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	if d.total > len(d.rows) {
 		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.offset+1, d.offset+len(d.rows), d.total))
 	}
-	return lines
+	return limitResidentSubagentsDialogHeight(lines, height)
+}
+
+func limitResidentSubagentsDialogHeight(lines []string, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return lines
+	}
+	return lines[:height]
 }
 
 func residentDisplayName(row subagents.ResidentSnapshot) string {

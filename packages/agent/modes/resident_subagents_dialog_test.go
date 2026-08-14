@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,25 @@ func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 			if line == "    " {
 				t.Fatalf("width %d rendered an empty metadata row", width)
 			}
+		}
+	}
+}
+
+func TestResidentSubagentsDialogBoundsEmptyStateByHeight(t *testing.T) {
+	dialog := newResidentSubagentsDialog()
+	dialog.Open(nil)
+	tests := []struct {
+		height int
+		want   []string
+	}{
+		{height: 0, want: nil},
+		{height: 1, want: []string{"  Resident subagents"}},
+		{height: 2, want: []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}},
+		{height: 3, want: []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn", "  No resident subagents."}},
+	}
+	for _, test := range tests {
+		if got := plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, test.height)); !slices.Equal(got, test.want) {
+			t.Errorf("height %d rendered %q, want %q", test.height, got, test.want)
 		}
 	}
 }
