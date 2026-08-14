@@ -1012,7 +1012,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		// frame, so this callback must only request that frame.
 		cfg.ResidentManager.SetUpdateObserver(func(string) { i.invalidate() })
 		cfg.ResidentManager.SetHistoryUpdateObserver(func(childID string) {
-			i.reloadOpenResidentChildSession(childID)
+			go i.reloadOpenResidentChildSession(childID)
 		})
 		cfg.ResidentManager.SetActivityObserver(func(active bool) {
 			i.residentAnimating.Store(active)

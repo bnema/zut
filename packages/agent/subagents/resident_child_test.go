@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,5 +79,57 @@ func TestResidentChildRunsAcceptedPromptsFIFOWithOneActiveTurn(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("%s turn did not complete", want)
 		}
+	}
+}
+
+func TestResidentChildReportsAndPreservesFailureWhenTurnStartCannotPersist(t *testing.T) {
+	journal, err := OpenResidentJournal(t.TempDir(), "start-persistence-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	completed := make(chan ResidentCompletion, 1)
+	run := make(chan struct{}, 1)
+	child := newJournaledResidentChild(
+		ResidentChildSpec{ID: "start-persistence-failure"},
+		journal,
+		func(context.Context, string) error {
+			run <- struct{}{}
+			return nil
+		},
+		func(completion ResidentCompletion) { completed <- completion },
+	)
+
+	request := residentPrompt{turnID: "turn", prompt: "task", ack: make(chan error, 1)}
+	select {
+	case child.inbox <- request:
+	case <-time.After(time.Second):
+		t.Fatal("child did not accept test prompt")
+	}
+	select {
+	case completion := <-completed:
+		if completion.ChildID != "start-persistence-failure" || completion.Task != "task" {
+			t.Fatalf("completion = %#v", completion)
+		}
+		if completion.Err == nil || !strings.Contains(completion.Err.Error(), "persist resident child start state") {
+			t.Fatalf("completion error = %v", completion.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed turn did not report completion")
+	}
+	select {
+	case <-child.done:
+	case <-time.After(time.Second):
+		t.Fatal("child did not stop after start persistence failure")
+	}
+	if state := child.State(); state != ResidentFailed {
+		t.Fatalf("state = %q, want %q", state, ResidentFailed)
+	}
+	select {
+	case <-run:
+		t.Fatal("runner started after turn-start persistence failure")
+	default:
 	}
 }

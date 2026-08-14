@@ -333,9 +333,14 @@ func (c *ResidentChild) run() {
 			active, queue = queue[0], queue[1:]
 			if c.journal != nil {
 				if err := c.journal.RecordTurnStarted(c.spec, active.turnID); err != nil {
+					terminalErr := fmt.Errorf("persist resident child start state: %w", err)
+					c.live.Finish(ResidentFailed)
 					c.setState(ResidentFailed)
 					c.cancel()
-					continue
+					if c.onCompletion != nil {
+						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr})
+					}
+					return
 				}
 			}
 			c.startTurn(active.turnID)

@@ -296,6 +296,48 @@ func TestInteractiveResidentHistoryUpdatesRefreshOpenChildSession(t *testing.T) 
 	}
 }
 
+func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	persist := make(chan struct{})
+	persisted := make(chan struct{})
+	release := make(chan struct{})
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			close(started)
+			<-persist
+			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "durable update"}}}}); err != nil {
+				return err
+			}
+			close(persisted)
+			<-release
+			return nil
+		}, nil
+	})
+	t.Cleanup(func() {
+		close(release)
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	interactive.mu.Lock()
+	interactive.residentChildSession = newResidentChildSession(manager, spec.ID, tui.Dark)
+	defer interactive.mu.Unlock()
+	close(persist)
+	select {
+	case <-persisted:
+	case <-time.After(time.Second):
+		t.Fatal("resident history update blocked the child control goroutine")
+	}
+}
+
 func TestInteractiveResidentActivityDrivesIndependentAnimation(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
