@@ -3352,13 +3352,28 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Lock()
 		busyCancel := i.busy && i.cancelTurn != nil
 		cancelTurn := i.cancelTurn
+		var restoreQueued string
 		var handoff json.RawMessage
 		var persistHandoff bool
 		if busyCancel {
+			// Keep the most recently queued follow-up as an editable draft
+			// instead of losing it with the cancelled turn's stale queue.
+			if i.agent != nil {
+				restoreQueued, _ = i.agent.PopQueuedMessage()
+			}
+			if restoreQueued == "" && len(i.queued) > 0 {
+				n := len(i.queued) - 1
+				restoreQueued = i.queued[n]
+				i.queued = i.queued[:n]
+			}
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
 		if busyCancel {
+			if restoreQueued != "" {
+				i.ed.SetValue(restoreQueued)
+				i.inputHistoryIndex = -1
+			}
 			i.updateActiveGoal(core.GoalPaused, "interrupted by user")
 			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
