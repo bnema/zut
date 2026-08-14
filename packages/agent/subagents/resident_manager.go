@@ -156,6 +156,7 @@ type ResidentSnapshot struct {
 	TurnStartedAt     time.Time
 	ActivityUpdatedAt time.Time
 	WaitingForModel   bool
+	OwnedElsewhere    bool
 }
 
 func residentSnapshot(child *ResidentChild) ResidentSnapshot {
@@ -400,6 +401,12 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	}
 	child := m.children[childID]
 	spec, recovered := m.recoveredSpec[childID]
+	snapshot := m.recovered[childID]
+	// A recovered foreign snapshot is advisory. Its owner may have exited since
+	// Reconcile; OpenResidentJournal below makes the authoritative fresh check.
+	if child == nil && snapshot.OwnedElsewhere {
+		recovered = true
+	}
 	if child == nil && recovered {
 		if _, pending := m.pending[childID]; pending {
 			m.mu.Unlock()
@@ -412,8 +419,21 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 		defer func() { m.mu.Lock(); delete(m.pending, childID); m.mu.Unlock() }()
 		journal, err := OpenResidentJournal(m.root, childID)
 		if err != nil {
+			if errors.Is(err, ErrResidentLeaseBusy) {
+				return errors.New("resident manager: child is owned by another zut process")
+			}
 			return err
 		}
+		if _, err := reconcileOwnedResidentJournal(journal); err != nil {
+			_ = journal.Close()
+			return err
+		}
+		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
+		if err != nil || len(records) == 0 || records[0].Spec == nil {
+			_ = journal.Close()
+			return errors.New("resident manager: invalid accepted specification")
+		}
+		spec = *records[0].Spec
 		var workspace WorkspaceHandle
 		workspaceRoot := strings.TrimSpace(spec.RepositoryRoot)
 		if workspaceRoot == "" {
@@ -750,21 +770,33 @@ func (m *ResidentManager) Reconcile() []error {
 		if live || pending {
 			continue
 		}
-		metadata, reconcileErr := ReconcileResidentJournal(filepath.Join(m.root, childID))
+		childDir := filepath.Join(m.root, childID)
+		metadata, spec, reconcileErr := reconcileResidentJournalWithSpec(childDir)
+		if errors.Is(reconcileErr, ErrResidentLeaseBusy) {
+			foreign, readErr := ReadResidentMetadata(filepath.Join(childDir, residentMetadataName))
+			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("resident child %s: read foreign metadata: %w", childID, readErr))
+				continue
+			}
+			state, updatedAt := foreign.State, foreign.UpdatedAt
+			if readErr != nil || state == "" {
+				// Ownership begins before child.accepted is durable. Do not read
+				// that live transcript merely to improve this transient snapshot.
+				state, updatedAt = ResidentQueued, time.Now().UTC()
+			}
+			m.mu.Lock()
+			m.recovered[childID] = ResidentSnapshot{ID: childID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true}
+			m.mu.Unlock()
+			continue
+		}
 		if reconcileErr != nil {
 			errs = append(errs, fmt.Errorf("resident child %s: %w", childID, reconcileErr))
 			continue
 		}
-		records, readErr := ReadResidentJournal(filepath.Join(m.root, childID, residentTranscriptName))
-		if readErr != nil || len(records) == 0 || records[0].Spec == nil {
-			errs = append(errs, fmt.Errorf("resident child %s: invalid accepted specification", childID))
-			continue
-		}
-		spec := records[0].Spec
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
 			m.recovered[childID] = ResidentSnapshot{ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt}
-			m.recoveredSpec[childID] = *spec
+			m.recoveredSpec[childID] = spec
 		}
 		m.mu.Unlock()
 	}
@@ -824,10 +856,11 @@ func (m *ResidentManager) History(childID string, limit int) ([]ResidentHistoryI
 	if m == nil {
 		return nil, errors.New("resident manager: unavailable")
 	}
-	dir, err := ResidentHistoryDir(m.root, childID)
+	dir, release, err := m.readableResidentDir(childID)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return ReadResidentHistory(dir, limit)
 }
 
@@ -838,10 +871,11 @@ func (m *ResidentManager) HistoryPage(childID, olderCursor string, limit int) (R
 	if m == nil {
 		return ResidentHistoryPage{}, errors.New("resident manager: unavailable")
 	}
-	dir, err := ResidentHistoryDir(m.root, childID)
+	dir, release, err := m.readableResidentDir(childID)
 	if err != nil {
 		return ResidentHistoryPage{}, err
 	}
+	defer release()
 	return ReadResidentHistoryPage(dir, olderCursor, limit)
 }
 
@@ -850,11 +884,34 @@ func (m *ResidentManager) Result(childID string) (ResidentResult, error) {
 	if m == nil {
 		return ResidentResult{}, errors.New("resident manager: unavailable")
 	}
-	dir, err := ResidentHistoryDir(m.root, childID)
+	dir, release, err := m.readableResidentDir(childID)
 	if err != nil {
 		return ResidentResult{}, err
 	}
+	defer release()
 	return ReadResidentResult(filepath.Join(dir, residentResultName))
+}
+
+func (m *ResidentManager) readableResidentDir(childID string) (string, func(), error) {
+	dir, err := ResidentHistoryDir(m.root, childID)
+	if err != nil {
+		return "", nil, err
+	}
+	childID = strings.TrimSpace(childID)
+	m.mu.Lock()
+	live := m.children[childID] != nil
+	m.mu.Unlock()
+	if live {
+		return dir, func() {}, nil
+	}
+	lease, err := acquireResidentLease(dir)
+	if err != nil {
+		if errors.Is(err, ErrResidentLeaseBusy) {
+			return "", nil, errors.New("resident manager: child is owned by another zut process")
+		}
+		return "", nil, err
+	}
+	return dir, func() { _ = lease.Close() }, nil
 }
 
 func (m *ResidentManager) Close(ctx context.Context) error {

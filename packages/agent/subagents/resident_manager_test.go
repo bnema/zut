@@ -1,7 +1,9 @@
 package subagents
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -586,6 +588,120 @@ func TestResidentManagerReconcileMakesInterruptedJournalDiscoverableWithoutRepla
 	}
 	if _, err := manager.Spawn(context.Background(), spec, "overwrite"); err == nil {
 		t.Fatal("Spawn overwrote recovered journal")
+	}
+}
+
+func TestResidentManagerReconcileDoesNotMutateForeignProcessJournal(t *testing.T) {
+	if os.Getenv("ZUT_RESIDENT_MANAGER_HELPER") == "1" {
+		root := os.Getenv("ZUT_RESIDENT_MANAGER_ROOT")
+		journal, err := OpenResidentJournal(root, "foreign-process")
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := ResidentChildSpec{ID: "foreign-process", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
+		if err := journal.Accept(spec, "active task"); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.RecordTurnStarted(spec, spec.InitialTurnID); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolCall, Time: time.Now().UTC(), ToolID: "call-1", ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"pwd"}`)}); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(os.Stdout, "ready")
+		if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolResult, Time: time.Now().UTC(), ToolID: "call-1", ToolResult: json.RawMessage(`{"Content":[{"text":"ok"}],"IsError":false}`)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.RecordTurnFinished(spec, spec.InitialTurnID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := journal.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	root := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestResidentManagerReconcileDoesNotMutateForeignProcessJournal$")
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}()
+	cmd.Env = append(os.Environ(), "ZUT_RESIDENT_MANAGER_HELPER=1", "ZUT_RESIDENT_MANAGER_ROOT="+root)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready != "ready\n" {
+		t.Fatalf("helper readiness = %q", ready)
+	}
+	transcript := filepath.Join(root, "foreign-process", residentTranscriptName)
+	before, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observer := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	if errs := observer.Reconcile(); len(errs) != 0 {
+		t.Fatalf("Reconcile errors = %v", errs)
+	}
+	after, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("foreign reconciliation modified the transcript")
+	}
+	snapshot, ok := observer.SnapshotFor("foreign-process")
+	if !ok || !snapshot.OwnedElsewhere || snapshot.State != ResidentRunning {
+		t.Fatalf("foreign snapshot = %#v, found=%v", snapshot, ok)
+	}
+	if err := observer.Resume(context.Background(), "foreign-process", "follow up"); err == nil || !strings.Contains(err.Error(), "owned by another") {
+		t.Fatalf("foreign Resume error = %v", err)
+	}
+	if _, err := observer.History("foreign-process", 1); err == nil || !strings.Contains(err.Error(), "owned by another") {
+		t.Fatalf("foreign History error = %v", err)
+	}
+	if _, err := observer.HistoryPage("foreign-process", "", 1); err == nil || !strings.Contains(err.Error(), "owned by another") {
+		t.Fatalf("foreign HistoryPage error = %v", err)
+	}
+	if _, err := observer.Result("foreign-process"); err == nil || !strings.Contains(err.Error(), "owned by another") {
+		t.Fatalf("foreign Result error = %v", err)
+	}
+	if _, err := fmt.Fprintln(stdin); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.Resume(context.Background(), "foreign-process", "follow up"); err != nil {
+		t.Fatalf("Resume after owner exit: %v", err)
+	}
+	if err := observer.Stop(context.Background(), "foreign-process"); err != nil {
+		t.Fatalf("Stop rebuilt child: %v", err)
 	}
 }
 
