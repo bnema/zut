@@ -98,8 +98,9 @@ Successful completions include the final visible assistant summary, capped at
 
 `/subagents` opens the resident-child list, ordered by the latest state change.
 Each row leads with the profile (or model), shows a human terminal state such
-as `completed`, a relative update time, and a short ID. Use arrows and Enter to
-open a child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
+as `completed`, a relative update time, and a short ID. Press Down from the
+main composer to open this list without clearing a draft when a child exists.
+Use arrows and Enter to open a child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
 opens its history; `/subagents result <id>` shows the bounded final summary;
 `kill <id>` stops it; and `resume <id> <prompt>` continues it.
 

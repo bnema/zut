@@ -400,7 +400,7 @@ Resident subagents run alongside the main session as independent in-process agen
 /subagents kill <id>                            # stop a live child
 ```
 
-**Dashboard (`/subagents` with no arg)** — a bounded list of resident children, ordered by the latest state change. Rows lead with the profile or model, show `completed` rather than the internal success state, a relative update time, and a short ID. Use `up`/`down` then `enter` to open the selected child, or `esc` to close.
+**Dashboard (`/subagents` with no arg)** — a bounded list of resident children, ordered by the latest state change. Rows lead with the profile or model, show `completed` rather than the internal success state, a relative update time, and a short ID. Use `up`/`down` then `enter` to open the selected child, or `esc` to close. With any resident child present, `down` from the main composer opens this picker without clearing a draft.
 
 **Inside an agent's transcript** — the overlay uses the main transcript renderer, combining finalized journal history with an immutable live projection. PgUp loads an older bounded page; Up/Down preserves scrollback and PgDn follows new output. Type a follow-up and press `enter`; the draft stays until the manager durably accepts it. Press `esc` to close.
 
@@ -934,14 +934,14 @@ Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only
 | `alt+left`, `alt+right` | Jump one word back or forward. |
 | `ctrl+u`, `ctrl+k` | Delete to start or end of line. |
 | `ctrl+w`, `alt+backspace` | Delete the previous word. |
-| `up`, `down` | Move within multi-line input. At the top edge, `up` recalls previous prompts and `down` moves forward through prompt history. |
+| `up`, `down` | Move within multi-line input. At the top edge, `up` recalls previous prompts and `down` moves forward through prompt history. At the bottom edge, `down` opens the resident-subagent picker when a child exists, preserving the draft. |
 
 ### Chat scroll
 
 | Key | Action |
 |---|---|
 | `pgup`, `pgdn` | Scroll one page up or down. |
-| `up`, `down` (editor empty, not browsing prompt history) | Scroll three lines up or down. This is how the mouse wheel reaches the scroll logic on most terminals. |
+| `up`, `down` (editor empty, not browsing prompt history) | Scroll three lines up or down. When resident children exist, `down` opens their picker first. This is how the mouse wheel reaches the scroll logic on most terminals. |
 
 ## Extensions
 

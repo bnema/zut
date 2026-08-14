@@ -338,6 +338,38 @@ func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *te
 	}
 }
 
+func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
+		t.Fatal(err)
+	}
+	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	interactive.ed.SetValue("draft")
+
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
+	if !interactive.residentSubagentsDialog.Active() {
+		t.Fatal("Down did not open the resident subagent picker")
+	}
+	if got := interactive.ed.Value(); got != "draft" {
+		t.Fatalf("editor value = %q, want draft preserved", got)
+	}
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+	if interactive.residentSubagentsDialog.Active() {
+		t.Fatal("Enter left the resident subagent picker open")
+	}
+	if interactive.residentChildSession == nil || interactive.residentChildSession.childID != spec.ID {
+		t.Fatalf("resident child session = %#v, want %q", interactive.residentChildSession, spec.ID)
+	}
+}
+
 func TestInteractiveResidentActivityDrivesIndependentAnimation(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

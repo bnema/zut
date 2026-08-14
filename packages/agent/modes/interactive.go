@@ -3445,6 +3445,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.invalidate()
 				return false
 			}
+			if !k.Alt && i.inputHistoryIndex < 0 && i.cfg.ResidentManager != nil {
+				if _, total := i.cfg.ResidentManager.RecentSnapshotPage(0, 1); total > 0 {
+					i.runResidentSubagents(ctx, nil)
+					return false
+				}
+			}
 			if !k.Alt && i.handleInputHistoryKey(k) {
 				return false
 			}
