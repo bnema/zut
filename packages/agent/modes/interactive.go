@@ -370,6 +370,11 @@ type InteractiveConfig struct {
 	CurrentGoalHistory func() []core.SessionGoal
 	EnsureMission      func(objective string) error
 	PersistGoal        func(goal *core.SessionGoal) error
+	// PersistGoalRuntime records execution bookkeeping without adding a mission
+	// transition to goal history.
+	PersistGoalRuntime func(goal *core.SessionGoal) error
+	// GoalMaxTokenBudget is optional. Nil means autonomous goals are unlimited.
+	GoalMaxTokenBudget *uint64
 
 	OnAssistant func(m provider.Message)
 
@@ -665,6 +670,7 @@ type Interactive struct {
 	statusErr         string
 	statusOK          string
 	goalStatus        core.GoalStatus
+	goalRun           *goalContinuationRun
 	reloadStatusSeq   uint64
 	extStatuses       map[string]map[string]extensionStatus
 	extWidgets        map[string]map[string]extensionWidget
@@ -1037,6 +1043,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.titleGenerationStarted = i.titleRealPromptSeen
 	}
 	i.applyAutoSubagentsTool()
+	i.recoverGoalRun()
 	return i
 }
 

@@ -486,6 +486,74 @@ func TestSessionGoalRoundTripAndClear(t *testing.T) {
 	}
 }
 
+func TestSessionGoalRuntimeRoundTripDoesNotAddHistory(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := uint64(1_000_000)
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "finish the requested change", Status: GoalActive, TokenBudget: &budget}); err != nil {
+		t.Fatal(err)
+	}
+	goal := cloneSessionGoal(sess.Meta.Goal)
+	goal.TokensUsed = 1234
+	goal.ContinuationID = "run-1"
+	goal.ConsecutiveNoProgressTurns = 1
+	if err := sess.UpdateGoalRuntime(goal); err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Meta.GoalHistory) != 0 {
+		t.Fatalf("runtime update added history: %#v", sess.Meta.GoalHistory)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err := OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if goal := reopened.Meta.Goal; goal == nil || goal.TokenBudget == nil || *goal.TokenBudget != budget || goal.TokensUsed != 1234 || goal.ContinuationID != "run-1" || goal.ConsecutiveNoProgressTurns != 1 {
+		t.Fatalf("reopened runtime goal = %#v", goal)
+	}
+	if len(reopened.Meta.GoalHistory) != 0 {
+		t.Fatalf("reopened runtime history = %#v", reopened.Meta.GoalHistory)
+	}
+}
+
+func TestSessionGoalTerminalStatusSettlesMission(t *testing.T) {
+	for _, test := range []struct {
+		goalStatus    GoalStatus
+		missionStatus MissionStatus
+	}{
+		{GoalDone, MissionCompleted},
+		{GoalPaused, MissionPaused},
+		{GoalBlocked, MissionBlocked},
+		{GoalBudgetLimited, MissionBlocked},
+		{GoalStalled, MissionBlocked},
+	} {
+		t.Run(string(test.goalStatus), func(t *testing.T) {
+			sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			if err := sess.UpdateGoal(&SessionGoal{Objective: "finish", Status: GoalActive}); err != nil {
+				t.Fatal(err)
+			}
+			goal := cloneSessionGoal(sess.Meta.Goal)
+			goal.Status = test.goalStatus
+			goal.Reason = "stopped"
+			if err := sess.UpdateGoal(goal); err != nil {
+				t.Fatal(err)
+			}
+			if sess.Meta.Mission == nil || sess.Meta.Mission.Status != test.missionStatus || sess.Meta.Mission.ActiveGoalID != "" {
+				t.Fatalf("mission = %#v", sess.Meta.Mission)
+			}
+		})
+	}
+}
+
 func TestCostAdd(t *testing.T) {
 	var c CostTracker
 	c.Add(provider.Usage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 20, ReasoningTokensKnown: true, CostUSD: 0.01})

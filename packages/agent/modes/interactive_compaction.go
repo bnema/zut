@@ -393,7 +393,23 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			case continueAutomatically:
 				i.startAutoCompactContinuation(p)
 			case continueGoal:
-				i.startGoalContinuation(p, goalMessage)
+				var run *goalContinuationRun
+				if i.cfg.CurrentGoal != nil {
+					goal := copySessionGoal(i.cfg.CurrentGoal())
+					if !i.limitGoalBeforeRun(goal) {
+						run, err = i.startGoalRun(goal)
+					}
+				}
+				if err != nil || run == nil {
+					i.mu.Lock()
+					i.busy = false
+					i.mu.Unlock()
+					if err != nil {
+						i.ReportError(err)
+					}
+					return
+				}
+				i.startGoalContinuation(p, goalMessage, run)
 			}
 		}
 	}()

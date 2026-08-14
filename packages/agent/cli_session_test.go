@@ -111,19 +111,158 @@ func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	}
 }
 
+func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
+	const privateGoal = "private goal text"
+	const privateMission = "private-mission-id"
+	const privateReason = "private active reason"
+	const privateSessionContent = "private session content"
+	var writeFailureGoal core.SessionGoal
+
+	newSession := func(t *testing.T) *core.Session {
+		t.Helper()
+		sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: privateSessionContent}}}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.Close() })
+		return sess
+	}
+
+	tests := []struct {
+		name            string
+		setup           func(*testing.T) *core.Session
+		update          tools.GoalUpdate
+		message         string
+		assertUnchanged func(*testing.T, *core.Session)
+	}{
+		{
+			name: "active goal",
+			setup: func(t *testing.T) *core.Session {
+				sess := newSession(t)
+				if err := sess.UpdateGoal(&core.SessionGoal{Objective: privateGoal, Status: core.GoalActive}); err != nil {
+					t.Fatal(err)
+				}
+				return sess
+			},
+			update:  tools.GoalUpdate{Status: core.GoalActive, Objective: privateGoal},
+			message: "goal transition rejected: the current goal is still active",
+		},
+		{
+			name:    "missing mission",
+			setup:   newSession,
+			update:  tools.GoalUpdate{Status: core.GoalActive, Objective: privateGoal, MissionID: privateMission},
+			message: "goal transition rejected: no active mission",
+		},
+		{
+			name: "mismatched mission",
+			setup: func(t *testing.T) *core.Session {
+				sess := newSession(t)
+				if err := sess.EnsureMission(privateGoal, core.MissionSourceUser); err != nil {
+					t.Fatal(err)
+				}
+				return sess
+			},
+			update:  tools.GoalUpdate{Status: core.GoalActive, Objective: privateGoal, MissionID: privateMission},
+			message: "goal transition rejected: it does not belong to the active mission",
+		},
+		{
+			name:    "storage unavailable",
+			setup:   func(*testing.T) *core.Session { return nil },
+			update:  tools.GoalUpdate{Status: core.GoalActive, Objective: privateGoal, MissionID: privateMission},
+			message: "goal state unavailable: session persistence is disabled",
+		},
+		{
+			name: "write failure",
+			setup: func(t *testing.T) *core.Session {
+				sess := newSession(t)
+				if err := sess.UpdateGoal(&core.SessionGoal{Objective: privateGoal, Status: core.GoalActive, Reason: privateReason}); err != nil {
+					t.Fatal(err)
+				}
+				writeFailureGoal = *sess.Meta.Goal
+				if err := sess.Close(); err != nil {
+					t.Fatal(err)
+				}
+				return sess
+			},
+			update:  tools.GoalUpdate{Status: core.GoalDone},
+			message: "goal state could not be saved",
+			assertUnchanged: func(t *testing.T, sess *core.Session) {
+				t.Helper()
+				assertGoal := func(source string, goal *core.SessionGoal) {
+					t.Helper()
+					if goal == nil || goal.Status != writeFailureGoal.Status || goal.Objective != writeFailureGoal.Objective || goal.Reason != writeFailureGoal.Reason {
+						t.Fatalf("%s goal after failed update = %#v, want status=%q objective=%q reason=%q", source, goal, writeFailureGoal.Status, writeFailureGoal.Objective, writeFailureGoal.Reason)
+					}
+				}
+				assertGoal("in-memory", sess.Meta.Goal)
+				snapshot, err := core.ReadSessionSnapshot(sess.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertGoal("persisted", snapshot.Meta.Goal)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sess := test.setup(t)
+			err := persistToolResultState(nil, sess, core.ToolResult{Details: test.update})
+			var safe *core.ToolResultCommitError
+			if !errors.As(err, &safe) {
+				t.Fatalf("persist error = %T %v, want safe tool result commit error", err, err)
+			}
+			if safe.Message != test.message {
+				t.Fatalf("safe message = %q, want %q", safe.Message, test.message)
+			}
+			if strings.Contains(safe.Message, privateGoal) || strings.Contains(safe.Message, privateMission) || strings.Contains(safe.Message, privateSessionContent) || (sess != nil && strings.Contains(safe.Message, sess.Path)) {
+				t.Fatalf("safe message leaked private state: %q", safe.Message)
+			}
+			if test.assertUnchanged != nil {
+				test.assertUnchanged(t, sess)
+			}
+		})
+	}
+}
+
 func TestPersistGoalToolResultCreatesActiveGoal(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
+	if err := sess.EnsureMission("reproduce the reported failure", core.MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
 
-	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure"}}
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure", MissionID: sess.Meta.Mission.ID}}
 	if err := persistGoalToolResult(sess, result); err != nil {
 		t.Fatal(err)
 	}
 	if goal := sess.Meta.Goal; goal == nil || goal.Status != core.GoalActive || goal.Objective != "reproduce the reported failure" || goal.Owner != core.GoalOwnerManager {
 		t.Fatalf("persisted goal = %#v", goal)
+	}
+}
+
+func TestPersistGoalToolResultAppliesConfiguredBudget(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.EnsureMission("reproduce the reported failure", core.MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	budget := uint64(1_000_000)
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure", MissionID: sess.Meta.Mission.ID}}
+	if err := persistGoalToolResult(sess, result, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if goal := sess.Meta.Goal; goal == nil || goal.TokenBudget == nil || *goal.TokenBudget != budget {
+		t.Fatalf("persisted goal budget = %#v", goal)
 	}
 }
 

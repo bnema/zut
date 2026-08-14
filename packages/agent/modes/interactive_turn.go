@@ -236,6 +236,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			lastStop = e.Stop
 			lastTurnErr = e.Err
 		}
+		i.observeGoalRun(ev)
 		i.handleEventForPresentation(ev)
 	}
 
@@ -322,6 +323,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if terminalGoalError {
 			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
 		}
+		continueGoal := i.finishGoalRun()
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
@@ -379,7 +381,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if recoverContextOverflow || shouldAutoCompact {
 			i.resetStreamingStateLocked()
 		}
-		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
 		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if persistHandoff {
@@ -415,6 +417,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 				lastStop:  lastStop,
 				turnError: lastTurnErr,
 			})
+		case continueGoal:
+			i.requestGoalContinuationIfIdle(parent)
 		}
 	}()
 }

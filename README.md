@@ -335,7 +335,19 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### `/goal`
 
-In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts a hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. The manager can use `update_goal` to settle the current goal or set a bounded next goal within the same mission. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session. `esc` pauses an interrupted goal, and terminal provider errors block it instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
+In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts one leased hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. The manager can use `update_goal` to settle the current goal or set a bounded next goal within the same mission. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session.
+
+Goals are unlimited by default. Zut records token use for each goal but only enforces a budget when it is explicitly configured in `config.json`:
+
+```json
+{
+  "goals": {
+    "max_token_budget": 1000000
+  }
+}
+```
+
+When set, `max_token_budget` is applied to newly created goals. A goal that reaches it becomes `budget_limited`; omitting the setting creates a goal with no token limit. This is separate from the continuation safety controller: a turn that ends without a concrete tool action receives one corrective continuation, then becomes `stalled` rather than repeatedly sending the same prompt. `esc` pauses an interrupted goal, and terminal provider errors block it instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
 
 A branch that copies the complete transcript inherits the goal. Forking from an earlier turn clears it because the later objective did not necessarily exist at that point. Manual `/compact` leaves an active goal recorded but does not start a hidden follow-up; run `/goal resume` to continue it.
 

@@ -33,6 +33,13 @@ type SubagentsConfig struct {
 	AllowedRoots  []string `json:"allowed_roots,omitempty"`
 }
 
+// GoalsConfig controls optional resource limits for autonomous goals. A nil
+// MaxTokenBudget leaves goals unlimited; when set, it is the host-configured
+// cap applied to newly created goals.
+type GoalsConfig struct {
+	MaxTokenBudget *uint64 `json:"max_token_budget,omitempty"`
+}
+
 // Config is the persisted user configuration.
 type Config struct {
 	Provider    string   `json:"provider"`
@@ -81,6 +88,10 @@ type Config struct {
 
 	// Subagents controls manager-owned child lifecycle and resource policy.
 	Subagents SubagentsConfig `json:"subagents,omitempty"`
+
+	// Goals configures optional resource limits for autonomous goals. Missing
+	// configuration preserves unlimited autonomous execution.
+	Goals GoalsConfig `json:"goals,omitempty"`
 
 	// AutoSubagentsEnabled lets the main agent spawn background sub-agents
 	// and query their live state via built-in auto-subagent tools. Off by
