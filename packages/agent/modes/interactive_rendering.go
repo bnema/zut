@@ -774,7 +774,6 @@ func (i *Interactive) redraw() {
 	// popup is showing.
 	composeBottom := func(residentSubagentLines []string) (bottom []string, inputStartRow int) {
 		bottom = make([]string, 0, len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
-		inputStartRow = -1
 		bottom = append(bottom, suggest...)
 		bottom = append(bottom, queue...)
 		lineInput := inputStyle == tui.InputStyleLines
