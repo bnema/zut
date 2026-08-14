@@ -349,6 +349,9 @@ func (c *ResidentChild) run() {
 					c.cancel()
 					if c.onCompletion != nil {
 						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: active.turnID, Task: active.prompt, Err: terminalErr})
+						for _, pending := range queue {
+							c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: terminalErr})
+						}
 					}
 					return
 				}
@@ -438,6 +441,11 @@ func (c *ResidentChild) run() {
 					}
 				}
 				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: result.turnID, Task: active.prompt, Err: terminalErr, Summary: summary})
+				if persistenceFailed {
+					for _, pending := range queue {
+						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: terminalErr})
+					}
+				}
 			}
 			if persistenceFailed {
 				return
