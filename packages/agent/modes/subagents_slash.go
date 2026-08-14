@@ -103,10 +103,11 @@ func (i *Interactive) openResidentChildSession(childID string) {
 	}
 	i.residentChildSession = session
 	i.mu.Unlock()
+	i.setResidentChildMouseReporting(true)
 	i.invalidate()
 	if session.BeginLoad() {
 		go func() {
-			err := session.LoadRecent(200)
+			err := session.LoadAll(200, i.invalidate)
 			if session.FinishLoad(err) {
 				i.reloadResidentChildSession(session)
 			}

@@ -275,22 +275,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.residentChildSession = nil
 			}
 			i.mu.Unlock()
+			residentSession.Close()
+			i.setResidentChildMouseReporting(false)
 		case tui.KeyPageUp:
-			session := residentSession
-			if session.BeginLoad() {
-				go func() {
-					err := session.LoadOlder(200)
-					if session.FinishLoad(err) {
-						i.reloadResidentChildSession(session)
-					}
-					i.invalidate()
-				}()
-			}
+			residentSession.Scroll(10)
 		case tui.KeyPageDown:
-			residentSession.FollowTail()
-		case tui.KeyUp:
+			residentSession.Scroll(-10)
+		case tui.KeyUp, tui.KeyMouseWheelUp:
 			residentSession.Scroll(1)
-		case tui.KeyDown:
+		case tui.KeyDown, tui.KeyMouseWheelDown:
 			residentSession.Scroll(-1)
 		default:
 			session := residentSession

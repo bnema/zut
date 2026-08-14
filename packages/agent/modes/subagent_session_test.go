@@ -196,6 +196,32 @@ func TestResidentChildSessionRenderRespectsRequestedHeight(t *testing.T) {
 	}
 }
 
+func TestInteractiveResidentChildMouseWheelScrollsHistory(t *testing.T) {
+	interactive := NewInteractive(InteractiveConfig{Theme: tui.Dark})
+	session := newResidentChildSession(nil, "child", tui.Dark)
+	interactive.residentChildSession = session
+
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyMouseWheelUp})
+	if session.scrollOffset != 1 {
+		t.Fatalf("wheel up scroll offset = %d, want 1", session.scrollOffset)
+	}
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyMouseWheelDown})
+	if session.scrollOffset != 0 {
+		t.Fatalf("wheel down scroll offset = %d, want 0", session.scrollOffset)
+	}
+}
+
+func TestInteractiveResidentChildMouseReportingFollowsOverlay(t *testing.T) {
+	term := &alertTestTerminal{}
+	interactive := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
+	interactive.runCtx = context.Background()
+	interactive.setResidentChildMouseReporting(true)
+	interactive.setResidentChildMouseReporting(false)
+	if got := term.String(); got != tui.SeqMouseOn+tui.SeqMouseOff {
+		t.Fatalf("mouse reporting sequences = %q", got)
+	}
+}
+
 func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan struct{})

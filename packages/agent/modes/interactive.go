@@ -772,6 +772,7 @@ type Interactive struct {
 	sessionDialog           *sessionDialog
 	residentSubagentsDialog *residentSubagentsDialog
 	residentChildSession    *residentChildSession
+	residentChildMouse      bool
 	jumpDialog              *jumpDialog
 	btwDialog               *btwDialog
 	skillsDialog            *skillsDialog
@@ -1063,6 +1064,28 @@ func (i *Interactive) markCtrlCExit() {
 	i.mu.Unlock()
 }
 
+// setResidentChildMouseReporting enables mouse reporting only while the
+// transcript overlay owns scrolling. Normal chat keeps native terminal
+// selection and wheel scrolling intact.
+func (i *Interactive) setResidentChildMouseReporting(enabled bool) {
+	i.mu.Lock()
+	if i.residentChildMouse == enabled {
+		i.mu.Unlock()
+		return
+	}
+	i.residentChildMouse = enabled
+	term, running := i.cfg.Terminal, i.runCtx != nil
+	i.mu.Unlock()
+	if term == nil || !running {
+		return
+	}
+	seq := tui.SeqMouseOff
+	if enabled {
+		seq = tui.SeqMouseOn
+	}
+	_, _ = term.Write([]byte(seq))
+}
+
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
 	i.mu.Lock()
@@ -1103,7 +1126,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// Erase the live frame and place the cursor deterministically before any
 	// exit summary or shell prompt is written. Do not erase scrollback: users
 	// should still be able to review the session after closing zut.
-	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor))
+	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqMouseOff + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor))
 	i.applyInputCursorColor()
 
 	// Streaming pacer: drains buffered text deltas at a steady rate

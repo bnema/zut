@@ -31,6 +31,9 @@ type Renderer struct {
 	// Kitty image pixels are explicitly deleted when their layer disappears.
 	prevHadImage      bool
 	prevHadKittyImage bool
+	floatingActive    bool
+	drawingFloating   bool
+	floatingRect      FloatingPaneRect
 
 	// Main-screen flow renderer state. logLines is the full logical
 	// buffer (chat + live bottom band) from the previous DrawLog call.
@@ -416,6 +419,10 @@ func truncateToWidth(s string, cols int) string {
 }
 
 func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
+	if r.floatingActive && !r.drawingFloating {
+		r.Invalidate()
+		r.floatingActive = false
+	}
 	if r.cols == 0 || r.rows == 0 {
 		return
 	}
@@ -538,8 +545,12 @@ func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int
 	if r.cols == 0 || r.rows == 0 {
 		return
 	}
-	r.Invalidate()
+	if !r.floatingActive || r.floatingRect != pane.Rect {
+		r.Invalidate()
+	}
+	r.drawingFloating = true
 	r.Draw(pane.Background, -1, 0)
+	r.drawingFloating = false
 
 	paneHasImage := false
 	paneHasKittyImage := false
@@ -572,9 +583,9 @@ func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int
 	_, _ = io.WriteString(r.out, w.String())
 	r.prevHadImage = r.prevHadImage || paneHasImage
 	r.prevHadKittyImage = r.prevHadKittyImage || paneHasKittyImage
-	// pane.Lines are painted outside Draw's frame cache, so the next normal
-	// frame must be fully repainted to remove the foreground cells.
-	r.Invalidate()
+	// Keep the dimmed background cache while this geometry remains active.
+	r.floatingActive = true
+	r.floatingRect = pane.Rect
 }
 
 // DrawLog renders zut in the terminal's main screen as normal terminal

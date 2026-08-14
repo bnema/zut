@@ -64,7 +64,7 @@ func (i *Interactive) reloadResidentChildSession(session *residentChildSession) 
 		return
 	}
 	go func() {
-		err := session.ReloadRecent(200)
+		err := session.ReloadAll(200, i.invalidate)
 		if session.FinishLoad(err) {
 			if session.RequestRecentReload() {
 				i.reloadResidentChildSession(session)

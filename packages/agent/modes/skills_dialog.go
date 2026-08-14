@@ -34,7 +34,8 @@ func (d *skillsDialog) Open(s []*skills.Skill) {
 func (d *skillsDialog) Close() { d.active = false }
 
 // Active reports whether the dialog is visible.
-func (d *skillsDialog) Active() bool { return d != nil && d.active }
+func (d *skillsDialog) Active() bool  { return d != nil && d.active }
+func (d *skillsDialog) Viewing() bool { return d != nil && d.viewing != nil }
 
 // HandleKey advances the dialog state.
 func (d *skillsDialog) HandleKey(k tui.Key) (closed bool) {

@@ -540,6 +540,9 @@ func (i *Interactive) redraw() {
 		dialog = i.btwDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.skillsDialog.Active():
 		dialogID = "skills"
+		if i.skillsDialog.Viewing() {
+			dialogID = "skills-body"
+		}
 		dialog = i.skillsDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.changelogDialog.Active():
 		dialogID = "changelog"
@@ -561,11 +564,15 @@ func (i *Interactive) redraw() {
 		i.sessionTreeDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, dialogWidth)
 	}
-	dialogTitle := ""
+	dialogTitle := floatingOverlayTitle(dialogID)
 	dialogRemovedTopRows := 0
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
-		dialogTitle, dialog, dialogRemovedTopRows = floatingDialogBody(dialog)
+		frameTitle, body, removedTopRows := floatingDialogBody(dialog)
+		if frameTitle != "" {
+			dialogTitle = frameTitle
+		}
+		dialog, dialogRemovedTopRows = body, removedTopRows
 	}
 	dialogFocusRow := -1
 	for row, line := range dialog {
@@ -1063,6 +1070,12 @@ func (i *Interactive) redraw() {
 		i.emitAlertLocked(alert)
 	}
 	i.mu.Unlock()
+}
+
+// floatingOverlayTitle supplies every overlay with a stable, human-readable
+// title even when its body does not use the legacy frame-header convention.
+func floatingOverlayTitle(id string) string {
+	return strings.ReplaceAll(id, "-", " ")
 }
 
 // floatingDialogBody removes a legacy dialog's rule chrome and returns its

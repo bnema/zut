@@ -7,6 +7,12 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+func TestFloatingOverlayTitleFallsBackToOverlayIdentity(t *testing.T) {
+	if got := floatingOverlayTitle("subagent-session"); got != "subagent session" {
+		t.Fatalf("overlay title = %q, want subagent session", got)
+	}
+}
+
 func TestFloatingDialogBodyMovesFrameTitleIntoPaneBorder(t *testing.T) {
 	lines := padDialogFrame([]string{frameHeader(tui.Dark, "settings", 40), "body", frameRule(tui.Dark, 40)})
 	title, body, removed := floatingDialogBody(lines)

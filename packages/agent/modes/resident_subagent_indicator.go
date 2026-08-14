@@ -22,7 +22,10 @@ var residentProviderWaitingSpinner = tui.NewStringSpinner(
 func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, snapshots []subagents.ResidentSnapshot, width int, now time.Time) []string {
 	lines := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if snapshot.State != subagents.ResidentQueued && snapshot.State != subagents.ResidentRunning {
+		// Foreign journals remain discoverable through /subagents, but their
+		// activity belongs to another zut host and must not occupy this
+		// session's always-visible editor-adjacent indicator.
+		if snapshot.OwnedElsewhere || (snapshot.State != subagents.ResidentQueued && snapshot.State != subagents.ResidentRunning) {
 			continue
 		}
 		name := sanitizeSessionTreeText(snapshot.Profile)
