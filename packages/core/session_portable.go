@@ -460,11 +460,22 @@ func cloneSessionGoal(goal *SessionGoal) *SessionGoal {
 		return nil
 	}
 	clone := *goal
+	if goal.TokenBudget != nil {
+		budget := *goal.TokenBudget
+		clone.TokenBudget = &budget
+	}
 	return &clone
 }
 
 func cloneGoalHistory(history []SessionGoal) []SessionGoal {
-	return append([]SessionGoal(nil), history...)
+	if len(history) == 0 {
+		return nil
+	}
+	clone := make([]SessionGoal, len(history))
+	for index := range history {
+		clone[index] = *cloneSessionGoal(&history[index])
+	}
+	return clone
 }
 
 func goalHistoryAtBranch(parent SessionMeta, messages []provider.Message, limit int) []SessionGoal {

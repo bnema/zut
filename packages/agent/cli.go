@@ -693,7 +693,7 @@ func copyExtensionStates(states map[string]json.RawMessage) map[string]json.RawM
 	return out
 }
 
-func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result core.ToolResult) error {
+func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result core.ToolResult, goalMaxTokenBudget ...*uint64) error {
 	if sess == nil {
 		return nil
 	}
@@ -705,13 +705,24 @@ func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result 
 			mgr.UpdateSessionState(details.Extension, details.State)
 		}
 	}
-	if err := persistGoalToolResult(sess, result); err != nil {
-		return fmt.Errorf("goal state: %w", err)
+	if err := persistGoalToolResult(sess, result, goalMaxTokenBudget...); err != nil {
+		return &core.ToolResultCommitError{Message: safeGoalCommitMessage(err), Err: fmt.Errorf("goal state: %w", err)}
 	}
 	return nil
 }
 
-func persistGoalToolResult(sess *core.Session, result core.ToolResult) error {
+func safeGoalCommitMessage(err error) string {
+	switch err.Error() {
+	case "cannot replace an active goal":
+		return "goal transition rejected: the current goal is still active"
+	case "goal update does not belong to the active mission":
+		return "goal transition rejected: it does not belong to the active mission"
+	default:
+		return "goal update could not be persisted"
+	}
+}
+
+func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTokenBudget ...*uint64) error {
 	if sess == nil {
 		return nil
 	}
@@ -726,7 +737,12 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult) error {
 		if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
 			return fmt.Errorf("goal update does not belong to the active mission")
 		}
-		return sess.UpdateGoal(&core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager})
+		goal := &core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager}
+		if len(goalMaxTokenBudget) > 0 && goalMaxTokenBudget[0] != nil && *goalMaxTokenBudget[0] > 0 {
+			budget := *goalMaxTokenBudget[0]
+			goal.TokenBudget = &budget
+		}
+		return sess.UpdateGoal(goal)
 	}
 	if sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
 		return nil
@@ -1416,6 +1432,9 @@ func reloadResourcesAfterStartupPreWithRegistry(ctx context.Context, args Args, 
 
 func runInteractive(ctx context.Context, args Args, version string) (runErr error) {
 	initialCfg, _ := LoadConfig()
+	if initialCfg.Goals.MaxTokenBudget != nil && *initialCfg.Goals.MaxTokenBudget == 0 {
+		return errors.New("goals.max_token_budget must be greater than zero")
+	}
 	// Resolve WITHOUT requiring credentials.
 	r, err := Resolve(args, false)
 	if err != nil {
@@ -1849,6 +1868,16 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		return sess.UpdateGoal(goal)
 	}
+	persistGoalRuntime := func(goal *core.SessionGoal) error {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return errors.New("session persistence is disabled")
+		}
+		return sess.UpdateGoalRuntime(goal)
+	}
 	ensureMission := func(objective string) error {
 		sessionTransitionMu.RLock()
 		defer sessionTransitionMu.RUnlock()
@@ -1883,7 +1912,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		a.CommitToolResult = func(_ string, result core.ToolResult) error {
 			persistMu.Lock()
 			defer persistMu.Unlock()
-			return persistToolResultState(extMgr, boundSession, result)
+			return persistToolResultState(extMgr, boundSession, result, initialCfg.Goals.MaxTokenBudget)
 		}
 	}
 	wireAgentPersist := func(a *core.Agent) *core.Agent {
@@ -2361,6 +2390,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		LSPEnabled:                     initialCfg.LSPEnabled,
 		SubagentLSPEnabled:             initialCfg.SubagentLSPEnabled,
 		AutoCompactThreshold:           initialCfg.AutoCompactThreshold,
+		GoalMaxTokenBudget:             initialCfg.Goals.MaxTokenBudget,
 		JailByDefault:                  initialCfg.JailByDefault,
 		QuickModelShortcuts:            quickModelShortcuts,
 		RecursiveFileSuggest:           initialCfg.RecursiveFileSuggest,
@@ -2483,6 +2513,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		PersistCompactHandoff: persistCompactHandoff,
 		CurrentCompactHandoff: currentCompactHandoff,
 		PersistGoal:           persistGoal,
+		PersistGoalRuntime:    persistGoalRuntime,
 		CurrentGoal:           currentGoal,
 		CurrentGoalHistory:    currentGoalHistory,
 		EnsureMission:         ensureMission,

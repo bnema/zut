@@ -236,6 +236,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			lastStop = e.Stop
 			lastTurnErr = e.Err
 		}
+		i.observeGoalRun(ev)
 		i.handleEventForPresentation(ev)
 	}
 
@@ -322,6 +323,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if terminalGoalError {
 			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
 		}
+		i.finishGoalRun()
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the

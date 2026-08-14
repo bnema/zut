@@ -31,6 +31,9 @@ func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
 	}
 	text := goal.Objective +
 		"\n\nContinue working autonomously toward this active goal. Do not stop at a progress update. Continue until the goal is complete or blocked, then call update_goal."
+	if goal.ConsecutiveNoProgressTurns > 0 {
+		text += " You ended the prior continuation without taking a concrete action. Inspect the current state and take the next action now; do not merely say that you will continue."
+	}
 	if goal.MissionID != "" {
 		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
 	}
@@ -47,7 +50,11 @@ func (i *Interactive) goalIdleLocked() bool {
 
 func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool {
 	message, ok := i.goalContinuationMessage()
-	if !ok || i.coordinatorHasPendingWorkers() {
+	if !ok || i.coordinatorHasPendingWorkers() || i.cfg.CurrentGoal == nil {
+		return false
+	}
+	goal := copySessionGoal(i.cfg.CurrentGoal())
+	if goal == nil || i.limitGoalBeforeRun(goal) {
 		return false
 	}
 	i.mu.Lock()
@@ -57,11 +64,25 @@ func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool
 	}
 	i.busy = true
 	i.mu.Unlock()
-	i.startGoalContinuation(parent, message)
+	run, err := i.startGoalRun(goal)
+	if err != nil {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		i.ReportError(err)
+		return false
+	}
+	if run == nil {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		return false
+	}
+	i.startGoalContinuation(parent, message, run)
 	return true
 }
 
-func (i *Interactive) startGoalContinuation(parent context.Context, message provider.Message) {
+func (i *Interactive) startGoalContinuation(parent context.Context, message provider.Message, run *goalContinuationRun) {
 	goalMessage, goalActive := i.goalContinuationMessage()
 	i.mu.Lock()
 	ag := i.agent
@@ -70,6 +91,7 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		pendingIdleWork := i.takePendingIdleWorkLocked()
 		i.mu.Unlock()
 		runPendingIdleWork(pendingIdleWork)
+		i.abandonGoalRun(run)
 		i.invalidate()
 		return
 	}
@@ -77,11 +99,13 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		next := i.queued[0]
 		i.queued = i.queued[1:]
 		i.mu.Unlock()
+		i.abandonGoalRun(run)
 		i.startTurn(parent, next)
 		return
 	}
 	if ag.QueuedMessageCount() > 0 {
 		i.mu.Unlock()
+		i.abandonGoalRun(run)
 		i.startTurnRequest(parent, "", nil, true, false)
 		return
 	}
@@ -93,6 +117,7 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		// The objective may have been replaced while the prior turn was
 		// finishing. Re-evaluate it now instead of waiting for another event;
 		// the idle gate still gives queued user work priority.
+		i.abandonGoalRun(run)
 		i.requestGoalContinuationIfIdle(parent)
 		i.invalidate()
 		return
@@ -108,6 +133,7 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		next := i.queued[0]
 		i.queued = i.queued[1:]
 		i.mu.Unlock()
+		i.abandonGoalRun(run)
 		i.startTurn(parent, next)
 		return
 	}
@@ -182,6 +208,11 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 			owner = core.GoalOwnerUser
 		}
 		status := fmt.Sprintf("goal %s (%s): %s", current.Status, owner, current.Objective)
+		if current.TokenBudget != nil {
+			status += fmt.Sprintf(" (%d / %d tokens)", current.TokensUsed, *current.TokenBudget)
+		} else if current.TokensUsed > 0 {
+			status += fmt.Sprintf(" (%d tokens)", current.TokensUsed)
+		}
 		if current.Reason != "" {
 			status += " (" + current.Reason + ")"
 		}
@@ -226,6 +257,12 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 			return
 		}
 		current = &core.SessionGoal{Objective: objective, Status: core.GoalActive, Owner: core.GoalOwnerUser}
+		if i.cfg.GoalMaxTokenBudget != nil {
+			budget := *i.cfg.GoalMaxTokenBudget
+			if budget > 0 {
+				current.TokenBudget = &budget
+			}
+		}
 		startIfIdle = true
 		startTitle = true
 	}

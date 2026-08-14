@@ -1153,6 +1153,36 @@ func drainProviderStream(stream <-chan provider.Event) {
 	}
 }
 
+// ToolResultCommitError supplies a user-safe explanation when a host rejects
+// a tool result during durable-state commit. Internal storage errors remain in
+// Err; callers without this type retain the generic failure message.
+type ToolResultCommitError struct {
+	Message string
+	Err     error
+}
+
+func (e *ToolResultCommitError) Error() string {
+	if e == nil || e.Err == nil {
+		return "tool result commit failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *ToolResultCommitError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func toolResultCommitMessage(err error) string {
+	var safe *ToolResultCommitError
+	if errors.As(err, &safe) && strings.TrimSpace(safe.Message) != "" {
+		return safe.Message
+	}
+	return "tool result state could not be persisted"
+}
+
 // executeTools runs every tool call in the assistant message and returns
 // a single tool-role message carrying all results.
 func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink func(AgentEvent)) (provider.Message, bool) {
@@ -1170,7 +1200,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if a.CommitToolResult != nil {
 			if err := a.CommitToolResult(tc.ID, res); err != nil {
 				res = ToolResult{
-					Content: []provider.Content{provider.TextBlock{Text: "tool result state could not be persisted"}},
+					Content: []provider.Content{provider.TextBlock{Text: toolResultCommitMessage(err)}},
 					IsError: true,
 					Timing:  res.Timing,
 				}

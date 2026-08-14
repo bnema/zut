@@ -80,6 +80,24 @@ func TestToolResultPersistenceFailureBecomesToolError(t *testing.T) {
 	}
 }
 
+func TestToolResultCommitErrorUsesSafeMessage(t *testing.T) {
+	agent := NewAgent(nil, "test", "", Registry{
+		"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "done"}}}},
+	})
+	agent.CommitToolResult = func(string, ToolResult) error {
+		return &ToolResultCommitError{Message: "goal transition rejected: the current goal is still active", Err: errors.New("database path /private/session is unavailable")}
+	}
+	message := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "result", Arguments: json.RawMessage(`{}`)}}}
+	toolMessage, hadError := agent.executeTools(context.Background(), message, func(AgentEvent) {})
+	if !hadError {
+		t.Fatal("commit error did not mark the tool batch failed")
+	}
+	block := toolMessage.Content[0].(provider.ToolResultBlock)
+	if got := block.Content[0].(provider.TextBlock).Text; got != "goal transition rejected: the current goal is still active" {
+		t.Fatalf("tool error text = %q", got)
+	}
+}
+
 // TestBeforeToolExecuteModifiesArgs verifies that a non-nil
 // modifiedArgs returned from BeforeToolExecute is what the tool
 // actually sees.

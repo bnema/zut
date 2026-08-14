@@ -55,10 +55,12 @@ type Session struct {
 type GoalStatus string
 
 const (
-	GoalActive  GoalStatus = "active"
-	GoalPaused  GoalStatus = "paused"
-	GoalBlocked GoalStatus = "blocked"
-	GoalDone    GoalStatus = "done"
+	GoalActive        GoalStatus = "active"
+	GoalPaused        GoalStatus = "paused"
+	GoalBlocked       GoalStatus = "blocked"
+	GoalDone          GoalStatus = "done"
+	GoalBudgetLimited GoalStatus = "budget_limited"
+	GoalStalled       GoalStatus = "stalled"
 )
 
 // GoalOwner identifies who established a session goal. Missing owners in
@@ -102,13 +104,17 @@ type SessionMission struct {
 
 // SessionGoal is the concise autonomous objective attached to one session.
 type SessionGoal struct {
-	ID        string     `json:"id,omitempty"`
-	MissionID string     `json:"mission_id,omitempty"`
-	Objective string     `json:"objective"`
-	Status    GoalStatus `json:"status"`
-	Owner     GoalOwner  `json:"owner,omitempty"`
-	Ordinal   int        `json:"ordinal,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
+	ID                         string     `json:"id,omitempty"`
+	MissionID                  string     `json:"mission_id,omitempty"`
+	Objective                  string     `json:"objective"`
+	Status                     GoalStatus `json:"status"`
+	Owner                      GoalOwner  `json:"owner,omitempty"`
+	Ordinal                    int        `json:"ordinal,omitempty"`
+	Reason                     string     `json:"reason,omitempty"`
+	TokenBudget                *uint64    `json:"token_budget,omitempty"`
+	TokensUsed                 uint64     `json:"tokens_used,omitempty"`
+	ContinuationID             string     `json:"continuation_id,omitempty"`
+	ConsecutiveNoProgressTurns int        `json:"consecutive_no_progress_turns,omitempty"`
 }
 
 // SessionMeta is written as the first line of every session file.
@@ -1439,6 +1445,29 @@ func (s *Session) UpdateGoal(goal *SessionGoal) error {
 	return nil
 }
 
+// UpdateGoalRuntime persists mutable execution state without treating each
+// continuation as a mission transition. The goal ID must match the current
+// goal so stale workers cannot overwrite a newer user or manager goal.
+func (s *Session) UpdateGoalRuntime(goal *SessionGoal) error {
+	if s == nil {
+		return nil
+	}
+	if goal == nil || s.Meta.Goal == nil || goal.ID == "" || goal.ID != s.Meta.Goal.ID {
+		return errors.New("goal runtime update does not match the current goal")
+	}
+	previous := cloneSessionGoal(s.Meta.Goal)
+	copyGoal := *s.Meta.Goal
+	copyGoal.TokensUsed = goal.TokensUsed
+	copyGoal.ContinuationID = goal.ContinuationID
+	copyGoal.ConsecutiveNoProgressTurns = goal.ConsecutiveNoProgressTurns
+	s.Meta.Goal = &copyGoal
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.Goal = previous
+		return fmt.Errorf("update goal runtime: %w", err)
+	}
+	return nil
+}
+
 func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
 	if s.Meta.Mission == nil {
 		source := MissionSourceUser
@@ -1476,6 +1505,17 @@ func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
 		mission.Reason = ""
 	} else if mission.ActiveGoalID == goal.ID {
 		mission.ActiveGoalID = ""
+		switch goal.Status {
+		case GoalDone:
+			mission.Status = MissionCompleted
+			mission.Reason = ""
+		case GoalPaused:
+			mission.Status = MissionPaused
+			mission.Reason = ""
+		case GoalBlocked, GoalBudgetLimited, GoalStalled:
+			mission.Status = MissionBlocked
+			mission.Reason = goal.Reason
+		}
 	}
 	return nil
 }

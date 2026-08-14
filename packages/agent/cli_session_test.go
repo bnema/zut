@@ -111,6 +111,26 @@ func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	}
 }
 
+func TestPersistToolResultStateReturnsSafeGoalTransitionError(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "current work", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = persistToolResultState(nil, sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "unrelated work"}})
+	var safe *core.ToolResultCommitError
+	if !errors.As(err, &safe) {
+		t.Fatalf("persist error = %T %v, want safe tool result commit error", err, err)
+	}
+	if safe.Message != "goal transition rejected: the current goal is still active" {
+		t.Fatalf("safe message = %q", safe.Message)
+	}
+}
+
 func TestPersistGoalToolResultCreatesActiveGoal(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {
@@ -124,6 +144,23 @@ func TestPersistGoalToolResultCreatesActiveGoal(t *testing.T) {
 	}
 	if goal := sess.Meta.Goal; goal == nil || goal.Status != core.GoalActive || goal.Objective != "reproduce the reported failure" || goal.Owner != core.GoalOwnerManager {
 		t.Fatalf("persisted goal = %#v", goal)
+	}
+}
+
+func TestPersistGoalToolResultAppliesConfiguredBudget(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	budget := uint64(1_000_000)
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure"}}
+	if err := persistGoalToolResult(sess, result, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if goal := sess.Meta.Goal; goal == nil || goal.TokenBudget == nil || *goal.TokenBudget != budget {
+		t.Fatalf("persisted goal budget = %#v", goal)
 	}
 }
 
