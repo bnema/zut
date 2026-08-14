@@ -81,7 +81,7 @@ zut verify ./code-reviewer.zut
 zut run ./code-reviewer.zut
 ```
 
-The first run displays the declared permissions and asks for consent before the agent starts.
+The first run displays the declared permissions and asks for consent before the agent starts. A packaged agent with filesystem read permission can use the built-in `grep` tool without any Bash permission; `grep` checks the requested search root against the declared read scopes before running its direct read-only subprocess.
 
 ## Directory layout
 
@@ -303,7 +303,7 @@ In `--print` / `--stream` / `--json` modes, `pre` still runs first: shell escape
 
 ## Filesystem permissions
 
-Filesystem permissions are enforced by the built-in `read`, `write`, `edit`, and `create_worktree` tools. Empty or omitted scopes deny the operation.
+Filesystem permissions are enforced by the built-in `read`, `write`, `edit`, `grep`, and `create_worktree` tools. Empty or omitted scopes deny the operation.
 
 Two variables are available in filesystem scopes:
 

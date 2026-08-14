@@ -29,7 +29,7 @@ Three things an extension can do (any combination):
 2. **Tools** — register tools the LLM itself calls. Schema is
    JSON Schema; zut routes the model's `tool_call` to the
    extension's `tool_result`. Same lifecycle as built-in tools
-   (read/write/edit/bash/create_worktree/lsp/web_search/skill).
+   (read/write/edit/bash/create_worktree/grep/lsp/web_search/skill).
 
 3. **Lifecycle hooks** — subscribe to events
    (session_start, turn_start, tool_call, turn_end,
@@ -71,8 +71,8 @@ Field rules:
 - `name` (required, unique) — id zut uses internally; matches the
   hello frame. Slash commands & tools live in the same name space
   as built-ins; conflicts with active built-ins are ignored. The
-  native `web_search` name is reserved even when that built-in is
-  disabled, so an extension cannot claim or replace it.
+  native `web_search` and `grep` names are reserved even when those
+  built-ins are disabled, so an extension cannot claim or replace them.
 - `exec` (required) — the executable path. Resolution:
   - absolute: as-is
   - starts with `./` or `../`: relative to the manifest's directory
