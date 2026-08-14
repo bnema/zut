@@ -693,8 +693,19 @@ func copyExtensionStates(states map[string]json.RawMessage) map[string]json.RawM
 	return out
 }
 
+var (
+	errGoalActiveReplacement  = errors.New("active goal replacement")
+	errGoalMissionMissing     = errors.New("goal mission missing")
+	errGoalMissionMismatch    = errors.New("goal mission mismatch")
+	errGoalStorageUnavailable = errors.New("goal storage unavailable")
+	errGoalStateWrite         = errors.New("goal state write")
+)
+
 func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result core.ToolResult, goalMaxTokenBudget ...*uint64) error {
 	if sess == nil {
+		if _, ok := tools.GoalUpdateFromResult(result); ok {
+			return goalCommitError(errGoalStorageUnavailable)
+		}
 		return nil
 	}
 	if details, ok := result.Details.(extensions.ToolResultDetails); ok && details.Extension != "" && len(details.State) > 0 {
@@ -706,17 +717,27 @@ func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result 
 		}
 	}
 	if err := persistGoalToolResult(sess, result, goalMaxTokenBudget...); err != nil {
-		return &core.ToolResultCommitError{Message: safeGoalCommitMessage(err), Err: fmt.Errorf("goal state: %w", err)}
+		return goalCommitError(err)
 	}
 	return nil
 }
 
+func goalCommitError(err error) error {
+	return &core.ToolResultCommitError{Message: safeGoalCommitMessage(err), Err: fmt.Errorf("goal state: %w", err)}
+}
+
 func safeGoalCommitMessage(err error) string {
-	switch err.Error() {
-	case "cannot replace an active goal":
+	switch {
+	case errors.Is(err, errGoalActiveReplacement):
 		return "goal transition rejected: the current goal is still active"
-	case "goal update does not belong to the active mission":
+	case errors.Is(err, errGoalMissionMissing):
+		return "goal transition rejected: no active mission"
+	case errors.Is(err, errGoalMissionMismatch):
 		return "goal transition rejected: it does not belong to the active mission"
+	case errors.Is(err, errGoalStorageUnavailable):
+		return "goal state unavailable: session persistence is disabled"
+	case errors.Is(err, errGoalStateWrite):
+		return "goal state could not be saved"
 	default:
 		return "goal update could not be persisted"
 	}
@@ -732,17 +753,23 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 	}
 	if update.Status == core.GoalActive {
 		if sess.Meta.Goal != nil && sess.Meta.Goal.Status == core.GoalActive {
-			return fmt.Errorf("cannot replace an active goal")
+			return errGoalActiveReplacement
 		}
-		if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
-			return fmt.Errorf("goal update does not belong to the active mission")
+		if sess.Meta.Mission == nil {
+			return errGoalMissionMissing
+		}
+		if update.MissionID == "" || update.MissionID != sess.Meta.Mission.ID {
+			return errGoalMissionMismatch
 		}
 		goal := &core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager}
 		if len(goalMaxTokenBudget) > 0 && goalMaxTokenBudget[0] != nil && *goalMaxTokenBudget[0] > 0 {
 			budget := *goalMaxTokenBudget[0]
 			goal.TokenBudget = &budget
 		}
-		return sess.UpdateGoal(goal)
+		if err := sess.UpdateGoal(goal); err != nil {
+			return fmt.Errorf("%w: %w", errGoalStateWrite, err)
+		}
+		return nil
 	}
 	if sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
 		return nil
@@ -750,7 +777,10 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 	goal := *sess.Meta.Goal
 	goal.Status = update.Status
 	goal.Reason = update.Reason
-	return sess.UpdateGoal(&goal)
+	if err := sess.UpdateGoal(&goal); err != nil {
+		return fmt.Errorf("%w: %w", errGoalStateWrite, err)
+	}
+	return nil
 }
 
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {

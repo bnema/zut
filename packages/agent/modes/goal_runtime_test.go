@@ -79,10 +79,8 @@ func TestGoalContinuationDoesNotResendNoProgressMessagesIndefinitely(t *testing.
 	if got := current(); got == nil || got.Status != core.GoalStalled {
 		t.Fatalf("goal after repeated no-progress responses = %#v", got)
 	}
-	select {
-	case call := <-client.hits:
-		t.Fatalf("unexpected continuation call %d after stalled goal", call)
-	case <-time.After(100 * time.Millisecond):
+	if got := client.count(); got != maxConsecutiveGoalNoProgressTurns {
+		t.Fatalf("provider call count = %d, want %d", got, maxConsecutiveGoalNoProgressTurns)
 	}
 }
 
