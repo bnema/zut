@@ -3839,25 +3839,6 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 // holds an interface, not a concrete *Interactive, so these methods
 // are the only thing the manager sees.
 
-// Submit feeds text through the agent loop as if the user had typed it.
-func (i *Interactive) Submit(text string) {
-	if cmd, ok := shellEscapeCommand(text); ok {
-		i.startShellEscape(i.runCtx, cmd)
-		return
-	}
-	parent := i.runCtx
-	if parent == nil {
-		parent = context.Background()
-	}
-	i.mu.Lock()
-	awaitingStartupPre := i.awaitingStartupPre
-	i.mu.Unlock()
-	if !awaitingStartupPre {
-		i.maybeStartSessionTitle(parent, text)
-	}
-	i.startTurn(parent, text)
-}
-
 // completeStartupPre applies deferred InitialInput after entry.pre finishes.
 // When AutoSubmitInitial was set, the deferred prompt is submitted; otherwise
 // it only pre-fills the editor (CLI-supplied prompts).
