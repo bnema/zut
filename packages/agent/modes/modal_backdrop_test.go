@@ -7,6 +7,14 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+func TestFloatingBackgroundFrameKeepsNewestOversizedBottomRows(t *testing.T) {
+	got := floatingBackgroundFrame([]string{"chat"}, []string{"old", "newer", "newest"}, 3)
+	want := []string{"newer", "newest", ""}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("floating background = %q, want %q", got, want)
+	}
+}
+
 func TestSettingsDialogDimsBackdropAndMainCursor(t *testing.T) {
 	term := &alertTestTerminal{}
 	i := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
@@ -23,8 +31,17 @@ func TestSettingsDialogDimsBackdropAndMainCursor(t *testing.T) {
 	if !strings.Contains(got, tui.Dim(input)) {
 		t.Fatalf("settings dialog left the main input undimmed: %q", got)
 	}
-	if header := frameHeader(i.cfg.Theme, "settings", 80); strings.Contains(got, tui.Dim(header)) {
+	pane := tui.FloatingPaneMaxRect(80, 24)
+	header := frameHeader(i.cfg.Theme, "settings", pane.ContentWidth())
+	if !strings.Contains(got, header) {
+		t.Fatalf("settings dialog was not rendered inside the floating pane: %q", got)
+	}
+	if strings.Contains(got, tui.Dim(header)) {
 		t.Fatalf("settings dialog itself was dimmed: %q", got)
+	}
+	// The pane shrinks to its content and remains horizontally centered.
+	if !strings.Contains(got, tui.MoveTo(9, pane.X+1)) {
+		t.Fatalf("floating pane was not positioned at its computed geometry: %q", got)
 	}
 	cursor := tui.CursorColor(i.cfg.Theme.DimColor(tui.Color256(15), modalBackdropDimPercent))
 	if !strings.Contains(got, cursor) {

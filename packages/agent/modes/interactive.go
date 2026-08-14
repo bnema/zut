@@ -780,6 +780,7 @@ type Interactive struct {
 	logoutDialog            *logoutDialog
 	telegramDialog          *telegramDialog
 	settingsDialog          *settingsDialog
+	floatingPane            tui.FloatingPane
 	quickModelAssign        int
 	telegramBridge          *telegram.Bridge
 	sessionOpsDialog        *sessionOpsDialog
