@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/core"
@@ -22,6 +23,7 @@ const (
 	maxGrepOutputBytes    = 50 * 1024
 	maxGrepOutputLines    = 2000
 	grepTruncationReserve = 128
+	grepInternalTimeout   = 30 * time.Second
 )
 
 // GrepTool searches text files below a requested path without invoking a
@@ -54,6 +56,24 @@ func (t *GrepTool) Schema() json.RawMessage { return json.RawMessage(grepSchema)
 // checked before the executable is selected or started, so a denied path
 // cannot be used to probe or read through the subprocess.
 func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	return t.executeWithTimeout(ctx, raw, progress, grepInternalTimeout)
+}
+
+// grepTimeoutError distinguishes the search's hard deadline from a caller
+// cancellation or deadline, so the caller gets actionable search guidance.
+type grepTimeoutError struct {
+	after time.Duration
+}
+
+func (e *grepTimeoutError) Error() string {
+	return fmt.Sprintf("grep: search timed out after %s; try narrowing the path or glob", e.after)
+}
+
+func (e *grepTimeoutError) Timeout() bool { return true }
+
+// executeWithTimeout keeps the production deadline in Execute while allowing
+// deadline behavior to be tested without waiting 30 seconds.
+func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, progress func(string), timeout time.Duration) (core.ToolResult, error) {
 	args, err := parseGrepArgs(raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -86,7 +106,12 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 
 	commandArgs := grepCommandArgs(engine, args.Pattern, root)
-	cmd := exec.CommandContext(ctx, executable, commandArgs...)
+	// WithTimeout preserves a sooner deadline or cancellation from ctx; the
+	// internal deadline can only add a limit when the caller has not already
+	// supplied a stricter one.
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, executable, commandArgs...)
 	if info.IsDir() {
 		cmd.Dir = root
 	} else {
@@ -109,6 +134,9 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	runErr := cmd.Run()
 	if err := ctx.Err(); err != nil {
 		return core.ToolResult{}, err
+	}
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return core.ToolResult{}, &grepTimeoutError{after: timeout}
 	}
 
 	actualExitCode := 0

@@ -177,6 +177,74 @@ func TestGrepCancellationPropagates(t *testing.T) {
 	}
 }
 
+func TestGrepInternalTimeoutStopsSearch(t *testing.T) {
+	skipGrepScriptTestsOnWindows(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hold"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeGrepScript(t, "#!/bin/sh\nprintf 'started\\n'\nexec tail -f hold\n")
+	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := tool.executeWithTimeout(context.Background(), grepArgsJSON("needle", root), nil, 100*time.Millisecond)
+		resultCh <- err
+	}()
+
+	err := waitForGrepResult(t, resultCh)
+	var timeoutErr *grepTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("error = %v, want internal grep timeout", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("internal timeout error = %v, want distinct caller deadline error", err)
+	}
+	if !strings.Contains(err.Error(), "try narrowing the path or glob") {
+		t.Fatalf("error = %v, want path/glob narrowing guidance", err)
+	}
+}
+
+func TestGrepCallerDeadlineTakesPrecedenceOverInternalTimeout(t *testing.T) {
+	skipGrepScriptTestsOnWindows(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hold"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := writeGrepScript(t, "#!/bin/sh\nprintf 'started\\n'\nexec tail -f hold\n")
+	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := tool.executeWithTimeout(ctx, grepArgsJSON("needle", root), nil, time.Second)
+		resultCh <- err
+	}()
+
+	err := waitForGrepResult(t, resultCh)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want caller deadline exceeded", err)
+	}
+	var timeoutErr *grepTimeoutError
+	if errors.As(err, &timeoutErr) {
+		t.Fatalf("error = %v, want caller deadline rather than internal timeout", err)
+	}
+}
+
+func waitForGrepResult(t *testing.T, resultCh <-chan error) error {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-resultCh:
+		return err
+	case <-timer.C:
+		t.Fatal("grep fixture did not stop before the test deadline")
+		return nil
+	}
+}
+
 func TestGrepDoesNotRequireBashPermission(t *testing.T) {
 	skipGrepScriptTestsOnWindows(t)
 	root := t.TempDir()
