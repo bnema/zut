@@ -57,7 +57,7 @@ Only direct HTTP(S) result URLs are returned. Titles are limited to 300 Unicode 
 
 ## Transcript and integrations
 
-The query is stored in the normal tool-call arguments. Returned titles, URLs, snippets, and errors are normal tool-result content: they can be stored in session transcripts and exports and exposed through JSON and RPC events/transcript retrieval. SDK event consumers see the same tool result only when the SDK explicitly enables `web_search`. Extensions can intercept the normal tool call, but cannot claim the reserved `web_search` name or replace the built-in. Do not submit credentials, secrets, or sensitive local paths in a query: arbitrary query text is retained in those transcript and export surfaces.
+The query is stored in the normal tool-call arguments. Returned titles, URLs, snippets, and errors are normal tool-result content: they can be stored in session transcripts and exports and exposed through JSON and RPC events/transcript retrieval. SDK event consumers see the same tool result only when the SDK explicitly enables `web_search`. Extensions can intercept the normal tool call, but cannot claim the reserved `web_search` or `grep` names or replace the built-ins. Do not submit credentials, secrets, or sensitive local paths in a query: arbitrary query text is retained in those transcript and export surfaces.
 
 The untrusted-content label is not a privacy boundary. Raw HTML, response headers, cookies, proxy configuration, and internal request metadata are not returned or persisted by this tool. A configured environment proxy may observe the request, but proxy settings are never displayed or included in transcripts, JSON/RPC events, or extension content.
 

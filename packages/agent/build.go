@@ -97,11 +97,11 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 	}
 	changed := false
 	for _, info := range mgr.Tools() {
-		// web_search remains a reserved native-tool name even when its
-		// capability policy excludes the current session. An extension must
-		// not turn a normal CLI opt-out into a differently implemented search
+		// web_search and grep remain reserved native-tool names even when
+		// their capability policy excludes the current session. An extension
+		// must not turn a normal CLI opt-out into a differently implemented
 		// capability with the same model-visible name.
-		if info.Name == "web_search" || info.Name == "update_goal" {
+		if info.Name == "web_search" || info.Name == "grep" || info.Name == "update_goal" {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -1194,6 +1194,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.LSPTool:
 			v.Sandbox = s
+		case *tools.GrepTool:
+			v.Sandbox = s
 		}
 		_ = name
 	}
@@ -1229,6 +1231,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"edit":            &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
 		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
+		"grep":            &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
 		"update_goal":     &tools.UpdateGoalTool{},
 	}
 	if webSearchAllowedForRegistry(args) {
@@ -1316,7 +1319,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "create_worktree", "lsp", "web_search", "update_goal"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "update_goal"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary
