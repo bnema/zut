@@ -151,12 +151,6 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 			message: "goal transition rejected: the current goal is still active",
 		},
 		{
-			name:    "missing mission",
-			setup:   newSession,
-			update:  tools.GoalUpdate{Status: core.GoalActive, Objective: privateGoal, MissionID: privateMission},
-			message: "goal transition rejected: no active mission",
-		},
-		{
 			name: "mismatched mission",
 			setup: func(t *testing.T) *core.Session {
 				sess := newSession(t)
@@ -227,22 +221,24 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 	}
 }
 
-func TestPersistGoalToolResultCreatesActiveGoal(t *testing.T) {
+func TestPersistGoalToolResultStartsManagerMission(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
-	if err := sess.EnsureMission("reproduce the reported failure", core.MissionSourceUser); err != nil {
-		t.Fatal(err)
-	}
 
-	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure", MissionID: sess.Meta.Mission.ID}}
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "reproduce the reported failure"}}
 	if err := persistGoalToolResult(sess, result); err != nil {
 		t.Fatal(err)
 	}
-	if goal := sess.Meta.Goal; goal == nil || goal.Status != core.GoalActive || goal.Objective != "reproduce the reported failure" || goal.Owner != core.GoalOwnerManager {
+	goal := sess.Meta.Goal
+	if goal == nil || goal.Status != core.GoalActive || goal.Objective != "reproduce the reported failure" || goal.Owner != core.GoalOwnerManager {
 		t.Fatalf("persisted goal = %#v", goal)
+	}
+	mission := sess.Meta.Mission
+	if mission == nil || mission.Source != core.MissionSourceManager || mission.Objective != goal.Objective || mission.ID != goal.MissionID || mission.ActiveGoalID != goal.ID {
+		t.Fatalf("persisted mission = %#v, goal = %#v", mission, goal)
 	}
 }
 

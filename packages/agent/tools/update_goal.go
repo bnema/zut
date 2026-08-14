@@ -13,12 +13,12 @@ import (
 
 const (
 	UpdateGoalToolName = "update_goal"
-	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked"],"description":"Set the next active goal, or mark the active goal complete or blocked."},"objective":{"type":"string","description":"Concrete objective for status active."},"mission_id":{"type":"string","description":"Mission identifier supplied in the active-goal context when setting a next goal."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
+	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked"],"description":"Start a mission or set its next active goal, or mark the active goal complete or blocked."},"objective":{"type":"string","description":"Concrete objective for status active."},"mission_id":{"type":"string","description":"Required identifier from the active-goal context when setting a next goal in an existing mission. Omit it when starting a mission."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
 )
 
-// UpdateGoalTool lets the manager set the next concrete active goal or settle
-// the current goal. Host-side persistence validates that a transition remains
-// within the session's active mission.
+// UpdateGoalTool lets the main agent start a mission, set its next concrete
+// active goal, or settle the current goal. Host-side persistence validates
+// transitions within an existing session mission.
 type UpdateGoalTool struct{}
 
 type updateGoalArgs struct {
@@ -39,7 +39,7 @@ type GoalUpdate struct {
 func (t *UpdateGoalTool) Name() string { return UpdateGoalToolName }
 
 func (t *UpdateGoalTool) Description() string {
-	return "Set the next concrete goal needed for the active user mission, or mark the active goal complete or blocked. Do not broaden the user's mission."
+	return "Start your own mission when none is active, set the next concrete goal within an active mission, or mark the active goal complete or blocked. Do not broaden an existing mission."
 }
 
 func (t *UpdateGoalTool) Schema() json.RawMessage { return json.RawMessage(updateGoalSchema) }

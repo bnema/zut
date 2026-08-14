@@ -695,7 +695,6 @@ func copyExtensionStates(states map[string]json.RawMessage) map[string]json.RawM
 
 var (
 	errGoalActiveReplacement  = errors.New("active goal replacement")
-	errGoalMissionMissing     = errors.New("goal mission missing")
 	errGoalMissionMismatch    = errors.New("goal mission mismatch")
 	errGoalStorageUnavailable = errors.New("goal storage unavailable")
 	errGoalStateWrite         = errors.New("goal state write")
@@ -730,8 +729,6 @@ func safeGoalCommitMessage(err error) string {
 	switch {
 	case errors.Is(err, errGoalActiveReplacement):
 		return "goal transition rejected: the current goal is still active"
-	case errors.Is(err, errGoalMissionMissing):
-		return "goal transition rejected: no active mission"
 	case errors.Is(err, errGoalMissionMismatch):
 		return "goal transition rejected: it does not belong to the active mission"
 	case errors.Is(err, errGoalStorageUnavailable):
@@ -755,10 +752,7 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 		if sess.Meta.Goal != nil && sess.Meta.Goal.Status == core.GoalActive {
 			return errGoalActiveReplacement
 		}
-		if sess.Meta.Mission == nil {
-			return errGoalMissionMissing
-		}
-		if update.MissionID == "" || update.MissionID != sess.Meta.Mission.ID {
+		if sess.Meta.Mission != nil && update.MissionID != sess.Meta.Mission.ID {
 			return errGoalMissionMismatch
 		}
 		goal := &core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager}
