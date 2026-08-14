@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/provider"
 	"github.com/google/uuid"
 )
 
@@ -157,6 +158,10 @@ type ResidentSnapshot struct {
 	ActivityUpdatedAt time.Time
 	WaitingForModel   bool
 	OwnedElsewhere    bool
+	Usage             provider.Usage
+	ContextUsed       int
+	ContextMax        int
+	Subscription      bool
 }
 
 func residentSnapshot(child *ResidentChild) ResidentSnapshot {
@@ -168,7 +173,8 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
 		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
-		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel}
+		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel,
+		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription}
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -785,7 +791,10 @@ func (m *ResidentManager) Reconcile() []error {
 				state, updatedAt = ResidentQueued, time.Now().UTC()
 			}
 			m.mu.Lock()
-			m.recovered[childID] = ResidentSnapshot{ID: childID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true}
+			m.recovered[childID] = ResidentSnapshot{
+				ID: childID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true,
+				Usage: foreign.Usage, ContextUsed: foreign.ContextUsed, ContextMax: foreign.ContextMax, Subscription: foreign.Subscription,
+			}
 			m.mu.Unlock()
 			continue
 		}
@@ -795,7 +804,11 @@ func (m *ResidentManager) Reconcile() []error {
 		}
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
-			m.recovered[childID] = ResidentSnapshot{ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt}
+			m.recovered[childID] = ResidentSnapshot{
+				ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model,
+				WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt,
+				Usage: metadata.Usage, ContextUsed: metadata.ContextUsed, ContextMax: metadata.ContextMax, Subscription: metadata.Subscription,
+			}
 			m.recoveredSpec[childID] = spec
 		}
 		m.mu.Unlock()

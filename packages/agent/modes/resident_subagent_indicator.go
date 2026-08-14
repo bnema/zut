@@ -20,7 +20,7 @@ var residentProviderWaitingSpinner = tui.NewStringSpinner(
 // child is waiting for a resident scheduler slot; only running children use
 // the animated glyph.
 func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, snapshots []subagents.ResidentSnapshot, width int, now time.Time) []string {
-	lines := make([]string, 0, len(snapshots))
+	lines := make([]string, 0, len(snapshots)*2)
 	for _, snapshot := range snapshots {
 		// Foreign journals remain discoverable through /subagents, but their
 		// activity belongs to another zut host and must not occupy this
@@ -58,8 +58,22 @@ func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, s
 			continue
 		}
 		lines = append(lines, "  "+theme.FGColor(color, plain))
+		if metadata := residentUsageMetadata(snapshot); metadata != "" {
+			metadata = truncateResidentSubagentIndicator(metadata, width-4)
+			if metadata != "" {
+				lines = append(lines, "    "+theme.FGColor(theme.Muted, metadata))
+			}
+		}
 	}
 	return lines
+}
+
+func residentUsageMetadata(snapshot subagents.ResidentSnapshot) string {
+	parts := tui.UsageStatsParts(tui.UsageStatsParams{Usage: snapshot.Usage, Subscription: snapshot.Subscription})
+	if context := tui.ContextUsageText(snapshot.ContextUsed, snapshot.ContextMax); context != "" {
+		parts = append(parts, context)
+	}
+	return strings.Join(parts, " ")
 }
 
 func turnStartTime(snapshot subagents.ResidentSnapshot) time.Time {
@@ -104,18 +118,30 @@ func limitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden,
 	if maxRows <= 0 || (len(lines) == 0 && hidden == 0) {
 		return nil
 	}
+	groups := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, "    ") && len(groups) > 0 {
+			groups[len(groups)-1] = append(groups[len(groups)-1], line)
+			continue
+		}
+		groups = append(groups, []string{line})
+	}
 	if hidden == 0 && len(lines) <= maxRows {
 		return lines
 	}
 	if maxRows == 1 {
-		return []string{residentSubagentActivityOverflowLine(theme, len(lines)+hidden, width)}
+		return []string{residentSubagentActivityOverflowLine(theme, len(groups)+hidden, width)}
 	}
-	visible := len(lines)
-	if visible > maxRows-1 {
-		visible = maxRows - 1
+	out := make([]string, 0, maxRows)
+	visibleGroups := 0
+	for _, group := range groups {
+		if len(out)+len(group) > maxRows-1 {
+			break
+		}
+		out = append(out, group...)
+		visibleGroups++
 	}
-	out := append([]string(nil), lines[:visible]...)
-	return append(out, residentSubagentActivityOverflowLine(theme, hidden+len(lines)-visible, width))
+	return append(out, residentSubagentActivityOverflowLine(theme, hidden+len(groups)-visibleGroups, width))
 }
 
 func residentSubagentActivityOverflowLine(theme tui.Theme, hidden, width int) string {

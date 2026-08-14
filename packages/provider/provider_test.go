@@ -11,6 +11,23 @@ import (
 	"testing"
 )
 
+func TestUsageCacheHitRatioIncludesAllPromptTokens(t *testing.T) {
+	u := Usage{InputTokens: 84_000, CacheReadTokens: 123_000, CacheWriteTokens: 3_000}
+	if got := u.PromptTokens(); got != 210_000 {
+		t.Fatalf("prompt tokens = %d, want 210000", got)
+	}
+	ratio, ok := u.CacheHitRatio()
+	if !ok || math.Abs(ratio-123.0/210.0) > 1e-9 {
+		t.Fatalf("cache hit ratio = %v, %v, want %v, true", ratio, ok, 123.0/210.0)
+	}
+}
+
+func TestUsageCacheHitRatioUnavailableWithoutCacheReads(t *testing.T) {
+	if ratio, ok := (Usage{InputTokens: 84_000}).CacheHitRatio(); ok || ratio != 0 {
+		t.Fatalf("cache hit ratio = %v, %v, want 0, false", ratio, ok)
+	}
+}
+
 func TestSSEParse(t *testing.T) {
 	r := strings.NewReader("event: foo\ndata: {\"a\":1}\n\ndata: hello\ndata: world\n\n")
 	ch := make(chan sseEvent, 4)

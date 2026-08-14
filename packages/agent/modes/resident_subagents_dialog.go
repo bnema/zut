@@ -91,7 +91,9 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	if d == nil {
 		return nil
 	}
-	maxRows := height - 3 // title, hint, and page indicator/empty state
+	// Reserve two lines per child so usage metadata never pushes the dialog
+	// beyond its content height. Children without usage simply consume less.
+	maxRows := (height - 3) / 2 // title, hint, and page indicator/empty state
 	if maxRows < 1 {
 		maxRows = 1
 	}
@@ -114,6 +116,9 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 			label += "  required"
 		}
 		lines = append(lines, marker+truncateResidentSubagentIndicator(label, width-2))
+		if metadata := residentUsageMetadata(row); metadata != "" {
+			lines = append(lines, "    "+truncateResidentSubagentIndicator(metadata, width-4))
+		}
 	}
 	if d.total > len(d.rows) {
 		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.offset+1, d.offset+len(d.rows), d.total))

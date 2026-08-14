@@ -101,6 +101,7 @@ func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJour
 		live:              newResidentLiveProjection(),
 	}
 	if journal != nil {
+		child.live.SeedUsage(journal.usageSnapshot())
 		journal.SetEventObserver(func(event core.AgentEvent) {
 			child.live.Apply(event)
 			child.recordActivity()

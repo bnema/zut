@@ -7,6 +7,36 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestStatusBarShowsCacheHitRatio(t *testing.T) {
+	lines := StatusBar(StatusBarParams{
+		Theme: Dark, Provider: "openai-codex", Model: "gpt-test", Cols: 200,
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000},
+		ContextUsed: 45_152, ContextMax: 272_000,
+	})
+	plain := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "↑84k ↓1.5k R123k/ C59.4%") {
+		t.Fatalf("status bar = %q, want compact cache hit ratio", plain)
+	}
+}
+
+func TestStatusBarWrapsCacheStatsWithinNarrowWidth(t *testing.T) {
+	const cols = 30
+	lines := StatusBar(StatusBarParams{
+		Theme: Dark, Provider: "openai-codex", Model: "gpt-test", Cols: cols,
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheWriteTokens: 2_000, CostUSD: 0.525},
+		ContextUsed: 209_000, ContextMax: 272_000,
+	})
+	plain := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "C58.9%") {
+		t.Fatalf("narrow status bar = %q, want cache hit ratio", plain)
+	}
+	for _, line := range lines {
+		if width := visibleWidth(line); width > cols {
+			t.Fatalf("narrow status line width = %d, want <= %d: %q", width, cols, stripANSI(line))
+		}
+	}
+}
+
 func TestStatusBarShowsActiveGoal(t *testing.T) {
 	params := StatusBarParams{
 		Theme:      Dark,

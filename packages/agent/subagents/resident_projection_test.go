@@ -39,6 +39,17 @@ func TestResidentLiveProjectionPublishesCopiesAndFinalizesLiveItems(t *testing.T
 	}
 }
 
+func TestResidentLiveProjectionPreservesContextAcrossZeroUsage(t *testing.T) {
+	projection := newResidentLiveProjection()
+	usage := provider.Usage{InputTokens: 84_000, CacheReadTokens: 123_000}
+	projection.Apply(core.EvUsage{Usage: usage, Cumulative: usage})
+	projection.Apply(core.EvUsage{Usage: provider.Usage{}, Cumulative: usage})
+	got := projection.Snapshot()
+	if got.Usage != usage || got.ContextUsed != 207_000 {
+		t.Fatalf("live usage = %#v, context = %d; want cumulative usage and preserved context", got.Usage, got.ContextUsed)
+	}
+}
+
 func TestResidentLiveProjectionBoundsToolArguments(t *testing.T) {
 	projection := newResidentLiveProjection()
 	projection.Start("turn-1")

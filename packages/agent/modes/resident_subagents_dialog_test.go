@@ -1,10 +1,15 @@
 package modes
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestResidentSubagentListUsesHumanLabelTerminalStateAndRelativeTime(t *testing.T) {
@@ -20,6 +25,33 @@ func TestResidentSubagentListUsesHumanLabelTerminalStateAndRelativeTime(t *testi
 	}
 	if got := formatResidentUpdatedAt(time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC), time.Date(2026, time.August, 13, 12, 2, 0, 0, time.UTC)); got != "2m ago" {
 		t.Fatalf("relative update = %q", got)
+	}
+}
+
+func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
+	completed := make(chan struct{}, 1)
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		journal.ConfigureUsage(272_000, true)
+		return func(context.Context, string) error {
+			usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CostUSD: 0.525}
+			return journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage})
+		}, nil
+	})
+	manager.SetCompletionObserver(func(subagents.ResidentCompletion) { completed <- struct{}{} })
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "usage-child", SessionID: "session", Profile: "reviewer", Provider: "openai-codex", Model: "gpt-test"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("resident child did not complete")
+	}
+	dialog := newResidentSubagentsDialog()
+	dialog.Open(manager)
+	plain := strings.Join(plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 10)), "\n")
+	if !strings.Contains(plain, "\n    ↑84k ↓1.5k R123k/ C59.4% $0.525 (sub) 76.1%/272k") {
+		t.Fatalf("dialog = %q, want usage metadata line", plain)
 	}
 }
 
