@@ -372,3 +372,10 @@ func (r *renamedClient) Stream(ctx context.Context, req Request) (<-chan Event, 
 	}
 	return r.inner.Stream(ctx, req)
 }
+
+func (r *renamedClient) Close() error {
+	if closer, ok := r.inner.(ClientCloser); ok {
+		return closer.Close()
+	}
+	return nil
+}

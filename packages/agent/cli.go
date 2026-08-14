@@ -584,6 +584,11 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	if err != nil {
 		return sessionResumeCandidate{}, joinSessionCloseError(err, sess)
 	}
+	// A replacement agent is still private at this point. Bind the durable
+	// identity before it can be published or run any startup work.
+	if err := candidate.agent.BindSessionID(candidate.session.Meta.ID); err != nil {
+		return sessionResumeCandidate{}, joinSessionCloseError(err, candidate.session)
+	}
 	if !candidate.rebuilt {
 		candidate.agent.SetMessages(candidate.messages)
 		candidate.agent.SeedCost(candidate.cumulative)
@@ -793,9 +798,6 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runZutfileCommand(rawArgs, version); handled {
 		return err
 	}
-	if handled, err := runDebugCommand(rawArgs, os.Stdout); handled {
-		return err
-	}
 	return runWithArgsRaw(rawArgs, version)
 }
 
@@ -854,8 +856,6 @@ func runWithArgs(args Args, version string) error {
 		return runJSONMode(ctx, args, version)
 	case ModeRPC:
 		return runRPCMode(ctx, args, version)
-	case ModeSubagentWorker:
-		return runSubagentWorkerMode(ctx, args, version)
 	default:
 		return runInteractive(ctx, args, version)
 	}
@@ -1481,28 +1481,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	// Keep the shared subagent runtime in the outer scope: session reloads,
 	// dashboard updates, agent rebuilds, and shutdown all use the same owner.
 	var runtime *subagentRuntime
-	var subagentsMgr *subagents.Supervisor
-	// These callbacks deliberately resolve iv lazily because the Interactive
-	// instance is constructed after the agent and its registry.
-	onSpawnedSupervisor := func(a *subagents.Agent, task string, required bool) {
+	onResidentAccepted := func(spec subagents.ResidentChildSpec, _ string) {
 		if iv != nil {
-			iv.TrackSubagentWorker(a, task, required)
+			iv.TrackResidentSubagent(spec.ID)
 		}
 	}
-	onResumedSupervisor := func(a *subagents.Agent, prompt string, required bool) {
+	onResidentCompletion := func(completion subagents.ResidentCompletion) {
 		if iv != nil {
-			iv.TrackResumedSubagentWorker(a, prompt, required)
-		}
-	}
-	onBeforeResumedSupervisor := func(a *subagents.Agent, prompt string, required bool) func() {
-		if iv != nil {
-			return iv.PrepareResumedSubagentWorker(a, prompt, required)
-		}
-		return nil
-	}
-	onStopRequestedSupervisor := func(a *subagents.Agent) {
-		if iv != nil {
-			iv.TrackStoppedSubagentWorker(a)
+			iv.ReportResidentSubagent(completion)
 		}
 	}
 	activeProviderForSubagents := func() string {
@@ -1517,46 +1503,37 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	}
 
 	runtime = newSubagentRuntime(subagentRuntimeConfig{
-		Context:         ctx,
-		Args:            args,
-		Root:            filepath.Join(ZutHome(), "subagents"),
-		RepoRoot:        r.CWD,
-		Provider:        r.Provider,
-		Model:           r.Model,
-		Reasoning:       r.Reasoning,
-		BaseURL:         r.BaseURL,
-		InsecureTLS:     r.InsecureTLS,
-		FastMode:        r.FastMode,
-		APIKey:          args.APIKey,
-		Policy:          subagentPolicyFromConfig(initialCfg.Subagents),
-		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
-		WebSearchGuard:  webSearchGuard,
-		ActiveProvider:  activeProviderForSubagents,
-		ActiveModel:     activeModelForSubagents,
-		OnSpawned:       onSpawnedSupervisor,
-		OnResumed:       onResumedSupervisor,
-		BeforeResumed:   onBeforeResumedSupervisor,
-		OnStopRequested: onStopRequestedSupervisor,
+		Args:               args,
+		Root:               filepath.Join(ZutHome(), "subagents"),
+		RepoRoot:           r.CWD,
+		Provider:           r.Provider,
+		Model:              r.Model,
+		Reasoning:          r.Reasoning,
+		BaseURL:            r.BaseURL,
+		InsecureTLS:        r.InsecureTLS,
+		FastMode:           r.FastMode,
+		Policy:             subagentPolicyFromConfig(initialCfg.Subagents),
+		WebSearchPolicy:    webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
+		WebSearchGuard:     webSearchGuard,
+		ActiveProvider:     activeProviderForSubagents,
+		ActiveModel:        activeModelForSubagents,
+		OnResidentSpawned:  onResidentAccepted,
+		ResidentCompletion: onResidentCompletion,
 	})
-	subagentsMgr = runtime.Supervisor()
 	reloadDone := make(chan struct{})
 	var reloadErrs []error
-	runtime.SetRequiredWorkerReady(reloadDone, func() error {
-		return errors.Join(reloadErrs...)
-	})
-	if subagentsMgr != nil {
-		// Replaying historical event logs can take seconds. Populate the
-		// detached-agent dashboard without blocking the first interactive paint.
+	if resident := runtime.ResidentManager(); resident != nil {
+		// Resident reconciliation reads only the new journal format. It marks
+		// active durable work interrupted and exposes it for an explicit new
+		// prompt; it never constructs a child or replays an accepted task.
 		go func() {
-			_, reloadErrs = subagentsMgr.Reload()
+			reloadErrs = resident.Reconcile()
 			close(reloadDone)
 		}()
 	} else {
 		close(reloadDone)
 	}
 	defer func() {
-		// Reload may attach detached workers, so let it finish before shutdown
-		// snapshots the supervisor's worker set.
 		<-reloadDone
 		_ = closeSubagentRuntimeFresh(runtime)
 	}()
@@ -2057,13 +2034,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		activeProvider = candidate.provider
 		activeModel = candidate.model
-		if subagentsMgr != nil && candidate.session != nil {
-			// Keep the dashboard scope in the same commit as the session,
-			// agent, usage, and persistence baseline.
+		if candidate.session != nil {
+			// Keep the resident parent's session association in the same commit
+			// as the session, agent, usage, and persistence baseline.
+			runtime.SetActiveSession(candidate.session.ID)
 			if iv != nil {
 				iv.SetSubagentSessionScope(candidate.session.ID)
-			} else {
-				runtime.SetActiveSession(candidate.session.ID)
 			}
 		}
 		committed = true
@@ -2257,10 +2233,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 
 		// Re-scope the subagent dashboard to the new session.
 		if newSess != nil {
+			runtime.SetActiveSession(newSess.ID)
 			if iv != nil {
 				iv.SetSubagentSessionScope(newSess.ID)
-			} else {
-				runtime.SetActiveSession(newSess.ID)
 			}
 		}
 		if newSess != nil {
@@ -2340,7 +2315,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	}
 
 	// Scope the dashboard to the active host session. The runtime owns
-	// shutdown separately and closes the supervisor exactly once.
+	// shutdown separately and closes the resident runtime exactly once.
 	if sess != nil {
 		runtime.SetActiveSession(sess.ID)
 	}
@@ -2360,9 +2335,6 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	webSearchInvocationOverride := webSearchExplicitlyEnabledForSession(args)
 	setWebSearchAvailable := func(available bool) {
 		webSearchGuard.setAvailable(available)
-		if subagentsMgr == nil {
-			return
-		}
 		policy := subagents.WebSearchDeny
 		if available {
 			policy = subagents.WebSearchAllow
@@ -2397,7 +2369,6 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		TUIInputStyle:                  initialCfg.TUIInputStyle,
 		TUIStatusPosition:              initialCfg.TUIStatusPosition,
 		TUIWorkingPosition:             initialCfg.TUIWorkingPosition,
-		TUISubagentPosition:            initialCfg.TUISubagentPosition,
 		ThemeName:                      initialCfg.Theme,
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),
@@ -2552,9 +2523,34 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		},
 		SessionTransition: newSessionTransition(&sessionTransitionMu),
 		Extensions:        extMgr,
-		Supervisor:        subagentsMgr,
-		ResolveSubagent:   resolveSubagent,
-		ChangelogChan:     changelogCh,
+		ResidentManager:   runtime.ResidentManager(),
+		SpawnResident: func(ctx context.Context, request tools.ResidentSpawnRequest) (string, error) {
+			manager := runtime.ResidentManager()
+			if manager == nil {
+				return "", errors.New("resident runtime is unavailable")
+			}
+			catalogue := r.ToolRegistry
+			if iv != nil && iv.Agent() != nil {
+				catalogue = iv.Agent().ToolsSnapshot()
+			}
+			spec, err := runtime.buildResidentChildSpec(ctx, request, catalogue)
+			if err != nil {
+				return "", err
+			}
+			if _, err := manager.Spawn(ctx, spec, request.Task); err != nil {
+				return "", err
+			}
+			return spec.ID, nil
+		},
+		BuildResidentSpec: func(ctx context.Context, request tools.ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+			catalogue := r.ToolRegistry
+			if iv != nil && iv.Agent() != nil {
+				catalogue = iv.Agent().ToolsSnapshot()
+			}
+			return runtime.buildResidentChildSpec(ctx, request, catalogue)
+		},
+		ResolveSubagent: resolveSubagent,
+		ChangelogChan:   changelogCh,
 		OnChangelogDismiss: func() {
 			// For development builds, store the actual release version
 			// so the same changelog doesn't show again next launch.
@@ -2754,6 +2750,9 @@ func agentSessionsRoot(root string, args Args) string {
 // with a nil error if session persistence is disabled.
 func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Agent, version string) (*core.Session, error) {
 	if args.NoSess {
+		// Allocate the one logical identity for this non-persisted run during
+		// runtime assembly instead of allowing a provider adapter to invent it.
+		ag.SessionID()
 		return nil, nil
 	}
 	// Sweep meta-only files left over from older zut versions (and from
@@ -2772,14 +2771,8 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 	switch {
 	case args.Session != "":
 		s, msgs, err = core.OpenSession(args.Session)
-		// The subagent-worker child passes a fixed --session path that
-		// may not exist yet on first Spawn. Treat ENOENT as "create
-		// a fresh session AT THIS PATH" so the conversation actually
-		// gets persisted; without this fallback the subagent child runs
-		// with sess==nil and every Resume re-starts with no memory
-		// of the prior turns. Other openers (--continue / --resume /
-		// the picker) never see ENOENT here because they only choose
-		// paths that already exist on disk.
+		// An explicit session path may be created on first use; session pickers
+		// and resume paths still select existing files only.
 		if err != nil && errors.Is(err, os.ErrNotExist) {
 			s, err = core.NewSessionAtPath(args.Session, args.CWD, r.Provider, r.Model, version)
 			msgs = nil
@@ -2813,6 +2806,9 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 		return nil, err
 	}
 	if s != nil {
+		if err := ag.BindSessionID(s.Meta.ID); err != nil {
+			return nil, err
+		}
 		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
 		ag.SetMessages(msgs)
 		if cum, last, uerr := core.SessionUsageDetail(s.Path); uerr == nil {
@@ -2823,6 +2819,9 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 	}
 	s, err = core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
 	if err == nil {
+		if bindErr := ag.BindSessionID(s.Meta.ID); bindErr != nil {
+			return nil, bindErr
+		}
 		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
 	}
 	return s, err

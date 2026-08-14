@@ -68,9 +68,9 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 			runErr = errors.Join(runErr, closeErr)
 		}
 	}()
-	if runtime.Supervisor() != nil {
-		if _, reloadErrs := runtime.Supervisor().Reload(); len(reloadErrs) != 0 {
-			return fmt.Errorf("reload subagents: %w", errors.Join(reloadErrs...))
+	if resident := runtime.ResidentManager(); resident != nil {
+		for _, reconcileErr := range resident.Reconcile() {
+			fmt.Fprintf(os.Stderr, "zut: reconcile resident subagent: %v\n", reconcileErr)
 		}
 	}
 
@@ -129,7 +129,7 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 			return refreshErr
 		}
 		// entry.pre may have changed the effective permission set. Keep the
-		// worker supervisor in step with the refreshed parent registry.
+		// resident child factory in step with the refreshed parent registry.
 		runtime.SetWebSearchPolicy(refreshedPolicy)
 	}
 
@@ -192,24 +192,8 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 	return hooks.finish(finalText)
 }
 
-func newOrchestratedRuntime(ctx context.Context, args Args, r Resolved, cfg Config, tracker *subagents.CompletionTracker) *subagentRuntime {
-	onSpawned := func(a *subagents.Agent, task string, _ bool) {
-		tracker.TrackTurn(a, task, false)
-	}
-	onResumed := func(a *subagents.Agent, prompt string, _ bool) {
-		// BeforeResumed normally owns future-turn registration. Keep this
-		// fallback for direct runtime callers that do not install the pre-hook;
-		// SubagentResumeTool suppresses it when BeforeResumed accepted delivery.
-		tracker.TrackTurn(a, prompt, true)
-	}
-	onBeforeResumed := func(a *subagents.Agent, prompt string, _ bool) func() {
-		return tracker.TrackFutureTurn(a, prompt, true)
-	}
-	onStopRequested := func(a *subagents.Agent) {
-		tracker.TrackExit(a, "stopped")
-	}
+func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config, tracker *subagents.CompletionTracker) *subagentRuntime {
 	return newSubagentRuntime(subagentRuntimeConfig{
-		Context:         ctx,
 		Args:            args,
 		Root:            filepath.Join(ZutHome(), "subagents"),
 		RepoRoot:        r.CWD,
@@ -219,13 +203,17 @@ func newOrchestratedRuntime(ctx context.Context, args Args, r Resolved, cfg Conf
 		BaseURL:         r.BaseURL,
 		InsecureTLS:     r.InsecureTLS,
 		FastMode:        r.FastMode,
-		APIKey:          args.APIKey,
 		Policy:          subagentPolicyFromConfig(cfg.Subagents),
 		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
-		OnSpawned:       onSpawned,
-		OnResumed:       onResumed,
-		BeforeResumed:   onBeforeResumed,
-		OnStopRequested: onStopRequested,
+		ResidentCompletion: func(completion subagents.ResidentCompletion) {
+			status := "completed"
+			errText := ""
+			if completion.Err != nil {
+				status, errText = "failed", completion.Err.Error()
+			}
+			tracker.Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
+		},
+		OnResidentSpawned: func(subagents.ResidentChildSpec, string) { tracker.TrackResident() },
 	})
 }
 

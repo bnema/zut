@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
+	"github.com/google/uuid"
 )
 
 var (
@@ -165,6 +166,11 @@ type Agent struct {
 	// a running tool or cancels an in-flight provider request.
 	queued      []queuedMessage
 	timeContext agentTimeContext
+	// sessionID is assigned by the host from the durable session before the
+	// first provider request. Agents without persistence allocate one lazily at
+	// their first accepted turn and retain it for the process lifetime.
+	sessionID              string
+	providerRequestStarted bool
 }
 
 // NewAgent returns an Agent with sensible defaults.
@@ -180,6 +186,45 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 		StreamIdleTimeout: DefaultStreamIdleTimeout,
 		timeContext:       newAgentTimeContext(time.Now()),
 	}
+}
+
+// BindSessionID assigns the stable logical session identity before the first
+// provider request. A durable host session must bind its SessionMeta.ID here;
+// no-session hosts may leave it unset and the agent will allocate one lazily.
+func (a *Agent) BindSessionID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("session ID is empty")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.providerRequestStarted {
+		return errors.New("cannot change session ID after the first provider request")
+	}
+	a.sessionID = id
+	return nil
+}
+
+// SessionID returns the stable logical session identity, allocating an
+// ephemeral identity when persistence is disabled and the host did not bind
+// one during runtime assembly.
+func (a *Agent) SessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessionID == "" {
+		a.sessionID = uuid.NewString()
+	}
+	return a.sessionID
+}
+
+func (a *Agent) beginTurn() provider.RequestContext {
+	return provider.RequestContext{SessionID: a.SessionID(), TurnID: uuid.NewString()}
+}
+
+func (a *Agent) beginProviderRequest() {
+	a.mu.Lock()
+	a.providerRequestStarted = true
+	a.mu.Unlock()
 }
 
 // SetFastMode changes the service-tier preference for the next model call.
@@ -485,7 +530,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, images []provider.Image
 	a.fireMessageAppended(user)
 	sink(EvUserMessage{Message: user})
 
-	return a.runLoop(ctx, sink)
+	return a.runLoop(ctx, sink, a.beginTurn())
 }
 
 // Continue runs the agent loop against the existing transcript. Used
@@ -495,7 +540,7 @@ func (a *Agent) Continue(ctx context.Context, sink func(AgentEvent)) error {
 		sink = func(AgentEvent) {}
 	}
 	sink = a.wrapSink(sink)
-	return a.runLoop(ctx, sink)
+	return a.runLoop(ctx, sink, a.beginTurn())
 }
 
 // wrapSink composes the per-call sink with a.OnEvent (if set) so the
@@ -512,7 +557,7 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 	}
 }
 
-func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
+func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestContext provider.RequestContext) error {
 	for step := 1; a.MaxSteps <= 0 || step <= a.MaxSteps; step++ {
 		// Messages queued while the agent was busy are delivered
 		// before the next model call. This is the safe boundary:
@@ -523,7 +568,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			a.appendQueuedAsUser(pending, sink)
 		}
 
-		sink(EvTurnStart{Step: step})
+		sink(EvTurnStart{Step: step, TurnID: requestContext.TurnID})
 		turnContext := ""
 		if a.BeforeTurnContext != nil {
 			var allowed bool
@@ -555,7 +600,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		)
 		maxAttempts := max(a.MaxRetries+1, 1)
 		for attempt := 0; ; attempt++ {
-			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, attempt, maxAttempts)
+			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, requestContext, attempt, maxAttempts)
 			sink(EvTurnEnd{Stop: stop, Err: err})
 			if err == nil {
 				break
@@ -907,7 +952,7 @@ func newStreamIdleTimer(timeout time.Duration) (<-chan time.Time, func(), func()
 	return timer.C, stop, reset
 }
 
-func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
+func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, requestContext provider.RequestContext, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
 	fastMode := a.FastModeEnabled()
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
 		return provider.StopError, provider.Message{}, err
@@ -949,6 +994,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
 		Lifecycle:   requestLifecycle,
+		Context:     requestContext,
 	}
 	sink(EvRequestStarted{
 		Provider:    a.Client.Name(),
@@ -959,6 +1005,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	})
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
+	a.beginProviderRequest()
 	stream, err := a.Client.Stream(streamCtx, req)
 	if err != nil {
 		return provider.StopError, provider.Message{}, &requestOpenError{err: err}

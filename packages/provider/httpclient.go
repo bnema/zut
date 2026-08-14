@@ -43,7 +43,17 @@ func WithHTTPClient(c Client, httpClient *http.Client) Client {
 		v.http = httpClient
 	case *bedrockClient:
 		v.http = httpClient
+	case *codexClient:
+		v.http = httpClient
+	case *responsesWebSocketClient:
+		v.http.http = openaiResponsesHTTPClient(httpClient)
 	case *renamedClient:
+		if codex, ok := v.inner.(*codexClient); ok {
+			if _, isPublicResponses := codex.http.Transport.(*openaiResponsesTransport); isPublicResponses {
+				codex.http = openaiResponsesHTTPClient(httpClient)
+				return c
+			}
+		}
 		v.inner = WithHTTPClient(v.inner, httpClient)
 	case *modelRouter:
 		v.fallback = WithHTTPClient(v.fallback, httpClient)

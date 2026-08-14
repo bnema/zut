@@ -169,10 +169,6 @@ type InteractiveConfig struct {
 	// above or below the main input.
 	TUIWorkingPosition string
 
-	// TUISubagentPosition controls whether live subagent activity renders
-	// above or below the main input. Empty defaults below the input.
-	TUISubagentPosition string
-
 	// QuickModelShortcuts maps slots 1-9 to provider/model pairs. The
 	// shortcuts are Ctrl+1..9. Cmd+1..9 may also work when the terminal
 	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
@@ -229,7 +225,7 @@ type InteractiveConfig struct {
 	// ceilings after a live registry commit or fail-closed revocation. It can
 	// run while agentMu and i.mu are held, so callbacks must not re-enter
 	// Interactive or wait on either lock. The CLI callback only updates its
-	// web-search guard and supervisor policy.
+	// web-search guard and resident child policy.
 	SetWebSearchAvailable func(bool)
 
 	// RefreshPrompt re-resolves the complete live prompt and tool registry
@@ -390,12 +386,14 @@ type InteractiveConfig struct {
 	// AFTER the built-in catalog so a built-in name always wins.
 	Extensions *extensions.Manager
 
-	// Supervisor, if non-nil, enables the /subagents slash command and the
-	// dashboard dialog. The cli constructs the Supervisor once per
-	// interactive run and tears it down on exit. nil disables the
-	// feature entirely (used by embedders / tests that don't want
-	// subprocesses).
-	Supervisor *subagents.Supervisor
+	// ResidentManager owns the /subagents runtime and provides bounded journal
+	// pages plus live projections to the child-session UI.
+	ResidentManager *subagents.ResidentManager
+	// SpawnResident resolves the host's live registry/configuration and commits
+	// a new resident child. Keeping that construction callback in agent avoids
+	// leaking provider or credential assembly into modes.
+	SpawnResident     func(context.Context, tools.ResidentSpawnRequest) (string, error)
+	BuildResidentSpec func(context.Context, tools.ResidentSpawnRequest) (subagents.ResidentChildSpec, error)
 
 	// ResolveSubagent validates a named markdown profile for direct
 	// /subagents commands. Auto-subagents uses the equivalent callback on its
@@ -495,7 +493,6 @@ type SettingsStore interface {
 	SetTUIInputStyle(style string) error
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error
-	SetTUISubagentPosition(position string) error
 	SetReasoning(level string) error
 	SetTheme(name string) error
 }
@@ -672,33 +669,32 @@ type Interactive struct {
 	// it. We snapshot the total expected stream length (already
 	// streamed + still pending) at the moment the tool starts, and
 	// hold the block back until the pacer reaches it.
-	toolGate               map[string]int
-	statusErr              string
-	statusOK               string
-	goalStatus             core.GoalStatus
-	reloadStatusSeq        uint64
-	extStatuses            map[string]map[string]extensionStatus
-	extWidgets             map[string]map[string]extensionWidget
-	rightBarHidden         bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
-	liveBlock              []string // live streaming/tool progress rendered outside scrollback
-	helpBlock              []string // rendered above the chat when /help was typed
-	cumUsage               provider.Usage
-	lastCtxInput           int // input_tokens of the most recent turn — approximates current context size
-	busy                   bool
-	ctrlCExit              bool
-	activity               agentActivity
-	subagentActivityActive bool
-	pendingIdleWork        []func()
-	dirty                  chan struct{}
-	renderScheduler        atomic.Pointer[latestFrameScheduler]
-	renderRevision         atomic.Uint64
-	renderOutsideLock      bool
-	modelRefresh           chan modelRefreshResult
-	modelRefreshing        bool
-	startupPreDone         chan startupPreResult
-	cancelTurn             context.CancelFunc
-	scrollOffset           int // rows from the bottom; 0 = pinned to latest
-	prevScrollOffset       int // last value redraw snapped against; tracks intent
+	toolGate          map[string]int
+	statusErr         string
+	statusOK          string
+	goalStatus        core.GoalStatus
+	reloadStatusSeq   uint64
+	extStatuses       map[string]map[string]extensionStatus
+	extWidgets        map[string]map[string]extensionWidget
+	rightBarHidden    bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
+	liveBlock         []string // live streaming/tool progress rendered outside scrollback
+	helpBlock         []string // rendered above the chat when /help was typed
+	cumUsage          provider.Usage
+	lastCtxInput      int // input_tokens of the most recent turn — approximates current context size
+	busy              bool
+	ctrlCExit         bool
+	activity          agentActivity
+	pendingIdleWork   []func()
+	dirty             chan struct{}
+	renderScheduler   atomic.Pointer[latestFrameScheduler]
+	renderRevision    atomic.Uint64
+	renderOutsideLock bool
+	modelRefresh      chan modelRefreshResult
+	modelRefreshing   bool
+	startupPreDone    chan startupPreResult
+	cancelTurn        context.CancelFunc
+	scrollOffset      int // rows from the bottom; 0 = pinned to latest
+	prevScrollOffset  int // last value redraw snapped against; tracks intent
 
 	// prevChatLen and prevChatCols track the chat buffer's size at the
 	// last redraw so that when content grows below the user's viewport
@@ -771,28 +767,30 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
-	dialog            *loginDialog
-	modelDialog       *modelDialog
-	llamaDialog       *llamaDialog
-	rescueDialog      *rescueDialog
-	sessionDialog     *sessionDialog
-	subagentsDialog   *subagentsDialog
-	jumpDialog        *jumpDialog
-	btwDialog         *btwDialog
-	skillsDialog      *skillsDialog
-	changelogDialog   *changelogDialog
-	confirmDialog     *confirmDialog
-	logoutDialog      *logoutDialog
-	telegramDialog    *telegramDialog
-	settingsDialog    *settingsDialog
-	quickModelAssign  int
-	telegramBridge    *telegram.Bridge
-	sessionOpsDialog  *sessionOpsDialog
-	sessionTreeDialog *sessionTreeDialog
-	extPanel          *extPanelDialog
-	llamaConfigured   bool
+	dialog                  *loginDialog
+	modelDialog             *modelDialog
+	llamaDialog             *llamaDialog
+	rescueDialog            *rescueDialog
+	sessionDialog           *sessionDialog
+	residentSubagentsDialog *residentSubagentsDialog
+	residentChildSession    *residentChildSession
+	jumpDialog              *jumpDialog
+	btwDialog               *btwDialog
+	skillsDialog            *skillsDialog
+	changelogDialog         *changelogDialog
+	confirmDialog           *confirmDialog
+	logoutDialog            *logoutDialog
+	telegramDialog          *telegramDialog
+	settingsDialog          *settingsDialog
+	quickModelAssign        int
+	telegramBridge          *telegram.Bridge
+	sessionOpsDialog        *sessionOpsDialog
+	sessionTreeDialog       *sessionTreeDialog
+	extPanel                *extPanelDialog
+	llamaConfigured         bool
 
-	// completionTracker observes auto-subagent turn and process completion.
+	// completionTracker collects resident child terminal turns for delivery to
+	// the parent orchestration wave.
 	// turnCoordinator seals worker waves at manager-turn boundaries and decides
 	// the next wake without relying on timing or polling.
 	completionTracker         *subagents.CompletionTracker
@@ -804,18 +802,15 @@ type Interactive struct {
 	completionDeliveryRequest bool
 	completionDeliveryHolds   int
 
-	// subagentsWaitWatcherDone is an optional test hook invoked when a
-	// /subagents wait watcher exits.
-	subagentsWaitWatcherDone func()
-
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
 	// of scrolling. Flag resets after the action fires or the dialog
 	// is dismissed, so repeated /jump calls don't turn into forks.
-	pendingFork bool
-	suggest     *slashSuggester
-	fileSuggest *fileSuggester
-	spin        *spinner
+	pendingFork       bool
+	suggest           *slashSuggester
+	fileSuggest       *fileSuggester
+	spin              *spinner
+	residentAnimating atomic.Bool
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -966,40 +961,40 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		// Prompt is the standard half-block accent bar used by chat
 		// speaker labels too, so the input gutter matches the rest
 		// of the UI.
-		ed:                  tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
-		rend:                renderer,
-		toolCalls:           map[string]*tui.ToolCallView{},
-		toolGate:            map[string]int{},
-		dirty:               make(chan struct{}, 8),
-		modelRefresh:        make(chan modelRefreshResult, 1),
-		startupPreDone:      make(chan startupPreResult, 1),
-		dialog:              newLoginDialog(),
-		modelDialog:         newModelDialog(),
-		llamaDialog:         newLlamaDialog(),
-		rescueDialog:        newRescueDialog(),
-		sessionDialog:       newSessionDialog(),
-		subagentsDialog:     newSubagentsDialog(),
-		jumpDialog:          newJumpDialog(),
-		btwDialog:           newBtwDialog(),
-		skillsDialog:        newSkillsDialog(),
-		changelogDialog:     newChangelogDialog(),
-		confirmDialog:       newConfirmDialog(),
-		logoutDialog:        newLogoutDialog(),
-		telegramDialog:      newTelegramDialog(),
-		settingsDialog:      newSettingsDialog(),
-		sessionOpsDialog:    newSessionOpsDialog(),
-		sessionTreeDialog:   newSessionTreeDialog(),
-		extPanel:            newExtPanelDialog(),
-		extStatuses:         map[string]map[string]extensionStatus{},
-		extWidgets:          map[string]map[string]extensionWidget{},
-		suggest:             newSlashSuggester(),
-		fileSuggest:         newFileSuggester(),
-		spin:                newSpinner(cfg.Theme),
-		inputHistoryIndex:   -1,
-		clock:               time.Now,
-		goalStatus:          initialGoalStatus,
-		reloadErrors:        append([]string(nil), cfg.StartupExtensionErrors...),
-		compactContinuation: decodeCompactHandoff(cfg.InitialCompactHandoff),
+		ed:                      tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
+		rend:                    renderer,
+		toolCalls:               map[string]*tui.ToolCallView{},
+		toolGate:                map[string]int{},
+		dirty:                   make(chan struct{}, 8),
+		modelRefresh:            make(chan modelRefreshResult, 1),
+		startupPreDone:          make(chan startupPreResult, 1),
+		dialog:                  newLoginDialog(),
+		modelDialog:             newModelDialog(),
+		llamaDialog:             newLlamaDialog(),
+		rescueDialog:            newRescueDialog(),
+		sessionDialog:           newSessionDialog(),
+		residentSubagentsDialog: newResidentSubagentsDialog(),
+		jumpDialog:              newJumpDialog(),
+		btwDialog:               newBtwDialog(),
+		skillsDialog:            newSkillsDialog(),
+		changelogDialog:         newChangelogDialog(),
+		confirmDialog:           newConfirmDialog(),
+		logoutDialog:            newLogoutDialog(),
+		telegramDialog:          newTelegramDialog(),
+		settingsDialog:          newSettingsDialog(),
+		sessionOpsDialog:        newSessionOpsDialog(),
+		sessionTreeDialog:       newSessionTreeDialog(),
+		extPanel:                newExtPanelDialog(),
+		extStatuses:             map[string]map[string]extensionStatus{},
+		extWidgets:              map[string]map[string]extensionWidget{},
+		suggest:                 newSlashSuggester(),
+		fileSuggest:             newFileSuggester(),
+		spin:                    newSpinner(cfg.Theme),
+		inputHistoryIndex:       -1,
+		clock:                   time.Now,
+		goalStatus:              initialGoalStatus,
+		reloadErrors:            append([]string(nil), cfg.StartupExtensionErrors...),
+		compactContinuation:     decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
 	i.btwDialog.setCloseHook(func() {
 		i.confirmDialog.CancelChildConfirmations("side chat closed")
@@ -1011,6 +1006,18 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
 	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
+	if cfg.ResidentManager != nil {
+		// Resident updates arrive from the child control goroutine. The
+		// renderer reads its immutable live projection on the next throttled
+		// frame, so this callback must only request that frame.
+		cfg.ResidentManager.SetUpdateObserver(func(string) { i.invalidate() })
+		cfg.ResidentManager.SetHistoryUpdateObserver(func(childID string) {
+			go i.reloadOpenResidentChildSession(childID)
+		})
+		cfg.ResidentManager.SetActivityObserver(func(active bool) {
+			i.residentAnimating.Store(active)
+		})
+	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = filterHiddenTranscriptMessages(cfg.Agent.Messages())
@@ -1359,20 +1366,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// A session picker that is still loading is an exception so
 			// its dialog-local spinner can advance.
 			//
-			// The subagent dashboard is also animated: its rows reflect
-			// background subprocesses whose activity / age change
-			// without any user input. Without the tick redraw the
-			// dashboard freezes on the snapshot taken when the user
-			// last pressed a key. We exclude the dashboard when one
-			// of its inline editors (spawn task or prompt composer)
-			// is active so the cursor blink in those editors works
-			// the same way it does inside btw.
 			i.mu.Lock()
 			busy := i.busy
-			subagentActivityActive := i.subagentActivityActive
 			sessionLoading := i.sessionDialog.Loading()
 			i.mu.Unlock()
-			if busy || subagentActivityActive || sessionLoading || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
+			if busy || sessionLoading || i.btwDialog.Loading() || i.residentAnimating.Load() {
 				requestRedraw()
 			}
 		}
@@ -1966,17 +1964,12 @@ func (i *Interactive) redraw() {
 		}
 		i.sessionDialog.MaxRows = avail
 		dialog = i.sessionDialog.Render(i.cfg.Theme, mainCols)
-	case i.subagentsDialog.Active():
-		// The dashboard is composed into the bottom-sticky dialog band.
-		// Reserve its leading gap, frame padding, one chat row, and the
-		// renderer margin so a long list or expanded snapshot never pushes
-		// its top rows out of the terminal viewport.
-		avail := rows - 4
-		if avail < 4 {
-			avail = 4
-		}
-		i.subagentsDialog.SetMaxRows(avail)
-		dialog = i.subagentsDialog.Render(i.cfg.Theme, mainCols)
+	case i.residentSubagentsDialog.Active():
+		_, terminalRows := i.cfg.Terminal.Size()
+		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, mainCols, terminalRows)
+	case i.residentChildSession != nil:
+		_, terminalRows := i.cfg.Terminal.Size()
+		dialog = i.residentChildSession.Render(mainCols, terminalRows)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, mainCols)
 	case i.extPanel.Active() && (!i.confirmDialog.Active() || !i.confirmDialog.Focused()):
@@ -2151,19 +2144,14 @@ func (i *Interactive) redraw() {
 		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
 	}
 	edLines, curR, curC := i.ed.Render(mainCols)
-	dashboardActive := i.subagentsDialog.Active()
-	var allSubagentLines []string
-	if !dashboardActive {
-		now := i.clock()
-		activitySnapshots, traceViews := i.activeSubagentActivitySnapshots()
-		allSubagentLines = renderSubagentActivityLines(
-			i.cfg.Theme,
-			i.spin.FrameAt(now),
-			activitySnapshots,
-			traceViews,
-			mainCols,
-			now,
-		)
+	dashboardActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
+	var allResidentSubagentLines []string
+	residentSubagentHidden := 0
+	if !dashboardActive && i.cfg.ResidentManager != nil {
+		const residentIndicatorSnapshotLimit = 8
+		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
+		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock())
+		residentSubagentHidden = total - len(snapshots)
 	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
@@ -2212,21 +2200,14 @@ func (i *Interactive) redraw() {
 	// content. The status block and editor get their own dedicated
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
-	composeBottom := func(subagentLines []string) (bottom []string, inputStartRow int) {
-		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(subagentLines)+len(edLines)+9)
+	composeBottom := func(residentSubagentLines []string) (bottom []string, inputStartRow int) {
+		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
 		inputStartRow = -1
 		if len(dialog) > 0 {
 			bottom = append(bottom, "")
 		}
 		bottom = append(bottom, dialog...)
-		// The subagent dashboard owns the bottom of the screen while it's
-		// active: it has its own inline editors for spawn (`n`) and
-		// prompt (`p`), so the main input would be a confusing second
-		// caret. The suggest popup, sliding-in queue, status block, and
-		// main editor are all hidden underneath it. Keystrokes still
-		// reach handleKey — it routes them to subagentsDialog.HandleKey
-		// before the editor ever sees them — so the only effect of this
-		// branch is visual.
+		// The resident child views own the bottom of the screen while active.
 		if dashboardActive {
 			return bottom, inputStartRow
 		}
@@ -2236,8 +2217,6 @@ func (i *Interactive) redraw() {
 		lineInput := inputStyle == tui.InputStyleLines
 		statusBelow := statusPosition == tui.StatusPositionBelowInput
 		workingBelow := workingPosition == tui.WorkingPositionBelowInput
-		subagentBelow := tui.NormalizeSubagentPosition(i.cfg.TUISubagentPosition) == tui.SubagentPositionBelowInput
-
 		var aboveInput []string
 		aboveInput = append(aboveInput, extensionLines...)
 		if !statusBelow {
@@ -2246,13 +2225,10 @@ func (i *Interactive) redraw() {
 		if !workingBelow {
 			aboveInput = append(aboveInput, workingLines...)
 		}
-		if !subagentBelow {
-			aboveInput = append(aboveInput, subagentLines...)
-		}
 		var belowInput []string
-		if subagentBelow {
-			belowInput = append(belowInput, subagentLines...)
-		}
+		// Background resident work belongs directly below the editor. It is
+		// deliberately independent of the main turn's busy/status placement.
+		belowInput = append(belowInput, residentSubagentLines...)
 		if workingBelow {
 			belowInput = append(belowInput, workingLines...)
 		}
@@ -2272,9 +2248,9 @@ func (i *Interactive) redraw() {
 		inputStartRow = len(bottom)
 		bottom = append(bottom, edLines...)
 		if len(belowInput) > 0 {
-			// Running subagents sit immediately under the prompt by default.
-			// Other below-input chrome keeps the existing breathing room.
-			if !lineInput && (!subagentBelow || len(subagentLines) == 0) {
+			// Active resident work sits immediately below the prompt. Other
+			// below-input chrome keeps the usual breathing room.
+			if !lineInput && len(residentSubagentLines) == 0 {
 				bottom = append(bottom, "")
 			}
 			bottom = append(bottom, belowInput...)
@@ -2282,26 +2258,22 @@ func (i *Interactive) redraw() {
 		return bottom, inputStartRow
 	}
 
-	// Preserve one chat row and the renderer-owned bottom margin. This keeps
-	// a bounded set of live indicators from pushing the editor or its cursor
-	// out of a fixed right-bar frame on short terminals.
 	const rendererBottomMarginRows = 1
 	maxBottomRows := rows - rendererBottomMarginRows - 1
-	subagentLines := allSubagentLines
-	bottom, inputStartRow := composeBottom(subagentLines)
-	if !dashboardActive && len(allSubagentLines) > 0 {
-		for maxRows := len(allSubagentLines); maxRows >= 0; maxRows-- {
-			candidate := limitSubagentActivityLines(i.cfg.Theme, allSubagentLines, maxRows, mainCols)
-			candidateBottom, candidateInputStartRow := composeBottom(candidate)
+	var residentSubagentLines []string
+	var bottom []string
+	var inputStartRow int
+	if !dashboardActive && len(allResidentSubagentLines) > 0 {
+		for maxRows := len(allResidentSubagentLines) + 1; maxRows >= 0; maxRows-- {
+			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, maxRows, mainCols)
+			candidateBottom, _ := composeBottom(candidate)
 			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
-				subagentLines = candidate
-				bottom = candidateBottom
-				inputStartRow = candidateInputStartRow
+				residentSubagentLines = candidate
 				break
 			}
 		}
 	}
-	i.subagentActivityActive = !dashboardActive && len(subagentLines) > 0
+	bottom, inputStartRow = composeBottom(residentSubagentLines)
 
 	chatRows := rows - len(bottom)
 	if chatRows < 1 {
@@ -2506,20 +2478,6 @@ func (i *Interactive) redraw() {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true
-		}
-	}
-	if i.subagentsDialog.Active() {
-		if r, c := i.subagentsDialog.CursorPos(mainCols); r >= 0 {
-			cursorRow = dialogLead + r
-			cursorCol = c
-			cursorInDialog = true
-		} else {
-			// Dashboard list / transcript view has no caret. Without
-			// this branch the default cursorRow points at the
-			// (hidden) main editor row, so the terminal would draw
-			// a stray block somewhere in the chat region.
-			cursorRow = -1
-			cursorCol = 0
 		}
 	}
 	if i.extPanel.Active() {
@@ -2834,7 +2792,8 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 		i.llamaDialog.Active() ||
 		i.rescueDialog.Active() ||
 		i.sessionDialog.Active() ||
-		i.subagentsDialog.Active() ||
+		i.residentSubagentsDialog.Active() ||
+		i.residentChildSession != nil ||
 		i.jumpDialog.Active() ||
 		i.btwDialog.Active() ||
 		i.skillsDialog.Active() ||
@@ -3059,18 +3018,64 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.subagentsDialog.Active() {
-		if k.Kind == tui.KeyCtrlC {
-			i.subagentsDialog.Close()
+	i.mu.Lock()
+	residentDialog := i.residentSubagentsDialog
+	residentDialogActive := residentDialog != nil && residentDialog.Active()
+	residentSession := i.residentChildSession
+	i.mu.Unlock()
+	if residentDialogActive {
+		if k.Kind == tui.KeyCtrlC || k.Kind == tui.KeyEsc {
+			i.mu.Lock()
+			if i.residentSubagentsDialog == residentDialog {
+				residentDialog.Close()
+			}
+			i.mu.Unlock()
 			i.invalidate()
 			return false
 		}
-		_, msg, errMsg := i.subagentsDialog.HandleKey(k)
-		if msg != "" || errMsg != "" {
+		i.mu.Lock()
+		childID := residentDialog.HandleKey(k)
+		i.mu.Unlock()
+		if childID != "" {
+			i.openResidentChildSession(childID)
+		}
+		i.invalidate()
+		return false
+	}
+	if residentSession != nil {
+		switch k.Kind {
+		case tui.KeyCtrlC, tui.KeyEsc:
 			i.mu.Lock()
-			i.statusOK = msg
-			i.statusErr = errMsg
+			if i.residentChildSession == residentSession {
+				i.residentChildSession = nil
+			}
 			i.mu.Unlock()
+		case tui.KeyPageUp:
+			session := residentSession
+			if session.BeginLoad() {
+				go func() {
+					err := session.LoadOlder(200)
+					if session.FinishLoad(err) {
+						i.reloadResidentChildSession(session)
+					}
+					i.invalidate()
+				}()
+			}
+		case tui.KeyPageDown:
+			residentSession.FollowTail()
+		case tui.KeyUp:
+			residentSession.Scroll(1)
+		case tui.KeyDown:
+			residentSession.Scroll(-1)
+		default:
+			session := residentSession
+			if prompt, submit := session.HandleKey(k); submit {
+				go func() {
+					err := i.cfg.ResidentManager.Resume(ctx, session.childID, prompt)
+					session.FinishSubmission(err)
+					i.invalidate()
+				}()
+			}
 		}
 		i.invalidate()
 		return false
@@ -3439,6 +3444,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if i.ed.MoveVertical(+1) {
 				i.invalidate()
 				return false
+			}
+			if !k.Alt && i.inputHistoryIndex < 0 && i.cfg.ResidentManager != nil {
+				if _, total := i.cfg.ResidentManager.RecentSnapshotPage(0, 1); total > 0 {
+					i.runResidentSubagents(ctx, nil)
+					return false
+				}
 			}
 			if !k.Alt && i.handleInputHistoryKey(k) {
 				return false
@@ -4063,15 +4074,9 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.invalidate()
 }
 
-// SetSubagentSessionScope changes the live-worker filter and then requests a
-// redraw. Session changes must use this boundary after their host/session
-// state commits so input-adjacent activity cannot remain scoped to the prior
-// session until another UI event arrives.
-func (i *Interactive) SetSubagentSessionScope(sessionID string) {
-	if i.cfg.Supervisor == nil {
-		return
-	}
-	i.cfg.Supervisor.SetActiveSession(sessionID)
+// SetSubagentSessionScope redraws after a host session transition. Resident
+// children retain their explicit parent session in their durable journal.
+func (i *Interactive) SetSubagentSessionScope(_ string) {
 	i.invalidate()
 }
 
@@ -4582,7 +4587,6 @@ func (i *Interactive) openSettingsDialog() {
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	statusPosition := tui.NormalizeStatusPosition(i.cfg.TUIStatusPosition)
 	workingPosition := tui.NormalizeWorkingPosition(i.cfg.TUIWorkingPosition)
-	subagentPosition := tui.NormalizeSubagentPosition(i.cfg.TUISubagentPosition)
 	quickItems := i.quickModelSettingItems()
 
 	autoCompactOptions := []settingsOption{
@@ -4661,18 +4665,6 @@ func (i *Interactive) openSettingsDialog() {
 	for idx, opt := range workingPositionOptions {
 		if opt.value == workingPosition {
 			workingPositionChoice = idx
-			break
-		}
-	}
-
-	subagentPositionOptions := []settingsOption{
-		{value: tui.SubagentPositionAboveInput, label: "above input", desc: "show running subagents above the input"},
-		{value: tui.SubagentPositionBelowInput, label: "below input", desc: "show running subagents immediately below the input"},
-	}
-	subagentPositionChoice := 0
-	for idx, opt := range subagentPositionOptions {
-		if opt.value == subagentPosition {
-			subagentPositionChoice = idx
 			break
 		}
 	}
@@ -4804,13 +4796,6 @@ func (i *Interactive) openSettingsDialog() {
 					options: inputStyleOptions,
 					choice:  inputStyleChoice,
 				},
-				{
-					key:     "tui_subagent_position",
-					label:   "running subagent position",
-					desc:    "place live subagent activity above or below the input",
-					options: subagentPositionOptions,
-					choice:  subagentPositionChoice,
-				},
 			},
 		},
 		reasoningItem,
@@ -4849,8 +4834,6 @@ func (i *Interactive) applySettingChange(act settingsAction) {
 		i.applyTUIStatusPositionSetting(act.StringValue)
 	case act.Key == "tui_working_position":
 		i.applyTUIWorkingPositionSetting(act.StringValue)
-	case act.Key == "tui_subagent_position":
-		i.applyTUISubagentPositionSetting(act.StringValue)
 	default:
 		i.applySettingToggle(act.Key, act.Value)
 	}
@@ -5377,9 +5360,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		if i.agent != nil {
 			i.agent.SetFastMode(value)
 		}
-		if i.cfg.Supervisor != nil {
-			i.cfg.Supervisor.SetFastMode(value)
-		}
 		i.mu.Lock()
 		i.statusOK = "fast mode " + onOff(value)
 		i.statusErr = ""
@@ -5619,31 +5599,6 @@ func (i *Interactive) applyTUIWorkingPositionSetting(position string) {
 	i.mu.Unlock()
 }
 
-func (i *Interactive) applyTUISubagentPositionSetting(position string) {
-	defer func() {
-		i.requestRendererClear()
-		i.invalidate()
-	}()
-	position = tui.NormalizeSubagentPosition(position)
-	i.cfg.TUISubagentPosition = position
-	if i.cfg.SettingsStore != nil {
-		if err := i.cfg.SettingsStore.SetTUISubagentPosition(position); err != nil {
-			i.mu.Lock()
-			i.statusErr = "settings: " + err.Error()
-			i.mu.Unlock()
-			return
-		}
-	}
-	i.mu.Lock()
-	label := "below input"
-	if position == tui.SubagentPositionAboveInput {
-		label = "above input"
-	}
-	i.statusOK = "running subagent position " + label
-	i.statusErr = ""
-	i.mu.Unlock()
-}
-
 func (i *Interactive) applyThemeSetting(name string) {
 	if i.cfg.SettingsStore != nil {
 		if err := i.cfg.SettingsStore.SetTheme(name); err != nil {
@@ -5794,7 +5749,7 @@ func buildStudyPrompt(arg, cwd string) string {
 // keeps Tab as a literal no-op.
 //
 // Free function (not a method) so the same logic runs against the
-// editor instances owned by btwDialog and subagentsDialog without each
+// editor instances owned by local dialogs without each
 // dialog needing its own copy.
 func tryPathTabCompleteEditor(ed *tui.Editor, cwd string) bool {
 	if ed == nil {
@@ -8827,56 +8782,60 @@ func (a telegramSenderAdapter) Active() bool {
 	return a.bridge != nil && a.bridge.Active()
 }
 
-// TrackSubagentWorker is the exported entry point used by the cli to
-// hand a freshly-spawned auto-subagents agent off to the shared tracker.
-func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string, _ bool) {
-	i.trackSubagentWorker(a, task, false, false)
-}
-
-// TrackResumedSubagentWorker watches a resumed follow-up independently of the
-// worker's original task. A long-lived daemon can complete several manager
-// turns, each of which must produce its own automatic delivery.
-func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string, _ bool) {
-	i.trackSubagentWorker(a, prompt, true, false)
-}
-
-// PrepareResumedSubagentWorker registers a resumed turn before its prompt is
-// sent. The returned cleanup removes the registration if the resume operation
-// fails before delivery. It is used by the resume tool's pre-send hook; the
-// existing TrackResumedSubagentWorker signature remains the post-success API.
-func (i *Interactive) PrepareResumedSubagentWorker(a *subagents.Agent, prompt string, _ bool) func() {
-	return i.trackSubagentWorker(a, prompt, true, true)
-}
-
-// TrackStoppedSubagentWorker watches a requested worker shutdown. If an active
-// task watcher already owns the worker, the shared tracker leaves that watcher
-// responsible for the terminal outcome.
-func (i *Interactive) TrackStoppedSubagentWorker(a *subagents.Agent) {
-	if i == nil || a == nil {
+// TrackResidentSubagent reserves completion delivery after the manager has
+// durably accepted a resident child prompt and before it is scheduled.
+func (i *Interactive) TrackResidentSubagent(childID string) {
+	if i == nil {
 		return
 	}
-	tracker := i.ensureCompletionTracker()
-	i.registerCoordinatorWorker(a.ID)
-	tracker.TrackExit(a, a.Task)
+	i.ensureCompletionTracker().TrackResident()
+	i.registerCoordinatorWorker(childID)
 	i.invalidate()
 	i.requestCompletionDelivery()
 }
 
-func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, followUp, future bool) func() {
-	if i == nil || a == nil {
-		return nil
+// ReportResidentSubagent delivers a typed resident terminal outcome through
+// the same coordinator path used by legacy worker completions.
+func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentCompletion) {
+	if i == nil {
+		return
 	}
-	tracker := i.ensureCompletionTracker()
-	i.registerCoordinatorWorker(a.ID)
-	var cancel func()
-	if future {
-		cancel = tracker.TrackFutureTurn(a, task, followUp)
-	} else {
-		cancel = tracker.TrackTurn(a, task, followUp)
+	status, errText := "completed", ""
+	if completion.Err != nil {
+		status, errText = "failed", completion.Err.Error()
 	}
+	i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
+	i.reloadOpenResidentChildSession(completion.ChildID)
 	i.invalidate()
 	i.requestCompletionDelivery()
-	return cancel
+}
+
+func (i *Interactive) reloadOpenResidentChildSession(childID string) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	session := i.residentChildSession
+	i.mu.Unlock()
+	if session == nil || session.childID != childID || !session.RequestRecentReload() {
+		return
+	}
+	i.reloadResidentChildSession(session)
+}
+
+func (i *Interactive) reloadResidentChildSession(session *residentChildSession) {
+	if i == nil || session == nil {
+		return
+	}
+	go func() {
+		err := session.ReloadRecent(200)
+		if session.FinishLoad(err) {
+			if session.RequestRecentReload() {
+				i.reloadResidentChildSession(session)
+			}
+		}
+		i.invalidate()
+	}()
 }
 
 func (i *Interactive) ensureCompletionTracker() *subagents.CompletionTracker {
@@ -8962,9 +8921,8 @@ func (i *Interactive) cancelCoordinator() {
 	i.completionDeliveryMu.Lock()
 	coordinator := i.ensureCoordinatorLocked()
 	actions := coordinator.Apply(orchestration.Event{Kind: orchestration.EventCancelled}).Actions
-	// A later user turn starts a fresh wave. Drop tracker registrations as well
-	// as coordinator identities so late outcomes cannot match a new worker with
-	// the same Agent.ID.
+	// A later user turn starts a fresh wave. Drop resident registrations as
+	// well as coordinator identities so late outcomes cannot match a new child.
 	if i.completionTracker != nil {
 		i.completionTracker.Reset()
 	}
@@ -9136,13 +9094,13 @@ func (i *Interactive) deliverCompletionUpdates() {
 // mode whenever the primary agent can spawn a worker.
 func autoSubagentsAddenda(cfg InteractiveConfig, orchestrating bool) []string {
 	addenda := make([]string, 0, 2)
-	if cfg.Supervisor != nil && autoSubagentsToolAllowedConfig(cfg) {
+	if cfg.ResidentManager != nil && autoSubagentsToolAllowedConfig(cfg) {
 		if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
 			addenda = append(addenda, addendum)
 		}
 	}
 	if !orchestrating {
-		if cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
+		if cfg.ResidentManager != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
 			if addendum := strings.TrimSpace(cfg.OnDemandSubagentsSystemAddendum); addendum != "" {
 				addenda = append(addenda, addendum)
 			}
@@ -9225,13 +9183,13 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 // Mirrors applyTelegramTools' snapshot+mutate pattern so extension tools and
 // /reload-ext additions survive a settings change.
 func (i *Interactive) autoSubagentsAvailable() bool {
-	return i.cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(i.cfg)
+	return i.cfg.ResidentManager != nil && autoSubagentsAnyToolAllowedConfig(i.cfg)
 }
 
 func (i *Interactive) autoSubagentsUnavailableHint() string {
 	var hints []string
-	if i.cfg.Supervisor == nil {
-		hints = append(hints, "subagent supervisor not available in this mode")
+	if i.cfg.ResidentManager == nil {
+		hints = append(hints, "resident subagent manager is unavailable in this mode")
 	}
 	if !autoSubagentsAnyToolAllowedConfig(i.cfg) {
 		hints = append(hints, "launch-time tool policy excludes subagent manager tools")
@@ -9312,40 +9270,34 @@ func (i *Interactive) applyAutoSubagentsTool() {
 	if i.autoSubagentsAvailable() {
 		if i.autoSubagentsToolAllowed() {
 			canonical := &tools.SubagentSpawnTool{
-				Supervisor:       i.cfg.Supervisor,
-				Enabled:          func() bool { return true },
-				DefaultModel:     func() string { return i.cfg.Model },
-				DefaultProvider:  func() string { return i.cfg.Provider },
-				DefaultReasoning: func() string { return i.cfg.Reasoning },
-				ResolveSubagent:  i.cfg.ResolveSubagent,
-				OnSpawned: func(a *subagents.Agent, task string, required bool) {
-					i.TrackSubagentWorker(a, task, required)
-				},
+				ResidentManager:   i.cfg.ResidentManager,
+				BuildResidentSpec: i.cfg.BuildResidentSpec,
+				Enabled:           func() bool { return true },
+				DefaultModel:      func() string { return i.cfg.Model },
+				DefaultProvider:   func() string { return i.cfg.Provider },
+				DefaultReasoning:  func() string { return i.cfg.Reasoning },
+				ResolveSubagent:   i.cfg.ResolveSubagent,
 			}
 			next[canonical.Name()] = canonical
 		}
 		if i.autoSubagentsStatusToolAllowed() {
 			statusTool := &tools.SubagentStatusTool{
-				Supervisor: i.cfg.Supervisor,
-				Enabled:    func() bool { return true },
+				ResidentManager: i.cfg.ResidentManager,
+				Enabled:         func() bool { return true },
 			}
 			next[statusTool.Name()] = statusTool
 		}
 		if i.autoSubagentsStopToolAllowed() {
 			stopTool := &tools.SubagentStopTool{
-				Supervisor:      i.cfg.Supervisor,
+				ResidentManager: i.cfg.ResidentManager,
 				Enabled:         func() bool { return true },
-				OnStopRequested: i.TrackStoppedSubagentWorker,
 			}
 			next[stopTool.Name()] = stopTool
 		}
 		if i.autoSubagentsResumeToolAllowed() {
 			resumeTool := &tools.SubagentResumeTool{
-				Supervisor: i.cfg.Supervisor,
-				Enabled:    func() bool { return true },
-				BeforeResumed: func(a *subagents.Agent, prompt string, required bool) func() {
-					return i.PrepareResumedSubagentWorker(a, prompt, required)
-				},
+				ResidentManager: i.cfg.ResidentManager,
+				Enabled:         func() bool { return true },
 			}
 			next[resumeTool.Name()] = resumeTool
 		}

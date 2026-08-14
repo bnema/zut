@@ -19,13 +19,8 @@ func validateOrchestrationArgs(args Args) error {
 		// for callers that select those output protocols.
 	case ModeRPC:
 		return fmt.Errorf("--orchestrate is not supported with RPC mode")
-	case ModeSubagentWorker:
-		return fmt.Errorf("--orchestrate is not supported in subagent-worker mode")
 	default:
 		return fmt.Errorf("--orchestrate requires print, stream, or JSON mode")
-	}
-	if strings.TrimSpace(args.Subagent) != "" {
-		return fmt.Errorf("--orchestrate is not supported with --subagent profiles")
 	}
 	if args.PermissionSet != nil || strings.TrimSpace(args.AgentName) != "" || strings.TrimSpace(args.AgentDataDir) != "" {
 		return fmt.Errorf("--orchestrate is not supported for packaged agents")

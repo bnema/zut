@@ -37,7 +37,7 @@ func TestSlashSuggesterShowsLlamaOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestSlashSuggesterHasSupervisor(t *testing.T) {
+func TestSlashSuggesterHasSubagents(t *testing.T) {
 	s := newSlashSuggester()
 	if got := commandNames(s.matches("/su")); !contains(got, "/subagents") {
 		t.Fatalf("/subagents missing from suggestions, got %v", got)

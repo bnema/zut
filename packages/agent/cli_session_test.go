@@ -660,7 +660,6 @@ func TestApplyInitialSessionResumeWithRuntimePreservesInheritedModelDefaults(t *
 	}
 	current := base.NewAgent()
 	runtime := newSubagentRuntime(subagentRuntimeConfig{
-		Context:  context.Background(),
 		Args:     args,
 		Root:     t.TempDir(),
 		RepoRoot: args.CWD,
@@ -724,6 +723,30 @@ func TestPrepareSessionResumeRebuildsForStoredProviderAndModel(t *testing.T) {
 	}
 	if got := old.Messages(); len(got) != 1 || firstMessageText(got) != "current transcript" {
 		t.Fatalf("current transcript changed during preparation: %+v", got)
+	}
+}
+
+func TestApplySessionResumeBindsRebuiltAgentToDurableSessionID(t *testing.T) {
+	path := syntheticSession(t, "stored-provider", "stored-model", provider.Usage{})
+	sess, _, err := core.OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	current := core.NewAgent(nil, "current-model", "", nil)
+	candidate, err := applySessionResume(sess, current, "current-provider", "current-model", false, false, func(providerName, model string) (*core.Agent, string, string, error) {
+		return core.NewAgent(nil, model, "", nil), providerName, model, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.session.Close()
+	if !candidate.rebuilt {
+		t.Fatal("resume did not rebuild the agent")
+	}
+	if got := candidate.agent.SessionID(); got != candidate.session.Meta.ID {
+		t.Fatalf("rebuilt agent session ID = %q, want durable session ID %q", got, candidate.session.Meta.ID)
 	}
 }
 

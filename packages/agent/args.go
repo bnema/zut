@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -23,13 +22,6 @@ const (
 	ModeStream      Mode = "stream"
 	ModeJSON        Mode = "json"
 	ModeRPC         Mode = "rpc"
-	// ModeSubagentWorker is the long-lived, headless daemon mode used by
-	// subagent-spawned agents. The binary opens a unix-socket inbox at
-	// the path provided by --subagent-worker, reads versioned JSONL
-	// supervisor messages, runs each user turn against a persistent session,
-	// and streams JSONL events on
-	// stdout.
-	ModeSubagentWorker Mode = "subagent-worker"
 )
 
 // Args holds parsed command-line options.
@@ -40,24 +32,15 @@ type Args struct {
 	Model       string
 	APIKey      string
 
-	// inheritedCredential is populated only by subagent-worker mode from
-	// the supervisor's stdin. It is never accepted as a CLI argument.
-	inheritedCredential string
-	inheritedAuthMethod string
-	inheritedAccountID  string
-
 	BaseURL            string // override provider base URL (for tests/self-hosted)
 	SystemPrompt       string
 	AppendSystemPrompt []string
 	Reasoning          string
 	Temperature        *float32
 
-	// FastMode is an internal subagent-child propagation flag. Normal users
-	// enable fast mode through the persisted config /settings toggle.
+	// FastMode is an internal resident-child propagation value.
 	FastMode bool
-	// FastModeSet distinguishes an explicit child override (including
-	// --no-fast-mode) from an omitted flag so persisted subagent settings
-	// survive a parent config change.
+	// FastModeSet distinguishes the durable child override from host config.
 	FastModeSet bool
 
 	Continue        bool
@@ -76,9 +59,8 @@ type Args struct {
 	// capability allowlist.
 	ToolsSet bool
 
-	// WebSearchPolicy is an internal capability override. Normal CLI args
-	// leave it at Inherit so Resolve applies config and --tools provenance;
-	// SDK, bot, and subagent-worker callers set it explicitly.
+	// WebSearchPolicy is an internal capability override. CLI users leave it
+	// at Inherit; host runtimes and SDK callers set it explicitly.
 	WebSearchPolicy subagents.WebSearchPolicy
 	MaxSteps        int
 
@@ -142,26 +124,6 @@ type Args struct {
 	// mode auto-submits it once at startup before InitialInput handling.
 	StartupPre string
 
-	// SubagentWorker is the inbox-socket path when this process is a
-	// subagent worker. Empty in every other mode. Set by either
-	// --subagent-worker.
-	SubagentWorker string
-
-	// SubagentTurnTimeout limits each active delegated turn while leaving the
-	// worker process alive between turns for explicit follow-ups.
-	SubagentTurnTimeout time.Duration
-	// SubagentLifetimeTurns and SubagentRunTurns are supervisor-provided
-	// counters used to resume a worker without losing observability or its
-	// current-run budget. They are internal worker flags, not user policy.
-	SubagentLifetimeTurns int
-	SubagentRunTurns      int
-
-	// Subagent selects a named markdown profile for a subagent child.
-	// It is intentionally an internal child flag; the parent subagent tool
-	// passes only the profile name and the child discovers the definition
-	// locally.
-	Subagent string
-
 	// AgentName/AgentDataDir/PermissionSet are populated by `zut run`
 	// for local zutfile agents. They scope sessions and enforce the
 	// manifest's declared file/bash permissions.
@@ -174,7 +136,6 @@ type Args struct {
 func ParseArgs(in []string) (Args, error) {
 	a := Args{Mode: ModeInteractive, MaxSteps: 0, WithSkills: true}
 	positional := []string{}
-	webSearchPolicySet := false
 
 	want := func(i *int, flag string) (string, error) {
 		*i++
@@ -189,8 +150,7 @@ func ParseArgs(in []string) (Args, error) {
 		switch arg {
 		case "--":
 			// Everything after the terminator is prompt text, including
-			// values that begin with a dash. This is used by subagent
-			// workers and is also a conventional CLI escape hatch.
+			// values that begin with a dash.
 			positional = append(positional, in[i+1:]...)
 			i = len(in)
 		case "-h", "--help":
@@ -310,12 +270,6 @@ func ParseArgs(in []string) (Args, error) {
 			}
 			t := float32(f)
 			a.Temperature = &t
-		case "--fast-mode":
-			a.FastMode = true
-			a.FastModeSet = true
-		case "--no-fast-mode":
-			a.FastMode = false
-			a.FastModeSet = true
 		case "--stats":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -334,35 +288,6 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.CWD = v
-		case "--subagent-worker":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			a.SubagentWorker = v
-			a.Mode = ModeSubagentWorker
-		case "--subagent":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			a.Subagent = v
-		case "--web-search-policy":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			webSearchPolicySet = true
-			switch strings.ToLower(strings.TrimSpace(v)) {
-			case "inherit":
-				a.WebSearchPolicy = subagents.WebSearchInherit
-			case "deny", "off":
-				a.WebSearchPolicy = subagents.WebSearchDeny
-			case "allow", "on":
-				a.WebSearchPolicy = subagents.WebSearchAllow
-			default:
-				return a, fmt.Errorf("--web-search-policy must be inherit|allow|deny")
-			}
 		case "--tools":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -385,36 +310,6 @@ func ParseArgs(in []string) (Args, error) {
 				return a, fmt.Errorf("--max-steps must be a positive integer")
 			}
 			a.MaxSteps = n
-		case "--subagent-turn-timeout":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			timeout, err := time.ParseDuration(v)
-			if err != nil || timeout <= 0 {
-				return a, fmt.Errorf("--subagent-turn-timeout must be a positive duration")
-			}
-			a.SubagentTurnTimeout = timeout
-		case "--subagent-lifetime-turns":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			var n int
-			if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n < 0 {
-				return a, fmt.Errorf("--subagent-lifetime-turns must be a non-negative integer")
-			}
-			a.SubagentLifetimeTurns = n
-		case "--subagent-run-turns":
-			v, err := want(&i, arg)
-			if err != nil {
-				return a, err
-			}
-			var n int
-			if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n < 0 {
-				return a, fmt.Errorf("--subagent-run-turns must be a non-negative integer")
-			}
-			a.SubagentRunTurns = n
 		default:
 			if strings.HasPrefix(arg, "-") && arg != "-" {
 				return a, fmt.Errorf("unknown flag %q", arg)
@@ -427,9 +322,6 @@ func ParseArgs(in []string) (Args, error) {
 		a.Prompt = strings.Join(positional, " ")
 	}
 
-	if webSearchPolicySet && a.Mode != ModeSubagentWorker {
-		return a, fmt.Errorf("--web-search-policy requires --subagent-worker")
-	}
 	if a.StatsPath != "" && a.Mode != ModePrint {
 		return a, fmt.Errorf("--stats requires -p or --print")
 	}

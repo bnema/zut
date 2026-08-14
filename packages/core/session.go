@@ -236,11 +236,9 @@ func NewSession(root, cwd, providerName, model, version string) (*Session, error
 	return newSessionAt(p, cwd, providerName, model, version)
 }
 
-// NewSessionAtPath creates a session at an explicit file path. Used
-// by callers (notably the subagent worker) that need the session
-// file to live at a path chosen by their parent rather than under
-// SessionsDir. Returns an error if the file already exists — use
-// OpenSession for that case.
+// NewSessionAtPath creates a session at an explicit file path. It is useful
+// whenever a caller needs a location other than SessionsDir. Returns an error
+// if the file already exists — use OpenSession for that case.
 func NewSessionAtPath(path, cwd, providerName, model, version string) (*Session, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -1890,4 +1888,11 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 		}
 	}
 	return msg, nil
+}
+
+// DecodeMessageJSON restores a provider-neutral message whose Content blocks
+// were encoded through json.RawMessage. It is shared by durable session-like
+// stores; callers must treat malformed content as persistence corruption.
+func DecodeMessageJSON(rawMessage []byte) (provider.Message, error) {
+	return hydrateMessageObject(rawMessage)
 }

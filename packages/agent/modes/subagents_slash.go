@@ -6,340 +6,173 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
-	"github.com/bnema/zut/packages/tui"
 )
 
-// runSubagents dispatches /subagents subcommands. Layout:
-//
-//	/subagents                       -> open the dashboard
-//	/subagents list                  -> open the dashboard
-//	/subagents new [--agent A] [--model M] [--provider P] [--reasoning L] <task...>
-//	                             -> spawn an agent with optional profile/model overrides
-//	/subagents kill <id>             -> stop a running agent
-//	/subagents cancel <id>           -> cancel the active turn
-//	/subagents remove <id>           -> tear down a terminated agent
-//	/subagents logs <id>             -> open the scrollable transcript view
-//	/subagents result|inspect <id>   -> show the completed result
-//	/subagents wait <id>             -> wait for the agent to finish
-//	/subagents send <id> <text...>   -> send a follow-up user turn to <id>
-//	/subagents resume [id]           -> resume an agent (omit id to pick from a list)
-//	/subagents restart-task|restart <id> -> restart the original task
-//	/subagents attach <id>           -> (planned) drop into the agent's TUI
-//
-// When cfg.Supervisor is nil the command tells the user the feature is
-// disabled instead of pretending to work.
 func (i *Interactive) runSubagents(ctx context.Context, args []string) {
-	if i.cfg.Supervisor == nil {
+	if i.cfg.ResidentManager == nil {
 		i.mu.Lock()
-		i.statusErr = "subagent is disabled in this build"
+		i.statusErr = i.autoSubagentsUnavailableHint()
 		i.statusOK = ""
 		i.mu.Unlock()
 		return
 	}
+	i.runResidentSubagents(ctx, args)
+}
 
+// runResidentSubagents is the production slash-command path. The list/editor
+// migration is deliberately kept separate from the legacy process dashboard;
+// details open a structured journal-backed child session immediately.
+func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 	sub := ""
 	rest := ""
 	if len(args) > 0 {
 		sub = strings.ToLower(args[0])
-		// Guard the args[1:] reslice: when only the subcommand was
-		// typed (e.g. bare "/subagents new"), args has length 1 and the
-		// naive args[1:] is fine, but when args is empty (bare
-		// "/subagents") the reslice is [1:0] and panics. The len>0 branch
-		// here keeps both cases safe.
 		if len(args) > 1 {
 			rest = strings.TrimSpace(strings.Join(args[1:], " "))
 		}
 	}
-
-	// spawnAdapter, sendAdapter, resumeAdapter wrap the Supervisor methods
-	// in the signatures the dialog expects. Defined once here so the
-	// three Open()-shaped entry points (list, logs/view-jump, resume)
-	// feed the dialog identical callbacks.
-	spawnAdapter := func(task, model, provider string) error {
-		_, err := i.cfg.Supervisor.SpawnReq(ctx, subagents.SpawnRequest{
-			Task: task, Model: model, Provider: provider, Reasoning: i.cfg.Reasoning,
-		})
-		return err
-	}
-	sendAdapter := func(id, text string) error {
-		return i.cfg.Supervisor.SendUserTurn(id, text)
-	}
-	resumeAdapter := func(id string) error {
-		_, err := i.cfg.Supervisor.ResumeSession(ctx, id)
-		return err
-	}
-
-	// Pin every fresh spawn to whatever the host's /model selection
-	// is right now. This is captured at /subagents time — if the user
-	// wants a different model for the next subagent agent, they pick it
-	// via /model first (globally), or, while inside the spawn
-	// editor, by typing /model on its own line to pop the picker.
-	i.subagentsDialog.SetCompactMode(i.compactModeEnabled())
-	i.subagentsDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
-	i.subagentsDialog.SetAllSnapshots(i.cfg.Supervisor.SnapshotAllSessions)
-	i.subagentsDialog.SetTraceViews(i.cfg.Supervisor.TraceViews)
-	i.subagentsDialog.SetLoadTranscript(i.cfg.Supervisor.LoadTranscript)
-	i.subagentsDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)
-	if i.cfg.LoggedInProviders != nil {
-		i.subagentsDialog.SetLoggedInProviders(i.cfg.LoggedInProviders())
-	}
-
 	switch sub {
 	case "", "list", "ls", "ps":
-		i.subagentsDialog.Open(
-			i.cfg.Supervisor.SnapshotCurrentSession,
-			i.cfg.Supervisor.Stop,
-			i.cfg.Supervisor.Remove,
-			spawnAdapter,
-			sendAdapter,
-			resumeAdapter,
-			i.cfg.CWD,
-		)
+		i.mu.Lock()
+		if i.residentSubagentsDialog == nil {
+			i.residentSubagentsDialog = newResidentSubagentsDialog()
+		}
+		i.residentSubagentsDialog.Open(i.cfg.ResidentManager)
+		i.mu.Unlock()
+		i.invalidate()
 	case "new", "spawn":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents new <task>: missing task")
-			return
-		}
-		// Permit profile/model/provider/reasoning flags before the task
-		// so scripts can pin a child without going through the dialog.
-		// Anything that isn't a recognised flag terminates parsing and
-		// the rest becomes the task; only leading flags are consumed.
-		model, provider, reasoning, subagent, task := parseSpawnFlags(rest)
-		var profileTools []string
-		var fastModeOverride *bool
-		if task == "" {
-			i.subagentsStatus("", "/subagents new: missing task (after any spawn flags)")
-			return
-		}
-		if subagent != "" {
-			if i.cfg.ResolveSubagent == nil {
-				i.subagentsStatus("", "spawn: named subagent profiles are unavailable")
-				return
-			}
-			profile, err := i.cfg.ResolveSubagent(subagent)
-			if err != nil {
-				i.subagentsStatus("", "spawn: "+err.Error())
-				return
-			}
-			if profile == nil {
-				i.subagentsStatus("", "spawn: unknown subagent profile "+subagent)
-				return
-			}
-			subagent = profile.Name
-			profileTools = append([]string(nil), profile.Tools...)
-			fastModeOverride = profile.FastMode
-			profileProvider, profileModel := profile.ModelSelection()
-			if model == "" {
-				model = profileModel
-			}
-			if provider == "" {
-				provider = profileProvider
-			}
-			if reasoning == "" {
-				reasoning = profile.Thinking
-			}
-		}
-		if model == "" {
-			model = i.cfg.Model
-		}
-		if provider == "" {
-			provider = i.cfg.Provider
-		}
-		if reasoning == "" {
-			reasoning = i.cfg.Reasoning
-		}
-		if reasoning != "" {
-			normalizedReasoning, err := normalizeSpawnReasoning(reasoning)
-			if err != nil {
-				i.subagentsStatus("", "spawn: "+err.Error())
-				return
-			}
-			reasoning = normalizedReasoning
-		}
-		a, err := i.cfg.Supervisor.SpawnReq(ctx, subagents.SpawnRequest{
-			Task: task, Model: model, Provider: provider, Reasoning: reasoning,
-			FastMode: fastModeOverride, Subagent: subagent,
-			Tools: profileTools,
-		})
-		if err != nil {
-			i.subagentsStatus("", "spawn: "+err.Error())
-			return
-		}
-		status := "spawned " + a.ID
-		if subagent != "" {
-			status += " (agent " + subagent + ")"
-		} else if model != "" {
-			status += " (model " + model + ")"
-		}
-		i.subagentsStatus(status, "")
-	case "kill", "stop":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents kill <id>: missing id")
-			return
-		}
-		if err := i.cfg.Supervisor.Stop(rest); err != nil {
-			i.subagentsStatus("", "kill: "+err.Error())
-			return
-		}
-		i.subagentsStatus("stopped "+rest, "")
-	case "cancel":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents cancel <id>: missing id")
-			return
-		}
-		if err := i.cfg.Supervisor.CancelTurn(rest); err != nil {
-			i.subagentsStatus("", "cancel: "+err.Error())
-			return
-		}
-		i.subagentsStatus("canceling turn "+rest, "")
-	case "remove", "rm":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents remove <id>: missing id")
-			return
-		}
-		if err := i.cfg.Supervisor.Remove(rest); err != nil {
-			i.subagentsStatus("", "remove: "+err.Error())
-			return
-		}
-		i.subagentsStatus("removed "+rest, "")
+		i.spawnResidentSubagent(rest)
 	case "logs", "log", "view":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents logs <id>: missing id")
 			return
 		}
-		if err := i.cfg.Supervisor.LoadTranscript(rest); err != nil {
-			i.subagentsStatus("", "logs: "+err.Error())
-			return
-		}
-		ok := i.subagentsDialog.OpenViewing(
-			rest,
-			i.cfg.Supervisor.SnapshotAll,
-			i.cfg.Supervisor.Stop,
-			i.cfg.Supervisor.Remove,
-			spawnAdapter,
-			sendAdapter,
-			resumeAdapter,
-			i.cfg.CWD,
-		)
-		if !ok {
-			i.subagentsStatus("", "/subagents logs: no agent matching "+rest)
-		}
+		i.openResidentChildSession(rest)
 	case "result", "inspect":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents result <id>: missing id")
 			return
 		}
-		result, err := i.cfg.Supervisor.ReadResult(rest)
+		result, err := i.cfg.ResidentManager.Result(rest)
 		if err != nil {
 			i.subagentsStatus("", "result: "+err.Error())
 			return
 		}
-		status := fmt.Sprintf("%s result %s", result.Status, i.cfg.Supervisor.ResultReference(rest))
-		if result.Summary != "" {
-			status += ": " + truncateStatus(result.Summary, 160)
-		}
-		i.subagentsStatus(status, "")
-	case "wait":
+		i.subagentsStatus(residentResultStatus(rest, result), "")
+	case "kill", "stop":
 		if rest == "" {
-			i.subagentsStatus("", "/subagents wait <id>: missing id")
+			i.subagentsStatus("", "/subagents kill <id>: missing id")
 			return
 		}
-		a := i.cfg.Supervisor.Get(rest)
-		if a == nil {
-			i.subagentsStatus("", "wait: no such agent "+rest)
+		if err := i.cfg.ResidentManager.Stop(ctx, rest); err != nil {
+			i.subagentsStatus("", "kill: "+err.Error())
 			return
 		}
-		waitWatcherDone := i.subagentsWaitWatcherDone
-		// Publish the initial state before starting the watcher. A worker may
-		// already be done, and its completion must be the final status rather
-		// than being overwritten by a late "waiting" update.
-		i.subagentsStatus("waiting for "+a.ID, "")
-		go func() {
-			defer func() {
-				if waitWatcherDone != nil {
-					waitWatcherDone()
-				}
-			}()
-			if _, err := a.WaitTurnResult(ctx, a.WaitTargetTurnID()); err != nil {
-				return
-			}
-			// If cancellation became observable at the same time as
-			// completion, do not report a completion that the caller
-			// no longer owns.
-			if ctx.Err() == nil {
-				i.subagentsStatus("completed "+a.ID, "")
-			}
-		}()
-	case "resume-session", "resume", "reattach", "reopen":
-		if rest == "" {
-			count := i.subagentsDialog.OpenForResume(
-				i.cfg.Supervisor.SnapshotCurrentSession,
-				i.cfg.Supervisor.Stop,
-				i.cfg.Supervisor.Remove,
-				spawnAdapter,
-				sendAdapter,
-				resumeAdapter,
-				i.cfg.CWD,
-			)
-			switch count {
-			case 0:
-				i.subagentsStatus("", "/subagents resume-session: no resumable agents")
-			case 1:
-				i.subagentsStatus("1 resumable agent, press R to resume", "")
-			default:
-				i.subagentsStatus(fmt.Sprintf("%d resumable agents, ↑/↓ to pick, R to resume", count), "")
-			}
+		i.subagentsStatus("stopped "+rest, "")
+	case "send", "prompt", "msg", "resume":
+		id, prompt := splitIDAndRest(rest)
+		if id == "" || prompt == "" {
+			i.subagentsStatus("", "/subagents "+sub+" <id> <prompt>: missing id or prompt")
 			return
 		}
-		a, err := i.cfg.Supervisor.ResumeSession(ctx, rest)
-		if err != nil {
-			i.subagentsStatus("", "resume-session: "+err.Error())
+		if err := i.cfg.ResidentManager.Resume(ctx, id, prompt); err != nil {
+			i.subagentsStatus("", sub+": "+err.Error())
 			return
 		}
-		i.subagentsStatus("resumed "+a.ID, "")
-	case "restart-task", "restart":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents restart-task <id>: missing id")
-			return
-		}
-		a, err := i.cfg.Supervisor.RestartTask(ctx, rest)
-		if err != nil {
-			i.subagentsStatus("", "restart-task: "+err.Error())
-			return
-		}
-		i.subagentsStatus("restarted task "+a.ID, "")
-	case "send", "prompt", "msg":
-		// /subagents send <id> <text...> is the non-interactive
-		// counterpart of pressing 'p' in the dashboard. We split the
-		// joined `rest` ourselves rather than reusing the dispatcher's
-		// already-fielded args[] because the text may contain spaces
-		// the user expects to be preserved verbatim.
-		id, text := splitIDAndRest(rest)
-		if id == "" {
-			i.subagentsStatus("", "/subagents send <id> <text>: missing id")
-			return
-		}
-		if text == "" {
-			i.subagentsStatus("", "/subagents send <id> <text>: missing text")
-			return
-		}
-		if err := i.cfg.Supervisor.SendUserTurn(id, text); err != nil {
-			i.subagentsStatus("", friendlySendErr(id, err))
-			return
-		}
-		i.subagentsStatus("sent to "+id, "")
-	case "attach":
-		// PTY-reparenting is a significant chunk of work I haven't
-		// landed yet (see the design sketch). Recognise the name so
-		// /subagents attach doesn't fall through to the generic "unknown
-		// subcommand" path — that error message is misleading because
-		// it makes attach sound like a typo instead of a planned
-		// feature. Point the user at /subagents logs in the meantime.
-		i.subagentsStatus("", "/subagents attach: not implemented yet (needs PTY reparenting). Use /subagents logs "+firstWord(rest)+" to watch its transcript.")
+		i.subagentsStatus("accepted follow-up for "+id, "")
 	default:
-		i.subagentsStatus("", "/subagents: unknown subcommand "+sub+" (try list / new / kill / cancel / remove / logs / send / result / wait / resume-session / restart-task)")
+		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
 	}
+}
+
+func residentResultStatus(id string, result subagents.ResidentResult) string {
+	status := fmt.Sprintf("%s result %s", residentDisplayState(result.State), id)
+	if summary := truncateStatus(result.Summary, 240); summary != "" {
+		status += ": " + summary
+	}
+	return status
+}
+
+func (i *Interactive) openResidentChildSession(childID string) {
+	session := newResidentChildSession(i.cfg.ResidentManager, childID, i.cfg.Theme)
+	i.mu.Lock()
+	if i.residentSubagentsDialog != nil {
+		i.residentSubagentsDialog.Close()
+	}
+	i.residentChildSession = session
+	i.mu.Unlock()
+	i.invalidate()
+	if session.BeginLoad() {
+		go func() {
+			err := session.LoadRecent(200)
+			if session.FinishLoad(err) {
+				i.reloadResidentChildSession(session)
+			}
+			i.invalidate()
+		}()
+	}
+}
+
+func (i *Interactive) spawnResidentSubagent(rest string) {
+	if i.cfg.SpawnResident == nil {
+		i.subagentsStatus("", "spawn: resident construction is unavailable")
+		return
+	}
+	model, providerID, reasoning, profileName, task := parseSpawnFlags(rest)
+	if task == "" {
+		i.subagentsStatus("", "/subagents new <task>: missing task")
+		return
+	}
+	var profile *subagents.Profile
+	var fastModeOverride *bool
+	if profileName != "" {
+		if i.cfg.ResolveSubagent == nil {
+			i.subagentsStatus("", "spawn: named subagent profiles are unavailable")
+			return
+		}
+		resolved, err := i.cfg.ResolveSubagent(profileName)
+		if err != nil || resolved == nil {
+			if err != nil {
+				i.subagentsStatus("", "spawn: "+err.Error())
+			} else {
+				i.subagentsStatus("", "spawn: unknown subagent profile "+profileName)
+			}
+			return
+		}
+		profile = resolved
+		fastModeOverride = profile.FastMode
+		if model == "" {
+			providerID, model = profile.ModelSelection()
+		}
+		if reasoning == "" {
+			reasoning = profile.Thinking
+		}
+	}
+	if model == "" {
+		model = i.cfg.Model
+	}
+	if providerID == "" {
+		providerID = i.cfg.Provider
+	}
+	if reasoning == "" {
+		reasoning = i.cfg.Reasoning
+	}
+	if reasoning != "" {
+		var err error
+		reasoning, err = normalizeSpawnReasoning(reasoning)
+		if err != nil {
+			i.subagentsStatus("", "spawn: "+err.Error())
+			return
+		}
+	}
+	childID, err := i.cfg.SpawnResident(context.Background(), tools.ResidentSpawnRequest{Task: task, Profile: profile, Model: model, Provider: providerID, Reasoning: reasoning, FastMode: fastModeOverride})
+	if err != nil {
+		i.subagentsStatus("", "spawn: "+err.Error())
+		return
+	}
+	i.subagentsStatus("spawned "+childID, "")
 }
 
 // normalizeSpawnReasoning validates and canonicalizes the reasoning levels
@@ -442,20 +275,6 @@ func splitIDAndRest(s string) (id, text string) {
 		return s, ""
 	}
 	return s[:cut], strings.TrimLeft(s[cut+1:], " \t")
-}
-
-// firstWord returns the first whitespace-separated token of s, or
-// "<id>" when s is empty. Used to keep the "/subagents attach" hint
-// readable even when the user typed no argument.
-func firstWord(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "<id>"
-	}
-	if i := strings.IndexAny(s, " \t"); i >= 0 {
-		return s[:i]
-	}
-	return s
 }
 
 func truncateStatus(value string, max int) string {

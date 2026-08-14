@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/websocket"
 )
 
 // An image-only tool result must not serialize to an empty
@@ -90,6 +92,7 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-terra",
+		Context:  RequestContext{SessionID: "logical-session-1", TurnID: "turn-1"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -107,11 +110,11 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotBody.PromptCacheKey == "" {
-		t.Fatal("prompt_cache_key was not set")
+	if gotBody.PromptCacheKey != "logical-session-1" {
+		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
 	}
-	if gotReq.Header.Get("session-id") != gotBody.PromptCacheKey {
-		t.Fatalf("session-id = %q, prompt_cache_key = %q", gotReq.Header.Get("session-id"), gotBody.PromptCacheKey)
+	if gotReq.Header.Get("session-id") != "logical-session-1" {
+		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
 	}
 }
 
@@ -162,11 +165,15 @@ func TestXAIResponsesUsesNamedProviderCatalogAndEndpoint(t *testing.T) {
 }
 
 func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
-	named := NewOpenAIResponsesNamed("token", "https://example.test/v1/responses", "openai").(*renamedClient)
-	c := named.inner.(*codexClient)
+	named := NewOpenAIResponsesNamed("token", "https://api.openai.com/v1/responses", "openai").(*renamedClient)
+	ws := named.inner.(*responsesWebSocketClient)
+	c := ws.http
 	var gotReq *http.Request
 	var gotBody codexRequest
-	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	ws.dial = func(context.Context) (*websocket.Conn, error) {
+		return nil, errors.New("test websocket unavailable")
+	}
+	c.http = openaiResponsesHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		gotReq = r
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatal(err)
@@ -176,10 +183,11 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 			Body:       io.NopCloser(strings.NewReader("")),
 		}, nil
-	})
+	})})
 
-	events, err := c.Stream(context.Background(), Request{
+	events, err := ws.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -194,14 +202,32 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	if gotReq.Header.Get("session-id") != "" {
 		t.Fatalf("session-id = %q", gotReq.Header.Get("session-id"))
 	}
+	if gotBody.PromptCacheKey != "logical-session-2" {
+		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
+	}
+	if gotReq.Header.Get("originator") != "" || gotReq.Header.Get("user-agent") != "" || gotReq.Header.Get("chatgpt-account-id") != "" || gotReq.Header.Get("openai-beta") != "" {
+		t.Fatalf("public fallback leaked Codex headers: %v", gotReq.Header)
+	}
+}
+
+func TestCustomResponsesEndpointDoesNotInheritOpenAICacheExtensions(t *testing.T) {
+	named := NewOpenAIResponsesNamed("token", "https://example.test/v1/responses", "openai").(*renamedClient)
+	c := named.inner.(*codexClient)
+	var gotBody codexRequest
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	events, err := c.Stream(context.Background(), Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "logical-session", TurnID: "turn"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
 	if gotBody.PromptCacheKey != "" {
-		t.Fatalf("prompt_cache_key = %q", gotBody.PromptCacheKey)
-	}
-	if gotReq.Header.Get("originator") != "zot" {
-		t.Fatalf("originator = %q", gotReq.Header.Get("originator"))
-	}
-	if gotReq.Header.Get("user-agent") != "zot ("+runtime.GOOS+" "+runtime.GOARCH+")" {
-		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
+		t.Fatalf("prompt_cache_key = %q, want omitted for undeclared endpoint", gotBody.PromptCacheKey)
 	}
 }
 
@@ -246,6 +272,7 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -263,8 +290,8 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotReq.Header.Get("session-id") == "" {
-		t.Fatal("session-id header missing")
+	if gotReq.Header.Get("session-id") != "logical-session-2" {
+		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
 	}
 	if !strings.Contains(body.String(), "prompt_cache_key") {
 		t.Fatalf("request missing prompt_cache_key: %s", body.String())

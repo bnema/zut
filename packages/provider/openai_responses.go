@@ -18,6 +18,7 @@ package provider
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -30,6 +31,18 @@ type openaiResponsesTransport struct {
 	inner http.RoundTripper
 }
 
+// openaiResponsesHTTPClient preserves the public Responses header boundary
+// when a caller injects a transport, for example to scope insecure TLS.
+func openaiResponsesHTTPClient(client *http.Client) *http.Client {
+	clone := *client
+	inner := clone.Transport
+	if inner == nil {
+		inner = http.DefaultTransport
+	}
+	clone.Transport = &openaiResponsesTransport{inner: inner}
+	return &clone
+}
+
 func (t *openaiResponsesTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	// The codex client always sets chatgpt-account-id; api.openai.com
@@ -38,6 +51,7 @@ func (t *openaiResponsesTransport) RoundTrip(req *http.Request) (*http.Response,
 	clone.Header.Del("chatgpt-account-id")
 	clone.Header.Del("openai-beta")
 	clone.Header.Del("originator")
+	clone.Header.Del("user-agent")
 	// Keep Authorization: Bearer <key> as set by the codex client.
 	return t.inner.RoundTrip(clone)
 }
@@ -56,19 +70,34 @@ func NewOpenAIResponses(apiKey, baseURL string) Client {
 // route Responses-only preview models without changing the visible provider.
 func NewOpenAIResponsesNamed(apiKey, baseURL, name string) Client {
 	baseURL = responsesURL(baseURL)
-	httpClient := &http.Client{
-		Transport: &openaiResponsesTransport{inner: http.DefaultTransport},
-		Timeout:   0,
-	}
+	httpClient := openaiResponsesHTTPClient(&http.Client{Timeout: 0})
 	inner := &codexClient{
 		token:        apiKey,
 		accountID:    "", // unused; transport strips the header
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		errorLabel:   "openai",
 		providerName: name,
-		http:         httpClient,
+		capabilities: responsesCapabilities{
+			// Only the official OpenAI provider declares this extension.
+			// A Responses-shaped custom endpoint must opt in through its
+			// own client rather than inheriting OpenAI's cache contract.
+			StablePromptCacheKey: officialOpenAIResponsesEndpoint(name, baseURL),
+		},
+		http: httpClient,
 	}
-	return &renamedClient{inner: inner, name: name}
+	var client Client = inner
+	if officialOpenAIResponsesEndpoint(name, baseURL) {
+		client = newResponsesWebSocketClient(inner)
+	}
+	return &renamedClient{inner: client, name: name}
+}
+
+func officialOpenAIResponsesEndpoint(name, endpoint string) bool {
+	if name != "openai" && name != "openai-responses" {
+		return false
+	}
+	u, err := url.Parse(endpoint)
+	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "api.openai.com") && u.Path == "/v1/responses"
 }
 
 // responsesURL accepts either an API root or a complete Responses endpoint.

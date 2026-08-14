@@ -15,7 +15,8 @@ type AgentEvent interface {
 }
 
 type EvTurnStart struct {
-	Step int
+	Step   int
+	TurnID string
 }
 
 func (EvTurnStart) Type() string { return "turn_start" }
