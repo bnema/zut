@@ -98,11 +98,15 @@ func residentResultStatus(id string, result subagents.ResidentResult) string {
 func (i *Interactive) openResidentChildSession(childID string) {
 	session := newResidentChildSession(i.cfg.ResidentManager, childID, i.cfg.Theme)
 	i.mu.Lock()
+	previous := i.residentChildSession
 	if i.residentSubagentsDialog != nil {
 		i.residentSubagentsDialog.Close()
 	}
 	i.residentChildSession = session
 	i.mu.Unlock()
+	if previous != nil {
+		previous.Close()
+	}
 	i.setResidentChildMouseReporting(true)
 	i.invalidate()
 	if session.BeginLoad() {

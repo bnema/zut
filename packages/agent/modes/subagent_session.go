@@ -297,6 +297,15 @@ func (s *residentChildSession) HandleKey(k tui.Key) (string, bool) {
 	return prompt, prompt != ""
 }
 
+func (s *residentChildSession) HandleNavigation(k tui.Key) bool {
+	if s == nil || s.composer == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.composer.HandleKey(k)
+}
+
 func (s *residentChildSession) FinishSubmission(err error) {
 	if s == nil {
 		return

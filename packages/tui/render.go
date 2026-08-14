@@ -571,9 +571,13 @@ func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int
 		if y < 0 || y >= r.rows {
 			continue
 		}
+		if pane.Rect.X >= r.cols {
+			continue
+		}
+		width := min(pane.Rect.Width, r.cols-pane.Rect.X)
 		w.WriteString(MoveTo(y+1, pane.Rect.X+1))
 		w.WriteString("\x1b[0m")
-		w.WriteString(paintBackgroundRow(truncateToWidth(line, pane.Rect.Width), pane.Rect.Width, r.backgroundStyle))
+		w.WriteString(paintBackgroundRow(truncateToWidth(line, width), width, r.backgroundStyle))
 	}
 	if cursorRow >= 0 && cursorRow < r.rows && cursorCol >= 0 && cursorCol < r.cols {
 		w.WriteString(MoveTo(cursorRow+1, cursorCol+1))

@@ -281,9 +281,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			residentSession.Scroll(10)
 		case tui.KeyPageDown:
 			residentSession.Scroll(-10)
-		case tui.KeyUp, tui.KeyMouseWheelUp:
+		case tui.KeyUp:
+			if !residentSession.HandleNavigation(k) {
+				residentSession.Scroll(1)
+			}
+		case tui.KeyDown:
+			if !residentSession.HandleNavigation(k) {
+				residentSession.Scroll(-1)
+			}
+		case tui.KeyMouseWheelUp:
 			residentSession.Scroll(1)
-		case tui.KeyDown, tui.KeyMouseWheelDown:
+		case tui.KeyMouseWheelDown:
 			residentSession.Scroll(-1)
 		default:
 			session := residentSession
