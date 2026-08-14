@@ -27,9 +27,13 @@ type Renderer struct {
 
 	// prevHadImage tracks whether the previous frame contained an
 	// inline-image escape so we can force a full clear+repaint whenever
-	// the image set changes. Only matters when inline images are
-	// enabled via ZUT_INLINE_IMAGES; defaults to false.
-	prevHadImage bool
+	// the image set changes. prevHadKittyImage additionally ensures stale
+	// Kitty image pixels are explicitly deleted when their layer disappears.
+	prevHadImage      bool
+	prevHadKittyImage bool
+	floatingActive    bool
+	drawingFloating   bool
+	floatingRect      FloatingPaneRect
 
 	// Main-screen flow renderer state. logLines is the full logical
 	// buffer (chat + live bottom band) from the previous DrawLog call.
@@ -415,6 +419,10 @@ func truncateToWidth(s string, cols int) string {
 }
 
 func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
+	if r.floatingActive && !r.drawingFloating {
+		r.Invalidate()
+		r.floatingActive = false
+	}
 	if r.cols == 0 || r.rows == 0 {
 		return
 	}
@@ -468,11 +476,11 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 		// its scrollbar to the top of the viewport on every image or
 		// selection-highlight frame.
 		w.WriteString(SeqClearScreenNoHome)
-		if curHasKittyImage {
-			// Delete previously placed kitty images once per frame,
-			// before rewriting all rows. Doing this inside each image
-			// escape makes only the last image in the frame survive.
-			w.WriteString("\x1b_Ga=d\x1b\\")
+		if curHasKittyImage || r.prevHadKittyImage {
+			// Delete previously placed kitty images once per frame, before
+			// rewriting all rows. This also removes a former foreground image
+			// when the replacement frame contains no Kitty image escape.
+			w.WriteString(SeqDeleteKittyImages)
 		}
 	}
 
@@ -523,8 +531,65 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 
 	r.prev = frame
 	r.prevHadImage = curHasImage
+	r.prevHadKittyImage = curHasKittyImage
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
+}
+
+// DrawFloating paints a complete, dimmed live background and then an opaque
+// floating pane at absolute coordinates. The background is deliberately
+// invalidated on every call: the pane is not represented in Draw's frame cache,
+// so repainting it first prevents stale foreground cells when either layer
+// changes or the terminal is resized.
+func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int) {
+	if r.cols == 0 || r.rows == 0 {
+		return
+	}
+	if !r.floatingActive || r.floatingRect != pane.Rect {
+		r.Invalidate()
+	}
+	r.drawingFloating = true
+	r.Draw(pane.Background, -1, 0)
+	r.drawingFloating = false
+
+	paneHasImage := false
+	paneHasKittyImage := false
+	for _, line := range pane.Lines {
+		if containsImageEscape(line) {
+			paneHasImage = true
+			if strings.Contains(line, "\x1b_G") {
+				paneHasKittyImage = true
+			}
+		}
+	}
+
+	var w strings.Builder
+	w.WriteString(SeqSynchronizedOn)
+	w.WriteString(SeqHideCursor)
+	for row, line := range pane.Lines {
+		y := pane.Rect.Y + row
+		if y < 0 || y >= r.rows {
+			continue
+		}
+		if pane.Rect.X >= r.cols {
+			continue
+		}
+		width := min(pane.Rect.Width, r.cols-pane.Rect.X)
+		w.WriteString(MoveTo(y+1, pane.Rect.X+1))
+		w.WriteString("\x1b[0m")
+		w.WriteString(paintBackgroundRow(truncateToWidth(line, width), width, r.backgroundStyle))
+	}
+	if cursorRow >= 0 && cursorRow < r.rows && cursorCol >= 0 && cursorCol < r.cols {
+		w.WriteString(MoveTo(cursorRow+1, cursorCol+1))
+		w.WriteString(SeqShowCursor)
+	}
+	w.WriteString(SeqSynchronizedOff)
+	_, _ = io.WriteString(r.out, w.String())
+	r.prevHadImage = r.prevHadImage || paneHasImage
+	r.prevHadKittyImage = r.prevHadKittyImage || paneHasKittyImage
+	// Keep the dimmed background cache while this geometry remains active.
+	r.floatingActive = true
+	r.floatingRect = pane.Rect
 }
 
 // DrawLog renders zut in the terminal's main screen as normal terminal

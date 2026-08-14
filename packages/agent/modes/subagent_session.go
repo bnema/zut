@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,14 +28,31 @@ type residentChildSession struct {
 	// scrollOffset is measured from the rendered live tail. Keeping the
 	// viewport bottom-relative preserves the same finalized content when an
 	// older page is prepended or the active turn grows.
-	scrollOffset int
-	unread       int
-	lastRows     int
-	recentRows   int
+	scrollOffset          int
+	unread                int
+	lastRows              int
+	recentRows            int
+	liveRevision          uint64
+	livePresent           bool
+	cacheWidth            int
+	cacheMessagesRevision uint64
+	cacheMessageCount     int
+	cacheLiveRevision     uint64
+	cacheLivePresent      bool
+	cacheRows             []string
+	loadCtx               context.Context
+	cancelLoad            context.CancelFunc
 }
 
 func newResidentChildSession(manager *subagents.ResidentManager, childID string, theme tui.Theme) *residentChildSession {
-	return &residentChildSession{manager: manager, childID: childID, view: tui.View{Theme: theme, ExpandAll: true}, composer: tui.NewEditor("follow-up > ")}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &residentChildSession{manager: manager, childID: childID, view: tui.View{Theme: theme, ExpandAll: true}, composer: tui.NewEditor("follow-up > "), loadCtx: ctx, cancelLoad: cancel}
+}
+
+func (s *residentChildSession) Close() {
+	if s != nil && s.cancelLoad != nil {
+		s.cancelLoad()
+	}
 }
 
 func (s *residentChildSession) LoadRecent(limit int) error {
@@ -58,6 +76,60 @@ func (s *residentChildSession) LoadRecent(limit int) error {
 // does not discard the user's scrollback.
 func (s *residentChildSession) ReloadRecent(limit int) error {
 	return s.LoadRecent(limit)
+}
+
+// LoadAll progressively installs the newest page then prepends every older
+// page. The callback runs after each durable page so the floating pane grows
+// naturally while disk history is being reconstructed.
+func (s *residentChildSession) LoadAll(limit int, progressed func()) error {
+	if s.loadCtx != nil {
+		select {
+		case <-s.loadCtx.Done():
+			return s.loadCtx.Err()
+		default:
+		}
+	}
+	if err := s.LoadRecent(limit); err != nil {
+		return err
+	}
+	if progressed != nil {
+		progressed()
+	}
+	for {
+		if s.loadCtx != nil {
+			select {
+			case <-s.loadCtx.Done():
+				return s.loadCtx.Err()
+			default:
+			}
+		}
+		s.mu.Lock()
+		more := s.olderCursor != ""
+		s.mu.Unlock()
+		if !more {
+			return nil
+		}
+		if err := s.LoadOlder(limit); err != nil {
+			return err
+		}
+		if progressed != nil {
+			progressed()
+		}
+	}
+}
+
+// ReloadAll rebuilds from one journal generation instead of replacing a
+// projected-message suffix whose page boundary may not match tool projection.
+func (s *residentChildSession) ReloadAll(limit int, progressed func()) error {
+	s.mu.Lock()
+	s.view.Messages = nil
+	s.view.MessagesRevision++
+	s.olderCursor = ""
+	s.recentRows = 0
+	// Keep a reader's bottom-relative viewport across a durable reload.
+	// Render clamps it against the rebuilt rows; a tail follower remains at 0.
+	s.mu.Unlock()
+	return s.LoadAll(limit, progressed)
 }
 
 func (s *residentChildSession) replaceRecent(messages []provider.Message, olderCursor string) {
@@ -116,14 +188,39 @@ func (s *residentChildSession) refreshLiveLocked() {
 		s.view.Streaming = ""
 		s.view.StreamingActive = false
 		s.view.ToolCalls = nil
+		s.liveRevision = 0
+		s.livePresent = false
 		return
 	}
+	s.liveRevision = live.Revision
+	s.livePresent = true
 	s.view.Streaming = live.AssistantText
 	s.view.StreamingActive = live.State == subagents.ResidentRunning && live.AssistantText != ""
 	s.view.ToolCalls = make([]tui.ToolCallView, len(live.Tools))
 	for index, tool := range live.Tools {
 		s.view.ToolCalls[index] = tui.ToolCallView{ID: tool.ID, Name: tool.Name, Args: tui.ShortArgs(tool.Name, tool.Args), RawJSONBuf: string(tool.Args), Streaming: tool.State == subagents.ResidentLiveToolComposing, Revision: live.Revision}
 	}
+}
+
+func (s *residentChildSession) renderedHistory(width int) []string {
+	s.mu.Lock()
+	s.refreshLiveLocked()
+	if s.cacheWidth == width && s.cacheMessagesRevision == s.view.MessagesRevision && s.cacheMessageCount == len(s.view.Messages) && s.cacheLiveRevision == s.liveRevision && s.cacheLivePresent == s.livePresent && s.cacheRows != nil {
+		rows := s.cacheRows
+		s.mu.Unlock()
+		return rows
+	}
+	view := s.view.CloneForRender()
+	messagesRevision, liveRevision := s.view.MessagesRevision, s.liveRevision
+	s.mu.Unlock()
+	rows := view.Build(width)
+	s.mu.Lock()
+	if s.view.MessagesRevision == messagesRevision && s.liveRevision == liveRevision {
+		s.cacheWidth, s.cacheMessagesRevision, s.cacheMessageCount, s.cacheLiveRevision, s.cacheLivePresent, s.cacheRows = width, messagesRevision, len(s.view.Messages), liveRevision, s.livePresent, rows
+		s.view.AdoptRenderCacheFrom(view)
+	}
+	s.mu.Unlock()
+	return rows
 }
 
 func (s *residentChildSession) View() *tui.View {
@@ -200,6 +297,15 @@ func (s *residentChildSession) HandleKey(k tui.Key) (string, bool) {
 	return prompt, prompt != ""
 }
 
+func (s *residentChildSession) HandleNavigation(k tui.Key) bool {
+	if s == nil || s.composer == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.composer.HandleKey(k)
+}
+
 func (s *residentChildSession) FinishSubmission(err error) {
 	if s == nil {
 		return
@@ -245,10 +351,6 @@ func (s *residentChildSession) Render(width, height int) []string {
 	if s == nil {
 		return nil
 	}
-	view := s.View()
-	if view == nil {
-		return []string{"  resident subagent unavailable"}
-	}
 	s.mu.Lock()
 	loading, loadErr := s.loading, s.err
 	var editorLines []string
@@ -275,7 +377,7 @@ func (s *residentChildSession) Render(width, height int) []string {
 	if loadErr != "" {
 		lines = append(lines, "  history: "+loadErr)
 	}
-	history := view.Build(width)
+	history := s.renderedHistory(width)
 	s.mu.Lock()
 	if s.lastRows != 0 && len(history) > s.lastRows && s.scrollOffset > 0 {
 		s.scrollOffset += len(history) - s.lastRows
@@ -305,7 +407,7 @@ func (s *residentChildSession) Render(width, height int) []string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, editorLines...)
-	lines = append(lines, "  Enter: send follow-up/resume   Esc: close   PgUp: load older history")
+	lines = append(lines, "  Enter: send follow-up/resume   Esc: close   PgUp/PgDn: scroll history")
 	if height <= 0 {
 		return nil
 	}

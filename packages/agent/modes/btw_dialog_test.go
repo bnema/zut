@@ -187,7 +187,8 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	}
 	d.mu.Unlock()
 
-	rows := d.Render(tui.Theme{}, 80)
+	const paneWidth = 62
+	rows := d.Render(tui.Theme{}, paneWidth)
 	rendered := strings.Join(rows, "\n")
 	if !strings.Contains(rendered, "┌─") || !strings.Contains(rendered, "echo") || !strings.Contains(rendered, "└─") {
 		t.Fatalf("/btw did not use the standard bordered tool renderer:\n%s", rendered)
@@ -202,7 +203,7 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	if toolRow < 1 || rows[toolRow-1] != "" {
 		t.Fatalf("/btw tool box is not separated from the user bubble by a blank row:\n%s", rendered)
 	}
-	if cursorRow, _ := d.CursorPos(80); cursorRow != len(rows)-3 {
+	if cursorRow, _ := d.CursorPos(paneWidth); cursorRow != len(rows)-3 {
 		t.Fatalf("cursor row = %d, want editor row %d after tool spacing change", cursorRow, len(rows)-3)
 	}
 }

@@ -14,14 +14,15 @@ func TestRenderResidentSubagentActivityLinesShowsOnlyActiveChildren(t *testing.T
 	lines := renderResidentSubagentActivityLines(tui.Dark, "/", []subagents.ResidentSnapshot{
 		{ID: "running-id", Profile: "reviewer", State: subagents.ResidentRunning, TurnStartedAt: now.Add(-90 * time.Second), ActivityUpdatedAt: now, WaitingForModel: true},
 		{ID: "queued-id", Profile: "planner", State: subagents.ResidentQueued, TurnStartedAt: now.Add(-10 * time.Second), ActivityUpdatedAt: now.Add(-5 * time.Second)},
+		{ID: "foreign-id", Profile: "another process", State: subagents.ResidentRunning, OwnedElsewhere: true, TurnStartedAt: now.Add(-10 * time.Second)},
 		{ID: "idle-id", Profile: "finished", State: subagents.ResidentIdle},
 	}, 80, now)
 	got := strings.Join(plainResidentIndicatorLines(lines), "\n")
 	if !strings.Contains(got, "/ reviewer · Zzzz · activity 0s ago · 1m30s") || !strings.Contains(got, "… planner · queued · activity 5s ago · 10s") {
 		t.Fatalf("activity lines = %q", got)
 	}
-	if strings.Contains(got, "finished") {
-		t.Fatalf("activity lines include inactive child: %q", got)
+	if strings.Contains(got, "finished") || strings.Contains(got, "another process") {
+		t.Fatalf("activity lines include inactive or foreign child: %q", got)
 	}
 }
 

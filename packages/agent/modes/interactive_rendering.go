@@ -492,75 +492,94 @@ func (i *Interactive) redraw() {
 		return
 	}
 
-	// Dialogs (login or model picker) render between chat and the editor.
+	// Independent views render into a floating pane over the live transcript.
+	// The pane owns its geometry and viewport; each view retains its own local
+	// selection, editor, and asynchronous state.
+	paneMax := tui.FloatingPaneMaxRect(cols, rows)
+	dialogWidth := paneMax.ContentWidth()
 	var dialog []string
+	var dialogID string
 	switch {
 	case i.dialog.Active():
-		dialog = i.dialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "login"
+		dialog = i.dialog.Render(i.cfg.Theme, dialogWidth)
 	case i.modelDialog.Active():
-		dialog = i.modelDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "model"
+		dialog = i.modelDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.llamaDialog.Active():
-		dialog = i.llamaDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "llama"
+		dialog = i.llamaDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.rescueDialog.Active():
-		dialog = i.rescueDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "rescue"
+		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.sessionDialog.Active():
-		// Reserve rows for the editor (~3), status line (1-2),
-		// dialog chrome (header + hint + rule + indicators, ~5),
-		// and leave the remainder for session rows. Minimum of 3
-		// rows so even a very small terminal shows something.
-		_, rows := i.cfg.Terminal.Size()
-		avail := rows - 12
-		if avail < 3 {
-			avail = 3
-		}
-		i.sessionDialog.MaxRows = avail
-		dialog = i.sessionDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "sessions"
+		i.sessionDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
+		dialog = i.sessionDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.residentSubagentsDialog.Active():
-		_, terminalRows := i.cfg.Terminal.Size()
-		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, mainCols, terminalRows)
+		dialogID = "subagents"
+		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.residentChildSession != nil:
-		_, terminalRows := i.cfg.Terminal.Size()
-		dialog = i.residentChildSession.Render(mainCols, terminalRows)
+		dialogID = "subagent-session"
+		dialog = i.residentChildSession.Render(dialogWidth, paneMax.ContentHeight())
 	case i.jumpDialog.Active():
-		dialog = i.jumpDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "jump"
+		dialog = i.jumpDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.extPanel.Active() && (!i.confirmDialog.Active() || !i.confirmDialog.Focused()):
-		dialog = i.extPanel.Render(i.cfg.Theme, mainCols)
+		dialogID = "extension-panel"
+		dialog = i.extPanel.Render(i.cfg.Theme, dialogWidth)
 	case i.confirmDialog.Active():
+		dialogID = "confirmation"
 		if i.btwDialog.Active() {
-			// Keep the side-chat transcript and its live tool preview visible
-			// above confirmation, matching how the main transcript remains
-			// visible while --no-yolo waits for a decision.
-			dialog = renderBtwConfirmation(i.cfg.Theme, mainCols, i.btwDialog, i.confirmDialog)
+			dialog = renderBtwConfirmation(i.cfg.Theme, dialogWidth, i.btwDialog, i.confirmDialog)
 		} else {
-			dialog = i.confirmDialog.Render(i.cfg.Theme, mainCols)
+			dialog = i.confirmDialog.Render(i.cfg.Theme, dialogWidth)
 		}
 	case i.btwDialog.Active():
-		dialog = i.btwDialog.Render(i.cfg.Theme, mainCols)
+		dialogID = "side-chat"
+		dialog = i.btwDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.skillsDialog.Active():
-		dialog = i.skillsDialog.Render(i.cfg.Theme, mainCols)
-	case i.changelogDialog.Active():
-		dialog = i.changelogDialog.Render(i.cfg.Theme, mainCols)
-	case i.logoutDialog.Active():
-		dialog = i.logoutDialog.Render(i.cfg.Theme, mainCols)
-	case i.telegramDialog.Active():
-		dialog = i.telegramDialog.Render(i.cfg.Theme, mainCols)
-	case i.settingsDialog.Active():
-		dialog = i.settingsDialog.Render(i.cfg.Theme, mainCols)
-	case i.sessionOpsDialog.Active():
-		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, mainCols)
-	case i.sessionTreeDialog.Active():
-		// Reserve rows for the editor, status, and tree chrome while using
-		// the same budget for rendering and PageUp/PageDown movement.
-		_, rows := i.cfg.Terminal.Size()
-		avail := rows - 12
-		if avail < 3 {
-			avail = 3
+		dialogID = "skills"
+		if i.skillsDialog.Viewing() {
+			dialogID = "skills-body"
 		}
-		i.sessionTreeDialog.MaxRows = avail
-		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, mainCols)
+		dialog = i.skillsDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.changelogDialog.Active():
+		dialogID = "changelog"
+		dialog = i.changelogDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.logoutDialog.Active():
+		dialogID = "logout"
+		dialog = i.logoutDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.telegramDialog.Active():
+		dialogID = "telegram"
+		dialog = i.telegramDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.settingsDialog.Active():
+		dialogID = "settings"
+		dialog = i.settingsDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.sessionOpsDialog.Active():
+		dialogID = "session-ops"
+		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.sessionTreeDialog.Active():
+		dialogID = "session-tree"
+		i.sessionTreeDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
+		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, dialogWidth)
 	}
+	dialogTitle := floatingOverlayTitle(dialogID)
+	dialogRemovedTopRows := 0
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
+		frameTitle, body, removedTopRows := floatingDialogBody(dialog)
+		if frameTitle != "" {
+			dialogTitle = frameTitle
+		}
+		dialog, dialogRemovedTopRows = body, removedTopRows
+	}
+	dialogFocusRow := -1
+	for row, line := range dialog {
+		if strings.Contains(line, i.cfg.Theme.SelectionStyle()) {
+			dialogFocusRow = row
+			break
+		}
 	}
 	modalBackdrop := len(dialog) > 0
 
@@ -695,10 +714,12 @@ func (i *Interactive) redraw() {
 		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
 	}
 	edLines, curR, curC := i.ed.Render(mainCols)
-	dashboardActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
+	// Floating independent views no longer replace the main bottom band: the
+	// underlying chat, status, and editor keep updating behind the pane.
+	residentViewActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
 	var allResidentSubagentLines []string
 	residentSubagentHidden := 0
-	if !dashboardActive && i.cfg.ResidentManager != nil {
+	if !residentViewActive && i.cfg.ResidentManager != nil {
 		const residentIndicatorSnapshotLimit = 8
 		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
 		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock())
@@ -752,17 +773,7 @@ func (i *Interactive) redraw() {
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
 	composeBottom := func(residentSubagentLines []string) (bottom []string, inputStartRow int) {
-		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
-		inputStartRow = -1
-		if len(dialog) > 0 {
-			bottom = append(bottom, "")
-		}
-		bottom = append(bottom, dialog...)
-		// The resident child views own the bottom of the screen while active.
-		if dashboardActive {
-			return bottom, inputStartRow
-		}
-
+		bottom = make([]string, 0, len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
 		bottom = append(bottom, suggest...)
 		bottom = append(bottom, queue...)
 		lineInput := inputStyle == tui.InputStyleLines
@@ -814,7 +825,7 @@ func (i *Interactive) redraw() {
 	var residentSubagentLines []string
 	var bottom []string
 	var inputStartRow int
-	if !dashboardActive && len(allResidentSubagentLines) > 0 {
+	if len(allResidentSubagentLines) > 0 {
 		for maxRows := len(allResidentSubagentLines) + 1; maxRows >= 0; maxRows-- {
 			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, maxRows, mainCols)
 			candidateBottom, _ := composeBottom(candidate)
@@ -969,39 +980,24 @@ func (i *Interactive) redraw() {
 		}
 	}
 
-	// A dialog is the foreground layer. Dim every other visible surface,
-	// including the main input beneath it, without changing the dialog's
-	// own styling. Keep the source slices untouched because chat is cached.
-	if modalBackdrop {
-		chat = tui.DimLines(chat)
-		visibleChat = tui.DimLines(visibleChat)
-		dimmedBottom := tui.DimLines(bottom)
-		copy(dimmedBottom[1:1+len(dialog)], dialog)
-		bottom = dimmedBottom
-	}
-
 	// Default: the real terminal cursor sits on the main editor's
 	// input position. In main-screen log mode cursor rows are relative
 	// to the fixed bottom band, not the chat transcript.
-	// dialogLead is 1 when the bottom region prepends a blank above
-	// the dialog block (whenever a dialog is showing) so popup-side
-	// cursor positions still land in the right cell.
+	// Floating content has its own coordinate space, so dialog cursor rows
+	// remain relative to the content passed to FloatingPane.Compose.
 	dialogLead := 0
-	if len(dialog) > 0 {
-		dialogLead = 1
-	}
 	cursorRow := inputStartRow + inputCursorOffset + curR
 	cursorCol := curC + inputCursorColOffset
 	cursorInDialog := false
 	if i.btwDialog.Active() {
-		if r, c := i.btwDialog.CursorPos(mainCols); r >= 0 {
+		if r, c := i.btwDialog.CursorPos(dialogWidth); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true
 		}
 	}
 	if i.dialog.Active() {
-		if r, c := i.dialog.CursorPos(mainCols); r >= 0 {
+		if r, c := i.dialog.CursorPos(dialogWidth); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true
@@ -1035,6 +1031,13 @@ func (i *Interactive) redraw() {
 		cursorRow = -1
 		cursorCol = 0
 	}
+	dialogCursorRow, dialogCursorCol := dialogFocusRow, 0
+	if cursorInDialog {
+		dialogCursorRow, dialogCursorCol = cursorRow-dialogRemovedTopRows, cursorCol
+		if dialogCursorRow < 0 {
+			dialogCursorRow = -1
+		}
+	}
 	i.setInputCursorDimmed(modalBackdrop && !cursorInDialog)
 	if i.renderRevision.Load() != renderRevision {
 		i.mu.Unlock()
@@ -1044,13 +1047,17 @@ func (i *Interactive) redraw() {
 	// State assembly above is synchronized; terminal output is owned by
 	// this renderer goroutine and must not hold the global state mutex.
 	i.mu.Unlock()
-	if rightBarActive {
-		rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
-		if modalBackdrop {
-			i.rend.DrawRightBarDimmed(visibleChat, bottom, tui.DimLines(rightBar), cursorRow, cursorCol)
-		} else {
-			i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
+	if modalBackdrop {
+		background := floatingBackgroundFrame(visibleChat, bottom, rows)
+		if rightBarActive {
+			rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
+			background = floatingRightBarFrame(theme, background, rightBar, mainCols, rightBarWidth)
 		}
+		pane, paneCursorRow, paneCursorCol := i.floatingPane.Compose(theme, dialogID, dialogTitle, background, dialog, cols, rows, dialogCursorRow, dialogCursorCol)
+		i.rend.DrawFloating(pane, paneCursorRow, paneCursorCol)
+	} else if rightBarActive {
+		rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
+		i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
 	} else {
 		_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
@@ -1063,6 +1070,69 @@ func (i *Interactive) redraw() {
 	}
 	i.mu.Unlock()
 }
+
+// floatingOverlayTitle supplies every overlay with a stable, human-readable
+// title even when its body does not use the legacy frame-header convention.
+func floatingOverlayTitle(id string) string {
+	return strings.ReplaceAll(id, "-", " ")
+}
+
+// floatingDialogBody removes a legacy dialog's rule chrome and returns its
+// title for the shared floating-pane border.
+func floatingDialogBody(lines []string) (title string, body []string, removedTopRows int) {
+	if len(lines) == 0 {
+		return "", nil, 0
+	}
+	body = lines
+	if isFrameHeaderLine(body[0]) {
+		plain := strings.TrimPrefix(stripANSIBytes(body[0]), "── ")
+		title = strings.TrimSpace(strings.TrimRight(plain, "─"))
+		body = body[1:]
+		removedTopRows = 1
+	}
+	if last := len(body) - 1; last >= 0 && isFrameRuleLine(body[last]) {
+		body = body[:last]
+	}
+	return title, body, removedTopRows
+}
+
+// floatingBackgroundFrame preserves the regular viewport layout while an
+// independent view is open. It is a fixed terminal frame only for the overlay
+// lifetime; normal rendering immediately returns to scrollback-oriented flow
+// when the pane closes.
+func floatingBackgroundFrame(chat, bottom []string, rows int) []string {
+	if rows < 1 {
+		return nil
+	}
+	// Match DrawLog's logical order and renderer-owned bottom margin, then
+	// retain exactly the terminal viewport. In particular, an editor/status
+	// band taller than the terminal must show its newest rows, not its oldest.
+	lines := make([]string, 0, len(chat)+len(bottom)+1)
+	lines = append(lines, chat...)
+	lines = append(lines, bottom...)
+	lines = append(lines, "")
+	if len(lines) > rows {
+		lines = lines[len(lines)-rows:]
+	}
+	frame := make([]string, rows)
+	// DrawLog's flow renderer leaves the logical session content at the
+	// viewport's top. Keep that anchoring when switching to a fixed floating
+	// frame so opening a pane does not visibly jump the whole session down.
+	copy(frame, lines)
+	return frame
+}
+
+func floatingRightBarFrame(theme tui.Theme, main, rightBar []string, mainWidth, rightBarWidth int) []string {
+	for row := range main {
+		barLine := ""
+		if row < len(rightBar) {
+			barLine = rightBar[row]
+		}
+		main[row] = tui.JoinRightBar(theme, main[row], barLine, mainWidth, rightBarWidth)
+	}
+	return main
+}
+
 func hasImageEscape(line string) bool {
 	return strings.Contains(line, "\x1b]1337;File=") || strings.Contains(line, "\x1b_G")
 }

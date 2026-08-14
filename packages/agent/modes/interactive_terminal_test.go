@@ -38,7 +38,7 @@ func TestInteractiveRunClearsVisibleFrameOnExit(t *testing.T) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
 
-	cleanup := tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages +
+	cleanup := tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqMouseOff +
 		tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff +
 		tui.ResetCursorColor() + tui.ResetCursorShape() +
 		tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor

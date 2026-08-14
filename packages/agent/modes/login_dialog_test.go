@@ -76,8 +76,11 @@ func TestLoginDialogCursorPosMatchesPaddedInputRow(t *testing.T) {
 	d.provider = "anthropic"
 	d.ShowWaiting("https://example.com/oauth/authorize?code_challenge=abc&state=xyz")
 
-	lines := padDialogFrame(d.Render(tui.Theme{}, 80))
-	row, _ := d.CursorPos(80)
+	// Floating panes render this dialog narrower than the main terminal, so
+	// CursorPos must use the identical width to retain wrapping alignment.
+	const paneWidth = 62
+	lines := padDialogFrame(d.Render(tui.Theme{}, paneWidth))
+	row, _ := d.CursorPos(paneWidth)
 	if row < 0 || row >= len(lines) {
 		t.Fatalf("CursorPos row = %d outside rendered lines %d", row, len(lines))
 	}

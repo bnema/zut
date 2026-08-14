@@ -260,7 +260,7 @@ When the sandbox is on (see `/jail`), filesystem tools, `grep`, and LSP workspac
 
 ## Modes
 
-- **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands.
+- **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands. Independent views such as `/settings`, `/subagents`, pickers, and confirmations open in a focused floating pane while the live main view remains visible and dimmed behind it. On terminals narrower than 80 columns, the pane becomes a full-width bottom drawer.
 - **Print**: `zut -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
 - **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
 - **Piped input**: stdin implies print mode when no explicit mode is selected. Print, stream, and JSON modes prepend piped input to the positional prompt, separated by a newline. For example, `cat README.md | zut "summarize this text"`.
