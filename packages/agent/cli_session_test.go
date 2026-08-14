@@ -114,7 +114,9 @@ func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 	const privateGoal = "private goal text"
 	const privateMission = "private-mission-id"
+	const privateReason = "private active reason"
 	const privateSessionContent = "private session content"
+	var writeFailureGoal core.SessionGoal
 
 	newSession := func(t *testing.T) *core.Session {
 		t.Helper()
@@ -130,10 +132,11 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		setup   func(*testing.T) *core.Session
-		update  tools.GoalUpdate
-		message string
+		name            string
+		setup           func(*testing.T) *core.Session
+		update          tools.GoalUpdate
+		message         string
+		assertUnchanged func(*testing.T, *core.Session)
 	}{
 		{
 			name: "active goal",
@@ -175,9 +178,10 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 			name: "write failure",
 			setup: func(t *testing.T) *core.Session {
 				sess := newSession(t)
-				if err := sess.UpdateGoal(&core.SessionGoal{Objective: privateGoal, Status: core.GoalActive}); err != nil {
+				if err := sess.UpdateGoal(&core.SessionGoal{Objective: privateGoal, Status: core.GoalActive, Reason: privateReason}); err != nil {
 					t.Fatal(err)
 				}
+				writeFailureGoal = *sess.Meta.Goal
 				if err := sess.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -185,6 +189,21 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 			},
 			update:  tools.GoalUpdate{Status: core.GoalDone},
 			message: "goal state could not be saved",
+			assertUnchanged: func(t *testing.T, sess *core.Session) {
+				t.Helper()
+				assertGoal := func(source string, goal *core.SessionGoal) {
+					t.Helper()
+					if goal == nil || goal.Status != writeFailureGoal.Status || goal.Objective != writeFailureGoal.Objective || goal.Reason != writeFailureGoal.Reason {
+						t.Fatalf("%s goal after failed update = %#v, want status=%q objective=%q reason=%q", source, goal, writeFailureGoal.Status, writeFailureGoal.Objective, writeFailureGoal.Reason)
+					}
+				}
+				assertGoal("in-memory", sess.Meta.Goal)
+				snapshot, err := core.ReadSessionSnapshot(sess.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertGoal("persisted", snapshot.Meta.Goal)
+			},
 		},
 	}
 	for _, test := range tests {
@@ -200,6 +219,9 @@ func TestPersistToolResultStateUsesSafeGoalPersistenceCategories(t *testing.T) {
 			}
 			if strings.Contains(safe.Message, privateGoal) || strings.Contains(safe.Message, privateMission) || strings.Contains(safe.Message, privateSessionContent) || (sess != nil && strings.Contains(safe.Message, sess.Path)) {
 				t.Fatalf("safe message leaked private state: %q", safe.Message)
+			}
+			if test.assertUnchanged != nil {
+				test.assertUnchanged(t, sess)
 			}
 		})
 	}
