@@ -110,7 +110,7 @@ func TestResidentChildReportsAndPreservesFailureWhenTurnStartCannotPersist(t *te
 	}
 	select {
 	case completion := <-completed:
-		if completion.ChildID != "start-persistence-failure" || completion.Task != "task" {
+		if completion.ChildID != "start-persistence-failure" || completion.TurnID != "turn" || completion.Task != "task" {
 			t.Fatalf("completion = %#v", completion)
 		}
 		if completion.Err == nil || !strings.Contains(completion.Err.Error(), "persist resident child start state") {

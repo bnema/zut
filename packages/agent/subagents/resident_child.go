@@ -30,6 +30,7 @@ type residentTurnResult struct {
 // ResidentCompletion is a typed in-process terminal turn notification.
 type ResidentCompletion struct {
 	ChildID string
+	TurnID  string
 	Task    string
 	Err     error
 	Summary string
@@ -256,36 +257,44 @@ func (c *ResidentChild) Resume(ctx context.Context, prompt string) error {
 	return c.enqueue(ctx, residentPrompt{turnID: uuid.NewString(), prompt: prompt, ack: make(chan error, 1)})
 }
 
-func (c *ResidentChild) resumeAccepted(ctx context.Context, turnID, prompt string) error {
-	return c.enqueue(ctx, residentPrompt{turnID: turnID, prompt: prompt, ack: make(chan error, 1)})
+// resumeAccepted queues durably accepted work and reports whether the child
+// took ownership of its terminal completion. Once it has taken ownership, it
+// emits the completion itself even when turn startup fails.
+func (c *ResidentChild) resumeAccepted(ctx context.Context, turnID, prompt string) (bool, error) {
+	return c.enqueueAccepted(ctx, residentPrompt{turnID: turnID, prompt: prompt, ack: make(chan error, 1)})
 }
 
 func (c *ResidentChild) enqueue(ctx context.Context, request residentPrompt) error {
+	_, err := c.enqueueAccepted(ctx, request)
+	return err
+}
+
+func (c *ResidentChild) enqueueAccepted(ctx context.Context, request residentPrompt) (bool, error) {
 	if c == nil || c.runner == nil {
-		return errors.New("resident child: no runner")
+		return false, errors.New("resident child: no runner")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	request.prompt = strings.TrimSpace(request.prompt)
 	if request.prompt == "" {
-		return errors.New("resident child: prompt is empty")
+		return false, errors.New("resident child: prompt is empty")
 	}
 	if strings.TrimSpace(request.turnID) == "" {
-		return errors.New("resident child: missing turn ID")
+		return false, errors.New("resident child: missing turn ID")
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-c.ctx.Done():
-		return errors.New("resident child: closed")
+		return false, errors.New("resident child: closed")
 	case c.inbox <- request:
 	}
 	select {
 	case err := <-request.ack:
-		return err
+		return true, err
 	case <-c.ctx.Done():
-		return errors.New("resident child: closed before prompt acceptance")
+		return true, errors.New("resident child: closed before prompt acceptance")
 	}
 }
 
@@ -325,6 +334,7 @@ func (c *ResidentChild) run() {
 	}()
 
 	var queue []residentPrompt
+	var interruptedPrompts []residentPrompt
 	results := make(chan residentTurnResult, 1)
 	var active residentPrompt
 	running, interrupted := false, false
@@ -338,7 +348,10 @@ func (c *ResidentChild) run() {
 					c.setState(ResidentFailed)
 					c.cancel()
 					if c.onCompletion != nil {
-						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr})
+						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: active.turnID, Task: active.prompt, Err: terminalErr})
+						for _, pending := range queue {
+							c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: terminalErr})
+						}
 					}
 					return
 				}
@@ -353,6 +366,11 @@ func (c *ResidentChild) run() {
 		if interrupted && !running {
 			c.live.Finish(ResidentInterrupted)
 			c.setState(ResidentInterrupted)
+			if c.onCompletion != nil {
+				for _, prompt := range interruptedPrompts {
+					c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: prompt.turnID, Task: prompt.prompt, Err: context.Canceled})
+				}
+			}
 			return
 		}
 
@@ -366,10 +384,14 @@ func (c *ResidentChild) run() {
 				continue
 			}
 			interrupted = true
-			if running && c.journal != nil {
-				_ = c.journal.RecordTurnInterrupted(c.spec, active.turnID)
+			if running {
+				interruptedPrompts = append(interruptedPrompts, active)
+				if c.journal != nil {
+					_ = c.journal.RecordTurnInterrupted(c.spec, active.turnID)
+				}
 			}
 			for _, pending := range queue {
+				interruptedPrompts = append(interruptedPrompts, pending)
 				if c.journal != nil {
 					_ = c.journal.RecordTurnInterrupted(c.spec, pending.turnID)
 				}
@@ -418,7 +440,12 @@ func (c *ResidentChild) run() {
 						summary = result.Summary
 					}
 				}
-				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, Task: active.prompt, Err: terminalErr, Summary: summary})
+				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: result.turnID, Task: active.prompt, Err: terminalErr, Summary: summary})
+				if persistenceFailed {
+					for _, pending := range queue {
+						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: terminalErr})
+					}
+				}
 			}
 			if persistenceFailed {
 				return

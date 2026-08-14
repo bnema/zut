@@ -67,11 +67,98 @@ func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
 	}
 	select {
 	case completion := <-completed:
+		if completion.TurnID == "" {
+			t.Fatal("completion turn ID is empty")
+		}
 		if completion.Summary != "the actual child answer" {
 			t.Fatalf("completion summary = %q", completion.Summary)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("resident child did not complete")
+	}
+}
+
+func TestResidentManagerReportsQueuedTurnsWhenFinalResultCannotPersist(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	completed := make(chan ResidentCompletion, 2)
+	var journal *ResidentJournal
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, childJournal *ResidentJournal) (ResidentTurnRunner, error) {
+		journal = childJournal
+		return func(context.Context, string) error {
+			close(started)
+			<-release
+			return nil
+		}, nil
+	})
+	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "persistence-failure-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "initial task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("resident child did not start")
+	}
+	if err := manager.Resume(context.Background(), "persistence-failure-child", "queued follow-up"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatalf("Close journal: %v", err)
+	}
+	close(release)
+
+	seen := make(map[string]ResidentCompletion, 2)
+	for range 2 {
+		select {
+		case completion := <-completed:
+			seen[completion.Task] = completion
+		case <-time.After(time.Second):
+			t.Fatalf("terminal completions = %#v, want initial and queued turns", seen)
+		}
+	}
+	for _, task := range []string{"initial task", "queued follow-up"} {
+		completion, ok := seen[task]
+		if !ok || completion.TurnID == "" || completion.Err == nil || !strings.Contains(completion.Err.Error(), "persist resident child terminal state") {
+			t.Fatalf("completion for %q = %#v", task, completion)
+		}
+	}
+}
+
+func TestResidentManagerReportsAcceptedInterruptedTurn(t *testing.T) {
+	started := make(chan struct{})
+	completed := make(chan ResidentCompletion, 1)
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		}, nil
+	})
+	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+
+	child, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "interrupted-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("resident child did not start")
+	}
+	if err := child.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case completion := <-completed:
+		if completion.ChildID != "interrupted-child" || completion.TurnID == "" || !errors.Is(completion.Err, context.Canceled) {
+			t.Fatalf("completion = %#v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupted turn did not report completion")
 	}
 }
 
@@ -627,7 +714,7 @@ func TestResidentManagerNotifiesAcceptedObserverForFollowUps(t *testing.T) {
 	})
 	defer manager.Close(context.Background())
 	accepted := make(chan string, 2)
-	manager.SetAcceptedObserver(func(_ ResidentChildSpec, prompt string) { accepted <- prompt })
+	manager.SetAcceptedObserver(func(_ ResidentChildSpec, _ string, prompt string) { accepted <- prompt })
 	spec := ResidentChildSpec{ID: "observer", SessionID: "session", Provider: "openai", Model: "gpt-5"}
 	if _, err := manager.Spawn(context.Background(), spec, "initial"); err != nil {
 		t.Fatal(err)
