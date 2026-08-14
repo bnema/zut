@@ -36,7 +36,7 @@ type ResidentManager struct {
 	allowedRoots     []string
 	dispatchMu       sync.Mutex
 	onCompletion     func(ResidentCompletion)
-	onAccepted       func(ResidentChildSpec, string)
+	onAccepted       func(ResidentChildSpec, string, string)
 	onUpdate         func(string)
 	onHistoryUpdate  func(string)
 	onActivity       func(bool)
@@ -51,9 +51,10 @@ func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion
 	m.mu.Unlock()
 }
 
-// SetAcceptedObserver receives a prompt only after the authoritative
-// child.accepted record has synchronized, and before it can be scheduled.
-func (m *ResidentManager) SetAcceptedObserver(observer func(ResidentChildSpec, string)) {
+// SetAcceptedObserver receives an accepted turn's ID and prompt only after
+// the authoritative child.accepted record has synchronized and before it can
+// be scheduled.
+func (m *ResidentManager) SetAcceptedObserver(observer func(ResidentChildSpec, string, string)) {
 	if m == nil {
 		return
 	}
@@ -274,7 +275,7 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	accepted := m.onAccepted
 	m.mu.Unlock()
 	if accepted != nil {
-		accepted(spec, task)
+		accepted(spec, spec.InitialTurnID, task)
 	}
 	runner, err := m.factory(spec, journal)
 	if err != nil {
@@ -284,7 +285,7 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 		completion := m.onCompletion
 		m.mu.Unlock()
 		if completion != nil {
-			completion(ResidentCompletion{ChildID: spec.ID, Task: task, Err: err})
+			completion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
 		}
 		return nil, err
 	}
@@ -302,14 +303,20 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	}
 	m.children[spec.ID] = child
 	m.mu.Unlock()
-	if err := child.resumeAccepted(ctx, spec.InitialTurnID, task); err != nil {
-		_ = journal.RecordTurnInterrupted(spec, spec.InitialTurnID)
+	if childAccepted, err := child.resumeAccepted(ctx, spec.InitialTurnID, task); err != nil {
 		m.mu.Lock()
 		if m.children[spec.ID] == child {
 			delete(m.children, spec.ID)
 		}
+		completion := m.onCompletion
 		m.mu.Unlock()
 		_ = child.Close(context.Background())
+		if !childAccepted {
+			_ = journal.RecordTurnInterrupted(spec, spec.InitialTurnID)
+			if completion != nil {
+				completion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
+			}
+		}
 		return nil, err
 	}
 	return child, nil
@@ -458,7 +465,8 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	}
 	turnID := uuid.NewString()
 	if child.journal == nil {
-		return child.resumeAccepted(ctx, turnID, prompt)
+		_, err := child.resumeAccepted(ctx, turnID, prompt)
+		return err
 	}
 	if err := child.journal.AcceptFollowUp(child.spec, turnID, prompt); err != nil {
 		return err
@@ -467,10 +475,18 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	accepted := m.onAccepted
 	m.mu.Unlock()
 	if accepted != nil {
-		accepted(child.spec, prompt)
+		accepted(child.spec, turnID, prompt)
 	}
-	if err := child.resumeAccepted(ctx, turnID, prompt); err != nil {
-		_ = child.journal.RecordTurnInterrupted(child.spec, turnID)
+	if childAccepted, err := child.resumeAccepted(ctx, turnID, prompt); err != nil {
+		if !childAccepted {
+			_ = child.journal.RecordTurnInterrupted(child.spec, turnID)
+			m.mu.Lock()
+			completion := m.onCompletion
+			m.mu.Unlock()
+			if completion != nil {
+				completion(ResidentCompletion{ChildID: child.spec.ID, TurnID: turnID, Task: prompt, Err: err})
+			}
+		}
 		return err
 	}
 	return nil

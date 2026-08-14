@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,11 +18,13 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
-func (i *Interactive) TrackResidentSubagent(childID string) {
+func (i *Interactive) TrackResidentSubagent(childID, turnID string) {
 	if i == nil {
 		return
 	}
-	i.ensureCompletionTracker().TrackResident()
+	if !i.ensureCompletionTracker().TrackResident(childID, turnID) {
+		return
+	}
 	i.registerCoordinatorWorker(childID)
 	i.invalidate()
 	i.requestCompletionDelivery()
@@ -33,8 +36,13 @@ func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentComple
 	status, errText := "completed", ""
 	if completion.Err != nil {
 		status, errText = "failed", completion.Err.Error()
+		if errors.Is(completion.Err, context.Canceled) {
+			status = "interrupted"
+		}
 	}
-	i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
+	if !i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, TurnID: completion.TurnID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary}) {
+		return
+	}
 	i.reloadOpenResidentChildSession(completion.ChildID)
 	i.invalidate()
 	i.requestCompletionDelivery()

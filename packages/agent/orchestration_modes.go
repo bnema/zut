@@ -210,10 +210,13 @@ func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config
 			errText := ""
 			if completion.Err != nil {
 				status, errText = "failed", completion.Err.Error()
+				if errors.Is(completion.Err, context.Canceled) {
+					status = "interrupted"
+				}
 			}
-			tracker.Report(subagents.Completion{AgentID: completion.ChildID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
+			tracker.Report(subagents.Completion{AgentID: completion.ChildID, TurnID: completion.TurnID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
 		},
-		OnResidentSpawned: func(subagents.ResidentChildSpec, string) { tracker.TrackResident() },
+		OnResidentSpawned: func(spec subagents.ResidentChildSpec, turnID, _ string) { tracker.TrackResident(spec.ID, turnID) },
 	})
 }
 

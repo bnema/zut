@@ -10,6 +10,7 @@ import (
 // Completion is one resident child's terminal turn outcome.
 type Completion struct {
 	AgentID string
+	TurnID  string
 	Status  string
 	Task    string
 	Error   string
@@ -20,38 +21,61 @@ type Completion struct {
 // turn. It has no process or worker-event dependency.
 type CompletionTracker struct {
 	mu      sync.Mutex
-	pending int
+	pending map[string]struct{}
 	ready   []Completion
 	changed chan struct{}
 }
 
 func NewCompletionTracker() *CompletionTracker {
-	return &CompletionTracker{changed: make(chan struct{})}
+	return &CompletionTracker{changed: make(chan struct{}), pending: make(map[string]struct{})}
 }
 
-func (t *CompletionTracker) TrackResident() {
+// TrackResident records an accepted resident turn. It returns false when the
+// turn is incomplete or already tracked.
+func (t *CompletionTracker) TrackResident(agentID, turnID string) bool {
 	if t == nil {
-		return
+		return false
+	}
+	key := completionKey(agentID, turnID)
+	if key == "" {
+		return false
 	}
 	t.mu.Lock()
-	t.pending++
+	defer t.mu.Unlock()
+	if _, exists := t.pending[key]; exists {
+		return false
+	}
+	t.pending[key] = struct{}{}
 	t.signalLocked()
-	t.mu.Unlock()
+	return true
 }
 
-func (t *CompletionTracker) Report(completion Completion) {
+// Report accepts one terminal completion for an accepted resident turn. It
+// returns false for duplicate or unknown terminal reports.
+func (t *CompletionTracker) Report(completion Completion) bool {
 	if t == nil {
-		return
+		return false
+	}
+	key := completionKey(completion.AgentID, completion.TurnID)
+	if key == "" {
+		return false
 	}
 	t.mu.Lock()
-	if t.pending == 0 {
-		t.mu.Unlock()
-		return
+	defer t.mu.Unlock()
+	if _, exists := t.pending[key]; !exists {
+		return false
 	}
-	t.pending--
+	delete(t.pending, key)
 	t.ready = append(t.ready, completion)
 	t.signalLocked()
-	t.mu.Unlock()
+	return true
+}
+
+func completionKey(agentID, turnID string) string {
+	if agentID == "" || turnID == "" {
+		return ""
+	}
+	return agentID + "\x00" + turnID
 }
 
 func (t *CompletionTracker) Pending() int {
@@ -60,7 +84,7 @@ func (t *CompletionTracker) Pending() int {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.pending
+	return len(t.pending)
 }
 
 // Reset drops buffered outcomes at a parent-turn cancellation boundary.
@@ -69,7 +93,7 @@ func (t *CompletionTracker) Reset() {
 		return
 	}
 	t.mu.Lock()
-	t.pending = 0
+	t.pending = make(map[string]struct{})
 	t.ready = nil
 	t.signalLocked()
 	t.mu.Unlock()
@@ -81,7 +105,7 @@ func (t *CompletionTracker) WaitIdle(ctx context.Context) ([]Completion, error) 
 	}
 	for {
 		t.mu.Lock()
-		if t.pending == 0 {
+		if len(t.pending) == 0 {
 			ready := append([]Completion(nil), t.ready...)
 			t.ready = nil
 			t.mu.Unlock()

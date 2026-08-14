@@ -1481,9 +1481,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	// Keep the shared subagent runtime in the outer scope: session reloads,
 	// dashboard updates, agent rebuilds, and shutdown all use the same owner.
 	var runtime *subagentRuntime
-	onResidentAccepted := func(spec subagents.ResidentChildSpec, _ string) {
+	onResidentAccepted := func(spec subagents.ResidentChildSpec, turnID, _ string) {
 		if iv != nil {
-			iv.TrackResidentSubagent(spec.ID)
+			iv.TrackResidentSubagent(spec.ID, turnID)
 		}
 	}
 	onResidentCompletion := func(completion subagents.ResidentCompletion) {

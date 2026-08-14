@@ -44,10 +44,9 @@ type subagentRuntime struct {
 	activeSession   string
 	webSearchGuard  *webSearchSessionGuard
 
-	onResidentSpawned func(subagents.ResidentChildSpec, string)
-	settingsMu        sync.RWMutex
-	closeMu           sync.Mutex
-	closed            bool
+	settingsMu sync.RWMutex
+	closeMu    sync.Mutex
+	closed     bool
 }
 
 type subagentRuntimeConfiguration struct {
@@ -82,7 +81,7 @@ type subagentRuntimeConfig struct {
 	ActiveModel        func() string
 	ActiveReasoning    func() string
 	ResidentCompletion func(subagents.ResidentCompletion)
-	OnResidentSpawned  func(subagents.ResidentChildSpec, string)
+	OnResidentSpawned  func(subagents.ResidentChildSpec, string, string)
 }
 
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
@@ -103,7 +102,6 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 		webSearchPolicy:    cfg.WebSearchPolicy,
 		policy:             cfg.Policy,
 		webSearchGuard:     cfg.WebSearchGuard,
-		onResidentSpawned:  cfg.OnResidentSpawned,
 	}
 	if rt.activeProvider == nil {
 		rt.activeProvider = func() string {
@@ -398,7 +396,6 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 			BuildResidentSpec: func(ctx context.Context, request tools.ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
 				return rt.buildResidentChildSpec(ctx, request, reg)
 			},
-			OnResidentSpawned: rt.onResidentSpawned,
 		}
 		reg[spawn.Name()] = spawn
 	}
