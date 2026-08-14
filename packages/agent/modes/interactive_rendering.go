@@ -561,8 +561,11 @@ func (i *Interactive) redraw() {
 		i.sessionTreeDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, dialogWidth)
 	}
+	dialogTitle := ""
+	dialogRemovedTopRows := 0
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
+		dialogTitle, dialog, dialogRemovedTopRows = floatingDialogBody(dialog)
 	}
 	dialogFocusRow := -1
 	for row, line := range dialog {
@@ -1024,7 +1027,10 @@ func (i *Interactive) redraw() {
 	}
 	dialogCursorRow, dialogCursorCol := dialogFocusRow, 0
 	if cursorInDialog {
-		dialogCursorRow, dialogCursorCol = cursorRow, cursorCol
+		dialogCursorRow, dialogCursorCol = cursorRow-dialogRemovedTopRows, cursorCol
+		if dialogCursorRow < 0 {
+			dialogCursorRow = -1
+		}
 	}
 	i.setInputCursorDimmed(modalBackdrop && !cursorInDialog)
 	if i.renderRevision.Load() != renderRevision {
@@ -1041,7 +1047,7 @@ func (i *Interactive) redraw() {
 			rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
 			background = floatingRightBarFrame(theme, background, rightBar, mainCols, rightBarWidth)
 		}
-		pane, paneCursorRow, paneCursorCol := i.floatingPane.Compose(theme, dialogID, background, dialog, cols, rows, dialogCursorRow, dialogCursorCol)
+		pane, paneCursorRow, paneCursorCol := i.floatingPane.Compose(theme, dialogID, dialogTitle, background, dialog, cols, rows, dialogCursorRow, dialogCursorCol)
 		i.rend.DrawFloating(pane, paneCursorRow, paneCursorCol)
 	} else if rightBarActive {
 		rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
@@ -1057,6 +1063,25 @@ func (i *Interactive) redraw() {
 		i.emitAlertLocked(alert)
 	}
 	i.mu.Unlock()
+}
+
+// floatingDialogBody removes a legacy dialog's rule chrome and returns its
+// title for the shared floating-pane border.
+func floatingDialogBody(lines []string) (title string, body []string, removedTopRows int) {
+	if len(lines) == 0 {
+		return "", nil, 0
+	}
+	body = lines
+	if isFrameHeaderLine(body[0]) {
+		plain := strings.TrimPrefix(stripANSIBytes(body[0]), "── ")
+		title = strings.TrimSpace(strings.TrimRight(plain, "─"))
+		body = body[1:]
+		removedTopRows = 1
+	}
+	if last := len(body) - 1; last >= 0 && isFrameRuleLine(body[last]) {
+		body = body[:last]
+	}
+	return title, body, removedTopRows
 }
 
 // floatingBackgroundFrame preserves the regular viewport layout while an
@@ -1078,7 +1103,10 @@ func floatingBackgroundFrame(chat, bottom []string, rows int) []string {
 		lines = lines[len(lines)-rows:]
 	}
 	frame := make([]string, rows)
-	copy(frame[rows-len(lines):], lines)
+	// DrawLog's flow renderer leaves the logical session content at the
+	// viewport's top. Keep that anchoring when switching to a fixed floating
+	// frame so opening a pane does not visibly jump the whole session down.
+	copy(frame, lines)
 	return frame
 }
 

@@ -101,11 +101,11 @@ type FloatingPaneFrame struct {
 	Rect       FloatingPaneRect
 }
 
-// Compose returns a complete floating-pane frame. contentCursorRow is relative
-// to content and is used both to retain the pane's own viewport and to return
-// an absolute terminal cursor row. Pass -1 when the foreground has no text
-// cursor.
-func (p *FloatingPane) Compose(theme Theme, id string, background, content []string, cols, rows, contentCursorRow, contentCursorCol int) (pane FloatingPaneFrame, cursorRow, cursorCol int) {
+// Compose returns a complete floating-pane frame. title is centered in the
+// pane border. contentCursorRow is relative to content and is used both to
+// retain the pane's own viewport and to return an absolute terminal cursor
+// row. Pass -1 when the foreground has no text cursor.
+func (p *FloatingPane) Compose(theme Theme, id, title string, background, content []string, cols, rows, contentCursorRow, contentCursorCol int) (pane FloatingPaneFrame, cursorRow, cursorCol int) {
 	pane.Background = DimLines(fitFloatingBackground(background, cols, rows))
 	if cols < 1 || rows < 1 {
 		return pane, -1, 0
@@ -141,7 +141,7 @@ func (p *FloatingPane) Compose(theme Theme, id string, background, content []str
 	viewportRows := pane.Rect.ContentHeight()
 	p.follow(contentCursorRow, len(content), viewportRows)
 	content = p.viewport(content, viewportRows)
-	pane.Lines = floatingPaneLines(theme, pane.Rect, content)
+	pane.Lines = floatingPaneLines(theme, pane.Rect, title, content)
 
 	if contentCursorRow >= p.scroll && contentCursorRow < p.scroll+viewportRows {
 		cursorRow = pane.Rect.contentY() + contentCursorRow - p.scroll
@@ -200,7 +200,7 @@ func fitFloatingBackground(background []string, cols, rows int) []string {
 	return frame
 }
 
-func floatingPaneLines(theme Theme, rect FloatingPaneRect, content []string) []string {
+func floatingPaneLines(theme Theme, rect FloatingPaneRect, title string, content []string) []string {
 	if rect.Width < 1 || rect.Height < 1 {
 		return nil
 	}
@@ -212,7 +212,7 @@ func floatingPaneLines(theme Theme, rect FloatingPaneRect, content []string) []s
 	}
 	lines := make([]string, rect.Height)
 	if rect.Drawer {
-		lines[0] = theme.FGColor(theme.Muted, strings.Repeat("─", rect.Width))
+		lines[0] = floatingPaneTitle(theme, title, rect.Width, false)
 		for row := 0; row < rect.ContentHeight(); row++ {
 			line := ""
 			if row < len(content) {
@@ -226,7 +226,7 @@ func floatingPaneLines(theme Theme, rect FloatingPaneRect, content []string) []s
 		return lines
 	}
 	border := theme.FGColor(theme.Muted, "│")
-	lines[0] = theme.FGColor(theme.Muted, "╭"+strings.Repeat("─", rect.Width-2)+"╮")
+	lines[0] = floatingPaneTitle(theme, title, rect.Width, true)
 	lines[len(lines)-1] = theme.FGColor(theme.Muted, "╰"+strings.Repeat("─", rect.Width-2)+"╯")
 	for row := 0; row < rect.ContentHeight(); row++ {
 		line := ""
@@ -239,4 +239,31 @@ func floatingPaneLines(theme Theme, rect FloatingPaneRect, content []string) []s
 		lines[row+1] = border + line + border
 	}
 	return lines
+}
+
+func floatingPaneTitle(theme Theme, title string, width int, boxed bool) string {
+	if width < 1 {
+		return ""
+	}
+	interior := width
+	left, right := "", ""
+	if boxed {
+		if width < 3 {
+			return theme.FGColor(theme.Muted, strings.Repeat("─", width))
+		}
+		interior -= 2
+		left, right = "╭", "╮"
+	}
+	label := ""
+	if title != "" {
+		label = " " + truncateToWidth(title, max(1, interior-2)) + " "
+	}
+	labelWidth := visibleWidth(label)
+	if labelWidth > interior {
+		label = truncateToWidth(label, interior)
+		labelWidth = visibleWidth(label)
+	}
+	before := max(0, (interior-labelWidth)/2)
+	after := max(0, interior-labelWidth-before)
+	return theme.FGColor(theme.Muted, left+strings.Repeat("─", before)+label+strings.Repeat("─", after)+right)
 }
