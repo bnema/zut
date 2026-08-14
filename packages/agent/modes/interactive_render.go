@@ -99,3 +99,44 @@ func (s *latestFrameScheduler) stop() {
 	s.mu.Unlock()
 	<-s.done
 }
+
+func (i *Interactive) requestRendererClear() {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.request(true, false)
+		return
+	}
+	if i.rend != nil {
+		i.rend.Clear()
+	}
+}
+
+func (i *Interactive) requestRendererInvalidate() {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.request(false, true)
+		return
+	}
+	if i.rend != nil {
+		i.rend.Invalidate()
+	}
+}
+
+func (i *Interactive) requestRendererTheme(theme tui.Theme) {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.requestTheme(theme)
+		return
+	}
+	if i.rend != nil {
+		i.rend.SetTheme(theme)
+	}
+}
+
+func (i *Interactive) invalidate() {
+	i.renderRevision.Add(1)
+	// Keep ordinary state changes on the main-loop throttle. The scheduler
+	// owns terminal output, but scheduling it here would bypass
+	// redrawMinInterval and paint every intermediate tool-event frame.
+	select {
+	case i.dirty <- struct{}{}:
+	default:
+	}
+}

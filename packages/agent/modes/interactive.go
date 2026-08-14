@@ -1377,47 +1377,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 	}
 }
 
-func (i *Interactive) requestRendererClear() {
-	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(true, false)
-		return
-	}
-	if i.rend != nil {
-		i.rend.Clear()
-	}
-}
-
-func (i *Interactive) requestRendererInvalidate() {
-	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(false, true)
-		return
-	}
-	if i.rend != nil {
-		i.rend.Invalidate()
-	}
-}
-
-func (i *Interactive) requestRendererTheme(theme tui.Theme) {
-	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.requestTheme(theme)
-		return
-	}
-	if i.rend != nil {
-		i.rend.SetTheme(theme)
-	}
-}
-
-func (i *Interactive) invalidate() {
-	i.renderRevision.Add(1)
-	// Keep ordinary state changes on the main-loop throttle. The scheduler
-	// owns terminal output, but scheduling it here would bypass
-	// redrawMinInterval and paint every intermediate tool-event frame.
-	select {
-	case i.dirty <- struct{}{}:
-	default:
-	}
-}
-
 func (i *Interactive) cachedChatLocked(cols int) []string {
 	// A busy frame contains mutable streaming/tool state. Keep the stable
 	// transcript cache, but never return a full-frame cache entry that would
@@ -2823,49 +2782,9 @@ func (i *Interactive) restoreConfirmFocus() {
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	defer i.restoreConfirmFocus()
 
-	// A bare Escape is eligible for the session-tree gesture only while the
-	// main input owns the key. Any other key, modified Escape, or visible
-	// child interaction resets the pending first tap before normal routing.
-	if !isUnmodifiedEscape(k) || i.sessionTreeEscapeBlocked() {
-		i.mu.Lock()
-		i.doubleEscape.Reset()
-		i.mu.Unlock()
-	}
-
-	// Dialogs route keys before the main clipboard handler below. Resolve text
-	// here when a child interaction owns input so every editor and filter sees
-	// the same KeyPaste event as terminal-native bracketed paste. Main chat is
-	// left image-first to preserve macOS clipboard image attachments.
-	if k.Kind == tui.KeyPasteClipboard && i.confirmChildActive() {
-		resolved, pastedText, err := resolveClipboardText(k, tui.ReadClipboardText)
-		if err != nil {
-			i.mu.Lock()
-			i.statusErr = "clipboard paste failed: " + err.Error()
-			i.statusOK = ""
-			i.mu.Unlock()
-			return false
-		}
-		if pastedText {
-			k = resolved
-			i.mu.Lock()
-			i.statusErr = ""
-			i.statusOK = ""
-			i.mu.Unlock()
-		}
-	}
-
-	// Any key that isn't ctrl+c invalidates an armed ctrl+c-exit, so
-	// pressing ctrl+c then typing then ctrl+c much later doesn't quit
-	// unexpectedly. The hint message also goes stale; clear it.
-	if k.Kind != tui.KeyCtrlC {
-		i.mu.Lock()
-		if !i.lastCtrlC.IsZero() {
-			i.lastCtrlC = time.Time{}
-			if strings.HasPrefix(i.statusOK, "input cleared") || strings.HasPrefix(i.statusOK, "press ctrl+c") {
-				i.statusOK = ""
-			}
-		}
-		i.mu.Unlock()
+	var ok bool
+	if k, ok = i.prepareInputKey(k); !ok {
+		return false
 	}
 
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
@@ -3919,77 +3838,6 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 // HostHooks implementation for the extension manager. The manager
 // holds an interface, not a concrete *Interactive, so these methods
 // are the only thing the manager sees.
-
-// Notify is the manager's NotifyFromExt entry point.
-func (i *Interactive) Notify(extName, level, message string) {
-	i.appendExtensionNote(extName, message, level)
-	i.invalidate()
-}
-
-// Alert is the manager's AlertFromExt entry point. Alerts are emitted
-// through the same terminal writer as redraws while holding the TUI mutex,
-// so a BEL cannot be interleaved with a frame update.
-func (i *Interactive) Alert(_ string, alert extproto.AlertRequest) {
-	i.mu.Lock()
-	i.emitAlertLocked(alert)
-	i.mu.Unlock()
-}
-
-func terminalAlertsEnabled(enabled *bool) bool {
-	return enabled == nil || *enabled
-}
-
-// emitAlertLocked applies the shared terminal-alert policy. The caller must
-// hold i.mu because terminal writes share the renderer's output boundary.
-func (i *Interactive) emitAlertLocked(alert extproto.AlertRequest) {
-	if alert.Kind != extproto.AlertKindBell || !terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled) || i.cfg.Terminal == nil {
-		return
-	}
-	_ = tui.WriteBell(i.cfg.Terminal)
-}
-
-// scheduleMainAlert defers a main-session alert until the next redraw
-// commits the final frame. Keeping this deferred even when no paced text is
-// pending avoids racing the pacer's final state transition.
-func (i *Interactive) scheduleMainAlert(reason string) {
-	if reason == "" {
-		return
-	}
-	i.mu.Lock()
-	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}
-	i.mu.Unlock()
-	i.invalidate()
-}
-
-// ClearNotes removes every note line owned by extName from the
-// bottom-sticky ext-notes block. Extensions use this to retract a
-// transient status line (e.g. an approval prompt) once it no longer
-// applies, instead of leaving it stacked forever. Notes from other
-// extensions and internal notes (auto-compact) are left untouched.
-func (i *Interactive) ClearNotes(extName string) {
-	marker := "[" + extName + "] "
-	i.mu.Lock()
-	if len(i.extNotes) == 0 {
-		i.mu.Unlock()
-		return
-	}
-	kept := i.extNotes[:0:0]
-	changed := false
-	for _, line := range i.extNotes {
-		if strings.Contains(line, marker) {
-			changed = true
-			continue
-		}
-		kept = append(kept, line)
-	}
-	if changed {
-		i.extNotes = kept
-	}
-	i.mu.Unlock()
-	if changed {
-		i.invalidate()
-	}
-}
 
 // Submit feeds text through the agent loop as if the user had typed it.
 func (i *Interactive) Submit(text string) {
