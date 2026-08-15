@@ -37,6 +37,28 @@ func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(
 		t.Fatalf("managed session path = %q, want %q", got, session.Path)
 	}
 
+	agentRoot := filepath.Join(root, "sessions", "agents", "scheduled-worker")
+	agentSession, err := NewSession(agentRoot, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agentSession.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "agent managed"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentSession.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = FindManagedSessionByID(context.Background(), root, agentSession.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID(agent session): %v", err)
+	}
+	if got != agentSession.Path {
+		t.Fatalf("agent managed session path = %q, want %q", got, agentSession.Path)
+	}
+
 	badPath := filepath.Join(SessionsDir(root, cwd), "bad.jsonl")
 	if err := os.WriteFile(badPath, []byte("not json\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -1487,6 +1487,19 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	activeModel := r.Model
 	var sess *core.Session
 	scheduleEngine := scheduler.NewEngine(nil)
+	var scheduledSessionMu sync.Mutex
+	scheduledSessionLocks := make(map[string]*sync.Mutex)
+	lockScheduledSession := func(sessionID string) func() {
+		scheduledSessionMu.Lock()
+		lock := scheduledSessionLocks[sessionID]
+		if lock == nil {
+			lock = new(sync.Mutex)
+			scheduledSessionLocks[sessionID] = lock
+		}
+		scheduledSessionMu.Unlock()
+		lock.Lock()
+		return lock.Unlock
+	}
 
 	// Build the extension manager BEFORE the agent so we can fold
 	// extension-defined tools into the registry. Attach the interactive
@@ -2714,7 +2727,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	schedulerCtx, cancelScheduler := context.WithCancel(ctx)
 	defer cancelScheduler()
 	go func() {
-		if err := scheduleEngine.Run(schedulerCtx, func(task scheduler.Task) error {
+		if err := scheduleEngine.Run(schedulerCtx, func(taskCtx context.Context, task scheduler.Task) error {
+			unlockSession := lockScheduledSession(task.SessionID)
+			defer unlockSession()
 			// Keep a background session run mutually exclusive with /session
 			// transitions. The active target uses Interactive's distinct-turn
 			// ingress instead, so it never injects into an in-flight model loop.
@@ -2724,7 +2739,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			activeTarget := sess != nil && sess.ID == task.SessionID
 			persistMu.Unlock()
 			if activeTarget {
-				return iv.SubmitFollowUp(schedulerCtx, task.Message)
+				return iv.SubmitFollowUp(taskCtx, task.Message)
 			}
 			// A resumed background agent must schedule any follow-up work against
 			// the transcript it resumed, not whichever session is visible in the
@@ -2739,7 +2754,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 				}
 				return registry
 			}
-			err := runScheduledSession(schedulerCtx, task, args, r, extMgr, backgroundRegistry)
+			err := runScheduledSession(taskCtx, task, args, r, extMgr, backgroundRegistry)
 			if err != nil {
 				iv.Notify("scheduler", "error", fmt.Sprintf("scheduled task %s failed: %v", task.ID, err))
 			} else {

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -17,7 +16,7 @@ import (
 // process and appends the resulting turn to its existing transcript. The
 // caller serializes this with session transitions before invoking it.
 func runScheduledSession(ctx context.Context, task scheduler.Task, args Args, base Resolved, extMgr *extensions.Manager, prepareRegistry func(core.Registry) core.Registry) error {
-	path, err := core.FindManagedSessionByID(ctx, filepath.Join(ZutHome(), "sessions"), task.SessionID)
+	path, err := core.FindManagedSessionByID(ctx, ZutHome(), task.SessionID)
 	if err != nil {
 		return fmt.Errorf("find scheduled session %q: %w", task.SessionID, err)
 	}

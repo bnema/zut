@@ -46,8 +46,8 @@ func TestParseCronDSTTransitions(t *testing.T) {
 	}
 	first := fallBack.Next(time.Date(2026, time.November, 1, 0, 59, 0, 0, loc))
 	second := fallBack.Next(first)
-	if first.Hour() != 1 || first.Minute() != 30 || second.Hour() != 1 || second.Minute() != 30 || first.Equal(second) {
-		t.Fatalf("fall-back occurrences = %v, %v; want two distinct 01:30 occurrences", first, second)
+	if first.Hour() != 1 || first.Minute() != 30 || second.Hour() != 1 || second.Minute() != 30 || first.Equal(second) || second.Sub(first) != time.Hour {
+		t.Fatalf("fall-back occurrences = %v, %v; want 01:30 exactly one elapsed hour apart", first, second)
 	}
 
 	springForward, err := ParseCron("30 2 * * *", loc)

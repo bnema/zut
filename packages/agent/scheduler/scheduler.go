@@ -27,6 +27,8 @@ type Task struct {
 	LastError string
 
 	schedule Cron
+	queued   bool
+	running  bool
 }
 
 // NewTaskInput describes a task to add to an Engine. Location is captured at
@@ -38,9 +40,9 @@ type NewTaskInput struct {
 	Location  *time.Location
 }
 
-// Engine serializes task scheduling and execution through one timer loop. Its
-// callback runs outside the engine lock but is intentionally called one task
-// at a time so a session cannot receive overlapping scheduled turns.
+// Engine owns due-task claiming through one timer loop. Executors run outside
+// the lock, allowing independent session tasks to progress concurrently; the
+// host remains responsible for serializing work for one session.
 type Engine struct {
 	mu    sync.Mutex
 	now   func() time.Time
@@ -148,10 +150,10 @@ func (e *Engine) List() []Task {
 	return tasks
 }
 
-// Run waits for due tasks until ctx is cancelled. The executor is called
-// synchronously for each due task, which prevents a scheduled task from
-// overlapping a prior scheduled turn.
-func (e *Engine) Run(ctx context.Context, executor func(Task) error) error {
+// Run waits for due tasks until ctx is cancelled. Each claimed task receives
+// ctx and executes asynchronously; cancellation prevents new callbacks and is
+// propagated to callbacks already in flight.
+func (e *Engine) Run(ctx context.Context, executor func(context.Context, Task) error) error {
 	if e == nil {
 		return fmt.Errorf("scheduler is not initialized")
 	}
@@ -159,8 +161,11 @@ func (e *Engine) Run(ctx context.Context, executor func(Task) error) error {
 		return fmt.Errorf("scheduler executor is required")
 	}
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		now := e.now()
-		e.dispatchDue(now, executor)
+		e.dispatchDue(ctx, now, executor)
 		next, ok := e.nextRun()
 		if !ok {
 			select {
@@ -196,16 +201,16 @@ func (e *Engine) Run(ctx context.Context, executor func(Task) error) error {
 	}
 }
 
-// dispatchDue executes all tasks due at or before now. Run is its only
-// production caller; keeping it private preserves Engine's single executor
-// ownership and prevents concurrent duplicate dispatches.
-func (e *Engine) dispatchDue(now time.Time, executor func(Task) error) {
-	if e == nil || executor == nil {
+// dispatchDue reserves every due task before launching an asynchronous
+// dispatch. A reservation prevents concurrent Run callers from selecting the
+// same task. dispatchTask claims it immediately before invoking the executor,
+// so Cancel can still win while a task is waiting to begin.
+func (e *Engine) dispatchDue(ctx context.Context, now time.Time, executor func(context.Context, Task) error) {
+	if e == nil || executor == nil || ctx.Err() != nil {
 		return
 	}
 	for _, task := range e.takeDue(now) {
-		err := executor(task)
-		e.finish(task.ID, task.NextRun, err)
+		go e.dispatchTask(ctx, task, executor)
 	}
 }
 
@@ -213,10 +218,13 @@ func (e *Engine) takeDue(now time.Time) []Task {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	due := make([]Task, 0)
-	for _, task := range e.tasks {
-		if !task.NextRun.After(now) {
-			due = append(due, task)
+	for id, task := range e.tasks {
+		if task.queued || task.running || task.NextRun.After(now) {
+			continue
 		}
+		task.queued = true
+		e.tasks[id] = task
+		due = append(due, task)
 	}
 	sort.Slice(due, func(i, j int) bool {
 		if due[i].NextRun.Equal(due[j].NextRun) {
@@ -227,13 +235,50 @@ func (e *Engine) takeDue(now time.Time) []Task {
 	return due
 }
 
+func (e *Engine) dispatchTask(ctx context.Context, queued Task, executor func(context.Context, Task) error) {
+	if ctx.Err() != nil {
+		e.releaseQueued(queued.ID, queued.NextRun)
+		return
+	}
+	e.mu.Lock()
+	task, ok := e.tasks[queued.ID]
+	if !ok || !task.queued || !task.NextRun.Equal(queued.NextRun) {
+		e.mu.Unlock()
+		return // cancelled or superseded before it was claimed
+	}
+	task.queued = false
+	task.running = true
+	e.tasks[task.ID] = task
+	e.mu.Unlock()
+	if ctx.Err() != nil {
+		e.finish(task.ID, task.NextRun, ctx.Err())
+		return
+	}
+	err := executor(ctx, task)
+	e.finish(task.ID, task.NextRun, err)
+}
+
+func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
+	e.mu.Lock()
+	task, ok := e.tasks[id]
+	if !ok || !task.queued || !task.NextRun.Equal(scheduledFor) {
+		e.mu.Unlock()
+		return
+	}
+	task.queued = false
+	e.tasks[id] = task
+	e.mu.Unlock()
+	e.signalWake()
+}
+
 func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	task, ok := e.tasks[id]
 	if !ok || !task.NextRun.Equal(scheduledFor) {
+		e.mu.Unlock()
 		return // cancelled or replaced while the executor ran
 	}
+	task.running = false
 	task.LastRun = scheduledFor
 	task.RunCount++
 	if err != nil {
@@ -247,9 +292,11 @@ func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
 	task.NextRun = task.schedule.Next(e.now())
 	if task.NextRun.IsZero() {
 		delete(e.tasks, id)
-		return
+	} else {
+		e.tasks[id] = task
 	}
-	e.tasks[id] = task
+	e.mu.Unlock()
+	e.signalWake()
 }
 
 func (e *Engine) nextRun() (time.Time, bool) {
@@ -257,6 +304,9 @@ func (e *Engine) nextRun() (time.Time, bool) {
 	defer e.mu.Unlock()
 	var next time.Time
 	for _, task := range e.tasks {
+		if task.queued || task.running {
+			continue
+		}
 		if next.IsZero() || task.NextRun.Before(next) {
 			next = task.NextRun
 		}
