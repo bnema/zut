@@ -201,6 +201,36 @@ func (i *Interactive) SubmitSlash(text string) {
 func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 	i.submitOrQueue(text, images, true)
 }
+
+// SubmitFollowUp submits a scheduler-owned prompt without interpreting shell
+// escapes or steering an active agent loop. A busy interactive waits for its
+// current turn to end, then starts this prompt as a distinct follow-up turn.
+func (i *Interactive) SubmitFollowUp(ctx context.Context, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("scheduled prompt is empty")
+	}
+	i.mu.Lock()
+	if i.agent == nil {
+		i.mu.Unlock()
+		return fmt.Errorf("no agent running; log in first")
+	}
+	if i.busy {
+		accepted := make(chan error, 1)
+		i.scheduled = append(i.scheduled, scheduledFollowUp{text: text, accepted: accepted})
+		i.mu.Unlock()
+		i.invalidate()
+		select {
+		case err := <-accepted:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	i.mu.Unlock()
+	i.startTurn(i.runCtx, text)
+	return nil
+}
 func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, userInput bool) {
 	if cmd, ok := shellEscapeCommand(text); ok {
 		i.startShellEscape(i.runCtx, cmd)

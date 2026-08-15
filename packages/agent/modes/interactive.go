@@ -612,6 +612,11 @@ func encodeCompactHandoff(state compactContinuationState) json.RawMessage {
 	return encoded
 }
 
+type scheduledFollowUp struct {
+	text     string
+	accepted chan error
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -727,6 +732,11 @@ type Interactive struct {
 	// its own follow-up turn once the current one finishes. Rendered
 	// above the status bar as "sliding in: ..." chips.
 	queued []string
+
+	// scheduled holds prompt-only follow-ups injected by the in-process
+	// scheduler. Unlike agent.QueueMessage, these always wait until the
+	// current turn has completed before starting their own turn.
+	scheduled []scheduledFollowUp
 
 	// runCtx is the top-level context passed to Run(). Follow-up turns
 	// drained from `queued` are started against this context so they
