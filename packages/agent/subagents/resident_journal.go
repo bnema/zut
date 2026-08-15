@@ -33,6 +33,7 @@ const (
 	residentRecordAssistant    = "message.assistant"
 	residentRecordToolCall     = "tool.call"
 	residentRecordToolResult   = "tool.result"
+	residentRecordUsage        = "usage"
 	residentJournalVersion     = 1
 	residentInterruptedText    = "tool interrupted by resident host restart"
 	residentMaxRecordBytes     = 2 << 20
@@ -90,19 +91,23 @@ type ResidentChildSpec struct {
 }
 
 type residentRecord struct {
-	Version    int                `json:"version"`
-	Type       string             `json:"type"`
-	Time       time.Time          `json:"time"`
-	Spec       *ResidentChildSpec `json:"spec,omitempty"`
-	TurnID     string             `json:"turn_id,omitempty"`
-	Prompt     string             `json:"prompt,omitempty"`
-	Outcome    string             `json:"outcome,omitempty"`
-	Message    json.RawMessage    `json:"message,omitempty"`
-	ToolID     string             `json:"tool_id,omitempty"`
-	ToolName   string             `json:"tool_name,omitempty"`
-	ToolArgs   json.RawMessage    `json:"tool_args,omitempty"`
-	ToolResult json.RawMessage    `json:"tool_result,omitempty"`
-	raw        json.RawMessage    `json:"-"`
+	Version      int                `json:"version"`
+	Type         string             `json:"type"`
+	Time         time.Time          `json:"time"`
+	Spec         *ResidentChildSpec `json:"spec,omitempty"`
+	TurnID       string             `json:"turn_id,omitempty"`
+	Prompt       string             `json:"prompt,omitempty"`
+	Outcome      string             `json:"outcome,omitempty"`
+	Message      json.RawMessage    `json:"message,omitempty"`
+	ToolID       string             `json:"tool_id,omitempty"`
+	ToolName     string             `json:"tool_name,omitempty"`
+	ToolArgs     json.RawMessage    `json:"tool_args,omitempty"`
+	ToolResult   json.RawMessage    `json:"tool_result,omitempty"`
+	Usage        *provider.Usage    `json:"usage,omitempty"`
+	ContextUsed  int                `json:"context_used,omitempty"`
+	ContextMax   int                `json:"context_max,omitempty"`
+	Subscription bool               `json:"subscription,omitempty"`
+	raw          json.RawMessage    `json:"-"`
 }
 
 // RecordAgentEvent persists finalized provider-neutral transcript events. It
@@ -135,6 +140,15 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 			return fmt.Errorf("resident journal encode tool result: %w", err)
 		}
 		record = residentRecord{Type: residentRecordToolResult, ToolID: value.ID, ToolResult: result}
+	case core.EvUsage:
+		j.usageMu.RLock()
+		contextUsed, contextMax, subscription := j.contextUsed, j.contextMax, j.subscription
+		j.usageMu.RUnlock()
+		if current := value.Usage.PromptTokens(); current > 0 {
+			contextUsed = current
+		}
+		usage := value.Cumulative
+		record = residentRecord{Type: residentRecordUsage, Usage: &usage, ContextUsed: contextUsed, ContextMax: contextMax, Subscription: subscription}
 	default:
 		j.publishAgentEvent(event)
 		return nil
@@ -147,6 +161,15 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 		return errors.New("resident journal: closed")
 	}
 	err := j.appendSync(record)
+	if usageEvent, ok := event.(core.EvUsage); err == nil && ok {
+		j.usageMu.Lock()
+		j.usage = usageEvent.Cumulative
+		if current := usageEvent.Usage.PromptTokens(); current > 0 {
+			j.contextUsed = current
+		}
+		j.usageMu.Unlock()
+		err = j.projectUsageMetadata()
+	}
 	j.mu.Unlock()
 	if err == nil {
 		switch message := event.(type) {
@@ -167,12 +190,16 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 // the authority for acceptance; callers must never infer acceptance solely
 // from this file.
 type ResidentMetadata struct {
-	Version         int           `json:"version"`
-	ID              string        `json:"id"`
-	SessionID       string        `json:"session_id"`
-	ParentSessionID string        `json:"parent_session_id,omitempty"`
-	State           ResidentState `json:"state"`
-	UpdatedAt       time.Time     `json:"updated_at"`
+	Version         int            `json:"version"`
+	ID              string         `json:"id"`
+	SessionID       string         `json:"session_id"`
+	ParentSessionID string         `json:"parent_session_id,omitempty"`
+	State           ResidentState  `json:"state"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	Usage           provider.Usage `json:"usage,omitempty"`
+	ContextUsed     int            `json:"context_used,omitempty"`
+	ContextMax      int            `json:"context_max,omitempty"`
+	Subscription    bool           `json:"subscription,omitempty"`
 }
 
 // ResidentResult is the bounded latest-turn projection. The transcript
@@ -198,9 +225,50 @@ type ResidentJournal struct {
 	eventObserver func(core.AgentEvent)
 	summaryMu     sync.RWMutex
 	latestSummary string
+	usageMu       sync.RWMutex
+	usage         provider.Usage
+	contextUsed   int
+	contextMax    int
+	subscription  bool
 	dir           string
 	file          *os.File
 	lease         *residentLease
+}
+
+// ResidentUsageSnapshot is the bounded usage projection shared by durable and
+// live resident state.
+type ResidentUsageSnapshot struct {
+	Usage        provider.Usage
+	ContextUsed  int
+	ContextMax   int
+	Subscription bool
+}
+
+// ConfigureUsage records resolved model metadata and restores the latest
+// durable usage baseline when a resident child is reconstructed.
+func (j *ResidentJournal) ConfigureUsage(contextMax int, subscription bool) ResidentUsageSnapshot {
+	if j == nil {
+		return ResidentUsageSnapshot{}
+	}
+	j.usageMu.Lock()
+	if metadata, err := ReadResidentMetadata(filepath.Join(j.dir, residentMetadataName)); err == nil {
+		j.usage = metadata.Usage
+		j.contextUsed = metadata.ContextUsed
+	}
+	j.contextMax = contextMax
+	j.subscription = subscription
+	snapshot := ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription}
+	j.usageMu.Unlock()
+	return snapshot
+}
+
+func (j *ResidentJournal) usageSnapshot() ResidentUsageSnapshot {
+	if j == nil {
+		return ResidentUsageSnapshot{}
+	}
+	j.usageMu.RLock()
+	defer j.usageMu.RUnlock()
+	return ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription}
 }
 
 // SetEventObserver publishes in-memory agent events without creating another
@@ -272,7 +340,7 @@ func (j *ResidentJournal) Accept(spec ResidentChildSpec, prompt string) error {
 	if err := j.appendSync(record); err != nil {
 		return err
 	}
-	return writeResidentMetadata(j.dir, ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: ResidentQueued, UpdatedAt: record.Time})
+	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentQueued, record.Time))
 }
 
 // RecordFailure makes a post-acceptance construction failure durable.
@@ -286,7 +354,7 @@ func (j *ResidentJournal) RecordFailure(spec ResidentChildSpec) error {
 	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordFailed, Time: now}); err != nil {
 		return err
 	}
-	return writeResidentMetadata(j.dir, ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: ResidentFailed, UpdatedAt: now})
+	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentFailed, now))
 }
 
 // AcceptFollowUp establishes a durable follow-up before a live child is told
@@ -305,7 +373,7 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordTurnAccepted, Time: now, TurnID: turnID, Prompt: prompt}); err != nil {
 		return err
 	}
-	return writeResidentMetadata(j.dir, ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: ResidentQueued, UpdatedAt: now})
+	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentQueued, now))
 }
 
 func (j *ResidentJournal) RecordTurnStarted(spec ResidentChildSpec, turnID string) error {
@@ -416,7 +484,32 @@ func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, recordType,
 	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: recordType, Time: now, TurnID: turnID, Outcome: outcome}); err != nil {
 		return err
 	}
-	return writeResidentMetadata(j.dir, ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: now})
+	return writeResidentMetadata(j.dir, j.metadata(spec, state, now))
+}
+
+func (j *ResidentJournal) metadata(spec ResidentChildSpec, state ResidentState, updatedAt time.Time) ResidentMetadata {
+	usage := j.usageSnapshot()
+	return ResidentMetadata{
+		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
+		ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: updatedAt,
+		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
+	}
+}
+
+// projectUsageMetadata updates the rebuildable projection while j.mu holds the
+// lifecycle ordering lock. The transcript remains authoritative if this write
+// fails and reconciliation can reconstruct the same values.
+func (j *ResidentJournal) projectUsageMetadata() error {
+	metadata, err := ReadResidentMetadata(filepath.Join(j.dir, residentMetadataName))
+	if err != nil {
+		return err
+	}
+	usage := j.usageSnapshot()
+	metadata.Usage = usage.Usage
+	metadata.ContextUsed = usage.ContextUsed
+	metadata.ContextMax = usage.ContextMax
+	metadata.Subscription = usage.Subscription
+	return writeResidentMetadata(j.dir, metadata)
 }
 
 func (j *ResidentJournal) appendSync(record residentRecord) error {
@@ -594,6 +687,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	state := ResidentQueued
 	lastStateAt := records[0].Time
 	lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary := "", "", ""
+	usage := ResidentUsageSnapshot{}
 	seenTurns := make(map[string]string)
 	// The initial prompt is accepted atomically with child.accepted rather than
 	// through a separate turn.accepted record. Seed it so interruption and
@@ -673,12 +767,21 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 				return ResidentMetadata{}, errors.New("resident journal: duplicate tool result")
 			}
 			toolResults[record.ToolID] = struct{}{}
+		case residentRecordUsage:
+			if record.Usage == nil {
+				return ResidentMetadata{}, errors.New("resident journal: invalid usage record")
+			}
+			usage = ResidentUsageSnapshot{Usage: *record.Usage, ContextUsed: record.ContextUsed, ContextMax: record.ContextMax, Subscription: record.Subscription}
 		}
 	}
 	if lastStateAt.IsZero() {
 		lastStateAt = time.Now().UTC()
 	}
-	metadata := ResidentMetadata{Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt}
+	metadata := ResidentMetadata{
+		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
+		ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt,
+		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
+	}
 	needsInterruption := state == ResidentQueued || state == ResidentRunning
 	needsToolRepair := len(toolCalls) != len(toolResults)
 	if needsInterruption || needsToolRepair {

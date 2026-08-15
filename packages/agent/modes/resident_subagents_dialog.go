@@ -43,8 +43,8 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 		d.total = 0
 		return
 	}
-	if limit < 1 {
-		limit = 1
+	if limit < 0 {
+		limit = 0
 	}
 	_, total := d.manager.SnapshotPage(0, 0)
 	d.total = total
@@ -53,6 +53,10 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 	}
 	if d.selected < 0 || d.total == 0 {
 		d.selected = 0
+	}
+	if limit == 0 {
+		d.rows = nil
+		return
 	}
 	if d.selected < d.offset {
 		d.offset = d.selected
@@ -91,14 +95,24 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	if d == nil {
 		return nil
 	}
-	maxRows := height - 3 // title, hint, and page indicator/empty state
-	if maxRows < 1 {
-		maxRows = 1
+	// Reserve two lines per child so usage metadata never pushes the dialog
+	// beyond its content height. Children without usage simply consume less.
+	maxRows := (height - 3) / 2 // title, hint, and page indicator/empty state
+	if maxRows < 0 {
+		maxRows = 0
 	}
 	d.refresh(maxRows)
 	lines := []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}
 	if len(d.rows) == 0 {
-		return append(lines, "", "  No resident subagents.")
+		if d.total > 0 {
+			return limitResidentSubagentsDialogHeight(lines, height)
+		}
+		if height == len(lines)+1 {
+			lines = append(lines, "  No resident subagents.")
+		} else {
+			lines = append(lines, "", "  No resident subagents.")
+		}
+		return limitResidentSubagentsDialogHeight(lines, height)
 	}
 	for index, row := range d.rows {
 		marker := "  "
@@ -114,11 +128,27 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 			label += "  required"
 		}
 		lines = append(lines, marker+truncateResidentSubagentIndicator(label, width-2))
+		if metadata := residentUsageMetadata(row); metadata != "" {
+			metadata = truncateResidentSubagentIndicator(metadata, width-4)
+			if metadata != "" {
+				lines = append(lines, "    "+metadata)
+			}
+		}
 	}
 	if d.total > len(d.rows) {
 		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.offset+1, d.offset+len(d.rows), d.total))
 	}
-	return lines
+	return limitResidentSubagentsDialogHeight(lines, height)
+}
+
+func limitResidentSubagentsDialogHeight(lines []string, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return lines
+	}
+	return lines[:height]
 }
 
 func residentDisplayName(row subagents.ResidentSnapshot) string {

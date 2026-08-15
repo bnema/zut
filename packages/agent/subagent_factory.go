@@ -43,6 +43,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	agent.Reasoning = resolved.Reasoning
 	agent.Temperature = resolved.Temperature
 	agent.FastMode = resolved.FastMode
+	if journal != nil {
+		baseline := journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
+		agent.SeedCost(baseline.Usage)
+	}
 	if err := agent.BindSessionID(spec.SessionID); err != nil {
 		return nil, fmt.Errorf("bind resident child %q session: %w", spec.ID, err)
 	}

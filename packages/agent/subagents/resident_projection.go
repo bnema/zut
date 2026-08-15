@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 const residentLiveArgumentBytes = 64 << 10
@@ -35,6 +36,10 @@ type ResidentLiveSnapshot struct {
 	WaitingForModel bool
 	AssistantText   string
 	Tools           []ResidentLiveTool
+	Usage           provider.Usage
+	ContextUsed     int
+	ContextMax      int
+	Subscription    bool
 }
 
 type residentLiveProjection struct {
@@ -43,6 +48,19 @@ type residentLiveProjection struct {
 }
 
 func newResidentLiveProjection() *residentLiveProjection { return &residentLiveProjection{} }
+
+func (p *residentLiveProjection) SeedUsage(usage ResidentUsageSnapshot) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.snapshot.Usage = usage.Usage
+	p.snapshot.ContextUsed = usage.ContextUsed
+	p.snapshot.ContextMax = usage.ContextMax
+	p.snapshot.Subscription = usage.Subscription
+	p.snapshot.Revision++
+	p.mu.Unlock()
+}
 
 func (p *residentLiveProjection) Start(turnID string) {
 	if p == nil {
@@ -125,6 +143,11 @@ func (p *residentLiveProjection) Apply(event core.AgentEvent) {
 	case core.EvAssistantMessage:
 		p.snapshot.WaitingForModel = false
 		p.snapshot.AssistantText = ""
+	case core.EvUsage:
+		p.snapshot.Usage = value.Cumulative
+		if current := value.Usage.PromptTokens(); current > 0 {
+			p.snapshot.ContextUsed = current
+		}
 	default:
 		changed = false
 	}

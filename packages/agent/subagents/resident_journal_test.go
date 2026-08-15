@@ -62,6 +62,67 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	}
 }
 
+func TestResidentJournalReconcilesUsageMetadata(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "usage-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "usage-child", SessionID: "usage-session", Provider: "openai-codex", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	journal.ConfigureUsage(272_000, true)
+	turn := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CostUSD: 0.525}
+	if err := journal.RecordAgentEvent(core.EvUsage{Usage: turn, Cumulative: turn}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvUsage{Usage: provider.Usage{}, Cumulative: turn}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Usage != turn || metadata.ContextUsed != 207_000 || metadata.ContextMax != 272_000 || !metadata.Subscription {
+		t.Fatalf("metadata = %#v, want durable usage projection", metadata)
+	}
+}
+
+func TestResidentJournalProjectsUsageEmittedAfterInterruption(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "interrupted-usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	spec := ResidentChildSpec{ID: "interrupted-usage", SessionID: "usage-session", Provider: "openai", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	journal.ConfigureUsage(272_000, false)
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnInterrupted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	usage := provider.Usage{InputTokens: 84_000, CacheReadTokens: 123_000}
+	if err := journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReadResidentMetadata(filepath.Join(journal.Dir(), residentMetadataName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.State != ResidentInterrupted || metadata.Usage != usage || metadata.ContextUsed != 207_000 {
+		t.Fatalf("metadata = %#v, want interrupted state with latest usage", metadata)
+	}
+}
+
 func TestOpenResidentJournalRejectsDotChildIDs(t *testing.T) {
 	for _, childID := range []string{".", "..", "nested/child"} {
 		t.Run(childID, func(t *testing.T) {

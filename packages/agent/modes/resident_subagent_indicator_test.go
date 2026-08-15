@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -23,6 +24,19 @@ func TestRenderResidentSubagentActivityLinesShowsOnlyActiveChildren(t *testing.T
 	}
 	if strings.Contains(got, "finished") || strings.Contains(got, "another process") {
 		t.Fatalf("activity lines include inactive or foreign child: %q", got)
+	}
+}
+
+func TestRenderResidentSubagentActivityLinesShowsUsageMetadata(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	lines := renderResidentSubagentActivityLines(tui.Dark, "/", []subagents.ResidentSnapshot{{
+		ID: "running-id", Profile: "reviewer", State: subagents.ResidentRunning,
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CostUSD: 0.525},
+		ContextUsed: 45_152, ContextMax: 272_000, Subscription: true,
+	}}, 100, now)
+	got := strings.Join(plainResidentIndicatorLines(lines), "\n")
+	if !strings.Contains(got, "\n    ↑84k ↓1.5k R123k/ C59.4% $0.525 (sub) 16.6%/272k") {
+		t.Fatalf("activity lines = %q, want usage metadata line", got)
 	}
 }
 
@@ -54,6 +68,15 @@ func TestRenderResidentSubagentActivityLinesShowsRunningDuringToolWork(t *testin
 func TestLimitResidentSubagentActivityLinesSummarizesOverflow(t *testing.T) {
 	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, []string{"one", "two", "three"}, 0, 2, 80))
 	want := []string{"one", "  … 2 more active subagents"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("limited lines = %#v, want %#v", got, want)
+	}
+}
+
+func TestLimitResidentSubagentActivityLinesKeepsMetadataWithItsAgent(t *testing.T) {
+	lines := []string{"  agent one", "    usage one", "  agent two", "    usage two"}
+	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, lines, 0, 3, 80))
+	want := []string{"  agent one", "    usage one", "  … 1 more active subagents"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("limited lines = %#v, want %#v", got, want)
 	}

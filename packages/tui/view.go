@@ -2897,36 +2897,7 @@ type StatusBarParams struct {
 func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
 
-	// Token stats: only include each segment when non-zero. Keeps
-	// the bar compact on brand-new sessions.
-	var stats []string
-	if p.Usage.InputTokens > 0 {
-		stats = append(stats, fmt.Sprintf("↑%s", formatTokens(p.Usage.InputTokens)))
-	}
-	if p.Usage.OutputTokens > 0 {
-		stats = append(stats, fmt.Sprintf("↓%s", formatTokens(p.Usage.OutputTokens)))
-	}
-	if p.Usage.CacheReadTokens > 0 {
-		stats = append(stats, fmt.Sprintf("R%s", formatTokens(p.Usage.CacheReadTokens)))
-	}
-	if p.Usage.CacheWriteTokens > 0 {
-		stats = append(stats, fmt.Sprintf("W%s", formatTokens(p.Usage.CacheWriteTokens)))
-	}
-
-	// Cost: always show the dollar value computed from token counts,
-	// even on subscription. Lets you see what the equivalent api cost
-	// would be (handy for gauging subscription value). Append "(sub)"
-	// only as a hint that no real money moved.
-	var costStr string
-	if p.Usage.CostUSD > 0 || p.Subscription {
-		costStr = fmt.Sprintf("$%.3f", p.Usage.CostUSD)
-		if p.Subscription {
-			costStr += " (sub)"
-		}
-	}
-	if costStr != "" {
-		stats = append(stats, costStr)
-	}
+	stats := UsageStatsParts(UsageStatsParams{Usage: p.Usage, Subscription: p.Subscription})
 	if p.GoalStatus != "" {
 		stats = append(stats, "goal:"+p.GoalStatus)
 	}
@@ -3020,7 +2991,7 @@ func StatusBar(p StatusBarParams) []string {
 		modelLine := pad + th.FGColor(th.Muted, left)
 		lines := []string{busyLine}
 		if middle != "" && visibleWidth(modelLine+pad+th.FGColor(th.Muted, middle)) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, stats, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
@@ -3042,7 +3013,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && middle != "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, stats, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
@@ -3059,7 +3030,7 @@ func StatusBar(p StatusBarParams) []string {
 	return []string{primary, cwdRendered}
 }
 
-func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText, reasoningText, statsText string, cols int) []string {
+func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText, reasoningText string, stats []string, cols int) []string {
 	modelLine := pad + th.FGColor(th.Muted, modelText)
 	infoParts := make([]string, 0, 2)
 	if fastText != "" {
@@ -3071,10 +3042,7 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText
 	infoText := strings.Join(infoParts, pad)
 	if infoText == "" {
 		lines = append(lines, modelLine)
-		if statsText != "" {
-			lines = append(lines, pad+th.FGColor(th.Muted, statsText))
-		}
-		return lines
+		return appendWrappedUsageStats(lines, th, pad, stats, cols)
 	}
 
 	modelInfoPlain := pad + modelText + pad + infoText
@@ -3093,9 +3061,34 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText
 			lines = append(lines, pad+th.FGColor(reasoningStatusColor(th, reasoningText), reasoningText))
 		}
 	}
-	if statsText != "" {
-		lines = append(lines, pad+th.FGColor(th.Muted, statsText))
+	return appendWrappedUsageStats(lines, th, pad, stats, cols)
+}
+
+func appendWrappedUsageStats(lines []string, th Theme, pad string, stats []string, cols int) []string {
+	if len(stats) == 0 {
+		return lines
 	}
+	available := cols - visibleWidth(pad)
+	if cols <= 0 || available <= 0 {
+		return append(lines, pad+th.FGColor(th.Muted, strings.Join(stats, " ")))
+	}
+	current := make([]string, 0, len(stats))
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		line := pad + th.FGColor(th.Muted, strings.Join(current, " "))
+		lines = append(lines, truncateToWidth(line, cols))
+		current = current[:0]
+	}
+	for _, stat := range stats {
+		candidate := append(append([]string(nil), current...), stat)
+		if len(current) > 0 && visibleWidth(strings.Join(candidate, " ")) > available {
+			flush()
+		}
+		current = append(current, stat)
+	}
+	flush()
 	return lines
 }
 

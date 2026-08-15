@@ -180,6 +180,22 @@ type Usage struct {
 	CostUSD              float64 `json:"cost_usd"`
 }
 
+// PromptTokens returns all input tokens, regardless of cache disposition.
+func (u Usage) PromptTokens() int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
+// CacheHitRatio returns the share of prompt tokens served from cache. The
+// boolean is false when the provider reported no cache reads, which avoids
+// presenting an unsupported cache metric as a zero-percent hit rate.
+func (u Usage) CacheHitRatio() (float64, bool) {
+	total := u.PromptTokens()
+	if total <= 0 || u.CacheReadTokens <= 0 {
+		return 0, false
+	}
+	return float64(u.CacheReadTokens) / float64(total), true
+}
+
 // Add returns u plus v. A reasoning total is known only when both
 // component usage reports include a separate reasoning-token count.
 func (u Usage) Add(v Usage) Usage {
