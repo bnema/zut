@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -19,7 +20,8 @@ func TestScheduleToolScopesTasksToCurrentSession(t *testing.T) {
 		Location:  func() *time.Location { return time.UTC },
 	}
 
-	result, err := tool.Execute(nil, json.RawMessage(`{"action":"add","cron":"@hourly","message":"check build"}`), nil)
+	ctx := context.Background()
+	result, err := tool.Execute(ctx, json.RawMessage(`{"action":"add","cron":"@hourly","message":"check build"}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("Execute(add) = %#v, %v", result, err)
 	}
@@ -31,7 +33,7 @@ func TestScheduleToolScopesTasksToCurrentSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Engine.Add() error = %v", err)
 	}
-	result, err = tool.Execute(nil, json.RawMessage(`{"action":"cancel","id":"`+otherSession.ID+`"}`), nil)
+	result, err = tool.Execute(ctx, json.RawMessage(`{"action":"cancel","id":"`+otherSession.ID+`"}`), nil)
 	if err != nil || !result.IsError {
 		t.Fatalf("Execute(cancel other session) = %#v, %v; want scoped error", result, err)
 	}
