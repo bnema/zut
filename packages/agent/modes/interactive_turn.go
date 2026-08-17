@@ -337,13 +337,21 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			next, i.queued = i.queued[0], i.queued[1:]
 			hasNext = true
 		}
-		// If the turn was cancelled or errored, drop the queue so the
+		// If the turn was cancelled or errored, drop ordinary input so the
 		// user isn't bombarded with stale messages after an interrupt.
+		// Scheduler follow-ups deliberately remain: they are distinct turns
+		// whose due time must not let them steer this failed turn.
 		if ctx.Err() != nil || (err != nil && !recoverContextOverflow) {
 			i.queued = nil
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
+		}
+		var scheduled scheduledFollowUp
+		var hasScheduled bool
+		if !awaitingPre && !hasNext && len(i.scheduled) > 0 {
+			scheduled, i.scheduled = i.scheduled[0], i.scheduled[1:]
+			hasScheduled = true
 		}
 		// Decide whether the next thing to do is an auto-compaction.
 		// Only fires when the turn completed cleanly AND no host-side
@@ -371,7 +379,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			}
 		}
-		if !continueStatusRescue && (i.agent == nil || ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
+		if !continueStatusRescue && (i.agent == nil || ctx.Err() != nil || err != nil || awaitingPre || hasNext || hasScheduled || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		// The agent run can finish before the paced final text reaches the
@@ -381,8 +389,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if recoverContextOverflow || shouldAutoCompact {
 			i.resetStreamingStateLocked()
 		}
-		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
-		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || hasScheduled || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
+		i.busy = hasNext || hasScheduled || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
@@ -402,6 +410,12 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		switch {
 		case hasNext:
 			i.startTurn(parent, next)
+		case hasScheduled:
+			// The scheduler holds the session transition read lock until this
+			// acknowledgement, so accepting here binds the prompt to the agent
+			// that just completed rather than a subsequently loaded session.
+			scheduled.accepted <- nil
+			i.startTurn(parent, scheduled.text)
 		case continueQueued:
 			i.startTurnRequest(parent, "", nil, true, false)
 		case continueStatusRescue:

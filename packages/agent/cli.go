@@ -19,6 +19,7 @@ import (
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/scheduler"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -1484,6 +1485,21 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	var sessionTransitionMu sync.RWMutex
 	activeProvider := r.Provider
 	activeModel := r.Model
+	var sess *core.Session
+	scheduleEngine := scheduler.NewEngine(nil)
+	var scheduledSessionMu sync.Mutex
+	scheduledSessionLocks := make(map[string]*sync.Mutex)
+	lockScheduledSession := func(sessionID string) func() {
+		scheduledSessionMu.Lock()
+		lock := scheduledSessionLocks[sessionID]
+		if lock == nil {
+			lock = new(sync.Mutex)
+			scheduledSessionLocks[sessionID] = lock
+		}
+		scheduledSessionMu.Unlock()
+		lock.Lock()
+		return lock.Unlock
+	}
 
 	// Build the extension manager BEFORE the agent so we can fold
 	// extension-defined tools into the registry. Attach the interactive
@@ -1665,6 +1681,30 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		return a
 	}
 
+	scheduleTool := &tools.ScheduleTool{
+		Engine: scheduleEngine,
+		SessionID: func() string {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil {
+				return ""
+			}
+			return sess.ID
+		},
+		Location: func() *time.Location { return time.Local },
+	}
+	schedulerAllowed := !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, tools.ScheduleToolName))
+	installSchedulerTool := func(registry core.Registry) core.Registry {
+		if schedulerAllowed {
+			registry[tools.ScheduleToolName] = scheduleTool
+		}
+		return registry
+	}
+	installSchedulerTool(r.ToolRegistry)
+	prepareInteractiveRegistryWithScheduler := func(registry core.Registry) core.Registry {
+		return prepareInteractiveRegistry(installSchedulerTool(registry))
+	}
+
 	var ag *core.Agent
 	buildAgent := func() (*core.Agent, string, string, error) {
 		resolved, err := Resolve(args, true)
@@ -1676,6 +1716,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
+		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
@@ -1698,6 +1739,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
+		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
@@ -1728,6 +1770,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
+		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
@@ -1747,12 +1790,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if current == nil {
 			return
 		}
-		if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv); err != nil && iv != nil {
+		if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistryWithScheduler, iv); err != nil && iv != nil {
 			iv.ReportError(err)
 		}
 	})
 
-	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened
 	var sessionTitlePending bool
 	if !args.NoSess && ag != nil {
@@ -2476,14 +2518,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 				_ = extMgr.Reload(context.Background(), 2*time.Second)
 			}
 			if current != nil {
-				if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv); err != nil {
+				if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistryWithScheduler, iv); err != nil {
 					iv.ReportError(err)
 				}
 			}
 		},
 		RefreshTools: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
+			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistryWithScheduler, iv)
 			if err != nil {
 				if !errors.Is(err, errInteractiveAgentChanged) {
 					setWebSearchAvailable(false)
@@ -2496,7 +2538,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		SetWebSearchAvailable: setWebSearchAvailable,
 		RefreshPrompt: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
+			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistryWithScheduler, iv)
 			if err != nil {
 				return err
 			}
@@ -2682,6 +2724,47 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		},
 	})
 	extHooks.attachInteractive(iv)
+	schedulerCtx, cancelScheduler := context.WithCancel(ctx)
+	defer cancelScheduler()
+	go func() {
+		if err := scheduleEngine.Run(schedulerCtx, func(taskCtx context.Context, task scheduler.Task) error {
+			unlockSession := lockScheduledSession(task.SessionID)
+			defer unlockSession()
+			// Keep a background session run mutually exclusive with /session
+			// transitions. The active target uses Interactive's distinct-turn
+			// ingress instead, so it never injects into an in-flight model loop.
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
+			persistMu.Lock()
+			activeTarget := sess != nil && sess.ID == task.SessionID
+			persistMu.Unlock()
+			if activeTarget {
+				return iv.SubmitFollowUp(taskCtx, task.Message)
+			}
+			// A resumed background agent must schedule any follow-up work against
+			// the transcript it resumed, not whichever session is visible in the
+			// interactive TUI while it runs.
+			backgroundRegistry := func(registry core.Registry) core.Registry {
+				if schedulerAllowed {
+					registry[tools.ScheduleToolName] = &tools.ScheduleTool{
+						Engine:    scheduleEngine,
+						SessionID: func() string { return task.SessionID },
+						Location:  func() *time.Location { return time.Local },
+					}
+				}
+				return registry
+			}
+			err := runScheduledSession(taskCtx, task, args, r, extMgr, backgroundRegistry)
+			if err != nil {
+				iv.Notify("scheduler", "error", fmt.Sprintf("scheduled task %s failed: %v", task.ID, err))
+			} else {
+				iv.Notify("scheduler", "success", fmt.Sprintf("scheduled task %s completed in session %s", task.ID, task.SessionID))
+			}
+			return err
+		}); err != nil && schedulerCtx.Err() == nil {
+			iv.ReportError(fmt.Errorf("scheduler stopped: %w", err))
+		}
+	}()
 	go func() {
 		<-reloadDone
 		for _, reloadErr := range reloadErrs {
