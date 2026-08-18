@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestResidentToolsUseManagerOnly(t *testing.T) {
@@ -52,6 +55,94 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	}
 }
 
+func TestResidentSpawnWaitReturnsInitialCompletion(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spawn := &SubagentSpawnTool{
+		ResidentManager: manager,
+		Enabled:         func() bool { return true },
+		DefaultProvider: func() string { return "openai" },
+		DefaultModel:    func() string { return "gpt-5" },
+		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+			return subagents.ResidentChildSpec{ID: "wait-for-completion", SessionID: "child-session", Provider: request.Provider, Model: request.Model}, nil
+		},
+	}
+	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"finish now","wait":1}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("Execute = (%#v, %v)", result, err)
+	}
+	if got := toolResultText(t, result); !strings.Contains(got, "state: completed") {
+		t.Fatalf("wait result = %q, want completed state", got)
+	}
+}
+
+func TestResidentSpawnWaitExpiryReportsQueuedChild(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
+	finished := make(chan string, 1)
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 1, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, prompt string) error {
+			switch prompt {
+			case "blocker":
+				started <- struct{}{}
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			case "waiter":
+				finished <- prompt
+			}
+			return nil
+		}, nil
+	})
+	t.Cleanup(func() {
+		releaseBlocker()
+		_ = manager.Close(context.Background())
+	})
+	spawn := &SubagentSpawnTool{
+		ResidentManager: manager,
+		Enabled:         func() bool { return true },
+		DefaultProvider: func() string { return "openai" },
+		DefaultModel:    func() string { return "gpt-5" },
+		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+			return subagents.ResidentChildSpec{ID: request.Task, SessionID: request.Task, Provider: request.Provider, Model: request.Model}, nil
+		},
+	}
+	if _, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"blocker"}`), nil); err != nil {
+		t.Fatalf("spawn blocker: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker did not start")
+	}
+	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"waiter","wait":1}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("spawn waiter = (%#v, %v)", result, err)
+	}
+	if got := toolResultText(t, result); !strings.Contains(got, "state: queued") || !strings.Contains(got, "wait: timed out after 1 seconds") {
+		t.Fatalf("wait expiry result = %q, want queued timeout", got)
+	}
+	if state, ok := manager.State("waiter"); !ok || state != subagents.ResidentQueued {
+		t.Fatalf("waiter state = %q (found=%t), want queued", state, ok)
+	}
+	releaseBlocker()
+	select {
+	case got := <-finished:
+		if got != "waiter" {
+			t.Fatalf("finished task = %q, want waiter", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued waiter did not execute")
+	}
+}
+
 func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
 		return func(context.Context, string) error { return nil }, nil
@@ -70,6 +161,8 @@ func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 		`{"task":"x","unexpected":true}`,
 		`{"task":"x"}{}`,
 		`{"task":"x","model":"gpt-5"}`,
+		`{"task":"x","wait":0}`,
+		`{"task":"x","wait":301}`,
 		`{"task":"x","isolation":"outside"}`,
 	} {
 		result, err := spawn.Execute(context.Background(), json.RawMessage(raw), nil)
@@ -128,6 +221,18 @@ func TestResidentToolsRejectUnknownFields(t *testing.T) {
 			t.Fatalf("unknown field error = %v", err)
 		}
 	}
+}
+
+func toolResultText(t *testing.T, result core.ToolResult) string {
+	t.Helper()
+	if len(result.Content) != 1 {
+		t.Fatalf("content = %#v, want one text block", result.Content)
+	}
+	block, ok := result.Content[0].(provider.TextBlock)
+	if !ok {
+		t.Fatalf("content = %#v, want text block", result.Content)
+	}
+	return block.Text
 }
 
 func TestFindResidentStatusSnapshotRejectsAmbiguousPrefix(t *testing.T) {
