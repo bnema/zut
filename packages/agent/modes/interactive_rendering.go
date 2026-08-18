@@ -8,9 +8,25 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
+
+func queuedMessageSummary(message core.QueuedMessage) string {
+	text := message.Text
+	if len(message.Images) == 0 {
+		return text
+	}
+	imageLabel := "[image]"
+	if len(message.Images) > 1 {
+		imageLabel = fmt.Sprintf("[%d images]", len(message.Images))
+	}
+	if text == "" {
+		return imageLabel
+	}
+	return text + " " + imageLabel
+}
 
 func (i *Interactive) cachedChatLocked(cols int) []string {
 	// A busy frame contains mutable streaming/tool state. Keep the stable
@@ -749,7 +765,7 @@ func (i *Interactive) redraw() {
 	// in flight. Shown directly above the status bar so they're close
 	// to the editor but don't push the chat around.
 	var queue []string
-	queued := append([]string(nil), i.queued...)
+	queued := append([]core.QueuedMessage(nil), i.queued...)
 	if i.agent != nil {
 		queued = append(queued, i.agent.PendingQueuedMessages()...)
 	}
@@ -757,7 +773,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, "")
 		for _, q := range queued {
 			label := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "  sliding in: ")
-			text := truncateLine(q, mainCols-17)
+			text := truncateLine(queuedMessageSummary(q), mainCols-17)
 			queue = append(queue, label+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, text))
 		}
 		// Hint row, rendered in the same muted tone as the model

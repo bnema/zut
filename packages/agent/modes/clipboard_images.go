@@ -1,8 +1,10 @@
 package modes
 
 import (
+	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -26,6 +28,26 @@ func preparePromptWithClipboardImages(text string, pending []clipboardImageAttac
 		images = append(images, item.Image)
 	}
 	return strings.TrimSpace(out), images
+}
+
+func (i *Interactive) restoreQueuedMessageToEditor(message core.QueuedMessage) bool {
+	if message.Text == "" && len(message.Images) == 0 {
+		return false
+	}
+	text := message.Text
+	attachments := make([]clipboardImageAttachment, 0, len(message.Images))
+	for index, image := range message.Images {
+		marker := fmt.Sprintf("[clipboard image #%d]", index+1)
+		if text != "" {
+			text += " "
+		}
+		text += marker
+		attachments = append(attachments, clipboardImageAttachment{Marker: marker, Image: image})
+	}
+	i.clipboardImages = attachments
+	i.ed.SetValue(text)
+	i.inputHistoryIndex = -1
+	return true
 }
 
 func removeClipboardMarker(text, marker string) string {

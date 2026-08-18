@@ -100,7 +100,7 @@ func TestQueuedMessageInjectedAfterToolBatchBeforeNextModelCall(t *testing.T) {
 	}()
 
 	<-tool.started
-	if !a.QueueMessage("also do Y") {
+	if !a.QueueMessage("also do Y", nil) {
 		t.Fatal("QueueMessage returned false")
 	}
 	close(tool.release)
@@ -131,10 +131,46 @@ func queueTestContains(xs []string, want string) bool {
 	return false
 }
 
+func TestQueuedImageMessageInjectedAtNextSafeBoundary(t *testing.T) {
+	client := &queueFakeClient{}
+	tool := &blockingTool{started: make(chan struct{}), release: make(chan struct{})}
+	a := NewAgent(client, "fake-model", "system", Registry{"echo": tool})
+
+	var queued provider.Message
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Prompt(context.Background(), "inspect later", nil, func(ev AgentEvent) {
+			if user, ok := ev.(EvUserMessage); ok && len(user.Message.Content) > 0 {
+				if _, isImage := user.Message.Content[0].(provider.ImageBlock); isImage {
+					queued = user.Message
+				}
+			}
+		})
+	}()
+
+	<-tool.started
+	image := provider.ImageBlock{MimeType: "image/png", Data: []byte("png-bytes")}
+	if !a.QueueMessage("", []provider.ImageBlock{image}) {
+		t.Fatal("QueueMessage returned false for image-only prompt")
+	}
+	close(tool.release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if len(queued.Content) != 1 {
+		t.Fatalf("queued content = %#v, want one image", queued.Content)
+	}
+	got, ok := queued.Content[0].(provider.ImageBlock)
+	if !ok || got.MimeType != image.MimeType || string(got.Data) != string(image.Data) {
+		t.Fatalf("queued image = %#v, want %#v", queued.Content[0], image)
+	}
+}
+
 func TestQueuedMessageKeepsAcceptedTimeAcrossDrain(t *testing.T) {
 	a := NewAgent(nil, "fake", "", Registry{})
 	before := time.Now()
-	if !a.QueueMessage("queued") {
+	if !a.QueueMessage("queued", nil) {
 		t.Fatal("QueueMessage returned false")
 	}
 	after := time.Now()
@@ -150,18 +186,18 @@ func TestQueuedMessageKeepsAcceptedTimeAcrossDrain(t *testing.T) {
 
 func TestQueueMessageSnapshotPopAndDrain(t *testing.T) {
 	a := NewAgent(nil, "fake", "", Registry{})
-	if a.QueueMessage("   ") {
+	if a.QueueMessage("   ", nil) {
 		t.Fatal("blank queue message accepted")
 	}
-	a.QueueMessage("one")
-	a.QueueMessage("two")
-	if got := a.PendingQueuedMessages(); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+	a.QueueMessage("one", nil)
+	a.QueueMessage("two", nil)
+	if got := a.PendingQueuedMessages(); len(got) != 2 || got[0].Text != "one" || got[1].Text != "two" {
 		t.Fatalf("PendingQueuedMessages = %v; want [one two]", got)
 	}
-	if text, ok := a.PopQueuedMessage(); !ok || text != "two" {
-		t.Fatalf("PopQueuedMessage = %q,%v; want two,true", text, ok)
+	if message, ok := a.PopQueuedMessage(); !ok || message.Text != "two" {
+		t.Fatalf("PopQueuedMessage = %#v,%v; want two,true", message, ok)
 	}
-	if got := a.DrainQueuedMessages(); len(got) != 1 || got[0] != "one" {
+	if got := a.DrainQueuedMessages(); len(got) != 1 || got[0].Text != "one" {
 		t.Fatalf("DrainQueuedMessages = %v; want [one]", got)
 	}
 	if got := a.QueuedMessageCount(); got != 0 {

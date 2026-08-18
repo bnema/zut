@@ -347,12 +347,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			if ag != nil && !compacting {
 				i.mu.Lock()
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				ag.QueueMessage(studyPrompt)
+				ag.QueueMessage(studyPrompt, nil)
 				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				i.queued = append(i.queued, studyPrompt)
+				i.queued = append(i.queued, core.QueuedMessage{Text: studyPrompt})
 				i.mu.Unlock()
 			}
 			if persistHandoff {
@@ -880,10 +880,10 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		var persistHandoff bool
 		if i.compacting {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.queued = append(i.queued, prompt)
+			i.queued = append(i.queued, core.QueuedMessage{Text: prompt})
 		} else {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.agent.QueueMessage(prompt)
+			i.agent.QueueMessage(prompt, nil)
 		}
 		i.mu.Unlock()
 		if persistHandoff {

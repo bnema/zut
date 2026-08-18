@@ -266,8 +266,7 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 	i.maybeStartSessionTitle(i.runCtx, text)
 	i.mu.Lock()
 	if i.busy {
-		// Queue text only; images are dropped for queued prompts. Keep the
-		// interactive mutex held through Agent.QueueMessage so turn teardown
+		// Keep the interactive mutex held through Agent.QueueMessage so turn teardown
 		// cannot inspect the agent queue between the busy check and enqueue.
 		// Compaction uses the host queue because it has no active agent loop
 		// to drain Agent.QueueMessage entries.
@@ -275,10 +274,10 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 		var persistHandoff bool
 		if i.agent != nil && !i.compacting {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.agent.QueueMessage(text)
+			i.agent.QueueMessage(text, images)
 		} else {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.queued = append(i.queued, text)
+			i.queued = append(i.queued, core.QueuedMessage{Text: text, Images: images})
 		}
 		i.mu.Unlock()
 		if persistHandoff {

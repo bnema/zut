@@ -6,7 +6,22 @@ import (
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
+
+func TestSubmitOrQueuePreservesImagesInHostQueue(t *testing.T) {
+	i := &Interactive{agent: &core.Agent{}, busy: true, compacting: true}
+	image := provider.ImageBlock{MimeType: "image/png", Data: []byte("png-1")}
+
+	i.submitOrQueue("inspect", []provider.ImageBlock{image}, false)
+
+	if len(i.queued) != 1 || i.queued[0].Text != "inspect" {
+		t.Fatalf("queued messages = %#v, want one inspect prompt", i.queued)
+	}
+	if len(i.queued[0].Images) != 1 || string(i.queued[0].Images[0].Data) != "png-1" {
+		t.Fatalf("queued images = %#v, want png-1", i.queued[0].Images)
+	}
+}
 
 func TestSubmitOrQueuePreservesSealedWorkerWaveWithPendingWorker(t *testing.T) {
 	i := &Interactive{agent: &core.Agent{}}

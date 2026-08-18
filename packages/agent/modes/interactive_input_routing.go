@@ -578,27 +578,28 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Lock()
 		busyCancel := i.busy && i.cancelTurn != nil
 		cancelTurn := i.cancelTurn
-		var restoreQueued string
+		var restoreQueued core.QueuedMessage
+		var hasRestoreQueued bool
 		var handoff json.RawMessage
 		var persistHandoff bool
 		if busyCancel {
 			// Keep the most recently queued follow-up as an editable draft
 			// instead of losing it with the cancelled turn's stale queue.
 			if i.agent != nil {
-				restoreQueued, _ = i.agent.PopQueuedMessage()
+				restoreQueued, hasRestoreQueued = i.agent.PopQueuedMessage()
 			}
-			if restoreQueued == "" && len(i.queued) > 0 {
+			if !hasRestoreQueued && len(i.queued) > 0 {
 				n := len(i.queued) - 1
 				restoreQueued = i.queued[n]
 				i.queued = i.queued[:n]
+				hasRestoreQueued = true
 			}
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
 		if busyCancel {
-			if restoreQueued != "" {
-				i.ed.SetValue(restoreQueued)
-				i.inputHistoryIndex = -1
+			if hasRestoreQueued {
+				i.restoreQueuedMessageToEditor(restoreQueued)
 			}
 			i.updateActiveGoal(core.GoalPaused, "interrupted by user")
 			cancelTurn()
@@ -647,20 +648,20 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
 			i.mu.Lock()
-			var text string
+			var message core.QueuedMessage
+			var ok bool
 			if i.agent != nil {
-				text, _ = i.agent.PopQueuedMessage()
+				message, ok = i.agent.PopQueuedMessage()
 			}
-			if text == "" {
+			if !ok {
 				if n := len(i.queued); n > 0 {
-					text = i.queued[n-1]
+					message = i.queued[n-1]
 					i.queued = i.queued[:n-1]
+					ok = true
 				}
 			}
 			i.mu.Unlock()
-			if text != "" {
-				i.ed.SetValue(text)
-				i.inputHistoryIndex = -1
+			if ok && i.restoreQueuedMessageToEditor(message) {
 				i.invalidate()
 				return false
 			}
@@ -914,25 +915,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
-			if len(images) > 0 {
-				i.mu.Lock()
-				i.statusErr = "can't queue clipboard images while a turn is running; wait for the current turn to finish"
-				i.mu.Unlock()
-				i.invalidate()
-				return false
-			}
 			clearSubmittedInput()
 			var handoff json.RawMessage
 			var persistHandoff bool
 			if ag != nil && !compacting {
 				i.mu.Lock()
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				ag.QueueMessage(text)
+				ag.QueueMessage(text, images)
 				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				i.queued = append(i.queued, text)
+				i.queued = append(i.queued, core.QueuedMessage{Text: text, Images: images})
 				i.mu.Unlock()
 			}
 			if persistHandoff {

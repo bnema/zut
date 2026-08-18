@@ -331,7 +331,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// deciding whether this continuation may spend another rescue attempt.
 		statusRescueActive := i.compactContinuation.reason == compactContinuationStatusRescue
 		// Pop the next queued message, if any, and relaunch.
-		var next string
+		var next core.QueuedMessage
 		var hasNext bool
 		if !awaitingPre && len(i.queued) > 0 && ctx.Err() == nil && err == nil {
 			next, i.queued = i.queued[0], i.queued[1:]
@@ -409,7 +409,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		switch {
 		case hasNext:
-			i.startTurn(parent, next)
+			i.startTurnWithImages(parent, next.Text, next.Images)
 		case hasScheduled:
 			// The scheduler holds the session transition read lock until this
 			// acknowledgement, so accepting here binds the prompt to the agent

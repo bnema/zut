@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -109,7 +110,8 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 		return
 	}
 
-	var next string
+	var next core.QueuedMessage
+	var hasNext bool
 	continueQueued := false
 	var resume compactHandoffResume
 	var handoff json.RawMessage
@@ -117,6 +119,7 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 	switch {
 	case state.reason != compactContinuationForcedLength && len(i.queued) > 0:
 		next, i.queued = i.queued[0], i.queued[1:]
+		hasNext = true
 		handoff, persistHandoff = i.resetCompactContinuationLocked()
 	case state.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0:
 		continueQueued = true
@@ -129,7 +132,7 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 	}
 	// Reserve the turn slot before persisting or dispatching so concurrent input
 	// can only queue behind the restored handoff, never start a competing turn.
-	starting := next != "" || continueQueued || resume == compactHandoffContinueExisting || resume == compactHandoffAppendPrompt
+	starting := hasNext || continueQueued || resume == compactHandoffContinueExisting || resume == compactHandoffAppendPrompt
 	i.busy = starting
 	i.mu.Unlock()
 	if persistHandoff {
@@ -140,8 +143,8 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 		return
 	}
 	switch {
-	case next != "":
-		i.startTurn(parent, next)
+	case hasNext:
+		i.startTurnWithImages(parent, next.Text, next.Images)
 	case continueQueued:
 		i.startTurnRequest(parent, "", nil, true, false)
 	case resume == compactHandoffContinueExisting:
@@ -173,7 +176,7 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
 		}
-		i.startTurn(parent, next)
+		i.startTurnWithImages(parent, next.Text, next.Images)
 		return
 	}
 	if i.compactContinuation.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0 {
@@ -338,7 +341,10 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				continueAutomatically = true
 			case len(i.queued) > 0:
-				next, i.queued = i.queued[0], i.queued[1:]
+				queued := i.queued[0]
+				i.queued = i.queued[1:]
+				next = queued.Text
+				nextImages = queued.Images
 				hasNext = true
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			case continuationReason == compactContinuationStructuralTail || continuationReason == compactContinuationStatusRescue:
