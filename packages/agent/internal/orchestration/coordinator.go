@@ -4,7 +4,10 @@
 // events and execute the returned actions.
 package orchestration
 
-import "github.com/bnema/zut/packages/agent/subagents"
+import (
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
+)
 
 // Coordinator collects one sealed worker wave per manager turn. A terminal
 // worker cannot wake the manager until the owning turn is sealed. Queued user
@@ -17,7 +20,12 @@ type Coordinator struct {
 	goalActive    bool
 	workers       map[string]*worker
 	workerOrder   []string
-	queuedUser    []string
+	queuedUser    []queuedUserInput
+}
+
+type queuedUserInput struct {
+	text   string
+	images []provider.ImageBlock
 }
 
 type worker struct {
@@ -43,6 +51,7 @@ type Event struct {
 	WorkerID   string
 	Completion subagents.Completion
 	Text       string
+	Images     []provider.ImageBlock
 	GoalActive bool
 }
 
@@ -66,6 +75,7 @@ type Action struct {
 	Kind        ActionKind
 	Reason      WakeReason
 	Text        string
+	Images      []provider.ImageBlock
 	Completions []subagents.Completion
 }
 
@@ -124,10 +134,10 @@ func (c *Coordinator) Apply(event Event) Result {
 			return c.wakeIfIdle()
 		}
 	case EventUserInput:
-		if event.Text == "" {
+		if event.Text == "" && len(event.Images) == 0 {
 			return Result{}
 		}
-		c.queuedUser = append(c.queuedUser, event.Text)
+		c.queuedUser = append(c.queuedUser, queuedUserInput{text: event.Text, images: cloneImages(event.Images)})
 		return c.wakeIfIdle()
 	case EventGoalChanged:
 		c.goalActive = event.GoalActive
@@ -145,22 +155,34 @@ func (c *Coordinator) wakeIfIdle() Result {
 	}
 	completions := c.completedWorkers()
 	if len(c.queuedUser) != 0 {
-		text := c.queuedUser[0]
+		input := c.queuedUser[0]
 		c.queuedUser = c.queuedUser[1:]
-		return c.startManager(WakeUser, text, completions)
+		return c.startManager(WakeUser, input.text, input.images, completions)
 	}
 	if len(completions) != 0 {
-		return c.startManager(WakeWorkers, "", completions)
+		return c.startManager(WakeWorkers, "", nil, completions)
 	}
 	if c.goalActive {
-		return c.startManager(WakeGoal, "", nil)
+		return c.startManager(WakeGoal, "", nil, nil)
 	}
 	return Result{}
 }
 
-func (c *Coordinator) startManager(reason WakeReason, text string, completions []subagents.Completion) Result {
+func (c *Coordinator) startManager(reason WakeReason, text string, images []provider.ImageBlock, completions []subagents.Completion) Result {
 	c.managerActive = true
-	return Result{Actions: []Action{{Kind: ActionRunManager, Reason: reason, Text: text, Completions: completions}}}
+	return Result{Actions: []Action{{Kind: ActionRunManager, Reason: reason, Text: text, Images: images, Completions: completions}}}
+}
+
+func cloneImages(images []provider.ImageBlock) []provider.ImageBlock {
+	if len(images) == 0 {
+		return nil
+	}
+	cloned := make([]provider.ImageBlock, len(images))
+	for index, image := range images {
+		cloned[index] = image
+		cloned[index].Data = append([]byte(nil), image.Data...)
+	}
+	return cloned
 }
 
 func (c *Coordinator) hasPendingWorkers() bool {

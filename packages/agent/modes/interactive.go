@@ -733,7 +733,7 @@ type Interactive struct {
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
 	// above the status bar as "sliding in: ..." chips.
-	queued []string
+	queued []core.QueuedMessage
 
 	// scheduled holds prompt-only follow-ups injected by the in-process
 	// scheduler. Unlike agent.QueueMessage, these always wait until the
@@ -1533,13 +1533,10 @@ const ctrlCExitWindow = 2 * time.Second
 // agent cancel the active turn first via the same path the editor
 // uses for typed slash commands.
 
-// SubmitOrQueue runs text immediately if the agent is idle, or
-// appends it to the pending queue if a turn is already in flight.
-// Used by the telegram bridge (and by the editor submit path) so
-// both input sources share the same "queue behind an active turn"
-// semantics. Images are ignored for now — only the text prompt is
-// forwarded — because the queued-prompt path is text-only; a
-// follow-up can expand the queue entry to carry images.
+// SubmitOrQueue runs a text-and-image prompt immediately if the agent is idle,
+// or appends it to the pending queue if a turn is already in flight. Used by
+// the Telegram bridge and editor submit path so both input sources share the
+// same queue semantics.
 
 // CancelTurn aborts the active turn if one is running. Used by the
 // telegram bridge when the paired user sends /stop.
@@ -1667,7 +1664,7 @@ const modalBackdropDimPercent = 50
 // model call immediately instead of just opening an empty dialog.
 
 // submitOrQueuePrompt submits a slash command's expanded prompt immediately,
-// or queues it behind the active turn using the normal text-only queue.
+// or queues it behind the active turn.
 
 // openSkillsDialog opens the skill inspector. The picker reflects
 // whatever SkillSnapshot returns at call time, so edits to a

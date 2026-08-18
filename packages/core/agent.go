@@ -24,8 +24,14 @@ const (
 	DefaultStreamMaxRetries  = 5
 )
 
+// QueuedMessage is a user prompt waiting for the next safe model-call boundary.
+type QueuedMessage struct {
+	Text   string
+	Images []provider.ImageBlock
+}
+
 type queuedMessage struct {
-	text     string
+	message  QueuedMessage
 	accepted time.Time
 }
 
@@ -274,18 +280,18 @@ func (a *Agent) FastModeEnabled() bool {
 	return a.FastMode
 }
 
-// QueueMessage queues text to be injected as a user message at the
-// next safe boundary of the active agent loop. It is non-blocking in
-// the sense that it never waits for model/tool work; it only takes
-// the transcript mutex briefly. Empty/whitespace-only messages are
-// ignored.
-func (a *Agent) QueueMessage(text string) bool {
+// QueueMessage queues a text and image prompt to be injected as a user message
+// at the next safe boundary of the active agent loop. It is non-blocking in the
+// sense that it never waits for model/tool work; it only takes the transcript
+// mutex briefly. Prompts without text or images are ignored.
+func (a *Agent) QueueMessage(text string, images []provider.ImageBlock) bool {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(images) == 0 {
 		return false
 	}
+	message := cloneQueuedMessage(QueuedMessage{Text: text, Images: images})
 	a.mu.Lock()
-	a.queued = append(a.queued, queuedMessage{text: text, accepted: time.Now()})
+	a.queued = append(a.queued, queuedMessage{message: message, accepted: time.Now()})
 	a.mu.Unlock()
 	return true
 }
@@ -293,12 +299,12 @@ func (a *Agent) QueueMessage(text string) bool {
 // PendingQueuedMessages returns a snapshot of user messages waiting
 // to be injected. Used by hosts to render the visible "sliding in"
 // chips without consuming them.
-func (a *Agent) PendingQueuedMessages() []string {
+func (a *Agent) PendingQueuedMessages() []QueuedMessage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]string, len(a.queued))
+	out := make([]QueuedMessage, len(a.queued))
 	for i, queued := range a.queued {
-		out[i] = queued.text
+		out[i] = cloneQueuedMessage(queued.message)
 	}
 	return out
 }
@@ -313,28 +319,41 @@ func (a *Agent) QueuedMessageCount() int {
 
 // PopQueuedMessage removes and returns the most recently queued
 // message. Hosts use this for the slide-back keybinding.
-func (a *Agent) PopQueuedMessage() (string, bool) {
+func (a *Agent) PopQueuedMessage() (QueuedMessage, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	n := len(a.queued)
 	if n == 0 {
-		return "", false
+		return QueuedMessage{}, false
 	}
-	text := a.queued[n-1].text
+	message := cloneQueuedMessage(a.queued[n-1].message)
 	a.queued = a.queued[:n-1]
-	return text, true
+	return message, true
 }
 
 // DrainQueuedMessages discards and returns every queued message.
 // Hosts use this on explicit cancel/clear so stale follow-ups do
 // not run after the user aborted the turn.
-func (a *Agent) DrainQueuedMessages() []string {
+func (a *Agent) DrainQueuedMessages() []QueuedMessage {
 	queued := a.drainQueuedMessages()
-	out := make([]string, len(queued))
+	out := make([]QueuedMessage, len(queued))
 	for i, message := range queued {
-		out[i] = message.text
+		out[i] = cloneQueuedMessage(message.message)
 	}
 	return out
+}
+
+func cloneQueuedMessage(message QueuedMessage) QueuedMessage {
+	clone := QueuedMessage{Text: message.Text}
+	if len(message.Images) == 0 {
+		return clone
+	}
+	clone.Images = make([]provider.ImageBlock, len(message.Images))
+	for i, image := range message.Images {
+		clone.Images[i] = image
+		clone.Images[i].Data = append([]byte(nil), image.Data...)
+	}
+	return clone
 }
 
 func (a *Agent) drainQueuedMessages() []queuedMessage {
@@ -351,9 +370,16 @@ func (a *Agent) appendQueuedAsUser(messages []queuedMessage, sink func(AgentEven
 		if accepted.IsZero() {
 			accepted = time.Now()
 		}
+		content := make([]provider.Content, 0, 1+len(queued.message.Images))
+		if queued.message.Text != "" {
+			content = append(content, provider.TextBlock{Text: queued.message.Text})
+		}
+		for _, image := range queued.message.Images {
+			content = append(content, image)
+		}
 		msg := provider.Message{
 			Role:    provider.RoleUser,
-			Content: []provider.Content{provider.TextBlock{Text: queued.text}},
+			Content: content,
 			Time:    accepted,
 		}
 		a.mu.Lock()

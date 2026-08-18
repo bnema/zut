@@ -543,7 +543,7 @@ func TestRestoredHandoffReservesTurnBeforePersistence(t *testing.T) {
 	})
 	interactive.runCtx = context.Background()
 	interactive.mu.Lock()
-	interactive.queued = []string{"newer user request"}
+	interactive.queued = []core.QueuedMessage{{Text: "newer user request"}}
 	interactive.mu.Unlock()
 
 	done := make(chan struct{})
@@ -631,7 +631,7 @@ func TestRestoredHandoffDefersToQueuedUserPrompt(t *testing.T) {
 	})
 	interactive.runCtx = context.Background()
 	interactive.mu.Lock()
-	interactive.queued = []string{"newer user request"}
+	interactive.queued = []core.QueuedMessage{{Text: "newer user request"}}
 	interactive.mu.Unlock()
 
 	interactive.startRestoredCompactHandoff(context.Background())

@@ -100,7 +100,7 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		i.queued = i.queued[1:]
 		i.mu.Unlock()
 		i.abandonGoalRun(run)
-		i.startTurn(parent, next)
+		i.startTurnWithImages(parent, next.Text, next.Images)
 		return
 	}
 	if ag.QueuedMessageCount() > 0 {
@@ -134,7 +134,7 @@ func (i *Interactive) startGoalContinuation(parent context.Context, message prov
 		i.queued = i.queued[1:]
 		i.mu.Unlock()
 		i.abandonGoalRun(run)
-		i.startTurn(parent, next)
+		i.startTurnWithImages(parent, next.Text, next.Images)
 		return
 	}
 	i.mu.Unlock()

@@ -190,8 +190,8 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 				prompt = update
 			}
 		}
-		if prompt != "" {
-			i.submitOrQueue(prompt, nil, false)
+		if prompt != "" || len(action.Images) != 0 {
+			i.submitOrQueue(prompt, action.Images, false)
 		} else if action.Reason == orchestration.WakeGoal {
 			parent := i.runCtx
 			if parent == nil {
