@@ -9,48 +9,30 @@ import (
 )
 
 const (
-	maxToolResultTextBytes      = 32 * 1024
-	maxToolResultTotalTextBytes = 128 * 1024
-	toolResultOmissionMarker    = "[tool result content omitted]"
+	maxToolResultTextBytes   = 32 * 1024
+	toolResultOmissionMarker = "[tool result content omitted]"
 )
 
 // projectToolResultMessages returns a copied provider-input view of msgs.
-// Text inside each tool result is bounded independently and then against the
-// total budget, with newer results receiving the remaining budget first.
-// Tool-result blocks and all non-text content remain in the projection so
-// tool-call/result pairing stays valid.
+// Each tool result is bounded independently. Its projection must depend only
+// on that result: retroactively shrinking older results when a new one arrives
+// mutates the prompt prefix and defeats provider prompt caching. Compaction
+// owns the aggregate transcript budget.
 func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 	projected := copyToolResultMessages(msgs)
-	remaining := maxToolResultTotalTextBytes
 
-	for i := len(projected) - 1; i >= 0; i-- {
-		for j := len(projected[i].Content) - 1; j >= 0; j-- {
-			result, ok := projected[i].Content[j].(provider.ToolResultBlock)
+	for i := range projected {
+		for j, content := range projected[i].Content {
+			result, ok := content.(provider.ToolResultBlock)
 			if !ok {
 				continue
 			}
 
-			timingText := ""
+			if toolResultTextBytes(result.Content) > 0 {
+				result.Content, _ = projectToolResultContent(result.Content, maxToolResultTextBytes)
+			}
 			if result.Timing != nil {
-				candidate := formatToolTiming(result.Timing)
-				if len(candidate) <= remaining {
-					timingText = candidate
-					remaining -= len(candidate)
-				}
-			}
-
-			textBytes := toolResultTextBytes(result.Content)
-			if textBytes > 0 {
-				limit := maxToolResultTextBytes
-				if remaining < limit {
-					limit = remaining
-				}
-				var retained int
-				result.Content, retained = projectToolResultContent(result.Content, limit)
-				remaining -= retained
-			}
-			if timingText != "" {
-				result.Content = append(result.Content, provider.TextBlock{Text: timingText})
+				result.Content = append(result.Content, provider.TextBlock{Text: formatToolTiming(result.Timing)})
 			}
 			projected[i].Content[j] = result
 		}
