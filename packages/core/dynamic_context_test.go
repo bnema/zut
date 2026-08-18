@@ -35,10 +35,11 @@ func TestFirstDynamicContextPersistsAsTranscriptReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, messages, err := OpenSession(path)
+	opened, messages, err := OpenSession(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer opened.Close()
 	if len(messages) < 2 || messages[0].Role != provider.RoleDeveloper || messages[1].Role != provider.RoleUser {
 		t.Fatalf("restored messages = %#v, want developer context followed by accepted user message", messages)
 	}
