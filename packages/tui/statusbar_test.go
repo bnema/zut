@@ -10,7 +10,7 @@ import (
 func TestStatusBarShowsCacheHitRatio(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme: Dark, Provider: "openai-codex", Model: "gpt-test", Cols: 200,
-		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000},
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000},
 		ContextUsed: 45_152, ContextMax: 272_000,
 	})
 	plain := stripANSI(strings.Join(lines, "\n"))
@@ -19,11 +19,22 @@ func TestStatusBarShowsCacheHitRatio(t *testing.T) {
 	}
 }
 
+func TestStatusBarOmitsCacheRatioWhenCacheDetailsAreUnavailable(t *testing.T) {
+	lines := StatusBar(StatusBarParams{
+		Theme: Dark, Provider: "compatible", Model: "model", Cols: 200,
+		Usage: provider.Usage{InputTokens: 84_000, CacheReadTokens: 123_000},
+	})
+	plain := stripANSI(strings.Join(lines, "\n"))
+	if strings.Contains(plain, "C") {
+		t.Fatalf("status bar = %q, want no cache ratio without measured details", plain)
+	}
+}
+
 func TestStatusBarWrapsCacheStatsWithinNarrowWidth(t *testing.T) {
 	const cols = 30
 	lines := StatusBar(StatusBarParams{
 		Theme: Dark, Provider: "openai-codex", Model: "gpt-test", Cols: cols,
-		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheWriteTokens: 2_000, CostUSD: 0.525},
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheWriteTokens: 2_000, CacheMeasuredPromptTokens: 209_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525},
 		ContextUsed: 209_000, ContextMax: 272_000,
 	})
 	plain := stripANSI(strings.Join(lines, "\n"))

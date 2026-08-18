@@ -338,7 +338,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		workspaceMode = subagents.WorkspaceShared
 	}
 	spec := subagents.ResidentChildSpec{
-		ID: uuid.NewString(), SessionID: uuid.NewString(), ParentSessionID: parentSession,
+		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: parentSession, ParentSessionID: parentSession,
 		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
 		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode, Tools: childTools,
 		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,

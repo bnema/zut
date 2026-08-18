@@ -12,7 +12,7 @@ import (
 )
 
 func TestUsageCacheHitRatioIncludesAllPromptTokens(t *testing.T) {
-	u := Usage{InputTokens: 84_000, CacheReadTokens: 123_000, CacheWriteTokens: 3_000}
+	u := Usage{InputTokens: 84_000, CacheReadTokens: 123_000, CacheWriteTokens: 3_000, CacheMeasuredPromptTokens: 210_000, CacheMeasuredReadTokens: 123_000}
 	if got := u.PromptTokens(); got != 210_000 {
 		t.Fatalf("prompt tokens = %d, want 210000", got)
 	}
@@ -22,9 +22,28 @@ func TestUsageCacheHitRatioIncludesAllPromptTokens(t *testing.T) {
 	}
 }
 
-func TestUsageCacheHitRatioUnavailableWithoutCacheReads(t *testing.T) {
-	if ratio, ok := (Usage{InputTokens: 84_000}).CacheHitRatio(); ok || ratio != 0 {
-		t.Fatalf("cache hit ratio = %v, %v, want 0, false", ratio, ok)
+func TestUsageCacheHitRatioDistinguishesKnownZeroFromHistoricalUnknown(t *testing.T) {
+	knownMiss := Usage{InputTokens: 84_000, CacheMeasuredPromptTokens: 84_000}
+	if ratio, ok := knownMiss.CacheHitRatio(); !ok || ratio != 0 {
+		t.Fatalf("known cache miss ratio = %v, %v, want 0, true", ratio, ok)
+	}
+
+	historicalUnknown := Usage{InputTokens: 84_000}
+	if ratio, ok := historicalUnknown.CacheHitRatio(); ok || ratio != 0 {
+		t.Fatalf("historical cache ratio = %v, %v, want 0, false", ratio, ok)
+	}
+}
+
+func TestUsageAddPreservesOnlyMeasuredCacheDenominators(t *testing.T) {
+	measured := Usage{InputTokens: 60, CacheReadTokens: 40, CacheMeasuredPromptTokens: 100, CacheMeasuredReadTokens: 40}
+	unknown := Usage{InputTokens: 200, CacheReadTokens: 100}
+
+	got := measured.Add(unknown)
+	if got.CacheMeasuredPromptTokens != 100 {
+		t.Fatalf("measured cache denominator = %d, want 100", got.CacheMeasuredPromptTokens)
+	}
+	if ratio, ok := got.CacheHitRatio(); !ok || math.Abs(ratio-0.4) > 1e-9 {
+		t.Fatalf("cache hit ratio = %v, %v, want 0.4, true", ratio, ok)
 	}
 }
 

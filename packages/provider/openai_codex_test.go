@@ -92,7 +92,7 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-terra",
-		Context:  RequestContext{SessionID: "logical-session-1", TurnID: "turn-1"},
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -110,11 +110,11 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotBody.PromptCacheKey != "logical-session-1" {
-		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
+	if gotBody.PromptCacheKey != "cache-root-1" {
+		t.Fatalf("prompt_cache_key = %q, want root cache ID", gotBody.PromptCacheKey)
 	}
-	if gotReq.Header.Get("session-id") != "logical-session-1" {
-		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
+	if gotReq.Header.Get("session-id") != "cache-root-1" || gotReq.Header.Get("thread-id") != "thread-1" || gotReq.Header.Get("x-client-request-id") != "thread-1" {
+		t.Fatalf("routing headers = session=%q thread=%q request=%q", gotReq.Header.Get("session-id"), gotReq.Header.Get("thread-id"), gotReq.Header.Get("x-client-request-id"))
 	}
 }
 
@@ -187,7 +187,7 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 
 	events, err := ws.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
-		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
+		Context:  RequestContext{CacheSessionID: "cache-root-2", ThreadID: "thread-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -202,8 +202,8 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	if gotReq.Header.Get("session-id") != "" {
 		t.Fatalf("session-id = %q", gotReq.Header.Get("session-id"))
 	}
-	if gotBody.PromptCacheKey != "logical-session-2" {
-		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
+	if gotBody.PromptCacheKey != "cache-root-2" {
+		t.Fatalf("prompt_cache_key = %q, want root cache ID", gotBody.PromptCacheKey)
 	}
 	if gotReq.Header.Get("originator") != "" || gotReq.Header.Get("user-agent") != "" || gotReq.Header.Get("chatgpt-account-id") != "" || gotReq.Header.Get("openai-beta") != "" {
 		t.Fatalf("public fallback leaked Codex headers: %v", gotReq.Header)
@@ -220,7 +220,7 @@ func TestCustomResponsesEndpointDoesNotInheritOpenAICacheExtensions(t *testing.T
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})
-	events, err := c.Stream(context.Background(), Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "logical-session", TurnID: "turn"}})
+	events, err := c.Stream(context.Background(), Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root", ThreadID: "thread", TurnID: "turn"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
-		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
+		Context:  RequestContext{CacheSessionID: "cache-root-2", ThreadID: "thread-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -290,8 +290,8 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotReq.Header.Get("session-id") != "logical-session-2" {
-		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
+	if gotReq.Header.Get("session-id") != "cache-root-2" || gotReq.Header.Get("thread-id") != "thread-2" || gotReq.Header.Get("x-client-request-id") != "thread-2" {
+		t.Fatalf("routing headers = session=%q thread=%q request=%q", gotReq.Header.Get("session-id"), gotReq.Header.Get("thread-id"), gotReq.Header.Get("x-client-request-id"))
 	}
 	if !strings.Contains(body.String(), "prompt_cache_key") {
 		t.Fatalf("request missing prompt_cache_key: %s", body.String())

@@ -367,6 +367,8 @@ func SessionUsageDetail(path string) (cumulative, lastTurn provider.Usage, err e
 	lastTurn.ReasoningTokensKnown = last.ReasoningTokensKnown
 	lastTurn.CacheReadTokens = nonNegDelta(last.CacheReadTokens, prev.CacheReadTokens)
 	lastTurn.CacheWriteTokens = nonNegDelta(last.CacheWriteTokens, prev.CacheWriteTokens)
+	lastTurn.CacheMeasuredPromptTokens = nonNegDelta(last.CacheMeasuredPromptTokens, prev.CacheMeasuredPromptTokens)
+	lastTurn.CacheMeasuredReadTokens = nonNegDelta(last.CacheMeasuredReadTokens, prev.CacheMeasuredReadTokens)
 	lastTurn.CostUSD = last.CostUSD - prev.CostUSD
 	if lastTurn.CostUSD < 0 {
 		lastTurn.CostUSD = 0

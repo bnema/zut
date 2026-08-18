@@ -35,7 +35,7 @@ func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
 		journal.ConfigureUsage(272_000, true)
 		return func(context.Context, string) error {
-			usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CostUSD: 0.525}
+			usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525}
 			return journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage})
 		}, nil
 	})

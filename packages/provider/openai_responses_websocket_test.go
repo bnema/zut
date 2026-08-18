@@ -80,10 +80,10 @@ func TestResponsesWebSocketReconnectsMissingPreviousResponseWithFullContext(t *t
 		token: "test-token", baseURL: server.URL + "/v1/responses", providerName: "openai",
 		capabilities: responsesCapabilities{StablePromptCacheKey: true}, http: &http.Client{},
 	})
-	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
+	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
 	assertCompletedResponse(t, client, first)
 	lifecycle := &recordingRequestLifecycle{}
-	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Lifecycle: lifecycle, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
+	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Lifecycle: lifecycle, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
 	assertCompletedResponseText(t, client, second, "reconnected")
 	mu.Lock()
 	defer mu.Unlock()
@@ -163,14 +163,14 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	first := Request{
 		Model:     "gpt-5.6-sol",
 		FastMode:  true,
-		Context:   RequestContext{SessionID: "session-1", TurnID: "turn-1"},
+		Context:   RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
 		Lifecycle: lifecycle,
 		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
 	}
 	assertCompletedResponse(t, client, first)
 	second := Request{
 		Model:   "gpt-5.6-sol",
-		Context: RequestContext{SessionID: "session-1", TurnID: "turn-2"},
+		Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
 		Messages: append(append([]Message(nil), first.Messages...),
 			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}},
 			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
@@ -195,7 +195,7 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	if _, ok := requests[0]["stream"]; ok {
 		t.Fatalf("WebSocket payload unexpectedly carries stream: %#v", requests[0])
 	}
-	if got := requests[0]["prompt_cache_key"]; got != "session-1" {
+	if got := requests[0]["prompt_cache_key"]; got != "cache-root-1" {
 		t.Fatalf("prompt_cache_key = %#v", got)
 	}
 	if got := requests[0]["service_tier"]; got != fastModeServiceTier {
@@ -242,7 +242,7 @@ func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) 
 		capabilities: responsesCapabilities{StablePromptCacheKey: true},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := client.Stream(ctx, Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}})
+	stream, err := client.Stream(ctx, Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,9 +290,9 @@ func TestResponsesWebSocketIgnoresStaleTerminalFrameBeforeNextResponse(t *testin
 		token: "test-token", baseURL: server.URL + "/v1/responses", providerName: "openai",
 		capabilities: responsesCapabilities{StablePromptCacheKey: true}, http: &http.Client{},
 	})
-	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
+	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
 	assertCompletedResponseText(t, client, first, "first")
-	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "first"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
+	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "first"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
 	assertCompletedResponseText(t, client, second, "second")
 }
 

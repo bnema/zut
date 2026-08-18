@@ -152,15 +152,16 @@ func responsesWebSocketURL(endpoint string) (string, error) {
 }
 
 func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
-	// WebSocket continuation state is keyed by the durable core session ID.
-	// Requests without that identity retain HTTP/SSE semantics rather than
-	// accidentally pooling unrelated conversations.
-	sessionID := strings.TrimSpace(req.Context.SessionID)
-	if sessionID == "" {
+	// WebSocket continuation state is isolated per conversation thread. Cache
+	// affinity may be shared by root and resident children, but their server
+	// response chains must never be pooled.
+	threadID := strings.TrimSpace(req.Context.ThreadID)
+	if threadID == "" {
 		return c.http.Stream(ctx, req)
 	}
+	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
 
-	session := c.session(sessionID)
+	session := c.session(threadID)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -175,7 +176,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 	}()
 
 	streamReq, previousResponseID := session.incrementalRequest(req)
-	payload, err := c.websocketPayload(streamReq, sessionID, previousResponseID)
+	payload, err := c.websocketPayload(streamReq, cacheSessionID, previousResponseID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +216,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			// HTTP/SSE. That keeps the stable cache key and logical IDs intact
 			// without ever reusing the invalid previous_response_id.
 			session.invalidate()
-			reconnected, reconnectRaw, reconnectFirst, reconnectResponseID, err := c.reconnectFull(ctx, session, req, sessionID)
+			reconnected, reconnectRaw, reconnectFirst, reconnectResponseID, err := c.reconnectFull(ctx, session, req, cacheSessionID)
 			if err != nil {
 				c.forwardResponsesHTTP(ctx, req, out)
 				return
@@ -254,7 +255,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 	return out, nil
 }
 
-func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, previousResponseID string) ([]byte, error) {
+func (c *responsesWebSocketClient) websocketPayload(req Request, cacheSessionID, previousResponseID string) ([]byte, error) {
 	wire, err := c.http.buildRequest(req)
 	if err != nil {
 		return nil, err
@@ -262,8 +263,8 @@ func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, prev
 	if c.http.modelName != nil {
 		wire.Model = c.http.modelName(wire.Model)
 	}
-	if c.http.capabilities.StablePromptCacheKey {
-		wire.PromptCacheKey = sessionID
+	if c.http.capabilities.StablePromptCacheKey && cacheSessionID != "" {
+		wire.PromptCacheKey = cacheSessionID
 	}
 	wire.Stream = false // WebSocket mode does not send HTTP stream controls.
 	wire.PreviousResponseID = previousResponseID
@@ -276,8 +277,8 @@ func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, prev
 // reconnectFull establishes one replacement WebSocket turn after a cached
 // continuation failed. A fresh connection cannot rely on the previous server
 // response, so it always sends the complete local transcript.
-func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, sessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, string, error) {
-	payload, err := c.websocketPayload(req, sessionID, "")
+func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, cacheSessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, string, error) {
+	payload, err := c.websocketPayload(req, cacheSessionID, "")
 	if err != nil {
 		return nil, nil, sseEvent{}, "", err
 	}

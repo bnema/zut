@@ -53,6 +53,8 @@ type codexClient struct {
 type responsesCapabilities struct {
 	StablePromptCacheKey bool
 	SessionHeader        bool
+	ThreadHeader         bool
+	ClientRequestHeader  bool
 }
 
 // NewOpenAICodex creates a client that talks to ChatGPT's Codex endpoint
@@ -78,6 +80,8 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 		capabilities: responsesCapabilities{
 			StablePromptCacheKey: true,
 			SessionHeader:        true,
+			ThreadHeader:         true,
+			ClientRequestHeader:  true,
 		},
 		http: &http.Client{Timeout: 0},
 	}
@@ -383,9 +387,10 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		wire.Model = c.modelName(wire.Model)
 	}
 	useCodexCLIRouting := !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model))
-	logicalSessionID := strings.TrimSpace(req.Context.SessionID)
-	if c.capabilities.StablePromptCacheKey && logicalSessionID != "" {
-		wire.PromptCacheKey = logicalSessionID
+	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
+	threadID := strings.TrimSpace(req.Context.ThreadID)
+	if c.capabilities.StablePromptCacheKey && cacheSessionID != "" {
+		wire.PromptCacheKey = cacheSessionID
 	}
 	body, err := json.Marshal(wire)
 	if err != nil {
@@ -408,8 +413,14 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			// identities are load-shed with "servers are currently
 			// overloaded" errors even when capacity is fine.
 			httpReq.Header.Set("originator", "codex_cli_rs")
-			if c.capabilities.SessionHeader && logicalSessionID != "" {
-				httpReq.Header.Set("session-id", logicalSessionID)
+			if c.capabilities.SessionHeader && cacheSessionID != "" {
+				httpReq.Header.Set("session-id", cacheSessionID)
+			}
+			if c.capabilities.ThreadHeader && threadID != "" {
+				httpReq.Header.Set("thread-id", threadID)
+			}
+			if c.capabilities.ClientRequestHeader && threadID != "" {
+				httpReq.Header.Set("x-client-request-id", threadID)
 			}
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 		} else {
@@ -659,11 +670,9 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				Response struct {
 					ID    string `json:"id"`
 					Usage struct {
-						InputTokens        int `json:"input_tokens"`
-						OutputTokens       int `json:"output_tokens"`
-						InputTokensDetails struct {
-							CachedTokens int `json:"cached_tokens"`
-						} `json:"input_tokens_details"`
+						InputTokens         int                       `json:"input_tokens"`
+						OutputTokens        int                       `json:"output_tokens"`
+						InputTokensDetails  *openAIInputTokensDetails `json:"input_tokens_details"`
 						OutputTokensDetails *struct {
 							ReasoningTokens int `json:"reasoning_tokens"`
 						} `json:"output_tokens_details"`
@@ -672,12 +681,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				} `json:"response"`
 			}
 			_ = json.Unmarshal([]byte(ev.Data), &p)
-			usage.InputTokens = p.Response.Usage.InputTokens - p.Response.Usage.InputTokensDetails.CachedTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = p.Response.Usage.InputTokens
-			}
-			usage.OutputTokens = p.Response.Usage.OutputTokens
-			usage.CacheReadTokens = p.Response.Usage.InputTokensDetails.CachedTokens
+			usage = normalizeOpenAIUsage(p.Response.Usage.InputTokens, p.Response.Usage.OutputTokens, p.Response.Usage.InputTokensDetails)
 			if details := p.Response.Usage.OutputTokensDetails; details != nil {
 				usage.ReasoningTokens = details.ReasoningTokens
 				usage.ReasoningTokensKnown = true

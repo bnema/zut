@@ -65,8 +65,11 @@ const (
 // provider endpoint and TLS mode are retained so explicit resume reconstructs
 // the same transport contract.
 type ResidentChildSpec struct {
-	ID                    string        `json:"id"`
+	ID string `json:"id"`
+	// SessionID identifies the child's conversation thread. RootCacheID is the
+	// root cache affinity shared by every child of the same parent session.
 	SessionID             string        `json:"session_id"`
+	RootCacheID           string        `json:"root_cache_id,omitempty"`
 	InitialTurnID         string        `json:"initial_turn_id,omitempty"`
 	ParentSessionID       string        `json:"parent_session_id,omitempty"`
 	Profile               string        `json:"profile,omitempty"`
@@ -193,6 +196,7 @@ type ResidentMetadata struct {
 	Version         int            `json:"version"`
 	ID              string         `json:"id"`
 	SessionID       string         `json:"session_id"`
+	RootCacheID     string         `json:"root_cache_id,omitempty"`
 	ParentSessionID string         `json:"parent_session_id,omitempty"`
 	State           ResidentState  `json:"state"`
 	UpdatedAt       time.Time      `json:"updated_at"`
@@ -491,7 +495,7 @@ func (j *ResidentJournal) metadata(spec ResidentChildSpec, state ResidentState, 
 	usage := j.usageSnapshot()
 	return ResidentMetadata{
 		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
-		ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: updatedAt,
+		RootCacheID: spec.RootCacheID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: updatedAt,
 		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
 	}
 }

@@ -171,13 +171,19 @@ func activatedToolNames(messages []Message) map[string]bool {
 
 // Usage aggregates token counts and cost for a turn.
 type Usage struct {
-	InputTokens          int     `json:"input_tokens"`
-	OutputTokens         int     `json:"output_tokens"`
-	ReasoningTokens      int     `json:"reasoning_tokens"`
-	ReasoningTokensKnown bool    `json:"reasoning_tokens_known,omitempty"`
-	CacheReadTokens      int     `json:"cache_read_tokens"`
-	CacheWriteTokens     int     `json:"cache_write_tokens"`
-	CostUSD              float64 `json:"cost_usd"`
+	InputTokens          int  `json:"input_tokens"`
+	OutputTokens         int  `json:"output_tokens"`
+	ReasoningTokens      int  `json:"reasoning_tokens"`
+	ReasoningTokensKnown bool `json:"reasoning_tokens_known,omitempty"`
+	CacheReadTokens      int  `json:"cache_read_tokens"`
+	CacheWriteTokens     int  `json:"cache_write_tokens"`
+	// CacheMeasuredPromptTokens and CacheMeasuredReadTokens describe the
+	// portion of the prompt for which the provider explicitly reported cache
+	// details. Zero values mean cache details were unavailable, including in
+	// historical session rows.
+	CacheMeasuredPromptTokens int     `json:"cache_measured_prompt_tokens,omitempty"`
+	CacheMeasuredReadTokens   int     `json:"cache_measured_read_tokens,omitempty"`
+	CostUSD                   float64 `json:"cost_usd"`
 }
 
 // PromptTokens returns all input tokens, regardless of cache disposition.
@@ -185,28 +191,30 @@ func (u Usage) PromptTokens() int {
 	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
 }
 
-// CacheHitRatio returns the share of prompt tokens served from cache. The
-// boolean is false when the provider reported no cache reads, which avoids
-// presenting an unsupported cache metric as a zero-percent hit rate.
+// CacheHitRatio returns the share of provider-measured prompt tokens served
+// from cache. The boolean is false when cache details were unavailable, which
+// keeps historical or unsupported usage distinct from a known zero-percent
+// cache hit rate.
 func (u Usage) CacheHitRatio() (float64, bool) {
-	total := u.PromptTokens()
-	if total <= 0 || u.CacheReadTokens <= 0 {
+	if u.CacheMeasuredPromptTokens <= 0 {
 		return 0, false
 	}
-	return float64(u.CacheReadTokens) / float64(total), true
+	return float64(u.CacheMeasuredReadTokens) / float64(u.CacheMeasuredPromptTokens), true
 }
 
 // Add returns u plus v. A reasoning total is known only when both
 // component usage reports include a separate reasoning-token count.
 func (u Usage) Add(v Usage) Usage {
 	return Usage{
-		InputTokens:          u.InputTokens + v.InputTokens,
-		OutputTokens:         u.OutputTokens + v.OutputTokens,
-		ReasoningTokens:      u.ReasoningTokens + v.ReasoningTokens,
-		ReasoningTokensKnown: u.ReasoningTokensKnown && v.ReasoningTokensKnown,
-		CacheReadTokens:      u.CacheReadTokens + v.CacheReadTokens,
-		CacheWriteTokens:     u.CacheWriteTokens + v.CacheWriteTokens,
-		CostUSD:              u.CostUSD + v.CostUSD,
+		InputTokens:               u.InputTokens + v.InputTokens,
+		OutputTokens:              u.OutputTokens + v.OutputTokens,
+		ReasoningTokens:           u.ReasoningTokens + v.ReasoningTokens,
+		ReasoningTokensKnown:      u.ReasoningTokensKnown && v.ReasoningTokensKnown,
+		CacheReadTokens:           u.CacheReadTokens + v.CacheReadTokens,
+		CacheWriteTokens:          u.CacheWriteTokens + v.CacheWriteTokens,
+		CacheMeasuredPromptTokens: u.CacheMeasuredPromptTokens + v.CacheMeasuredPromptTokens,
+		CacheMeasuredReadTokens:   u.CacheMeasuredReadTokens + v.CacheMeasuredReadTokens,
+		CostUSD:                   u.CostUSD + v.CostUSD,
 	}
 }
 
@@ -312,13 +320,15 @@ type RequestFailureLifecycle interface {
 	RequestFailed(attempt, maxAttempts int, reason RequestFailureReason, terminal bool)
 }
 
-// RequestContext identifies one logical agent session and one accepted turn.
-// Values are opaque provider-neutral correlation IDs. Providers may translate
-// them into cache controls or session-affinity fields, but must not replace
-// them with transport-attempt IDs.
+// RequestContext identifies the cache affinity, conversation thread, and
+// accepted turn for one logical agent request. Values are opaque
+// provider-neutral correlation IDs. Providers may translate them into cache
+// controls or routing fields, but must not replace them with transport-attempt
+// IDs.
 type RequestContext struct {
-	SessionID string
-	TurnID    string
+	CacheSessionID string
+	ThreadID       string
+	TurnID         string
 }
 
 // Request is a single LLM call.

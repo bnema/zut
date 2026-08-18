@@ -166,10 +166,12 @@ type Agent struct {
 	// a running tool or cancels an in-flight provider request.
 	queued      []queuedMessage
 	timeContext agentTimeContext
-	// sessionID is assigned by the host from the durable session before the
-	// first provider request. Agents without persistence allocate one lazily at
-	// their first accepted turn and retain it for the process lifetime.
+	// sessionID identifies this conversation thread. cacheSessionID identifies
+	// the root prompt-cache affinity and may be shared by resident child
+	// threads. Hosts bind both before the first provider request; unbound
+	// agents allocate one shared ephemeral value for the process lifetime.
 	sessionID              string
+	cacheSessionID         string
 	providerRequestStarted bool
 }
 
@@ -188,37 +190,65 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 	}
 }
 
-// BindSessionID assigns the stable logical session identity before the first
-// provider request. A durable host session must bind its SessionMeta.ID here;
-// no-session hosts may leave it unset and the agent will allocate one lazily.
+// BindSessionID binds a root conversation's durable session as both its
+// thread identity and prompt-cache affinity. Resident children use
+// BindRequestIdentity to retain their own thread while sharing their root's
+// cache affinity.
 func (a *Agent) BindSessionID(id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return errors.New("session ID is empty")
+	return a.BindRequestIdentity(id, id)
+}
+
+// BindRequestIdentity assigns the stable root cache and thread identities
+// before the first provider request.
+func (a *Agent) BindRequestIdentity(cacheSessionID, threadID string) error {
+	cacheSessionID = strings.TrimSpace(cacheSessionID)
+	threadID = strings.TrimSpace(threadID)
+	if cacheSessionID == "" || threadID == "" {
+		return errors.New("cache session ID and thread ID are required")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.providerRequestStarted {
-		return errors.New("cannot change session ID after the first provider request")
+		return errors.New("cannot change request identity after the first provider request")
 	}
-	a.sessionID = id
+	a.cacheSessionID = cacheSessionID
+	a.sessionID = threadID
 	return nil
 }
 
-// SessionID returns the stable logical session identity, allocating an
+// SessionID returns the stable conversation-thread identity, allocating an
 // ephemeral identity when persistence is disabled and the host did not bind
 // one during runtime assembly.
 func (a *Agent) SessionID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.sessionID == "" {
-		a.sessionID = uuid.NewString()
-	}
+	a.ensureRequestIdentityLocked()
 	return a.sessionID
 }
 
+// CacheSessionID returns the stable root cache-affinity identity.
+func (a *Agent) CacheSessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ensureRequestIdentityLocked()
+	return a.cacheSessionID
+}
+
+func (a *Agent) ensureRequestIdentityLocked() {
+	if a.sessionID == "" {
+		a.sessionID = uuid.NewString()
+	}
+	if a.cacheSessionID == "" {
+		a.cacheSessionID = a.sessionID
+	}
+}
+
 func (a *Agent) beginTurn() provider.RequestContext {
-	return provider.RequestContext{SessionID: a.SessionID(), TurnID: uuid.NewString()}
+	a.mu.Lock()
+	a.ensureRequestIdentityLocked()
+	context := provider.RequestContext{CacheSessionID: a.cacheSessionID, ThreadID: a.sessionID, TurnID: uuid.NewString()}
+	a.mu.Unlock()
+	return context
 }
 
 func (a *Agent) beginProviderRequest() {

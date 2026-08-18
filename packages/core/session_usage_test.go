@@ -7,6 +7,45 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestSessionUsageDetailDeltasMeasuredCacheUsage(t *testing.T) {
+	sess := newUsageTestSession(t)
+	if err := sess.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}}); err != nil {
+		t.Fatal(err)
+	}
+	first := provider.Usage{
+		InputTokens:               60,
+		CacheReadTokens:           40,
+		CacheMeasuredPromptTokens: 100,
+		CacheMeasuredReadTokens:   40,
+	}
+	if err := sess.AppendUsage(first, first); err != nil {
+		t.Fatal(err)
+	}
+	second := provider.Usage{
+		InputTokens:               80,
+		CacheReadTokens:           70,
+		CacheMeasuredPromptTokens: 150,
+		CacheMeasuredReadTokens:   70,
+	}
+	if err := sess.AppendUsage(provider.Usage{}, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cumulative, last, err := SessionUsageDetail(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cumulative.CacheMeasuredPromptTokens != 150 || cumulative.CacheMeasuredReadTokens != 70 {
+		t.Fatalf("cumulative measured cache usage = %+v", cumulative)
+	}
+	if last.CacheMeasuredPromptTokens != 50 || last.CacheMeasuredReadTokens != 30 {
+		t.Fatalf("last measured cache usage = %+v", last)
+	}
+}
+
 func TestSessionUsageDetailResetsContextAfterCompaction(t *testing.T) {
 	t.Run("compaction is latest row", func(t *testing.T) {
 		sess := newUsageTestSession(t)
