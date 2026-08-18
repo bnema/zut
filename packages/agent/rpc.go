@@ -468,12 +468,14 @@ func (s *rpcServer) snapshotState() map[string]any {
 		"message_count": len(s.agent.Messages()),
 		"busy":          s.activeCancel != nil,
 		"usage": map[string]any{
-			"input":       cum.InputTokens,
-			"output":      cum.OutputTokens,
-			"reasoning":   rpcReasoningTokens(cum),
-			"cache_read":  cum.CacheReadTokens,
-			"cache_write": cum.CacheWriteTokens,
-			"cost_usd":    cum.CostUSD,
+			"input":                 cum.InputTokens,
+			"output":                cum.OutputTokens,
+			"reasoning":             rpcReasoningTokens(cum),
+			"cache_read":            cum.CacheReadTokens,
+			"cache_write":           cum.CacheWriteTokens,
+			"cache_measured_prompt": cum.CacheMeasuredPromptTokens,
+			"cache_measured_read":   cum.CacheMeasuredReadTokens,
+			"cost_usd":              cum.CostUSD,
 		},
 	}
 }

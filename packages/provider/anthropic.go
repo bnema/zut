@@ -246,7 +246,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		out.Temperature = req.Temperature
 	}
 
-	system := req.SystemPrompt()
+	system, messages := systemWithDeveloperContext(req)
 
 	// System prompt assembly differs between api-key and OAuth modes.
 	// OAuth requests MUST begin with the Claude Code identity line or
@@ -318,7 +318,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
-	for _, t := range activeToolDefinitions(req.Tools, req.Messages) {
+	for _, t := range activeToolDefinitions(req.Tools, messages) {
 		name := t.Name
 		if c.oauthTok != "" {
 			name = toClaudeCodeToolName(name)
@@ -353,11 +353,11 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	// emitting them separately keeps each message bit-stable across
 	// turns, so the cache prefix matches for the entire history up
 	// to the newest block.
-	req.Messages = RepairOrphanedToolResults(req.Messages)
-	for _, msg := range req.Messages {
+	messages = RepairOrphanedToolResults(messages)
+	for _, msg := range messages {
 		renameTools := c.oauthTok != ""
 		switch msg.Role {
-		case RoleDeveloper, RoleUser:
+		case RoleUser:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "user",
 				Content: convertAnthContent(msg.Content, renameTools),

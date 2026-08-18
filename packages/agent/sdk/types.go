@@ -92,12 +92,14 @@ type Image struct {
 
 // Usage is per-turn or cumulative token / cost counts.
 type Usage struct {
-	Input      int     `json:"input"`
-	Output     int     `json:"output"`
-	Reasoning  *int    `json:"reasoning"`
-	CacheRead  int     `json:"cache_read"`
-	CacheWrite int     `json:"cache_write"`
-	CostUSD    float64 `json:"cost_usd"`
+	Input               int     `json:"input"`
+	Output              int     `json:"output"`
+	Reasoning           *int    `json:"reasoning"`
+	CacheRead           int     `json:"cache_read"`
+	CacheWrite          int     `json:"cache_write"`
+	CacheMeasuredPrompt int     `json:"cache_measured_prompt,omitempty"`
+	CacheMeasuredRead   int     `json:"cache_measured_read,omitempty"`
+	CostUSD             float64 `json:"cost_usd"`
 }
 
 // State is a snapshot of the runtime's current state.
@@ -182,20 +184,24 @@ func toEvent(ev core.AgentEvent) Event {
 		out.Result = convertContent(e.Result.Content)
 	case core.EvUsage:
 		out.Usage = &Usage{
-			Input:      e.Usage.InputTokens,
-			Output:     e.Usage.OutputTokens,
-			Reasoning:  sdkReasoningTokens(e.Usage),
-			CacheRead:  e.Usage.CacheReadTokens,
-			CacheWrite: e.Usage.CacheWriteTokens,
-			CostUSD:    e.Usage.CostUSD,
+			Input:               e.Usage.InputTokens,
+			Output:              e.Usage.OutputTokens,
+			Reasoning:           sdkReasoningTokens(e.Usage),
+			CacheRead:           e.Usage.CacheReadTokens,
+			CacheWrite:          e.Usage.CacheWriteTokens,
+			CacheMeasuredPrompt: e.Usage.CacheMeasuredPromptTokens,
+			CacheMeasuredRead:   e.Usage.CacheMeasuredReadTokens,
+			CostUSD:             e.Usage.CostUSD,
 		}
 		out.Cumulative = &Usage{
-			Input:      e.Cumulative.InputTokens,
-			Output:     e.Cumulative.OutputTokens,
-			Reasoning:  sdkReasoningTokens(e.Cumulative),
-			CacheRead:  e.Cumulative.CacheReadTokens,
-			CacheWrite: e.Cumulative.CacheWriteTokens,
-			CostUSD:    e.Cumulative.CostUSD,
+			Input:               e.Cumulative.InputTokens,
+			Output:              e.Cumulative.OutputTokens,
+			Reasoning:           sdkReasoningTokens(e.Cumulative),
+			CacheRead:           e.Cumulative.CacheReadTokens,
+			CacheWrite:          e.Cumulative.CacheWriteTokens,
+			CacheMeasuredPrompt: e.Cumulative.CacheMeasuredPromptTokens,
+			CacheMeasuredRead:   e.Cumulative.CacheMeasuredReadTokens,
+			CostUSD:             e.Cumulative.CostUSD,
 		}
 	case core.EvTurnEnd:
 		out.Stop = string(e.Stop)

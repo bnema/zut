@@ -491,7 +491,9 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		return "", err
 	}
 	newID := uuid.NewString()
-	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), newID[:8])
+	now := time.Now()
+	timezone, timezoneOffset := localTimeMetadata(now)
+	name := fmt.Sprintf("%s-%s.jsonl", now.UTC().Format("20060102-150405"), newID[:8])
 	outPath := filepath.Join(dir, name)
 	// Build in a same-directory temporary file. Rename is atomic only when
 	// the temporary and final paths share a directory; closing the file first
@@ -521,8 +523,10 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		CWD:              cwd,
 		Model:            parent.Model,
 		Provider:         parent.Provider,
-		Started:          time.Now().UTC(),
+		Started:          now.UTC(),
 		Version:          version,
+		Timezone:         timezone,
+		TimezoneOffset:   timezoneOffset,
 		Parent:           parent.ID,
 		ForkPoint:        limit,
 		HideFromSessions: hideFromSessions,

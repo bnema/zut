@@ -301,6 +301,27 @@ type RequestAttemptIDLifecycle interface {
 	RequestAttemptID(requestID string, attempt, maxAttempts int)
 }
 
+// CacheDiagnostics contains only allowlisted cache-routing state. It must not
+// contain prompt text, durable identities, request bodies, or credentials.
+type CacheDiagnostics struct {
+	Eligible     bool
+	Mode         string
+	Transport    string
+	Continuation string
+}
+
+// RequestCacheDiagnosticsLifecycle receives sanitized cache-routing state when
+// an adapter can determine it. It is optional to preserve existing clients.
+type RequestCacheDiagnosticsLifecycle interface {
+	CacheDiagnostics(CacheDiagnostics)
+}
+
+func ReportCacheDiagnostics(lifecycle RequestLifecycle, diagnostics CacheDiagnostics) {
+	if withDiagnostics, ok := lifecycle.(RequestCacheDiagnosticsLifecycle); ok {
+		withDiagnostics.CacheDiagnostics(diagnostics)
+	}
+}
+
 // RequestFailureReason is an allowlisted request-failure category. It is safe
 // to persist; raw provider errors and response bodies are not.
 type RequestFailureReason string

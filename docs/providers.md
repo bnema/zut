@@ -158,7 +158,9 @@ identity but retain distinct thread identities. The OpenAI/Codex Responses
 route uses the root identity as `prompt_cache_key`; declared Codex routes also
 receive their documented session and thread routing headers. A generic
 OpenAI-compatible endpoint never receives these extensions merely because it
-accepts an OpenAI-shaped request.
+accepts an OpenAI-shaped request. JSON event mode also reports sanitized cache
+diagnostics (`eligible`, `mode`, `transport`, and `continuation`). These
+records never include prompts, durable IDs, request bodies, or credentials.
 
 When a provider reports cache detail, zut displays cache-read hit rate as
 `cache reads / cache-reporting prompt input`. A shown `0%` is a confirmed
@@ -174,7 +176,8 @@ the Responses API WebSocket mode for the OpenAI Responses route. It keeps one
 connection per conversation thread, sends one `response.create` at a time,
 and continues the most recent completed response with `previous_response_id`
 only when the complete response-context configuration and prior input prefix
-match exactly. Compatible continuations send only new tool or user input.
+match exactly, including the completed assistant output that precedes a new
+suffix. Compatible continuations send only new tool or user input.
 The request uses `store:false`; its only provider-specific handshake header is
 `Authorization: Bearer ...`, never the
 ChatGPT/Codex account, routing, or session headers.

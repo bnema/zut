@@ -333,7 +333,8 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	reasoning := ClampReasoningForModel(model, req.Reasoning)
 	adaptive := usesAdaptiveThinking(model)
 
-	if system := req.SystemPrompt(); system != "" {
+	system, messages := systemWithDeveloperContext(req)
+	if system != "" {
 		sysBlock := map[string]interface{}{"text": system}
 		if caching {
 			// Append cachePoint after the system text so the stable system
@@ -356,7 +357,7 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	if out.InferenceConfig.MaxTokens == 0 {
 		out.InferenceConfig.MaxTokens = 4096
 	}
-	for _, m := range normalizeBedrockToolResults(req.Messages) {
+	for _, m := range normalizeBedrockToolResults(messages) {
 		role := string(m.Role)
 		if role == "tool" {
 			role = "user"

@@ -142,17 +142,18 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	}
 
 	reasoning := ClampReasoningForModel(m, req.Reasoning)
+	system, messages := systemWithDeveloperContext(req)
 	out := &gemRequest{}
 
 	// System prompt → systemInstruction.parts[0].text.
-	if system := req.SystemPrompt(); strings.TrimSpace(system) != "" {
+	if strings.TrimSpace(system) != "" {
 		out.SystemInstruction = &gemSystemInstruction{
 			Parts: []gemPart{{Text: system}},
 		}
 	}
 
 	functionsEnabled := geminiSupportsFunctionCalling(m.ID)
-	activeTools := activeToolDefinitions(req.Tools, req.Messages)
+	activeTools := activeToolDefinitions(req.Tools, messages)
 
 	// Convert tool defs. Gemini image-generation models reject function
 	// declarations with "Function calling is not enabled for this model";
@@ -190,13 +191,13 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	// Convert messages. When function calling is disabled for the target
 	// model, also remove historical functionCall/functionResponse parts;
 	// image models should receive only text/image content.
-	msgs := req.Messages
+	msgs := messages
 	if functionsEnabled {
-		msgs = RepairOrphanedToolResults(req.Messages)
+		msgs = RepairOrphanedToolResults(messages)
 	}
 	for _, msg := range msgs {
 		switch msg.Role {
-		case RoleDeveloper, RoleUser:
+		case RoleUser:
 			parts := convertGemUserParts(msg.Content)
 			if len(parts) == 0 {
 				continue

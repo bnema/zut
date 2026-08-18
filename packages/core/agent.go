@@ -899,6 +899,15 @@ type requestLifecycleSink struct {
 	lastReason RetryReason
 }
 
+func (s *requestLifecycleSink) CacheDiagnostics(diagnostics provider.CacheDiagnostics) {
+	s.sink(EvCacheDiagnostics{
+		Eligible:     diagnostics.Eligible,
+		Mode:         diagnostics.Mode,
+		Transport:    diagnostics.Transport,
+		Continuation: diagnostics.Continuation,
+	})
+}
+
 func (s *requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
 	s.sink(EvRequestStarted{
 		Provider:    s.provider,

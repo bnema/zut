@@ -93,8 +93,9 @@ func (c *codexClient) Name() string { return "openai-codex" }
 // ---- Responses API wire types (subset needed for zut's surface) ----
 
 type codexInputText struct {
-	Type string `json:"type"` // "input_text"
-	Text string `json:"text"`
+	Type                  string                      `json:"type"` // "input_text"
+	Text                  string                      `json:"text"`
+	PromptCacheBreakpoint *codexPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type codexInputImage struct {
@@ -114,14 +115,13 @@ type codexPromptCacheOptions struct {
 }
 
 type codexPromptCacheBreakpoint struct {
-	Type string `json:"type"`
+	Mode string `json:"mode"`
 }
 
 type codexInputMessage struct {
-	Type                  string                      `json:"type,omitempty"` // "message" (optional for input)
-	Role                  string                      `json:"role"`
-	Content               []any                       `json:"content"`
-	PromptCacheBreakpoint *codexPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+	Type    string `json:"type,omitempty"` // "message" (optional for input)
+	Role    string `json:"role"`
+	Content []any  `json:"content"`
 }
 
 type codexOutputMessage struct {
@@ -240,9 +240,12 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		// checkpoints as well as this stable instruction/tool boundary.
 		body.PromptCacheOptions = &codexPromptCacheOptions{Mode: "implicit"}
 		body.Input = append(body.Input, codexInputMessage{
-			Role:                  "developer",
-			Content:               []any{codexInputText{Type: "input_text", Text: "[Stable prompt boundary]"}},
-			PromptCacheBreakpoint: &codexPromptCacheBreakpoint{Type: "stable"},
+			Role: "developer",
+			Content: []any{codexInputText{
+				Type:                  "input_text",
+				Text:                  "[Stable prompt boundary]",
+				PromptCacheBreakpoint: &codexPromptCacheBreakpoint{Mode: "explicit"},
+			}},
 		})
 	}
 	if m.Reasoning {
@@ -396,6 +399,16 @@ func splitCallID(id string) (string, string) {
 	return id, ""
 }
 
+func responsesCacheDiagnostics(wire *codexRequest, transport, continuation string) CacheDiagnostics {
+	diagnostics := CacheDiagnostics{Mode: "none", Transport: transport, Continuation: continuation}
+	if wire == nil || wire.PromptCacheOptions == nil {
+		return diagnostics
+	}
+	diagnostics.Eligible = true
+	diagnostics.Mode = wire.PromptCacheOptions.Mode
+	return diagnostics
+}
+
 func usesCodexCLIRouting(model string) bool {
 	switch model {
 	case "gpt-5.6-luna", "gpt-5.6-luna-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro":
@@ -412,6 +425,7 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 	if err != nil {
 		return nil, err
 	}
+	ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "http_sse", "full"))
 	if c.modelName != nil {
 		wire.Model = c.modelName(wire.Model)
 	}
@@ -490,10 +504,14 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 // event vocabulary, so keeping the state machine here prevents the transports
 // from drifting in tool-call, reasoning, and usage handling.
 func (c *codexClient) runResponseEvents(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, completed func(string)) {
-	c.runResponseEventsWithFirst(ctx, req, out, raw, nil, completed)
+	var observe func(string, Message)
+	if completed != nil {
+		observe = func(responseID string, _ Message) { completed(responseID) }
+	}
+	c.runResponseEventsWithFirst(ctx, req, out, raw, nil, observe)
 }
 
-func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, first *sseEvent, completed func(string)) {
+func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, first *sseEvent, completed func(string, Message)) {
 	model, _ := c.findModel(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
@@ -729,7 +747,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				stop = StopEnd
 			}
 			if completed != nil && p.Response.ID != "" {
-				completed(p.Response.ID)
+				completed(p.Response.ID, assemble())
 			}
 			sendDone()
 			return

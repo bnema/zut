@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/websocket"
 )
@@ -39,6 +40,7 @@ type responsesWebSocketSession struct {
 	// lastRequest is the complete request accepted by the server. Continuation
 	// must compare every response-context setting, not merely its transcript.
 	lastRequest    Request
+	lastOutput     Message
 	lastResponseID string
 }
 
@@ -179,6 +181,16 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 
 	streamReq, previousResponseID := session.incrementalRequest(req)
 	payload, err := c.websocketPayload(streamReq, cacheSessionID, previousResponseID)
+	if err == nil {
+		wire, wireErr := c.http.buildRequest(streamReq)
+		if wireErr == nil {
+			continuation := "full"
+			if previousResponseID != "" {
+				continuation = "incremental"
+			}
+			ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "websocket", continuation))
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -242,12 +254,12 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 
 		completed := false
 		turnRaw := filterResponsesWebSocketEvents(raw, responseID, finished)
-		c.http.runResponseEventsWithFirst(ctx, req, out, turnRaw, &first, func(responseID string) {
+		c.http.runResponseEventsWithFirst(ctx, req, out, turnRaw, &first, func(responseID string, output Message) {
 			stateMu.Lock()
 			terminal = true
 			stateMu.Unlock()
 			completed = true
-			session.recordCompleted(req, responseID)
+			session.recordCompleted(req, output, responseID)
 		})
 		close(finished)
 		if !completed {
@@ -427,13 +439,26 @@ func (s *responsesWebSocketSession) incrementalRequest(req Request) (Request, st
 	if s.lastResponseID == "" || !sameResponsesContinuationConfig(previous, req) || len(req.Messages) < len(previous.Messages) || !reflect.DeepEqual(req.Messages[:len(previous.Messages)], previous.Messages) {
 		return req, ""
 	}
-	// The cached response already contains the assistant output from the last
-	// generation. Send only the strict new tool-result and/or user suffix.
+	// The cached response already contains the exact assistant output from the
+	// last generation. It must be replayed verbatim in the caller transcript
+	// before we can safely send only the strict new tool-result/user suffix.
 	req.Messages = append([]Message(nil), req.Messages[len(previous.Messages):]...)
-	for len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
+	if len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
+		if !sameResponsesOutput(req.Messages[0], s.lastOutput) {
+			return req, ""
+		}
 		req.Messages = req.Messages[1:]
 	}
 	return req, s.lastResponseID
+}
+
+func sameResponsesOutput(current, previous Message) bool {
+	// Provider message timestamps are local presentation metadata, not server
+	// response state. All visible content, call IDs, reasoning replay, and
+	// metadata remain part of the strict baseline.
+	current.Time = time.Time{}
+	previous.Time = time.Time{}
+	return reflect.DeepEqual(current, previous)
 }
 
 func sameResponsesContinuationConfig(previous, current Request) bool {
@@ -474,12 +499,13 @@ func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEve
 	return s.conn, s.raw
 }
 
-func (s *responsesWebSocketSession) recordCompleted(request Request, responseID string) {
+func (s *responsesWebSocketSession) recordCompleted(request Request, output Message, responseID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	request.Messages = append([]Message(nil), request.Messages...)
 	request.Lifecycle = nil
 	s.lastRequest = request
+	s.lastOutput = output
 	s.lastResponseID = responseID
 }
 
@@ -509,6 +535,7 @@ func (s *responsesWebSocketSession) invalidateLocked() {
 	s.raw = nil
 	s.readerDone = nil
 	s.lastRequest = Request{}
+	s.lastOutput = Message{}
 	s.lastResponseID = ""
 }
 
