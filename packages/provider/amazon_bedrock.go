@@ -333,9 +333,9 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	reasoning := ClampReasoningForModel(model, req.Reasoning)
 	adaptive := usesAdaptiveThinking(model)
 
-	system, messages := systemWithDeveloperContext(req)
-	if system != "" {
-		sysBlock := map[string]interface{}{"text": system}
+	stableSystem, dynamicSystem, messages := systemWithDeveloperContext(req)
+	if stableSystem != "" {
+		sysBlock := map[string]interface{}{"text": stableSystem}
 		if caching {
 			// Append cachePoint after the system text so the stable system
 			// prompt is cached as the first breakpoint.
@@ -343,6 +343,9 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 		} else {
 			out.System = []map[string]interface{}{sysBlock}
 		}
+	}
+	if dynamicSystem != "" {
+		out.System = append(out.System, map[string]interface{}{"text": dynamicSystem})
 	}
 	if !adaptive {
 		out.InferenceConfig.Temperature = req.Temperature

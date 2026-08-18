@@ -783,7 +783,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	}
 	metadata := ResidentMetadata{
 		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
-		ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt,
+		RootCacheID: spec.RootCacheID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt,
 		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
 	}
 	needsInterruption := state == ResidentQueued || state == ResidentRunning

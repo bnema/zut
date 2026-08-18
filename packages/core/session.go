@@ -1812,7 +1812,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	if err := json.Unmarshal(rawMessage, &row); err != nil {
 		return provider.Message{}, err
 	}
-	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool {
+	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool && row.Role != provider.RoleDeveloper {
 		return provider.Message{}, fmt.Errorf("message has invalid role %q", row.Role)
 	}
 	if len(row.Content) == 0 {

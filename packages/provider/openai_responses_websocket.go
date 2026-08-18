@@ -188,22 +188,19 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 	}
 	streamReq, previousResponseID := session.incrementalRequest(req, cacheSessionID, c.canonicalResponsesBaseline)
 	payload, err := c.websocketPayload(streamReq, cacheSessionID, previousResponseID)
-	if err == nil {
-		wire, wireErr := c.http.buildRequest(streamReq)
-		if wireErr == nil {
-			continuation := "full"
-			if previousResponseID != "" {
-				continuation = "incremental"
-			}
-			ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "websocket", continuation))
-		}
-	}
 	if err != nil {
 		return nil, err
 	}
 
 	if !responsesWebSocketHTTPCompatible(c.http.http) {
 		return c.http.Stream(ctx, req)
+	}
+	if wire, wireErr := c.http.buildRequest(streamReq); wireErr == nil {
+		continuation := "full"
+		if previousResponseID != "" {
+			continuation = "incremental"
+		}
+		ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "websocket", continuation))
 	}
 	reportRequestAttempt(req.Lifecycle, 1, 2)
 	if err := session.ensureConnected(ctx, c.dial); err != nil {

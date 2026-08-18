@@ -246,7 +246,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		out.Temperature = req.Temperature
 	}
 
-	system, messages := systemWithDeveloperContext(req)
+	stableSystem, dynamicSystem, messages := systemWithDeveloperContext(req)
 
 	// System prompt assembly differs between api-key and OAuth modes.
 	// OAuth requests MUST begin with the Claude Code identity line or
@@ -272,19 +272,22 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 			Text:         claudeCodeIdentity,
 			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 		}}
-		if system != "" {
+		if stableSystem != "" {
 			out.System = append(out.System, anthSystemBlock{
 				Type:         "text",
-				Text:         system,
+				Text:         stableSystem,
 				CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 			})
 		}
-	} else if system != "" {
+	} else if stableSystem != "" {
 		out.System = []anthSystemBlock{{
 			Type:         "text",
-			Text:         system,
+			Text:         stableSystem,
 			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 		}}
+	}
+	if dynamicSystem != "" {
+		out.System = append(out.System, anthSystemBlock{Type: "text", Text: dynamicSystem})
 	}
 
 	if reasoning != "" && m.Reasoning {

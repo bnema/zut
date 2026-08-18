@@ -46,6 +46,9 @@ type Event struct {
 	Usage      *Usage `json:"usage,omitempty"`
 	Cumulative *Usage `json:"cumulative,omitempty"`
 
+	// cache_diagnostics
+	CacheDiagnostics *CacheDiagnostics `json:"cache_diagnostics,omitempty"`
+
 	// user_message / assistant_message
 	Message *Message `json:"message,omitempty"`
 
@@ -88,6 +91,14 @@ type ContentBlock struct {
 type Image struct {
 	MimeType string
 	Data     []byte
+}
+
+// CacheDiagnostics reports sanitized provider cache-routing state.
+type CacheDiagnostics struct {
+	Eligible     bool   `json:"eligible"`
+	Mode         string `json:"mode"`
+	Transport    string `json:"transport"`
+	Continuation string `json:"continuation"`
 }
 
 // Usage is per-turn or cumulative token / cost counts.
@@ -182,6 +193,13 @@ func toEvent(ev core.AgentEvent) Event {
 		out.ID = e.ID
 		out.IsError = e.Result.IsError
 		out.Result = convertContent(e.Result.Content)
+	case core.EvCacheDiagnostics:
+		out.CacheDiagnostics = &CacheDiagnostics{
+			Eligible:     e.Eligible,
+			Mode:         e.Mode,
+			Transport:    e.Transport,
+			Continuation: e.Continuation,
+		}
 	case core.EvUsage:
 		out.Usage = &Usage{
 			Input:               e.Usage.InputTokens,

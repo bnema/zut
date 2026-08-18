@@ -2,11 +2,38 @@ package sdk
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
 )
+
+func TestToEventPreservesCacheDiagnostics(t *testing.T) {
+	for _, diagnostics := range []core.EvCacheDiagnostics{
+		{Eligible: true, Mode: "automatic", Transport: "http_sse", Continuation: "full"},
+		{Eligible: false, Mode: "below_minimum", Transport: "websocket", Continuation: "incremental"},
+	} {
+		event := toEvent(diagnostics)
+		if event.Type != "cache_diagnostics" || event.CacheDiagnostics == nil {
+			t.Fatalf("event = %#v", event)
+		}
+		got := event.CacheDiagnostics
+		if got.Eligible != diagnostics.Eligible || got.Mode != diagnostics.Mode || got.Transport != diagnostics.Transport || got.Continuation != diagnostics.Continuation {
+			t.Fatalf("cache diagnostics = %#v, want %#v", got, diagnostics)
+		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !json.Valid(encoded) {
+			t.Fatalf("encoded diagnostics are invalid JSON: %s", encoded)
+		}
+		if !diagnostics.Eligible && !strings.Contains(string(encoded), `"eligible":false`) {
+			t.Fatalf("encoded ineligible diagnostics = %s, want eligible=false", encoded)
+		}
+	}
+}
 
 func TestToEventPreservesActivityAndToolStreamFacts(t *testing.T) {
 	retry := toEvent(core.EvRetryScheduled{

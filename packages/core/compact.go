@@ -64,6 +64,7 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
 
 	req := provider.Request{
+		Context:     a.beginTurn(),
 		Model:       a.Model,
 		System:      summarizationSystem,
 		MaxTokens:   4096,
@@ -99,6 +100,7 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 		})
 	}
 
+	a.beginProviderRequest()
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {
 		return "", err

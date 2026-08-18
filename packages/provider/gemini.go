@@ -142,11 +142,12 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	}
 
 	reasoning := ClampReasoningForModel(m, req.Reasoning)
-	system, messages := systemWithDeveloperContext(req)
+	stableSystem, dynamicSystem, messages := systemWithDeveloperContext(req)
+	system := strings.TrimSpace(strings.Join([]string{stableSystem, dynamicSystem}, "\n\n"))
 	out := &gemRequest{}
 
 	// System prompt → systemInstruction.parts[0].text.
-	if strings.TrimSpace(system) != "" {
+	if system != "" {
 		out.SystemInstruction = &gemSystemInstruction{
 			Parts: []gemPart{{Text: system}},
 		}

@@ -44,17 +44,26 @@ func (a *Agent) appendDynamicContext(turnContext string) {
 		}
 		break
 	}
-	// The first dynamic item must precede the accepted user task. Later
-	// snapshots extend the history at the next model boundary.
+	// The first dynamic item must precede the accepted user task. Persisting it
+	// as an append would reverse that order on session reload, so report the
+	// resulting transcript replacement instead. Later snapshots extend the
+	// history at the next model boundary and remain ordinary appends.
+	first := !hasInternalContextMessage(a.messages)
 	insertAt := len(a.messages)
-	if !hasInternalContextMessage(a.messages) {
+	if first {
 		insertAt = 0
 	}
 	a.messages = append(a.messages, provider.Message{})
 	copy(a.messages[insertAt+1:], a.messages[insertAt:])
 	a.messages[insertAt] = message
 	a.rev++
+	onCompacted := a.OnTranscriptCompacted
+	persisted := append([]provider.Message(nil), a.messages...)
 	a.mu.Unlock()
+	if first && onCompacted != nil {
+		onCompacted(persisted)
+		return
+	}
 	a.fireMessageAppended(message)
 }
 

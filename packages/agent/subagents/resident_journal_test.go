@@ -93,6 +93,28 @@ func TestResidentJournalReconcilesUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestReconcileResidentJournalRetainsRootCacheID(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "cache-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "cache-child", SessionID: "child-session", RootCacheID: "root-cache", Provider: "openai", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.RootCacheID != spec.RootCacheID {
+		t.Fatalf("RootCacheID = %q, want %q", metadata.RootCacheID, spec.RootCacheID)
+	}
+}
+
 func TestResidentJournalProjectsUsageEmittedAfterInterruption(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "interrupted-usage")

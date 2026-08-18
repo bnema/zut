@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -375,6 +376,47 @@ func TestResponsesWebSocketCloseReleasesSessionSockets(t *testing.T) {
 	defer client.mu.Unlock()
 	if len(client.sessions) != 0 {
 		t.Fatalf("sessions retained after close: %d", len(client.sessions))
+	}
+}
+
+type cacheDiagnosticsLifecycle struct {
+	diagnostics []CacheDiagnostics
+}
+
+func (l *cacheDiagnosticsLifecycle) RequestAttempt(int, int)                {}
+func (l *cacheDiagnosticsLifecycle) RetryScheduled(int, int, time.Duration) {}
+
+func (l *cacheDiagnosticsLifecycle) CacheDiagnostics(diagnostics CacheDiagnostics) {
+	l.diagnostics = append(l.diagnostics, diagnostics)
+}
+
+func TestResponsesWebSocketUsesHTTPDiagnosticsForIncompatibleTransport(t *testing.T) {
+	lifecycle := &cacheDiagnosticsLifecycle{}
+	client := newResponsesWebSocketClient(&codexClient{
+		token: "test-token", baseURL: "https://example.test/v1/responses", providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true},
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"status":"completed","usage":{}}}
+
+`)),
+			}, nil
+		})},
+	})
+	req := Request{
+		Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root", ThreadID: "thread"}, Lifecycle: lifecycle,
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "request"}}}},
+	}
+	stream, err := client.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if len(lifecycle.diagnostics) != 1 || lifecycle.diagnostics[0].Transport != "http_sse" {
+		t.Fatalf("diagnostics = %#v, want only HTTP/SSE diagnostics", lifecycle.diagnostics)
 	}
 }
 
