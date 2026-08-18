@@ -218,6 +218,37 @@ func TestResidentProjectionSkipsIdenticalRewrite(t *testing.T) {
 	}
 }
 
+func TestResidentProjectionReplacesSymlinkInsteadOfFollowingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	metadata := ResidentMetadata{Version: residentJournalVersion, ID: "projection-child", SessionID: "projection-session", State: ResidentIdle}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, residentMetadataName)
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeResidentMetadata(dir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("projection mode = %v, want regular file", info.Mode())
+	}
+}
+
 func TestResidentProjectionRepairsPermissionsForIdenticalData(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not enforced on Windows")

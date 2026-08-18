@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1129,10 +1130,13 @@ func writeResidentProjection(dir, name string, value any) error {
 }
 
 func residentProjectionCurrent(path string, data []byte) bool {
-	current, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(current, data) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().Perm() == 0o600
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		return false
+	}
+	current, err := os.ReadFile(path)
+	return err == nil && bytes.Equal(current, data)
 }
