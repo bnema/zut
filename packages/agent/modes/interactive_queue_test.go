@@ -2,12 +2,29 @@ package modes
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
+
+func TestQueuedMessageSummaryKeepsImageIndicatorWhenTextIsTruncated(t *testing.T) {
+	message := core.QueuedMessage{
+		Text:   strings.Repeat("x", 100),
+		Images: []provider.ImageBlock{{MimeType: "image/png", Data: []byte("png-1")}},
+	}
+
+	summary := queuedMessageSummary(message, 24)
+
+	if !strings.HasSuffix(summary, " [image]") {
+		t.Fatalf("summary = %q, want visible image indicator", summary)
+	}
+	if len([]rune(summary)) > 24 {
+		t.Fatalf("summary width = %d, want at most 24", len([]rune(summary)))
+	}
+}
 
 func TestBusySubmitQueuesClipboardImagePrompt(t *testing.T) {
 	agent := core.NewAgent(nil, "test-model", "", nil)

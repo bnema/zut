@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -11,6 +12,26 @@ func testClipboardImage(marker string, data string) clipboardImageAttachment {
 	return clipboardImageAttachment{
 		Marker: marker,
 		Image:  provider.ImageBlock{MimeType: "image/png", Data: []byte(data)},
+	}
+}
+
+func TestRestoredQueuedImageDoesNotConsumeLiteralClipboardMarker(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	message := core.QueuedMessage{
+		Text:   "keep literal [clipboard image #1]",
+		Images: []provider.ImageBlock{{MimeType: "image/png", Data: []byte("png-1")}},
+	}
+
+	if !i.restoreQueuedMessageToEditor(message) {
+		t.Fatal("queued message was not restored")
+	}
+	text, images := preparePromptWithClipboardImages(i.ed.Value(), i.clipboardImages)
+
+	if text != message.Text {
+		t.Fatalf("resubmitted text = %q, want %q", text, message.Text)
+	}
+	if len(images) != 1 || string(images[0].Data) != "png-1" {
+		t.Fatalf("resubmitted images = %#v, want png-1", images)
 	}
 }
 

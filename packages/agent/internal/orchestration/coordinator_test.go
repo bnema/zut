@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestCoordinatorSealsWorkerWaveAndWakesOnce(t *testing.T) {
@@ -24,9 +25,10 @@ func TestCoordinatorGivesQueuedUserInputPriority(t *testing.T) {
 	c.Apply(Event{Kind: EventManagerStarted})
 	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "worker"})
 	c.Apply(Event{Kind: EventManagerFinished})
-	c.Apply(Event{Kind: EventUserInput, Text: "stop and explain"})
+	image := provider.ImageBlock{MimeType: "image/png", Data: []byte("png-1")}
+	c.Apply(Event{Kind: EventUserInput, Text: "stop and explain", Images: []provider.ImageBlock{image}})
 	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "worker", Completion: subagents.Completion{AgentID: "worker", Status: "failed"}}), []Action{{
-		Kind: ActionRunManager, Reason: WakeUser, Text: "stop and explain",
+		Kind: ActionRunManager, Reason: WakeUser, Text: "stop and explain", Images: []provider.ImageBlock{image},
 		Completions: []subagents.Completion{{AgentID: "worker", Status: "failed"}},
 	}})
 }
@@ -54,6 +56,14 @@ func assertActions(t *testing.T, got Result, want []Action) {
 	for i := range want {
 		if got.Actions[i].Kind != want[i].Kind || got.Actions[i].Reason != want[i].Reason || got.Actions[i].Text != want[i].Text {
 			t.Fatalf("action %d = %#v, want %#v", i, got.Actions[i], want[i])
+		}
+		if len(got.Actions[i].Images) != len(want[i].Images) {
+			t.Fatalf("action %d images = %#v, want %#v", i, got.Actions[i].Images, want[i].Images)
+		}
+		for j := range want[i].Images {
+			if got.Actions[i].Images[j].MimeType != want[i].Images[j].MimeType || string(got.Actions[i].Images[j].Data) != string(want[i].Images[j].Data) {
+				t.Fatalf("action %d image %d = %#v, want %#v", i, j, got.Actions[i].Images[j], want[i].Images[j])
+			}
 		}
 		if len(got.Actions[i].Completions) != len(want[i].Completions) {
 			t.Fatalf("action %d completions = %#v, want %#v", i, got.Actions[i].Completions, want[i].Completions)

@@ -37,7 +37,12 @@ func (i *Interactive) restoreQueuedMessageToEditor(message core.QueuedMessage) b
 	text := message.Text
 	attachments := make([]clipboardImageAttachment, 0, len(message.Images))
 	for index, image := range message.Images {
-		marker := fmt.Sprintf("[clipboard image #%d]", index+1)
+		markerIndex := index + 1
+		marker := fmt.Sprintf("[clipboard image #%d]", markerIndex)
+		for strings.Contains(text, marker) {
+			markerIndex++
+			marker = fmt.Sprintf("[clipboard image #%d]", markerIndex)
+		}
 		if text != "" {
 			text += " "
 		}

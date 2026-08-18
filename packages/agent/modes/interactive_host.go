@@ -256,7 +256,7 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 	// the manager is dormant behind a sealed worker wave, the coordinator makes
 	// this the next manager turn and carries any completed worker summary with it.
 	if userInput && i.coordinatorAcceptsUserInput() {
-		actions := i.applyCoordinator(orchestration.Event{Kind: orchestration.EventUserInput, Text: text})
+		actions := i.applyCoordinator(orchestration.Event{Kind: orchestration.EventUserInput, Text: text, Images: images})
 		i.executeCoordinatorActions(actions)
 		// The coordinator has accepted the input for its sealed worker wave.
 		// It may intentionally defer an action until pending workers finish;

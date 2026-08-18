@@ -29,7 +29,8 @@ func TestSubmitOrQueuePreservesSealedWorkerWaveWithPendingWorker(t *testing.T) {
 	i.applyCoordinator(orchestration.Event{Kind: orchestration.EventWorkerRegistered, WorkerID: "worker#1"})
 	i.applyCoordinator(orchestration.Event{Kind: orchestration.EventManagerFinished})
 
-	i.submitOrQueue("review the result", nil, true)
+	image := provider.ImageBlock{MimeType: "image/png", Data: []byte("png-1")}
+	i.submitOrQueue("review the result", []provider.ImageBlock{image}, true)
 
 	actions := i.applyCoordinator(orchestration.Event{
 		Kind:     orchestration.EventWorkerFinished,
@@ -44,5 +45,8 @@ func TestSubmitOrQueuePreservesSealedWorkerWaveWithPendingWorker(t *testing.T) {
 	}
 	if got := actions[0].Text; got != "review the result" {
 		t.Fatalf("completion action text = %q, want queued user input", got)
+	}
+	if len(actions[0].Images) != 1 || string(actions[0].Images[0].Data) != "png-1" {
+		t.Fatalf("completion action images = %#v, want queued image", actions[0].Images)
 	}
 }

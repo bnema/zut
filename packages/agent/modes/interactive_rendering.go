@@ -13,15 +13,18 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
-func queuedMessageSummary(message core.QueuedMessage) string {
-	text := message.Text
+func queuedMessageSummary(message core.QueuedMessage, maxWidth int) string {
 	if len(message.Images) == 0 {
-		return text
+		return truncateLine(message.Text, maxWidth)
 	}
 	imageLabel := "[image]"
 	if len(message.Images) > 1 {
 		imageLabel = fmt.Sprintf("[%d images]", len(message.Images))
 	}
+	if message.Text == "" || maxWidth <= len(imageLabel) {
+		return truncateLine(imageLabel, maxWidth)
+	}
+	text := truncateLine(message.Text, maxWidth-len(imageLabel)-1)
 	if text == "" {
 		return imageLabel
 	}
@@ -773,7 +776,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, "")
 		for _, q := range queued {
 			label := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "  sliding in: ")
-			text := truncateLine(queuedMessageSummary(q), mainCols-17)
+			text := queuedMessageSummary(q, mainCols-17)
 			queue = append(queue, label+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, text))
 		}
 		// Hint row, rendered in the same muted tone as the model
