@@ -10,6 +10,11 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+type sessionInfoBlock struct {
+	afterMessage int
+	lines        []string
+}
+
 // renderSessionInfoBlock formats information owned by the live interactive
 // session. Paths remain absolute so users can copy the transcript location.
 func renderSessionInfoBlock(th tui.Theme, width int, sessionID, sessionPath, cwd, provider, model string) []string {
@@ -42,6 +47,48 @@ func renderSessionInfoBlock(th tui.Theme, width int, sessionID, sessionPath, cwd
 			th.FGColor(th.Muted, row[1])))
 	}
 	return append(out, "", frameRule(th, width), "")
+}
+
+func insertSessionInfoBlocks(rows []string, anchors []tui.MessageAnchor, blocks []sessionInfoBlock) []string {
+	if len(blocks) == 0 {
+		return rows
+	}
+
+	out := make([]string, 0, len(rows))
+	rowStart := 0
+	for _, block := range blocks {
+		insertAt := len(rows)
+		if block.afterMessage >= 0 && block.afterMessage < len(anchors) {
+			insertAt = anchors[block.afterMessage].Row
+		}
+		if insertAt < rowStart {
+			insertAt = rowStart
+		}
+		out = append(out, rows[rowStart:insertAt]...)
+		out = append(out, block.lines...)
+		rowStart = insertAt
+	}
+	return append(out, rows[rowStart:]...)
+}
+
+func clampSessionInfoBlocks(blocks []sessionInfoBlock, messageCount int) {
+	for idx := range blocks {
+		if blocks[idx].afterMessage > messageCount {
+			blocks[idx].afterMessage = messageCount
+		}
+	}
+}
+
+func sessionInfoBlocksKey(blocks []sessionInfoBlock) string {
+	var key strings.Builder
+	for _, block := range blocks {
+		fmt.Fprintf(&key, "%d\n", block.afterMessage)
+		for _, line := range block.lines {
+			key.WriteString(line)
+			key.WriteByte('\n')
+		}
+	}
+	return key.String()
 }
 
 func valueOrUnavailable(value string) string {
@@ -84,10 +131,17 @@ func (i *Interactive) showSessionInfo() {
 		width, _ = terminal.Size()
 	}
 	block := renderSessionInfoBlock(theme, width, sessionID, absoluteSessionInfoPath(sessionPath), absoluteSessionInfoPath(cwd), providerName, model)
+	messageCount := 0
+	if agent != nil {
+		messageCount = len(filterHiddenTranscriptMessages(agent.Messages()))
+	}
 
 	i.mu.Lock()
 	i.helpBlock = nil
-	i.sessionInfoBlock = block
+	i.sessionInfoBlocks = append(i.sessionInfoBlocks, sessionInfoBlock{
+		afterMessage: messageCount,
+		lines:        block,
+	})
 	i.statusErr = ""
 	i.statusOK = ""
 	i.scrollOffset = 0

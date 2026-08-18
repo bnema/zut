@@ -119,7 +119,7 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
 	i.helpBlock = nil
-	i.sessionInfoBlock = nil
+	i.sessionInfoBlocks = nil
 	i.extNotes = nil
 	i.parkedTurn = 0
 	i.parkedTotal = 0
@@ -175,7 +175,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
 	i.helpBlock = nil
-	i.sessionInfoBlock = nil
+	i.sessionInfoBlocks = nil
 	i.parkedTurn = 0
 	i.statusErr = ""
 	i.mu.Unlock()
