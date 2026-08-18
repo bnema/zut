@@ -655,12 +655,12 @@ func TestGPT56CatalogEntries(t *testing.T) {
 		cacheRead  float64
 		cacheWrite float64
 	}{
-		{"openai", "gpt-5.6-luna", 272000, 1, 6, 0.1, 1.25},
-		{"openai", "gpt-5.6-sol", 272000, 5, 30, 0.5, 6.25},
-		{"openai", "gpt-5.6-terra", 272000, 2.5, 15, 0.25, 3.125},
-		{"openai-codex", "gpt-5.6-luna", 272000, 1, 6, 0.1, 1.25},
-		{"openai-codex", "gpt-5.6-sol", 272000, 5, 30, 0.5, 6.25},
-		{"openai-codex", "gpt-5.6-terra", 272000, 2.5, 15, 0.25, 3.125},
+		{"openai", "gpt-5.6-luna", 500000, 1, 6, 0.1, 1.25},
+		{"openai", "gpt-5.6-sol", 500000, 5, 30, 0.5, 6.25},
+		{"openai", "gpt-5.6-terra", 500000, 2.5, 15, 0.25, 3.125},
+		{"openai-codex", "gpt-5.6-luna", 500000, 1, 6, 0.1, 1.25},
+		{"openai-codex", "gpt-5.6-sol", 500000, 5, 30, 0.5, 6.25},
+		{"openai-codex", "gpt-5.6-terra", 500000, 2.5, 15, 0.25, 3.125},
 		{"azure-openai-responses", "gpt-5.6-luna", 1050000, 1, 6, 0.1, 1.25},
 		{"azure-openai-responses", "gpt-5.6-sol", 1050000, 5, 30, 0.5, 6.25},
 		{"azure-openai-responses", "gpt-5.6-terra", 1050000, 2.5, 15, 0.25, 3.125},
