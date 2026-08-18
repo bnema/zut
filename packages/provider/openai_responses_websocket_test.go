@@ -261,6 +261,36 @@ func TestResponsesWebSocketWireBaselineChangeForcesFullRequest(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketAssistantMismatchForcesCompleteTranscript(t *testing.T) {
+	client := newResponsesWebSocketClient(&codexClient{
+		providerName: "openai", capabilities: responsesCapabilities{StablePromptCacheKey: true},
+	}).(*responsesWebSocketClient)
+	first := Request{
+		Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
+	}
+	baseline, err := client.canonicalResponsesBaseline(first, first.Context.CacheSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &responsesWebSocketSession{}
+	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "actual"}}}, "resp_1")
+	second := Request{
+		Model: first.Model, Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
+		Messages: append(append([]Message(nil), first.Messages...),
+			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "modified"}}},
+			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
+		),
+	}
+	streamReq, previousResponseID := session.incrementalRequest(second, second.Context.CacheSessionID, client.canonicalResponsesBaseline)
+	if previousResponseID != "" {
+		t.Fatalf("previous response ID = %q, want complete request", previousResponseID)
+	}
+	if !reflect.DeepEqual(streamReq.Messages, second.Messages) {
+		t.Fatalf("stream messages = %#v, want complete transcript %#v", streamReq.Messages, second.Messages)
+	}
+}
+
 func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) {
 	closed := make(chan struct{})
 	var closeOnce sync.Once

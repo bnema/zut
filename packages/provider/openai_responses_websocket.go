@@ -467,10 +467,11 @@ func (s *responsesWebSocketSession) incrementalRequest(req Request, cacheSession
 	// The cached response already contains the exact assistant output from the
 	// last generation. It must be replayed verbatim in the caller transcript
 	// before we can safely send only the strict new tool-result/user suffix.
+	fullRequest := req
 	req.Messages = append([]Message(nil), req.Messages[len(previous.Messages):]...)
 	if len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
 		if !sameResponsesOutput(req.Messages[0], s.lastOutput) {
-			return req, ""
+			return fullRequest, ""
 		}
 		req.Messages = req.Messages[1:]
 	}
