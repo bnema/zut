@@ -184,10 +184,13 @@ func TestEditMultiple(t *testing.T) {
 	}
 }
 
-func TestEditAmbiguous(t *testing.T) {
+func TestEditAmbiguousGuidesRecovery(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")
-	os.WriteFile(p, []byte("x\nx\n"), 0o644)
+	original := []byte("x\nx\nx\nx\nx\nx\nx\n")
+	if err := os.WriteFile(p, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	tool := &EditTool{CWD: dir}
 	_, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"path":  "a.txt",
@@ -196,11 +199,52 @@ func TestEditAmbiguous(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ambiguous error")
 	}
+	for _, want := range []string{
+		"oldText matches 7 times",
+		"lines 1, 2, 3, 4, and 5 (and 2 more)",
+		"read a.txt with a bounded context window around those lines",
+		"retry with a verbatim excerpt containing enough surrounding text to identify exactly one location",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %q", want, err)
+		}
+	}
+	got, readErr := os.ReadFile(p)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("ambiguous edit modified file: got %q, want %q", got, original)
+	}
+}
+
+func TestEditRejectsOverlappingMatches(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.txt")
+	original := []byte("aaa\n")
+	if err := os.WriteFile(p, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &EditTool{CWD: dir}
+	_, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
+		"path":  "a.txt",
+		"edits": []map[string]any{{"oldText": "aa", "newText": "b"}},
+	}), nil)
+	if err == nil || !strings.Contains(err.Error(), "oldText matches 2 times") {
+		t.Fatalf("want overlapping-match error, got %v", err)
+	}
+	got, readErr := os.ReadFile(p)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("ambiguous edit modified file: got %q, want %q", got, original)
+	}
 }
 
 func TestEditGuidance(t *testing.T) {
 	desc := (&EditTool{}).Description()
-	for _, want := range []string{"Inspect that file", "directly from its current contents", "short excerpts", "write"} {
+	for _, want := range []string{"Inspect that file", "directly from its current contents", "verbatim excerpt", "enough surrounding text", "write"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description missing %q: %q", want, desc)
 		}
@@ -215,8 +259,11 @@ func TestEditGuidance(t *testing.T) {
 	items := edits["items"].(map[string]any)
 	editProperties := items["properties"].(map[string]any)
 	oldText := editProperties["oldText"].(map[string]any)
-	if got, _ := oldText["description"].(string); !strings.Contains(got, "file being modified") {
-		t.Fatalf("oldText schema description missing target-file guidance: %q", got)
+	oldTextDescription, _ := oldText["description"].(string)
+	for _, want := range []string{"file being modified", "verbatim excerpt", "enough surrounding text", "exactly one location"} {
+		if !strings.Contains(oldTextDescription, want) {
+			t.Errorf("oldText schema description missing %q: %q", want, oldTextDescription)
+		}
 	}
 }
 
@@ -244,16 +291,24 @@ func TestEditNotFoundGuidesRecovery(t *testing.T) {
 func TestEditPreservesCRLF(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")
-	os.WriteFile(p, []byte("hello\r\nworld\r\n"), 0o644)
+	if err := os.WriteFile(p, []byte("hello\r\nworld\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	tool := &EditTool{CWD: dir}
 	_, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
-		"path":  "a.txt",
-		"edits": []map[string]any{{"oldText": "world", "newText": "gopher"}},
+		"path": "a.txt",
+		"edits": []map[string]any{{
+			"oldText": "hello\r\nworld",
+			"newText": "hello\r\ngopher",
+		}},
 	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(p)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(b) != "hello\r\ngopher\r\n" {
 		t.Fatalf("got %q", string(b))
 	}

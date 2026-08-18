@@ -31,11 +31,11 @@ type editArgs struct {
 	Edits []editOp `json:"edits"`
 }
 
-const editSchema = `{"type":"object","properties":{"path":{"type":"string","description":"File to modify, given as an absolute path or one relative to the working directory."},"edits":{"type":"array","description":"A set of non-overlapping substitutions, all located in the file content as it existed before this call.","items":{"type":"object","properties":{"oldText":{"type":"string","description":"A verbatim excerpt from the file being modified. Include enough surrounding text to identify exactly one location, without intersecting another edit."},"newText":{"type":"string","description":"Content that will replace the matched excerpt."}},"required":["oldText","newText"]}}},"required":["path","edits"]}`
+const editSchema = `{"type":"object","properties":{"path":{"type":"string","description":"File to modify, given as an absolute path or one relative to the working directory."},"edits":{"type":"array","description":"A set of non-overlapping substitutions, all located in the file content as it existed before this call.","items":{"type":"object","properties":{"oldText":{"type":"string","description":"A verbatim excerpt from the file being modified with enough surrounding text to identify exactly one location, without intersecting another edit."},"newText":{"type":"string","description":"Content that will replace the matched excerpt."}},"required":["oldText","newText"]}}},"required":["path","edits"]}`
 
 func (t *EditTool) Name() string { return "edit" }
 func (t *EditTool) Description() string {
-	return "Apply exact substitutions to an existing file. Inspect that file before editing and take every oldText directly from its current contents. Use short excerpts that identify one location; choose write when replacing most or all of a file."
+	return "Apply exact substitutions to an existing file. Inspect that file before editing and take every oldText directly from its current contents. Use a verbatim excerpt with enough surrounding text to identify exactly one location; choose write when replacing most or all of a file."
 }
 func (t *EditTool) Schema() json.RawMessage { return json.RawMessage(editSchema) }
 
@@ -98,36 +98,41 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 		orig = orig[3:]
 	}
 	nl := detectLineEnding(orig)
-	// Normalize to \n for matching.
-	body := string(bytes.ReplaceAll(orig, []byte("\r\n"), []byte("\n")))
+	// Normalize the file and edit operands to \n for matching and replacement.
+	body := normalizeLineEndings(string(orig))
 
-	// Validate all edits first (against original content, not sequentially).
-	for i, e := range a.Edits {
-		if e.OldText == "" {
-			return editPlan{}, fmt.Errorf("edit %d: oldText must not be empty", i+1)
-		}
-		if e.OldText == e.NewText {
-			return editPlan{}, fmt.Errorf("edit %d: oldText equals newText", i+1)
-		}
-		count := strings.Count(body, e.OldText)
-		if count == 0 {
-			return editPlan{}, fmt.Errorf("edit %d: oldText not found in %s; inspect that file again and use a verbatim excerpt with matching spaces and line breaks", i+1, a.Path)
-		}
-		if count > 1 {
-			return editPlan{}, fmt.Errorf("edit %d: oldText matches %d times (must be unique) in %s", i+1, count, a.Path)
-		}
-	}
-
-	// Apply atomically (sorted by position so offsets stay valid as we splice).
+	// Validate all edits against the original content and build their spans in
+	// the same pass. This keeps validation and application anchored to the same
+	// match instead of locating each oldText a second time.
 	type span struct {
 		start, end  int
 		replacement string
 	}
 	spans := make([]span, 0, len(a.Edits))
-	for _, e := range a.Edits {
-		idx := strings.Index(body, e.OldText)
-		spans = append(spans, span{start: idx, end: idx + len(e.OldText), replacement: e.NewText})
+	for i, e := range a.Edits {
+		oldText := normalizeLineEndings(e.OldText)
+		newText := normalizeLineEndings(e.NewText)
+		if oldText == "" {
+			return editPlan{}, fmt.Errorf("edit %d: oldText must not be empty", i+1)
+		}
+		if oldText == newText {
+			return editPlan{}, fmt.Errorf("edit %d: oldText equals newText", i+1)
+		}
+		matches := summarizeMatches(body, oldText)
+		if matches.count == 0 {
+			return editPlan{}, fmt.Errorf("edit %d: oldText not found in %s; inspect that file again and use a verbatim excerpt with matching spaces and line breaks", i+1, a.Path)
+		}
+		if matches.count > 1 {
+			return editPlan{}, fmt.Errorf("edit %d: oldText matches %d times (must be unique) in %s at %s; read %s with a bounded context window around those lines, then retry with a verbatim excerpt containing enough surrounding text to identify exactly one location", i+1, matches.count, a.Path, formatMatchLines(matches.lines, matches.count), a.Path)
+		}
+		spans = append(spans, span{
+			start:       matches.start,
+			end:         matches.start + len(oldText),
+			replacement: newText,
+		})
 	}
+
+	// Apply atomically (sorted by position so offsets stay valid as we splice).
 	// Check for overlaps.
 	for i := 0; i < len(spans); i++ {
 		for j := i + 1; j < len(spans); j++ {
@@ -168,6 +173,61 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 		Details: map[string]any{"path": path, "edits": len(a.Edits), "diff": diff},
 	}
 	return editPlan{path: path, final: final, result: result}, nil
+}
+
+const maxReportedMatchLines = 5
+
+type matchSummary struct {
+	count int
+	start int
+	lines []int
+}
+
+// summarizeMatches counts every possible match start, including overlaps,
+// while retaining only the line numbers useful for recovery guidance.
+func summarizeMatches(body, oldText string) matchSummary {
+	var summary matchSummary
+	for searchFrom := 0; searchFrom < len(body); {
+		relative := strings.Index(body[searchFrom:], oldText)
+		if relative < 0 {
+			break
+		}
+		start := searchFrom + relative
+		if summary.count == 0 {
+			summary.start = start
+		}
+		summary.count++
+		if len(summary.lines) < maxReportedMatchLines {
+			summary.lines = append(summary.lines, 1+strings.Count(body[:start], "\n"))
+		}
+		searchFrom = start + 1
+	}
+	return summary
+}
+
+func formatMatchLines(lines []int, count int) string {
+	parts := make([]string, len(lines))
+	for i, line := range lines {
+		parts[i] = fmt.Sprintf("%d", line)
+	}
+
+	var list string
+	switch len(parts) {
+	case 1:
+		list = parts[0]
+	case 2:
+		list = parts[0] + " and " + parts[1]
+	default:
+		list = strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+	if omitted := count - len(lines); omitted > 0 {
+		list += fmt.Sprintf(" (and %d more)", omitted)
+	}
+	return "lines " + list
+}
+
+func normalizeLineEndings(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
 func detectLineEnding(b []byte) string {
