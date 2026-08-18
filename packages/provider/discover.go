@@ -295,8 +295,13 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 		if m.ContextWindow != nil {
 			contextWindow = *m.ContextWindow
 		}
-		if contextWindow == 0 && m.MaxContext != nil {
-			contextWindow = *m.MaxContext
+		if m.MaxContext != nil {
+			switch {
+			case contextWindow == 0:
+				contextWindow = *m.MaxContext
+			case *m.MaxContext >= openAIContextWindowTarget && contextWindow < openAIContextWindowTarget:
+				contextWindow = openAIContextWindowTarget
+			}
 		}
 		displayName := m.DisplayName
 		if displayName == "" {
