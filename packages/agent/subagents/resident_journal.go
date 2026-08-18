@@ -2,14 +2,12 @@ package subagents
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -165,21 +163,38 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 		j.mu.Unlock()
 		return errors.New("resident journal: closed")
 	}
-	if record.Type == residentRecordUsage && j.usageRecordAlreadyDurable(record) {
-		j.mu.Unlock()
-		j.publishAgentEvent(event)
-		return nil
+	if record.Type == residentRecordUsage {
+		durable, metadataPersisted := j.usageRecordPersistence(record)
+		if durable {
+			var err error
+			if !metadataPersisted {
+				err = j.projectUsageMetadata()
+				if err == nil {
+					j.markUsageMetadataPersisted(record)
+				}
+			}
+			j.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			j.publishAgentEvent(event)
+			return nil
+		}
 	}
 	err := j.appendSync(record)
 	if usageEvent, ok := event.(core.EvUsage); err == nil && ok {
 		j.usageMu.Lock()
 		j.usage = usageEvent.Cumulative
-		j.usagePersisted = true
+		j.usageRecordPersisted = true
+		j.usageMetadataPersisted = false
 		if current := usageEvent.Usage.PromptTokens(); current > 0 {
 			j.contextUsed = current
 		}
 		j.usageMu.Unlock()
 		err = j.projectUsageMetadata()
+		if err == nil {
+			j.markUsageMetadataPersisted(record)
+		}
 	}
 	j.mu.Unlock()
 	if err == nil {
@@ -232,20 +247,21 @@ type ResidentResult struct {
 // ResidentJournal serializes durable child records. It is intentionally a
 // narrow storage primitive; the manager owns scheduling and provider work.
 type ResidentJournal struct {
-	mu             sync.Mutex
-	eventMu        sync.RWMutex
-	eventObserver  func(core.AgentEvent)
-	summaryMu      sync.RWMutex
-	latestSummary  string
-	usageMu        sync.RWMutex
-	usage          provider.Usage
-	usagePersisted bool
-	contextUsed    int
-	contextMax     int
-	subscription   bool
-	dir            string
-	file           *os.File
-	lease          *residentLease
+	mu                     sync.Mutex
+	eventMu                sync.RWMutex
+	eventObserver          func(core.AgentEvent)
+	summaryMu              sync.RWMutex
+	latestSummary          string
+	usageMu                sync.RWMutex
+	usage                  provider.Usage
+	usageRecordPersisted   bool
+	usageMetadataPersisted bool
+	contextUsed            int
+	contextMax             int
+	subscription           bool
+	dir                    string
+	file                   *os.File
+	lease                  *residentLease
 }
 
 // ResidentUsageSnapshot is the bounded usage projection shared by durable and
@@ -284,17 +300,31 @@ func (j *ResidentJournal) usageSnapshot() ResidentUsageSnapshot {
 	return ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription}
 }
 
-func (j *ResidentJournal) usageRecordAlreadyDurable(record residentRecord) bool {
+func (j *ResidentJournal) usageRecordPersistence(record residentRecord) (durable, metadataPersisted bool) {
 	if record.Usage == nil {
-		return false
+		return false, false
 	}
 	j.usageMu.RLock()
 	defer j.usageMu.RUnlock()
-	return j.usagePersisted &&
-		j.usage == *record.Usage &&
+	matches := j.usage == *record.Usage &&
 		j.contextUsed == record.ContextUsed &&
 		j.contextMax == record.ContextMax &&
 		j.subscription == record.Subscription
+	return j.usageRecordPersisted && matches, j.usageMetadataPersisted && matches
+}
+
+func (j *ResidentJournal) markUsageMetadataPersisted(record residentRecord) {
+	if record.Usage == nil {
+		return
+	}
+	j.usageMu.Lock()
+	if j.usage == *record.Usage &&
+		j.contextUsed == record.ContextUsed &&
+		j.contextMax == record.ContextMax &&
+		j.subscription == record.Subscription {
+		j.usageMetadataPersisted = true
+	}
+	j.usageMu.Unlock()
 }
 
 // SetEventObserver publishes in-memory agent events without creating another
@@ -1127,16 +1157,4 @@ func writeResidentProjection(dir, name string, value any) error {
 		return fmt.Errorf("resident projection directory sync: %w", err)
 	}
 	return nil
-}
-
-func residentProjectionCurrent(path string, data []byte) bool {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		return false
-	}
-	current, err := os.ReadFile(path)
-	return err == nil && bytes.Equal(current, data)
 }

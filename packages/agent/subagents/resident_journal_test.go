@@ -123,6 +123,55 @@ func TestResidentJournalSkipsDuplicateUsageRecord(t *testing.T) {
 	}
 }
 
+func TestResidentJournalDuplicateUsageRetriesFailedMetadataProjection(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "retry-usage-projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	spec := ResidentChildSpec{ID: "retry-usage-projection", SessionID: "usage-session", Provider: "openai", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	journal.ConfigureUsage(128_000, false)
+	metadataPath := filepath.Join(journal.Dir(), residentMetadataName)
+	originalMetadata, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	usage := provider.Usage{InputTokens: 10_000, OutputTokens: 500}
+	event := core.EvUsage{Usage: usage, Cumulative: usage}
+	if err := journal.RecordAgentEvent(event); err == nil {
+		t.Fatal("first usage projection succeeded with malformed metadata")
+	}
+	if err := os.WriteFile(metadataPath, originalMetadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(event); err != nil {
+		t.Fatalf("retry identical usage: %v", err)
+	}
+
+	records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(records); got != 2 {
+		t.Fatalf("journal records = %d, want accepted record plus one usage record", got)
+	}
+	metadata, err := ReadResidentMetadata(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Usage != usage || metadata.ContextUsed != usage.PromptTokens() {
+		t.Fatalf("metadata usage = %+v, context = %d; want %+v, %d", metadata.Usage, metadata.ContextUsed, usage, usage.PromptTokens())
+	}
+}
+
 func TestReconcileResidentJournalRetainsRootCacheID(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "cache-child")
@@ -177,6 +226,9 @@ func TestResidentJournalProjectsUsageEmittedAfterInterruption(t *testing.T) {
 }
 
 func TestResidentProjectionSkipsIdenticalRewrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no-follow projection reads are unavailable on Windows")
+	}
 	dir := t.TempDir()
 	metadata := ResidentMetadata{
 		Version:   residentJournalVersion,
