@@ -299,6 +299,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		switch msg.Role {
+		case RoleDeveloper:
+			content := buildOAIUserContent(msg.Content, textOnly)
+			out.Messages = append(out.Messages, oaiMessage{Role: "developer", Content: content})
 		case RoleUser:
 			content := buildOAIUserContent(msg.Content, textOnly)
 			out.Messages = append(out.Messages, oaiMessage{Role: "user", Content: content})
@@ -656,11 +659,9 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
 				Usage *struct {
-					PromptTokens        int `json:"prompt_tokens"`
-					CompletionTokens    int `json:"completion_tokens"`
-					PromptTokensDetails struct {
-						CachedTokens int `json:"cached_tokens"`
-					} `json:"prompt_tokens_details"`
+					PromptTokens            int                       `json:"prompt_tokens"`
+					CompletionTokens        int                       `json:"completion_tokens"`
+					PromptTokensDetails     *openAIInputTokensDetails `json:"prompt_tokens_details"`
 					CompletionTokensDetails *struct {
 						ReasoningTokens int `json:"reasoning_tokens"`
 					} `json:"completion_tokens_details"`
@@ -680,12 +681,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				return
 			}
 			if chunk.Usage != nil {
-				usage.InputTokens = chunk.Usage.PromptTokens - chunk.Usage.PromptTokensDetails.CachedTokens
-				if usage.InputTokens < 0 {
-					usage.InputTokens = chunk.Usage.PromptTokens
-				}
-				usage.OutputTokens = chunk.Usage.CompletionTokens
-				usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				usage = normalizeOpenAIUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptTokensDetails)
 				if details := chunk.Usage.CompletionTokensDetails; details != nil {
 					usage.ReasoningTokens = details.ReasoningTokens
 					usage.ReasoningTokensKnown = true

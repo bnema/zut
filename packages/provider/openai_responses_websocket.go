@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/websocket"
 )
@@ -36,7 +39,11 @@ type responsesWebSocketSession struct {
 	raw        chan sseEvent
 	readerDone chan struct{}
 
-	lastRequest    []Message
+	// lastRequest is the complete request accepted by the server. Continuation
+	// must compare every response-context setting, not merely its transcript.
+	lastRequest    Request
+	lastBaseline   string
+	lastOutput     Message
 	lastResponseID string
 }
 
@@ -152,15 +159,16 @@ func responsesWebSocketURL(endpoint string) (string, error) {
 }
 
 func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
-	// WebSocket continuation state is keyed by the durable core session ID.
-	// Requests without that identity retain HTTP/SSE semantics rather than
-	// accidentally pooling unrelated conversations.
-	sessionID := strings.TrimSpace(req.Context.SessionID)
-	if sessionID == "" {
+	// WebSocket continuation state is isolated per conversation thread. Cache
+	// affinity may be shared by root and resident children, but their server
+	// response chains must never be pooled.
+	threadID := strings.TrimSpace(req.Context.ThreadID)
+	if threadID == "" {
 		return c.http.Stream(ctx, req)
 	}
+	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
 
-	session := c.session(sessionID)
+	session := c.session(threadID)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -174,14 +182,25 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		}
 	}()
 
-	streamReq, previousResponseID := session.incrementalRequest(req)
-	payload, err := c.websocketPayload(streamReq, sessionID, previousResponseID)
+	fullBaseline, err := c.canonicalResponsesBaseline(req, cacheSessionID)
+	if err != nil {
+		return nil, err
+	}
+	streamReq, previousResponseID := session.incrementalRequest(req, cacheSessionID, c.canonicalResponsesBaseline)
+	payload, err := c.websocketPayload(streamReq, cacheSessionID, previousResponseID)
 	if err != nil {
 		return nil, err
 	}
 
 	if !responsesWebSocketHTTPCompatible(c.http.http) {
 		return c.http.Stream(ctx, req)
+	}
+	if wire, wireErr := c.http.buildRequest(streamReq); wireErr == nil {
+		continuation := "full"
+		if previousResponseID != "" {
+			continuation = "incremental"
+		}
+		ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "websocket", continuation))
 	}
 	reportRequestAttempt(req.Lifecycle, 1, 2)
 	if err := session.ensureConnected(ctx, c.dial); err != nil {
@@ -215,7 +234,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			// HTTP/SSE. That keeps the stable cache key and logical IDs intact
 			// without ever reusing the invalid previous_response_id.
 			session.invalidate()
-			reconnected, reconnectRaw, reconnectFirst, reconnectResponseID, err := c.reconnectFull(ctx, session, req, sessionID)
+			reconnected, reconnectRaw, reconnectFirst, reconnectResponseID, err := c.reconnectFull(ctx, session, req, cacheSessionID)
 			if err != nil {
 				c.forwardResponsesHTTP(ctx, req, out)
 				return
@@ -239,12 +258,12 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 
 		completed := false
 		turnRaw := filterResponsesWebSocketEvents(raw, responseID, finished)
-		c.http.runResponseEventsWithFirst(ctx, req, out, turnRaw, &first, func(responseID string) {
+		c.http.runResponseEventsWithFirst(ctx, req, out, turnRaw, &first, func(responseID string, output Message) {
 			stateMu.Lock()
 			terminal = true
 			stateMu.Unlock()
 			completed = true
-			session.recordCompleted(req.Messages, responseID)
+			session.recordCompleted(req, fullBaseline, output, responseID)
 		})
 		close(finished)
 		if !completed {
@@ -254,7 +273,19 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 	return out, nil
 }
 
-func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, previousResponseID string) ([]byte, error) {
+// canonicalResponsesBaseline hashes the complete, encoded WebSocket request
+// without a server response ID. The digest lets continuation compare every
+// wire-visible setting without retaining prompts, IDs, or credentials.
+func (c *responsesWebSocketClient) canonicalResponsesBaseline(req Request, cacheSessionID string) (string, error) {
+	payload, err := c.websocketPayload(req, cacheSessionID, "")
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (c *responsesWebSocketClient) websocketPayload(req Request, cacheSessionID, previousResponseID string) ([]byte, error) {
 	wire, err := c.http.buildRequest(req)
 	if err != nil {
 		return nil, err
@@ -262,8 +293,8 @@ func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, prev
 	if c.http.modelName != nil {
 		wire.Model = c.http.modelName(wire.Model)
 	}
-	if c.http.capabilities.StablePromptCacheKey {
-		wire.PromptCacheKey = sessionID
+	if c.http.capabilities.StablePromptCacheKey && cacheSessionID != "" {
+		wire.PromptCacheKey = cacheSessionID
 	}
 	wire.Stream = false // WebSocket mode does not send HTTP stream controls.
 	wire.PreviousResponseID = previousResponseID
@@ -276,8 +307,8 @@ func (c *responsesWebSocketClient) websocketPayload(req Request, sessionID, prev
 // reconnectFull establishes one replacement WebSocket turn after a cached
 // continuation failed. A fresh connection cannot rely on the previous server
 // response, so it always sends the complete local transcript.
-func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, sessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, string, error) {
-	payload, err := c.websocketPayload(req, sessionID, "")
+func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *responsesWebSocketSession, req Request, cacheSessionID string) (*websocket.Conn, <-chan sseEvent, sseEvent, string, error) {
+	payload, err := c.websocketPayload(req, cacheSessionID, "")
 	if err != nil {
 		return nil, nil, sseEvent{}, "", err
 	}
@@ -417,19 +448,50 @@ func (c *responsesWebSocketClient) forwardResponsesHTTP(ctx context.Context, req
 	}
 }
 
-func (s *responsesWebSocketSession) incrementalRequest(req Request) (Request, string) {
+func (s *responsesWebSocketSession) incrementalRequest(req Request, cacheSessionID string, canonicalBaseline func(Request, string) (string, error)) (Request, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lastResponseID == "" || len(req.Messages) < len(s.lastRequest) || !reflect.DeepEqual(req.Messages[:len(s.lastRequest)], s.lastRequest) {
+	previous := s.lastRequest
+	if s.lastResponseID == "" || !sameResponsesContinuationConfig(previous, req) || len(req.Messages) < len(previous.Messages) || !reflect.DeepEqual(req.Messages[:len(previous.Messages)], previous.Messages) {
 		return req, ""
 	}
-	// The cached response already contains the assistant output from the last
-	// generation. Send only the new tool results and/or user message.
-	req.Messages = append([]Message(nil), req.Messages[len(s.lastRequest):]...)
-	for len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
+	prefix := req
+	prefix.Messages = append([]Message(nil), req.Messages[:len(previous.Messages)]...)
+	baseline, err := canonicalBaseline(prefix, cacheSessionID)
+	if err != nil || baseline != s.lastBaseline {
+		return req, ""
+	}
+	// The cached response already contains the exact assistant output from the
+	// last generation. It must be replayed verbatim in the caller transcript
+	// before we can safely send only the strict new tool-result/user suffix.
+	fullRequest := req
+	req.Messages = append([]Message(nil), req.Messages[len(previous.Messages):]...)
+	if len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
+		if !sameResponsesOutput(req.Messages[0], s.lastOutput) {
+			return fullRequest, ""
+		}
 		req.Messages = req.Messages[1:]
 	}
 	return req, s.lastResponseID
+}
+
+func sameResponsesOutput(current, previous Message) bool {
+	// Provider message timestamps are local presentation metadata, not server
+	// response state. All visible content, call IDs, reasoning replay, and
+	// metadata remain part of the strict baseline.
+	current.Time = time.Time{}
+	previous.Time = time.Time{}
+	return reflect.DeepEqual(current, previous)
+}
+
+func sameResponsesContinuationConfig(previous, current Request) bool {
+	previous.Messages = nil
+	previous.Context.TurnID = ""
+	previous.Lifecycle = nil
+	current.Messages = nil
+	current.Context.TurnID = ""
+	current.Lifecycle = nil
+	return reflect.DeepEqual(previous, current)
 }
 
 func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, dial func(context.Context) (*websocket.Conn, error)) error {
@@ -460,10 +522,14 @@ func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEve
 	return s.conn, s.raw
 }
 
-func (s *responsesWebSocketSession) recordCompleted(messages []Message, responseID string) {
+func (s *responsesWebSocketSession) recordCompleted(request Request, baseline string, output Message, responseID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRequest = append(s.lastRequest[:0], messages...)
+	request.Messages = append([]Message(nil), request.Messages...)
+	request.Lifecycle = nil
+	s.lastRequest = request
+	s.lastBaseline = baseline
+	s.lastOutput = output
 	s.lastResponseID = responseID
 }
 
@@ -492,7 +558,9 @@ func (s *responsesWebSocketSession) invalidateLocked() {
 	s.conn = nil
 	s.raw = nil
 	s.readerDone = nil
-	s.lastRequest = nil
+	s.lastRequest = Request{}
+	s.lastBaseline = ""
+	s.lastOutput = Message{}
 	s.lastResponseID = ""
 }
 

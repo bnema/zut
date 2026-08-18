@@ -53,6 +53,42 @@ func (c *compactLifecycleClient) Stream(_ context.Context, req provider.Request)
 	return out, nil
 }
 
+func TestCompactPreservesOnlyLatestInternalContext(t *testing.T) {
+	client := &compactLifecycleClient{}
+	agent := NewAgent(client, "compact-model", "system", Registry{})
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleDeveloper, Content: []provider.Content{provider.TextBlock{Text: "old"}}, Meta: map[string]string{internalContextMarker: "true"}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "first"}}},
+		{Role: provider.RoleDeveloper, Content: []provider.Content{provider.TextBlock{Text: "new"}}, Meta: map[string]string{internalContextMarker: "true"}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer"}}},
+	})
+	if _, err := agent.Compact(context.Background(), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	messages := agent.Messages()
+	if len(messages) != 2 || messages[0].Role != provider.RoleDeveloper || internalContextText(messages[0]) != "new" {
+		t.Fatalf("compacted messages = %#v, want latest internal context then summary", messages)
+	}
+}
+
+func TestCompactStartsProviderRequestIdentity(t *testing.T) {
+	client := &compactLifecycleClient{}
+	agent := NewAgent(client, "compact-model", "system", Registry{})
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "source"}},
+	}})
+	if _, err := agent.Compact(context.Background(), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if client.req.Context.CacheSessionID == "" || client.req.Context.ThreadID == "" || client.req.Context.TurnID == "" {
+		t.Fatalf("compaction request context = %#v, want all identities", client.req.Context)
+	}
+	if err := agent.BindRequestIdentity("other-cache", "other-thread"); err == nil {
+		t.Fatal("BindRequestIdentity succeeded after compaction provider request")
+	}
+}
+
 func TestCompactWithEventsAccumulatesAndPersistsUsage(t *testing.T) {
 	client := &compactLifecycleClient{usage: []provider.Usage{{InputTokens: 2}, {OutputTokens: 3, CostUSD: 0.25}}}
 	agent := NewAgent(client, "compact-model", "system", Registry{})

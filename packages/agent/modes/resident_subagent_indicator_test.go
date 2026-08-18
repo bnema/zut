@@ -31,7 +31,7 @@ func TestRenderResidentSubagentActivityLinesShowsUsageMetadata(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	lines := renderResidentSubagentActivityLines(tui.Dark, "/", []subagents.ResidentSnapshot{{
 		ID: "running-id", Profile: "reviewer", State: subagents.ResidentRunning,
-		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CostUSD: 0.525},
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525},
 		ContextUsed: 45_152, ContextMax: 272_000, Subscription: true,
 	}}, 100, now)
 	got := strings.Join(plainResidentIndicatorLines(lines), "\n")

@@ -69,6 +69,20 @@ func TestRunJSONFailureEmitsOneErrorObject(t *testing.T) {
 	}
 }
 
+func TestEventToJSONCacheDiagnosticsAreSanitized(t *testing.T) {
+	event := EventToJSON(core.EvCacheDiagnostics{
+		Eligible: true, Mode: "implicit", Transport: "websocket", Continuation: "incremental",
+	})
+	if event["type"] != "cache_diagnostics" || event["eligible"] != true || event["mode"] != "implicit" || event["transport"] != "websocket" || event["continuation"] != "incremental" {
+		t.Fatalf("cache diagnostics event = %#v", event)
+	}
+	for _, forbidden := range []string{"prompt", "session_id", "thread_id", "request_body", "credential"} {
+		if _, ok := event[forbidden]; ok {
+			t.Fatalf("cache diagnostics leaked %q: %#v", forbidden, event)
+		}
+	}
+}
+
 func TestEventToJSONActivityLifecycle(t *testing.T) {
 	request := EventToJSON(core.EvRequestStarted{
 		Provider:    "anthropic",

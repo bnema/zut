@@ -333,8 +333,9 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	reasoning := ClampReasoningForModel(model, req.Reasoning)
 	adaptive := usesAdaptiveThinking(model)
 
-	if system := req.SystemPrompt(); system != "" {
-		sysBlock := map[string]interface{}{"text": system}
+	stableSystem, dynamicSystem, messages := systemWithDeveloperContext(req)
+	if stableSystem != "" {
+		sysBlock := map[string]interface{}{"text": stableSystem}
 		if caching {
 			// Append cachePoint after the system text so the stable system
 			// prompt is cached as the first breakpoint.
@@ -342,6 +343,9 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 		} else {
 			out.System = []map[string]interface{}{sysBlock}
 		}
+	}
+	if dynamicSystem != "" {
+		out.System = append(out.System, map[string]interface{}{"text": dynamicSystem})
 	}
 	if !adaptive {
 		out.InferenceConfig.Temperature = req.Temperature
@@ -356,7 +360,7 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	if out.InferenceConfig.MaxTokens == 0 {
 		out.InferenceConfig.MaxTokens = 4096
 	}
-	for _, m := range normalizeBedrockToolResults(req.Messages) {
+	for _, m := range normalizeBedrockToolResults(messages) {
 		role := string(m.Role)
 		if role == "tool" {
 			role = "user"

@@ -51,8 +51,11 @@ type codexClient struct {
 // responsesCapabilities records extensions verified for the exact provider
 // client, rather than assuming every Responses-shaped endpoint accepts them.
 type responsesCapabilities struct {
-	StablePromptCacheKey bool
-	SessionHeader        bool
+	StablePromptCacheKey          bool
+	ExplicitPromptCacheBreakpoint bool
+	SessionHeader                 bool
+	ThreadHeader                  bool
+	ClientRequestHeader           bool
 }
 
 // NewOpenAICodex creates a client that talks to ChatGPT's Codex endpoint
@@ -78,6 +81,8 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 		capabilities: responsesCapabilities{
 			StablePromptCacheKey: true,
 			SessionHeader:        true,
+			ThreadHeader:         true,
+			ClientRequestHeader:  true,
 		},
 		http: &http.Client{Timeout: 0},
 	}
@@ -88,8 +93,9 @@ func (c *codexClient) Name() string { return "openai-codex" }
 // ---- Responses API wire types (subset needed for zut's surface) ----
 
 type codexInputText struct {
-	Type string `json:"type"` // "input_text"
-	Text string `json:"text"`
+	Type                  string                      `json:"type"` // "input_text"
+	Text                  string                      `json:"text"`
+	PromptCacheBreakpoint *codexPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type codexInputImage struct {
@@ -102,6 +108,14 @@ type codexOutputText struct {
 	Type        string `json:"type"` // "output_text"
 	Text        string `json:"text"`
 	Annotations []any  `json:"annotations"`
+}
+
+type codexPromptCacheOptions struct {
+	Mode string `json:"mode"`
+}
+
+type codexPromptCacheBreakpoint struct {
+	Mode string `json:"mode"`
 }
 
 type codexInputMessage struct {
@@ -162,19 +176,20 @@ type codexReasoningConfig struct {
 }
 
 type codexRequest struct {
-	Model              string                `json:"model"`
-	Store              bool                  `json:"store"`
-	Stream             bool                  `json:"stream,omitempty"`
-	Instructions       string                `json:"instructions,omitempty"`
-	Input              []any                 `json:"input"`
-	Tools              []codexTool           `json:"tools,omitempty"`
-	ToolChoice         string                `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool                  `json:"parallel_tool_calls"`
-	Include            []string              `json:"include,omitempty"`
-	Reasoning          *codexReasoningConfig `json:"reasoning,omitempty"`
-	PromptCacheKey     string                `json:"prompt_cache_key,omitempty"`
-	ServiceTier        string                `json:"service_tier,omitempty"`
-	PreviousResponseID string                `json:"previous_response_id,omitempty"`
+	Model              string                   `json:"model"`
+	Store              bool                     `json:"store"`
+	Stream             bool                     `json:"stream,omitempty"`
+	Instructions       string                   `json:"instructions,omitempty"`
+	Input              []any                    `json:"input"`
+	Tools              []codexTool              `json:"tools,omitempty"`
+	ToolChoice         string                   `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                     `json:"parallel_tool_calls"`
+	Include            []string                 `json:"include,omitempty"`
+	Reasoning          *codexReasoningConfig    `json:"reasoning,omitempty"`
+	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *codexPromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	ServiceTier        string                   `json:"service_tier,omitempty"`
+	PreviousResponseID string                   `json:"previous_response_id,omitempty"`
 }
 
 // ---- Request building ----
@@ -189,6 +204,10 @@ func (c *codexClient) findModel(id string) (Model, error) {
 		return m, nil
 	}
 	return FindModel("openai", id)
+}
+
+func isGPT56Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.6-")
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
@@ -215,6 +234,19 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 	if req.FastMode {
 		body.ServiceTier = fastModeServiceTier
+	}
+	if c.capabilities.ExplicitPromptCacheBreakpoint && isGPT56Model(req.Model) {
+		// Keep implicit mode so OpenAI can retain later conversation
+		// checkpoints as well as this stable instruction/tool boundary.
+		body.PromptCacheOptions = &codexPromptCacheOptions{Mode: "implicit"}
+		body.Input = append(body.Input, codexInputMessage{
+			Role: "developer",
+			Content: []any{codexInputText{
+				Type:                  "input_text",
+				Text:                  "[Stable prompt boundary]",
+				PromptCacheBreakpoint: &codexPromptCacheBreakpoint{Mode: "explicit"},
+			}},
+		})
 	}
 	if m.Reasoning {
 		effort := OpenAICodexReasoningEffort(reasoning, req.Model)
@@ -246,7 +278,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		switch msg.Role {
-		case RoleUser:
+		case RoleDeveloper, RoleUser:
 			content := []any{}
 			for _, c := range msg.Content {
 				switch v := c.(type) {
@@ -262,7 +294,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			if len(content) == 0 {
 				continue
 			}
-			body.Input = append(body.Input, codexInputMessage{Role: "user", Content: content})
+			role := "user"
+			if msg.Role == RoleDeveloper {
+				role = "developer"
+			}
+			body.Input = append(body.Input, codexInputMessage{Role: role, Content: content})
 		case RoleAssistant:
 			// Emit one output_message per text block, one function_call per
 			// tool call, and one reasoning item per ReasoningBlock,
@@ -363,6 +399,29 @@ func splitCallID(id string) (string, string) {
 	return id, ""
 }
 
+const minOpenAIPromptCacheTokens = 1024
+
+func responsesCacheDiagnostics(wire *codexRequest, transport, continuation string) CacheDiagnostics {
+	diagnostics := CacheDiagnostics{Mode: "none", Transport: transport, Continuation: continuation}
+	if wire == nil || wire.PromptCacheOptions == nil {
+		return diagnostics
+	}
+	diagnostics.Mode = wire.PromptCacheOptions.Mode
+	diagnostics.Eligible = estimatedOpenAIPromptTokens(wire) >= minOpenAIPromptCacheTokens
+	return diagnostics
+}
+
+// estimatedOpenAIPromptTokens supplies a deliberately conservative local
+// eligibility signal. OpenAI makes the final tokenization and cache decision;
+// this estimate never leaves the process and is not persisted in diagnostics.
+func estimatedOpenAIPromptTokens(wire *codexRequest) int {
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		return 0
+	}
+	return len(encoded) / 4
+}
+
 func usesCodexCLIRouting(model string) bool {
 	switch model {
 	case "gpt-5.6-luna", "gpt-5.6-luna-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro":
@@ -379,13 +438,15 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 	if err != nil {
 		return nil, err
 	}
+	ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "http_sse", "full"))
 	if c.modelName != nil {
 		wire.Model = c.modelName(wire.Model)
 	}
 	useCodexCLIRouting := !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model))
-	logicalSessionID := strings.TrimSpace(req.Context.SessionID)
-	if c.capabilities.StablePromptCacheKey && logicalSessionID != "" {
-		wire.PromptCacheKey = logicalSessionID
+	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
+	threadID := strings.TrimSpace(req.Context.ThreadID)
+	if c.capabilities.StablePromptCacheKey && cacheSessionID != "" {
+		wire.PromptCacheKey = cacheSessionID
 	}
 	body, err := json.Marshal(wire)
 	if err != nil {
@@ -408,8 +469,14 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			// identities are load-shed with "servers are currently
 			// overloaded" errors even when capacity is fine.
 			httpReq.Header.Set("originator", "codex_cli_rs")
-			if c.capabilities.SessionHeader && logicalSessionID != "" {
-				httpReq.Header.Set("session-id", logicalSessionID)
+			if c.capabilities.SessionHeader && cacheSessionID != "" {
+				httpReq.Header.Set("session-id", cacheSessionID)
+			}
+			if c.capabilities.ThreadHeader && threadID != "" {
+				httpReq.Header.Set("thread-id", threadID)
+			}
+			if c.capabilities.ClientRequestHeader && threadID != "" {
+				httpReq.Header.Set("x-client-request-id", threadID)
 			}
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 		} else {
@@ -450,10 +517,14 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 // event vocabulary, so keeping the state machine here prevents the transports
 // from drifting in tool-call, reasoning, and usage handling.
 func (c *codexClient) runResponseEvents(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, completed func(string)) {
-	c.runResponseEventsWithFirst(ctx, req, out, raw, nil, completed)
+	var observe func(string, Message)
+	if completed != nil {
+		observe = func(responseID string, _ Message) { completed(responseID) }
+	}
+	c.runResponseEventsWithFirst(ctx, req, out, raw, nil, observe)
 }
 
-func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, first *sseEvent, completed func(string)) {
+func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Request, out chan<- Event, raw <-chan sseEvent, first *sseEvent, completed func(string, Message)) {
 	model, _ := c.findModel(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
@@ -659,11 +730,9 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				Response struct {
 					ID    string `json:"id"`
 					Usage struct {
-						InputTokens        int `json:"input_tokens"`
-						OutputTokens       int `json:"output_tokens"`
-						InputTokensDetails struct {
-							CachedTokens int `json:"cached_tokens"`
-						} `json:"input_tokens_details"`
+						InputTokens         int                       `json:"input_tokens"`
+						OutputTokens        int                       `json:"output_tokens"`
+						InputTokensDetails  *openAIInputTokensDetails `json:"input_tokens_details"`
 						OutputTokensDetails *struct {
 							ReasoningTokens int `json:"reasoning_tokens"`
 						} `json:"output_tokens_details"`
@@ -672,12 +741,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				} `json:"response"`
 			}
 			_ = json.Unmarshal([]byte(ev.Data), &p)
-			usage.InputTokens = p.Response.Usage.InputTokens - p.Response.Usage.InputTokensDetails.CachedTokens
-			if usage.InputTokens < 0 {
-				usage.InputTokens = p.Response.Usage.InputTokens
-			}
-			usage.OutputTokens = p.Response.Usage.OutputTokens
-			usage.CacheReadTokens = p.Response.Usage.InputTokensDetails.CachedTokens
+			usage = normalizeOpenAIUsage(p.Response.Usage.InputTokens, p.Response.Usage.OutputTokens, p.Response.Usage.InputTokensDetails)
 			if details := p.Response.Usage.OutputTokensDetails; details != nil {
 				usage.ReasoningTokens = details.ReasoningTokens
 				usage.ReasoningTokensKnown = true
@@ -696,7 +760,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				stop = StopEnd
 			}
 			if completed != nil && p.Response.ID != "" {
-				completed(p.Response.ID)
+				completed(p.Response.ID, assemble())
 			}
 			sendDone()
 			return

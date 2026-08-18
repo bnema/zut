@@ -123,7 +123,7 @@ Response data:
   "cwd": "/path/to/zut",
   "message_count": 12,
   "busy": false,
-  "usage": {"input": 1234, "output": 567, "reasoning": 123, "cache_read": 890, "cache_write": 0, "cost_usd": 0.0123}
+  "usage": {"input": 1234, "output": 567, "reasoning": 123, "cache_read": 890, "cache_write": 0, "cache_measured_prompt": 1234, "cache_measured_read": 890, "cost_usd": 0.0123}
 }
 ```
 
@@ -193,6 +193,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 |---|---|---|
 | `turn_start` | `step` | Beginning of one model call (max-steps loop iteration) |
 | `request_started` | `provider`, `model`, `scope`, `attempt`, `max_attempts` | A provider (`scope=provider`) or agent (`scope=agent`) request attempt started |
+| `cache_diagnostics` | `eligible`, `mode`, `transport`, `continuation` | Sanitized cache-routing state. `eligible` is a conservative local prompt-length estimate; it never includes prompts, IDs, request bodies, or credentials |
 | `retry_scheduled` | `scope`, `attempt`, `max_attempts`, `delay_ms` | The upcoming attempt is delayed; `delay_ms` is a non-negative integer |
 | `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
 | `assistant_start` | (none) | Provider connection opened; waiting for assistant streaming |
@@ -205,7 +206,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
-| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. `reasoning` is null when unavailable. |
+| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. |
 | `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end_turn`, `tool_use`, `length`, `error`, or `aborted` |
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |

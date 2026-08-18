@@ -367,6 +367,8 @@ func SessionUsageDetail(path string) (cumulative, lastTurn provider.Usage, err e
 	lastTurn.ReasoningTokensKnown = last.ReasoningTokensKnown
 	lastTurn.CacheReadTokens = nonNegDelta(last.CacheReadTokens, prev.CacheReadTokens)
 	lastTurn.CacheWriteTokens = nonNegDelta(last.CacheWriteTokens, prev.CacheWriteTokens)
+	lastTurn.CacheMeasuredPromptTokens = nonNegDelta(last.CacheMeasuredPromptTokens, prev.CacheMeasuredPromptTokens)
+	lastTurn.CacheMeasuredReadTokens = nonNegDelta(last.CacheMeasuredReadTokens, prev.CacheMeasuredReadTokens)
 	lastTurn.CostUSD = last.CostUSD - prev.CostUSD
 	if lastTurn.CostUSD < 0 {
 		lastTurn.CostUSD = 0
@@ -1810,7 +1812,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	if err := json.Unmarshal(rawMessage, &row); err != nil {
 		return provider.Message{}, err
 	}
-	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool {
+	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool && row.Role != provider.RoleDeveloper {
 		return provider.Message{}, fmt.Errorf("message has invalid role %q", row.Role)
 	}
 	if len(row.Content) == 0 {

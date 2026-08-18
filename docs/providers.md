@@ -150,22 +150,38 @@ profile sets `fastMode` explicitly.
 
 ## Session identity and caching
 
-zut supplies every provider request with a stable logical session ID and a
-per-prompt turn ID. They are opaque local correlations; adapters translate them
-only when their exact provider, model, and endpoint declaration supports it.
-For example, the OpenAI/Codex Responses route uses the stable session as its
-`prompt_cache_key` and, where required by the declared Codex route, its
-`session-id` header. A generic OpenAI-compatible endpoint never receives those
-extensions merely because it accepts an OpenAI-shaped request.
+zut supplies every provider request with a root cache identity, a
+conversation-thread identity, and a per-prompt turn ID. They are opaque local
+correlations; adapters translate them only when their exact provider, model,
+and endpoint declaration supports it. Resident children share the root cache
+identity but retain distinct thread identities. The OpenAI/Codex Responses
+route uses the root identity as `prompt_cache_key`; declared Codex routes also
+receive their documented session and thread routing headers. A generic
+OpenAI-compatible endpoint never receives these extensions merely because it
+accepts an OpenAI-shaped request. JSON event mode also reports sanitized cache
+diagnostics (`eligible`, `mode`, `transport`, and `continuation`). `eligible`
+is a conservative local prompt-length estimate; OpenAI performs the authoritative
+tokenization and cache decision. These records never include prompts, durable
+IDs, request bodies, or credentials.
+
+When a provider reports cache detail, zut displays cache-read hit rate as
+`cache reads / cache-reporting prompt input`. A shown `0%` is a confirmed
+cache miss; no percentage means the provider or historical session did not
+report cache detail. Cache writes remain separate from that hit rate. Provider
+retention and eviction, request routing, and OpenAI's 1,024-token eligibility
+minimum can still produce a miss even when the stable prefix is unchanged.
 
 ### OpenAI Responses WebSocket mode
 
 For the exact public endpoint `https://api.openai.com/v1/responses`, zut uses
 the Responses API WebSocket mode for the OpenAI Responses route. It keeps one
-connection per logical session, sends one `response.create` at a time, and
-continues the most recent completed response with `previous_response_id` plus
-only new tool or user input. The request uses `store:false`; its only
-provider-specific handshake header is `Authorization: Bearer ...`, never the
+connection per conversation thread, sends one `response.create` at a time,
+and continues the most recent completed response with `previous_response_id`
+only when the complete response-context configuration and prior input prefix
+match exactly, including the completed assistant output that precedes a new
+suffix. Compatible continuations send only new tool or user input.
+The request uses `store:false`; its only provider-specific handshake header is
+`Authorization: Bearer ...`, never the
 ChatGPT/Codex account, routing, or session headers.
 
 The capability is deliberately not inherited by `--base-url`, compatible

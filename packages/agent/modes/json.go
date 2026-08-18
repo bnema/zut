@@ -82,6 +82,11 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvAssistantMessage:
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
+	case core.EvCacheDiagnostics:
+		m["eligible"] = e.Eligible
+		m["mode"] = e.Mode
+		m["transport"] = e.Transport
+		m["continuation"] = e.Continuation
 	case core.EvTextDelta:
 		m["delta"] = e.Delta
 	case core.EvToolUseStart:
@@ -114,14 +119,18 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["reasoning"] = nullableReasoningTokens(e.Usage)
 		m["cache_read"] = e.Usage.CacheReadTokens
 		m["cache_write"] = e.Usage.CacheWriteTokens
+		m["cache_measured_prompt"] = e.Usage.CacheMeasuredPromptTokens
+		m["cache_measured_read"] = e.Usage.CacheMeasuredReadTokens
 		m["cost_usd"] = e.Usage.CostUSD
 		m["cumulative"] = map[string]any{
-			"input":       e.Cumulative.InputTokens,
-			"output":      e.Cumulative.OutputTokens,
-			"reasoning":   nullableReasoningTokens(e.Cumulative),
-			"cache_read":  e.Cumulative.CacheReadTokens,
-			"cache_write": e.Cumulative.CacheWriteTokens,
-			"cost_usd":    e.Cumulative.CostUSD,
+			"input":                 e.Cumulative.InputTokens,
+			"output":                e.Cumulative.OutputTokens,
+			"reasoning":             nullableReasoningTokens(e.Cumulative),
+			"cache_read":            e.Cumulative.CacheReadTokens,
+			"cache_write":           e.Cumulative.CacheWriteTokens,
+			"cache_measured_prompt": e.Cumulative.CacheMeasuredPromptTokens,
+			"cache_measured_read":   e.Cumulative.CacheMeasuredReadTokens,
+			"cost_usd":              e.Cumulative.CostUSD,
 		}
 	case core.EvTurnEnd:
 		m["stop"] = string(e.Stop)

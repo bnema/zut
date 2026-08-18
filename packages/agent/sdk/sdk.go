@@ -199,12 +199,14 @@ func (r *Runtime) Cost() Usage {
 	}
 	u := r.agent.Cost()
 	return Usage{
-		Input:      u.InputTokens,
-		Output:     u.OutputTokens,
-		Reasoning:  sdkReasoningTokens(u),
-		CacheRead:  u.CacheReadTokens,
-		CacheWrite: u.CacheWriteTokens,
-		CostUSD:    u.CostUSD,
+		Input:               u.InputTokens,
+		Output:              u.OutputTokens,
+		Reasoning:           sdkReasoningTokens(u),
+		CacheRead:           u.CacheReadTokens,
+		CacheWrite:          u.CacheWriteTokens,
+		CacheMeasuredPrompt: u.CacheMeasuredPromptTokens,
+		CacheMeasuredRead:   u.CacheMeasuredReadTokens,
+		CostUSD:             u.CostUSD,
 	}
 }
 

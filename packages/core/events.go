@@ -86,6 +86,17 @@ type EvRequestStarted struct {
 
 func (EvRequestStarted) Type() string { return "request_started" }
 
+// EvCacheDiagnostics reports sanitized provider cache-routing state. It never
+// includes prompt text, durable IDs, request bodies, or credentials.
+type EvCacheDiagnostics struct {
+	Eligible     bool
+	Mode         string
+	Transport    string
+	Continuation string
+}
+
+func (EvCacheDiagnostics) Type() string { return "cache_diagnostics" }
+
 // EvRetryScheduled reports a retry delay before its upcoming attempt.
 type EvRetryScheduled struct {
 	Scope       RetryScope

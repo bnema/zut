@@ -47,8 +47,17 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		baseline := journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
 		agent.SeedCost(baseline.Usage)
 	}
-	if err := agent.BindSessionID(spec.SessionID); err != nil {
-		return nil, fmt.Errorf("bind resident child %q session: %w", spec.ID, err)
+	rootCacheID := strings.TrimSpace(spec.RootCacheID)
+	if rootCacheID == "" {
+		// Journals written before root cache identity was persisted can still
+		// resume safely: their immediate parent was the only available root.
+		rootCacheID = strings.TrimSpace(spec.ParentSessionID)
+		if rootCacheID == "" {
+			rootCacheID = spec.SessionID
+		}
+	}
+	if err := agent.BindRequestIdentity(rootCacheID, spec.SessionID); err != nil {
+		return nil, fmt.Errorf("bind resident child %q request identity: %w", spec.ID, err)
 	}
 	if journal != nil {
 		messages, err := subagents.ReadResidentTranscriptMessages(journal.Dir())

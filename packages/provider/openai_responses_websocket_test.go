@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -80,10 +82,10 @@ func TestResponsesWebSocketReconnectsMissingPreviousResponseWithFullContext(t *t
 		token: "test-token", baseURL: server.URL + "/v1/responses", providerName: "openai",
 		capabilities: responsesCapabilities{StablePromptCacheKey: true}, http: &http.Client{},
 	})
-	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
+	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
 	assertCompletedResponse(t, client, first)
 	lifecycle := &recordingRequestLifecycle{}
-	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Lifecycle: lifecycle, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
+	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Lifecycle: lifecycle, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
 	assertCompletedResponseText(t, client, second, "reconnected")
 	mu.Lock()
 	defer mu.Unlock()
@@ -163,14 +165,15 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	first := Request{
 		Model:     "gpt-5.6-sol",
 		FastMode:  true,
-		Context:   RequestContext{SessionID: "session-1", TurnID: "turn-1"},
+		Context:   RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
 		Lifecycle: lifecycle,
 		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
 	}
 	assertCompletedResponse(t, client, first)
 	second := Request{
-		Model:   "gpt-5.6-sol",
-		Context: RequestContext{SessionID: "session-1", TurnID: "turn-2"},
+		Model:    "gpt-5.6-sol",
+		FastMode: true,
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
 		Messages: append(append([]Message(nil), first.Messages...),
 			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}},
 			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
@@ -195,7 +198,7 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	if _, ok := requests[0]["stream"]; ok {
 		t.Fatalf("WebSocket payload unexpectedly carries stream: %#v", requests[0])
 	}
-	if got := requests[0]["prompt_cache_key"]; got != "session-1" {
+	if got := requests[0]["prompt_cache_key"]; got != "cache-root-1" {
 		t.Fatalf("prompt_cache_key = %#v", got)
 	}
 	if got := requests[0]["service_tier"]; got != fastModeServiceTier {
@@ -222,6 +225,73 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketWireBaselineChangeForcesFullRequest(t *testing.T) {
+	mappedModel := "gpt-5.6-sol-a"
+	client := newResponsesWebSocketClient(&codexClient{
+		providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true},
+		modelName:    func(string) string { return mappedModel },
+	}).(*responsesWebSocketClient)
+	first := Request{
+		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
+	}
+	baseline, err := client.canonicalResponsesBaseline(first, first.Context.CacheSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &responsesWebSocketSession{}
+	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, "resp_1")
+
+	mappedModel = "gpt-5.6-sol-b"
+	second := Request{
+		Model:   first.Model,
+		Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
+		Messages: append(append([]Message(nil), first.Messages...),
+			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}},
+			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
+		),
+	}
+	streamReq, previousResponseID := session.incrementalRequest(second, second.Context.CacheSessionID, client.canonicalResponsesBaseline)
+	if previousResponseID != "" {
+		t.Fatalf("previous response ID = %q, want full request after wire baseline change", previousResponseID)
+	}
+	if !reflect.DeepEqual(streamReq.Messages, second.Messages) {
+		t.Fatalf("stream messages = %#v, want complete transcript %#v", streamReq.Messages, second.Messages)
+	}
+}
+
+func TestResponsesWebSocketAssistantMismatchForcesCompleteTranscript(t *testing.T) {
+	client := newResponsesWebSocketClient(&codexClient{
+		providerName: "openai", capabilities: responsesCapabilities{StablePromptCacheKey: true},
+	}).(*responsesWebSocketClient)
+	first := Request{
+		Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
+	}
+	baseline, err := client.canonicalResponsesBaseline(first, first.Context.CacheSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &responsesWebSocketSession{}
+	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "actual"}}}, "resp_1")
+	second := Request{
+		Model: first.Model, Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
+		Messages: append(append([]Message(nil), first.Messages...),
+			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "modified"}}},
+			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
+		),
+	}
+	streamReq, previousResponseID := session.incrementalRequest(second, second.Context.CacheSessionID, client.canonicalResponsesBaseline)
+	if previousResponseID != "" {
+		t.Fatalf("previous response ID = %q, want complete request", previousResponseID)
+	}
+	if !reflect.DeepEqual(streamReq.Messages, second.Messages) {
+		t.Fatalf("stream messages = %#v, want complete transcript %#v", streamReq.Messages, second.Messages)
+	}
+}
+
 func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) {
 	closed := make(chan struct{})
 	var closeOnce sync.Once
@@ -242,7 +312,7 @@ func TestResponsesWebSocketCancellationClosesOnlyActiveConnection(t *testing.T) 
 		capabilities: responsesCapabilities{StablePromptCacheKey: true},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := client.Stream(ctx, Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}})
+	stream, err := client.Stream(ctx, Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,9 +360,9 @@ func TestResponsesWebSocketIgnoresStaleTerminalFrameBeforeNextResponse(t *testin
 		token: "test-token", baseURL: server.URL + "/v1/responses", providerName: "openai",
 		capabilities: responsesCapabilities{StablePromptCacheKey: true}, http: &http.Client{},
 	})
-	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
+	first := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}}}
 	assertCompletedResponseText(t, client, first, "first")
-	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "session-1"}, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "first"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
+	second := Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1"}, Messages: append(append([]Message(nil), first.Messages...), Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "first"}}}, Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}})}
 	assertCompletedResponseText(t, client, second, "second")
 }
 
@@ -306,6 +376,47 @@ func TestResponsesWebSocketCloseReleasesSessionSockets(t *testing.T) {
 	defer client.mu.Unlock()
 	if len(client.sessions) != 0 {
 		t.Fatalf("sessions retained after close: %d", len(client.sessions))
+	}
+}
+
+type cacheDiagnosticsLifecycle struct {
+	diagnostics []CacheDiagnostics
+}
+
+func (l *cacheDiagnosticsLifecycle) RequestAttempt(int, int)                {}
+func (l *cacheDiagnosticsLifecycle) RetryScheduled(int, int, time.Duration) {}
+
+func (l *cacheDiagnosticsLifecycle) CacheDiagnostics(diagnostics CacheDiagnostics) {
+	l.diagnostics = append(l.diagnostics, diagnostics)
+}
+
+func TestResponsesWebSocketUsesHTTPDiagnosticsForIncompatibleTransport(t *testing.T) {
+	lifecycle := &cacheDiagnosticsLifecycle{}
+	client := newResponsesWebSocketClient(&codexClient{
+		token: "test-token", baseURL: "https://example.test/v1/responses", providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true},
+		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"status":"completed","usage":{}}}
+
+`)),
+			}, nil
+		})},
+	})
+	req := Request{
+		Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root", ThreadID: "thread"}, Lifecycle: lifecycle,
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "request"}}}},
+	}
+	stream, err := client.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if len(lifecycle.diagnostics) != 1 || lifecycle.diagnostics[0].Transport != "http_sse" {
+		t.Fatalf("diagnostics = %#v, want only HTTP/SSE diagnostics", lifecycle.diagnostics)
 	}
 }
 

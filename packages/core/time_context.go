@@ -65,16 +65,27 @@ func (a *Agent) SetSessionTimeContext(started time.Time, timezone, offset string
 		zone:     timezone,
 		offset:   offset,
 	}
+	a.hasSessionTimeContext = true
 	a.mu.Unlock()
 }
 
 func (a *Agent) providerTimeContext() agentTimeContext {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if !a.hasSessionTimeContext {
+		return agentTimeContext{}
+	}
 	return a.timeContext
 }
 
 func (c agentTimeContext) systemText() string {
+	return c.developerText()
+}
+
+// developerText returns host context projected after stable instructions.
+// Minute precision is sufficient for coordination and avoids generating a
+// unique timestamp solely to distinguish otherwise-equal agents.
+func (c agentTimeContext) developerText() string {
 	if c.started.IsZero() {
 		return ""
 	}
@@ -91,7 +102,7 @@ func (c agentTimeContext) systemText() string {
 		_, seconds := c.started.In(location).Zone()
 		offset = formatUTCOffset(seconds)
 	}
-	return fmt.Sprintf("[Session time context]\nsession_started: %s\nlocal_timezone: %s (UTC%s)", c.started.In(location).Format(time.RFC3339), zone, offset)
+	return fmt.Sprintf("[Session time context]\nsession_started: %s\nlocal_timezone: %s (UTC%s)", c.started.In(location).Format("2006-01-02 15:04"), zone, offset)
 }
 
 func formatUTCOffset(seconds int) string {

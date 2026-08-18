@@ -25,6 +25,7 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	spec := ResidentChildSpec{
 		ID:              "child-1",
 		SessionID:       "child-session-1",
+		RootCacheID:     "root-cache-1",
 		ParentSessionID: "parent-session-1",
 		Provider:        "openai-codex",
 		Model:           "gpt-5.6-terra",
@@ -42,7 +43,7 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	if len(records) != 1 || records[0].Type != residentRecordAccepted {
 		t.Fatalf("records = %#v, want one accepted record", records)
 	}
-	if records[0].Spec == nil || records[0].Spec.SessionID != spec.SessionID || records[0].Prompt != "review this change" {
+	if records[0].Spec == nil || records[0].Spec.SessionID != spec.SessionID || records[0].Spec.RootCacheID != spec.RootCacheID || records[0].Prompt != "review this change" {
 		t.Fatalf("accepted record = %#v", records[0])
 	}
 
@@ -50,7 +51,7 @@ func TestResidentJournalAcceptCommitsAuthorityBeforeMetadataProjection(t *testin
 	if err != nil {
 		t.Fatalf("ReadResidentMetadata: %v", err)
 	}
-	if meta.State != ResidentQueued || meta.SessionID != spec.SessionID {
+	if meta.State != ResidentQueued || meta.SessionID != spec.SessionID || meta.RootCacheID != spec.RootCacheID {
 		t.Fatalf("metadata = %#v", meta)
 	}
 	info, err := os.Stat(filepath.Join(root, "child-1", residentTranscriptName))
@@ -89,6 +90,28 @@ func TestResidentJournalReconcilesUsageMetadata(t *testing.T) {
 	}
 	if metadata.Usage != turn || metadata.ContextUsed != 207_000 || metadata.ContextMax != 272_000 || !metadata.Subscription {
 		t.Fatalf("metadata = %#v, want durable usage projection", metadata)
+	}
+}
+
+func TestReconcileResidentJournalRetainsRootCacheID(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "cache-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "cache-child", SessionID: "child-session", RootCacheID: "root-cache", Provider: "openai", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.RootCacheID != spec.RootCacheID {
+		t.Fatalf("RootCacheID = %q, want %q", metadata.RootCacheID, spec.RootCacheID)
 	}
 }
 

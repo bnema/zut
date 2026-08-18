@@ -13,6 +13,23 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestResponsesCacheDiagnosticsRequireEstimatedThreshold(t *testing.T) {
+	newWire := func(text string) *codexRequest {
+		return &codexRequest{
+			PromptCacheOptions: &codexPromptCacheOptions{Mode: "implicit"},
+			Input: []any{codexInputMessage{Role: "user", Content: []any{
+				codexInputText{Type: "input_text", Text: text},
+			}}},
+		}
+	}
+	if diagnostics := responsesCacheDiagnostics(newWire(strings.Repeat("a", 64)), "http_sse", "full"); diagnostics.Eligible {
+		t.Fatalf("short request diagnostics = %#v, want ineligible", diagnostics)
+	}
+	if diagnostics := responsesCacheDiagnostics(newWire(strings.Repeat("a", 5_000)), "http_sse", "full"); !diagnostics.Eligible {
+		t.Fatalf("long request diagnostics = %#v, want eligible", diagnostics)
+	}
+}
+
 // An image-only tool result must not serialize to an empty
 // function_call_output (the Responses API may reject it) and a
 // following user-message image must serialize as input_image so the
@@ -92,7 +109,7 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-terra",
-		Context:  RequestContext{SessionID: "logical-session-1", TurnID: "turn-1"},
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -110,11 +127,11 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotBody.PromptCacheKey != "logical-session-1" {
-		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
+	if gotBody.PromptCacheKey != "cache-root-1" {
+		t.Fatalf("prompt_cache_key = %q, want root cache ID", gotBody.PromptCacheKey)
 	}
-	if gotReq.Header.Get("session-id") != "logical-session-1" {
-		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
+	if gotReq.Header.Get("session-id") != "cache-root-1" || gotReq.Header.Get("thread-id") != "thread-1" || gotReq.Header.Get("x-client-request-id") != "thread-1" {
+		t.Fatalf("routing headers = session=%q thread=%q request=%q", gotReq.Header.Get("session-id"), gotReq.Header.Get("thread-id"), gotReq.Header.Get("x-client-request-id"))
 	}
 }
 
@@ -187,7 +204,7 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 
 	events, err := ws.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
-		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
+		Context:  RequestContext{CacheSessionID: "cache-root-2", ThreadID: "thread-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -202,8 +219,27 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	if gotReq.Header.Get("session-id") != "" {
 		t.Fatalf("session-id = %q", gotReq.Header.Get("session-id"))
 	}
-	if gotBody.PromptCacheKey != "logical-session-2" {
-		t.Fatalf("prompt_cache_key = %q, want logical session ID", gotBody.PromptCacheKey)
+	if gotBody.PromptCacheKey != "cache-root-2" {
+		t.Fatalf("prompt_cache_key = %q, want root cache ID", gotBody.PromptCacheKey)
+	}
+	if gotBody.PromptCacheOptions == nil || gotBody.PromptCacheOptions.Mode != "implicit" || len(gotBody.Input) < 2 {
+		t.Fatalf("explicit cache boundary = options=%+v input=%#v", gotBody.PromptCacheOptions, gotBody.Input)
+	}
+	boundary, ok := gotBody.Input[0].(map[string]any)
+	if !ok || boundary["role"] != "developer" {
+		t.Fatalf("stable cache boundary = %#v", gotBody.Input[0])
+	}
+	content, ok := boundary["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("stable cache boundary content = %#v", boundary)
+	}
+	text, ok := content[0].(map[string]any)
+	if !ok || text["type"] != "input_text" {
+		t.Fatalf("stable cache text block = %#v", content)
+	}
+	breakpoint, ok := text["prompt_cache_breakpoint"].(map[string]any)
+	if !ok || breakpoint["mode"] != "explicit" {
+		t.Fatalf("stable cache breakpoint = %#v", text)
 	}
 	if gotReq.Header.Get("originator") != "" || gotReq.Header.Get("user-agent") != "" || gotReq.Header.Get("chatgpt-account-id") != "" || gotReq.Header.Get("openai-beta") != "" {
 		t.Fatalf("public fallback leaked Codex headers: %v", gotReq.Header)
@@ -220,7 +256,7 @@ func TestCustomResponsesEndpointDoesNotInheritOpenAICacheExtensions(t *testing.T
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})
-	events, err := c.Stream(context.Background(), Request{Model: "gpt-5.6-sol", Context: RequestContext{SessionID: "logical-session", TurnID: "turn"}})
+	events, err := c.Stream(context.Background(), Request{Model: "gpt-5.6-sol", Context: RequestContext{CacheSessionID: "cache-root", ThreadID: "thread", TurnID: "turn"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +308,7 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 
 	events, err := c.Stream(context.Background(), Request{
 		Model:    "gpt-5.6-sol",
-		Context:  RequestContext{SessionID: "logical-session-2", TurnID: "turn-2"},
+		Context:  RequestContext{CacheSessionID: "cache-root-2", ThreadID: "thread-2", TurnID: "turn-2"},
 		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -290,8 +326,8 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
 		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if gotReq.Header.Get("session-id") != "logical-session-2" {
-		t.Fatalf("session-id = %q, want logical session ID", gotReq.Header.Get("session-id"))
+	if gotReq.Header.Get("session-id") != "cache-root-2" || gotReq.Header.Get("thread-id") != "thread-2" || gotReq.Header.Get("x-client-request-id") != "thread-2" {
+		t.Fatalf("routing headers = session=%q thread=%q request=%q", gotReq.Header.Get("session-id"), gotReq.Header.Get("thread-id"), gotReq.Header.Get("x-client-request-id"))
 	}
 	if !strings.Contains(body.String(), "prompt_cache_key") {
 		t.Fatalf("request missing prompt_cache_key: %s", body.String())
