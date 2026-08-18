@@ -582,6 +582,21 @@ func (m *ResidentManager) Get(childID string) *ResidentChild {
 	return m.children[childID]
 }
 
+// State reports a live child's current execution state. A child with an
+// accepted turn awaiting global scheduler admission is queued, even though its
+// control loop has started preparing that turn.
+func (m *ResidentManager) State(childID string) (ResidentState, bool) {
+	child := m.Get(childID)
+	if child == nil {
+		return "", false
+	}
+	state := child.State()
+	if state == ResidentRunning && m.scheduler.Pending(childID) {
+		return ResidentQueued, true
+	}
+	return state, true
+}
+
 // Live returns an immutable unfinished-turn snapshot for one live child. It
 // never holds the manager lock while copying the child projection.
 func (m *ResidentManager) Live(childID string) (ResidentLiveSnapshot, bool) {

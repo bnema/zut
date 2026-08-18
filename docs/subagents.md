@@ -102,15 +102,19 @@ The model-facing tools retain their logical names:
   `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
   `worktree`). `wait` is an explicit whole-second value from 1 through 300;
   when omitted, spawning returns immediately. A timed-out wait leaves the
-  child running. It returns a logical `subagent://<id>` reference.
-- `subagent_status` returns bounded state for one child or the current set.
+  accepted child active, whether it is queued or running. Do not retry that
+  task until it reaches a terminal failure, cancellation, or interruption. It
+  returns a logical `subagent://<id>` reference.
+- `subagent_status` returns bounded current state for one child or the current
+  set immediately.
 - `subagent_stop` stops one live child.
 - `subagent_resume` accepts an explicit follow-up prompt for an existing child.
 
-These calls are asynchronous unless `subagent_spawn` receives an explicit
-`wait` value. Otherwise completion arrives through the host’s typed completion
-update, not process polling. Do not use sleep loops, repeated status calls,
-journal files, or terminal UI inspection as a completion signal.
+Child execution started by `subagent_spawn` is asynchronous unless it receives
+an explicit `wait` value. For an unwaited spawn, completion arrives through the
+host’s typed completion update; `subagent_status` only returns the current
+state immediately. Do not use sleep loops, repeated status calls, journal
+files, or terminal UI inspection as a completion signal.
 Successful completions include the final visible assistant summary, capped at
 256 KiB; open the child session for the complete durable transcript.
 

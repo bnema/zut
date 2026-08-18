@@ -64,6 +64,22 @@ func (s *ResidentScheduler) Admit() (ResidentTicket, bool) {
 	return ResidentTicket{}, false
 }
 
+// Pending reports whether a child's accepted turn is waiting for scheduler
+// admission rather than running provider work.
+func (s *ResidentScheduler) Pending(childID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ticket := range s.pending {
+		if ticket.ChildID == childID {
+			return true
+		}
+	}
+	return false
+}
+
 // Cancel removes an admitted-waiting ticket. Once admitted, the caller owns
 // the active reservation and must Release it instead.
 func (s *ResidentScheduler) Cancel(sequence uint64) bool {

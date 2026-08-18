@@ -252,7 +252,15 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			if ctx.Err() != nil {
 				return core.ToolResult{}, ctx.Err()
 			}
-			waitTimedOut = true
+			select {
+			case result, ok := <-completionResult:
+				if !ok {
+					return core.ToolResult{}, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
+				}
+				completion = result
+			default:
+				waitTimedOut = true
+			}
 		}
 	} else if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
@@ -260,7 +268,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	state := "queued"
 	if a.Wait != nil {
 		if waitTimedOut {
-			state = "running"
+			if current, ok := t.ResidentManager.State(spec.ID); ok {
+				state = string(current)
+			}
 		} else if completion.Err != nil {
 			state = "failed"
 		} else {
@@ -282,7 +292,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	if a.Wait != nil {
 		if waitTimedOut {
 			fmt.Fprintf(&sb, "wait: timed out after %d seconds\n", *a.Wait)
-			sb.WriteString("\nThe sub-agent is still running in the background. Completion is host-event-driven through [auto-subagents update].")
+			sb.WriteString("\nThe accepted sub-agent remains active in the background. Completion is host-event-driven through [auto-subagents update].")
 		} else if completion.Err != nil {
 			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
 			if completion.Summary != "" {
