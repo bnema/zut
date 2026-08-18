@@ -93,6 +93,36 @@ func TestResidentJournalReconcilesUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestResidentJournalSkipsDuplicateUsageRecord(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "duplicate-usage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	spec := ResidentChildSpec{ID: "duplicate-usage", SessionID: "usage-session", Provider: "openai", Model: "gpt-test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	journal.ConfigureUsage(128_000, false)
+	usage := provider.Usage{InputTokens: 10_000, OutputTokens: 500}
+	event := core.EvUsage{Usage: usage, Cumulative: usage}
+	if err := journal.RecordAgentEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(event); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(records); got != 2 {
+		t.Fatalf("journal records = %d, want accepted record plus one usage record", got)
+	}
+}
+
 func TestReconcileResidentJournalRetainsRootCacheID(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "cache-child")
@@ -143,6 +173,78 @@ func TestResidentJournalProjectsUsageEmittedAfterInterruption(t *testing.T) {
 	}
 	if metadata.State != ResidentInterrupted || metadata.Usage != usage || metadata.ContextUsed != 207_000 {
 		t.Fatalf("metadata = %#v, want interrupted state with latest usage", metadata)
+	}
+}
+
+func TestResidentProjectionSkipsIdenticalRewrite(t *testing.T) {
+	dir := t.TempDir()
+	metadata := ResidentMetadata{
+		Version:   residentJournalVersion,
+		ID:        "projection-child",
+		SessionID: "projection-session",
+		State:     ResidentIdle,
+		UpdatedAt: time.Unix(1_700_000_000, 0).UTC(),
+	}
+	if err := writeResidentMetadata(dir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, residentMetadataName)
+	oldTime := time.Unix(1_600_000_000, 0)
+	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeResidentMetadata(dir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(oldTime) {
+		t.Fatalf("identical projection rewrite changed mtime to %v", info.ModTime())
+	}
+
+	metadata.State = ResidentStopped
+	if err := writeResidentMetadata(dir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().Equal(oldTime) {
+		t.Fatal("changed projection was not rewritten")
+	}
+}
+
+func TestResidentProjectionRepairsPermissionsForIdenticalData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	metadata := ResidentMetadata{Version: residentJournalVersion, ID: "projection-child", SessionID: "projection-session", State: ResidentIdle}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, residentMetadataName)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeResidentMetadata(dir, metadata); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("projection permissions = %o, want 600", got)
 	}
 }
 
