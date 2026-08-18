@@ -225,6 +225,77 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexUsesWebSocketWithSubscriptionHeaders(t *testing.T) {
+	headers := make(chan http.Header, 1)
+	requests := make(chan map[string]any, 1)
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		headers <- conn.Request().Header.Clone()
+		var payload map[string]any
+		if err := websocket.JSON.Receive(conn, &payload); err != nil {
+			t.Errorf("receive websocket request: %v", err)
+			return
+		}
+		requests <- payload
+		for _, event := range []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "resp_subscription"}},
+			{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}},
+			{"type": "response.output_text.delta", "output_index": 0, "delta": "ok"},
+			{"type": "response.completed", "response": map[string]any{"id": "resp_subscription", "usage": map[string]any{}}},
+		} {
+			_ = websocket.JSON.Send(conn, event)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodex("subscription-token", "account-1", server.URL)
+	websocketClient, ok := client.(*responsesWebSocketClient)
+	if !ok {
+		t.Fatalf("NewOpenAICodex returned %T, want WebSocket Responses client", client)
+	}
+	defer websocketClient.Close()
+
+	request := Request{
+		Model:    "gpt-5.6-luna",
+		Context:  RequestContext{CacheSessionID: "root-1", ThreadID: "thread-1", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hello"}}}},
+	}
+	assertCompletedResponse(t, client, request)
+
+	gotHeaders := <-headers
+	for name, want := range map[string]string{
+		"authorization":       "Bearer subscription-token",
+		"chatgpt-account-id":  "account-1",
+		"openai-beta":         "responses=experimental",
+		"originator":          "codex_cli_rs",
+		"user-agent":          "codex_cli_rs/0.0.0",
+		"session-id":          "root-1",
+		"thread-id":           "thread-1",
+		"x-client-request-id": "thread-1",
+	} {
+		if got := gotHeaders.Get(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if got := gotHeaders.Get("origin"); got != server.URL {
+		t.Fatalf("origin = %q, want %q", got, server.URL)
+	}
+	if got := (<-requests)["prompt_cache_key"]; got != "root-1" {
+		t.Fatalf("prompt_cache_key = %#v, want root cache ID", got)
+	}
+}
+
+func TestWithHTTPClientPreservesSubscriptionHeaders(t *testing.T) {
+	client := NewOpenAICodex("subscription-token", "account-1", "https://example.test/backend-api/codex/responses")
+	customHTTP := &http.Client{Transport: &http.Transport{}}
+	WithHTTPClient(client, customHTTP)
+
+	websocketClient := client.(*responsesWebSocketClient)
+	if websocketClient.http.http != customHTTP {
+		t.Fatal("subscription client was wrapped in the public OpenAI header-stripping transport")
+	}
+}
+
 func TestResponsesWebSocketWireBaselineChangeForcesFullRequest(t *testing.T) {
 	mappedModel := "gpt-5.6-sol-a"
 	client := newResponsesWebSocketClient(&codexClient{

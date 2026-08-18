@@ -97,7 +97,7 @@ func TestDeferredToolsFallbackToActiveTopLevelDefinitions(t *testing.T) {
 		},
 		"openai-codex": func(req Request) ([]string, error) {
 			req.Model = "gpt-5.5"
-			wire, err := NewOpenAICodex("token", "account", "").(*codexClient).buildRequest(req)
+			wire, err := newOpenAICodexClient("token", "account", "").buildRequest(req)
 			if err != nil {
 				return nil, err
 			}

@@ -35,7 +35,7 @@ func TestResponsesCacheDiagnosticsRequireEstimatedThreshold(t *testing.T) {
 // following user-message image must serialize as input_image so the
 // model actually receives the bytes.
 func TestCodexImageToolResultMirror(t *testing.T) {
-	c := NewOpenAICodex("token", "acct", "").(*codexClient)
+	c := newOpenAICodexClient("token", "acct", "")
 
 	wire, err := c.buildRequest(Request{
 		Model: "gpt-5.5",
@@ -92,7 +92,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
-	c := NewOpenAICodex("token", "acct", "https://example.test/backend-api/codex/responses").(*codexClient)
+	c := newOpenAICodexClient("token", "acct", "https://example.test/backend-api/codex/responses")
 	var gotReq *http.Request
 	var gotBody codexRequest
 	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -136,7 +136,7 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 }
 
 func TestGPT56UsesNativeMaxReasoningEffort(t *testing.T) {
-	c := NewOpenAICodex("token", "acct", "").(*codexClient)
+	c := newOpenAICodexClient("token", "acct", "")
 	wire, err := c.buildRequest(Request{Model: "gpt-5.6-sol", Reasoning: "max"})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	c := ws.http
 	var gotReq *http.Request
 	var gotBody codexRequest
-	ws.dial = func(context.Context) (*websocket.Conn, error) {
+	ws.dial = func(context.Context, Request) (*websocket.Conn, error) {
 		return nil, errors.New("test websocket unavailable")
 	}
 	c.http = openaiResponsesHTTPClient(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -268,7 +268,7 @@ func TestCustomResponsesEndpointDoesNotInheritOpenAICacheExtensions(t *testing.T
 }
 
 func TestCodexNestedStreamError(t *testing.T) {
-	c := NewOpenAICodex("token", "acct", "").(*codexClient)
+	c := newOpenAICodexClient("token", "acct", "")
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader("data: {\"type\":\"error\",\"error\":{\"code\":\"model_not_available\",\"message\":\"limited preview\"}}\n\n")),
 	}
@@ -293,7 +293,7 @@ func TestCodexNestedStreamError(t *testing.T) {
 // even when capacity is fine, so the CLI shape is required for
 // reliable service, not just for preview-model admission.
 func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
-	c := NewOpenAICodex("token", "acct", "https://example.test/backend-api/codex/responses").(*codexClient)
+	c := newOpenAICodexClient("token", "acct", "https://example.test/backend-api/codex/responses")
 	var gotReq *http.Request
 	var body bytes.Buffer
 	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {

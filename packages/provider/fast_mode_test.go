@@ -27,7 +27,7 @@ func TestOpenAIFastModeAddsServiceTier(t *testing.T) {
 }
 
 func TestOpenAICodexFastModeAddsServiceTier(t *testing.T) {
-	client := NewOpenAICodex("token", "account", "").(*codexClient)
+	client := newOpenAICodexClient("token", "account", "")
 
 	wire, err := client.buildRequest(Request{Model: "gpt-5.6-sol", FastMode: true})
 	if err != nil {
