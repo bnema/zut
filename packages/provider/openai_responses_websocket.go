@@ -17,17 +17,16 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// responsesWebSocketClient uses the public Responses WebSocket mode for one
-// logical session at a time. It deliberately wraps only the public OpenAI
-// Responses client: ChatGPT Codex and OpenAI-compatible endpoints have
-// different authentication and cache contracts and must retain their HTTP/SSE
-// transport until they independently declare WebSocket support.
+// responsesWebSocketClient uses Responses WebSocket mode for one logical
+// thread at a time. Official OpenAI API-key and ChatGPT subscription clients
+// both use it; each supplies its own authenticated handshake headers and keeps
+// HTTP/SSE as the pre-event fallback.
 type responsesWebSocketClient struct {
 	http *codexClient
 
 	mu       sync.Mutex
 	sessions map[string]*responsesWebSocketSession
-	dial     func(context.Context) (*websocket.Conn, error)
+	dial     func(context.Context, Request) (*websocket.Conn, error)
 }
 
 type responsesWebSocketSession struct {
@@ -85,17 +84,25 @@ func (c *responsesWebSocketClient) session(id string) *responsesWebSocketSession
 	return session
 }
 
-func (c *responsesWebSocketClient) dialResponses(ctx context.Context) (*websocket.Conn, error) {
+func (c *responsesWebSocketClient) dialResponses(ctx context.Context, req Request) (*websocket.Conn, error) {
 	endpoint, err := responsesWebSocketURL(c.http.baseURL)
 	if err != nil {
 		return nil, err
 	}
-	config, err := websocket.NewConfig(endpoint, "https://api.openai.com")
+	origin, err := responsesWebSocketOrigin(c.http.baseURL)
 	if err != nil {
 		return nil, err
 	}
-	config.Header = make(http.Header)
-	config.Header.Set("authorization", "Bearer "+c.http.token)
+	config, err := websocket.NewConfig(endpoint, origin)
+	if err != nil {
+		return nil, err
+	}
+	model := req.Model
+	if c.http.modelName != nil {
+		model = c.http.modelName(model)
+	}
+	useCodexCLIRouting := !c.http.disableCLIRouting && (c.http.cliRoutingAll || usesCodexCLIRouting(model))
+	config.Header = c.http.responsesHeaders(req, useCodexCLIRouting, true)
 	if tlsConfig := responsesWebSocketTLSConfig(c.http.http); tlsConfig != nil {
 		config.TlsConfig = tlsConfig
 	}
@@ -104,6 +111,26 @@ func (c *responsesWebSocketClient) dialResponses(ctx context.Context) (*websocke
 
 // responsesWebSocketTLSConfig carries the explicit TLS policy supplied by
 // WithHTTPClient into the WebSocket dial.
+func responsesWebSocketOrigin(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse Responses endpoint origin: %w", err)
+	}
+	switch u.Scheme {
+	case "https", "wss":
+		u.Scheme = "https"
+	case "http", "ws":
+		u.Scheme = "http"
+	default:
+		return "", fmt.Errorf("unsupported Responses endpoint scheme %q", u.Scheme)
+	}
+	u.Path = ""
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
 func responsesWebSocketTLSConfig(client *http.Client) *tls.Config {
 	if client == nil {
 		return nil
@@ -203,7 +230,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		ReportCacheDiagnostics(req.Lifecycle, responsesCacheDiagnostics(wire, "websocket", continuation))
 	}
 	reportRequestAttempt(req.Lifecycle, 1, 2)
-	if err := session.ensureConnected(ctx, c.dial); err != nil {
+	if err := session.ensureConnected(ctx, req, c.dial); err != nil {
 		// A connection that never became usable has no server-side turn. The
 		// SSE fallback therefore receives the complete request and preserves
 		// the same session-derived cache key without sharing WebSocket state.
@@ -313,7 +340,7 @@ func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *r
 		return nil, nil, sseEvent{}, "", err
 	}
 	reportRequestAttempt(req.Lifecycle, 2, 2)
-	if err := session.ensureConnected(ctx, c.dial); err != nil {
+	if err := session.ensureConnected(ctx, req, c.dial); err != nil {
 		return nil, nil, sseEvent{}, "", err
 	}
 	conn, raw := session.connection()
@@ -494,14 +521,14 @@ func sameResponsesContinuationConfig(previous, current Request) bool {
 	return reflect.DeepEqual(previous, current)
 }
 
-func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, dial func(context.Context) (*websocket.Conn, error)) error {
+func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, req Request, dial func(context.Context, Request) (*websocket.Conn, error)) error {
 	s.mu.Lock()
 	if s.conn != nil && s.raw != nil {
 		s.mu.Unlock()
 		return nil
 	}
 	s.mu.Unlock()
-	conn, err := dial(ctx)
+	conn, err := dial(ctx, req)
 	if err != nil {
 		return err
 	}

@@ -21,10 +21,15 @@ func TestOpenSessionHydratesDeveloperMessage(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, messages, err := OpenSession(path)
+	opened, messages, err := OpenSession(path)
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := opened.Close(); err != nil {
+			t.Errorf("close opened session: %v", err)
+		}
+	})
 	if len(messages) != 1 || messages[0].Role != provider.RoleDeveloper {
 		t.Fatalf("messages = %#v, want one developer message", messages)
 	}

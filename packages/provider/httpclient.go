@@ -46,7 +46,11 @@ func WithHTTPClient(c Client, httpClient *http.Client) Client {
 	case *codexClient:
 		v.http = httpClient
 	case *responsesWebSocketClient:
-		v.http.http = openaiResponsesHTTPClient(httpClient)
+		if v.http.accountID == "" {
+			v.http.http = openaiResponsesHTTPClient(httpClient)
+		} else {
+			v.http.http = httpClient
+		}
 	case *renamedClient:
 		if codex, ok := v.inner.(*codexClient); ok {
 			if _, isPublicResponses := codex.http.Transport.(*openaiResponsesTransport); isPublicResponses {

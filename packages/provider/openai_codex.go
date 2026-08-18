@@ -58,10 +58,15 @@ type responsesCapabilities struct {
 	ClientRequestHeader           bool
 }
 
-// NewOpenAICodex creates a client that talks to ChatGPT's Codex endpoint
-// using a subscription OAuth access token and the user's ChatGPT
-// account id. baseURL may be empty to use the default.
+// NewOpenAICodex creates a Responses client for ChatGPT's Codex endpoint
+// using a subscription OAuth access token and the user's ChatGPT account ID.
+// It prefers WebSocket mode and falls back to HTTP/SSE before visible output.
+// baseURL may be empty to use the default.
 func NewOpenAICodex(token, accountID, baseURL string) Client {
+	return newResponsesWebSocketClient(newOpenAICodexClient(token, accountID, baseURL))
+}
+
+func newOpenAICodexClient(token, accountID, baseURL string) *codexClient {
 	if baseURL == "" {
 		baseURL = codexDefaultBaseURL
 	}
@@ -444,7 +449,6 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 	}
 	useCodexCLIRouting := !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model))
 	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
-	threadID := strings.TrimSpace(req.Context.ThreadID)
 	if c.capabilities.StablePromptCacheKey && cacheSessionID != "" {
 		wire.PromptCacheKey = cacheSessionID
 	}
@@ -458,33 +462,9 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		if err != nil {
 			return nil, err
 		}
+		httpReq.Header = c.responsesHeaders(req, useCodexCLIRouting, false)
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", "text/event-stream")
-		httpReq.Header.Set("authorization", "Bearer "+c.token)
-		httpReq.Header.Set("chatgpt-account-id", c.accountID)
-		httpReq.Header.Set("openai-beta", "responses=experimental")
-		if useCodexCLIRouting {
-			// The ChatGPT Codex backend only admits (and reliably serves)
-			// requests that follow Codex CLI routing metadata; other client
-			// identities are load-shed with "servers are currently
-			// overloaded" errors even when capacity is fine.
-			httpReq.Header.Set("originator", "codex_cli_rs")
-			if c.capabilities.SessionHeader && cacheSessionID != "" {
-				httpReq.Header.Set("session-id", cacheSessionID)
-			}
-			if c.capabilities.ThreadHeader && threadID != "" {
-				httpReq.Header.Set("thread-id", threadID)
-			}
-			if c.capabilities.ClientRequestHeader && threadID != "" {
-				httpReq.Header.Set("x-client-request-id", threadID)
-			}
-			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
-		} else {
-			// ChatGPT's backend recognizes these established values. They are
-			// external provider metadata, not zut product identifiers.
-			httpReq.Header.Set("originator", "zot")
-			httpReq.Header.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
-		}
 		return httpReq, nil
 	}
 
@@ -501,6 +481,45 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 	out := make(chan Event, 16)
 	go c.runStream(ctx, resp, req, out)
 	return out, nil
+}
+
+func (c *codexClient) responsesHeaders(req Request, useCodexCLIRouting, websocketMode bool) http.Header {
+	headers := make(http.Header)
+	headers.Set("authorization", "Bearer "+c.token)
+	if !websocketMode || c.accountID != "" {
+		headers.Set("openai-beta", "responses=experimental")
+	}
+	if c.accountID != "" {
+		headers.Set("chatgpt-account-id", c.accountID)
+	}
+
+	cacheSessionID := strings.TrimSpace(req.Context.CacheSessionID)
+	threadID := strings.TrimSpace(req.Context.ThreadID)
+	if useCodexCLIRouting {
+		// The ChatGPT Codex backend only admits (and reliably serves)
+		// requests that follow Codex CLI routing metadata; other client
+		// identities are load-shed even when capacity is available.
+		headers.Set("originator", "codex_cli_rs")
+		if c.capabilities.SessionHeader && cacheSessionID != "" {
+			headers.Set("session-id", cacheSessionID)
+		}
+		if c.capabilities.ThreadHeader && threadID != "" {
+			headers.Set("thread-id", threadID)
+		}
+		if c.capabilities.ClientRequestHeader && threadID != "" {
+			headers.Set("x-client-request-id", threadID)
+		}
+		headers.Set("user-agent", "codex_cli_rs/0.0.0")
+		return headers
+	}
+
+	// ChatGPT's backend recognizes these established values. They are
+	// external provider metadata, not zut product identifiers.
+	if c.accountID != "" {
+		headers.Set("originator", "zot")
+		headers.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
+	}
+	return headers
 }
 
 func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Request, out chan<- Event) {

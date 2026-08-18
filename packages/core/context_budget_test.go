@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -93,37 +94,28 @@ func TestProjectToolTimingIsModelOnly(t *testing.T) {
 	}
 }
 
-func TestProjectToolTimingCountsTowardAggregateBudget(t *testing.T) {
-	started := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
-	timing := &provider.ToolTiming{StartedAt: started, CompletedAt: started.Add(time.Second), Duration: time.Second}
-	msgs := make([]provider.Message, 0, maxToolResultTotalTextBytes/maxToolResultTextBytes+1)
-	for i := 0; i < maxToolResultTotalTextBytes/maxToolResultTextBytes; i++ {
-		msgs = append(msgs, provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
-			CallID:  string(rune('a' + i)),
-			Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("x", maxToolResultTextBytes)}},
-		}}})
+func TestProjectToolResultMessagesKeepsHistoricalPrefixStable(t *testing.T) {
+	messages := make([]provider.Message, 0, 4)
+	for i := 0; i < 4; i++ {
+		messages = append(messages, provider.Message{Role: provider.RoleTool, Content: []provider.Content{
+			provider.ToolResultBlock{
+				CallID:  fmt.Sprintf("call-%d", i),
+				Content: []provider.Content{provider.TextBlock{Text: strings.Repeat(string(rune('a'+i)), maxToolResultTextBytes)}},
+			},
+		}})
 	}
-	msgs = append(msgs, provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
-		CallID: "timed-empty", Timing: timing,
-	}}})
 
-	projected := projectToolResultMessages(msgs)
-	if got := toolResultTextForCall(projected, "timed-empty"); got != formatToolTiming(timing) {
-		t.Fatalf("empty timed result = %q, want timing annotation", got)
-	}
-	var total int
-	for _, message := range projected {
-		for _, content := range message.Content {
-			if result, ok := content.(provider.ToolResultBlock); ok {
-				total += retainedToolResultTextBytes(result.Content)
-			}
-		}
-	}
-	if total > maxToolResultTotalTextBytes {
-		t.Fatalf("projected tool-result text = %d bytes, want <= %d", total, maxToolResultTotalTextBytes)
-	}
-	if got := toolResultTextForCall(projected, "a"); !strings.Contains(got, toolResultOmissionMarker) {
-		t.Fatalf("oldest result = %q, want truncation after timing reservation", got)
+	before := projectToolResultMessages(messages)
+	messages = append(messages, provider.Message{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{
+			CallID:  "new-call",
+			Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("new", maxToolResultTextBytes)}},
+		},
+	}})
+	after := projectToolResultMessages(messages)
+
+	if !reflect.DeepEqual(after[:len(before)], before) {
+		t.Fatal("appending a tool result changed the provider-visible historical prefix")
 	}
 }
 
@@ -147,7 +139,6 @@ func TestProjectToolResultMessagesBoundsAndUTF8(t *testing.T) {
 	}
 
 	projected := projectToolResultMessages(msgs)
-	total := 0
 	for _, message := range projected {
 		for _, content := range message.Content {
 			result, ok := content.(provider.ToolResultBlock)
@@ -166,15 +157,11 @@ func TestProjectToolResultMessagesBoundsAndUTF8(t *testing.T) {
 					t.Fatalf("result %q contains invalid UTF-8", result.CallID)
 				}
 			}
-			total += retainedBytes
 		}
-	}
-	if total > maxToolResultTotalTextBytes {
-		t.Fatalf("projected tool-result text = %d bytes, want <= %d", total, maxToolResultTotalTextBytes)
 	}
 }
 
-func TestProjectToolResultMessagesRetainsNewestResultsFirst(t *testing.T) {
+func TestProjectToolResultMessagesBoundsEveryResultIndependently(t *testing.T) {
 	msgs := make([]provider.Message, 0, 10)
 	for i := 1; i <= 5; i++ {
 		id := "call-" + string(rune('0'+i))
@@ -192,18 +179,17 @@ func TestProjectToolResultMessagesRetainsNewestResultsFirst(t *testing.T) {
 	}
 
 	projected := projectToolResultMessages(msgs)
-	oldest := toolResultTextForCall(projected, "call-1")
-	newest := toolResultTextForCall(projected, "call-5")
-	if oldest != toolResultOmissionMarker {
-		t.Fatalf("oldest result = %q, want omission marker after newer results filled budget", oldest)
-	}
-	if !strings.HasPrefix(newest, "result-call-5 ") || !strings.Contains(newest, toolResultOmissionMarker) {
-		t.Fatalf("newest result was not retained and truncated first: %q", newest[:min(len(newest), 80)])
+	for i := 1; i <= 5; i++ {
+		id := "call-" + string(rune('0'+i))
+		got := toolResultTextForCall(projected, id)
+		if !strings.HasPrefix(got, "result-"+id+" ") || !strings.Contains(got, toolResultOmissionMarker) {
+			t.Fatalf("result %s was not independently retained and truncated: %q", id, got[:min(len(got), 80)])
+		}
 	}
 }
 
-func TestProjectToolResultMessagesMarksResultsAfterAggregateBudgetIsExhausted(t *testing.T) {
-	const resultCount = maxToolResultTotalTextBytes/maxToolResultTextBytes + 1
+func TestProjectToolResultMessagesDoesNotExhaustAnAggregateBudget(t *testing.T) {
+	const resultCount = 5
 	msgs := make([]provider.Message, 0, resultCount)
 	for i := 0; i < resultCount; i++ {
 		id := "call-" + string(rune('1'+i))
@@ -230,11 +216,11 @@ func TestProjectToolResultMessagesMarksResultsAfterAggregateBudgetIsExhausted(t 
 			retainedTotal += retainedToolResultTextBytes(result.Content)
 		}
 	}
-	if retainedTotal != maxToolResultTotalTextBytes {
-		t.Fatalf("retained tool-result text = %d bytes, want exactly %d", retainedTotal, maxToolResultTotalTextBytes)
+	if retainedTotal != resultCount*maxToolResultTextBytes {
+		t.Fatalf("retained tool-result text = %d bytes, want %d independent bytes", retainedTotal, resultCount*maxToolResultTextBytes)
 	}
-	if got := toolResultTextForCall(projected, "call-1"); got != toolResultOmissionMarker {
-		t.Fatalf("aggregate-exhausted result = %q, want omission marker", got)
+	if got := toolResultTextForCall(projected, "call-1"); got == toolResultOmissionMarker {
+		t.Fatalf("old result was discarded after later results: %q", got)
 	}
 }
 
@@ -291,7 +277,7 @@ func TestAgentNormalRequestProjectsToolResultsAfterPairRepair(t *testing.T) {
 		t.Fatalf("Continue: %v", err)
 	}
 	projectedText := toolResultTextForCall(client.lastReq.Messages, "call-1")
-	if retainedToolResultTextBytesForCall(client.lastReq.Messages, "call-1") > maxToolResultTotalTextBytes || !strings.Contains(projectedText, toolResultOmissionMarker) {
+	if !strings.Contains(projectedText, toolResultOmissionMarker) {
 		t.Fatalf("normal request result was not bounded: %d bytes, %q", len(projectedText), projectedText[:min(len(projectedText), 80)])
 	}
 	if !strings.Contains(projectedText, formatToolTiming(timing)) {
@@ -371,18 +357,6 @@ func hasToolResultOmissionMarker(content []provider.Content) bool {
 		}
 	}
 	return false
-}
-
-func retainedToolResultTextBytesForCall(messages []provider.Message, callID string) int {
-	for _, message := range messages {
-		for _, content := range message.Content {
-			result, ok := content.(provider.ToolResultBlock)
-			if ok && result.CallID == callID {
-				return retainedToolResultTextBytes(result.Content)
-			}
-		}
-	}
-	return 0
 }
 
 func toolResultTextForCall(messages []provider.Message, callID string) string {

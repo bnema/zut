@@ -2,12 +2,10 @@ package provider
 
 // OpenAI Responses API client (api.openai.com/v1/responses).
 //
-// Strategy: reuse the existing codexClient (which already speaks the
-// Responses wire format) via a header-rewriting RoundTripper. The codex
-// client always sends `chatgpt-account-id` and `openai-beta`; the public
-// Responses API on api.openai.com accepts but doesn't require those —
-// we strip the account-id header on its way out so the request looks
-// like a normal authenticated OpenAI call.
+// Strategy: reuse codexClient, which already speaks the Responses wire
+// format, via a header-rewriting RoundTripper. The public Responses API on
+// api.openai.com does not need ChatGPT subscription identity headers, so the
+// transport strips them if a shared request path supplied any.
 //
 // This is a separate provider from `openai` (which is Chat Completions);
 // users opt in by passing `--provider openai-responses` or by picking a
