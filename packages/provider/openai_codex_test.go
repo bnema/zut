@@ -13,6 +13,23 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestResponsesCacheDiagnosticsRequireEstimatedThreshold(t *testing.T) {
+	newWire := func(text string) *codexRequest {
+		return &codexRequest{
+			PromptCacheOptions: &codexPromptCacheOptions{Mode: "implicit"},
+			Input: []any{codexInputMessage{Role: "user", Content: []any{
+				codexInputText{Type: "input_text", Text: text},
+			}}},
+		}
+	}
+	if diagnostics := responsesCacheDiagnostics(newWire(strings.Repeat("a", 64)), "http_sse", "full"); diagnostics.Eligible {
+		t.Fatalf("short request diagnostics = %#v, want ineligible", diagnostics)
+	}
+	if diagnostics := responsesCacheDiagnostics(newWire(strings.Repeat("a", 5_000)), "http_sse", "full"); !diagnostics.Eligible {
+		t.Fatalf("long request diagnostics = %#v, want eligible", diagnostics)
+	}
+}
+
 // An image-only tool result must not serialize to an empty
 // function_call_output (the Responses API may reject it) and a
 // following user-message image must serialize as input_image so the

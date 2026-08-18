@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -40,6 +42,7 @@ type responsesWebSocketSession struct {
 	// lastRequest is the complete request accepted by the server. Continuation
 	// must compare every response-context setting, not merely its transcript.
 	lastRequest    Request
+	lastBaseline   string
 	lastOutput     Message
 	lastResponseID string
 }
@@ -179,7 +182,11 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		}
 	}()
 
-	streamReq, previousResponseID := session.incrementalRequest(req)
+	fullBaseline, err := c.canonicalResponsesBaseline(req, cacheSessionID)
+	if err != nil {
+		return nil, err
+	}
+	streamReq, previousResponseID := session.incrementalRequest(req, cacheSessionID, c.canonicalResponsesBaseline)
 	payload, err := c.websocketPayload(streamReq, cacheSessionID, previousResponseID)
 	if err == nil {
 		wire, wireErr := c.http.buildRequest(streamReq)
@@ -259,7 +266,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			terminal = true
 			stateMu.Unlock()
 			completed = true
-			session.recordCompleted(req, output, responseID)
+			session.recordCompleted(req, fullBaseline, output, responseID)
 		})
 		close(finished)
 		if !completed {
@@ -267,6 +274,18 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		}
 	}()
 	return out, nil
+}
+
+// canonicalResponsesBaseline hashes the complete, encoded WebSocket request
+// without a server response ID. The digest lets continuation compare every
+// wire-visible setting without retaining prompts, IDs, or credentials.
+func (c *responsesWebSocketClient) canonicalResponsesBaseline(req Request, cacheSessionID string) (string, error) {
+	payload, err := c.websocketPayload(req, cacheSessionID, "")
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (c *responsesWebSocketClient) websocketPayload(req Request, cacheSessionID, previousResponseID string) ([]byte, error) {
@@ -432,11 +451,17 @@ func (c *responsesWebSocketClient) forwardResponsesHTTP(ctx context.Context, req
 	}
 }
 
-func (s *responsesWebSocketSession) incrementalRequest(req Request) (Request, string) {
+func (s *responsesWebSocketSession) incrementalRequest(req Request, cacheSessionID string, canonicalBaseline func(Request, string) (string, error)) (Request, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous := s.lastRequest
 	if s.lastResponseID == "" || !sameResponsesContinuationConfig(previous, req) || len(req.Messages) < len(previous.Messages) || !reflect.DeepEqual(req.Messages[:len(previous.Messages)], previous.Messages) {
+		return req, ""
+	}
+	prefix := req
+	prefix.Messages = append([]Message(nil), req.Messages[:len(previous.Messages)]...)
+	baseline, err := canonicalBaseline(prefix, cacheSessionID)
+	if err != nil || baseline != s.lastBaseline {
 		return req, ""
 	}
 	// The cached response already contains the exact assistant output from the
@@ -499,12 +524,13 @@ func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEve
 	return s.conn, s.raw
 }
 
-func (s *responsesWebSocketSession) recordCompleted(request Request, output Message, responseID string) {
+func (s *responsesWebSocketSession) recordCompleted(request Request, baseline string, output Message, responseID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	request.Messages = append([]Message(nil), request.Messages...)
 	request.Lifecycle = nil
 	s.lastRequest = request
+	s.lastBaseline = baseline
 	s.lastOutput = output
 	s.lastResponseID = responseID
 }
@@ -535,6 +561,7 @@ func (s *responsesWebSocketSession) invalidateLocked() {
 	s.raw = nil
 	s.readerDone = nil
 	s.lastRequest = Request{}
+	s.lastBaseline = ""
 	s.lastOutput = Message{}
 	s.lastResponseID = ""
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -220,6 +221,43 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 		if got["chatgpt-account-id"] != "" || got["openai-beta"] != "" {
 			t.Fatalf("public WebSocket leaked Codex headers: %#v", got)
 		}
+	}
+}
+
+func TestResponsesWebSocketWireBaselineChangeForcesFullRequest(t *testing.T) {
+	mappedModel := "gpt-5.6-sol-a"
+	client := newResponsesWebSocketClient(&codexClient{
+		providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true},
+		modelName:    func(string) string { return mappedModel },
+	}).(*responsesWebSocketClient)
+	first := Request{
+		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}}},
+	}
+	baseline, err := client.canonicalResponsesBaseline(first, first.Context.CacheSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &responsesWebSocketSession{}
+	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, "resp_1")
+
+	mappedModel = "gpt-5.6-sol-b"
+	second := Request{
+		Model:   first.Model,
+		Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
+		Messages: append(append([]Message(nil), first.Messages...),
+			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}},
+			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
+		),
+	}
+	streamReq, previousResponseID := session.incrementalRequest(second, second.Context.CacheSessionID, client.canonicalResponsesBaseline)
+	if previousResponseID != "" {
+		t.Fatalf("previous response ID = %q, want full request after wire baseline change", previousResponseID)
+	}
+	if !reflect.DeepEqual(streamReq.Messages, second.Messages) {
+		t.Fatalf("stream messages = %#v, want complete transcript %#v", streamReq.Messages, second.Messages)
 	}
 }
 

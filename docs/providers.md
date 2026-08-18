@@ -159,8 +159,10 @@ route uses the root identity as `prompt_cache_key`; declared Codex routes also
 receive their documented session and thread routing headers. A generic
 OpenAI-compatible endpoint never receives these extensions merely because it
 accepts an OpenAI-shaped request. JSON event mode also reports sanitized cache
-diagnostics (`eligible`, `mode`, `transport`, and `continuation`). These
-records never include prompts, durable IDs, request bodies, or credentials.
+diagnostics (`eligible`, `mode`, `transport`, and `continuation`). `eligible`
+is a conservative local prompt-length estimate; OpenAI performs the authoritative
+tokenization and cache decision. These records never include prompts, durable
+IDs, request bodies, or credentials.
 
 When a provider reports cache detail, zut displays cache-read hit rate as
 `cache reads / cache-reporting prompt input`. A shown `0%` is a confirmed

@@ -399,14 +399,27 @@ func splitCallID(id string) (string, string) {
 	return id, ""
 }
 
+const minOpenAIPromptCacheTokens = 1024
+
 func responsesCacheDiagnostics(wire *codexRequest, transport, continuation string) CacheDiagnostics {
 	diagnostics := CacheDiagnostics{Mode: "none", Transport: transport, Continuation: continuation}
 	if wire == nil || wire.PromptCacheOptions == nil {
 		return diagnostics
 	}
-	diagnostics.Eligible = true
 	diagnostics.Mode = wire.PromptCacheOptions.Mode
+	diagnostics.Eligible = estimatedOpenAIPromptTokens(wire) >= minOpenAIPromptCacheTokens
 	return diagnostics
+}
+
+// estimatedOpenAIPromptTokens supplies a deliberately conservative local
+// eligibility signal. OpenAI makes the final tokenization and cache decision;
+// this estimate never leaves the process and is not persisted in diagnostics.
+func estimatedOpenAIPromptTokens(wire *codexRequest) int {
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		return 0
+	}
+	return len(encoded) / 4
 }
 
 func usesCodexCLIRouting(model string) bool {
