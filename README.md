@@ -307,6 +307,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | Command | Description |
 |---|---|
 | `/help` | Show key bindings and commands. |
+| `/info` | Show the current session ID, full transcript-file path, working directory, provider, and model. |
 | `/login` | Log in via API key or subscription (opens a dialog). |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
@@ -905,7 +906,7 @@ You can keep typing while the agent is working. Pressing `enter` during a turn q
 
 To recover the most recently queued message back into the editor (to tweak it before it runs), press `Option+↑`. In VS Code's integrated terminal that chord doesn't survive xterm.js's macOS key handling — use `Option+Shift+↑` there. zut's hint line under the sliding-in queue adapts automatically based on `$TERM_PROGRAM`.
 
-Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/info`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
 
 
 ## Keys (interactive mode)

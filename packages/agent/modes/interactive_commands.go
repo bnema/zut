@@ -228,6 +228,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.statusOK = ""
 		i.helpBlock = nil
+		i.sessionInfoBlock = nil
 		i.parkedTurn = 0
 		i.parkedTotal = 0
 		i.scrollOffset = 0
@@ -242,6 +243,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/help":
 		i.mu.Lock()
 		i.helpBlock = renderHelpBlock(i.cfg.Theme, i.lastCols(), i.llamaConfigured)
+		i.sessionInfoBlock = nil
 		i.statusErr = ""
 		i.statusOK = ""
 		// Pin the viewport to the newest content so the help block,
@@ -249,6 +251,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// what the user actually sees.
 		i.scrollOffset = 0
 		i.mu.Unlock()
+	case "/info":
+		i.showSessionInfo()
 	case "/login":
 		i.dialog.Open(i.cfg.ZutHome)
 	case "/logout":
@@ -397,6 +401,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.toolOrder = nil
 		i.toolGate = map[string]int{}
 		i.helpBlock = nil
+		i.sessionInfoBlock = nil
 		i.parkedTurn = 0
 		i.statusOK = "cwd " + i.cfg.CWD
 		i.statusErr = ""
