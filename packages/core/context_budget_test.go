@@ -46,7 +46,7 @@ func TestAgentProviderTimeContextIsStableAndLocal(t *testing.T) {
 	if first != second {
 		t.Fatalf("time context changed between requests: %q != %q", first, second)
 	}
-	for _, want := range []string{"session_started: 2026-08-08T02:10:11-07:00", "local_timezone: America/Los_Angeles (UTC-07:00)"} {
+	for _, want := range []string{"session_started: 2026-08-08 02:10", "local_timezone: America/Los_Angeles (UTC-07:00)"} {
 		if !strings.Contains(first, want) {
 			t.Fatalf("time context %q missing %q", first, want)
 		}

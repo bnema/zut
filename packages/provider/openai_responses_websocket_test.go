@@ -169,8 +169,9 @@ func TestResponsesWebSocketReusesSessionAndSendsIncrementalInput(t *testing.T) {
 	}
 	assertCompletedResponse(t, client, first)
 	second := Request{
-		Model:   "gpt-5.6-sol",
-		Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
+		Model:    "gpt-5.6-sol",
+		FastMode: true,
+		Context:  RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
 		Messages: append(append([]Message(nil), first.Messages...),
 			Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}},
 			Message{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},

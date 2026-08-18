@@ -37,6 +37,7 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 	msgs := append([]provider.Message(nil), a.messages...)
 	a.mu.Unlock()
 
+	latestContext, msgs := latestInternalContext(msgs)
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("nothing to compact")
 	}
@@ -62,14 +63,12 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 
 	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
 
-	systemContext := a.providerTimeContext().systemText()
 	req := provider.Request{
-		Model:         a.Model,
-		System:        summarizationSystem,
-		SystemContext: systemContext,
-		MaxTokens:     4096,
-		Temperature:   a.Temperature,
-		FastMode:      fastMode,
+		Model:       a.Model,
+		System:      summarizationSystem,
+		MaxTokens:   4096,
+		Temperature: a.Temperature,
+		FastMode:    fastMode,
 		Messages: []provider.Message{
 			{
 				Role:    provider.RoleUser,
@@ -171,7 +170,10 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 	// a tool_use ID that doesn't exist.
 	tail = repairOrphanedToolResults(tail)
 
-	next := make([]provider.Message, 0, 1+len(tail))
+	next := make([]provider.Message, 0, 2+len(tail))
+	if latestContext != nil {
+		next = append(next, *latestContext)
+	}
 	next = append(next, synthetic)
 	next = append(next, tail...)
 

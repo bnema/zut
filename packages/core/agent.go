@@ -164,8 +164,9 @@ type Agent struct {
 	// boundaries: before the next model call after a tool batch, or
 	// after a text-only assistant turn finishes. It never interrupts
 	// a running tool or cancels an in-flight provider request.
-	queued      []queuedMessage
-	timeContext agentTimeContext
+	queued                []queuedMessage
+	timeContext           agentTimeContext
+	hasSessionTimeContext bool
 	// sessionID identifies this conversation thread. cacheSessionID identifies
 	// the root prompt-cache affinity and may be shared by resident child
 	// threads. Hosts bind both before the first provider request; unbound
@@ -623,6 +624,8 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 			}
 		}
 
+		a.appendDynamicContext(turnContext)
+
 		var (
 			stop         provider.StopReason
 			assistantMsg provider.Message
@@ -988,13 +991,6 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		return provider.StopError, provider.Message{}, err
 	}
 	system, tools := a.PromptConfig()
-	systemContext := a.providerTimeContext().systemText()
-	if contextText := boundedTurnContext(turnContext); contextText != "" {
-		if system != "" {
-			system += "\n\n"
-		}
-		system += "[Extension context for this turn]\n" + contextText
-	}
 	// Repair pairs before projecting the copied provider-input view. The
 	// repair can add stub results for aborted calls; those results must also
 	// remain in the request so every tool call still has a matching result.
@@ -1006,9 +1002,8 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		model:    a.Model,
 	}
 	req := provider.Request{
-		Model:         a.Model,
-		System:        system,
-		SystemContext: systemContext,
+		Model:  a.Model,
+		System: system,
 		// Repair any dangling tool_use blocks before sending. A turn
 		// aborted mid-flight (cancel, connection drop, ECONNREFUSED to a
 		// dev server, etc.) can leave an assistant tool_use with no

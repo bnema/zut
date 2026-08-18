@@ -51,10 +51,11 @@ type codexClient struct {
 // responsesCapabilities records extensions verified for the exact provider
 // client, rather than assuming every Responses-shaped endpoint accepts them.
 type responsesCapabilities struct {
-	StablePromptCacheKey bool
-	SessionHeader        bool
-	ThreadHeader         bool
-	ClientRequestHeader  bool
+	StablePromptCacheKey          bool
+	ExplicitPromptCacheBreakpoint bool
+	SessionHeader                 bool
+	ThreadHeader                  bool
+	ClientRequestHeader           bool
 }
 
 // NewOpenAICodex creates a client that talks to ChatGPT's Codex endpoint
@@ -108,10 +109,19 @@ type codexOutputText struct {
 	Annotations []any  `json:"annotations"`
 }
 
+type codexPromptCacheOptions struct {
+	Mode string `json:"mode"`
+}
+
+type codexPromptCacheBreakpoint struct {
+	Type string `json:"type"`
+}
+
 type codexInputMessage struct {
-	Type    string `json:"type,omitempty"` // "message" (optional for input)
-	Role    string `json:"role"`
-	Content []any  `json:"content"`
+	Type                  string                      `json:"type,omitempty"` // "message" (optional for input)
+	Role                  string                      `json:"role"`
+	Content               []any                       `json:"content"`
+	PromptCacheBreakpoint *codexPromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type codexOutputMessage struct {
@@ -166,19 +176,20 @@ type codexReasoningConfig struct {
 }
 
 type codexRequest struct {
-	Model              string                `json:"model"`
-	Store              bool                  `json:"store"`
-	Stream             bool                  `json:"stream,omitempty"`
-	Instructions       string                `json:"instructions,omitempty"`
-	Input              []any                 `json:"input"`
-	Tools              []codexTool           `json:"tools,omitempty"`
-	ToolChoice         string                `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool                  `json:"parallel_tool_calls"`
-	Include            []string              `json:"include,omitempty"`
-	Reasoning          *codexReasoningConfig `json:"reasoning,omitempty"`
-	PromptCacheKey     string                `json:"prompt_cache_key,omitempty"`
-	ServiceTier        string                `json:"service_tier,omitempty"`
-	PreviousResponseID string                `json:"previous_response_id,omitempty"`
+	Model              string                   `json:"model"`
+	Store              bool                     `json:"store"`
+	Stream             bool                     `json:"stream,omitempty"`
+	Instructions       string                   `json:"instructions,omitempty"`
+	Input              []any                    `json:"input"`
+	Tools              []codexTool              `json:"tools,omitempty"`
+	ToolChoice         string                   `json:"tool_choice,omitempty"`
+	ParallelToolCalls  bool                     `json:"parallel_tool_calls"`
+	Include            []string                 `json:"include,omitempty"`
+	Reasoning          *codexReasoningConfig    `json:"reasoning,omitempty"`
+	PromptCacheKey     string                   `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *codexPromptCacheOptions `json:"prompt_cache_options,omitempty"`
+	ServiceTier        string                   `json:"service_tier,omitempty"`
+	PreviousResponseID string                   `json:"previous_response_id,omitempty"`
 }
 
 // ---- Request building ----
@@ -193,6 +204,10 @@ func (c *codexClient) findModel(id string) (Model, error) {
 		return m, nil
 	}
 	return FindModel("openai", id)
+}
+
+func isGPT56Model(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.6-")
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
@@ -219,6 +234,16 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 	if req.FastMode {
 		body.ServiceTier = fastModeServiceTier
+	}
+	if c.capabilities.ExplicitPromptCacheBreakpoint && isGPT56Model(req.Model) {
+		// Keep implicit mode so OpenAI can retain later conversation
+		// checkpoints as well as this stable instruction/tool boundary.
+		body.PromptCacheOptions = &codexPromptCacheOptions{Mode: "implicit"}
+		body.Input = append(body.Input, codexInputMessage{
+			Role:                  "developer",
+			Content:               []any{codexInputText{Type: "input_text", Text: "[Stable prompt boundary]"}},
+			PromptCacheBreakpoint: &codexPromptCacheBreakpoint{Type: "stable"},
+		})
 	}
 	if m.Reasoning {
 		effort := OpenAICodexReasoningEffort(reasoning, req.Model)
@@ -250,7 +275,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		switch msg.Role {
-		case RoleUser:
+		case RoleDeveloper, RoleUser:
 			content := []any{}
 			for _, c := range msg.Content {
 				switch v := c.(type) {
@@ -266,7 +291,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			if len(content) == 0 {
 				continue
 			}
-			body.Input = append(body.Input, codexInputMessage{Role: "user", Content: content})
+			role := "user"
+			if msg.Role == RoleDeveloper {
+				role = "developer"
+			}
+			body.Input = append(body.Input, codexInputMessage{Role: role, Content: content})
 		case RoleAssistant:
 			// Emit one output_message per text block, one function_call per
 			// tool call, and one reasoning item per ReasoningBlock,

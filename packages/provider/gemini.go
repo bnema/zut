@@ -196,7 +196,7 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	}
 	for _, msg := range msgs {
 		switch msg.Role {
-		case RoleUser:
+		case RoleDeveloper, RoleUser:
 			parts := convertGemUserParts(msg.Content)
 			if len(parts) == 0 {
 				continue

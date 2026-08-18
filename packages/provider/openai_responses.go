@@ -78,10 +78,11 @@ func NewOpenAIResponsesNamed(apiKey, baseURL, name string) Client {
 		errorLabel:   "openai",
 		providerName: name,
 		capabilities: responsesCapabilities{
-			// Only the official OpenAI provider declares this extension.
+			// Only the official OpenAI provider declares these extensions.
 			// A Responses-shaped custom endpoint must opt in through its
 			// own client rather than inheriting OpenAI's cache contract.
-			StablePromptCacheKey: officialOpenAIResponsesEndpoint(name, baseURL),
+			StablePromptCacheKey:          officialOpenAIResponsesEndpoint(name, baseURL),
+			ExplicitPromptCacheBreakpoint: officialOpenAIResponsesEndpoint(name, baseURL),
 		},
 		http: httpClient,
 	}

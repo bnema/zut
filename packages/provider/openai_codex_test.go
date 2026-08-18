@@ -205,6 +205,17 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	if gotBody.PromptCacheKey != "cache-root-2" {
 		t.Fatalf("prompt_cache_key = %q, want root cache ID", gotBody.PromptCacheKey)
 	}
+	if gotBody.PromptCacheOptions == nil || gotBody.PromptCacheOptions.Mode != "implicit" || len(gotBody.Input) < 2 {
+		t.Fatalf("explicit cache boundary = options=%+v input=%#v", gotBody.PromptCacheOptions, gotBody.Input)
+	}
+	boundary, ok := gotBody.Input[0].(map[string]any)
+	if !ok || boundary["role"] != "developer" {
+		t.Fatalf("stable cache boundary = %#v", gotBody.Input[0])
+	}
+	breakpoint, ok := boundary["prompt_cache_breakpoint"].(map[string]any)
+	if !ok || breakpoint["type"] != "stable" {
+		t.Fatalf("stable cache breakpoint = %#v", boundary)
+	}
 	if gotReq.Header.Get("originator") != "" || gotReq.Header.Get("user-agent") != "" || gotReq.Header.Get("chatgpt-account-id") != "" || gotReq.Header.Get("openai-beta") != "" {
 		t.Fatalf("public fallback leaked Codex headers: %v", gotReq.Header)
 	}

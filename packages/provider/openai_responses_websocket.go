@@ -36,7 +36,9 @@ type responsesWebSocketSession struct {
 	raw        chan sseEvent
 	readerDone chan struct{}
 
-	lastRequest    []Message
+	// lastRequest is the complete request accepted by the server. Continuation
+	// must compare every response-context setting, not merely its transcript.
+	lastRequest    Request
 	lastResponseID string
 }
 
@@ -245,7 +247,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			terminal = true
 			stateMu.Unlock()
 			completed = true
-			session.recordCompleted(req.Messages, responseID)
+			session.recordCompleted(req, responseID)
 		})
 		close(finished)
 		if !completed {
@@ -421,16 +423,27 @@ func (c *responsesWebSocketClient) forwardResponsesHTTP(ctx context.Context, req
 func (s *responsesWebSocketSession) incrementalRequest(req Request) (Request, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lastResponseID == "" || len(req.Messages) < len(s.lastRequest) || !reflect.DeepEqual(req.Messages[:len(s.lastRequest)], s.lastRequest) {
+	previous := s.lastRequest
+	if s.lastResponseID == "" || !sameResponsesContinuationConfig(previous, req) || len(req.Messages) < len(previous.Messages) || !reflect.DeepEqual(req.Messages[:len(previous.Messages)], previous.Messages) {
 		return req, ""
 	}
 	// The cached response already contains the assistant output from the last
-	// generation. Send only the new tool results and/or user message.
-	req.Messages = append([]Message(nil), req.Messages[len(s.lastRequest):]...)
+	// generation. Send only the strict new tool-result and/or user suffix.
+	req.Messages = append([]Message(nil), req.Messages[len(previous.Messages):]...)
 	for len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
 		req.Messages = req.Messages[1:]
 	}
 	return req, s.lastResponseID
+}
+
+func sameResponsesContinuationConfig(previous, current Request) bool {
+	previous.Messages = nil
+	previous.Context.TurnID = ""
+	previous.Lifecycle = nil
+	current.Messages = nil
+	current.Context.TurnID = ""
+	current.Lifecycle = nil
+	return reflect.DeepEqual(previous, current)
 }
 
 func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, dial func(context.Context) (*websocket.Conn, error)) error {
@@ -461,10 +474,12 @@ func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEve
 	return s.conn, s.raw
 }
 
-func (s *responsesWebSocketSession) recordCompleted(messages []Message, responseID string) {
+func (s *responsesWebSocketSession) recordCompleted(request Request, responseID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastRequest = append(s.lastRequest[:0], messages...)
+	request.Messages = append([]Message(nil), request.Messages...)
+	request.Lifecycle = nil
+	s.lastRequest = request
 	s.lastResponseID = responseID
 }
 
@@ -493,7 +508,7 @@ func (s *responsesWebSocketSession) invalidateLocked() {
 	s.conn = nil
 	s.raw = nil
 	s.readerDone = nil
-	s.lastRequest = nil
+	s.lastRequest = Request{}
 	s.lastResponseID = ""
 }
 

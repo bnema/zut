@@ -20,6 +20,9 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+	// RoleDeveloper is host-authored provider context. Core persists it for
+	// replay but presentation layers must not render it as ordinary chat.
+	RoleDeveloper Role = "developer"
 )
 
 // Content is a block inside a Message. One of TextBlock, ImageBlock,

@@ -357,7 +357,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	for _, msg := range req.Messages {
 		renameTools := c.oauthTok != ""
 		switch msg.Role {
-		case RoleUser:
+		case RoleDeveloper, RoleUser:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "user",
 				Content: convertAnthContent(msg.Content, renameTools),

@@ -299,6 +299,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		switch msg.Role {
+		case RoleDeveloper:
+			content := buildOAIUserContent(msg.Content, textOnly)
+			out.Messages = append(out.Messages, oaiMessage{Role: "developer", Content: content})
 		case RoleUser:
 			content := buildOAIUserContent(msg.Content, textOnly)
 			out.Messages = append(out.Messages, oaiMessage{Role: "user", Content: content})
