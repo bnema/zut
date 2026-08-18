@@ -683,7 +683,7 @@ type Interactive struct {
 	rightBarHidden    bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
 	liveBlock         []string // live streaming/tool progress rendered outside scrollback
 	helpBlock         []string // rendered above the chat when /help was typed
-	sessionInfoBlock  []string // rendered above the chat when /info was typed
+	sessionInfoBlocks []sessionInfoBlock
 	cumUsage          provider.Usage
 	lastCtxInput      int // input_tokens of the most recent turn — approximates current context size
 	busy              bool

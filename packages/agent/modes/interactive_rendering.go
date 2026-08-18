@@ -42,7 +42,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 		statusOK:             i.statusOK,
 		statusErr:            i.statusErr,
 		help:                 strings.Join(i.helpBlock, "\n"),
-		sessionInfo:          strings.Join(i.sessionInfoBlock, "\n"),
+		sessionInfo:          sessionInfoBlocksKey(i.sessionInfoBlocks),
 		extNotes:             strings.Join(i.extNotes, "\n"),
 		extStatuses:          i.extensionStatusesKeyLocked(),
 		extWidgets:           i.extensionWidgetsKeyLocked(),
@@ -227,8 +227,10 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	renderView.StreamingActive = false
 	renderView.ToolCalls = nil
 	renderView.Err = ""
+	infoBlocks := append([]sessionInfoBlock(nil), i.sessionInfoBlocks...)
 	if !i.renderOutsideLock {
-		rows := renderView.Build(cols)
+		rows, anchors := renderView.BuildWithAnchors(cols)
+		rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
 		i.stableChatCache = append(i.stableChatCache[:0], rows...)
 		i.stableChatCacheKey = key
 		i.stableChatCacheValid = true
@@ -238,7 +240,8 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	// a frame. Build the immutable snapshot without holding the interactive
 	// mutex so key processing can continue while a cold transcript renders.
 	i.mu.Unlock()
-	rows := renderView.Build(cols)
+	rows, anchors := renderView.BuildWithAnchors(cols)
+	rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
 	i.mu.Lock()
 	if i.view.MessagesRevision == renderView.MessagesRevision &&
 		i.view.RenderCacheRevision == renderView.RenderCacheRevision {
@@ -258,6 +261,10 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		i.view.Messages = nil
 		i.view.MessagesRevision = 0
 	}
+	// Transcript rewinds and compaction can remove messages that an info block
+	// was anchored after. Clamp those anchors once so later turns still append
+	// below the block instead of making it jump through the conversation.
+	clampSessionInfoBlocks(i.sessionInfoBlocks, len(i.view.Messages))
 	// Pacer flush: while the streaming pacer is still draining the
 	// buffer (i.e. EvAssistantMessage already fired but more runes
 	// are queued), the final assistant message is already in
@@ -349,9 +356,6 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// viewport, which users would miss entirely.
 	if len(i.helpBlock) > 0 {
 		chat = append(chat, i.helpBlock...)
-	}
-	if len(i.sessionInfoBlock) > 0 {
-		chat = append(chat, i.sessionInfoBlock...)
 	}
 
 	if i.statusOK != "" {
