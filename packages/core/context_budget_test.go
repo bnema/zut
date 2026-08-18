@@ -359,18 +359,6 @@ func hasToolResultOmissionMarker(content []provider.Content) bool {
 	return false
 }
 
-func retainedToolResultTextBytesForCall(messages []provider.Message, callID string) int {
-	for _, message := range messages {
-		for _, content := range message.Content {
-			result, ok := content.(provider.ToolResultBlock)
-			if ok && result.CallID == callID {
-				return retainedToolResultTextBytes(result.Content)
-			}
-		}
-	}
-	return 0
-}
-
 func toolResultTextForCall(messages []provider.Message, callID string) string {
 	var text strings.Builder
 	for _, message := range messages {
