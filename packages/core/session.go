@@ -49,6 +49,9 @@ type Session struct {
 
 	retryMu               sync.Mutex
 	pendingRetryLifecycle []RetryLifecycleRecord
+	lastWriteWasUsage     bool
+	lastUsage             provider.Usage
+	lastCumulativeUsage   provider.Usage
 }
 
 // GoalStatus is the persisted lifecycle state of an autonomous session goal.
@@ -1628,8 +1631,17 @@ func (s *Session) writeUsageCheckpointLocked(row sessionLine) error {
 	if len(s.pendingRetryLifecycle) > 0 {
 		row.RetryLifecycle = append([]RetryLifecycleRecord(nil), s.pendingRetryLifecycle...)
 	}
+	if row.Type == "usage" && len(row.RetryLifecycle) == 0 && row.Usage != nil && row.Cumulative != nil &&
+		s.lastWriteWasUsage && *row.Usage == s.lastUsage && *row.Cumulative == s.lastCumulativeUsage {
+		return nil
+	}
 	if err := s.writeLine(row); err != nil {
 		return err
+	}
+	if row.Type == "usage" && row.Usage != nil && row.Cumulative != nil {
+		s.lastWriteWasUsage = true
+		s.lastUsage = *row.Usage
+		s.lastCumulativeUsage = *row.Cumulative
 	}
 	s.pendingRetryLifecycle = nil
 	return nil
@@ -1732,6 +1744,7 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) writeLine(row sessionLine) error {
+	s.lastWriteWasUsage = false
 	b, err := json.Marshal(row)
 	if err != nil {
 		return err
