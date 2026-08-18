@@ -792,10 +792,8 @@ func TestResidentManagerAppliesPositiveQueueTimeoutDurably(t *testing.T) {
 		}, nil
 	})
 	defer manager.Close(context.Background())
-	for _, id := range []string{"first", "second"} {
-		if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: id, SessionID: id, Provider: "openai", Model: "gpt-5"}, id); err != nil {
-			t.Fatalf("Spawn(%s): %v", id, err)
-		}
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "first", SessionID: "first", Provider: "openai", Model: "gpt-5"}, "first"); err != nil {
+		t.Fatalf("Spawn(first): %v", err)
 	}
 	select {
 	case got := <-started:
@@ -804,6 +802,9 @@ func TestResidentManagerAppliesPositiveQueueTimeoutDurably(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("first runner did not start")
+	}
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "second", SessionID: "second", Provider: "openai", Model: "gpt-5"}, "second"); err != nil {
+		t.Fatalf("Spawn(second): %v", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
