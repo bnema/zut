@@ -99,15 +99,18 @@ explicit successful follow-up. A host restart never retries it automatically.
 The model-facing tools retain their logical names:
 
 - `subagent_spawn` accepts `task`, optional `agent`, `model` and `provider`,
-  `reasoning`, `fast_mode`, `required`, and `isolation` (`shared` or
-  `worktree`). It returns a logical `subagent://<id>` reference.
+  `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
+  `worktree`). `wait` is an explicit whole-second value from 1 through 300;
+  when omitted, spawning returns immediately. A timed-out wait leaves the
+  child running. It returns a logical `subagent://<id>` reference.
 - `subagent_status` returns bounded state for one child or the current set.
 - `subagent_stop` stops one live child.
 - `subagent_resume` accepts an explicit follow-up prompt for an existing child.
 
-These calls are asynchronous. Completion arrives through the host’s typed
-completion update, not process polling. Do not use sleep loops, repeated
-status calls, journal files, or terminal UI inspection as a completion signal.
+These calls are asynchronous unless `subagent_spawn` receives an explicit
+`wait` value. Otherwise completion arrives through the host’s typed completion
+update, not process polling. Do not use sleep loops, repeated status calls,
+journal files, or terminal UI inspection as a completion signal.
 Successful completions include the final visible assistant summary, capped at
 256 KiB; open the child session for the complete durable transcript.
 

@@ -21,26 +21,27 @@ import (
 type ResidentFactory func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error)
 
 type ResidentManager struct {
-	root             string
-	factory          ResidentFactory
-	prepareWorkspace func(context.Context, WorkspaceRequest) (WorkspaceHandle, error)
-	mu               sync.Mutex
-	lifecycleMu      sync.Mutex
-	closed           bool
-	children         map[string]*ResidentChild
-	recovered        map[string]ResidentSnapshot
-	recoveredSpec    map[string]ResidentChildSpec
-	pending          map[string]struct{}
-	activeChildren   map[string]struct{}
-	scheduler        *ResidentScheduler
-	queueTimeout     time.Duration
-	allowedRoots     []string
-	dispatchMu       sync.Mutex
-	onCompletion     func(ResidentCompletion)
-	onAccepted       func(ResidentChildSpec, string, string)
-	onUpdate         func(string)
-	onHistoryUpdate  func(string)
-	onActivity       func(bool)
+	root              string
+	factory           ResidentFactory
+	prepareWorkspace  func(context.Context, WorkspaceRequest) (WorkspaceHandle, error)
+	mu                sync.Mutex
+	lifecycleMu       sync.Mutex
+	closed            bool
+	children          map[string]*ResidentChild
+	recovered         map[string]ResidentSnapshot
+	recoveredSpec     map[string]ResidentChildSpec
+	pending           map[string]struct{}
+	activeChildren    map[string]struct{}
+	scheduler         *ResidentScheduler
+	queueTimeout      time.Duration
+	allowedRoots      []string
+	dispatchMu        sync.Mutex
+	onCompletion      func(ResidentCompletion)
+	completionWaiters map[string][]chan ResidentCompletion
+	onAccepted        func(ResidentChildSpec, string, string)
+	onUpdate          func(string)
+	onHistoryUpdate   func(string)
+	onActivity        func(bool)
 }
 
 func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion)) {
@@ -50,6 +51,64 @@ func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion
 	m.mu.Lock()
 	m.onCompletion = observer
 	m.mu.Unlock()
+}
+
+// WatchCompletion registers for one accepted resident turn. The caller must
+// register before making the turn visible, then call the returned cancel
+// function if it stops waiting before completion.
+func (m *ResidentManager) WatchCompletion(childID, turnID string) (<-chan ResidentCompletion, func()) {
+	result := make(chan ResidentCompletion, 1)
+	key := completionKey(childID, turnID)
+	if m == nil || key == "" {
+		close(result)
+		return result, func() {}
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		close(result)
+		return result, func() {}
+	}
+	if m.completionWaiters == nil {
+		m.completionWaiters = make(map[string][]chan ResidentCompletion)
+	}
+	m.completionWaiters[key] = append(m.completionWaiters[key], result)
+	m.mu.Unlock()
+	return result, func() {
+		m.mu.Lock()
+		waiters := m.completionWaiters[key]
+		for i, waiter := range waiters {
+			if waiter == result {
+				waiters = append(waiters[:i], waiters[i+1:]...)
+				break
+			}
+		}
+		if len(waiters) == 0 {
+			delete(m.completionWaiters, key)
+		} else {
+			m.completionWaiters[key] = waiters
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *ResidentManager) reportCompletion(completion ResidentCompletion) {
+	if m == nil {
+		return
+	}
+	key := completionKey(completion.ChildID, completion.TurnID)
+	m.mu.Lock()
+	waiters := m.completionWaiters[key]
+	delete(m.completionWaiters, key)
+	observer := m.onCompletion
+	m.mu.Unlock()
+	for _, waiter := range waiters {
+		waiter <- completion
+		close(waiter)
+	}
+	if observer != nil {
+		observer(completion)
+	}
 }
 
 // SetAcceptedObserver receives an accepted turn's ID and prompt only after
@@ -202,17 +261,18 @@ func newResidentManager(root string, policy SubagentPolicy, prepare func(context
 		prepare = PrepareWorkspace
 	}
 	return &ResidentManager{
-		root:             root,
-		factory:          factory,
-		prepareWorkspace: prepare,
-		children:         make(map[string]*ResidentChild),
-		recovered:        make(map[string]ResidentSnapshot),
-		recoveredSpec:    make(map[string]ResidentChildSpec),
-		pending:          make(map[string]struct{}),
-		activeChildren:   make(map[string]struct{}),
-		scheduler:        NewResidentScheduler(policy.MaxConcurrent),
-		queueTimeout:     policy.QueueTimeout,
-		allowedRoots:     append([]string(nil), policy.AllowedRoots...),
+		root:              root,
+		factory:           factory,
+		prepareWorkspace:  prepare,
+		children:          make(map[string]*ResidentChild),
+		recovered:         make(map[string]ResidentSnapshot),
+		recoveredSpec:     make(map[string]ResidentChildSpec),
+		pending:           make(map[string]struct{}),
+		activeChildren:    make(map[string]struct{}),
+		completionWaiters: make(map[string][]chan ResidentCompletion),
+		scheduler:         NewResidentScheduler(policy.MaxConcurrent),
+		queueTimeout:      policy.QueueTimeout,
+		allowedRoots:      append([]string(nil), policy.AllowedRoots...),
 	}
 }
 
@@ -288,18 +348,10 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	if err != nil {
 		_ = journal.RecordFailure(spec)
 		_ = journal.Close()
-		m.mu.Lock()
-		completion := m.onCompletion
-		m.mu.Unlock()
-		if completion != nil {
-			completion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
-		}
+		m.reportCompletion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
 		return nil, err
 	}
-	m.mu.Lock()
-	observer := m.onCompletion
-	m.mu.Unlock()
-	child := newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
+	child := newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), m.reportCompletion)
 	child.setUpdateObserver(func(historyChanged bool) { m.notifyUpdate(spec.ID, historyChanged) })
 	child.setStateObserver(func(state ResidentState) { m.notifyActivity(spec.ID, state) })
 	m.mu.Lock()
@@ -315,14 +367,11 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 		if m.children[spec.ID] == child {
 			delete(m.children, spec.ID)
 		}
-		completion := m.onCompletion
 		m.mu.Unlock()
 		_ = child.Close(context.Background())
 		if !childAccepted {
 			_ = journal.RecordTurnInterrupted(spec, spec.InitialTurnID)
-			if completion != nil {
-				completion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
-			}
+			m.reportCompletion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
 		}
 		return nil, err
 	}
@@ -469,10 +518,7 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 			_ = journal.Close()
 			return fmt.Errorf("resident manager rebuild child: %w", err)
 		}
-		m.mu.Lock()
-		observer := m.onCompletion
-		m.mu.Unlock()
-		child = newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), observer)
+		child = newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), m.reportCompletion)
 		child.setUpdateObserver(func(historyChanged bool) { m.notifyUpdate(spec.ID, historyChanged) })
 		child.setStateObserver(func(state ResidentState) { m.notifyActivity(spec.ID, state) })
 		m.mu.Lock()
@@ -506,12 +552,7 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	if childAccepted, err := child.resumeAccepted(ctx, turnID, prompt); err != nil {
 		if !childAccepted {
 			_ = child.journal.RecordTurnInterrupted(child.spec, turnID)
-			m.mu.Lock()
-			completion := m.onCompletion
-			m.mu.Unlock()
-			if completion != nil {
-				completion(ResidentCompletion{ChildID: child.spec.ID, TurnID: turnID, Task: prompt, Err: err})
-			}
+			m.reportCompletion(ResidentCompletion{ChildID: child.spec.ID, TurnID: turnID, Task: prompt, Err: err})
 		}
 		return err
 	}

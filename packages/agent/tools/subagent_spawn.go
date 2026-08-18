@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/google/uuid"
 )
 
 // SubagentSpawnTool lets the main agent delegate work through the resident
@@ -25,6 +27,8 @@ const (
 	SubagentStatusToolName = "subagent_status"
 	SubagentStopToolName   = "subagent_stop"
 	SubagentResumeToolName = "subagent_resume"
+
+	maxSubagentWaitSeconds = 5 * 60
 )
 
 type SubagentSpawnTool struct {
@@ -69,6 +73,7 @@ type subagentSpawnArgs struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	FastMode  *bool  `json:"fast_mode,omitempty"`
 	Required  bool   `json:"required,omitempty"`
+	Wait      *int   `json:"wait,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
 }
 
@@ -104,6 +109,12 @@ const subagentSpawnSchemaTemplate = `{
       "type": "boolean",
       "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. Failed, timed-out, or canceled work remains unmet until a successful retry or explicit user removal. An outcome unobserved across host restart requires explicit user reconciliation."
     },
+    "wait": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300,
+      "description": "Optional explicit number of seconds to wait for this sub-agent's initial task to finish. Omit to return immediately. The sub-agent continues in the background if this wait expires."
+    },
     "isolation": {
       "type": "string",
       "enum": ["shared", "worktree"],
@@ -115,7 +126,7 @@ const subagentSpawnSchemaTemplate = `{
 
 func (t *SubagentSpawnTool) Name() string { return SubagentSpawnToolName }
 func (t *SubagentSpawnTool) Description() string {
-	return "Delegate work to a resident sub-agent. Every spawn returns immediately and completion is host-event-driven through [auto-subagents update]. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
+	return "Delegate work to a resident sub-agent. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait. Work on unrelated independent tasks or end/yield your turn."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentSpawnSchemaTemplate)
@@ -136,6 +147,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
 		return protocolToolError(prefix + ": task is required")
+	}
+	if a.Wait != nil && (*a.Wait < 1 || *a.Wait > maxSubagentWaitSeconds) {
+		return protocolToolError(fmt.Sprintf("%s: wait must be between 1 and %d seconds", prefix, maxSubagentWaitSeconds))
 	}
 
 	workspaceMode := subagents.WorkspaceShared
@@ -217,11 +231,44 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	if err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
 	}
-	if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
+	var completion subagents.ResidentCompletion
+	waitTimedOut := false
+	if a.Wait != nil {
+		spec.InitialTurnID = uuid.NewString()
+		completionResult, cancelWait := t.ResidentManager.WatchCompletion(spec.ID, spec.InitialTurnID)
+		defer cancelWait()
+		if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
+			return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(*a.Wait)*time.Second)
+		defer cancel()
+		select {
+		case result, ok := <-completionResult:
+			if !ok {
+				return core.ToolResult{}, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
+			}
+			completion = result
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return core.ToolResult{}, ctx.Err()
+			}
+			waitTimedOut = true
+		}
+	} else if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
+	state := "queued"
+	if a.Wait != nil {
+		if waitTimedOut {
+			state = "running"
+		} else if completion.Err != nil {
+			state = "failed"
+		} else {
+			state = "completed"
+		}
+	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "spawned sub-agent %s\nstate: queued\nworkspace: %s\ntask: %s\n", spec.ID, spec.WorkspaceMode, truncateTask(task, 200))
+	fmt.Fprintf(&sb, "spawned sub-agent %s\nstate: %s\nworkspace: %s\ntask: %s\n", spec.ID, state, spec.WorkspaceMode, truncateTask(task, 200))
 	if spec.Profile != "" {
 		fmt.Fprintf(&sb, "agent: %s\n", spec.Profile)
 	}
@@ -230,9 +277,25 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		fmt.Fprintf(&sb, "reasoning: %s\n", spec.Reasoning)
 	}
 	if spec.Required {
-		sb.WriteString("required: pending\n")
+		fmt.Fprintf(&sb, "required: %s\n", state)
 	}
-	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update].")
+	if a.Wait != nil {
+		if waitTimedOut {
+			fmt.Fprintf(&sb, "wait: timed out after %d seconds\n", *a.Wait)
+			sb.WriteString("\nThe sub-agent is still running in the background. Completion is host-event-driven through [auto-subagents update].")
+		} else if completion.Err != nil {
+			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
+			if completion.Summary != "" {
+				fmt.Fprintf(&sb, "final: %s\n", completion.Summary)
+			}
+		} else {
+			if completion.Summary != "" {
+				fmt.Fprintf(&sb, "final: %s\n", completion.Summary)
+			}
+		}
+	} else {
+		sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update].")
+	}
 	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: sb.String()}}}, nil
 }
 

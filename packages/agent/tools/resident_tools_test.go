@@ -8,6 +8,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestResidentToolsUseManagerOnly(t *testing.T) {
@@ -52,6 +53,29 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	}
 }
 
+func TestResidentSpawnWaitReturnsInitialCompletion(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spawn := &SubagentSpawnTool{
+		ResidentManager: manager,
+		Enabled:         func() bool { return true },
+		DefaultProvider: func() string { return "openai" },
+		DefaultModel:    func() string { return "gpt-5" },
+		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+			return subagents.ResidentChildSpec{ID: "wait-for-completion", SessionID: "child-session", Provider: request.Provider, Model: request.Model}, nil
+		},
+	}
+	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"finish now","wait":1}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("Execute = (%#v, %v)", result, err)
+	}
+	if got := toolResultText(t, result); !strings.Contains(got, "state: completed") {
+		t.Fatalf("wait result = %q, want completed state", got)
+	}
+}
+
 func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
 		return func(context.Context, string) error { return nil }, nil
@@ -70,6 +94,8 @@ func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 		`{"task":"x","unexpected":true}`,
 		`{"task":"x"}{}`,
 		`{"task":"x","model":"gpt-5"}`,
+		`{"task":"x","wait":0}`,
+		`{"task":"x","wait":301}`,
 		`{"task":"x","isolation":"outside"}`,
 	} {
 		result, err := spawn.Execute(context.Background(), json.RawMessage(raw), nil)
@@ -128,6 +154,18 @@ func TestResidentToolsRejectUnknownFields(t *testing.T) {
 			t.Fatalf("unknown field error = %v", err)
 		}
 	}
+}
+
+func toolResultText(t *testing.T, result core.ToolResult) string {
+	t.Helper()
+	if len(result.Content) != 1 {
+		t.Fatalf("content = %#v, want one text block", result.Content)
+	}
+	block, ok := result.Content[0].(provider.TextBlock)
+	if !ok {
+		t.Fatalf("content = %#v, want text block", result.Content)
+	}
+	return block.Text
 }
 
 func TestFindResidentStatusSnapshotRejectsAmbiguousPrefix(t *testing.T) {
