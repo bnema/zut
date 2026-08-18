@@ -42,6 +42,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 		statusOK:             i.statusOK,
 		statusErr:            i.statusErr,
 		help:                 strings.Join(i.helpBlock, "\n"),
+		sessionInfo:          strings.Join(i.sessionInfoBlock, "\n"),
 		extNotes:             strings.Join(i.extNotes, "\n"),
 		extStatuses:          i.extensionStatusesKeyLocked(),
 		extWidgets:           i.extensionWidgetsKeyLocked(),
@@ -348,6 +349,9 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// viewport, which users would miss entirely.
 	if len(i.helpBlock) > 0 {
 		chat = append(chat, i.helpBlock...)
+	}
+	if len(i.sessionInfoBlock) > 0 {
+		chat = append(chat, i.sessionInfoBlock...)
 	}
 
 	if i.statusOK != "" {
