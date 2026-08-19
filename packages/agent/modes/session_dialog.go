@@ -432,6 +432,8 @@ func (d *sessionDialog) Close() {
 	d.loadSlots = nil
 	d.loadReadyThrough = 0
 	d.searchEvents = nil
+	d.searchSegments = nil
+	d.searchMatches = nil
 	d.active = false
 }
 
@@ -522,7 +524,7 @@ func (d *sessionDialog) scheduleSearchMatch() {
 		d.matchCancel()
 	}
 	query := d.query
-	segments := append([]core.SessionSearchSegment(nil), d.searchSegments...)
+	segments := d.searchSegments
 	generation := d.searchGeneration
 	events := d.searchEvents
 	ctx, cancel := context.WithCancel(d.searchContext)
@@ -944,7 +946,6 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 			if len(runes) > 0 {
 				d.query = string(runes[:len(runes)-1])
 			}
-			d.searchMatches = nil
 			d.applySearchFilter()
 			d.scheduleSearchMatch()
 			return sessionDialogAction{}
@@ -962,7 +963,6 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		if len([]rune(d.query)) > 256 {
 			d.query = string([]rune(d.query)[:256])
 		}
-		d.searchMatches = nil
 		d.applySearchFilter()
 		d.scheduleSearchMatch()
 		return sessionDialogAction{}

@@ -2034,8 +2034,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
-	loadSession := func(path string) (loadErr error) {
-		selectedMeta, err := core.ManagedSessionMeta(context.Background(), agentSessionsRoot(ZutHome(), args), path)
+	loadSessionContext := func(loadCtx context.Context, path string) (loadErr error) {
+		if err := loadCtx.Err(); err != nil {
+			return err
+		}
+		selectedMeta, err := core.ManagedSessionMeta(loadCtx, agentSessionsRoot(ZutHome(), args), path)
 		if err != nil {
 			return fmt.Errorf("validate selected session: %w", err)
 		}
@@ -2049,8 +2052,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		// Persistence callbacks take the read side, so an active session
 		// cannot be snapshotted before its lazy writes land or overwritten by
 		// a callback while the candidate is being installed.
+		if err := loadCtx.Err(); err != nil {
+			return err
+		}
 		sessionTransitionMu.Lock()
 		defer sessionTransitionMu.Unlock()
+		if err := loadCtx.Err(); err != nil {
+			return err
+		}
 		workspaceChanged := filepath.Clean(selectedMeta.CWD) != filepath.Clean(args.CWD)
 
 		currentAg := liveInteractiveAgent(iv, ag)
@@ -2150,6 +2159,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		// agent is reused and only its transcript/usage are refreshed.
 		wireAgentPersist(candidate.agent)
 
+		if err := loadCtx.Err(); err != nil {
+			return err
+		}
 		persistMu.Lock()
 		// A provider rebuild ran outside persistMu. Refuse to install it if
 		// the live agent, session, selection, transcript, or cost changed in
@@ -2220,6 +2232,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return fmt.Errorf("close current session: %w", oldCloseErr)
 		}
 		return nil
+	}
+	loadSession := func(path string) error {
+		return loadSessionContext(context.Background(), path)
 	}
 
 	// changeCWD switches the running session to a new working directory.
@@ -2646,6 +2661,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return out
 		},
 		LoadSession:           loadSession,
+		LoadSessionContext:    loadSessionContext,
 		ChangeCWD:             changeCWD,
 		PersistCompactHandoff: persistCompactHandoff,
 		CurrentCompactHandoff: currentCompactHandoff,

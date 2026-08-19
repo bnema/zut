@@ -181,15 +181,9 @@ func ReadSessionSearchSegments(ctx context.Context, path string) ([]SessionSearc
 		}
 		if len(line) > 0 {
 			var head sessionLineHead
-			if jsonErr := json.Unmarshal(line, &head); jsonErr != nil {
-				return nil, fmt.Errorf("read session search text: invalid JSON: %w", jsonErr)
-			}
-			if head.Type == "message" {
+			if jsonErr := json.Unmarshal(line, &head); jsonErr == nil && head.Type == "message" {
 				message, messageErr := readSearchMessage(line)
-				if messageErr != nil {
-					return nil, fmt.Errorf("read session search text: %w", messageErr)
-				}
-				if message.Role == provider.RoleUser || message.Role == provider.RoleAssistant {
+				if messageErr == nil && (message.Role == provider.RoleUser || message.Role == provider.RoleAssistant) {
 					for _, rawText := range message.Texts {
 						for _, text := range splitSessionSearchText(rawText) {
 							segments = append(segments, SessionSearchSegment{Path: path, Text: text, Normalized: NormalizeSessionSearchText(text), Role: message.Role, Time: message.Time, Order: order})

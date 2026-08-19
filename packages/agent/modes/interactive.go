@@ -299,6 +299,9 @@ type InteractiveConfig struct {
 	// LoadSession swaps the current session for the one at path. The
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
+	// LoadSessionContext is the cancellation-aware picker path. Embedders that
+	// only implement LoadSession retain the existing synchronous contract.
+	LoadSessionContext func(context.Context, string) error
 
 	// ChangeCWD switches the running zut session's working directory
 	// to path. The host closes the current session, rebuilds the

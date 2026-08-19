@@ -141,6 +141,8 @@ func (i *Interactive) ApplySessionAgentWithCWD(ag *core.Agent, providerName, mod
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagents.SystemPromptAddendum(profiles)
 	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
+	i.cfg.StartupContextPaths = nil
+	i.view.StartupContextPaths = nil
 	if i.cfg.Terminal != nil {
 		if seq := tui.ReportCWD(cwd); seq != "" {
 			_, _ = i.cfg.Terminal.Write([]byte(seq))
