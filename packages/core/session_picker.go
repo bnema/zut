@@ -27,11 +27,12 @@ const (
 // excerpt from a persisted session. It deliberately never contains tool,
 // developer, image, or raw JSON data.
 type SessionSearchSegment struct {
-	Path  string
-	Text  string
-	Role  provider.Role
-	Time  time.Time
-	Order int
+	Path       string
+	Text       string
+	Normalized string
+	Role       provider.Role
+	Time       time.Time
+	Order      int
 }
 
 // ListSessionPathsContext lists eligible session files for cwd or, when all is
@@ -191,7 +192,7 @@ func ReadSessionSearchSegments(ctx context.Context, path string) ([]SessionSearc
 				if message.Role == provider.RoleUser || message.Role == provider.RoleAssistant {
 					for _, rawText := range message.Texts {
 						for _, text := range splitSessionSearchText(rawText) {
-							segments = append(segments, SessionSearchSegment{Path: path, Text: text, Role: message.Role, Time: message.Time, Order: order})
+							segments = append(segments, SessionSearchSegment{Path: path, Text: text, Normalized: NormalizeSessionSearchText(text), Role: message.Role, Time: message.Time, Order: order})
 							order++
 						}
 					}
@@ -284,7 +285,7 @@ func splitSessionSearchText(text string) []string {
 	for len(runes) > 0 {
 		end := min(len(runes), maxSessionSearchRunes)
 		if end < len(runes) {
-			for split := end; split > end/2; split-- {
+			for split := end - 1; split > end/2; split-- {
 				if unicode.IsSpace(runes[split]) || unicode.Is(unicode.Sentence_Terminal, runes[split]) {
 					end = split + 1
 					break

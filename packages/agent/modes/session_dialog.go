@@ -544,9 +544,21 @@ func matchSessionSearchSegments(ctx context.Context, query string, segments []co
 	if query == "" {
 		return nil
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	texts := make([]string, len(segments))
 	for index, segment := range segments {
-		texts[index] = core.NormalizeSessionSearchText(segment.Text)
+		if ctx.Err() != nil {
+			return nil
+		}
+		texts[index] = segment.Normalized
+		if texts[index] == "" {
+			texts[index] = core.NormalizeSessionSearchText(segment.Text)
+		}
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	ranked := fuzzy.Find(query, texts)
 	matches := make(map[string]sessionSearchMatch)
@@ -558,7 +570,7 @@ func matchSessionSearchSegments(ctx context.Context, query string, segments []co
 		current := matches[segment.Path]
 		current.count++
 		if current.excerpt == "" || match.Score > current.score {
-			current.excerpt = segment.Text
+			current.excerpt = texts[match.Index]
 			current.indexes = append([]int(nil), match.MatchedIndexes...)
 			current.score = match.Score
 		}
