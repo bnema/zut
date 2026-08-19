@@ -482,7 +482,10 @@ func TestResidentManagerCapturesRealWorktreePatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
+	// Creating and diffing a real Git worktree can exceed a second on Windows,
+	// especially under filesystem scanning. Keep a bounded wait while allowing
+	// the actual asynchronous work to complete.
+	deadline := time.Now().Add(5 * time.Second)
 	for child.State() != ResidentIdle {
 		if time.Now().After(deadline) {
 			t.Fatal("worktree turn did not finish")
