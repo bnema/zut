@@ -717,7 +717,14 @@ func (i *Interactive) stripWebSearchTool() {
 		return
 	}
 	tools := i.agent.ToolsSnapshot()
-	if _, ok := tools["web_search"]; !ok {
+	hasWebCapability := false
+	for _, name := range toolspkg.WebCapabilityNames {
+		if _, ok := tools[name]; ok {
+			hasWebCapability = true
+			break
+		}
+	}
+	if !hasWebCapability {
 		return
 	}
 	toolspkg.RemoveWebCapabilities(tools)

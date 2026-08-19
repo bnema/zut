@@ -226,13 +226,11 @@ describing the tool's args (the same shape Anthropic and OpenAI accept).
 
 Tool names live in the same namespace as built-in tools (`read`,
 `write`, `edit`, `bash`, `create_worktree`, `grep`, `lsp`, `web_search`,
-`web_open`, `web_find`, `web_click`, `skill`). Conflicts with active built-ins
-are silently shadowed by the built-in. Every native public-web capability name
-is reserved even when its setting disables the capability, so an extension
-cannot claim or replace it. The `grep` name is
-reserved even when `Args.NoTools`/SDK `Config.NoTools` or an explicit
-`Args.Tools`/SDK `Config.Tools` allowlist disables the native search tool, so
-an extension cannot claim or replace it.
+`web_open`, `web_find`, `web_click`, `schedule`, `update_goal`, `skill`).
+Conflicts with active built-ins are silently shadowed by the built-in. Every
+native public-web capability name, plus `grep`, `schedule`, and `update_goal`,
+is reserved even when it is unavailable, so an extension cannot claim or
+replace it.
 
 Set `"deferred": true` to register a tool without advertising its definition initially. A loader tool can activate registered deferred tools by returning their names in `activate_tools`:
 

@@ -137,6 +137,18 @@ func (s *BrowsingStore) addPage(page *webDocument, generation uint64) (string, b
 	return id, id != ""
 }
 
+func (s *BrowsingStore) remove(id string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if doc, ok := s.docs[id]; ok {
+		delete(s.docs, id)
+		s.used -= uint64(doc.size)
+	}
+	s.mu.Unlock()
+}
+
 func (s *BrowsingStore) add(doc *webDocument, generation uint64, checkGeneration bool) string {
 	if s == nil || doc == nil {
 		return ""
@@ -288,7 +300,10 @@ func (t *WebOpenTool) Preview(_ context.Context, raw json.RawMessage) (core.Tool
 	if !found {
 		return webPageError(webPageUnknown), nil
 	}
-	return webPageValue(fmt.Sprintf("Open public web source %s. No request has been made.", doc.url), false), nil
+	if doc.source {
+		return webPageValue(fmt.Sprintf("Open public web source %s. No request has been made.", doc.url), false), nil
+	}
+	return webPageValue(fmt.Sprintf("Open stored web page %s. No request has been made.", doc.url), false), nil
 }
 func (t *WebClickTool) Preview(_ context.Context, raw json.RawMessage) (core.ToolResult, error) {
 	args, ok := parseWebClickArgs(raw)
@@ -559,7 +574,7 @@ func parsePlainWebPage(body []byte, finalURL string) *webDocument {
 }
 func extractHTMLWebPage(root *html.Node, finalURL string) (*webDocument, string) {
 	var title string
-	var content *html.Node
+	var article, main, body *html.Node
 	stack := []struct {
 		n     *html.Node
 		depth int
@@ -576,8 +591,19 @@ func extractHTMLWebPage(root *html.Node, finalURL string) (*webDocument, string)
 			if item.n.Data == "title" && title == "" {
 				title = boundPageText(nodePageText(item.n), 512)
 			}
-			if content == nil && (item.n.Data == "article" || item.n.Data == "main" || item.n.Data == "body") {
-				content = item.n
+			switch item.n.Data {
+			case "article":
+				if article == nil {
+					article = item.n
+				}
+			case "main":
+				if main == nil {
+					main = item.n
+				}
+			case "body":
+				if body == nil {
+					body = item.n
+				}
 			}
 		}
 		for child := item.n.LastChild; child != nil; child = child.PrevSibling {
@@ -586,6 +612,13 @@ func extractHTMLWebPage(root *html.Node, finalURL string) (*webDocument, string)
 				depth int
 			}{child, item.depth + 1})
 		}
+	}
+	content := article
+	if content == nil {
+		content = main
+	}
+	if content == nil {
+		content = body
 	}
 	if content == nil {
 		content = root

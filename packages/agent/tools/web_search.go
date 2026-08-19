@@ -192,14 +192,29 @@ func (t *WebSearchTool) Execute(ctx context.Context, raw json.RawMessage, progre
 	}
 	visible := results[:visibleCount]
 	if t.store != nil {
+		refs := make([]string, len(visible))
 		for index := range visible {
 			refID, committed := t.store.addSourceAtGeneration(visible[index].URL, storeGeneration)
 			if !committed {
+				for _, id := range refs {
+					t.store.remove(id)
+				}
 				return webSearchError("web search: unavailable in this session"), nil
 			}
+			refs[index] = refID
 			visible[index].RefID = refID
 		}
-		text, _, _ = formatWebSearchResults(visible)
+		initialTruncated := outputTruncated
+		var finalTruncated bool
+		text, visibleCount, finalTruncated = formatWebSearchResults(visible)
+		outputTruncated = initialTruncated || finalTruncated
+		for _, id := range refs[visibleCount:] {
+			t.store.remove(id)
+		}
+		visible = visible[:visibleCount]
+		if visibleCount == 0 {
+			return webSearchError("web search: no usable HTTP(S) results"), nil
+		}
 	}
 	return webSearchResultValue(text, false, map[string]any{
 		"backend":      "DuckDuckGo HTML",

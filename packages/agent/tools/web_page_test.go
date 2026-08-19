@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -148,13 +149,12 @@ func TestWebPageFetcherPreservesHTTPSHostnameForSNI(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	fetcher := testWebFetcher(t, server)
-	// httptest uses its own generated certificate. The unexported seam is used
-	// only to trust it for this local SNI assertion; production never supplies
-	// InsecureSkipVerify.
-	fetcher.tlsConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only local certificate
-	body, _, _, message := fetcher.fetch(context.Background(), "https://public.test/")
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	fetcher.tlsConfig = &tls.Config{RootCAs: roots}
+	body, _, _, message := fetcher.fetch(context.Background(), "https://example.com/")
 	got, _ := serverName.Load().(string)
-	if message != "" || string(body) != "secure" || got != "public.test" {
+	if message != "" || string(body) != "secure" || got != "example.com" {
 		t.Fatalf("HTTPS body=%q message=%q SNI=%q", body, message, got)
 	}
 }
@@ -165,16 +165,17 @@ func TestWebPageFetcherPinsTheValidatedAddress(t *testing.T) {
 		_, _ = w.Write([]byte("pinned"))
 	}))
 	defer server.Close()
-	var dialed string
+	var dialed atomic.Value
 	fetcher := testWebFetcher(t, server)
 	originalDial := fetcher.dial
 	fetcher.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
-		dialed = address
+		dialed.Store(address)
 		return originalDial(ctx, network, address)
 	}
 	body, _, _, message := fetcher.fetch(context.Background(), "http://public.test/")
-	if message != "" || string(body) != "pinned" || dialed != "8.8.8.8:80" {
-		t.Fatalf("pinned fetch body=%q message=%q dialed=%q", body, message, dialed)
+	got, _ := dialed.Load().(string)
+	if message != "" || string(body) != "pinned" || got != "8.8.8.8:80" {
+		t.Fatalf("pinned fetch body=%q message=%q dialed=%q", body, message, got)
 	}
 }
 

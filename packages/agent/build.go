@@ -100,7 +100,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "update_goal" {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "schedule" || info.Name == "update_goal" {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
