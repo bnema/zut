@@ -563,12 +563,12 @@ func matchSessionSearchSegments(ctx context.Context, query string, segments []co
 		if text == "" {
 			text = core.NormalizeSessionSearchText(segment.Text)
 		}
-		indexes := sessionSearchSubstringIndexes(text, query)
-		if len(indexes) == 0 {
+		count, indexes := sessionSearchSubstringMatches(text, query)
+		if count == 0 {
 			continue
 		}
 		current := matches[segment.Path]
-		current.count++
+		current.count += count
 		if current.excerpt == "" {
 			current.excerpt = text
 			current.indexes = indexes
@@ -582,18 +582,27 @@ func sessionSearchQuery(query string) bool {
 	return len([]rune(core.NormalizeSessionSearchText(query))) >= minSessionSearchQueryRunes
 }
 
-func sessionSearchSubstringIndexes(text, query string) []int {
-	start := strings.Index(text, query)
-	if start < 0 {
-		return nil
+func sessionSearchSubstringMatches(text, query string) (int, []int) {
+	count := 0
+	var firstIndexes []int
+	for start := 0; start < len(text); {
+		offset := strings.Index(text[start:], query)
+		if offset < 0 {
+			break
+		}
+		index := start + offset
+		count++
+		if firstIndexes == nil {
+			firstIndexes = make([]int, 0, utf8.RuneCountInString(query))
+			for end := index; end < index+len(query); {
+				firstIndexes = append(firstIndexes, end)
+				_, size := utf8.DecodeRuneInString(text[end:])
+				end += size
+			}
+		}
+		start = index + len(query)
 	}
-	indexes := make([]int, 0, utf8.RuneCountInString(query))
-	for index := start; index < start+len(query); {
-		indexes = append(indexes, index)
-		_, size := utf8.DecodeRuneInString(text[index:])
-		index += size
-	}
-	return indexes
+	return count, firstIndexes
 }
 
 func (d *sessionDialog) applySearchFilter() {

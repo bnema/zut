@@ -444,6 +444,25 @@ func TestSessionSearchUsesContiguousQueryAndRequiresTwoCharacters(t *testing.T) 
 	}
 }
 
+func TestSessionSearchCountsRepeatedSegmentMatches(t *testing.T) {
+	matches := matchSessionSearchSegments(context.Background(), "sharm", []core.SessionSearchSegment{
+		{Path: "repeated", Text: "sharm then sharm"},
+	})
+	match, ok := matches["repeated"]
+	if !ok {
+		t.Fatalf("matches = %#v, missing repeated session", matches)
+	}
+	if match.count != 2 {
+		t.Fatalf("match count = %d, want 2", match.count)
+	}
+	if match.excerpt != "sharm then sharm" {
+		t.Fatalf("match excerpt = %q", match.excerpt)
+	}
+	if want := []int{0, 1, 2, 3, 4}; len(match.indexes) != len(want) || match.indexes[0] != want[0] || match.indexes[1] != want[1] || match.indexes[2] != want[2] || match.indexes[3] != want[3] || match.indexes[4] != want[4] {
+		t.Fatalf("highlight indexes = %v, want %v", match.indexes, want)
+	}
+}
+
 func TestSessionDialogDefersSearchUntilSecondCharacter(t *testing.T) {
 	d := newSessionDialog()
 	d.active = true
