@@ -8,6 +8,48 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
+func TestExpandWebCapabilityTools(t *testing.T) {
+	catalogue := append([]string{"read"}, tools.WebCapabilityNames...)
+	got := expandWebCapabilityTools([]string{"read", "web_search"}, catalogue, func(string) bool { return true })
+	for _, name := range append([]string{"read"}, tools.WebCapabilityNames...) {
+		found := false
+		for _, candidate := range got {
+			if candidate == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expanded child tools = %v, missing %s", got, name)
+		}
+	}
+}
+
+func TestExpandWebCapabilityToolsPreservesPolicyAndNonWebSelections(t *testing.T) {
+	catalogue := append([]string{"read"}, tools.WebCapabilityNames...)
+	partial := expandWebCapabilityTools([]string{"web_open"}, catalogue, func(string) bool { return true })
+	for _, name := range tools.WebCapabilityNames {
+		found := false
+		for _, candidate := range partial {
+			if candidate == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("partial web selection did not expand: %v", partial)
+		}
+	}
+	denied := expandWebCapabilityTools([]string{"read", "web_search"}, catalogue, func(name string) bool { return name == "read" })
+	if len(denied) != 1 || denied[0] != "read" {
+		t.Fatalf("denied web capability = %v, want [read]", denied)
+	}
+	nonWeb := expandWebCapabilityTools([]string{"read"}, catalogue, func(string) bool { return true })
+	if len(nonWeb) != 1 || nonWeb[0] != "read" {
+		t.Fatalf("non-web selection changed to %v", nonWeb)
+	}
+}
+
 func TestResidentChildSpecSnapshotsCurrentProviderTransportSettings(t *testing.T) {
 	runtime := newSubagentRuntime(subagentRuntimeConfig{
 		Args: Args{}, Root: t.TempDir(), RepoRoot: t.TempDir(),

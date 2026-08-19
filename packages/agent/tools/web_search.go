@@ -54,6 +54,7 @@ var (
 type WebSearchTool struct {
 	endpointOverride string
 	transport        http.RoundTripper
+	store            *BrowsingStore
 }
 
 var _ core.Tool = (*WebSearchTool)(nil)
@@ -77,6 +78,7 @@ type webSearchResult struct {
 	Title   string `json:"title"`
 	URL     string `json:"url"`
 	Snippet string `json:"snippet"`
+	RefID   string `json:"ref_id,omitempty"`
 }
 
 func (t *WebSearchTool) Name() string { return "web_search" }
@@ -108,6 +110,10 @@ func (t *WebSearchTool) Execute(ctx context.Context, raw json.RawMessage, progre
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	storeGeneration := uint64(0)
+	if t.store != nil {
+		storeGeneration = t.store.snapshotGeneration()
 	}
 	if message := webSearchContextMessage(ctx, nil); message != "" {
 		return webSearchError(message), nil
@@ -185,6 +191,31 @@ func (t *WebSearchTool) Execute(ctx context.Context, raw json.RawMessage, progre
 		return webSearchError("web search: no usable HTTP(S) results"), nil
 	}
 	visible := results[:visibleCount]
+	if t.store != nil {
+		refs := make([]string, len(visible))
+		for index := range visible {
+			refID, committed := t.store.addSourceAtGeneration(visible[index].URL, storeGeneration)
+			if !committed {
+				for _, id := range refs {
+					t.store.remove(id)
+				}
+				return webSearchError("web search: unavailable in this session"), nil
+			}
+			refs[index] = refID
+			visible[index].RefID = refID
+		}
+		initialTruncated := outputTruncated
+		var finalTruncated bool
+		text, visibleCount, finalTruncated = formatWebSearchResults(visible)
+		outputTruncated = initialTruncated || finalTruncated
+		for _, id := range refs[visibleCount:] {
+			t.store.remove(id)
+		}
+		visible = visible[:visibleCount]
+		if visibleCount == 0 {
+			return webSearchError("web search: no usable HTTP(S) results"), nil
+		}
+	}
 	return webSearchResultValue(text, false, map[string]any{
 		"backend":      "DuckDuckGo HTML",
 		"query":        args.Query,
@@ -671,7 +702,11 @@ func formatWebSearchResults(results []webSearchResult) (string, int, bool) {
 	output.WriteString("\n\n")
 	visible := 0
 	for i, result := range results {
-		entry := fmt.Sprintf("[%d] %s\n    %s\n    %s\n", i+1, result.Title, result.URL, result.Snippet)
+		header := fmt.Sprintf("[%d] %s", i+1, result.Title)
+		if result.RefID != "" {
+			header += fmt.Sprintf(" (ref: %s)", result.RefID)
+		}
+		entry := fmt.Sprintf("%s\n    %s\n    %s\n", header, result.URL, result.Snippet)
 		if output.Len()+len(entry) > webSearchMaxOutputBytes {
 			break
 		}

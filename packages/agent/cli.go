@@ -1390,7 +1390,7 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 	}
 	reg := resolved.ToolRegistry
 	if resolved.WebSearchPolicy != subagents.WebSearchAllow {
-		delete(reg, "web_search")
+		tools.RemoveWebCapabilities(reg)
 	}
 	if mutateRegistry != nil {
 		reg = mutateRegistry(reg)
@@ -1412,12 +1412,15 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 }
 
 func webSearchPolicyForRegistry(policy subagents.WebSearchPolicy, reg core.Registry) subagents.WebSearchPolicy {
-	if policy == subagents.WebSearchAllow {
-		if _, ok := reg["web_search"]; ok {
-			return subagents.WebSearchAllow
+	if policy != subagents.WebSearchAllow {
+		return subagents.WebSearchDeny
+	}
+	for _, name := range tools.WebCapabilityNames {
+		if _, ok := reg[name]; !ok {
+			return subagents.WebSearchDeny
 		}
 	}
-	return subagents.WebSearchDeny
+	return subagents.WebSearchAllow
 }
 
 func webSearchToolAllowedForSession(args Args) bool {

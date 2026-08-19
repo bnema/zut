@@ -456,7 +456,7 @@ func PrintHelp(version string) {
 		row{"--cwd PATH", "treat PATH as the working directory"},
 		row{"--no-tools", "disable all tools"},
 		row{"--no-lsp", "disable the built-in LSP/linter tool"},
-		row{"--tools csv", "only enable listed tools (include lsp and web_search explicitly)"},
+		row{"--tools csv", "only enable listed tools (include lsp and web_search explicitly; web_search enables public-web navigation)"},
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zut run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},

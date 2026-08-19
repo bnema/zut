@@ -503,9 +503,9 @@ func (i *Interactive) applyTelegramTools(active bool) {
 		if name == "telegram_send_image" || name == "telegram_send_file" {
 			continue
 		}
-		if active && name == "web_search" {
+		if active && tools.IsWebCapabilityName(name) {
 			// External Telegram prompts have no per-request confirmation
-			// surface, so V1 does not expose native web search while paired.
+			// surface, so V1 does not expose public-web navigation while paired.
 			continue
 		}
 		next[name] = t

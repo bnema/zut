@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bnema/zut/packages/agent/tools"
+	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -160,7 +160,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			tc.Result = text.String()
 			i.bumpToolRevisionLocked(tc)
 		}
-		if update, ok := tools.GoalUpdateFromResult(e.Result); ok {
+		if update, ok := toolspkg.GoalUpdateFromResult(e.Result); ok {
 			if update.Status == core.GoalActive {
 				// A manager may advance a terminal goal to the next persisted
 				// goal in the same mission. Do not let a late tool result resume
@@ -232,9 +232,9 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 	if i.telegramBridge != nil {
 		// Telegram prompts arrive over an external messaging channel without a
 		// per-request confirmation surface. Keep the normal interactive
-		// registry from reintroducing web_search from the moment the bridge is
-		// attached, including while its startup handshake is in flight.
-		delete(tools, "web_search")
+		// registry from reintroducing web capabilities from the moment the
+		// bridge is attached, including while its startup handshake is in flight.
+		toolspkg.RemoveWebCapabilities(tools)
 	}
 	oldTools := ag.SetPromptConfig(system, tools)
 	_, webSearchAvailable := tools["web_search"]
@@ -250,7 +250,7 @@ func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
 	if i.telegramBridge != nil {
 		// External Telegram prompts may arrive as soon as the replacement is
 		// published, so post-swap cleanup is too late.
-		delete(registry, "web_search")
+		toolspkg.RemoveWebCapabilities(registry)
 		ag.SetTools(registry)
 	}
 	_, webSearchAvailable := registry["web_search"]

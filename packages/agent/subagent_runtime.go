@@ -43,6 +43,7 @@ type subagentRuntime struct {
 	policy          subagents.SubagentPolicy
 	activeSession   string
 	webSearchGuard  *webSearchSessionGuard
+	browsingStore   *tools.BrowsingStore
 
 	settingsMu sync.RWMutex
 	closeMu    sync.Mutex
@@ -272,8 +273,13 @@ func (rt *subagentRuntime) SetActiveSession(sessionID string) {
 	if rt == nil {
 		return
 	}
+	sessionID = strings.TrimSpace(sessionID)
 	rt.settingsMu.Lock()
-	rt.activeSession = strings.TrimSpace(sessionID)
+	if rt.activeSession != "" && rt.activeSession != sessionID && rt.browsingStore != nil {
+		rt.browsingStore.Clear()
+		rt.browsingStore = nil
+	}
+	rt.activeSession = sessionID
 	rt.settingsMu.Unlock()
 }
 
@@ -318,7 +324,12 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		allTools = append(allTools, name)
 	}
 	sort.Strings(allTools)
-	permitted := func(name string) bool { return policy.AllowsTool(name) }
+	permitted := func(name string) bool {
+		if tools.IsWebCapabilityName(name) {
+			return policy.AllowsTool("web_search")
+		}
+		return policy.AllowsTool(name)
+	}
 	var childTools []string
 	var err error
 	if request.Profile == nil || !request.Profile.ToolsDeclared {
@@ -333,6 +344,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 			return subagents.ResidentChildSpec{}, err
 		}
 	}
+	childTools = expandWebCapabilityTools(childTools, allTools, permitted)
 	workspaceMode := request.WorkspaceMode
 	if workspaceMode == "" {
 		workspaceMode = subagents.WorkspaceShared
@@ -353,11 +365,48 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	return spec, nil
 }
 
+func expandWebCapabilityTools(selected, catalogue []string, permitted func(string) bool) []string {
+	hasWebTool := false
+	for _, name := range selected {
+		if tools.IsWebCapabilityName(name) {
+			hasWebTool = true
+			break
+		}
+	}
+	if !hasWebTool {
+		return selected
+	}
+	available := make(map[string]struct{}, len(catalogue))
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, name := range catalogue {
+		available[name] = struct{}{}
+	}
+	for _, name := range selected {
+		if permitted == nil || permitted(name) {
+			selectedSet[name] = struct{}{}
+		}
+	}
+	for _, name := range tools.WebCapabilityNames {
+		if _, ok := available[name]; ok && (permitted == nil || permitted(name)) {
+			selectedSet[name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(selectedSet))
+	for name := range selectedSet {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (rt *subagentRuntime) SetWebSearchPolicy(policy subagents.WebSearchPolicy) {
 	if rt == nil {
 		return
 	}
 	rt.settingsMu.Lock()
+	if policy != subagents.WebSearchAllow && rt.webSearchPolicy == subagents.WebSearchAllow && rt.browsingStore != nil {
+		rt.browsingStore.Clear()
+	}
 	rt.webSearchPolicy = policy
 	rt.settingsMu.Unlock()
 }
@@ -425,6 +474,11 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 
 func (rt *subagentRuntime) PrepareRegistry(reg core.Registry) core.Registry {
 	reg = rt.InjectTools(reg)
+	if rt != nil {
+		rt.settingsMu.Lock()
+		rt.browsingStore = tools.ReuseBrowsingStore(reg, rt.browsingStore)
+		rt.settingsMu.Unlock()
+	}
 	if rt != nil && rt.webSearchGuard != nil {
 		return rt.webSearchGuard.wrapRegistry(reg)
 	}
@@ -432,11 +486,12 @@ func (rt *subagentRuntime) PrepareRegistry(reg core.Registry) core.Registry {
 }
 
 func (rt *subagentRuntime) PrepareResolvedRegistry(reg core.Registry, policy subagents.WebSearchPolicy) core.Registry {
+	effectivePolicy := webSearchPolicyForRegistry(policy, reg)
 	if rt != nil {
-		rt.SetWebSearchPolicy(webSearchPolicyForRegistry(policy, reg))
+		rt.SetWebSearchPolicy(effectivePolicy)
 	}
-	if policy != subagents.WebSearchAllow {
-		delete(reg, "web_search")
+	if effectivePolicy != subagents.WebSearchAllow {
+		tools.RemoveWebCapabilities(reg)
 	}
 	return rt.PrepareRegistry(reg)
 }
