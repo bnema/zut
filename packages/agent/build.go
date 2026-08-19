@@ -1247,12 +1247,17 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		for _, t := range all {
 			reg[t.Name()] = t
 		}
-		return reg
-	}
-	for _, name := range args.Tools {
-		if t, ok := all[name]; ok {
-			reg[name] = t
+	} else {
+		for _, name := range args.Tools {
+			if t, ok := all[name]; ok {
+				reg[name] = t
+			}
 		}
+	}
+	if orchestratorExplorationToolsAllowed(args) {
+		reg["read"] = all["read"]
+		reg["grep"] = all["grep"]
+		reg["web_search"] = tools.NewWebSearchTool()
 	}
 	return reg
 }
@@ -1280,6 +1285,12 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 
 func autoSubagentsToolAllowed(args Args) bool {
 	return autoSubagentsToolAllowedFor(args, "subagent_spawn")
+}
+
+// orchestratorExplorationToolsAllowed keeps the primary orchestrator's
+// read-only exploration tools available without enabling implementation tools.
+func orchestratorExplorationToolsAllowed(args Args) bool {
+	return args.Orchestrate && !args.NoTools
 }
 
 func autoSubagentsStatusToolAllowed(args Args) bool {
