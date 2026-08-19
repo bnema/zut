@@ -201,16 +201,29 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.mu.Lock()
 			i.sessionDialog.Close()
 			i.sessionLoads = nil
+			i.sessionSearches = nil
 			i.mu.Unlock()
 			i.invalidate()
 			return false
 		}
 		manualRenamePath := ""
+		renameActive := false
+		hasSelection := false
 		i.mu.Lock()
-		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions) && i.cfg.CurrentSessionPath != nil {
+		renameActive = i.sessionDialog.renaming
+		hasSelection = i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions)
+		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && hasSelection && i.cfg.CurrentSessionPath != nil {
 			manualRenamePath = i.sessionDialog.sessions[i.sessionDialog.cursor].Path
 		}
 		i.mu.Unlock()
+		if k.Kind == tui.KeyEnter && !renameActive && hasSelection && !i.canResumeSessionSelection() {
+			i.mu.Lock()
+			i.statusErr = "wait for the active work to finish before resuming a session"
+			i.statusOK = ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
 		manualRenameCurrent := manualRenamePath != "" && i.cfg.CurrentSessionPath() == manualRenamePath
 		if manualRenameCurrent {
 			i.markSessionTitleSwitching()
@@ -219,6 +232,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		act := i.sessionDialog.HandleKey(k)
 		if act.Select || act.Close {
 			i.sessionLoads = nil
+			i.sessionSearches = nil
+		}
+		if act.ToggleScope {
+			i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD, !i.sessionDialog.allScope)
+			i.sessionSearches = nil
+		}
+		if act.StartSearch {
+			i.sessionSearches = i.sessionDialog.StartSearch(ctx)
 		}
 		i.mu.Unlock()
 		if act.Select {

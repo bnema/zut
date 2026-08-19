@@ -436,13 +436,20 @@ type sessionResumeCandidate struct {
 // error this function closes the candidate session and leaves the current
 // agent untouched.
 func prepareSessionResume(path string, current *core.Agent, currentProvider, currentModel string, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (sessionResumeCandidate, error) {
-	return prepareSessionResumeWithOptions(path, current, currentProvider, currentModel, false, false, buildAgentFor)
+	return prepareSessionResumeWithOptions(path, current, currentProvider, currentModel, false, false, false, buildAgentFor)
+}
+
+// prepareSessionResumeForWorkspace always rebuilds the agent. A selected
+// transcript from another cwd must not retain tools, instructions, or sandbox
+// state assembled for the previous workspace even when provider/model match.
+func prepareSessionResumeForWorkspace(path string, current *core.Agent, currentProvider, currentModel string, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (sessionResumeCandidate, error) {
+	return prepareSessionResumeWithOptions(path, current, currentProvider, currentModel, false, false, true, buildAgentFor)
 }
 
 // prepareSessionResumeWithOptions is the provider/model-aware implementation.
 // An explicit CLI provider or model keeps that field authoritative; an empty
 // field falls back to the selected session's metadata when it is complete.
-func prepareSessionResumeWithOptions(path string, current *core.Agent, currentProvider, currentModel string, explicitProvider, explicitModel bool, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (candidate sessionResumeCandidate, err error) {
+func prepareSessionResumeWithOptions(path string, current *core.Agent, currentProvider, currentModel string, explicitProvider, explicitModel, forceRebuild bool, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (candidate sessionResumeCandidate, err error) {
 	if current == nil {
 		return candidate, fmt.Errorf("no agent running; log in first")
 	}
@@ -496,7 +503,7 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 	if explicitModel {
 		resumeModel = currentModel
 	}
-	if resumeProvider == currentProvider && resumeModel == currentModel {
+	if !forceRebuild && resumeProvider == currentProvider && resumeModel == currentModel {
 		keepSession = true
 		return candidate, nil
 	}
@@ -581,7 +588,7 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 		strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(currentModel) {
 		return candidate, nil
 	}
-	candidate, err := prepareSessionResumeWithOptions(sess.Path, ag, currentProvider, currentModel, explicitProvider, explicitModel, buildAgentFor)
+	candidate, err := prepareSessionResumeWithOptions(sess.Path, ag, currentProvider, currentModel, explicitProvider, explicitModel, false, buildAgentFor)
 	if err != nil {
 		return sessionResumeCandidate{}, joinSessionCloseError(err, sess)
 	}
@@ -2028,6 +2035,18 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
 	loadSession := func(path string) (loadErr error) {
+		selectedMeta, err := core.ManagedSessionMeta(context.Background(), agentSessionsRoot(ZutHome(), args), path)
+		if err != nil {
+			return fmt.Errorf("validate selected session: %w", err)
+		}
+		if info, statErr := os.Stat(selectedMeta.CWD); statErr != nil || !info.IsDir() {
+			if statErr != nil {
+				return fmt.Errorf("selected session cwd: %w", statErr)
+			}
+			return fmt.Errorf("selected session cwd is not a directory: %s", selectedMeta.CWD)
+		}
+		workspaceChanged := filepath.Clean(selectedMeta.CWD) != filepath.Clean(args.CWD)
+
 		// Hold the transition lock from the pre-flush through the commit.
 		// Persistence callbacks take the read side, so an active session
 		// cannot be snapshotted before its lazy writes land or overwritten by
@@ -2064,15 +2083,63 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		// provider settings on the shared runtime, so restore those settings on
 		// every failed path, including errors returned during preparation.
 		runtimeConfig := runtime.snapshotConfiguration()
+		oldCWD := args.CWD
+		oldResolvedCWD := r.CWD
+		oldPermissionSet := args.PermissionSet
+		oldSandboxRoot := ""
+		oldSandboxLocked := false
+		if sharedSandbox != nil {
+			oldSandboxRoot = sharedSandbox.Root
+			oldSandboxLocked = sharedSandbox.Locked()
+		}
+		rollbackWorkspace := func() {
+			if !workspaceChanged {
+				return
+			}
+			args.CWD = oldCWD
+			r.CWD = oldResolvedCWD
+			args.PermissionSet = oldPermissionSet
+			runtime.SetRepoRoot(oldResolvedCWD)
+			if sharedSandbox != nil {
+				sharedSandbox.Root = oldSandboxRoot
+				if oldSandboxLocked {
+					sharedSandbox.Lock()
+				} else {
+					sharedSandbox.Unlock()
+				}
+			}
+		}
+		if workspaceChanged {
+			args.CWD = selectedMeta.CWD
+			r.CWD = selectedMeta.CWD
+			runtime.SetRepoRoot(selectedMeta.CWD)
+			if args.PermissionSet != nil {
+				expanded := args.PermissionSet.Expand(selectedMeta.CWD, args.AgentDataDir)
+				args.PermissionSet = &expanded
+			}
+			if sharedSandbox != nil {
+				sharedSandbox.Root = selectedMeta.CWD
+				if oldSandboxLocked {
+					sharedSandbox.Lock()
+				} else {
+					sharedSandbox.Unlock()
+				}
+			}
+		}
 		committed := false
 		var candidate sessionResumeCandidate
 		defer func() {
 			if !committed {
+				rollbackWorkspace()
 				runtime.restoreConfiguration(runtimeConfig)
 				loadErr = joinSessionCloseError(loadErr, candidate.session)
 			}
 		}()
-		candidate, err := prepareSessionResume(path, currentAg, currentProvider, currentModel, baseBuildAgentFor)
+		if workspaceChanged {
+			candidate, err = prepareSessionResumeForWorkspace(path, currentAg, currentProvider, currentModel, baseBuildAgentFor)
+		} else {
+			candidate, err = prepareSessionResume(path, currentAg, currentProvider, currentModel, baseBuildAgentFor)
+		}
 		if err != nil {
 			// prepareSessionResume closes its append handle on failure;
 			// no live agent or session has been changed.
@@ -2118,7 +2185,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			// writer, so no new message can land on the old file between the
 			// two state changes.
 			if iv != nil {
-				iv.ApplySessionAgentWithCompactHandoff(candidate.agent, candidate.provider, candidate.model, candidate.session.Meta.CompactHandoff)
+				if workspaceChanged {
+					iv.ApplySessionAgentWithCWD(candidate.agent, candidate.provider, candidate.model, selectedMeta.CWD, candidate.session.Meta.CompactHandoff)
+				} else {
+					iv.ApplySessionAgentWithCompactHandoff(candidate.agent, candidate.provider, candidate.model, candidate.session.Meta.CompactHandoff)
+				}
 			}
 			ag = candidate.agent
 		} else {
@@ -2496,6 +2567,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		ShowInstructionsAtStartup:       initialCfg.ShowInstructionsAtStartup,
 		ZutHome:                         ZutHome(),
 		SessionsRoot:                    agentSessionsRoot(ZutHome(), args),
+		SessionsDisabled:                args.NoSess,
 		Version:                         version,
 		UpdateInfoChan:                  updateCh,
 		Sandbox:                         sharedSandbox,

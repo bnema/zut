@@ -46,6 +46,17 @@ func TestSessionsSlashUsesAgentSessionRoot(t *testing.T) {
 	}
 }
 
+func TestSessionsSlashRejectsNoSessionMode(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{SessionsDisabled: true})
+	i.runSlash(context.Background(), "/sessions")
+	if i.sessionDialog.Active() {
+		t.Fatal("session picker opened while sessions were disabled")
+	}
+	if i.statusErr != "sessions are disabled by --no-session" {
+		t.Fatalf("status error = %q", i.statusErr)
+	}
+}
+
 func TestSessionsRootDefaultsToZutHome(t *testing.T) {
 	i := &Interactive{cfg: InteractiveConfig{ZutHome: "/zut/home"}}
 	if got := i.sessionsRoot(); got != "/zut/home" {

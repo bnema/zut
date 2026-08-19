@@ -310,8 +310,16 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
+		if i.cfg.SessionsDisabled {
+			i.mu.Lock()
+			i.statusErr = "sessions are disabled by --no-session"
+			i.statusOK = ""
+			i.mu.Unlock()
+			break
+		}
 		i.mu.Lock()
 		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
+		i.sessionSearches = nil
 		i.mu.Unlock()
 	case "/fork":
 		i.doSessionFork()
@@ -978,6 +986,19 @@ func totalTurnsLocked(msgs []provider.Message) int {
 	}
 	return n
 }
+func (i *Interactive) canResumeSessionSelection() bool {
+	if i == nil || i.cfg.LoadSession == nil {
+		return false
+	}
+	i.mu.Lock()
+	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
+		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	queued := len(i.queued) != 0
+	ag := i.agent
+	i.mu.Unlock()
+	return !busy && !queued && ag != nil && ag.QueuedMessageCount() == 0
+}
+
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
