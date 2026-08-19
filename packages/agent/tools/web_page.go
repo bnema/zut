@@ -701,7 +701,7 @@ func pageLink(base, href string) (string, bool) {
 	}
 	u = b.ResolveReference(u)
 	u.Fragment = ""
-	if u.User != nil || !(u.Scheme == "http" || u.Scheme == "https") {
+	if u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", false
 	}
 	result := u.String()
@@ -948,7 +948,7 @@ func asciiHost(host string) bool {
 		return false
 	}
 	for _, r := range host {
-		if r > 127 || !(r == '.' || r == '-' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+		if r > 127 || (r != '.' && r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9')) {
 			return false
 		}
 	}
