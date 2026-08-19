@@ -10,7 +10,6 @@ import (
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
-	"github.com/sahilm/fuzzy"
 )
 
 type sessionLoadEventKind uint8
@@ -41,7 +40,6 @@ type sessionSearchMatch struct {
 	count   int
 	excerpt string
 	indexes []int
-	score   int
 }
 
 type sessionLoadEvent struct {
@@ -63,7 +61,10 @@ type sessionLoadJob struct {
 	path  string
 }
 
-const maxSessionLoadWorkers = 8
+const (
+	maxSessionLoadWorkers      = 8
+	minSessionSearchQueryRunes = 2
+)
 
 // sessionDialog is the inline picker shown when the user runs /sessions.
 type sessionDialog struct {
@@ -79,6 +80,7 @@ type sessionDialog struct {
 	cwd              string
 	paths            []string
 	query            string
+	searchRequested  bool
 	searching        bool
 	searchPending    bool
 	searchReady      bool
@@ -173,6 +175,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.allScope = len(allScope) > 0 && allScope[0]
 	d.paths = nil
 	d.query = ""
+	d.searchRequested = false
 	d.searching = false
 	d.searchPending = false
 	d.searchReady = false
@@ -371,7 +374,7 @@ func (d *sessionDialog) appendLoadedSessions(start, end int) {
 			continue
 		}
 		d.baseSessions = append(d.baseSessions, slot.summary)
-		if d.query == "" {
+		if !sessionSearchQuery(d.query) || !d.searchReady {
 			d.sessions = append(d.sessions, slot.summary)
 		}
 	}
@@ -428,6 +431,7 @@ func (d *sessionDialog) Close() {
 		d.matchCancel = nil
 	}
 	d.loading = false
+	d.searchRequested = false
 	d.searching = false
 	d.loadSlots = nil
 	d.loadReadyThrough = 0
@@ -437,9 +441,13 @@ func (d *sessionDialog) Close() {
 	d.active = false
 }
 
-// StartSearch starts one background corpus read for this picker opening. Query
-// edits reuse the retained corpus and never reopen a session file.
+// StartSearch starts one background corpus read after the query reaches the
+// minimum length. Query edits reuse the retained corpus and never reopen a
+// session file.
 func (d *sessionDialog) StartSearch(parent context.Context) <-chan sessionSearchEvent {
+	if !sessionSearchQuery(d.query) {
+		return nil
+	}
 	if d.searchEvents != nil {
 		return d.searchEvents
 	}
@@ -517,7 +525,7 @@ func (d *sessionDialog) ApplySearch(event sessionSearchEvent) {
 }
 
 func (d *sessionDialog) scheduleSearchMatch() {
-	if !d.searchReady || d.query == "" || d.searchEvents == nil || d.searchCancel == nil {
+	if !d.searchReady || !sessionSearchQuery(d.query) || d.searchEvents == nil || d.searchCancel == nil {
 		return
 	}
 	if d.matchCancel != nil {
@@ -543,46 +551,62 @@ func (d *sessionDialog) scheduleSearchMatch() {
 
 func matchSessionSearchSegments(ctx context.Context, query string, segments []core.SessionSearchSegment) map[string]sessionSearchMatch {
 	query = core.NormalizeSessionSearchText(query)
-	if query == "" {
+	if !sessionSearchQuery(query) || ctx.Err() != nil {
 		return nil
 	}
-	if ctx.Err() != nil {
-		return nil
-	}
-	texts := make([]string, len(segments))
-	for index, segment := range segments {
-		if ctx.Err() != nil {
-			return nil
-		}
-		texts[index] = segment.Normalized
-		if texts[index] == "" {
-			texts[index] = core.NormalizeSessionSearchText(segment.Text)
-		}
-	}
-	if ctx.Err() != nil {
-		return nil
-	}
-	ranked := fuzzy.Find(query, texts)
 	matches := make(map[string]sessionSearchMatch)
-	for _, match := range ranked {
-		if ctx.Err() != nil || match.Index < 0 || match.Index >= len(segments) {
+	for _, segment := range segments {
+		if ctx.Err() != nil {
 			return matches
 		}
-		segment := segments[match.Index]
+		text := segment.Normalized
+		if text == "" {
+			text = core.NormalizeSessionSearchText(segment.Text)
+		}
+		count, indexes := sessionSearchSubstringMatches(text, query)
+		if count == 0 {
+			continue
+		}
 		current := matches[segment.Path]
-		current.count++
-		if current.excerpt == "" || match.Score > current.score {
-			current.excerpt = texts[match.Index]
-			current.indexes = append([]int(nil), match.MatchedIndexes...)
-			current.score = match.Score
+		current.count += count
+		if current.excerpt == "" {
+			current.excerpt = text
+			current.indexes = indexes
 		}
 		matches[segment.Path] = current
 	}
 	return matches
 }
 
+func sessionSearchQuery(query string) bool {
+	return len([]rune(core.NormalizeSessionSearchText(query))) >= minSessionSearchQueryRunes
+}
+
+func sessionSearchSubstringMatches(text, query string) (int, []int) {
+	count := 0
+	var firstIndexes []int
+	for start := 0; start < len(text); {
+		offset := strings.Index(text[start:], query)
+		if offset < 0 {
+			break
+		}
+		index := start + offset
+		count++
+		if firstIndexes == nil {
+			firstIndexes = make([]int, 0, utf8.RuneCountInString(query))
+			for end := index; end < index+len(query); {
+				firstIndexes = append(firstIndexes, end)
+				_, size := utf8.DecodeRuneInString(text[end:])
+				end += size
+			}
+		}
+		start = index + len(query)
+	}
+	return count, firstIndexes
+}
+
 func (d *sessionDialog) applySearchFilter() {
-	if d.query == "" {
+	if !sessionSearchQuery(d.query) || !d.searchReady {
 		d.sessions = append(d.sessions[:0], d.baseSessions...)
 	} else {
 		filtered := make([]core.SessionSummary, 0, len(d.baseSessions))
@@ -627,7 +651,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		if d.allScope {
 			message = "no previous sessions in this namespace"
 		}
-		if d.query != "" && d.searchReady {
+		if sessionSearchQuery(d.query) && d.searchReady {
 			message = "no matching sessions"
 		}
 		lines = append(lines, th.FGColor(th.Muted, message))
@@ -648,9 +672,11 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		return lines
 	}
 	hint := "↑/↓ pick · enter resume · / search · tab scope · r rename · esc cancel"
-	if d.searchEvents != nil {
+	if d.searchRequested {
 		hint = "search: " + d.query + "  (esc clear · tab scope)"
-		if d.searching {
+		if !sessionSearchQuery(d.query) {
+			hint += " · type 2+ characters"
+		} else if d.searching {
 			hint += " · indexing"
 		}
 	}
@@ -685,8 +711,11 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	}
 	for i := d.viewTop; i < viewBot; i++ {
 		s := d.sessions[i]
-		match := d.searchMatches[s.Path]
-		plain := "  " + formatSessionSearchRowPlain(s, width-2, match.count)
+		matchCount := 0
+		if sessionSearchQuery(d.query) {
+			matchCount = d.searchMatches[s.Path].count
+		}
+		plain := "  " + formatSessionSearchRowPlain(s, width-2, matchCount)
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
@@ -702,7 +731,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		cwd := sanitizeSessionTreeText(friendlyPath(d.sessions[d.cursor].CWD))
 		lines = append(lines, th.FGColor(th.Muted, "  cwd: "+cwd))
 	}
-	if d.query != "" && d.cursor >= 0 && d.cursor < len(d.sessions) {
+	if sessionSearchQuery(d.query) && d.cursor >= 0 && d.cursor < len(d.sessions) {
 		if match := d.searchMatches[d.sessions[d.cursor].Path]; match.excerpt != "" {
 			lines = append(lines, "  "+highlightSessionSearchExcerpt(th, match.excerpt, match.indexes, width-2))
 		}
@@ -968,10 +997,11 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	if k.Kind == tui.KeyTab {
 		return sessionDialogAction{ToggleScope: true}
 	}
-	if k.Kind == tui.KeyRune && k.Rune == '/' && d.query == "" {
-		return sessionDialogAction{StartSearch: true}
+	if k.Kind == tui.KeyRune && k.Rune == '/' && d.query == "" && !d.searchRequested {
+		d.searchRequested = true
+		return sessionDialogAction{}
 	}
-	if d.query != "" || d.searchEvents != nil {
+	if d.searchRequested {
 		switch k.Kind {
 		case tui.KeyEsc:
 			if d.query == "" {
@@ -987,9 +1017,16 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 			if len(runes) > 0 {
 				d.query = string(runes[:len(runes)-1])
 			}
+			if !sessionSearchQuery(d.query) {
+				if d.matchCancel != nil {
+					d.matchCancel()
+					d.matchCancel = nil
+				}
+				d.searchMatches = nil
+			}
 			d.applySearchFilter()
 			d.scheduleSearchMatch()
-			return sessionDialogAction{}
+			return sessionDialogAction{StartSearch: d.searchEvents == nil && sessionSearchQuery(d.query)}
 		case tui.KeyPaste:
 			d.query += k.Paste
 		case tui.KeyRune:
@@ -1006,7 +1043,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		}
 		d.applySearchFilter()
 		d.scheduleSearchMatch()
-		return sessionDialogAction{}
+		return sessionDialogAction{StartSearch: d.searchEvents == nil && sessionSearchQuery(d.query)}
 	}
 
 	if d.loading && len(d.sessions) == 0 {

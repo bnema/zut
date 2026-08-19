@@ -419,6 +419,93 @@ func TestSessionDialogSearchShowsCountsAndExcerpt(t *testing.T) {
 	}
 }
 
+func TestSessionSearchUsesContiguousQueryAndRequiresTwoCharacters(t *testing.T) {
+	segments := []core.SessionSearchSegment{
+		{Path: "scattered", Text: "sizzle then harp, again remote"},
+		{Path: "exact", Text: "resume the sharm project"},
+	}
+
+	if matches := matchSessionSearchSegments(context.Background(), "s", segments); matches != nil {
+		t.Fatalf("one-character search = %#v, want no search", matches)
+	}
+	matches := matchSessionSearchSegments(context.Background(), "sharm", segments)
+	if len(matches) != 1 {
+		t.Fatalf("matches = %#v, want only exact session", matches)
+	}
+	match, ok := matches["exact"]
+	if !ok {
+		t.Fatalf("matches = %#v, missing exact session", matches)
+	}
+	if match.count != 1 || match.excerpt != "resume the sharm project" {
+		t.Fatalf("exact match = %#v", match)
+	}
+	if want := []int{11, 12, 13, 14, 15}; len(match.indexes) != len(want) || match.indexes[0] != want[0] || match.indexes[1] != want[1] || match.indexes[2] != want[2] || match.indexes[3] != want[3] || match.indexes[4] != want[4] {
+		t.Fatalf("highlight indexes = %v, want %v", match.indexes, want)
+	}
+}
+
+func TestSessionSearchCountsRepeatedSegmentMatches(t *testing.T) {
+	matches := matchSessionSearchSegments(context.Background(), "sharm", []core.SessionSearchSegment{
+		{Path: "repeated", Text: "sharm then sharm"},
+	})
+	match, ok := matches["repeated"]
+	if !ok {
+		t.Fatalf("matches = %#v, missing repeated session", matches)
+	}
+	if match.count != 2 {
+		t.Fatalf("match count = %d, want 2", match.count)
+	}
+	if match.excerpt != "sharm then sharm" {
+		t.Fatalf("match excerpt = %q", match.excerpt)
+	}
+	if want := []int{0, 1, 2, 3, 4}; len(match.indexes) != len(want) || match.indexes[0] != want[0] || match.indexes[1] != want[1] || match.indexes[2] != want[2] || match.indexes[3] != want[3] || match.indexes[4] != want[4] {
+		t.Fatalf("highlight indexes = %v, want %v", match.indexes, want)
+	}
+}
+
+func TestSessionDialogDefersSearchUntilSecondCharacter(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.baseSessions = []core.SessionSummary{{Path: "one"}, {Path: "two"}}
+	d.sessions = append([]core.SessionSummary(nil), d.baseSessions...)
+
+	if action := d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: '/'}); action.StartSearch || !d.searchRequested {
+		t.Fatalf("slash action = %#v, search requested = %v", action, d.searchRequested)
+	}
+	if action := d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 's'}); action.StartSearch || d.query != "s" {
+		t.Fatalf("one-character action = %#v, query = %q", action, d.query)
+	}
+	if len(d.sessions) != len(d.baseSessions) {
+		t.Fatalf("one-character search filtered sessions: %#v", d.sessions)
+	}
+	if events := d.StartSearch(context.Background()); events != nil || d.searchEvents != nil {
+		t.Fatal("one-character search started the corpus reader")
+	}
+	if action := d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'h'}); !action.StartSearch || d.query != "sh" {
+		t.Fatalf("two-character action = %#v, query = %q", action, d.query)
+	}
+}
+
+func TestSessionDialogClearsMatchesBelowSearchMinimum(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.searchRequested = true
+	d.searchReady = true
+	d.query = "sh"
+	d.baseSessions = []core.SessionSummary{{Path: "one", MessageCount: 1, FirstUserText: "session"}}
+	d.sessions = append([]core.SessionSummary(nil), d.baseSessions...)
+	d.searchMatches = map[string]sessionSearchMatch{"one": {count: 1}}
+
+	d.HandleKey(tui.Key{Kind: tui.KeyBackspace})
+	if d.searchMatches != nil {
+		t.Fatalf("matches after shortening query = %#v, want nil", d.searchMatches)
+	}
+	rendered := stripANSIBytes(strings.Join(d.Render(tui.Dark, 120), "\n"))
+	if strings.Contains(rendered, "1 match") {
+		t.Fatalf("one-character search rendered stale match count: %q", rendered)
+	}
+}
+
 func TestSessionDialogIgnoresStaleLoadResults(t *testing.T) {
 	first := newSessionDialog()
 	firstEvents := first.Open(context.Background(), t.TempDir(), t.TempDir())
