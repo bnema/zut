@@ -6,6 +6,30 @@ import (
 	"github.com/bnema/zut/packages/agent/tools"
 )
 
+func TestBuildToolRegistryWebCapabilityBundle(t *testing.T) {
+	cwd := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		args Args
+		want bool
+	}{
+		{name: "default", want: true},
+		{name: "explicit selector", args: Args{ToolsSet: true, Tools: []string{"web_search"}}, want: true},
+		{name: "excluded explicit list", args: Args{ToolsSet: true, Tools: []string{"read"}}, want: false},
+		{name: "no tools", args: Args{NoTools: true}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := buildToolRegistry(tc.args, cwd, nil, false, false, false)
+			for _, name := range tools.WebCapabilityNames {
+				_, got := registry[name]
+				if got != tc.want {
+					t.Fatalf("tool %s present = %v, want %v", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildToolRegistryGrepSelectionAndDefaults(t *testing.T) {
 	cwd := t.TempDir()
 

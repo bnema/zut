@@ -97,11 +97,10 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 	}
 	changed := false
 	for _, info := range mgr.Tools() {
-		// web_search and grep remain reserved native-tool names even when
-		// their capability policy excludes the current session. An extension
-		// must not turn a normal CLI opt-out into a differently implemented
-		// capability with the same model-visible name.
-		if info.Name == "web_search" || info.Name == "grep" || info.Name == "update_goal" {
+		// Web capability and other native names remain reserved even when their
+		// policy excludes the current session. An extension must not turn a
+		// normal CLI opt-out into a differently implemented capability.
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "update_goal" {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -1235,7 +1234,9 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"update_goal":     &tools.UpdateGoalTool{},
 	}
 	if webSearchAllowedForRegistry(args) {
-		all["web_search"] = tools.NewWebSearchTool()
+		for name, tool := range tools.NewWebTools() {
+			all[name] = tool
+		}
 	}
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
@@ -1250,6 +1251,14 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		return reg
 	}
 	for _, name := range args.Tools {
+		if name == "web_search" {
+			for webName, tool := range all {
+				if tools.IsWebCapabilityName(webName) {
+					reg[webName] = tool
+				}
+			}
+			continue
+		}
 		if t, ok := all[name]; ok {
 			reg[name] = t
 		}
@@ -1319,7 +1328,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "update_goal"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

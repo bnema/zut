@@ -6,15 +6,16 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
 
-var errWebSearchSessionRevoked = errors.New("web_search is unavailable in this session")
+var errWebSearchSessionRevoked = errors.New("web capability is unavailable in this session")
 
-// webSearchSessionGuard is shared by every web_search tool instance built for
-// one interactive session. Registry refreshes replace the advertised tool, but
-// an older tool already snapshotted by core still consults this guard at its
-// execution boundary.
+// webSearchSessionGuard is shared by every web capability tool instance built
+// for one interactive session. Registry refreshes replace the advertised
+// tools, but older tools already snapshotted by core still consult this guard
+// at their execution boundary.
 type webSearchSessionGuard struct {
 	available  atomic.Bool
 	generation atomic.Uint64
@@ -40,30 +41,28 @@ func (g *webSearchSessionGuard) wrapRegistry(reg core.Registry) core.Registry {
 	if g == nil || reg == nil {
 		return reg
 	}
-	tool, ok := reg["web_search"]
-	if !ok {
-		return reg
-	}
-	if webSearchToolGuard(tool) == g {
-		return reg
-	}
-	guarded := &guardedWebSearchTool{
-		Tool:       tool,
-		guard:      g,
-		generation: g.generation.Load(),
-	}
-	if previewer, ok := tool.(core.ToolPreviewer); ok {
-		reg["web_search"] = &guardedWebSearchPreviewTool{
-			guardedWebSearchTool: guarded,
-			previewer:            previewer,
+	for name, tool := range reg {
+		if !tools.IsWebCapabilityName(name) || webSearchToolGuard(tool) == g {
+			continue
 		}
-		return reg
+		guarded := &guardedWebSearchTool{
+			Tool:       tool,
+			guard:      g,
+			generation: g.generation.Load(),
+		}
+		if previewer, ok := tool.(core.ToolPreviewer); ok {
+			reg[name] = &guardedWebSearchPreviewTool{
+				guardedWebSearchTool: guarded,
+				previewer:            previewer,
+			}
+			continue
+		}
+		reg[name] = guarded
 	}
-	reg["web_search"] = guarded
 	return reg
 }
 
-// guardedWebSearchTool deliberately wraps only web_search. All extension
+// guardedWebSearchTool wraps every member of the web capability. All extension
 // interception, confirmation, and permission behavior remains in the normal
 // core path; this final check only closes the stale-registry execution window.
 type guardedWebSearchTool struct {

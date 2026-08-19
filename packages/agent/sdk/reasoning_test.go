@@ -3,6 +3,7 @@ package sdk
 import (
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
 
@@ -32,8 +33,10 @@ func TestNewRequiresExplicitWebSearchTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer withoutWeb.Close()
-	if _, ok := withoutWeb.agent.ToolsSnapshot()["web_search"]; ok {
-		t.Fatal("SDK registry inherited web_search without explicit Config.Tools opt-in")
+	for _, name := range tools.WebCapabilityNames {
+		if _, ok := withoutWeb.agent.ToolsSnapshot()[name]; ok {
+			t.Fatalf("SDK registry inherited %s without explicit Config.Tools opt-in", name)
+		}
 	}
 
 	withWeb, err := New(Config{Provider: "openai", Model: "gpt-5", Tools: []string{"web_search"}})
@@ -41,7 +44,9 @@ func TestNewRequiresExplicitWebSearchTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer withWeb.Close()
-	if _, ok := withWeb.agent.ToolsSnapshot()["web_search"]; !ok {
-		t.Fatal("SDK registry omitted explicitly requested web_search")
+	for _, name := range tools.WebCapabilityNames {
+		if _, ok := withWeb.agent.ToolsSnapshot()[name]; !ok {
+			t.Fatalf("SDK registry omitted %s from explicit web_search capability", name)
+		}
 	}
 }

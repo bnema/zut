@@ -8,6 +8,23 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
+func TestExpandWebCapabilityTools(t *testing.T) {
+	catalogue := append([]string{"read"}, tools.WebCapabilityNames...)
+	got := expandWebCapabilityTools([]string{"read", "web_search"}, catalogue, func(string) bool { return true })
+	for _, name := range append([]string{"read"}, tools.WebCapabilityNames...) {
+		found := false
+		for _, candidate := range got {
+			if candidate == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expanded child tools = %v, missing %s", got, name)
+		}
+	}
+}
+
 func TestResidentChildSpecSnapshotsCurrentProviderTransportSettings(t *testing.T) {
 	runtime := newSubagentRuntime(subagentRuntimeConfig{
 		Args: Args{}, Root: t.TempDir(), RepoRoot: t.TempDir(),

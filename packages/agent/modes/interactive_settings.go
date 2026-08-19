@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -719,7 +720,7 @@ func (i *Interactive) stripWebSearchTool() {
 	if _, ok := tools["web_search"]; !ok {
 		return
 	}
-	delete(tools, "web_search")
+	toolspkg.RemoveWebCapabilities(tools)
 	i.agent.SetTools(tools)
 }
 func (i *Interactive) applySettingToggle(key string, value bool) {
