@@ -760,10 +760,11 @@ func formatSessionSearchRowPlain(s core.SessionSummary, maxWidth, matchCount int
 }
 
 func highlightSessionSearchExcerpt(th tui.Theme, excerpt string, indexes []int, maxWidth int) string {
-	excerpt = truncateSessionSearchExcerpt(excerpt, 240)
-	if maxWidth > 0 && len([]rune(excerpt)) > maxWidth {
-		excerpt = truncateSessionSearchExcerpt(excerpt, maxWidth)
+	limit := 240
+	if maxWidth > 0 && maxWidth < limit {
+		limit = maxWidth
 	}
+	excerpt, indexes = windowSessionSearchExcerpt(excerpt, indexes, limit)
 	if len(indexes) == 0 {
 		return th.FGColor(th.Muted, excerpt)
 	}
@@ -785,15 +786,55 @@ func highlightSessionSearchExcerpt(th tui.Theme, excerpt string, indexes []int, 
 	return out.String()
 }
 
-func truncateSessionSearchExcerpt(text string, limit int) string {
+func windowSessionSearchExcerpt(text string, indexes []int, limit int) (string, []int) {
 	runes := []rune(text)
 	if limit <= 0 || len(runes) <= limit {
-		return text
+		return text, indexes
 	}
-	if limit <= 3 {
-		return string(runes[:limit])
+	matchRune := 0
+	if len(indexes) > 0 {
+		for runeIndex, byteIndex := range runeByteOffsets(text) {
+			if byteIndex <= indexes[0] {
+				matchRune = runeIndex
+			} else {
+				break
+			}
+		}
 	}
-	return string(runes[:limit-3]) + "..."
+	room := limit - 3
+	if room < 1 {
+		return string(runes[:limit]), nil
+	}
+	start := max(0, matchRune-room/2)
+	if start+room > len(runes) {
+		start = len(runes) - room
+	}
+	end := min(len(runes), start+room)
+	prefix := ""
+	if start > 0 {
+		prefix = "..."
+	}
+	suffix := ""
+	if end < len(runes) {
+		suffix = "..."
+	}
+	base := len(string(runes[:start]))
+	stop := len(string(runes[:end]))
+	rebased := make([]int, 0, len(indexes))
+	for _, index := range indexes {
+		if index >= base && index < stop {
+			rebased = append(rebased, len(prefix)+index-base)
+		}
+	}
+	return prefix + string(runes[start:end]) + suffix, rebased
+}
+
+func runeByteOffsets(text string) []int {
+	offsets := make([]int, 0, len(text))
+	for index := range text {
+		offsets = append(offsets, index)
+	}
+	return offsets
 }
 
 func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
