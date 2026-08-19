@@ -2045,14 +2045,13 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			}
 			return fmt.Errorf("selected session cwd is not a directory: %s", selectedMeta.CWD)
 		}
-		workspaceChanged := filepath.Clean(selectedMeta.CWD) != filepath.Clean(args.CWD)
-
 		// Hold the transition lock from the pre-flush through the commit.
 		// Persistence callbacks take the read side, so an active session
 		// cannot be snapshotted before its lazy writes land or overwritten by
 		// a callback while the candidate is being installed.
 		sessionTransitionMu.Lock()
 		defer sessionTransitionMu.Unlock()
+		workspaceChanged := filepath.Clean(selectedMeta.CWD) != filepath.Clean(args.CWD)
 
 		currentAg := liveInteractiveAgent(iv, ag)
 		if currentAg == nil {

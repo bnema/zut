@@ -60,7 +60,12 @@ func ListSessionPathsContext(ctx context.Context, root, cwd string, all bool) []
 			dirs = append(dirs, filepath.Join(sessionsDir, entry.Name()))
 		}
 	} else {
-		dirs = []string{SessionsDir(root, cwd)}
+		dir := SessionsDir(root, cwd)
+		info, err := os.Lstat(dir)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil
+		}
+		dirs = []string{dir}
 	}
 
 	type candidate struct {
@@ -139,6 +144,10 @@ func ManagedSessionMeta(ctx context.Context, root, path string) (SessionMeta, er
 		return SessionMeta{}, errors.New("managed session: invalid session metadata")
 	}
 	wantDir := filepath.Clean(SessionsDir(root, meta.CWD))
+	dirInfo, err := os.Lstat(wantDir)
+	if err != nil || dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return SessionMeta{}, errors.New("managed session: cwd bucket is not a directory")
+	}
 	if filepath.Clean(filepath.Dir(path)) != wantDir {
 		return SessionMeta{}, errors.New("managed session: cwd bucket does not match metadata")
 	}

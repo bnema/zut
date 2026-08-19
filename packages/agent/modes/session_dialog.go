@@ -80,9 +80,12 @@ type sessionDialog struct {
 	paths            []string
 	query            string
 	searching        bool
+	searchPending    bool
 	searchReady      bool
 	searchGeneration uint64
+	searchContext    context.Context
 	searchCancel     context.CancelFunc
+	matchCancel      context.CancelFunc
 	searchEvents     chan sessionSearchEvent
 	searchSegments   []core.SessionSearchSegment
 	searchMatches    map[string]sessionSearchMatch
@@ -145,6 +148,10 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 		d.searchCancel()
 		d.searchCancel = nil
 	}
+	if d.matchCancel != nil {
+		d.matchCancel()
+		d.matchCancel = nil
+	}
 	previousDone := d.loadDone
 	if parent == nil {
 		parent = context.Background()
@@ -167,6 +174,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.paths = nil
 	d.query = ""
 	d.searching = false
+	d.searchPending = false
 	d.searchReady = false
 	d.searchSegments = nil
 	d.searchMatches = nil
@@ -291,6 +299,10 @@ func (d *sessionDialog) ApplyLoad(event sessionLoadEvent) {
 		d.loadingTotal = event.total
 		d.loadingDone = 0
 		d.paths = append([]string(nil), event.paths...)
+		if d.searchPending {
+			d.searchPending = false
+			d.startSearchReader()
+		}
 		d.loadSlots = make([]sessionLoadSlot, event.total)
 		d.loadReadyThrough = 0
 		d.sessions = nil
@@ -411,6 +423,10 @@ func (d *sessionDialog) Close() {
 		d.searchCancel()
 		d.searchCancel = nil
 	}
+	if d.matchCancel != nil {
+		d.matchCancel()
+		d.matchCancel = nil
+	}
 	d.loading = false
 	d.searching = false
 	d.loadSlots = nil
@@ -429,13 +445,28 @@ func (d *sessionDialog) StartSearch(parent context.Context) <-chan sessionSearch
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	d.searchContext = ctx
 	d.searchCancel = cancel
 	d.searching = true
 	d.searchGeneration++
-	generation := d.searchGeneration
 	events := make(chan sessionSearchEvent, 1)
 	d.searchEvents = events
+	if len(d.paths) == 0 && d.loading {
+		d.searchPending = true
+		return events
+	}
+	d.startSearchReader()
+	return events
+}
+
+func (d *sessionDialog) startSearchReader() {
+	if d.searchEvents == nil || d.searchCancel == nil {
+		return
+	}
+	ctx := d.searchContext
 	paths := append([]string(nil), d.paths...)
+	generation := d.searchGeneration
+	events := d.searchEvents
 	go func() {
 		segments := make([]core.SessionSearchSegment, 0)
 		skipped := 0
@@ -458,7 +489,6 @@ func (d *sessionDialog) StartSearch(parent context.Context) <-chan sessionSearch
 		case <-ctx.Done():
 		}
 	}()
-	return events
 }
 
 // ApplySearch incorporates corpus and match results on the UI goroutine.
@@ -488,15 +518,23 @@ func (d *sessionDialog) scheduleSearchMatch() {
 	if !d.searchReady || d.query == "" || d.searchEvents == nil || d.searchCancel == nil {
 		return
 	}
+	if d.matchCancel != nil {
+		d.matchCancel()
+	}
 	query := d.query
 	segments := append([]core.SessionSearchSegment(nil), d.searchSegments...)
 	generation := d.searchGeneration
-	ctx := context.Background()
+	events := d.searchEvents
+	ctx, cancel := context.WithCancel(d.searchContext)
+	d.matchCancel = cancel
 	go func() {
 		matches := matchSessionSearchSegments(ctx, query, segments)
+		if ctx.Err() != nil {
+			return
+		}
 		select {
-		case d.searchEvents <- sessionSearchEvent{kind: sessionSearchMatchesReady, generation: generation, query: query, matches: matches}:
-		default:
+		case events <- sessionSearchEvent{kind: sessionSearchMatchesReady, generation: generation, query: query, matches: matches}:
+		case <-ctx.Done():
 		}
 	}()
 }
@@ -647,7 +685,8 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  ↓ %d more below", hidden)))
 	}
 	if d.allScope && d.cursor >= 0 && d.cursor < len(d.sessions) && d.sessions[d.cursor].CWD != "" {
-		lines = append(lines, th.FGColor(th.Muted, "  cwd: "+friendlyPath(d.sessions[d.cursor].CWD)))
+		cwd := sanitizeSessionTreeText(friendlyPath(d.sessions[d.cursor].CWD))
+		lines = append(lines, th.FGColor(th.Muted, "  cwd: "+cwd))
 	}
 	if d.query != "" && d.cursor >= 0 && d.cursor < len(d.sessions) {
 		if match := d.searchMatches[d.sessions[d.cursor].Path]; match.excerpt != "" {
@@ -837,6 +876,12 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 					renameErr = err
 				} else {
 					d.sessions[d.cursor].Title = title
+					for index := range d.baseSessions {
+						if d.baseSessions[index].Path == path {
+							d.baseSessions[index].Title = title
+							break
+						}
+					}
 					renamed = true
 				}
 			}
@@ -874,6 +919,10 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	if d.query != "" || d.searchEvents != nil {
 		switch k.Kind {
 		case tui.KeyEsc:
+			if d.query == "" {
+				d.Close()
+				return sessionDialogAction{Close: true}
+			}
 			d.query = ""
 			d.searchMatches = nil
 			d.applySearchFilter()
@@ -894,8 +943,10 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 				d.query += string(k.Rune)
 			}
 		default:
-			return sessionDialogAction{}
+			// Navigation and selection operate on the current filtered rows.
+			goto navigate
 		}
+		d.query = sanitizeSessionTreeText(d.query)
 		if len([]rune(d.query)) > 256 {
 			d.query = string([]rune(d.query)[:256])
 		}
@@ -913,6 +964,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		return sessionDialogAction{}
 	}
 
+navigate:
 	page := d.MaxRows
 	if page <= 0 {
 		page = 10
