@@ -139,9 +139,9 @@ func TestWebPageFetcherRedirectsWithFreshValidation(t *testing.T) {
 }
 
 func TestWebPageFetcherPreservesHTTPSHostnameForSNI(t *testing.T) {
-	var serverName string
+	var serverName atomic.Value
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverName = r.TLS.ServerName
+		serverName.Store(r.TLS.ServerName)
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("secure"))
 	}))
@@ -153,8 +153,9 @@ func TestWebPageFetcherPreservesHTTPSHostnameForSNI(t *testing.T) {
 	// InsecureSkipVerify.
 	fetcher.tlsConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only local certificate
 	body, _, _, message := fetcher.fetch(context.Background(), "https://public.test/")
-	if message != "" || string(body) != "secure" || serverName != "public.test" {
-		t.Fatalf("HTTPS body=%q message=%q SNI=%q", body, message, serverName)
+	got, _ := serverName.Load().(string)
+	if message != "" || string(body) != "secure" || got != "public.test" {
+		t.Fatalf("HTTPS body=%q message=%q SNI=%q", body, message, got)
 	}
 }
 
@@ -254,7 +255,14 @@ func TestBrowsingStoreConcurrentAccess(t *testing.T) {
 
 func TestWebPageStoreGenerationAndSchemaFailures(t *testing.T) {
 	store := NewBrowsingStore()
+	retained := store.addSource("http://public.test/")
 	generation := store.snapshotGeneration()
+	if id, committed := store.addPage(&webDocument{url: "http://public.test", lines: []string{strings.Repeat("x", webPageMaxStoreBytes+1)}}, generation); id != "" || committed {
+		t.Fatalf("oversized page commit = %q, %v", id, committed)
+	}
+	if _, ok := store.get(retained, false); !ok {
+		t.Fatal("oversized page evicted an existing document")
+	}
 	store.Clear()
 	if id, committed := store.addPage(&webDocument{url: "http://public.test", lines: []string{"text"}}, generation); id != "" || committed {
 		t.Fatalf("stale page commit = %q, %v", id, committed)

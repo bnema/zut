@@ -366,14 +366,14 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 }
 
 func expandWebCapabilityTools(selected, catalogue []string, permitted func(string) bool) []string {
-	hasSearch := false
+	hasWebTool := false
 	for _, name := range selected {
-		if name == "web_search" {
-			hasSearch = true
+		if tools.IsWebCapabilityName(name) {
+			hasWebTool = true
 			break
 		}
 	}
-	if !hasSearch {
+	if !hasWebTool {
 		return selected
 	}
 	available := make(map[string]struct{}, len(catalogue))
@@ -382,7 +382,9 @@ func expandWebCapabilityTools(selected, catalogue []string, permitted func(strin
 		available[name] = struct{}{}
 	}
 	for _, name := range selected {
-		selectedSet[name] = struct{}{}
+		if permitted == nil || permitted(name) {
+			selectedSet[name] = struct{}{}
+		}
 	}
 	for _, name := range tools.WebCapabilityNames {
 		if _, ok := available[name]; ok && (permitted == nil || permitted(name)) {

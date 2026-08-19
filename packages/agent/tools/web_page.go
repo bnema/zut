@@ -153,6 +153,9 @@ func (s *BrowsingStore) add(doc *webDocument, generation uint64, checkGeneration
 	for _, link := range doc.links {
 		doc.size += len(link.label) + len(link.url)
 	}
+	if doc.size > webPageMaxStoreBytes {
+		return ""
+	}
 	for len(s.docs) >= webPageMaxDocuments || (len(s.docs) > 0 && s.used+uint64(doc.size) > webPageMaxStoreBytes) {
 		var victim *webDocument
 		for _, candidate := range s.docs {
@@ -165,9 +168,6 @@ func (s *BrowsingStore) add(doc *webDocument, generation uint64, checkGeneration
 		}
 		delete(s.docs, victim.id)
 		s.used -= uint64(victim.size)
-	}
-	if doc.size > webPageMaxStoreBytes {
-		return ""
 	}
 	s.next++
 	doc.id = fmt.Sprintf("web-%d", s.next)

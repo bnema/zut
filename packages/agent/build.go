@@ -1266,8 +1266,10 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	if orchestratorExplorationToolsAllowed(args) {
 		reg["read"] = all["read"]
 		reg["grep"] = all["grep"]
-		for name, tool := range tools.NewWebTools() {
-			reg[name] = tool
+		if args.PermissionSet == nil {
+			for name, tool := range tools.NewWebTools() {
+				reg[name] = tool
+			}
 		}
 	}
 	return reg
