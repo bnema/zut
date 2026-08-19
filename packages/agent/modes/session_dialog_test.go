@@ -362,6 +362,63 @@ func TestSessionDialogCanSelectLoadedEntryWhileLoading(t *testing.T) {
 	}
 }
 
+func TestSessionDialogAllScopeIncludesOtherCWDBuckets(t *testing.T) {
+	root := t.TempDir()
+	cwdA := t.TempDir()
+	cwdB := t.TempDir()
+	for _, cwd := range []string{cwdA, cwdB} {
+		session, err := core.NewSession(root, cwd, "test", "model", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "scope"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := newSessionDialog()
+	events := d.Open(context.Background(), root, cwdA, true)
+	defer d.Close()
+	for event := range events {
+		d.ApplyLoad(event)
+	}
+	if !d.allScope || len(d.sessions) != 2 {
+		t.Fatalf("all scope = %v, sessions = %#v", d.allScope, d.sessions)
+	}
+	if action := d.HandleKey(tui.Key{Kind: tui.KeyTab}); !action.ToggleScope {
+		t.Fatalf("tab action = %#v, want scope toggle", action)
+	}
+}
+
+func TestSessionDialogSearchShowsCountsAndExcerpt(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.baseSessions = []core.SessionSummary{{Path: "one", MessageCount: 1}, {Path: "two", MessageCount: 1}}
+	d.sessions = append([]core.SessionSummary(nil), d.baseSessions...)
+	d.query = "alpha"
+	d.searchReady = true
+	d.searchGeneration = 1
+	d.searchMatches = matchSessionSearchSegments(context.Background(), d.query, []core.SessionSearchSegment{
+		{Path: "one", Text: "alpha implementation details"},
+		{Path: "one", Text: "alpha follow-up"},
+		{Path: "two", Text: "unrelated text"},
+	})
+	d.applySearchFilter()
+	if len(d.sessions) != 1 || d.sessions[0].Path != "one" {
+		t.Fatalf("search sessions = %#v", d.sessions)
+	}
+	match := d.searchMatches["one"]
+	if match.count != 2 || match.excerpt == "" {
+		t.Fatalf("search match = %#v", match)
+	}
+	rendered := stripANSIBytes(strings.Join(d.Render(tui.Dark, 120), "\n"))
+	if !strings.Contains(rendered, "2 matches") || !strings.Contains(rendered, "alpha") {
+		t.Fatalf("search render = %q", rendered)
+	}
+}
+
 func TestSessionDialogIgnoresStaleLoadResults(t *testing.T) {
 	first := newSessionDialog()
 	firstEvents := first.Open(context.Background(), t.TempDir(), t.TempDir())

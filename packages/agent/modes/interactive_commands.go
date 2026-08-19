@@ -310,8 +310,16 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
+		if i.cfg.SessionsDisabled {
+			i.mu.Lock()
+			i.statusErr = "sessions are disabled by --no-session"
+			i.statusOK = ""
+			i.mu.Unlock()
+			break
+		}
 		i.mu.Lock()
 		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
+		i.sessionSearches = nil
 		i.mu.Unlock()
 	case "/fork":
 		i.doSessionFork()
@@ -978,6 +986,19 @@ func totalTurnsLocked(msgs []provider.Message) int {
 	}
 	return n
 }
+func (i *Interactive) canResumeSessionSelection() bool {
+	if i == nil || i.cfg.LoadSession == nil {
+		return false
+	}
+	i.mu.Lock()
+	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
+		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	queued := len(i.queued) != 0
+	ag := i.agent
+	i.mu.Unlock()
+	return !busy && !queued && ag != nil && ag.QueuedMessageCount() == 0
+}
+
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
@@ -1000,58 +1021,73 @@ func (i *Interactive) applySessionSelection(path string) {
 	i.markSessionTitleSwitching()
 
 	go func() {
-		err := i.cfg.LoadSession(path)
-		if err != nil {
-			i.restoreFailedSessionTitle()
-			i.mu.Lock()
-			i.sessionLoading = false
-			i.statusErr = err.Error()
-			i.statusOK = ""
-			i.mu.Unlock()
-			i.invalidate()
+		load := i.cfg.LoadSession
+		if i.cfg.LoadSessionContext != nil {
+			ctx := i.runCtx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			err := i.cfg.LoadSessionContext(ctx, path)
+			i.finishSessionSelection(path, err)
 			return
 		}
-		i.restoreLoadedSessionTitle()
-		state := decodeCompactHandoff(i.currentCompactHandoff())
-		i.mu.Lock()
-		i.compactContinuation = state
-		i.sessionLoading = false
-		i.statusOK = "resumed session: " + path
-		i.statusErr = ""
-		i.parkedTurn = 0
-		i.parkedTotal = 0
-		i.scrollOffset = 0
-		// Fresh transcript swapped in: drop the auto-follow baseline so
-		// the next render's follow guard doesn't see the wholesale
-		// length change as a delta and jump the viewport.
-		i.prevChatLen = 0
-		i.prevChatCols = 0
-		i.extNotes = nil
-		i.view.InvalidateRenderCache()
-		if i.agent != nil {
-			i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
-			i.cumUsage = i.agent.Cost()
-			if last := i.agent.LastTurnUsage(); last.InputTokens > 0 || last.CacheReadTokens > 0 || last.CacheWriteTokens > 0 {
-				i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
-			} else {
-				i.lastCtxInput = 0
-			}
-			// Snap to the tail again — the swap brought in a fresh
-			// transcript whose markdown / chroma cost we don't want
-			// blocking the redraw.
-			if len(i.view.Messages) > initialResumeTailLimit {
-				i.view.TailLimit = initialResumeTailLimit
-			} else {
-				i.view.TailLimit = 0
-			}
-		}
-		i.mu.Unlock()
-		i.invalidate()
-		if state.reason != compactContinuationNone {
-			i.startRestoredCompactHandoff(i.runCtx)
-		}
+		err := load(path)
+		i.finishSessionSelection(path, err)
 	}()
 }
+
+func (i *Interactive) finishSessionSelection(path string, err error) {
+	if err != nil {
+		i.restoreFailedSessionTitle()
+		i.mu.Lock()
+		i.sessionLoading = false
+		i.statusErr = err.Error()
+		i.statusOK = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.restoreLoadedSessionTitle()
+	state := decodeCompactHandoff(i.currentCompactHandoff())
+	i.mu.Lock()
+	i.compactContinuation = state
+	i.sessionLoading = false
+	i.statusOK = "resumed session: " + path
+	i.statusErr = ""
+	i.parkedTurn = 0
+	i.parkedTotal = 0
+	i.scrollOffset = 0
+	// Fresh transcript swapped in: drop the auto-follow baseline so
+	// the next render's follow guard doesn't see the wholesale
+	// length change as a delta and jump the viewport.
+	i.prevChatLen = 0
+	i.prevChatCols = 0
+	i.extNotes = nil
+	i.view.InvalidateRenderCache()
+	if i.agent != nil {
+		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
+		i.cumUsage = i.agent.Cost()
+		if last := i.agent.LastTurnUsage(); last.InputTokens > 0 || last.CacheReadTokens > 0 || last.CacheWriteTokens > 0 {
+			i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
+		} else {
+			i.lastCtxInput = 0
+		}
+		// Snap to the tail again — the swap brought in a fresh
+		// transcript whose markdown / chroma cost we don't want
+		// blocking the redraw.
+		if len(i.view.Messages) > initialResumeTailLimit {
+			i.view.TailLimit = initialResumeTailLimit
+		} else {
+			i.view.TailLimit = 0
+		}
+	}
+	i.mu.Unlock()
+	i.invalidate()
+	if state.reason != compactContinuationNone {
+		i.startRestoredCompactHandoff(i.runCtx)
+	}
+}
+
 func (i *Interactive) applyModelSelection(prov, model string) {
 	i.swapModel(prov, model, i.cfg.BuildAgentFor, false)
 }

@@ -885,6 +885,23 @@ func TestApplySessionResumeBindsRebuiltAgentToDurableSessionID(t *testing.T) {
 	}
 }
 
+func TestPrepareSessionResumeForWorkspaceRebuildsMatchingProviderAndModel(t *testing.T) {
+	path := syntheticSession(t, "provider", "model", provider.Usage{})
+	current := core.NewAgent(nil, "model", "", nil)
+	builds := 0
+	candidate, err := prepareSessionResumeForWorkspace(path, current, "provider", "model", func(providerName, model string) (*core.Agent, string, string, error) {
+		builds++
+		return core.NewAgent(nil, model, "", nil), providerName, model, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.session.Close()
+	if builds != 1 || !candidate.rebuilt || candidate.agent == current {
+		t.Fatalf("workspace resume = builds %d rebuilt %v agent=%p current=%p", builds, candidate.rebuilt, candidate.agent, current)
+	}
+}
+
 func TestPrepareSessionResumePreservesLegacyMissingMetadata(t *testing.T) {
 	old := core.NewAgent(nil, "old-model", "", nil)
 	old.SetMessages([]provider.Message{{
@@ -987,7 +1004,7 @@ func TestPrepareSessionResumeHonorsExplicitProviderModelFields(t *testing.T) {
 			old := core.NewAgent(nil, "old-model", "", nil)
 			path := syntheticSession(t, "stored-provider", "stored-model", provider.Usage{})
 			var gotProvider, gotModel string
-			candidate, err := prepareSessionResumeWithOptions(path, old, "current-provider", "current-model", tc.explicitProvider, tc.explicitModel, func(providerName, model string) (*core.Agent, string, string, error) {
+			candidate, err := prepareSessionResumeWithOptions(path, old, "current-provider", "current-model", tc.explicitProvider, tc.explicitModel, false, func(providerName, model string) (*core.Agent, string, string, error) {
 				gotProvider, gotModel = providerName, model
 				return core.NewAgent(nil, model, "", nil), providerName, model, nil
 			})

@@ -277,6 +277,9 @@ type InteractiveConfig struct {
 	// from ZutHome for Zutfile agents, whose sessions are isolated by agent
 	// name. Empty falls back to ZutHome for embedders and tests.
 	SessionsRoot string
+	// SessionsDisabled is true for --no-session invocations. The picker must
+	// fail closed instead of offering stale or non-persisted state.
+	SessionsDisabled bool
 
 	// Version is the binary's current version (from main.version).
 	// Used only for display; the update check itself is done outside
@@ -296,6 +299,9 @@ type InteractiveConfig struct {
 	// LoadSession swaps the current session for the one at path. The
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
+	// LoadSessionContext is the cancellation-aware picker path. Embedders that
+	// only implement LoadSession retain the existing synchronous contract.
+	LoadSessionContext func(context.Context, string) error
 
 	// ChangeCWD switches the running zut session's working directory
 	// to path. The host closes the current session, rebuilds the
@@ -895,6 +901,9 @@ type Interactive struct {
 	// picker owns the load lifecycle; the interactive loop applies results so
 	// rendering never races with background file reads.
 	sessionLoads <-chan sessionLoadEvent
+	// sessionSearches carries the one-time corpus read and query-match results.
+	// It stays separate from summary loading so a query edit never reopens JSONL.
+	sessionSearches <-chan sessionSearchEvent
 
 	// sessionTreeLoads delivers asynchronously-read tree rows. Like the flat
 	// picker, the main loop is the sole owner of dialog mutation and rendering.
@@ -1363,6 +1372,16 @@ func (i *Interactive) Run(ctx context.Context) error {
 				break
 			}
 			i.sessionDialog.ApplyLoad(event)
+			i.mu.Unlock()
+			i.invalidate()
+		case event, ok := <-i.sessionSearches:
+			i.mu.Lock()
+			if !ok {
+				i.sessionSearches = nil
+				i.mu.Unlock()
+				break
+			}
+			i.sessionDialog.ApplySearch(event)
 			i.mu.Unlock()
 			i.invalidate()
 		case event, ok := <-i.sessionTreeLoads:

@@ -955,6 +955,7 @@ func LatestSession(root, cwd string) string {
 // SessionSummary describes one on-disk session at a glance for UI pickers.
 type SessionSummary struct {
 	Path          string
+	CWD           string
 	Started       time.Time
 	Model         string
 	Provider      string
@@ -1065,6 +1066,7 @@ func describeSessionContext(ctx context.Context, path string) SessionSummary {
 	if err != nil {
 		return s
 	}
+	s.CWD = snapshot.Meta.CWD
 	s.Started = snapshot.Meta.Started
 	s.Model = snapshot.Meta.Model
 	s.Provider = snapshot.Meta.Provider

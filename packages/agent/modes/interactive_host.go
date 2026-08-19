@@ -126,6 +126,34 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.mu.Unlock()
 	i.invalidate()
 }
+
+// ApplySessionAgentWithCWD commits a resumed agent together with its stored
+// workspace. Unlike a fresh /cd transition it preserves the session's compact
+// handoff and title while rebinding picker and terminal cwd state.
+func (i *Interactive) ApplySessionAgentWithCWD(ag *core.Agent, providerName, model, cwd string, compactHandoff json.RawMessage) {
+	i.ApplySessionAgentWithCompactHandoff(ag, providerName, model, compactHandoff)
+	if cwd == "" {
+		return
+	}
+	home, _ := os.UserHomeDir()
+	profiles, _ := subagents.Discover(cwd, home)
+	i.mu.Lock()
+	i.cfg.CWD = cwd
+	i.cfg.SubagentsSystemAddendum = subagents.SystemPromptAddendum(profiles)
+	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
+	i.cfg.StartupContextPaths = nil
+	i.view.StartupContextPaths = nil
+	if i.cfg.Terminal != nil {
+		if seq := tui.ReportCWD(cwd); seq != "" {
+			_, _ = i.cfg.Terminal.Write([]byte(seq))
+		}
+	}
+	i.mu.Unlock()
+	i.fileSuggest.Reset()
+	i.fileSuggest.SetCWD(cwd)
+	i.invalidate()
+}
+
 func (i *Interactive) SetSubagentSessionScope(_ string) {
 	i.invalidate()
 }
