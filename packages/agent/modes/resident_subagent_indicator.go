@@ -85,10 +85,6 @@ func renderResidentSubagentActivityGroup(theme tui.Theme, color tui.TerminalColo
 	}
 	metadataWidthLimit := width - runewidth.StringWidth(metadataIndent)
 	if metadataWidthLimit <= 0 {
-		metadata = truncateResidentSubagentIndicator(metadata, width)
-		if metadata != "" {
-			lines = append(lines, theme.FGColor(theme.Muted, metadata))
-		}
 		return lines
 	}
 	for _, metadataLine := range tui.WrapANSILine(metadata, metadataWidthLimit) {

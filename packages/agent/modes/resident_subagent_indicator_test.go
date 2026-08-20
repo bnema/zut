@@ -252,6 +252,36 @@ func TestFitResidentSubagentActivityLinesKeepsActivityWhenWrappedMetadataDoesNot
 	}
 }
 
+func TestRenderResidentSubagentActivityLinesOmitsMetadataWhenIndentDoesNotFit(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	snapshot := subagents.ResidentSnapshot{
+		ID: "running-id", Profile: "reviewer", State: subagents.ResidentRunning,
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525},
+		ContextUsed: 45_152, ContextMax: 272_000, Subscription: true,
+	}
+	for _, width := range []int{3, 4} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			lines := renderResidentSubagentActivityLines(tui.Dark, "/", []subagents.ResidentSnapshot{snapshot}, width, now)
+			plain := plainResidentIndicatorLines(lines)
+			wantActivity := "  " + strings.Repeat(".", width-runewidth.StringWidth("  "))
+			if len(plain) != 1 || plain[0] != wantActivity {
+				t.Fatalf("activity lines = %#v, want only activity row %#v", plain, []string{wantActivity})
+			}
+			if strings.Contains(strings.Join(plain, "\n"), "↑84k") {
+				t.Fatalf("activity lines include metadata despite unavailable indent: %#v", plain)
+			}
+			if gotWidth := runewidth.StringWidth(plain[0]); gotWidth > width {
+				t.Fatalf("activity line width = %d, want <= %d: %q", gotWidth, width, plain[0])
+			}
+
+			limited := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, lines, 0, 1, width))
+			if len(limited) != 1 || limited[0] != plain[0] || strings.Contains(limited[0], "more active") {
+				t.Fatalf("limited activity lines = %#v, want preserved activity row %#v without overflow", limited, plain)
+			}
+		})
+	}
+}
+
 func TestRenderResidentSubagentActivityLinesAnimatesModelWait(t *testing.T) {
 	started := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	now := started.Add(2 * time.Second)
