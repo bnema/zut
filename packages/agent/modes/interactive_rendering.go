@@ -745,12 +745,9 @@ func (i *Interactive) redraw() {
 	// underlying chat, status, and editor keep updating behind the pane.
 	residentViewActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
 	var allResidentSubagentLines []string
-	residentSubagentHidden := 0
 	if !residentViewActive && i.cfg.ResidentManager != nil {
-		const residentIndicatorSnapshotLimit = 8
-		snapshots, total := i.cfg.ResidentManager.ActiveSnapshotPage(residentIndicatorSnapshotLimit)
+		snapshots, _ := i.cfg.ResidentManager.ActiveSnapshotPage(0)
 		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock())
-		residentSubagentHidden = total - len(snapshots)
 	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
@@ -853,14 +850,10 @@ func (i *Interactive) redraw() {
 	var bottom []string
 	var inputStartRow int
 	if len(allResidentSubagentLines) > 0 {
-		for maxRows := len(allResidentSubagentLines) + 1; maxRows >= 0; maxRows-- {
-			candidate := limitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, residentSubagentHidden, maxRows, mainCols)
+		residentSubagentLines = fitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, 0, maxBottomRows, mainCols, func(candidate []string) int {
 			candidateBottom, _ := composeBottom(candidate)
-			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
-				residentSubagentLines = candidate
-				break
-			}
-		}
+			return len(candidateBottom)
+		})
 	}
 	bottom, inputStartRow = composeBottom(residentSubagentLines)
 

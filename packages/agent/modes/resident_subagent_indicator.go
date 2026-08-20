@@ -15,10 +15,11 @@ var residentProviderWaitingSpinner = tui.NewStringSpinner(
 	time.Second,
 )
 
-// renderResidentSubagentActivityLines renders the bounded, non-sensitive
-// background work indicator shown directly below the main editor. A queued
-// child is waiting for a resident scheduler slot; only running children use
-// the animated glyph.
+// renderResidentSubagentActivityLines renders the non-sensitive background
+// work indicator shown directly below the main editor. A queued child is
+// waiting for a resident scheduler slot; only running children use the
+// animated glyph. Height limiting happens after this function so all active
+// same-host children can be shown whenever the terminal has room.
 func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, snapshots []subagents.ResidentSnapshot, width int, now time.Time) []string {
 	lines := make([]string, 0, len(snapshots)*2)
 	for _, snapshot := range snapshots {
@@ -53,16 +54,47 @@ func renderResidentSubagentActivityLines(theme tui.Theme, spinnerGlyph string, s
 		plain := fmt.Sprintf("%s %s · %s · activity %s ago · %s", glyph, name, activity,
 			formatResidentSubagentActivityAge(activityTime(snapshot), now),
 			formatResidentSubagentActivityAge(turnStartTime(snapshot), now))
-		plain = truncateResidentSubagentIndicator(plain, width-2)
-		if plain == "" {
-			continue
+		lines = append(lines, renderResidentSubagentActivityGroup(theme, color, plain, residentUsageMetadata(snapshot), width)...)
+	}
+	return lines
+}
+
+func renderResidentSubagentActivityGroup(theme tui.Theme, color tui.TerminalColor, activity, metadata string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	const activityIndent = "  "
+	const metadataIndent = "    "
+	activityWidth := runewidth.StringWidth(activity)
+	metadataWidth := runewidth.StringWidth(metadata)
+	if metadata != "" && runewidth.StringWidth(activityIndent)+activityWidth+1+metadataWidth <= width {
+		gap := width - runewidth.StringWidth(activityIndent) - activityWidth - metadataWidth
+		if gap < 1 {
+			gap = 1
 		}
-		lines = append(lines, "  "+theme.FGColor(color, plain))
-		if metadata := residentUsageMetadata(snapshot); metadata != "" {
-			metadata = truncateResidentSubagentIndicator(metadata, width-4)
-			if metadata != "" {
-				lines = append(lines, "    "+theme.FGColor(theme.Muted, metadata))
-			}
+		return []string{activityIndent + theme.FGColor(color, activity) + strings.Repeat(" ", gap) + theme.FGColor(theme.Muted, metadata)}
+	}
+
+	activity = truncateResidentSubagentIndicator(activity, width-runewidth.StringWidth(activityIndent))
+	if activity == "" {
+		return nil
+	}
+	lines := []string{activityIndent + theme.FGColor(color, activity)}
+	if metadata == "" {
+		return lines
+	}
+	metadataWidthLimit := width - runewidth.StringWidth(metadataIndent)
+	if metadataWidthLimit <= 0 {
+		metadata = truncateResidentSubagentIndicator(metadata, width)
+		if metadata != "" {
+			lines = append(lines, theme.FGColor(theme.Muted, metadata))
+		}
+		return lines
+	}
+	for _, metadataLine := range tui.WrapANSILine(metadata, metadataWidthLimit) {
+		metadataLine = truncateResidentSubagentIndicator(metadataLine, metadataWidthLimit)
+		if metadataLine != "" {
+			lines = append(lines, metadataIndent+theme.FGColor(theme.Muted, metadataLine))
 		}
 	}
 	return lines
@@ -112,6 +144,19 @@ func formatResidentSubagentActivityAge(started, now time.Time) string {
 	default:
 		return fmt.Sprintf("%dd%02dh", seconds/(24*60*60), (seconds%(24*60*60))/(60*60))
 	}
+}
+
+func fitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden, maxBottomRows, width int, bottomRows func([]string) int) []string {
+	if len(lines) == 0 && hidden == 0 {
+		return nil
+	}
+	for maxRows := len(lines) + 1; maxRows >= 0; maxRows-- {
+		candidate := limitResidentSubagentActivityLines(theme, lines, hidden, maxRows, width)
+		if maxRows == 0 || bottomRows(candidate) <= maxBottomRows {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func limitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden, maxRows, width int) []string {
