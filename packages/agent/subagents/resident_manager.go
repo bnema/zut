@@ -729,8 +729,8 @@ func (m *ResidentManager) RecentSnapshotPage(offset, limit int) ([]ResidentSnaps
 	return result, total
 }
 
-// ActiveSnapshotPage returns only queued and running children for compact
-// activity surfaces. It deliberately exposes no prompt, transcript, or path.
+// ActiveSnapshotPage returns only same-host queued and running children for
+// compact activity surfaces. It deliberately exposes no prompt, transcript, or path.
 func (m *ResidentManager) ActiveSnapshotPage(limit int) ([]ResidentSnapshot, int) {
 	if m == nil {
 		return nil, 0
@@ -755,6 +755,9 @@ func (m *ResidentManager) ActiveSnapshotPage(limit int) ([]ResidentSnapshot, int
 	}
 	for id, snapshot := range recovered {
 		if _, exists := live[id]; exists {
+			continue
+		}
+		if snapshot.OwnedElsewhere {
 			continue
 		}
 		if snapshot.State == ResidentQueued || snapshot.State == ResidentRunning {
