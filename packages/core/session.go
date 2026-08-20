@@ -34,6 +34,7 @@ type Session struct {
 	ExtensionState map[string]json.RawMessage
 	writer         *os.File
 	buf            *bufio.Writer
+	writerMu       sync.Mutex
 
 	// freshFile is true when the file was created by NewSession (this
 	// process owns it) and false when OpenSession reopened an existing
@@ -1295,11 +1296,7 @@ func (s *Session) AppendMessage(m provider.Message) error {
 	if len(m.Content) == 0 {
 		return errors.New("message has no content")
 	}
-	if err := s.writeLine(sessionLine{Type: "message", Message: &m}); err != nil {
-		return err
-	}
-	s.messagesAppended++
-	return nil
+	return s.writeCountedLine(sessionLine{Type: "message", Message: &m})
 }
 
 // Sync flushes the session file's bytes through the filesystem. Interactive
@@ -1309,6 +1306,8 @@ func (s *Session) Sync() error {
 	if s == nil || s.writer == nil {
 		return nil
 	}
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
 	if err := s.buf.Flush(); err != nil {
 		return err
 	}
@@ -1324,14 +1323,10 @@ func (s *Session) AppendCompaction(messages []provider.Message) error {
 		return nil
 	}
 	compactionMessages := messages
-	if err := s.writeLine(sessionLine{Type: "compaction", Messages: &compactionMessages}); err != nil {
-		return err
-	}
 	// The compaction row itself is meaningful even when it replaces the
 	// transcript with an empty or nil slice. Count the append operation so a
 	// fresh session containing an empty checkpoint is not deleted on Close.
-	s.messagesAppended++
-	return nil
+	return s.writeCountedLine(sessionLine{Type: "compaction", Messages: &compactionMessages})
 }
 
 // AppendCompactionWithUsage atomically records a replacement transcript and
@@ -1343,16 +1338,12 @@ func (s *Session) AppendCompactionWithUsage(messages []provider.Message, cumulat
 		return nil
 	}
 	compactionMessages := messages
-	if err := s.writeUsageCheckpoint(sessionLine{
+	return s.writeUsageCheckpointCounted(sessionLine{
 		Type:       "compaction",
 		Messages:   &compactionMessages,
 		Usage:      &cumulative,
 		Cumulative: &cumulative,
-	}); err != nil {
-		return err
-	}
-	s.messagesAppended++
-	return nil
+	})
 }
 
 // UpdateModel records a provider/model switch in the session file.
@@ -1620,30 +1611,41 @@ func (s *Session) FlushRetryLifecycle(u, cum provider.Usage) error {
 	if len(s.pendingRetryLifecycle) == 0 {
 		return nil
 	}
-	return s.writeUsageCheckpointLocked(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
+	return s.writeUsageCheckpointLocked(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum}, false)
 }
 
 func (s *Session) writeUsageCheckpoint(row sessionLine) error {
 	s.retryMu.Lock()
 	defer s.retryMu.Unlock()
-	return s.writeUsageCheckpointLocked(row)
+	return s.writeUsageCheckpointLocked(row, false)
 }
 
-func (s *Session) writeUsageCheckpointLocked(row sessionLine) error {
+func (s *Session) writeUsageCheckpointCounted(row sessionLine) error {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	return s.writeUsageCheckpointLocked(row, true)
+}
+
+func (s *Session) writeUsageCheckpointLocked(row sessionLine, counted bool) error {
 	if len(s.pendingRetryLifecycle) > 0 {
 		row.RetryLifecycle = append([]RetryLifecycleRecord(nil), s.pendingRetryLifecycle...)
 	}
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
 	if row.Type == "usage" && len(row.RetryLifecycle) == 0 && row.Usage != nil && row.Cumulative != nil &&
 		s.lastWriteWasUsage && *row.Usage == s.lastUsage && *row.Cumulative == s.lastCumulativeUsage {
 		return nil
 	}
-	if err := s.writeLine(row); err != nil {
+	if err := s.writeLineLocked(row); err != nil {
 		return err
 	}
 	if row.Type == "usage" && row.Usage != nil && row.Cumulative != nil {
 		s.lastWriteWasUsage = true
 		s.lastUsage = *row.Usage
 		s.lastCumulativeUsage = *row.Cumulative
+	}
+	if counted {
+		s.messagesAppended++
 	}
 	s.pendingRetryLifecycle = nil
 	return nil
@@ -1719,6 +1721,8 @@ func (s *Session) Flush() error {
 	if s == nil {
 		return nil
 	}
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
 	return s.buf.Flush()
 }
 
@@ -1731,7 +1735,9 @@ func (s *Session) Close() error {
 	if s == nil {
 		return nil
 	}
-	flushErr := s.Flush()
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	flushErr := s.buf.Flush()
 	closeErr := s.writer.Close()
 	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Mission == nil && s.Meta.Goal == nil && len(s.Meta.GoalHistory) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the
@@ -1746,6 +1752,22 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) writeLine(row sessionLine) error {
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	return s.writeLineLocked(row)
+}
+
+func (s *Session) writeCountedLine(row sessionLine) error {
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	if err := s.writeLineLocked(row); err != nil {
+		return err
+	}
+	s.messagesAppended++
+	return nil
+}
+
+func (s *Session) writeLineLocked(row sessionLine) error {
 	s.lastWriteWasUsage = false
 	b, err := json.Marshal(row)
 	if err != nil {
