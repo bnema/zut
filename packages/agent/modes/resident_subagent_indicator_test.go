@@ -51,15 +51,7 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	for index := 0; index < 10; index++ {
-		spec := subagents.ResidentChildSpec{
-			ID: fmt.Sprintf("child-%02d", index), SessionID: fmt.Sprintf("session-%02d", index), Profile: fmt.Sprintf("agent-%02d", index),
-			Provider: "openai", Model: "gpt-test",
-		}
-		if _, err := manager.Spawn(context.Background(), spec, "task"); err != nil {
-			t.Fatalf("Spawn(%d): %v", index, err)
-		}
-	}
+	spawnResidentIndicatorChildren(t, manager, 10)
 
 	term := &residentIndicatorTerminal{cols: 80, rows: 40}
 	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
@@ -83,6 +75,93 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 	plain = stripANSIBytes(term.String())
 	if strings.Contains(plain, "agent-00") {
 		t.Fatalf("interactive output kept finished subagent activity:\n%s", plain)
+	}
+}
+
+func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeight(t *testing.T) {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spawnResidentIndicatorChildren(t, manager, 6)
+
+	term := &residentIndicatorTerminal{cols: 80, rows: 8}
+	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
+	interactive.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
+	interactive.rend.Resize(term.cols, term.rows)
+	term.Reset()
+	interactive.redraw()
+
+	plain := stripANSIBytes(term.String())
+	if count := strings.Count(plain, "agent-"); count != 1 {
+		t.Fatalf("interactive output showed %d active child rows, want one fitting row under short height:\n%s", count, plain)
+	}
+	if !strings.Contains(plain, "… 5 more active subagents") {
+		t.Fatalf("interactive output did not summarize omitted active children:\n%s", plain)
+	}
+}
+
+func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeightFits(t *testing.T) {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spawnResidentIndicatorChildren(t, manager, 2)
+
+	term := &residentIndicatorTerminal{cols: 80, rows: 8}
+	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
+	interactive.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
+	interactive.rend.Resize(term.cols, term.rows)
+	term.Reset()
+	interactive.redraw()
+
+	plain := stripANSIBytes(term.String())
+	for index := 0; index < 2; index++ {
+		if want := fmt.Sprintf("agent-%02d", index); !strings.Contains(plain, want) {
+			t.Fatalf("interactive output missing fitting active child %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "more active subagents") {
+		t.Fatalf("interactive output summarized fitting active children:\n%s", plain)
+	}
+}
+
+func spawnResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {
+	t.Helper()
+	for index := 0; index < count; index++ {
+		spec := subagents.ResidentChildSpec{
+			ID: fmt.Sprintf("child-%02d", index), SessionID: fmt.Sprintf("session-%02d", index), Profile: fmt.Sprintf("agent-%02d", index),
+			Provider: "openai", Model: "gpt-test",
+		}
+		if _, err := manager.Spawn(context.Background(), spec, "task"); err != nil {
+			t.Fatalf("Spawn(%d): %v", index, err)
+		}
+	}
+}
+
+func TestRenderResidentSubagentActivityPageReportsHiddenActiveChildren(t *testing.T) {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spawnResidentIndicatorChildren(t, manager, 5)
+
+	lines, hidden := renderResidentSubagentActivityPage(tui.Dark, manager, "/", 2, 80, time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC))
+	plain := strings.Join(plainResidentIndicatorLines(lines), "\n")
+	if hidden != 3 {
+		t.Fatalf("hidden active children = %d, want 3", hidden)
+	}
+	if count := strings.Count(plain, "agent-"); count != 2 {
+		t.Fatalf("activity page rendered %d child rows, want bounded page of 2:\n%s", count, plain)
 	}
 }
 
@@ -153,6 +232,26 @@ func TestRenderResidentSubagentActivityLinesWrapsUsageMetadataWhenItDoesNotFit(t
 	}
 }
 
+func TestFitResidentSubagentActivityLinesKeepsActivityWhenWrappedMetadataDoesNotFit(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	const width = 34
+	lines := renderResidentSubagentActivityLines(tui.Dark, "/", []subagents.ResidentSnapshot{{
+		ID: "running-id", Profile: "reviewer", State: subagents.ResidentRunning,
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525},
+		ContextUsed: 45_152, ContextMax: 272_000, Subscription: true,
+	}}, width, now)
+	if plain := plainResidentIndicatorLines(lines); len(plain) < 3 {
+		t.Fatalf("activity lines = %#v, want wrapped metadata", plain)
+	}
+
+	got := plainResidentIndicatorLines(fitResidentSubagentActivityLines(tui.Dark, lines, 0, 1, width, func(candidate []string) int {
+		return len(candidate)
+	}))
+	if len(got) != 1 || !strings.Contains(got[0], "reviewer") || strings.Contains(got[0], "more active") || strings.Contains(got[0], "↑84k") {
+		t.Fatalf("constrained activity lines = %#v, want only the activity/name row", got)
+	}
+}
+
 func TestRenderResidentSubagentActivityLinesAnimatesModelWait(t *testing.T) {
 	started := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	now := started.Add(2 * time.Second)
@@ -202,10 +301,27 @@ func TestLimitResidentSubagentActivityLinesSummarizesOverflow(t *testing.T) {
 	}
 }
 
-func TestLimitResidentSubagentActivityLinesKeepsMetadataWithItsAgent(t *testing.T) {
+func TestLimitResidentSubagentActivityLinesUsesSingleRowForOverflowWhenAgentsAreHidden(t *testing.T) {
+	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, []string{"one"}, 2, 1, 80))
+	want := []string{"  … 3 more active subagents"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("limited lines = %#v, want %#v", got, want)
+	}
+}
+
+func TestLimitResidentSubagentActivityLinesPrefersActivityRowsBeforeMetadata(t *testing.T) {
 	lines := []string{"  agent one", "    usage one", "  agent two", "    usage two"}
 	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, lines, 0, 3, 80))
-	want := []string{"  agent one", "    usage one", "  … 1 more active subagents"}
+	want := []string{"  agent one", "    usage one", "  agent two"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("limited lines = %#v, want %#v", got, want)
+	}
+}
+
+func TestLimitResidentSubagentActivityLinesCountsOnlyHiddenAgentsWhenMetadataTruncates(t *testing.T) {
+	lines := []string{"  agent one", "    usage one", "    usage continued", "  agent two", "    usage two"}
+	got := plainResidentIndicatorLines(limitResidentSubagentActivityLines(tui.Dark, lines, 1, 2, 80))
+	want := []string{"  agent one", "  … 2 more active subagents"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("limited lines = %#v, want %#v", got, want)
 	}

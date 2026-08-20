@@ -744,11 +744,6 @@ func (i *Interactive) redraw() {
 	// Floating independent views no longer replace the main bottom band: the
 	// underlying chat, status, and editor keep updating behind the pane.
 	residentViewActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
-	var allResidentSubagentLines []string
-	if !residentViewActive && i.cfg.ResidentManager != nil {
-		snapshots, _ := i.cfg.ResidentManager.ActiveSnapshotPage(0)
-		allResidentSubagentLines = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock())
-	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
 		workingLines = []string{"  " + busyPrefix}
@@ -849,11 +844,24 @@ func (i *Interactive) redraw() {
 	var residentSubagentLines []string
 	var bottom []string
 	var inputStartRow int
-	if len(allResidentSubagentLines) > 0 {
-		residentSubagentLines = fitResidentSubagentActivityLines(i.cfg.Theme, allResidentSubagentLines, 0, maxBottomRows, mainCols, func(candidate []string) int {
-			candidateBottom, _ := composeBottom(candidate)
-			return len(candidateBottom)
-		})
+	if !residentViewActive && i.cfg.ResidentManager != nil {
+		residentCapacity := 0
+		for candidateRows := maxBottomRows; candidateRows > 0; candidateRows-- {
+			candidateBottom, _ := composeBottom(make([]string, candidateRows))
+			if len(candidateBottom) <= maxBottomRows {
+				residentCapacity = candidateRows
+				break
+			}
+		}
+		if residentCapacity > 0 {
+			residentLines, hiddenResidents := renderResidentSubagentActivityPage(i.cfg.Theme, i.cfg.ResidentManager, i.spin.FrameAt(i.clock()), residentCapacity, mainCols, i.clock())
+			if len(residentLines) > 0 || hiddenResidents > 0 {
+				residentSubagentLines = fitResidentSubagentActivityLines(i.cfg.Theme, residentLines, hiddenResidents, maxBottomRows, mainCols, func(candidate []string) int {
+					candidateBottom, _ := composeBottom(candidate)
+					return len(candidateBottom)
+				})
+			}
+		}
 	}
 	bottom, inputStartRow = composeBottom(residentSubagentLines)
 

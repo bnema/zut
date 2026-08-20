@@ -39,3 +39,17 @@ func TestResidentManagerRecentSnapshotPageOrdersLatestTransitionFirst(t *testing
 		t.Fatalf("recent page = %#v/%d", page, total)
 	}
 }
+
+func TestResidentManagerActiveSnapshotPageSkipsForeignActiveChildren(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	manager := &ResidentManager{children: map[string]*ResidentChild{}, recovered: map[string]ResidentSnapshot{
+		"foreign":     {ID: "foreign", State: ResidentRunning, OwnedElsewhere: true, UpdatedAt: now},
+		"local-newer": {ID: "local-newer", State: ResidentRunning, UpdatedAt: now.Add(-time.Minute)},
+		"local-older": {ID: "local-older", State: ResidentQueued, UpdatedAt: now.Add(-time.Hour)},
+		"idle":        {ID: "idle", State: ResidentIdle, UpdatedAt: now.Add(time.Minute)},
+	}, recoveredSpec: map[string]ResidentChildSpec{}, pending: map[string]struct{}{}}
+	page, total := manager.ActiveSnapshotPage(1)
+	if total != 2 || len(page) != 1 || page[0].ID != "local-newer" {
+		t.Fatalf("active page = %#v/%d, want bounded same-host active children", page, total)
+	}
+}
