@@ -51,7 +51,7 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnResidentIndicatorChildren(t, manager, 10)
+	spawnRunningResidentIndicatorChildren(t, manager, 10)
 
 	term := &residentIndicatorTerminal{cols: 80, rows: 40}
 	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
@@ -86,7 +86,7 @@ func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeigh
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnResidentIndicatorChildren(t, manager, 6)
+	spawnRunningResidentIndicatorChildren(t, manager, 6)
 
 	term := &residentIndicatorTerminal{cols: 80, rows: 8}
 	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
@@ -112,7 +112,7 @@ func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeigh
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnResidentIndicatorChildren(t, manager, 2)
+	spawnRunningResidentIndicatorChildren(t, manager, 2)
 
 	term := &residentIndicatorTerminal{cols: 80, rows: 8}
 	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
@@ -129,6 +129,35 @@ func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeigh
 	}
 	if strings.Contains(plain, "more active subagents") {
 		t.Fatalf("interactive output summarized fitting active children:\n%s", plain)
+	}
+}
+
+func spawnRunningResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {
+	t.Helper()
+	updates := make(chan string, count*2)
+	manager.SetUpdateObserver(func(childID string) {
+		select {
+		case updates <- childID:
+		default:
+		}
+	})
+	spawnResidentIndicatorChildren(t, manager, count)
+	defer manager.SetUpdateObserver(nil)
+
+	running := make(map[string]struct{}, count)
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for len(running) < count {
+		select {
+		case childID := <-updates:
+			snapshot, ok := manager.SnapshotFor(childID)
+			if ok && snapshot.State == subagents.ResidentRunning {
+				running[childID] = struct{}{}
+			}
+		case <-timer.C:
+			snapshots, _ := manager.ActiveSnapshotPage(0)
+			t.Fatalf("running resident children = %d, want %d; active snapshots=%#v", len(running), count, snapshots)
+		}
 	}
 }
 
