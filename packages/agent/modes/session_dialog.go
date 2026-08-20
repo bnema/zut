@@ -28,12 +28,13 @@ const (
 )
 
 type sessionSearchEvent struct {
-	kind       sessionSearchEventKind
-	generation uint64
-	query      string
-	segments   []core.SessionSearchSegment
-	matches    map[string]sessionSearchMatch
-	skipped    int
+	kind            sessionSearchEventKind
+	generation      uint64
+	matchGeneration uint64
+	query           string
+	segments        []core.SessionSearchSegment
+	matches         map[string]sessionSearchMatch
+	skipped         int
 }
 
 type sessionSearchMatch struct {
@@ -82,9 +83,12 @@ type sessionDialog struct {
 	query            string
 	searchRequested  bool
 	searching        bool
+	matching         bool
 	searchPending    bool
 	searchReady      bool
+	searchSpinner    *spinner
 	searchGeneration uint64
+	matchGeneration  uint64
 	searchContext    context.Context
 	searchCancel     context.CancelFunc
 	matchCancel      context.CancelFunc
@@ -177,8 +181,11 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.query = ""
 	d.searchRequested = false
 	d.searching = false
+	d.matching = false
 	d.searchPending = false
+	d.searchSpinner = nil
 	d.searchReady = false
+	d.matchGeneration = 0
 	d.searchSegments = nil
 	d.searchMatches = nil
 	d.searchErr = ""
@@ -433,6 +440,8 @@ func (d *sessionDialog) Close() {
 	d.loading = false
 	d.searchRequested = false
 	d.searching = false
+	d.matching = false
+	d.searchSpinner = nil
 	d.loadSlots = nil
 	d.loadReadyThrough = 0
 	d.searchEvents = nil
@@ -458,6 +467,8 @@ func (d *sessionDialog) StartSearch(parent context.Context) <-chan sessionSearch
 	d.searchContext = ctx
 	d.searchCancel = cancel
 	d.searching = true
+	d.matching = false
+	d.searchSpinner = &spinner{startedAt: time.Now()}
 	d.searchGeneration++
 	events := make(chan sessionSearchEvent, 1)
 	d.searchEvents = events
@@ -516,9 +527,10 @@ func (d *sessionDialog) ApplySearch(event sessionSearchEvent) {
 		d.searchSegments = event.segments
 		d.scheduleSearchMatch()
 	case sessionSearchMatchesReady:
-		if event.query != d.query {
+		if event.query != d.query || event.matchGeneration != d.matchGeneration {
 			return
 		}
+		d.matching = false
 		d.searchMatches = event.matches
 		d.applySearchFilter()
 	}
@@ -531,9 +543,12 @@ func (d *sessionDialog) scheduleSearchMatch() {
 	if d.matchCancel != nil {
 		d.matchCancel()
 	}
+	d.matching = true
+	d.matchGeneration++
 	query := d.query
 	segments := d.searchSegments
 	generation := d.searchGeneration
+	matchGeneration := d.matchGeneration
 	events := d.searchEvents
 	ctx, cancel := context.WithCancel(d.searchContext)
 	d.matchCancel = cancel
@@ -543,7 +558,7 @@ func (d *sessionDialog) scheduleSearchMatch() {
 			return
 		}
 		select {
-		case events <- sessionSearchEvent{kind: sessionSearchMatchesReady, generation: generation, query: query, matches: matches}:
+		case events <- sessionSearchEvent{kind: sessionSearchMatchesReady, generation: generation, matchGeneration: matchGeneration, query: query, matches: matches}:
 		case <-ctx.Done():
 		}
 	}()
@@ -628,6 +643,11 @@ func (d *sessionDialog) Active() bool { return d != nil && d.active }
 // Loading reports whether the dialog still has session entries in flight.
 func (d *sessionDialog) Loading() bool { return d != nil && d.active && d.loading }
 
+// SearchLoading reports whether the dialog is reading or matching session text.
+func (d *sessionDialog) SearchLoading() bool {
+	return d != nil && d.active && (d.searching || d.matching)
+}
+
 // Render returns the dialog lines.
 func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	if !d.Active() {
@@ -639,6 +659,9 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		title = "sessions · all"
 	}
 	lines = append(lines, frameHeader(th, title, width))
+	if d.SearchLoading() {
+		lines = append(lines, d.searchLoadingMessage(th))
+	}
 	if d.loading {
 		lines = append(lines, th.FGColor(th.Muted, d.loadingMessage(th)))
 		if len(d.sessions) == 0 {
@@ -676,8 +699,6 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		hint = "search: " + d.query + "  (esc clear · tab scope)"
 		if !sessionSearchQuery(d.query) {
 			hint += " · type 2+ characters"
-		} else if d.searching {
-			hint += " · indexing"
 		}
 	}
 	if d.loading {
@@ -901,6 +922,18 @@ func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 	return row
 }
 
+func (d *sessionDialog) searchLoadingMessage(th tui.Theme) string {
+	if d.searchSpinner == nil {
+		d.searchSpinner = &spinner{startedAt: time.Now()}
+	}
+	d.searchSpinner.Configure(th)
+	message := "Searching session text"
+	if d.searching {
+		message = "Indexing session text"
+	}
+	return th.FGColor(th.Spinner, d.searchSpinner.Frame()) + " " + th.FGColor(th.Muted, message+"…")
+}
+
 func (d *sessionDialog) loadingMessage(th tui.Theme) string {
 	frames := th.SpinnerFrames
 	if len(frames) == 0 {
@@ -1009,6 +1042,11 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 				return sessionDialogAction{Close: true}
 			}
 			d.query = ""
+			if d.matchCancel != nil {
+				d.matchCancel()
+				d.matchCancel = nil
+			}
+			d.matching = false
 			d.searchMatches = nil
 			d.applySearchFilter()
 			return sessionDialogAction{}
@@ -1022,6 +1060,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 					d.matchCancel()
 					d.matchCancel = nil
 				}
+				d.matching = false
 				d.searchMatches = nil
 			}
 			d.applySearchFilter()
