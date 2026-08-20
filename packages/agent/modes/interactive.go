@@ -1423,8 +1423,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.mu.Lock()
 			busy := i.busy
 			sessionLoading := i.sessionDialog.Loading()
+			sessionSearching := i.sessionDialog.SearchLoading()
 			i.mu.Unlock()
-			if busy || sessionLoading || i.btwDialog.Loading() || i.residentAnimating.Load() {
+			if busy || sessionLoading || sessionSearching || i.btwDialog.Loading() || i.residentAnimating.Load() {
 				requestRedraw()
 			}
 		}

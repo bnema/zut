@@ -419,6 +419,77 @@ func TestSessionDialogSearchShowsCountsAndExcerpt(t *testing.T) {
 	}
 }
 
+func TestSessionDialogSearchShowsAnimatedLoadingFeedback(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.loading = true // Keep StartSearch pending; no background read is needed.
+	d.query = "go"
+
+	if events := d.StartSearch(context.Background()); events == nil {
+		t.Fatal("StartSearch returned nil")
+	}
+	defer d.Close()
+	if !d.SearchLoading() {
+		t.Fatal("search is not reported as loading while indexing")
+	}
+	if d.searchSpinner == nil {
+		t.Fatal("search did not initialize the shared spinner")
+	}
+	indexed := stripANSIBytes(strings.Join(d.Render(tui.Dark, 100), "\n"))
+	if !strings.Contains(indexed, "Indexing session text") {
+		t.Fatalf("indexing render = %q", indexed)
+	}
+
+	d.searching = false
+	d.matching = true
+	matching := stripANSIBytes(strings.Join(d.Render(tui.Dark, 100), "\n"))
+	if !strings.Contains(matching, "Searching session text") {
+		t.Fatalf("matching render = %q", matching)
+	}
+
+	d.matching = false
+	if d.SearchLoading() {
+		t.Fatal("search remains reported as loading after matching completes")
+	}
+}
+
+func TestSessionDialogSearchIgnoresStaleMatchGeneration(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.query = "abc"
+	d.searchGeneration = 1
+	d.matchGeneration = 2
+	d.matching = true
+
+	d.ApplySearch(sessionSearchEvent{
+		kind:            sessionSearchMatchesReady,
+		generation:      1,
+		matchGeneration: 1,
+		query:           "abc",
+		matches:         map[string]sessionSearchMatch{"stale": {count: 1}},
+	})
+	if !d.matching {
+		t.Fatal("stale match result cleared the active search state")
+	}
+	if d.searchMatches != nil {
+		t.Fatalf("stale match result was applied: %#v", d.searchMatches)
+	}
+
+	d.ApplySearch(sessionSearchEvent{
+		kind:            sessionSearchMatchesReady,
+		generation:      1,
+		matchGeneration: 2,
+		query:           "abc",
+		matches:         map[string]sessionSearchMatch{"current": {count: 1}},
+	})
+	if d.matching {
+		t.Fatal("current match result did not finish the active search")
+	}
+	if _, ok := d.searchMatches["current"]; !ok {
+		t.Fatalf("current match result was not applied: %#v", d.searchMatches)
+	}
+}
+
 func TestSessionSearchUsesContiguousQueryAndRequiresTwoCharacters(t *testing.T) {
 	segments := []core.SessionSearchSegment{
 		{Path: "scattered", Text: "sizzle then harp, again remote"},
