@@ -231,6 +231,26 @@ func TestAgentRetriesUnexpectedEOFStreamError(t *testing.T) {
 	}
 }
 
+func TestAgentRetriesBareEOFStreamError(t *testing.T) {
+	client := &retryFakeClient{firstErr: fmt.Errorf("read SSE: %w", io.EOF)}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+	var records []RetryLifecycleRecord
+	a.OnRetryLifecycle = func(record RetryLifecycleRecord) {
+		records = append(records, record)
+	}
+
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("Stream calls = %d; want 2", got)
+	}
+	if len(records) != 2 || records[0].Reason != RetryReasonNetwork || records[1].Reason != RetryReasonNetwork {
+		t.Fatalf("retry lifecycle = %#v; want network failure and retry", records)
+	}
+}
+
 func TestAgentEmitsRetryLifecycleEvents(t *testing.T) {
 	client := &retryFakeClient{}
 	a := NewAgent(client, "fake-model", "system", Registry{})
