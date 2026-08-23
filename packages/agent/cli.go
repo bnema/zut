@@ -2488,11 +2488,13 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	for idx, s := range initialCfg.QuickModelShortcuts {
 		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
 	}
-	theme, _, themeErr := tui.DetectThemeWithCustom(ZutHome(), initialCfg.Theme, 80*time.Millisecond)
+	themePreference := tui.ResolveThemePreference(initialCfg.Theme, os.Getenv("ZUT_THEME"))
+	theme, _, themeErr := tui.DetectThemeWithCustom(ZutHome(), themePreference.Effective, 80*time.Millisecond)
 	if themeErr != nil {
 		fmt.Fprintln(os.Stderr, "theme load:", themeErr)
-		if initialCfg.Theme != "" && !tui.ThemeExists(ZutHome(), initialCfg.Theme) {
+		if !themePreference.Forced && initialCfg.Theme != "" && !tui.ThemeExists(ZutHome(), initialCfg.Theme) {
 			initialCfg.Theme = ""
+			themePreference = tui.ResolveThemePreference("", os.Getenv("ZUT_THEME"))
 			_ = SaveConfig(initialCfg)
 		}
 	}
@@ -2554,6 +2556,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		TUIStatusPosition:              initialCfg.TUIStatusPosition,
 		TUIWorkingPosition:             initialCfg.TUIWorkingPosition,
 		ThemeName:                      initialCfg.Theme,
+		EffectiveThemeName:             themePreference.Effective,
+		ThemeForced:                    themePreference.Forced,
+		TerminalProfile:                theme.Terminal,
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),
 		ExtensionThemes:                extMgr.ThemeOptions,

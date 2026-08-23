@@ -55,6 +55,16 @@ func (s *residentChildSession) Close() {
 	}
 }
 
+func (s *residentChildSession) setTheme(theme tui.Theme) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.view.Theme = theme
+	s.view.InvalidateRenderCache()
+}
+
 func (s *residentChildSession) LoadRecent(limit int) error {
 	if s == nil || s.manager == nil {
 		return fmt.Errorf("resident child session: unavailable")

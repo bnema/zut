@@ -33,8 +33,8 @@ func TestLoadThemeAllowsPartialColorOverrides(t *testing.T) {
 	if th.Accent != Color256(204) {
 		t.Fatalf("accent = %#v, want 204", th.Accent)
 	}
-	if th.FG != Dark.FG {
-		t.Fatalf("fg = %#v, want inherited %#v", th.FG, Dark.FG)
+	if th.FG != TerminalDefault() {
+		t.Fatalf("fg = %#v, want terminal default", th.FG)
 	}
 	if len(th.SpinnerFrames) == 0 {
 		t.Fatal("spinner frames should be inherited")
@@ -66,8 +66,8 @@ func TestLoadThemeAllowsSpinnerAppearanceOverrides(t *testing.T) {
 	if th.SpinnerFrames[1] != "o" || th.SpinnerIntervalMS != 200 {
 		t.Fatalf("spinner appearance overrides not applied: %#v %d", th.SpinnerFrames, th.SpinnerIntervalMS)
 	}
-	if th.Accent != Dark.Accent {
-		t.Fatalf("accent = %#v, want inherited %#v", th.Accent, Dark.Accent)
+	if th.Accent != TerminalPaletteSlot(12) {
+		t.Fatalf("accent = %#v, want terminal palette slot 12", th.Accent)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestLoadThemeFallsBackToDarkWhenLightModeMissing(t *testing.T) {
 	if th.SpinnerIntervalMS != 120 {
 		t.Fatalf("spinner interval = %d, want 120", th.SpinnerIntervalMS)
 	}
-	if th.FG != Light.FG {
-		t.Fatalf("fg = %#v, want inherited light fg %#v", th.FG, Light.FG)
+	if th.FG != TerminalDefault() {
+		t.Fatalf("fg = %#v, want terminal default", th.FG)
 	}
 }
 
@@ -102,8 +102,8 @@ func TestLoadThemeIgnoresLegacySpinnerMessages(t *testing.T) {
 	if len(th.SpinnerFrames) != len(Light.SpinnerFrames) || th.SpinnerIntervalMS != Light.SpinnerIntervalMS {
 		t.Fatalf("legacy spinner_messages changed spinner appearance: %#v %d", th.SpinnerFrames, th.SpinnerIntervalMS)
 	}
-	if th.FG != Light.FG {
-		t.Fatalf("fg = %#v, want inherited %#v", th.FG, Light.FG)
+	if th.FG != TerminalDefault() {
+		t.Fatalf("fg = %#v, want terminal default", th.FG)
 	}
 }
 
@@ -143,5 +143,31 @@ func TestLoadThemeQuantizesRGBSemanticColorsWithoutTrueColor(t *testing.T) {
 	want := nearestXtermColor(200, 100, 50)
 	if got := th.FGColor(th.Accent, "x"); got != sgrFG(want)+"x\x1b[0m" {
 		t.Fatalf("RGB accent fallback = %q, want xterm-256 index %d", got, want)
+	}
+}
+
+func TestLoadThemeRejectsInvalidNestedValues(t *testing.T) {
+	for _, body := range []string{
+		`{"colors":{"dark":{"accent":999}}}`,
+		`{"colors":{"light":{"syntax":{"keyword":"not a style"}}}}`,
+		`{"spinner_interval_ms":1}`,
+		`{"syntax_base_style":"not-a-style"}`,
+	} {
+		home := writeThemeFile(t, "invalid", body)
+		if _, err := LoadThemeSource(home, "invalid"); err == nil {
+			t.Fatalf("LoadThemeSource(%s) succeeded", body)
+		}
+	}
+}
+
+func TestResolveThemeCustomUsesReportedScheme(t *testing.T) {
+	home := writeThemeFile(t, "split", `{"colors":{"dark":{"accent":20},"light":{"accent":21}}}`)
+	source, err := LoadThemeSource(home, "split")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := TerminalProfile{SchemeKnown: true, Light: true}
+	if got := ResolveTheme("split", source, profile).Theme.Accent; got != Color256(21) {
+		t.Fatalf("light branch accent = %#v, want 21", got)
 	}
 }

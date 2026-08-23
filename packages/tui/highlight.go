@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,21 +37,25 @@ func (th Theme) HighlightCode(src, lang string) []string {
 		highlightCache.store(styleKey, lang, src, out)
 		return out
 	}
-	style := th.chromaStyle()
-	formatterName := "terminal256"
-	if th.Terminal.TrueColor {
-		formatterName = "terminal16m"
-	}
-	formatter := formatters.Get(formatterName)
-	if formatter == nil {
-		return strings.Split(src, "\n")
-	}
-
 	iterator, err := lexer.Tokenise(nil, src)
 	if err != nil {
 		out := strings.Split(src, "\n")
 		highlightCache.store(styleKey, lang, src, out)
 		return out
+	}
+	if th.UseTerminalPalette {
+		out := formatTerminalTokens(th, iterator)
+		highlightCache.store(styleKey, lang, src, out)
+		return out
+	}
+	style := th.chromaStyle()
+	formatterName := "terminal256"
+	if th.Terminal.ColorDepth() == ColorDepthTrueColor {
+		formatterName = "terminal16m"
+	}
+	formatter := formatters.Get(formatterName)
+	if formatter == nil {
+		return strings.Split(src, "\n")
 	}
 	var buf bytes.Buffer
 	if err := formatter.Format(&buf, style, iterator); err != nil {
@@ -61,6 +66,46 @@ func (th Theme) HighlightCode(src, lang string) []string {
 	out := strings.Split(strings.TrimRight(stripANSIBackgrounds(buf.String()), "\n"), "\n")
 	highlightCache.store(styleKey, lang, src, out)
 	return out
+}
+
+// formatTerminalTokens keeps Chroma's lexer but owns terminal formatting for
+// adaptive themes. Chroma's terminal formatters map duplicate ANSI RGB values
+// through the xterm cube, losing an intended palette slot such as bright blue.
+func formatTerminalTokens(th Theme, iterator chroma.Iterator) []string {
+	var out strings.Builder
+	for token := iterator(); token != chroma.EOF; token = iterator() {
+		color, bold, italic := terminalTokenStyle(th, token.Type)
+		prefix := th.fgPrefix(color)
+		if bold {
+			prefix += "\x1b[1m"
+		}
+		if italic {
+			prefix += "\x1b[3m"
+		}
+		out.WriteString(prefix)
+		out.WriteString(token.Value)
+		out.WriteString(reset)
+	}
+	return strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+}
+
+func terminalTokenStyle(th Theme, typ chroma.TokenType) (TerminalColor, bool, bool) {
+	switch {
+	case typ.InCategory(chroma.Comment):
+		return th.Muted, false, true
+	case typ == chroma.LiteralStringEscape || typ == chroma.Error:
+		return th.Error, false, false
+	case typ.InSubCategory(chroma.LiteralString):
+		return th.Tool, false, false
+	case typ.InSubCategory(chroma.LiteralNumber):
+		return th.Warning, false, false
+	case typ.InCategory(chroma.Keyword):
+		return th.Accent, true, false
+	case typ.InCategory(chroma.Name):
+		return TerminalPaletteSlot(14), false, false
+	default:
+		return TerminalDefault(), false, false
+	}
 }
 
 // highlightResultCache is a simple LRU-ish cache: when it exceeds its
@@ -242,12 +287,8 @@ func (th Theme) chromaStyle() *chroma.Style {
 
 func (th Theme) syntaxKey() string {
 	syn := th.Syntax
-	outputMode := "256"
-	if th.Terminal.TrueColor {
-		outputMode = "truecolor"
-	}
 	return strings.Join([]string{
-		outputMode,
+		fmt.Sprintf("%v:%t:%#v", th.Terminal.ColorDepth(), th.UseTerminalPalette, th.Terminal),
 		th.SyntaxBaseStyle,
 		syn.Keyword,
 		syn.KeywordConstant,

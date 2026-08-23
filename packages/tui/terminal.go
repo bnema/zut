@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -36,6 +37,7 @@ type ProcTerm struct {
 	out       *os.File
 	in        *os.File
 	resizeCBs []func()
+	writeMu   sync.Mutex
 }
 
 // NewProcTerm returns a Terminal bound to stdin/stdout.
@@ -43,7 +45,11 @@ func NewProcTerm() *ProcTerm {
 	return &ProcTerm{out: os.Stdout, in: os.Stdin}
 }
 
-func (p *ProcTerm) Write(b []byte) (int, error) { return p.out.Write(b) }
+func (p *ProcTerm) Write(b []byte) (int, error) {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	return p.out.Write(b)
+}
 
 // WriteBell emits one standalone terminal alert character. Callers should
 // route it through the same output writer used for the rest of the terminal

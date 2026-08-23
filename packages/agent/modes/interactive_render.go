@@ -54,7 +54,10 @@ func (s *latestFrameScheduler) requestTheme(theme tui.Theme) bool {
 	if s.stopped {
 		return false
 	}
-	s.clear = true
+	// Theme changes repaint only the visible frame. Clear() emits 3J and
+	// destroys scrollback, which is never an acceptable side effect of a live
+	// terminal appearance update.
+	s.invalidate = true
 	s.theme = &theme
 	select {
 	case s.wake <- struct{}{}:
