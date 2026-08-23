@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -791,13 +792,14 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 	if msg == "" || isNonRetryableProviderLimit(msg) {
 		return false
 	}
+	if isStreamNetworkError(err, msg) {
+		return true
+	}
 	needles := []string{
 		"overloaded", "provider returned error", "rate limit", "ratelimit", "too many requests",
 		"429", "http 429", "500", "http 500", "502", "http 502", "503", "http 503", "504", "http 504",
-		"service unavailable", "server error", "internal error", "network error", "connection error",
-		"connection refused", "connection lost", "fetch failed", "upstream connect", "reset before headers",
-		"socket hang up", "ended without", "stream ended before", "did not get a response", "timed out",
-		"timeout", "terminated", "unexpected eof", "transport failure",
+		"service unavailable", "server error", "internal error", "ended without", "stream ended before",
+		"did not get a response", "timed out", "timeout", "terminated",
 		// OpenAI's ChatGPT/Codex backend returns this generic message (with a
 		// request ID) for transient server failures and explicitly says
 		// "You can retry your request".
@@ -813,6 +815,24 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 		"servers are currently overloaded", "servers are busy", "try again later",
 	}
 	for _, needle := range needles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStreamNetworkError detects transport errors from an opened provider stream.
+// Keep typed EOF checks because WebSocket readers return io.EOF on a peer close,
+// while provider-specific transports may only preserve a textual error.
+func isStreamNetworkError(err error, msg string) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	for _, needle := range []string{
+		"connection", "network", "unexpected eof", "broken pipe", "socket hang up",
+		"transport failure", "upstream connect",
+	} {
 		if strings.Contains(msg, needle) {
 			return true
 		}
@@ -850,10 +870,8 @@ func classifyRetryReason(err error) RetryReason {
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") {
 		return RetryReasonTimeout
 	}
-	for _, needle := range []string{"connection", "network", "unexpected eof", "broken pipe", "socket hang up", "transport failure", "upstream connect"} {
-		if strings.Contains(msg, needle) {
-			return RetryReasonNetwork
-		}
+	if isStreamNetworkError(err, msg) {
+		return RetryReasonNetwork
 	}
 	for _, needle := range []string{"context window", "context length", "maximum context", "too many tokens"} {
 		if strings.Contains(msg, needle) {
