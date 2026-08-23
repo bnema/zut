@@ -706,12 +706,6 @@ func validateThemeOverrides(o ThemeOverrides) error {
 	return nil
 }
 
-func IsLightTheme(th Theme) bool {
-	return th.FG == Light.FG && th.SelectionBG == Light.SelectionBG && th.SelectionFG == Light.SelectionFG
-}
-
-func isLightTheme(th Theme) bool { return IsLightTheme(th) }
-
 func parseHexColor(s string) (TerminalColor, bool) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
 	if len(s) != 6 {
