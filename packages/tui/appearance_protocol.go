@@ -1,13 +1,14 @@
 package tui
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// SchemeEvent is a reported terminal color-scheme preference.
+// Appearance query and DEC mode 2031 control sequences.
 const (
 	SeqQueryColorScheme = "\x1b[?996n"
 	SeqQueryMode2031    = "\x1b[?2031$p"
@@ -32,8 +33,12 @@ func AppearanceQuery() string {
 	return b.String()
 }
 
-// SchemeEvent is a reported terminal color-scheme preference.
-type SchemeEvent struct{ Light bool }
+// SchemeEvent is a reported terminal color-scheme preference. Solicited is
+// true only for the reply to a query initiated by zut.
+type SchemeEvent struct {
+	Light     bool
+	Solicited bool
+}
 
 // ColorEvent is one default foreground/background or ANSI-palette reply.
 type ColorEvent struct {
@@ -65,6 +70,7 @@ type InputEvent struct {
 type AppearanceParser struct {
 	mu            sync.RWMutex
 	pendingColors bool
+	pendingScheme bool
 	notifications bool
 }
 
@@ -80,6 +86,14 @@ func (p *AppearanceParser) SetNotifications(enabled bool) {
 	p.mu.Unlock()
 }
 
+// SetPendingScheme permits one solicited 997 response and marks it so the
+// event loop does not mistake it for a new terminal notification.
+func (p *AppearanceParser) SetPendingScheme(pending bool) {
+	p.mu.Lock()
+	p.pendingScheme = pending
+	p.mu.Unlock()
+}
+
 func (p *AppearanceParser) acceptsColors() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -90,6 +104,16 @@ func (p *AppearanceParser) acceptsNotifications() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.notifications
+}
+
+func (p *AppearanceParser) consumeScheme() (solicited bool, accepted bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pendingScheme {
+		p.pendingScheme = false
+		return true, true
+	}
+	return false, p.notifications
 }
 
 // ParseAppearanceOSC parses one complete BEL/ST-terminated OSC sequence.
@@ -186,7 +210,11 @@ func (s *AppearanceSource) ReadByte() (byte, error) {
 			s.trackPaste(b)
 			return b, err
 		}
-		next, ok, err := s.peek(time.Millisecond)
+		lookahead := time.Millisecond
+		if s.parser != nil && (s.parser.acceptsColors() || s.parser.acceptsNotifications()) {
+			lookahead = 50 * time.Millisecond
+		}
+		next, ok, err := s.peek(lookahead)
 		if err != nil || !ok || (next != ']' && next != '[') {
 			if ok {
 				s.pending = append(s.pending, next)
@@ -213,13 +241,16 @@ func (s *AppearanceSource) ReadByte() (byte, error) {
 		if err != nil {
 			return 0, err
 		}
-		if bytesEqual(sequence, []byte("\x1b[200~")) {
+		if bytes.Equal(sequence, []byte("\x1b[200~")) {
 			s.inPaste = true
 		}
 		scheme, mode := ParseAppearanceCSI(sequence)
-		if scheme != nil && s.parser != nil && (s.parser.acceptsColors() || s.parser.acceptsNotifications()) {
-			s.emit(InputEvent{Scheme: scheme})
-			continue
+		if scheme != nil && s.parser != nil {
+			if solicited, accepted := s.parser.consumeScheme(); accepted {
+				scheme.Solicited = solicited
+				s.emit(InputEvent{Scheme: scheme})
+				continue
+			}
 		}
 		if mode != nil {
 			s.emit(InputEvent{Mode: mode})
@@ -273,16 +304,4 @@ func (s *AppearanceSource) trackPaste(b byte) {
 		s.inPaste = false
 		s.pasteTail = nil
 	}
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

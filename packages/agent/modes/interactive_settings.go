@@ -1228,8 +1228,8 @@ func (i *Interactive) installResolvedTheme(resolution tui.ThemeResolution) {
 	i.view.InvalidateRenderCache()
 	i.chatCacheValid = false
 	i.stableChatCacheValid = false
-	i.mu.Unlock()
 	i.ed.Prompt = th.AccentBar(th.Accent)
+	i.mu.Unlock()
 	i.btwDialog.setTheme(th)
 	if i.residentChildSession != nil {
 		i.residentChildSession.setTheme(th)

@@ -30,7 +30,10 @@ func TestParseAppearanceCSI(t *testing.T) {
 	}
 }
 
-type appearanceBytes struct{ data []byte }
+type appearanceBytes struct {
+	data    []byte
+	minPeek time.Duration
+}
 
 func (s *appearanceBytes) read() (byte, error) {
 	if len(s.data) == 0 {
@@ -41,7 +44,10 @@ func (s *appearanceBytes) read() (byte, error) {
 	return b, nil
 }
 
-func (s *appearanceBytes) peek(time.Duration) (byte, bool, error) {
+func (s *appearanceBytes) peek(timeout time.Duration) (byte, bool, error) {
+	if timeout < s.minPeek {
+		return 0, false, nil
+	}
 	if len(s.data) == 0 {
 		return 0, false, nil
 	}
@@ -72,6 +78,41 @@ func TestAppearanceSourceConsumesOnlyPendingReplies(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Color == nil || events[0].Color.Kind != 11 {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestAppearanceSourceAcceptsDelayedReplyWhileQueryPending(t *testing.T) {
+	input := &appearanceBytes{data: []byte("\x1b]11;#123456\a"), minPeek: 2 * time.Millisecond}
+	parser := &AppearanceParser{}
+	parser.SetPendingColors(true)
+	var events []InputEvent
+	source := NewAppearanceSource(input.read, input.peek, parser, func(event InputEvent) { events = append(events, event) })
+	if _, err := source.ReadByte(); err != io.EOF {
+		t.Fatalf("ReadByte error = %v, want EOF after consuming reply", err)
+	}
+	if len(events) != 1 || events[0].Color == nil || events[0].Color.Kind != 11 {
+		t.Fatalf("delayed reply events = %#v", events)
+	}
+}
+
+func TestAppearanceSourceMarksOnlyPendingSchemeReplySolicited(t *testing.T) {
+	input := &appearanceBytes{data: []byte("\x1b[?997;1n\x1b[?997;2n")}
+	parser := &AppearanceParser{}
+	parser.SetPendingScheme(true)
+	parser.SetNotifications(true)
+	var events []InputEvent
+	source := NewAppearanceSource(input.read, input.peek, parser, func(event InputEvent) { events = append(events, event) })
+	for {
+		_, err := source.ReadByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(events) != 2 || events[0].Scheme == nil || events[1].Scheme == nil || !events[0].Scheme.Solicited || events[1].Scheme.Solicited {
+		t.Fatalf("scheme events = %#v", events)
 	}
 }
 

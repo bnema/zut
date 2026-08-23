@@ -73,8 +73,10 @@ func TestLoadThemeAllowsSpinnerAppearanceOverrides(t *testing.T) {
 
 func TestLoadThemeFallsBackToDarkWhenLightModeMissing(t *testing.T) {
 	home := writeThemeFile(t, "darkonly", `{"colors":{"dark":{"spinner_frames":["◢","◣","◤","◥"],"spinner_messages":["working"],"spinner_interval_ms":120}}}`)
+	detected := Light
+	detected.Terminal = TerminalProfile{SchemeKnown: true, Light: true}
 
-	th, _, err := LoadThemeFromHome(home, "darkonly", Light)
+	th, _, err := LoadThemeFromHome(home, "darkonly", detected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +171,9 @@ func TestResolveThemeCustomUsesReportedScheme(t *testing.T) {
 	profile := TerminalProfile{SchemeKnown: true, Light: true}
 	if got := ResolveTheme("split", source, profile).Theme.Accent; got != Color256(21) {
 		t.Fatalf("light branch accent = %#v, want 21", got)
+	}
+	dark := TerminalProfile{SchemeKnown: true, Light: false}
+	if got := ResolveTheme("split", source, dark).Theme.Accent; got != Color256(20) {
+		t.Fatalf("dark branch accent = %#v, want 20", got)
 	}
 }

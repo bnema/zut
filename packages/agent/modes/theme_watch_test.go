@@ -31,7 +31,7 @@ func TestWatchThemeSourceTicksPublishesOnlyValidRevisions(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ticks := make(chan time.Time, 3)
+	ticks := make(chan time.Time)
 	events := make(chan themeWatchEvent, 3)
 	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events)
 
@@ -62,29 +62,47 @@ func TestWatchThemeSourceTicksPublishesOnlyValidRevisions(t *testing.T) {
 	}
 }
 
-func TestWatchThemeSourceTicksDelaysPersistentDeletion(t *testing.T) {
+func TestWatchThemeSourceTicksRestartsDeletionGraceAfterInvalidReappearance(t *testing.T) {
 	home := t.TempDir()
 	path := writeWatchedTheme(t, home, `{}`)
 	accepted, err := tui.LoadThemeSource(home, "live")
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticks := make(chan time.Time)
+	events := make(chan themeWatchEvent, 1)
+	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events)
+
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ticks := make(chan time.Time, 3)
-	events := make(chan themeWatchEvent, 1)
-	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events)
 	ticks <- time.Unix(1, 0)
+	if err := os.WriteFile(path, []byte(`{"colors":{"accent":999}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ticks <- time.Unix(2, 0)
 	select {
 	case event := <-events:
-		t.Fatalf("deletion happened before grace period: %#v", event)
+		if event.err == nil {
+			t.Fatalf("invalid reappearance event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not report invalid reappearance")
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	ticks <- time.Unix(3, 0)
+	ticks <- time.Unix(4, 0)
+	select {
+	case event := <-events:
+		t.Fatalf("deletion happened before restarted grace period: %#v", event)
 	default:
 	}
-	ticks <- time.Unix(4, 0)
+	ticks <- time.Unix(6, 0)
 	select {
 	case event := <-events:
 		if !event.deleted {

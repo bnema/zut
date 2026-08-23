@@ -1280,6 +1280,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	appearanceEvents := make(chan tui.InputEvent, 256)
 	appearanceParser := &tui.AppearanceParser{}
 	appearanceParser.SetPendingColors(true)
+	appearanceParser.SetPendingScheme(true)
 	inputDone := make(chan struct{})
 	go func() {
 		defer close(inputDone)
@@ -1407,8 +1408,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 				i.activeThemeSource = event.source
 				i.themeWatchWarning = ""
 				i.installResolvedTheme(tui.ResolveTheme(i.cfg.EffectiveThemeName, event.source, i.terminalProfile))
+				i.mu.Lock()
 				i.statusOK = "theme reloaded"
 				i.statusErr = ""
+				i.mu.Unlock()
 			case event.deleted:
 				i.activeThemeSource = nil
 				i.stopThemeWatch()
@@ -1418,11 +1421,15 @@ func (i *Interactive) Run(ctx context.Context) error {
 					_ = i.cfg.SettingsStore.SetTheme("auto")
 				}
 				i.installResolvedTheme(tui.ResolveTheme("auto", nil, i.terminalProfile))
+				i.mu.Lock()
 				i.statusOK = "theme removed; using auto"
 				i.statusErr = ""
+				i.mu.Unlock()
 			case event.err != nil && event.err.Error() != i.themeWatchWarning:
 				i.themeWatchWarning = event.err.Error()
+				i.mu.Lock()
 				i.statusErr = "theme reload: " + event.err.Error()
+				i.mu.Unlock()
 			}
 			i.invalidate()
 		case event := <-appearanceEvents:
@@ -1444,6 +1451,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 				profileCandidate.Light = event.Scheme.Light
 				profileCandidate.SchemeKnown = true
 				profileDirty = true
+				if notificationsSupported && !event.Scheme.Solicited {
+					// A scheme notification means the terminal defaults and palette
+					// may have changed too. Refresh the complete profile atomically.
+					appearanceParser.SetPendingColors(true)
+					appearanceParser.SetPendingScheme(true)
+					appearanceDeadline = time.Now().Add(500 * time.Millisecond)
+					_, _ = term.Write([]byte(tui.AppearanceQuery()))
+				}
 			case event.Mode != nil && event.Mode.Mode == 2031:
 				switch event.Mode.Status {
 				case 1, 3:
@@ -1555,6 +1570,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			now := time.Now()
 			if !appearanceDeadline.IsZero() && !now.Before(appearanceDeadline) {
 				appearanceParser.SetPendingColors(false)
+				appearanceParser.SetPendingScheme(false)
 				appearanceDeadline = time.Time{}
 			}
 			if profileDirty {
@@ -1563,6 +1579,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			if !notificationsSupported && now.Sub(lastAppearancePoll) >= 2*time.Second {
 				appearanceParser.SetPendingColors(true)
+				appearanceParser.SetPendingScheme(true)
 				appearanceDeadline = now.Add(500 * time.Millisecond)
 				lastAppearancePoll = now
 				_, _ = term.Write([]byte("\x1b]11;?\a" + tui.SeqQueryColorScheme))

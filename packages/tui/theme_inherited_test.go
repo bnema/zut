@@ -95,6 +95,7 @@ func TestTerminalPaletteSlotsDoNotAliasExplicitIndexedColors(t *testing.T) {
 }
 
 func TestTerminalThemeRendererInvalidationDoesNotClearScrollback(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
 	r.Resize(20, 2)

@@ -207,8 +207,9 @@ func TerminalTheme(profile TerminalProfile) Theme {
 		Terminal:           profile,
 		SpinnerFrames:      append([]string(nil), defaultSpinnerFrames...),
 		SpinnerIntervalMS:  80,
-		SyntaxBaseStyle:    "",
-		Syntax:             terminalSyntaxTheme(),
+		// Terminal syntax is resolved directly from semantic terminal roles.
+		// Keep JSON syntax fields empty until a custom theme explicitly sets one.
+		Syntax: SyntaxTheme{},
 	}
 	if profile.HasForeground && profile.HasBackground {
 		t.Muted = t.DimColor(profile.Foreground, 45)
@@ -220,29 +221,6 @@ func TerminalTheme(profile TerminalProfile) Theme {
 	// the terminal. Custom themes can intentionally override Background.
 	t.Background = nil
 	return t
-}
-
-func terminalSyntaxTheme() SyntaxTheme {
-	return SyntaxTheme{
-		Keyword:             "ansi:12 bold",
-		KeywordConstant:     "ansi:12",
-		KeywordDeclaration:  "ansi:12",
-		KeywordNamespace:    "ansi:12",
-		KeywordReserved:     "ansi:12 bold",
-		KeywordType:         "ansi:14",
-		NameBuiltin:         "ansi:14",
-		NameFunction:        "ansi:10",
-		NameClass:           "ansi:10 bold",
-		NameDecorator:       "ansi:13",
-		LiteralString:       "ansi:10",
-		LiteralStringEscape: "ansi:9",
-		LiteralNumber:       "ansi:11",
-		Comment:             "ansi:8 italic",
-		CommentPreproc:      "ansi:13",
-		Operator:            "default",
-		Punctuation:         "default",
-		Text:                "default",
-	}
 }
 
 func withTerminalProfile(base, detected Theme) Theme {

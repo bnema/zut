@@ -2488,14 +2488,23 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	for idx, s := range initialCfg.QuickModelShortcuts {
 		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
 	}
-	themePreference := tui.ResolveThemePreference(initialCfg.Theme, os.Getenv("ZUT_THEME"))
+	themeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME")))
+	if themeEnv != "" && themeEnv != "auto" && themeEnv != "dark" && themeEnv != "light" {
+		fmt.Fprintf(os.Stderr, "theme override: unsupported ZUT_THEME=%q; ignoring it\n", themeEnv)
+		themeEnv = ""
+	}
+	themePreference := tui.ResolveThemePreference(initialCfg.Theme, themeEnv)
 	theme, _, themeErr := tui.DetectThemeWithCustom(ZutHome(), themePreference.Effective, 80*time.Millisecond)
 	if themeErr != nil {
 		fmt.Fprintln(os.Stderr, "theme load:", themeErr)
-		if !themePreference.Forced && initialCfg.Theme != "" && !tui.ThemeExists(ZutHome(), initialCfg.Theme) {
-			initialCfg.Theme = ""
-			themePreference = tui.ResolveThemePreference("", os.Getenv("ZUT_THEME"))
-			_ = SaveConfig(initialCfg)
+		if !themePreference.Forced {
+			themePreference = tui.ResolveThemePreference("", themeEnv)
+			if initialCfg.Theme != "" {
+				initialCfg.Theme = ""
+				if err := SaveConfig(initialCfg); err != nil {
+					fmt.Fprintln(os.Stderr, "theme reset:", err)
+				}
+			}
 		}
 	}
 

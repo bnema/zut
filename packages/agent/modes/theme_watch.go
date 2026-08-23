@@ -78,9 +78,11 @@ func watchThemeSourceTicks(ctx context.Context, home, preference string, accepte
 				}
 				continue
 			}
+			// A present-but-invalid revision remains watchable and must restart
+			// the deletion grace period just like a valid replacement does.
+			missingSince = time.Time{}
 			source, err := tui.LoadThemeSource(home, preference)
 			if err == nil && source != nil {
-				missingSince = time.Time{}
 				lastError = ""
 				if source.Path != accepted.Path || source.Digest == lastDigest {
 					continue
