@@ -28,6 +28,22 @@ func TestTerminalSyntaxUsesReportedRGBPalette(t *testing.T) {
 	}
 }
 
+func TestTerminalSyntaxCacheIncludesSemanticRoles(t *testing.T) {
+	profile := TerminalProfile{Depth: ColorDepthTrueColor}
+	first := TerminalTheme(profile)
+	first.Accent = ColorRGB(1, 2, 3)
+	second := TerminalTheme(profile)
+	second.Accent = ColorRGB(4, 5, 6)
+
+	const source = "func terminalSyntaxCacheSentinel() {}"
+	if got := strings.Join(first.HighlightCode(source, "go"), "\n"); !strings.Contains(got, "\x1b[38;2;1;2;3m") {
+		t.Fatalf("first output = %q, want first accent", got)
+	}
+	if got := strings.Join(second.HighlightCode(source, "go"), "\n"); !strings.Contains(got, "\x1b[38;2;4;5;6m") {
+		t.Fatalf("second output reused first semantic color: %q", got)
+	}
+}
+
 func TestTerminalSyntaxHonorsCustomOverrides(t *testing.T) {
 	th := TerminalTheme(TerminalProfile{Depth: ColorDepthTrueColor})
 	th.Syntax.Keyword = "#112233 bold"

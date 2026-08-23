@@ -411,7 +411,15 @@ func (th Theme) terminalSyntaxKeyPart() string {
 	for _, color := range th.Terminal.Palette {
 		h = hashThemeColor(h, color)
 	}
-	for _, color := range []TerminalColor{th.Terminal.Foreground, th.Terminal.Background} {
+	for _, color := range []TerminalColor{
+		th.Terminal.Foreground,
+		th.Terminal.Background,
+		th.Accent,
+		th.Muted,
+		th.Tool,
+		th.Warning,
+		th.Error,
+	} {
 		h = hashThemeColor(h, color)
 	}
 	for _, value := range []bool{th.Terminal.HasForeground, th.Terminal.HasBackground, th.Terminal.TrueColor, th.Terminal.Light, th.Terminal.SchemeKnown} {
