@@ -231,7 +231,7 @@ func (configSettingsStore) SetTheme(name string) error {
 	if err != nil {
 		return err
 	}
-	if name == "auto" {
+	if name == "auto" || name == "inherited" {
 		name = ""
 	}
 	cfg.Theme = name

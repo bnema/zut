@@ -21,39 +21,28 @@ func DetectTrueColor(termEnv, colorTerm string) bool {
 	return termEnv == "xterm-direct" || strings.HasSuffix(termEnv, "-direct")
 }
 
+// DetectColorDepth conservatively chooses the highest color mode advertised
+// by the environment. Terminals without a 256-color signal stay ANSI16.
+func DetectColorDepth(termEnv, colorTerm string) ColorDepth {
+	if DetectTrueColor(termEnv, colorTerm) {
+		return ColorDepthTrueColor
+	}
+	termEnv = strings.ToLower(strings.TrimSpace(termEnv))
+	if strings.Contains(termEnv, "256color") {
+		return ColorDepthIndexed256
+	}
+	return ColorDepthANSI16
+}
+
 // DetectThemeFromBackground queries the controlling tty for its current
-// foreground, background, and ANSI palette using OSC 10/11/4. The returned
-// theme keeps the detected light/dark built-in colors for the normal auto
-// theme and carries the terminal snapshot for the inherited theme.
+// foreground, background, and ANSI palette using OSC 10/11/4. Auto is always
+// terminal-owned; the snapshot is retained for subsequent runtime resolution.
 //
 // The query / parse runs synchronously before the TUI is initialised so the
 // returned snapshot can drive the entire session. We briefly put stdin into
 // raw mode and disable echo so OSC replies do not leak onto the user's screen.
 func DetectThemeFromBackground(timeout time.Duration) Theme {
-	profile := detectTerminalProfile(timeout)
-	base := Dark
-
-	// Honour explicit override env vars first; some users and CI environments
-	// know better than the heuristic. The terminal snapshot is still retained
-	// so selecting the inherited theme later remains useful.
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME"))) {
-	case "dark":
-		base = Dark
-	case "light":
-		base = Light
-	default:
-		if profile.HasBackground {
-			luma := 0.2126*float64(profile.Background.R) +
-				0.7152*float64(profile.Background.G) +
-				0.0722*float64(profile.Background.B)
-			if luma >= 127.5 {
-				base = Light
-			}
-		}
-	}
-
-	base.Terminal = profile
-	return base
+	return TerminalTheme(detectTerminalProfile(timeout))
 }
 
 type oscColorResponse struct {
@@ -63,7 +52,7 @@ type oscColorResponse struct {
 }
 
 func detectTerminalProfile(timeout time.Duration) TerminalProfile {
-	profile := TerminalProfile{TrueColor: DetectTrueColor(os.Getenv("TERM"), os.Getenv("COLORTERM"))}
+	profile := TerminalProfile{Depth: DetectColorDepth(os.Getenv("TERM"), os.Getenv("COLORTERM")), TrueColor: DetectTrueColor(os.Getenv("TERM"), os.Getenv("COLORTERM"))}
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) || timeout <= 0 {
 		return profile
 	}
@@ -97,11 +86,11 @@ func detectTerminalProfile(timeout time.Duration) TerminalProfile {
 		}
 	}
 	if profile.HasBackground {
-		luma := 0.2126*float64(profile.Background.R) +
-			0.7152*float64(profile.Background.G) +
-			0.0722*float64(profile.Background.B)
-		profile.Light = luma >= 127.5
-		profile.SchemeKnown = true
+		// This is a branch-selection fallback, not a reported scheme. Runtime
+		// CSI 997 replies alone set SchemeKnown.
+		profile.Light = 0.2126*float64(profile.Background.R)+
+			0.7152*float64(profile.Background.G)+
+			0.0722*float64(profile.Background.B) >= 127.5
 	}
 	return profile
 }

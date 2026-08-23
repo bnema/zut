@@ -202,7 +202,7 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 	}
 }
 
-func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
+func TestConfigSettingsStoreResetsRemovedInheritedThemeToAuto(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
@@ -215,8 +215,8 @@ func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Theme != "inherited" {
-		t.Fatalf("theme = %q, want inherited", cfg.Theme)
+	if cfg.Theme != "" {
+		t.Fatalf("theme = %q, want auto", cfg.Theme)
 	}
 }
 

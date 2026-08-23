@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -36,21 +37,25 @@ func (th Theme) HighlightCode(src, lang string) []string {
 		highlightCache.store(styleKey, lang, src, out)
 		return out
 	}
-	style := th.chromaStyle()
-	formatterName := "terminal256"
-	if th.Terminal.TrueColor {
-		formatterName = "terminal16m"
-	}
-	formatter := formatters.Get(formatterName)
-	if formatter == nil {
-		return strings.Split(src, "\n")
-	}
-
 	iterator, err := lexer.Tokenise(nil, src)
 	if err != nil {
 		out := strings.Split(src, "\n")
 		highlightCache.store(styleKey, lang, src, out)
 		return out
+	}
+	if th.UseTerminalPalette {
+		out := formatTerminalTokens(th, iterator)
+		highlightCache.store(styleKey, lang, src, out)
+		return out
+	}
+	style := th.chromaStyle()
+	formatterName := "terminal256"
+	if th.Terminal.ColorDepth() == ColorDepthTrueColor {
+		formatterName = "terminal16m"
+	}
+	formatter := formatters.Get(formatterName)
+	if formatter == nil {
+		return strings.Split(src, "\n")
 	}
 	var buf bytes.Buffer
 	if err := formatter.Format(&buf, style, iterator); err != nil {
@@ -61,6 +66,134 @@ func (th Theme) HighlightCode(src, lang string) []string {
 	out := strings.Split(strings.TrimRight(stripANSIBackgrounds(buf.String()), "\n"), "\n")
 	highlightCache.store(styleKey, lang, src, out)
 	return out
+}
+
+// formatTerminalTokens keeps Chroma's lexer but owns terminal formatting for
+// adaptive themes. Chroma's terminal formatters map duplicate ANSI RGB values
+// through the xterm cube, losing an intended palette slot such as bright blue.
+func formatTerminalTokens(th Theme, iterator chroma.Iterator) []string {
+	var out strings.Builder
+	for token := iterator(); token != chroma.EOF; token = iterator() {
+		color, bold, italic := terminalTokenStyle(th, token.Type)
+		prefix := th.fgPrefix(color)
+		if bold {
+			prefix += "\x1b[1m"
+		}
+		if italic {
+			prefix += "\x1b[3m"
+		}
+		// Coalesced Chroma tokens can span rows. Close the style before each
+		// newline and reopen it for the next segment so every rendered row is
+		// self-contained and cannot bleed into padding or following text.
+		for index, segment := range strings.Split(token.Value, "\n") {
+			if index > 0 {
+				out.WriteByte('\n')
+			}
+			if segment == "" {
+				continue
+			}
+			out.WriteString(prefix)
+			out.WriteString(segment)
+			out.WriteString(reset)
+		}
+	}
+	return strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+}
+
+func terminalTokenStyle(th Theme, typ chroma.TokenType) (TerminalColor, bool, bool) {
+	color, bold, italic := terminalTokenDefault(th, typ)
+	if entry, ok := terminalSyntaxEntry(th, typ); ok {
+		if entry.Colour.IsSet() {
+			color = ColorRGB(int(entry.Colour.Red()), int(entry.Colour.Green()), int(entry.Colour.Blue()))
+		}
+		if entry.Bold != chroma.Pass {
+			bold = entry.Bold == chroma.Yes
+		}
+		if entry.Italic != chroma.Pass {
+			italic = entry.Italic == chroma.Yes
+		}
+	}
+	return color, bold, italic
+}
+
+func terminalTokenDefault(th Theme, typ chroma.TokenType) (TerminalColor, bool, bool) {
+	switch {
+	case typ.InCategory(chroma.Comment):
+		return th.Muted, false, true
+	case typ == chroma.LiteralStringEscape || typ == chroma.Error:
+		return th.Error, false, false
+	case typ.InSubCategory(chroma.LiteralString):
+		return th.Tool, false, false
+	case typ.InSubCategory(chroma.LiteralNumber):
+		return th.Warning, false, false
+	case typ.InCategory(chroma.Keyword):
+		return th.Accent, true, false
+	case typ.InCategory(chroma.Name):
+		return TerminalPaletteSlot(14), false, false
+	default:
+		return TerminalDefault(), false, false
+	}
+}
+
+func terminalSyntaxEntry(th Theme, typ chroma.TokenType) (chroma.StyleEntry, bool) {
+	if entry := terminalSyntaxOverride(th.Syntax, typ); entry != "" {
+		parsed, err := chroma.ParseStyleEntry(entry)
+		return parsed, err == nil
+	}
+	if th.SyntaxBaseStyle != "" {
+		return styles.Get(th.SyntaxBaseStyle).Get(typ), true
+	}
+	return chroma.StyleEntry{}, false
+}
+
+func terminalSyntaxOverride(s SyntaxTheme, typ chroma.TokenType) string {
+	switch {
+	case typ == chroma.KeywordConstant:
+		return firstSyntaxOverride(s.KeywordConstant, s.Keyword)
+	case typ == chroma.KeywordDeclaration:
+		return firstSyntaxOverride(s.KeywordDeclaration, s.Keyword)
+	case typ == chroma.KeywordNamespace:
+		return firstSyntaxOverride(s.KeywordNamespace, s.Keyword)
+	case typ == chroma.KeywordReserved:
+		return firstSyntaxOverride(s.KeywordReserved, s.Keyword)
+	case typ == chroma.KeywordType:
+		return firstSyntaxOverride(s.KeywordType, s.Keyword)
+	case typ.InCategory(chroma.Keyword):
+		return s.Keyword
+	case typ == chroma.NameBuiltin:
+		return firstSyntaxOverride(s.NameBuiltin, s.NameFunction)
+	case typ == chroma.NameFunction:
+		return s.NameFunction
+	case typ == chroma.NameClass:
+		return firstSyntaxOverride(s.NameClass, s.NameFunction)
+	case typ == chroma.NameDecorator:
+		return firstSyntaxOverride(s.NameDecorator, s.NameFunction)
+	case typ == chroma.LiteralStringEscape:
+		return firstSyntaxOverride(s.LiteralStringEscape, s.LiteralString)
+	case typ.InSubCategory(chroma.LiteralString):
+		return s.LiteralString
+	case typ.InSubCategory(chroma.LiteralNumber):
+		return s.LiteralNumber
+	case typ == chroma.CommentPreproc:
+		return firstSyntaxOverride(s.CommentPreproc, s.Comment)
+	case typ.InCategory(chroma.Comment):
+		return s.Comment
+	case typ.InCategory(chroma.Operator):
+		return s.Operator
+	case typ.InCategory(chroma.Punctuation):
+		return s.Punctuation
+	default:
+		return s.Text
+	}
+}
+
+func firstSyntaxOverride(entries ...string) string {
+	for _, entry := range entries {
+		if entry != "" {
+			return entry
+		}
+	}
+	return ""
 }
 
 // highlightResultCache is a simple LRU-ish cache: when it exceeds its
@@ -242,12 +375,8 @@ func (th Theme) chromaStyle() *chroma.Style {
 
 func (th Theme) syntaxKey() string {
 	syn := th.Syntax
-	outputMode := "256"
-	if th.Terminal.TrueColor {
-		outputMode = "truecolor"
-	}
 	return strings.Join([]string{
-		outputMode,
+		th.terminalSyntaxKeyPart(),
 		th.SyntaxBaseStyle,
 		syn.Keyword,
 		syn.KeywordConstant,
@@ -268,6 +397,39 @@ func (th Theme) syntaxKey() string {
 		syn.Punctuation,
 		syn.Text,
 	}, "\x1f")
+}
+
+func (th Theme) terminalSyntaxKeyPart() string {
+	h := fnv64aInit
+	h = fnv64aWriteByte(h, byte(th.Terminal.ColorDepth()))
+	if th.UseTerminalPalette {
+		h = fnv64aWriteByte(h, 1)
+	} else {
+		h = fnv64aWriteByte(h, 0)
+	}
+	h = fnv64aWriteUint64(h, uint64(th.Terminal.PaletteKnown))
+	for _, color := range th.Terminal.Palette {
+		h = hashThemeColor(h, color)
+	}
+	for _, color := range []TerminalColor{
+		th.Terminal.Foreground,
+		th.Terminal.Background,
+		th.Accent,
+		th.Muted,
+		th.Tool,
+		th.Warning,
+		th.Error,
+	} {
+		h = hashThemeColor(h, color)
+	}
+	for _, value := range []bool{th.Terminal.HasForeground, th.Terminal.HasBackground, th.Terminal.TrueColor, th.Terminal.Light, th.Terminal.SchemeKnown} {
+		if value {
+			h = fnv64aWriteByte(h, 1)
+		} else {
+			h = fnv64aWriteByte(h, 0)
+		}
+	}
+	return strconv.FormatUint(h, 16)
 }
 
 // extLang maps file extensions to chroma lexer names. Only

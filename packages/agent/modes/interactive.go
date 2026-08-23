@@ -135,6 +135,16 @@ type InteractiveConfig struct {
 
 	// ThemeName mirrors the persisted config theme value. Empty means auto.
 	ThemeName string
+	// EffectiveThemeName is the process-local selection after ZUT_THEME
+	// precedence. ThemeForced keeps settings persistent without changing a
+	// dark/light environment override during this run.
+	EffectiveThemeName string
+	ThemeForced        bool
+	// TerminalProfile is distinct from the applied Theme because an explicit
+	// or custom theme is not evidence about the controlling terminal.
+	TerminalProfile tui.TerminalProfile
+	// ThemeWatchInterval is test-only when non-zero; production uses 500ms.
+	ThemeWatchInterval time.Duration
 
 	// FlatTools renders tool calls without the bordered panel (a quiet
 	// header line plus indented, frameless output). Mirrors the
@@ -627,8 +637,14 @@ type scheduledFollowUp struct {
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
-	ed   *tui.Editor
-	rend *tui.Renderer
+
+	terminalProfile   tui.TerminalProfile
+	activeThemeSource *tui.ThemeSource
+	themeWatchCancel  context.CancelFunc
+	themeWatchEvents  chan themeWatchEvent
+	themeWatchWarning string
+	ed                *tui.Editor
+	rend              *tui.Renderer
 
 	mu    sync.Mutex
 	agent *core.Agent
@@ -966,8 +982,34 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		startupExtensionNames = append(startupExtensionNames, cfg.StartupExtensionNames...)
 		startupSkillNames = append(startupSkillNames, cfg.StartupSkillNames...)
 	}
+	profile := cfg.TerminalProfile
+	if profile == (tui.TerminalProfile{}) {
+		profile = cfg.Theme.Terminal
+	}
+	preference := cfg.EffectiveThemeName
+	if preference == "" {
+		preference = cfg.ThemeName
+	}
+	if preference == "" {
+		preference = "auto"
+	}
+	source, sourceErr := tui.LoadThemeSource(cfg.ZutHome, preference)
+	// Embedders historically supplied a ready-made Theme without a selection.
+	// Preserve that explicit construction; CLI startup always supplies an
+	// explicit effective preference and therefore uses the pure resolver.
+	implicitReadyTheme := cfg.ThemeName == "" && cfg.EffectiveThemeName == "" && len(cfg.Theme.SpinnerFrames) != 0
+	// Source loading is only a startup optimization. Invalid selected files are
+	// handled by the existing invalid-selection path in the main loop.
+	if sourceErr == nil && !implicitReadyTheme {
+		cfg.Theme = tui.ResolveTheme(preference, source, profile).Theme
+	}
+	cfg.TerminalProfile = profile
+	cfg.EffectiveThemeName = preference
 	i := &Interactive{
-		cfg: cfg,
+		cfg:               cfg,
+		terminalProfile:   profile,
+		activeThemeSource: source,
+		themeWatchEvents:  make(chan themeWatchEvent, 8),
 		view: &tui.View{
 			Theme:                 cfg.Theme,
 			ImageProto:            effectiveImageProtocol(cfg.InlineImagesEnabled),
@@ -1112,6 +1154,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 	i.mu.Lock()
 	i.runCtx = ctx
 	i.mu.Unlock()
+	i.restartThemeWatch()
+	defer i.stopThemeWatch()
 	term := i.cfg.Terminal
 	restore, err := term.EnterRaw()
 	if err != nil {
@@ -1147,7 +1191,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// Erase the live frame and place the cursor deterministically before any
 	// exit summary or shell prompt is written. Do not erase scrollback: users
 	// should still be able to review the session after closing zut.
-	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqMouseOff + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor))
+	mode2031Owned := false
+	defer func() {
+		cleanup := tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqMouseOff + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.MoveTo(1, 1) + tui.SeqShowCursor
+		if mode2031Owned {
+			cleanup = tui.SeqDisableMode2031 + cleanup
+		}
+		_, _ = term.Write([]byte(cleanup))
+	}()
 	i.applyInputCursorColor()
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
@@ -1222,19 +1273,46 @@ func (i *Interactive) Run(ctx context.Context) error {
 		i.dialog.Open(i.cfg.ZutHome)
 	}
 
-	// Input goroutine. Buffered generously so a drag-drop that the
-	// terminal delivers as a burst of single-character key events
-	// (no bracketed paste) can be drained in one main-loop pass
-	// instead of triggering a redraw per character.
+	// The appearance-aware source is the only stdin reader. It consumes only
+	// replies for queries currently in flight, keeps bracketed-paste payload
+	// opaque, and sends every other byte through the established key parser.
 	keys := make(chan tui.Key, 256)
+	appearanceEvents := make(chan tui.InputEvent, 256)
+	appearanceParser := &tui.AppearanceParser{}
+	appearanceParser.SetPendingColors(true)
+	appearanceParser.SetPendingScheme(true)
+	inputDone := make(chan struct{})
 	go func() {
-		reader := tui.NewReaderWithPeek(term.ReadByte, term.PeekByteTimeout)
+		defer close(inputDone)
+		source := tui.NewAppearanceSource(term.ReadByte, term.PeekByteTimeout, appearanceParser, func(event tui.InputEvent) {
+			select {
+			case appearanceEvents <- event:
+			case <-ctx.Done():
+			}
+		})
+		reader := tui.NewReader(source.ReadByte)
 		for {
 			k, err := reader.Read()
 			if err != nil {
 				return
 			}
-			keys <- k
+			select {
+			case keys <- k:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	// Probe before mutating mode 2031. Replies are handled in the main loop so
+	// ownership and profile publication stay serialized with rendering.
+	_, _ = term.Write([]byte(tui.SeqQueryMode2031 + tui.AppearanceQuery()))
+	defer func() {
+		// Test terminals and normal EOF join immediately. A physical tty read
+		// may be uncancellable on some platforms, so shutdown never waits
+		// indefinitely for a kernel read that cannot be interrupted.
+		select {
+		case <-inputDone:
+		case <-time.After(50 * time.Millisecond):
 		}
 	}()
 
@@ -1310,11 +1388,97 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	updates := i.cfg.UpdateInfoChan  // nil-safe; nil channel blocks forever in select
 	changelog := i.cfg.ChangelogChan // single-shot, see case below
+	profileCandidate := i.terminalProfile
+	profileDirty := false
+	appearanceDeadline := time.Now().Add(500 * time.Millisecond)
+	lastAppearancePoll := time.Now()
+	modeEnableRequested := false
+	notificationsSupported := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case event := <-i.themeWatchEvents:
+			if i.activeThemeSource == nil || event.path != i.activeThemeSource.Path {
+				break
+			}
+			switch {
+			case event.source != nil:
+				i.activeThemeSource = event.source
+				i.themeWatchWarning = ""
+				i.installResolvedTheme(tui.ResolveTheme(i.cfg.EffectiveThemeName, event.source, i.terminalProfile))
+				i.mu.Lock()
+				i.statusOK = "theme reloaded"
+				i.statusErr = ""
+				i.mu.Unlock()
+			case event.deleted:
+				i.activeThemeSource = nil
+				i.stopThemeWatch()
+				i.cfg.ThemeName = ""
+				i.cfg.EffectiveThemeName = "auto"
+				if i.cfg.SettingsStore != nil {
+					_ = i.cfg.SettingsStore.SetTheme("auto")
+				}
+				i.installResolvedTheme(tui.ResolveTheme("auto", nil, i.terminalProfile))
+				i.mu.Lock()
+				i.statusOK = "theme removed; using auto"
+				i.statusErr = ""
+				i.mu.Unlock()
+			case event.err != nil && event.err.Error() != i.themeWatchWarning:
+				i.themeWatchWarning = event.err.Error()
+				i.mu.Lock()
+				i.statusErr = "theme reload: " + event.err.Error()
+				i.mu.Unlock()
+			}
+			i.invalidate()
+		case event := <-appearanceEvents:
+			switch {
+			case event.Color != nil:
+				switch event.Color.Kind {
+				case 10:
+					profileCandidate.Foreground = event.Color.Color
+					profileCandidate.HasForeground = true
+				case 11:
+					profileCandidate.Background = event.Color.Color
+					profileCandidate.HasBackground = true
+				case 4:
+					profileCandidate.Palette[event.Color.Slot] = event.Color.Color
+					profileCandidate.PaletteKnown |= uint16(1) << event.Color.Slot
+				}
+				profileDirty = true
+			case event.Scheme != nil:
+				profileCandidate.Light = event.Scheme.Light
+				profileCandidate.SchemeKnown = true
+				profileDirty = true
+				if notificationsSupported && !event.Scheme.Solicited {
+					// A scheme notification means the terminal defaults and palette
+					// may have changed too. Refresh the complete profile atomically.
+					appearanceParser.SetPendingColors(true)
+					appearanceParser.SetPendingScheme(true)
+					appearanceDeadline = time.Now().Add(500 * time.Millisecond)
+					_, _ = term.Write([]byte(tui.AppearanceQuery()))
+				}
+			case event.Mode != nil && event.Mode.Mode == 2031:
+				switch event.Mode.Status {
+				case 1, 3:
+					notificationsSupported = true
+					appearanceParser.SetNotifications(true)
+					if modeEnableRequested {
+						mode2031Owned = true
+					}
+				case 2:
+					modeEnableRequested = true
+					_, _ = term.Write([]byte(tui.SeqEnableMode2031 + tui.SeqQueryMode2031))
+				default:
+					appearanceParser.SetNotifications(false)
+				}
+			}
+			// The parser gate closes after a bounded collection window; accepted
+			// notifications remain enabled separately once mode 2031 is known.
+			if profileDirty {
+				i.invalidate()
+			}
 		case k := <-keys:
 			if done := i.handleKey(ctx, k); done {
 				return nil
@@ -1403,6 +1567,23 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
+			now := time.Now()
+			if !appearanceDeadline.IsZero() && !now.Before(appearanceDeadline) {
+				appearanceParser.SetPendingColors(false)
+				appearanceParser.SetPendingScheme(false)
+				appearanceDeadline = time.Time{}
+			}
+			if profileDirty {
+				i.applyTerminalProfile(profileCandidate)
+				profileDirty = false
+			}
+			if !notificationsSupported && now.Sub(lastAppearancePoll) >= 2*time.Second {
+				appearanceParser.SetPendingColors(true)
+				appearanceParser.SetPendingScheme(true)
+				appearanceDeadline = now.Add(500 * time.Millisecond)
+				lastAppearancePoll = now
+				_, _ = term.Write([]byte("\x1b]11;?\a" + tui.SeqQueryColorScheme))
+			}
 			// Always drain a pending redraw on the tick. This is the
 			// safety net that catches the case where the dirty channel
 			// was saturated when the final "turn finished" invalidate

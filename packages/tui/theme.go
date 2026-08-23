@@ -8,9 +8,10 @@ import (
 	"sync/atomic"
 )
 
-// TerminalColor describes a theme colour in one of the colour spaces
-// terminals commonly support. Every semantic theme colour uses this type;
-// xterm-256, ANSI, and RGB values are rendered according to terminal capability.
+// TerminalColor describes both explicit colors and terminal-owned colors.
+// TerminalDefault and TerminalPaletteSlot intentionally differ from literal
+// xterm-256 values: an adaptive theme follows the terminal palette while a
+// custom numeric value retains its xterm meaning.
 type TerminalColor struct {
 	Mode  terminalColorMode
 	Index int
@@ -22,20 +23,37 @@ type TerminalColor struct {
 type terminalColorMode int
 
 const (
-	terminalColor256 terminalColorMode = iota
+	terminalColorDefault terminalColorMode = iota
+	terminalColorPalette
+	terminalColor256
 	terminalColorANSI
 	terminalColorRGB
 )
 
+func TerminalDefault() TerminalColor { return TerminalColor{Mode: terminalColorDefault} }
+func TerminalPaletteSlot(index int) TerminalColor {
+	return TerminalColor{Mode: terminalColorPalette, Index: index}
+}
 func Color256(index int) TerminalColor { return TerminalColor{Mode: terminalColor256, Index: index} }
 func ColorANSI(sgr int) TerminalColor  { return TerminalColor{Mode: terminalColorANSI, Index: sgr} }
 func ColorRGB(r, g, b int) TerminalColor {
 	return TerminalColor{Mode: terminalColorRGB, R: r, G: g, B: b}
 }
 
+// ColorDepth is the terminal output capability used when resolving a color.
+type ColorDepth uint8
+
+const (
+	// Indexed256 is the zero value to preserve the legacy behavior for
+	// profiles assembled by callers that predate ColorDepth.
+	ColorDepthIndexed256 ColorDepth = iota
+	ColorDepthANSI16
+	ColorDepthTrueColor
+)
+
 // TerminalProfile is the best-effort color snapshot reported by the
-// controlling terminal. The ANSI palette is optional; unknown slots are
-// resolved through the classic xterm-256 palette.
+// controlling terminal. Palette entries are optional; an unknown slot is
+// emitted as its direct ANSI SGR rather than substituted with a fixed zut RGB.
 type TerminalProfile struct {
 	Foreground TerminalColor
 	Background TerminalColor
@@ -45,9 +63,22 @@ type TerminalProfile struct {
 
 	Palette      [16]TerminalColor
 	PaletteKnown uint16
-	TrueColor    bool
-	Light        bool
-	SchemeKnown  bool
+	Depth        ColorDepth
+	// TrueColor is retained for callers compiled against the older profile.
+	// Depth is authoritative when it is ColorDepthTrueColor.
+	TrueColor   bool
+	Light       bool
+	SchemeKnown bool
+}
+
+func (p TerminalProfile) ColorDepth() ColorDepth {
+	if p.Depth == ColorDepthTrueColor || p.TrueColor {
+		return ColorDepthTrueColor
+	}
+	if p.Depth == ColorDepthANSI16 {
+		return ColorDepthANSI16
+	}
+	return ColorDepthIndexed256
 }
 
 // PaletteColor returns a reported ANSI palette entry when available.
@@ -78,12 +109,11 @@ type Theme struct {
 	SelectionBG  TerminalColor // background for highlighted rows
 	SelectionFG  TerminalColor // foreground for highlighted rows
 
-	// Inherited selects terminal-owned colors. Terminal.TrueColor controls
-	// whether fixed indexed values are emitted as xterm-256 or truecolor and
-	// whether RGB values are quantized for terminals without direct-color
-	// support.
-	Inherited bool
-	Terminal  TerminalProfile
+	// UseTerminalPalette resolves TerminalPaletteSlot roles against the
+	// reported palette on truecolor terminals. It has no effect on explicit
+	// Color256 values from a custom theme.
+	UseTerminalPalette bool
+	Terminal           TerminalProfile
 
 	SpinnerFrames     []string
 	SpinnerIntervalMS int
@@ -231,8 +261,7 @@ func (t Theme) bgPrefix(color TerminalColor) string {
 }
 
 // DimColor fades a theme color toward the terminal background. It is used
-// by inherited theme construction and is also available to callers that need
-// terminal-aware dimming for overlays.
+// while resolving adaptive terminal surfaces and by overlay callers.
 func (t Theme) DimColor(color TerminalColor, percent int) TerminalColor {
 	percent = clampPercent(percent)
 	foreground := t.resolveColor(color)
@@ -250,31 +279,42 @@ func (t Theme) DimColor(color TerminalColor, percent int) TerminalColor {
 }
 
 func (t Theme) resolveColor(color TerminalColor) TerminalColor {
+	depth := t.Terminal.ColorDepth()
 	switch color.Mode {
+	case terminalColorDefault:
+		return color
+	case terminalColorPalette:
+		index := clampANSIIndex(color.Index)
+		if depth == ColorDepthTrueColor {
+			if palette, ok := t.Terminal.PaletteColor(index); ok {
+				return palette
+			}
+		}
+		return ColorANSI(ansiIndexForegroundSGR(index))
 	case terminalColor256:
 		index := clampXtermIndex(color.Index)
-		if t.Terminal.TrueColor {
-			if t.Inherited {
-				if palette, ok := t.Terminal.PaletteColor(index); ok {
-					return palette
-				}
-			}
+		switch depth {
+		case ColorDepthTrueColor:
 			r, g, b := xterm256RGB(index)
 			return ColorRGB(r, g, b)
+		case ColorDepthANSI16:
+			return ColorANSI(ansiIndexForegroundSGR(nearestANSIColor(index)))
+		default:
+			return Color256(index)
 		}
-		return Color256(index)
 	case terminalColorANSI:
-		if t.Inherited && t.Terminal.TrueColor {
+		if depth == ColorDepthTrueColor {
 			if index, ok := ansiSGRToXtermIndex(color.Index); ok {
 				if palette, ok := t.Terminal.PaletteColor(index); ok {
 					return palette
 				}
-				r, g, b := xterm256RGB(index)
-				return ColorRGB(r, g, b)
 			}
 		}
 	case terminalColorRGB:
-		if !t.Terminal.TrueColor {
+		if depth == ColorDepthANSI16 {
+			return ColorANSI(ansiIndexForegroundSGR(nearestANSIColor(nearestXtermColor(color.R, color.G, color.B))))
+		}
+		if depth != ColorDepthTrueColor {
 			return Color256(nearestXtermColor(color.R, color.G, color.B))
 		}
 	}
@@ -283,6 +323,8 @@ func (t Theme) resolveColor(color TerminalColor) TerminalColor {
 
 func sgrFGColor(color TerminalColor) string {
 	switch color.Mode {
+	case terminalColorDefault:
+		return "\x1b[39m"
 	case terminalColorANSI:
 		return "\x1b[" + itoa(ansiForegroundSGR(color.Index)) + "m"
 	case terminalColorRGB:
@@ -413,6 +455,8 @@ func sgrFG(c int) string { return "\x1b[38;5;" + itoa(clampXtermIndex(c)) + "m" 
 func sgrBG(c int) string { return "\x1b[48;5;" + itoa(clampXtermIndex(c)) + "m" }
 func sgrBGColor(c TerminalColor) string {
 	switch c.Mode {
+	case terminalColorDefault:
+		return "\x1b[49m"
 	case terminalColorANSI:
 		return "\x1b[" + itoa(ansiBackgroundSGR(c.Index)) + "m"
 	case terminalColorRGB:
@@ -420,6 +464,38 @@ func sgrBGColor(c TerminalColor) string {
 	default:
 		return sgrBG(c.Index)
 	}
+}
+
+func clampANSIIndex(index int) int {
+	if index < 0 {
+		return 0
+	}
+	if index > 15 {
+		return 15
+	}
+	return index
+}
+
+func ansiIndexForegroundSGR(index int) int {
+	index = clampANSIIndex(index)
+	if index < 8 {
+		return 30 + index
+	}
+	return 90 + index - 8
+}
+
+func nearestANSIColor(index int) int {
+	r, g, b := xterm256RGB(clampXtermIndex(index))
+	best, bestDistance := 0, int(^uint(0)>>1)
+	for slot := 0; slot < 16; slot++ {
+		pr, pg, pb := xterm256RGB(slot)
+		dr, dg, db := r-pr, g-pg, b-pb
+		distance := dr*dr + dg*dg + db*db
+		if distance < bestDistance {
+			best, bestDistance = slot, distance
+		}
+	}
+	return best
 }
 
 func clampXtermIndex(index int) int {
@@ -458,6 +534,9 @@ func rgbForTerminalColor(color TerminalColor) ([3]int, bool) {
 		return [3]int{clampByte(color.R), clampByte(color.G), clampByte(color.B)}, true
 	case terminalColor256:
 		r, g, b := xterm256RGB(clampXtermIndex(color.Index))
+		return [3]int{r, g, b}, true
+	case terminalColorPalette:
+		r, g, b := xterm256RGB(clampANSIIndex(color.Index))
 		return [3]int{r, g, b}, true
 	case terminalColorANSI:
 		if index, ok := ansiSGRToXtermIndex(color.Index); ok {

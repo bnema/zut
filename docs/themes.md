@@ -1,55 +1,51 @@
 # zut themes
 
-zut themes are JSON files that override any subset of the built-in
-light/dark TUI theme. Nothing is required: a theme can change one
-color, only the spinner, only syntax highlighting, or all of them.
-Missing values inherit from zut's built-in default for the detected
-terminal background.
+zut uses the controlling terminal as the source of truth for its default
+appearance. Theme files are JSON overlays: every field is optional.
 
-## Where themes live
+## Built-in choices
 
-User themes are discovered from:
+Open `/settings` and select **color theme**.
+
+- **auto** (default) follows the terminal default foreground and background,
+  ANSI palette, color depth, and reported light/dark scheme. It does not paint
+  a full-row background or set a cursor color.
+- **dark** and **light** use zut's fixed palettes. They remain fixed when the
+  terminal appearance changes.
+- A **custom theme** overlays `auto`. Unspecified roles remain terminal-owned;
+  explicit JSON values remain literal overrides.
+
+`inherited` is no longer a theme choice. A persisted `inherited` value resets
+to `auto`.
+
+`ZUT_THEME=dark` or `ZUT_THEME=light` forces that choice for one process. The
+settings dialog still saves the next-launch preference, but cannot override the
+environment for the running process. An unset `ZUT_THEME` or `ZUT_THEME=auto`
+uses the saved preference.
+
+## Live terminal changes
+
+Interactive zut queries terminal defaults and ANSI slots at startup. When the
+terminal supports DEC mode 2031 color-scheme notifications, zut follows
+reported scheme changes and refreshes its terminal profile. It probes the mode
+before changing it and disables it on exit only when zut enabled a known-reset
+mode itself. Terminals without notification support receive a low-rate OSC 11
+and scheme query fallback (about two seconds).
+
+Terminal support varies through multiplexers and remote sessions. If a reply
+does not arrive, zut remains usable with terminal default SGR colors and ANSI
+slots. Existing scrollback is never recolored or cleared by a theme change;
+only the visible live frame is repainted.
+
+## Theme files and reload
+
+User themes live under:
 
 ```text
 $ZUT_HOME/themes/*.json
 ```
 
-Open `/settings` and choose **color theme** to switch. Changes are
-saved in `$ZUT_HOME/config.json` and apply immediately. If the selected
-file is deleted later, zut resets the setting to the built-in auto
-(default) theme.
-
-The built-in choices are:
-
-- **auto** — detect the terminal background and use zut's built-in dark or
-  light palette. This remains the default.
-- **inherited (from terminal)** — use the terminal's reported foreground,
-  background, and ANSI palette. When `COLORTERM=truecolor`/`24bit` or
-  `TERM` ends in `-direct`, zut emits truecolor; otherwise it quantizes
-  derived colors to the xterm-256 palette as a best effort. Terminals that
-  do not answer OSC color queries fall back to zut's built-in palette while
-  still using the advertised color depth.
-- **dark** / **light** — use zut's fixed built-in palettes.
-
-The inherited terminal snapshot is captured at startup and reused when the
-setting is changed live; restart zut to pick up terminal palette changes.
-
-All theme color roles use the same terminal-color model. JSON themes may use
-xterm-256 indexes, ANSI SGR colors, or RGB values for any role. On terminals
-that advertise truecolor, zut emits RGB values directly and expands indexed
-values through the xterm palette; otherwise RGB values fall back to the
-nearest xterm-256 color while indexed values remain indexed. ANSI values keep
-their SGR semantics, with standard foreground/background ranges normalized to
-the role where necessary.
-
-## Theme proposals
-
-- **shades of gray (truecolor)** — a neutral grayscale palette for the UI and
-  syntax highlighting, with an xterm-256 fallback when direct color is
-  unavailable.
-
-Theme files bundled with extensions are discovered in-place from loaded
-extension directories:
+Extension-owned themes are loaded in place from:
 
 ```text
 $ZUT_HOME/extensions/<extension>/theme.json
@@ -58,35 +54,25 @@ $ZUT_HOME/extensions/<extension>/themes/theme.json
 <project>/.zut/extensions/<extension>/themes/theme.json
 ```
 
-zut does **not** copy extension themes into `$ZUT_HOME/themes`; extension
-owned themes stay in the extension directory. The settings picker shows
-source info such as `from extension my-theme-extension`.
+An active custom file is polled every 500 ms. A valid complete edit applies
+without restarting zut. Invalid JSON, invalid colors, unsupported syntax
+styles, and oversized files leave the last valid revision active. Brief atomic
+rename gaps are tolerated; a file that stays missing resets the saved choice to
+`auto` and shows a status message.
 
-## Minimal themes
-
-All of these are valid.
-
-Metadata only:
-
-```json
-{
-  "name": "my-theme",
-  "description": "Metadata only; all visuals inherit zut defaults."
-}
-```
-
-One shared color for both light and dark terminals:
+## Minimal files
 
 ```json
 {
   "name": "pink-accent",
-  "colors": {
-    "accent": 204
-  }
+  "colors": { "accent": 204 }
 }
 ```
 
-One color per mode:
+Shared overrides can appear at the top level or directly in `colors`.
+Mode-specific overrides go under `colors.dark` and `colors.light`; zut uses a
+reported color scheme when available, and a background-luminance fallback
+otherwise.
 
 ```json
 {
@@ -98,111 +84,17 @@ One color per mode:
 }
 ```
 
-Spinner-only:
-
 ```json
 {
-  "name": "custom-spinner",
-  "description": "Only changes the busy spinner.",
+  "name": "spinner-only",
   "spinner_frames": ["◢", "◣", "◤", "◥"],
   "spinner_interval_ms": 120
 }
 ```
 
-Dark-only themes still work on light terminals. If `colors.light` is
-missing, zut applies `colors.dark` overrides on top of the built-in
-light default. The inverse also works.
+## Color values
 
-```json
-{
-  "name": "custom-spinner",
-  "description": "An alternative busy-spinner animation for zut.",
-  "colors": {
-    "dark": {
-      "spinner_frames": ["◢", "◣", "◤", "◥"],
-      "spinner_interval_ms": 120
-    }
-  }
-}
-```
-
-## Full shape
-
-All fields are optional.
-
-```json
-{
-  "name": "my-theme",
-  "description": "Shown in /settings → color theme.",
-  "color_descriptions": {
-    "accent": "Optional documentation for humans. zut ignores this object."
-  },
-  "colors": {
-    "dark": {
-      "fg": 253,
-      "muted": 244,
-      "accent": 111,
-      "background": "#0b1020",
-      "user": 180,
-      "user_bubble_bg": "#42454b",
-      "user_bubble_fg": 248,
-      "assistant": 117,
-      "tool": 114,
-      "tool_out": 245,
-      "error": 203,
-      "warning": 214,
-      "spinner": 183,
-      "selection_bg": 24,
-      "selection_fg": 231,
-      "spinner_frames": ["⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"],
-      "spinner_interval_ms": 80,
-      "syntax_base_style": "monokai",
-      "syntax": {
-        "keyword": "#81a1c1 bold",
-        "keyword_constant": "#81a1c1",
-        "keyword_declaration": "#81a1c1",
-        "keyword_namespace": "#81a1c1",
-        "keyword_reserved": "#81a1c1 bold",
-        "keyword_type": "#88c0d0",
-        "name_builtin": "#88c0d0",
-        "name_function": "#8fbcbb",
-        "name_class": "#a3be8c bold",
-        "name_decorator": "#b48ead",
-        "literal_string": "#a3be8c",
-        "literal_string_escape": "#bf616a",
-        "literal_number": "#d08770",
-        "comment": "#616e88 italic",
-        "comment_preproc": "#b48ead",
-        "operator": "#eceff4",
-        "punctuation": "#d8dee9",
-        "text": "#e5e9f0"
-      }
-    },
-    "light": {
-      "fg": 236,
-      "muted": 244,
-      "accent": 33
-    }
-  }
-}
-```
-
-You may also put overrides directly at the top level or directly under
-`colors` when they should apply to both modes:
-
-```json
-{
-  "name": "tiny",
-  "accent": 204,
-  "colors": {
-    "spinner_frames": ["◐", "◓", "◑", "◒"]
-  }
-}
-```
-
-## Color fields
-
-Every color field accepts the following JSON forms:
+Every semantic color accepts one of:
 
 ```json
 254
@@ -212,73 +104,31 @@ Every color field accepts the following JSON forms:
 { "mode": "rgb", "r": 66, "g": 69, "b": 75 }
 ```
 
-Numeric values are xterm-256 indexes. ANSI values use SGR codes, with
-standard foreground/background ranges normalized to the role where necessary.
-RGB values are emitted directly when truecolor is advertised and quantized to
-xterm-256 otherwise. The built-in inherited theme additionally resolves
-semantic accents through the terminal's ANSI palette and derives muted and
-selected surfaces from the terminal foreground/background.
+Numeric values are literal xterm-256 indexes. ANSI values are literal ANSI SGR
+colors. RGB values use truecolor when available, otherwise zut quantizes them
+to the active terminal capability. `auto`-generated colors are distinct:
+they retain terminal-default or terminal-palette-slot provenance and therefore
+change with the terminal palette.
 
-- `fg` — default foreground text.
-- `muted` — secondary text, dividers, gutters, inactive hints.
-- `accent` — prompt bar, bullets, links, headings, active markers.
-- `background` — optional full-row TUI background. If missing, zut uses the terminal's existing background. Experimental: terminal background colors can vary by emulator and scrollback behavior; for the most reliable result, change your terminal background color in your terminal settings instead.
-- `user` — user role label color; mostly compatibility.
-- `user_bubble_bg` — background behind user message rows.
-- `user_bubble_fg` — foreground inside user message rows.
-- `assistant` — assistant/zut accent and spinner text.
-- `tool` — tool names, success marks, diff additions.
-- `tool_out` — plain tool-output text.
-- `error` — errors, refused calls, diff deletions.
-- `warning` — warnings and high context-usage state.
-- `spinner` — reserved spinner color slot.
-- `thinkingMax` or `thinking_max` (names retained for compatibility) - status color used when the opt-in `max` reasoning level is active. Missing values inherit the built-in theme color.
-- `selection_bg` — highlighted row background.
-- `selection_fg` — highlighted row foreground.
+Color roles are `fg`, `muted`, `accent`, `background`, `user`,
+`user_bubble_bg`, `user_bubble_fg`, `assistant`, `tool`, `tool_out`, `error`,
+`warning`, `spinner`, `thinking_max` (or `thinkingMax`), `selection_bg`, and
+`selection_fg`. `background` intentionally paints the full zut row; omit it
+to retain terminal background ownership.
 
-The same forms apply to `background`, `user_bubble_bg`, and every other
-semantic color field listed above.
+`spinner_frames` contains 1–64 non-empty frames. `spinner_interval_ms` must be
+between 10 and 10000. Theme files are limited to 1 MiB.
 
-## Spinner fields
+## Syntax
 
-Spinner settings can appear at top level, under `colors`, or under
-`colors.dark` / `colors.light`.
-
-- `spinner_frames` — list of frame strings. Single-cell glyphs keep
-  status-bar alignment clean.
-- `spinner_interval_ms` — frame interval in milliseconds. Missing or
-  invalid falls back to 80ms.
-
-Working-status text is owned by zut and reflects the current operation. The
-legacy `spinner_messages` field is ignored when present in existing theme
-files. In this v0 API, the former `tui.Theme.SpinnerMessages` and
-`tui.ThemeOverrides.SpinnerMessages` Go fields are removed; no compatibility
-alias is provided.
-
-## Syntax fields
-
-Syntax highlighting uses Chroma style entries. Values may include
-attributes after the color, such as `bold`, `italic`, or `underline`.
-
-Supported syntax override keys:
-
-```text
-keyword, keyword_constant, keyword_declaration, keyword_namespace,
-keyword_reserved, keyword_type, name_builtin, name_function,
-name_class, name_decorator, literal_string, literal_string_escape,
-literal_number, comment, comment_preproc, operator, punctuation, text
-```
-
-Example:
+Custom `syntax` entries use Chroma style entries, for example:
 
 ```json
 {
   "colors": {
     "dark": {
-      "syntax_base_style": "monokai",
       "syntax": {
-        "keyword": "#f05b8d",
-        "name_function": "#b675f1",
+        "keyword": "#f05b8d bold",
         "literal_string": "#58c760",
         "comment": "#a1a1a1 italic"
       }
@@ -287,36 +137,7 @@ Example:
 }
 ```
 
-## Theme-only extensions
-
-An extension can exist only to ship a theme. No slash command,
-subprocess, or executable is required when the extension contains a
-valid theme file.
-
-```text
-$ZUT_HOME/extensions/my-theme-extension/
-├── extension.json
-└── theme.json
-```
-
-`extension.json`:
-
-```json
-{
-  "name": "my-theme-extension",
-  "version": "1.0.0",
-  "description": "Ships a zut color theme",
-  "enabled": true
-}
-```
-
-No `exec` is needed when `theme.json` or `themes/theme.json` exists.
-If `exec` is present, zut treats it as a normal extension too.
-
-## Validate
-
-zut theme files are plain JSON, not JSONC. Validate before installing:
-
-```bash
-python3 -m json.tool theme.json >/dev/null
-```
+In `auto`, zut keeps Chroma for lexing but emits its own exact terminal SGR
+sequences. Keywords, names, strings, errors, numbers, comments, and plain text
+therefore retain terminal ANSI-slot identity instead of being remapped through
+the xterm color cube.

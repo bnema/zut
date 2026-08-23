@@ -42,6 +42,10 @@ func (i *Interactive) applyInputCursorColor() {
 	if i == nil || i.cfg.Terminal == nil {
 		return
 	}
+	if i.cfg.EffectiveThemeName == "auto" && i.cfg.Theme.FG == tui.TerminalDefault() {
+		_, _ = i.cfg.Terminal.Write([]byte(tui.ResetCursorColor() + tui.CursorShapeBlock()))
+		return
+	}
 	color := tui.Color256(15)
 	if i.cursorDimmed {
 		color = i.cfg.Theme.DimColor(color, modalBackdropDimPercent)
@@ -383,7 +387,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:     "theme",
 			label:   "color theme",
-			desc:    "choose auto, inherited terminal colors, a built-in dark/light theme, or a loaded theme file",
+			desc:    "choose terminal-owned auto, a built-in dark/light theme, or a loaded theme file",
 			options: themeOptions,
 			choice:  themeChoice,
 		},
@@ -1167,50 +1171,72 @@ func (i *Interactive) applyThemeSetting(name string) {
 	if name == "auto" {
 		i.cfg.ThemeName = ""
 	}
-	i.applyThemeNow(name)
+	if !i.cfg.ThemeForced {
+		i.cfg.EffectiveThemeName = name
+	}
+	i.applyThemeNow(i.cfg.EffectiveThemeName)
 }
+
 func (i *Interactive) applyThemeNow(name string) {
 	if name == "" {
 		name = "auto"
 	}
-	detected := tui.Dark
-	if tui.IsLightTheme(i.cfg.Theme) {
-		detected = tui.Light
-	}
-	// Keep the startup terminal snapshot available when a user switches
-	// themes live; inherited mode must not issue OSC queries while the TUI
-	// already owns raw stdin.
-	detected.Terminal = i.cfg.Theme.Terminal
-	th, applied, err := tui.LoadThemeFromHome(i.cfg.ZutHome, name, detected)
+	source, err := tui.LoadThemeSource(i.cfg.ZutHome, name)
 	if err != nil {
 		if i.cfg.SettingsStore != nil {
 			_ = i.cfg.SettingsStore.SetTheme("auto")
 		}
 		i.cfg.ThemeName = ""
-		th, _, _ = tui.LoadThemeFromHome(i.cfg.ZutHome, "auto", detected)
+		i.cfg.EffectiveThemeName = "auto"
+		i.activeThemeSource = nil
+		i.stopThemeWatch()
+		i.installResolvedTheme(tui.ResolveTheme("auto", nil, i.terminalProfile))
 		i.mu.Lock()
-		i.statusErr = "theme missing; reset to default"
+		i.statusErr = "theme missing; reset to auto"
 		i.mu.Unlock()
-	} else {
-		i.mu.Lock()
-		label := applied
-		if label == "" {
-			label = "auto"
-		}
-		i.statusOK = "theme " + label
-		i.statusErr = ""
-		i.mu.Unlock()
+		return
 	}
+	i.activeThemeSource = source
+	i.restartThemeWatch()
+	i.installResolvedTheme(tui.ResolveTheme(name, source, i.terminalProfile))
+	i.mu.Lock()
+	i.statusOK = "theme " + i.cfg.EffectiveThemeName
+	if i.cfg.ThemeForced {
+		i.statusOK += " (forced by ZUT_THEME)"
+	}
+	i.statusErr = ""
+	i.mu.Unlock()
+}
+
+// installResolvedTheme is the one main-loop-owned installation boundary for
+// settings, terminal profile, and accepted theme-file revisions.
+// applyTerminalProfile records detected appearance independently from the
+// currently applied theme. Forced and custom selections are re-resolved from
+// their immutable accepted source; no terminal event performs filesystem I/O.
+func (i *Interactive) applyTerminalProfile(profile tui.TerminalProfile) {
+	i.terminalProfile = profile
+	i.cfg.TerminalProfile = profile
+	resolution := tui.ResolveTheme(i.cfg.EffectiveThemeName, i.activeThemeSource, profile)
+	i.installResolvedTheme(resolution)
+}
+
+func (i *Interactive) installResolvedTheme(resolution tui.ThemeResolution) {
+	th := resolution.Theme
 	i.mu.Lock()
 	i.cfg.Theme = th
 	i.view.Theme = th
 	i.view.InvalidateRenderCache()
-	i.mu.Unlock()
+	i.chatCacheValid = false
+	i.stableChatCacheValid = false
 	i.ed.Prompt = th.AccentBar(th.Accent)
+	i.mu.Unlock()
+	i.btwDialog.setTheme(th)
+	if i.residentChildSession != nil {
+		i.residentChildSession.setTheme(th)
+	}
 	i.applyInputCursorColor()
 	i.spin.Configure(th)
 	i.requestRendererTheme(th)
-	i.requestRendererClear()
 	i.invalidate()
 }
 func (i *Interactive) applyReasoningSetting(level string) {

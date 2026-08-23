@@ -147,6 +147,25 @@ func (d *btwDialog) ToggleToolExpansion() {
 	}
 }
 
+func (d *btwDialog) setTheme(theme tui.Theme) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.theme = theme
+	if d.toolView != nil {
+		d.toolView.Theme = theme
+		d.toolView.InvalidateRenderCache()
+	}
+	if d.editor != nil {
+		d.editor.Prompt = theme.AccentBar(theme.Accent)
+	}
+	if d.spin != nil {
+		d.spin.Configure(theme)
+	}
+}
+
 // Open enters the side chat. agent supplies the live transcript and
 // system prompt, plus the underlying provider client to use for the
 // one-off completion. seed is an optional first question that gets

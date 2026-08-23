@@ -6,7 +6,7 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
-func TestSettingsDialogOffersInheritedTheme(t *testing.T) {
+func TestSettingsDialogDoesNotOfferInheritedTheme(t *testing.T) {
 	interactive := NewInteractive(InteractiveConfig{})
 	interactive.openSettingsDialog()
 
@@ -16,37 +16,42 @@ func TestSettingsDialogOffersInheritedTheme(t *testing.T) {
 		}
 		for _, option := range item.options {
 			if option.value == "inherited" {
-				if option.label != "inherited (from terminal)" {
-					t.Fatalf("inherited label = %q, want inherited (from terminal)", option.label)
-				}
-				return
+				t.Fatal("theme picker still offers inherited")
 			}
 		}
-		t.Fatal("theme picker did not include inherited")
+		return
 	}
 	t.Fatal("settings dialog did not include theme picker")
 }
 
-func TestApplyingInheritedThemeUsesCapturedTerminalProfile(t *testing.T) {
-	detected := tui.Dark
-	detected.Terminal = tui.TerminalProfile{
+func TestApplyingAutoThemeUsesCapturedTerminalProfile(t *testing.T) {
+	profile := tui.TerminalProfile{
 		Foreground:    tui.ColorRGB(220, 220, 220),
 		Background:    tui.ColorRGB(10, 10, 10),
 		HasForeground: true,
 		HasBackground: true,
-		TrueColor:     true,
+		Depth:         tui.ColorDepthTrueColor,
 	}
-	interactive := NewInteractive(InteractiveConfig{Theme: detected, ThemeName: "auto"})
+	interactive := NewInteractive(InteractiveConfig{Theme: tui.TerminalTheme(profile), TerminalProfile: profile, ThemeName: "dark"})
 	interactive.rend = nil
-	interactive.applyThemeNow("inherited")
+	interactive.applyThemeNow("auto")
 
-	if !interactive.cfg.Theme.Inherited {
-		t.Fatal("applying inherited theme did not switch the live theme")
+	if interactive.cfg.Theme.FG != tui.TerminalDefault() {
+		t.Fatal("applying auto did not switch to terminal defaults")
 	}
-	if !interactive.cfg.Theme.Terminal.TrueColor {
-		t.Fatal("live inherited color mode = 256, want truecolor")
+	if interactive.cfg.Theme.Terminal != profile {
+		t.Fatal("live auto theme lost the captured terminal profile")
 	}
-	if !interactive.cfg.Theme.Terminal.HasForeground || !interactive.cfg.Theme.Terminal.HasBackground {
-		t.Fatal("live inherited theme lost the captured terminal profile")
+}
+
+func TestEnvironmentForcedThemeDoesNotChangeOnSettingsSelection(t *testing.T) {
+	interactive := NewInteractive(InteractiveConfig{ThemeForced: true, EffectiveThemeName: "dark", ThemeName: "auto"})
+	interactive.rend = nil
+	interactive.applyThemeSetting("light")
+	if interactive.cfg.ThemeName != "light" {
+		t.Fatalf("persisted preference = %q, want light", interactive.cfg.ThemeName)
+	}
+	if interactive.cfg.EffectiveThemeName != "dark" {
+		t.Fatalf("effective preference = %q, want dark", interactive.cfg.EffectiveThemeName)
 	}
 }

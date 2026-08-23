@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/styles"
 )
 
 // ThemeOption is one selectable theme discovered under $ZUT_HOME/themes.
@@ -41,9 +45,11 @@ func (tf *ThemeFile) UnmarshalJSON(data []byte) error {
 	// {"spinner_frames":[".","o"],"spinner_interval_ms":120}.
 	// Metadata fields are ignored by ThemeOverrides because they do not
 	// have matching json tags.
-	_ = json.Unmarshal(data, &a.Overrides)
+	if err := json.Unmarshal(data, &a.Overrides); err != nil {
+		return fmt.Errorf("theme overrides: %w", err)
+	}
 	*tf = ThemeFile(a)
-	return nil
+	return validateThemeFile(*tf)
 }
 
 type ThemeFileColorModes struct {
@@ -61,16 +67,22 @@ func (m *ThemeFileColorModes) UnmarshalJSON(data []byte) error {
 	}
 	if v, ok := raw["dark"]; ok {
 		m.HasDark = true
-		_ = json.Unmarshal(v, &m.Dark)
+		if err := json.Unmarshal(v, &m.Dark); err != nil {
+			return fmt.Errorf("dark overrides: %w", err)
+		}
 	}
 	if v, ok := raw["light"]; ok {
 		m.HasLight = true
-		_ = json.Unmarshal(v, &m.Light)
+		if err := json.Unmarshal(v, &m.Light); err != nil {
+			return fmt.Errorf("light overrides: %w", err)
+		}
 	}
 	// Also allow colors to directly contain overrides shared by both
 	// modes, e.g. {"colors":{"accent":204}}.
 	var base ThemeOverrides
-	_ = json.Unmarshal(data, &base)
+	if err := json.Unmarshal(data, &base); err != nil {
+		return fmt.Errorf("shared overrides: %w", err)
+	}
 	m.Base = base
 	return nil
 }
@@ -138,13 +150,13 @@ func (c *TerminalColorValue) UnmarshalJSON(data []byte) error {
 	var index int
 	if err := json.Unmarshal(data, &index); err == nil {
 		c.TerminalColor = Color256(index)
-		return nil
+		return validateExplicitTerminalColor(c.TerminalColor)
 	}
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		if rgb, ok := parseHexColor(s); ok {
 			c.TerminalColor = rgb
-			return nil
+			return validateExplicitTerminalColor(c.TerminalColor)
 		}
 		return fmt.Errorf("invalid terminal color %q", s)
 	}
@@ -168,58 +180,45 @@ func (c *TerminalColorValue) UnmarshalJSON(data []byte) error {
 	default:
 		return fmt.Errorf("unknown terminal color mode %q", obj.Mode)
 	}
-	return nil
+	return validateExplicitTerminalColor(c.TerminalColor)
 }
 
-// InheritedTheme returns a theme derived from the terminal snapshot carried
-// by detected. It prefers the terminal's reported ANSI palette for semantic
-// accents, derives muted and selected surfaces by fading toward the terminal
-// background, and uses truecolor output only when the terminal advertises it.
-func InheritedTheme(detected Theme) Theme {
-	base := Dark
-	if detected.Terminal.SchemeKnown {
-		if detected.Terminal.Light {
-			base = Light
-		}
-	} else if IsLightTheme(detected) {
-		base = Light
+// TerminalTheme constructs zut's adaptive default from terminal-owned
+// defaults and ANSI slots. It never chooses a fixed built-in palette merely
+// because a terminal reports a light background.
+func TerminalTheme(profile TerminalProfile) Theme {
+	t := Theme{
+		FG:                 TerminalDefault(),
+		Muted:              TerminalPaletteSlot(8),
+		Accent:             TerminalPaletteSlot(12),
+		User:               TerminalPaletteSlot(13),
+		UserBubbleBG:       TerminalPaletteSlot(8),
+		UserBubbleFG:       TerminalDefault(),
+		Assistant:          TerminalPaletteSlot(12),
+		Tool:               TerminalPaletteSlot(10),
+		ToolOut:            TerminalPaletteSlot(8),
+		Error:              TerminalPaletteSlot(9),
+		Warning:            TerminalPaletteSlot(11),
+		Spinner:            TerminalPaletteSlot(13),
+		ThinkingMax:        TerminalPaletteSlot(13),
+		SelectionBG:        TerminalPaletteSlot(4),
+		SelectionFG:        TerminalDefault(),
+		UseTerminalPalette: true,
+		Terminal:           profile,
+		SpinnerFrames:      append([]string(nil), defaultSpinnerFrames...),
+		SpinnerIntervalMS:  80,
+		// Terminal syntax is resolved directly from semantic terminal roles.
+		// Keep JSON syntax fields empty until a custom theme explicitly sets one.
+		Syntax: SyntaxTheme{},
 	}
-	t := withTerminalProfile(base, detected)
-	t.Inherited = true
-
-	if t.Terminal.HasForeground {
-		t.FG = t.Terminal.Foreground
-	}
-
-	accentFallback := t.Accent
-	if IsLightTheme(t) {
-		accentFallback = Light.Accent
-	}
-	t.Accent = terminalPaletteColor(t.Terminal, accentFallback,
-		ansiBrightBlue, ansiBlue, ansiBrightCyan, ansiCyan, ansiBrightMagenta, ansiMagenta)
-	t.Assistant = t.Accent
-	t.Tool = terminalPaletteColor(t.Terminal, t.Tool, ansiBrightGreen, ansiGreen)
-	t.Error = terminalPaletteColor(t.Terminal, t.Error, ansiBrightRed, ansiRed)
-	t.Warning = terminalPaletteColor(t.Terminal, t.Warning, ansiBrightYellow, ansiYellow)
-	t.Spinner = terminalPaletteColor(t.Terminal, t.Spinner, ansiBrightMagenta, ansiMagenta)
-	t.ThinkingMax = terminalPaletteColor(t.Terminal, t.ThinkingMax, ansiBrightMagenta, ansiMagenta)
-	t.User = terminalPaletteColor(t.Terminal, t.User, ansiBrightYellow, ansiYellow)
-
-	if t.Terminal.HasForeground && t.Terminal.HasBackground {
-		t.Muted = t.DimColor(t.FG, 45)
+	if profile.HasForeground && profile.HasBackground {
+		t.Muted = t.DimColor(profile.Foreground, 45)
 		t.ToolOut = t.Muted
-		background := t.Terminal.Background
-		foreground := t.Terminal.Foreground
-		t.UserBubbleBG = blendTerminalColors(background, foreground, 12)
-		t.SelectionBG = blendTerminalColors(background, foreground, 25)
+		t.UserBubbleBG = blendTerminalColors(profile.Background, profile.Foreground, 12)
+		t.SelectionBG = blendTerminalColors(profile.Background, profile.Foreground, 25)
 	}
-
-	t.UserBubbleFG = t.FG
-	t.SelectionFG = t.FG
-
-	// Keep the terminal's configured background untouched. Painting an
-	// inherited RGB background across every row would make terminal theme
-	// changes and scrollback behavior less predictable.
+	// Auto must leave both the terminal background and cursor color owned by
+	// the terminal. Custom themes can intentionally override Background.
 	t.Background = nil
 	return t
 }
@@ -227,35 +226,6 @@ func InheritedTheme(detected Theme) Theme {
 func withTerminalProfile(base, detected Theme) Theme {
 	base.Terminal = detected.Terminal
 	return base
-}
-
-// Standard ANSI palette slots used as inherited role preferences.
-const (
-	ansiRed           = 1
-	ansiGreen         = 2
-	ansiYellow        = 3
-	ansiBlue          = 4
-	ansiMagenta       = 5
-	ansiCyan          = 6
-	ansiBrightRed     = 9
-	ansiBrightGreen   = 10
-	ansiBrightYellow  = 11
-	ansiBrightBlue    = 12
-	ansiBrightMagenta = 13
-	ansiBrightCyan    = 14
-)
-
-func terminalPaletteColor(profile TerminalProfile, fallback TerminalColor, preferred ...int) TerminalColor {
-	for _, index := range preferred {
-		if _, ok := profile.PaletteColor(index); ok {
-			// Keep the palette slot as the semantic value. Truecolor
-			// resolution expands it back to the terminal-reported RGB;
-			// 256-color output preserves the slot rather than re-quantizing
-			// the reported RGB to a nearby cube entry.
-			return Color256(index)
-		}
-	}
-	return fallback
 }
 
 func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
@@ -269,67 +239,150 @@ func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
 	)
 }
 
-// LoadThemeFromHome applies a custom theme from $ZUT_HOME/themes/*.json
-// to detected. Empty/auto/default keeps the built-in detected theme.
-// If preferred is set, it may be a theme name, a basename without
-// .json, or an absolute/relative path.
+const maxThemeFileSize = 1 << 20
+
+// ThemeSource is an immutable, fully validated custom theme revision. Runtime
+// profile changes resolve this value without touching the filesystem again.
+type ThemeSource struct {
+	Name   string
+	Path   string
+	Digest [sha256.Size]byte
+	File   ThemeFile
+}
+
+// ThemeResolution is the pure result of resolving a preference against one
+// terminal snapshot and, for custom preferences, one accepted source file.
+type ThemeResolution struct {
+	Theme Theme
+	Name  string
+}
+
+// ThemePreference separates the persisted setting from the process-only
+// ZUT_THEME override. Only dark/light force a running session.
+type ThemePreference struct {
+	Persisted string
+	Effective string
+	Forced    bool
+}
+
+func ResolveThemePreference(persisted, env string) ThemePreference {
+	preference := ThemePreference{Persisted: strings.TrimSpace(persisted), Effective: strings.TrimSpace(persisted)}
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "dark", "light":
+		preference.Effective = strings.ToLower(strings.TrimSpace(env))
+		preference.Forced = true
+	case "", "auto":
+		// Persisted setting remains effective.
+	}
+	if preference.Effective == "" {
+		preference.Effective = "auto"
+	}
+	return preference
+}
+
+// LoadThemeSource resolves and validates a custom source. Built-in selections
+// have no source and return nil, nil. The file limit prevents a polling reload
+// from allocating an unbounded partial write.
+func LoadThemeSource(zutHome, preference string) (*ThemeSource, error) {
+	path, err := resolveThemePath(zutHome, preference)
+	if err != nil || path == "" || strings.HasPrefix(path, "builtin:") {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("theme %s: %w", path, err)
+	}
+	if info.Size() > maxThemeFileSize {
+		return nil, fmt.Errorf("theme %s exceeds %d bytes", path, maxThemeFileSize)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read theme %s: %w", path, err)
+	}
+	if len(b) > maxThemeFileSize {
+		return nil, fmt.Errorf("theme %s exceeds %d bytes", path, maxThemeFileSize)
+	}
+	var file ThemeFile
+	if err := json.Unmarshal(b, &file); err != nil {
+		return nil, fmt.Errorf("parse theme %s: %w", path, err)
+	}
+	if file.Name == "" {
+		file.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	return &ThemeSource{Name: file.Name, Path: path, Digest: sha256.Sum256(b), File: file}, nil
+}
+
+// ResolveTheme performs no I/O. Custom themes always overlay TerminalTheme,
+// so omitted roles continue to follow the controlling terminal.
+func ResolveTheme(preference string, source *ThemeSource, profile TerminalProfile) ThemeResolution {
+	preference = strings.ToLower(strings.TrimSpace(preference))
+	switch preference {
+	case "", "auto", "default", "system":
+		return ThemeResolution{Theme: TerminalTheme(profile), Name: "auto"}
+	case "dark":
+		return ThemeResolution{Theme: withTerminalProfile(Dark, Theme{Terminal: profile}), Name: "dark"}
+	case "light":
+		return ThemeResolution{Theme: withTerminalProfile(Light, Theme{Terminal: profile}), Name: "light"}
+	}
+	if source == nil {
+		return ThemeResolution{Theme: TerminalTheme(profile), Name: "auto"}
+	}
+	base := TerminalTheme(profile)
+	base = applyThemeOverrides(base, source.File.Overrides)
+	base = applyThemeOverrides(base, source.File.Colors.Base)
+	if profileIsLight(profile) {
+		if source.File.Colors.HasLight {
+			base = applyThemeOverrides(base, source.File.Colors.Light)
+		} else if source.File.Colors.HasDark {
+			base = applyThemeOverrides(base, source.File.Colors.Dark)
+		}
+	} else if source.File.Colors.HasDark {
+		base = applyThemeOverrides(base, source.File.Colors.Dark)
+	} else if source.File.Colors.HasLight {
+		base = applyThemeOverrides(base, source.File.Colors.Light)
+	}
+	return ThemeResolution{Theme: base, Name: source.Name}
+}
+
+func profileIsLight(profile TerminalProfile) bool {
+	if profile.SchemeKnown {
+		return profile.Light
+	}
+	if profile.HasBackground {
+		r, g, b := profile.Background.R, profile.Background.G, profile.Background.B
+		return 0.2126*float64(r)+0.7152*float64(g)+0.0722*float64(b) >= 127.5
+	}
+	return false
+}
+
+// DetectThemeWithCustom performs the initial bounded profile query then uses
+// the same loader and pure resolver as runtime selection.
 func DetectThemeWithCustom(zutHome, preferred string, timeout time.Duration) (Theme, string, error) {
 	detected := DetectThemeFromBackground(timeout)
 	return LoadThemeFromHome(zutHome, preferred, detected)
 }
 
+// LoadThemeFromHome is retained as the startup convenience wrapper. New
+// runtime code should keep the ThemeSource and call ResolveTheme directly.
 func LoadThemeFromHome(zutHome, preferred string, detected Theme) (Theme, string, error) {
-	path, err := resolveThemePath(zutHome, preferred)
-	if err != nil || path == "" {
-		return detected, "", err
-	}
-	switch path {
-	case "builtin:inherited":
-		return InheritedTheme(detected), "inherited", nil
-	case "builtin:dark":
-		return withTerminalProfile(Dark, detected), "dark", nil
-	case "builtin:light":
-		return withTerminalProfile(Light, detected), "light", nil
-	}
-	b, err := os.ReadFile(path)
+	profile := detected.Terminal
+	source, err := LoadThemeSource(zutHome, preferred)
 	if err != nil {
-		return detected, "", err
+		return TerminalTheme(profile), "", err
 	}
-	var tf ThemeFile
-	if err := json.Unmarshal(b, &tf); err != nil {
-		return detected, "", fmt.Errorf("parse theme %s: %w", path, err)
-	}
-	if tf.Name == "" {
-		tf.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	}
-	base := applyThemeOverrides(detected, tf.Overrides)
-	base = applyThemeOverrides(base, tf.Colors.Base)
-	if isLightTheme(detected) {
-		if tf.Colors.HasLight {
-			base = applyThemeOverrides(base, tf.Colors.Light)
-		} else if tf.Colors.HasDark {
-			base = applyThemeOverrides(base, tf.Colors.Dark)
-		}
-	} else {
-		if tf.Colors.HasDark {
-			base = applyThemeOverrides(base, tf.Colors.Dark)
-		} else if tf.Colors.HasLight {
-			base = applyThemeOverrides(base, tf.Colors.Light)
-		}
-	}
-	return base, tf.Name, nil
+	returned := ResolveTheme(preferred, source, profile)
+	return returned.Theme, returned.Name, nil
 }
 
 // AvailableThemes returns built-in and user-installed themes suitable
 // for a settings picker. Invalid JSON files are skipped.
 func AvailableThemes(zutHome string) []ThemeOption {
 	out := []ThemeOption{
-		{Value: "auto", Label: "auto", Description: "detect terminal background and use zut defaults", Builtin: true},
-		{Value: "inherited", Label: "inherited (from terminal)", Description: "use terminal colors with truecolor or best-effort 256-color output", Builtin: true},
+		{Value: "auto", Label: "auto", Description: "follow terminal colors and appearance", Builtin: true},
 		{Value: "dark", Label: "dark", Description: "built-in dark theme", Builtin: true},
 		{Value: "light", Label: "light", Description: "built-in light theme", Builtin: true},
 	}
-	seen := map[string]bool{"auto": true, "inherited": true, "dark": true, "light": true}
+	seen := map[string]bool{"auto": true, "dark": true, "light": true}
 	paths, _ := themeFilesIn(filepath.Join(zutHome, "themes"))
 	sort.Strings(paths)
 	for _, path := range paths {
@@ -399,8 +452,6 @@ func resolveThemePath(zutHome, preferred string) (string, error) {
 	switch strings.ToLower(preferred) {
 	case "", "auto", "default", "system":
 		return "", nil
-	case "inherited", "terminal", "terminal-inherited":
-		return "builtin:inherited", nil
 	case "dark":
 		return "builtin:dark", nil
 	case "light":
@@ -569,14 +620,69 @@ func applySyntaxOverrides(s SyntaxTheme, o SyntaxThemeOverrides) SyntaxTheme {
 	return s
 }
 
-func IsLightTheme(th Theme) bool {
-	if th.FG == Light.FG && th.SelectionBG == Light.SelectionBG && th.SelectionFG == Light.SelectionFG {
-		return true
+func validateExplicitTerminalColor(color TerminalColor) error {
+	switch color.Mode {
+	case terminalColor256:
+		if color.Index < 0 || color.Index > 255 {
+			return fmt.Errorf("xterm-256 index %d is outside 0..255", color.Index)
+		}
+	case terminalColorANSI:
+		if _, ok := ansiSGRToXtermIndex(color.Index); !ok {
+			return fmt.Errorf("ANSI SGR %d is not a palette color", color.Index)
+		}
+	case terminalColorRGB:
+		if color.R < 0 || color.R > 255 || color.G < 0 || color.G > 255 || color.B < 0 || color.B > 255 {
+			return fmt.Errorf("RGB color (%d,%d,%d) is outside 0..255", color.R, color.G, color.B)
+		}
+	default:
+		return errors.New("theme colors must be explicit xterm-256, ANSI, or RGB values")
 	}
-	return th.Inherited && th.Terminal.SchemeKnown && th.Terminal.Light
+	return nil
 }
 
-func isLightTheme(th Theme) bool { return IsLightTheme(th) }
+func validateThemeFile(file ThemeFile) error {
+	for _, overrides := range []ThemeOverrides{file.Overrides, file.Colors.Base, file.Colors.Dark, file.Colors.Light} {
+		if err := validateThemeOverrides(overrides); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateThemeOverrides(o ThemeOverrides) error {
+	for _, color := range []*TerminalColorValue{o.FG, o.Muted, o.Accent, o.Background, o.User, o.UserBubbleBG, o.UserBubbleFG, o.Assistant, o.Tool, o.ToolOut, o.Error, o.Warning, o.Spinner, o.ThinkingMax, o.ThinkingMaxCamel, o.SelectionBG, o.SelectionFG} {
+		if color != nil {
+			if err := validateExplicitTerminalColor(color.TerminalColor); err != nil {
+				return err
+			}
+		}
+	}
+	if len(o.SpinnerFrames) > 64 {
+		return errors.New("spinner_frames has more than 64 entries")
+	}
+	for _, frame := range o.SpinnerFrames {
+		if frame == "" || len([]rune(frame)) > 16 {
+			return fmt.Errorf("invalid spinner frame %q", frame)
+		}
+	}
+	if o.SpinnerIntervalMS != nil && (*o.SpinnerIntervalMS < 10 || *o.SpinnerIntervalMS > 10000) {
+		return fmt.Errorf("spinner_interval_ms %d is outside 10..10000", *o.SpinnerIntervalMS)
+	}
+	if o.SyntaxBaseStyle != nil && *o.SyntaxBaseStyle != "" {
+		if _, ok := styles.Registry[*o.SyntaxBaseStyle]; !ok {
+			return fmt.Errorf("unknown syntax_base_style %q", *o.SyntaxBaseStyle)
+		}
+	}
+	for _, entry := range []*string{o.Syntax.Keyword, o.Syntax.KeywordConstant, o.Syntax.KeywordDeclaration, o.Syntax.KeywordNamespace, o.Syntax.KeywordReserved, o.Syntax.KeywordType, o.Syntax.NameBuiltin, o.Syntax.NameFunction, o.Syntax.NameClass, o.Syntax.NameDecorator, o.Syntax.LiteralString, o.Syntax.LiteralStringEscape, o.Syntax.LiteralNumber, o.Syntax.Comment, o.Syntax.CommentPreproc, o.Syntax.Operator, o.Syntax.Punctuation, o.Syntax.Text} {
+		if entry == nil {
+			continue
+		}
+		if _, err := chroma.ParseStyleEntry(*entry); err != nil {
+			return fmt.Errorf("invalid syntax style %q: %w", *entry, err)
+		}
+	}
+	return nil
+}
 
 func parseHexColor(s string) (TerminalColor, bool) {
 	s = strings.TrimPrefix(strings.TrimSpace(s), "#")

@@ -1208,8 +1208,10 @@ func toolThemeKey(theme Theme) uint64 {
 	for _, c := range theme.Terminal.Palette {
 		h = hashThemeColor(h, c)
 	}
+	h = fnv64aWriteByte(h, byte(theme.Terminal.ColorDepth()))
+	h = fnv64aWriteUint64(h, uint64(theme.Terminal.PaletteKnown))
 	for _, value := range []bool{
-		theme.Inherited,
+		theme.UseTerminalPalette,
 		theme.Terminal.HasForeground,
 		theme.Terminal.HasBackground,
 		theme.Terminal.TrueColor,
