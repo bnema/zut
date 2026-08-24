@@ -84,7 +84,7 @@ const subagentSpawnSchemaTemplate = `{
   "properties": {
     "task": {
       "type": "string",
-      "description": "The full task description for the sub-agent. Assign a concrete, bounded scope and explicit ownership that does not overlap other active work. Be specific: the child normally has the main agent's built-in tools, including lsp when enabled, but a selected profile can restrict its tools; it shares this working directory and starts with NO context from this conversation."
+      "description": "The full task description for the sub-agent. Assign a concrete, bounded scope and explicit ownership that does not overlap other active work. Be specific: the child normally has the main agent's built-in tools, including lsp when enabled, but a selected profile can restrict its tools; it starts with NO context from this conversation. Shared isolation uses this working directory; worktree isolation captures a patch without merging it."
     },
     "agent": {
       "type": "string",

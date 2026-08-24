@@ -71,7 +71,7 @@ func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := schema.Properties["task"].Description
-	for _, want := range []string{"concrete, bounded scope", "explicit ownership", "does not overlap"} {
+	for _, want := range []string{"concrete, bounded scope", "explicit ownership", "does not overlap", "Shared isolation uses this working directory", "worktree isolation captures a patch without merging it"} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task schema missing %q: %s", want, task)
 		}
