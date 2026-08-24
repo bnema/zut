@@ -93,9 +93,9 @@ type Config struct {
 	// configuration preserves unlimited autonomous execution.
 	Goals GoalsConfig `json:"goals,omitempty"`
 
-	// AutoSubagentsEnabled lets the main agent spawn background sub-agents
-	// and query their live state via built-in auto-subagent tools. Off by
-	// default; nil/missing means disabled. Toggle from /settings.
+	// AutoSubagentsEnabled lets the interactive primary proactively delegate
+	// independent sidecar work through built-in subagent tools. Off by default;
+	// nil/missing means disabled. Toggle from /settings.
 	AutoSubagentsEnabled *bool `json:"auto_subagents_enabled,omitempty"`
 
 	// PonytailEnabled controls the compact coding-guidance addendum. On by

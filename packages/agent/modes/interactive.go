@@ -179,9 +179,9 @@ type InteractiveConfig struct {
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
 
-	// AutoSubagentsSystemAddendum is the strict orchestrator block that gets
-	// appended when the user enables auto-subagents at runtime. Plumbed in from
-	// the cli so this package doesn't have to import agent (cycle).
+	// AutoSubagentsSystemAddendum is the proactive collaboration block that
+	// gets appended when the user enables auto-subagents at runtime. Plumbed in
+	// from the cli so this package doesn't have to import agent (cycle).
 	AutoSubagentsSystemAddendum string
 
 	// OnDemandSubagentsSystemAddendum limits delegation to explicit user

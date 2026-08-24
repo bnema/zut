@@ -1,11 +1,55 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 )
+
+func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testing.T) {
+	root := t.TempDir()
+	zutHome := filepath.Join(root, "zut-home")
+	project := filepath.Join(root, "project")
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if err := SaveConfig(Config{AutoSubagentsEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := Args{
+		Provider: "ollama",
+		Model:    "any-local-model",
+		CWD:      project,
+		NoLSP:    true,
+		NoSkill:  true,
+	}
+	interactive, err := Resolve(base, false)
+	if err != nil {
+		t.Fatalf("resolve interactive: %v", err)
+	}
+	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) {
+		t.Fatalf("interactive prompt did not select proactive policy:\n%s", interactive.SystemPrompt)
+	}
+
+	headlessArgs := base
+	headlessArgs.Mode = ModePrint
+	headlessArgs.Orchestrate = true
+	headless, err := Resolve(headlessArgs, false)
+	if err != nil {
+		t.Fatalf("resolve headless orchestrator: %v", err)
+	}
+	if !strings.Contains(headless.SystemPrompt, StrictOrchestratorSystemAddendum) || strings.Contains(headless.SystemPrompt, ProactiveSubagentsSystemAddendum) {
+		t.Fatalf("headless prompt did not select strict policy:\n%s", headless.SystemPrompt)
+	}
+}
 
 func TestOrchestratorAlwaysReceivesResearchTools(t *testing.T) {
 	for _, tc := range []struct {

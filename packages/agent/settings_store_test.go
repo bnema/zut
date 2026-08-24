@@ -5,40 +5,78 @@ import (
 	"testing"
 )
 
-func TestAutoSubagentsSystemAddendumForListsOnlyEnabledLifecycleTools(t *testing.T) {
-	for _, tc := range []struct {
-		name            string
-		spawn           bool
-		stop            bool
-		resume          bool
-		want            []string
-		unwanted        []string
-		wantUnavailable bool
-	}{
-		{name: "none", spawn: true, unwanted: []string{"subagent_stop", "subagent_resume"}},
-		{name: "fully unavailable", unwanted: []string{"subagent_stop", "subagent_resume"}, wantUnavailable: true},
-		{name: "stop", spawn: true, stop: true, want: []string{"subagent_stop"}, unwanted: []string{"subagent_resume"}},
-		{name: "resume", spawn: true, resume: true, want: []string{"subagent_resume"}, unwanted: []string{"subagent_stop"}},
-		{name: "both", spawn: true, stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume"}},
-		{name: "stop without spawn", stop: true, want: []string{"subagent_stop", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_resume"}},
-		{name: "resume without spawn", resume: true, want: []string{"subagent_resume", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_stop"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := AutoSubagentsSystemAddendumFor(tc.spawn, tc.stop, tc.resume)
-			for _, want := range tc.want {
-				if !strings.Contains(got, want) {
-					t.Fatalf("addendum missing enabled lifecycle tool %q:\n%s", want, got)
-				}
-			}
-			for _, unwanted := range tc.unwanted {
-				if strings.Contains(got, unwanted) {
-					t.Fatalf("addendum mentions unavailable lifecycle tool %q:\n%s", unwanted, got)
-				}
-			}
-			if gotUnavailable := strings.Contains(got, AutoSubagentsDelegationUnavailableAddendum); gotUnavailable != tc.wantUnavailable {
-				t.Fatalf("delegation-unavailable guidance present = %t, want %t:\n%s", gotUnavailable, tc.wantUnavailable, got)
+func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
+	builders := map[string]func(bool, bool, bool) string{
+		"proactive": ProactiveSubagentsSystemAddendumFor,
+		"strict":    StrictOrchestratorSystemAddendumFor,
+	}
+	for name, build := range builders {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name      string
+				spawn     bool
+				stop      bool
+				resume    bool
+				want      []string
+				unwanted  []string
+				available bool
+			}{
+				{name: "none", spawn: true, unwanted: []string{"subagent_stop", "subagent_resume"}, available: true},
+				{name: "fully unavailable", unwanted: []string{"subagent_stop", "subagent_resume"}},
+				{name: "stop", spawn: true, stop: true, want: []string{"subagent_stop"}, unwanted: []string{"subagent_resume"}, available: true},
+				{name: "resume", spawn: true, resume: true, want: []string{"subagent_resume"}, unwanted: []string{"subagent_stop"}, available: true},
+				{name: "both", spawn: true, stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume"}, available: true},
+				{name: "stop without spawn", stop: true, want: []string{"subagent_stop", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_resume"}},
+				{name: "resume without spawn", resume: true, want: []string{"subagent_resume", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_stop"}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					got := build(tc.spawn, tc.stop, tc.resume)
+					for _, want := range tc.want {
+						if !strings.Contains(got, want) {
+							t.Fatalf("addendum missing enabled lifecycle tool %q:\n%s", want, got)
+						}
+					}
+					for _, unwanted := range tc.unwanted {
+						if strings.Contains(got, unwanted) {
+							t.Fatalf("addendum mentions unavailable lifecycle tool %q:\n%s", unwanted, got)
+						}
+					}
+					if gotAvailable := !strings.Contains(got, "unavailable in this session") && !strings.Contains(got, "Spawning new workers is unavailable"); gotAvailable != tc.available {
+						t.Fatalf("delegation available = %t, want %t:\n%s", gotAvailable, tc.available, got)
+					}
+				})
 			}
 		})
+	}
+}
+
+func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
+	proactive := ProactiveSubagentsSystemAddendumFor(true, false, false)
+	for _, want := range []string{"primary owner and implementer", "immediate next task you will perform locally", "If you cannot name useful non-overlapping local work, do not delegate", "Do not search, read, test, review, edit"} {
+		if !strings.Contains(proactive, want) {
+			t.Fatalf("proactive addendum missing %q:\n%s", want, proactive)
+		}
+	}
+	if strings.Contains(proactive, "not an implementer") {
+		t.Fatalf("proactive addendum retained strict orchestrator contract:\n%s", proactive)
+	}
+
+	strict := StrictOrchestratorSystemAddendumFor(true, false, false)
+	for _, want := range []string{"not an implementer", "non-overlapping worker scopes", "Once a worker is active", "Only coordinate workers"} {
+		if !strings.Contains(strict, want) {
+			t.Fatalf("strict addendum missing %q:\n%s", want, strict)
+		}
+	}
+}
+
+func TestSubagentPoliciesHandleUnavailableDelegationByMode(t *testing.T) {
+	proactive := ProactiveSubagentsSystemAddendumFor(false, false, false)
+	if !strings.Contains(proactive, "Continue the user's task locally") || strings.Contains(proactive, "report this limitation") {
+		t.Fatalf("proactive unavailable guidance blocks local work:\n%s", proactive)
+	}
+	strict := StrictOrchestratorSystemAddendumFor(false, false, false)
+	if !strings.Contains(strict, "report this limitation") || !strings.Contains(strict, "rather than implementing") {
+		t.Fatalf("strict unavailable guidance permits local implementation:\n%s", strict)
 	}
 }
 
