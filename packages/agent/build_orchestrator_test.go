@@ -13,13 +13,15 @@ import (
 func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testing.T) {
 	root := t.TempDir()
 	zutHome := filepath.Join(root, "zut-home")
+	home := filepath.Join(root, "home")
 	project := filepath.Join(root, "project")
 	t.Setenv("ZUT_HOME", zutHome)
-	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	profilesDir := filepath.Join(root, "home", ".agents", "agents")
+	profilesDir := filepath.Join(home, ".agents", "agents")
 	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
