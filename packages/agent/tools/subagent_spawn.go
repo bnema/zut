@@ -16,8 +16,10 @@ import (
 )
 
 // SubagentSpawnTool lets the main agent delegate work through the resident
-// manager. Every spawn returns immediately and runs in the background. Required work records a durable obligation that must be
-// resolved before the parent can produce its terminal response.
+// manager. A spawn without wait returns after acceptance; an explicit bounded
+// wait may return the initial completion or expire while the child stays active.
+// Required work records a durable obligation that must be resolved before the
+// parent can produce its terminal response.
 //
 // Available when the host's launch-time tool policy permits delegation. The
 // primary-agent prompt decides whether delegation is proactive or only on an
@@ -107,7 +109,7 @@ const subagentSpawnSchemaTemplate = `{
     },
     "required": {
       "type": "boolean",
-      "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. Failed, timed-out, or canceled work remains unmet until a successful retry or explicit user removal. An outcome unobserved across host restart requires explicit user reconciliation."
+      "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. A bounded wait expiring does not terminate the accepted child and must not be retried while it remains active. Terminal failure or cancellation remains unmet until a successful follow-up. An outcome unobserved across host restart requires explicit user reconciliation."
     },
     "wait": {
       "type": "integer",
