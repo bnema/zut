@@ -24,10 +24,16 @@ func writeWatchedTheme(t *testing.T, home, body string) string {
 
 func advanceThemeWatch(t *testing.T, ticks chan<- time.Time, processed <-chan struct{}, now time.Time) {
 	t.Helper()
-	ticks <- now
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	select {
+	case ticks <- now:
+	case <-deadline.C:
+		t.Fatal("watcher did not accept tick")
+	}
 	select {
 	case <-processed:
-	case <-time.After(time.Second):
+	case <-deadline.C:
 		t.Fatal("watcher did not process tick")
 	}
 }

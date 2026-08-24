@@ -44,8 +44,8 @@ func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testin
 	if err != nil {
 		t.Fatalf("resolve interactive: %v", err)
 	}
-	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) || !strings.Contains(interactive.SystemPrompt, "[subagents_list]") {
-		t.Fatalf("interactive prompt did not select proactive primary policy and profiles:\n%s", interactive.SystemPrompt)
+	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) || !strings.Contains(interactive.SystemPrompt, "[subagents_list]") || !strings.Contains(interactive.SystemPrompt, "- reviewer: Review delegated work") {
+		t.Fatalf("interactive prompt did not select proactive primary policy and reviewer profile:\n%s", interactive.SystemPrompt)
 	}
 
 	childArgs := residentChildArgs(base, "ollama", subagents.ResidentChildSpec{Provider: "ollama", Model: "any-local-model"})
