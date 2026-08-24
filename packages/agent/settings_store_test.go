@@ -6,12 +6,16 @@ import (
 )
 
 func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
-	builders := map[string]func(bool, bool, bool) string{
-		"proactive": ProactiveSubagentsSystemAddendumFor,
-		"strict":    StrictOrchestratorSystemAddendumFor,
+	builders := []struct {
+		name            string
+		build           func(bool, bool, bool) string
+		noSpawnFallback string
+	}{
+		{name: "proactive", build: ProactiveSubagentsSystemAddendumFor, noSpawnFallback: "Continue non-delegated work locally."},
+		{name: "strict", build: StrictOrchestratorSystemAddendumFor, noSpawnFallback: "Do not implement, debug, test, or review directly."},
 	}
-	for name, build := range builders {
-		t.Run(name, func(t *testing.T) {
+	for _, builder := range builders {
+		t.Run(builder.name, func(t *testing.T) {
 			for _, tc := range []struct {
 				name      string
 				spawn     bool
@@ -28,9 +32,13 @@ func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 				{name: "both", spawn: true, stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume"}, available: true},
 				{name: "stop without spawn", stop: true, want: []string{"subagent_stop", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_resume"}},
 				{name: "resume without spawn", resume: true, want: []string{"subagent_resume", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_stop"}},
+				{name: "both without spawn", stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume", "Spawning new workers is unavailable"}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					got := build(tc.spawn, tc.stop, tc.resume)
+					got := builder.build(tc.spawn, tc.stop, tc.resume)
+					if !tc.spawn && (tc.stop || tc.resume) && !strings.Contains(got, builder.noSpawnFallback) {
+						t.Fatalf("addendum missing mode-specific no-spawn fallback %q:\n%s", builder.noSpawnFallback, got)
+					}
 					for _, want := range tc.want {
 						if !strings.Contains(got, want) {
 							t.Fatalf("addendum missing enabled lifecycle tool %q:\n%s", want, got)
