@@ -809,8 +809,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	primaryInteractive := interactiveMode
-	primaryOrchestrator := args.Orchestrate
+	primaryInteractive := interactiveMode && !args.ResidentChild
+	primaryOrchestrator := args.Orchestrate && !args.ResidentChild
 	if (primaryInteractive || primaryOrchestrator) && autoSubagentsToolAllowed(args) {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)

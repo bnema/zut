@@ -28,9 +28,12 @@ const (
 type Args struct {
 	Mode        Mode
 	Orchestrate bool
-	Provider    string
-	Model       string
-	APIKey      string
+	// ResidentChild marks internal child resolution so primary-only delegation
+	// policies and profile metadata are not added to worker prompts.
+	ResidentChild bool
+	Provider      string
+	Model         string
+	APIKey        string
 
 	BaseURL            string // override provider base URL (for tests/self-hosted)
 	SystemPrompt       string

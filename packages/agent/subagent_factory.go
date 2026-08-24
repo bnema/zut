@@ -100,9 +100,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 // decision accepted at spawn time across explicit resume and restart.
 func residentChildArgs(args Args, parentProvider string, spec subagents.ResidentChildSpec) Args {
 	next := args
-	// --orchestrate is a role for the headless parent, not its workers. A child
+	// Primary delegation policy belongs to the parent, not its workers. A child
 	// receives its accepted profile instructions and exact child tool list.
 	next.Orchestrate = false
+	next.ResidentChild = true
 	// An explicit CLI key belongs to the provider that resolved the parent.
 	// A child can select another provider, but it must resolve that provider's
 	// own credential rather than forwarding or persisting the parent's key.

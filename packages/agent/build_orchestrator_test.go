@@ -19,6 +19,13 @@ func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testin
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	profilesDir := filepath.Join(root, "home", ".agents", "agents")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "reviewer.md"), []byte("---\nname: reviewer\ndescription: Review delegated work\n---\nReview the requested scope."), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	enabled := true
 	if err := SaveConfig(Config{AutoSubagentsEnabled: &enabled}); err != nil {
 		t.Fatal(err)
@@ -35,8 +42,17 @@ func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testin
 	if err != nil {
 		t.Fatalf("resolve interactive: %v", err)
 	}
-	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) {
-		t.Fatalf("interactive prompt did not select proactive policy:\n%s", interactive.SystemPrompt)
+	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) || !strings.Contains(interactive.SystemPrompt, "[subagents_list]") {
+		t.Fatalf("interactive prompt did not select proactive primary policy and profiles:\n%s", interactive.SystemPrompt)
+	}
+
+	childArgs := residentChildArgs(base, "ollama", subagents.ResidentChildSpec{Provider: "ollama", Model: "any-local-model"})
+	child, err := Resolve(childArgs, false)
+	if err != nil {
+		t.Fatalf("resolve resident child: %v", err)
+	}
+	if strings.Contains(child.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(child.SystemPrompt, StrictOrchestratorSystemAddendum) || strings.Contains(child.SystemPrompt, "[subagents_list]") {
+		t.Fatalf("resident child inherited primary delegation policy or profiles:\n%s", child.SystemPrompt)
 	}
 
 	headlessArgs := base

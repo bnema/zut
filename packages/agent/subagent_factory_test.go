@@ -36,7 +36,7 @@ func TestResidentChildArgsPreserveDurableProfileInheritance(t *testing.T) {
 		Provider: "openai", BaseURL: "https://current.example/v1", InsecureTLS: true, Model: "gpt-5", Workspace: "/repo/child",
 		InheritSkills: &no, InheritProjectContext: &no,
 	})
-	if next.Provider != "openai" || next.BaseURL != "https://current.example/v1" || !next.InsecureTLS || next.Model != "gpt-5" || next.CWD != "/repo/child" || !next.NoSkill || !next.NoContextFiles || next.Orchestrate {
+	if next.Provider != "openai" || next.BaseURL != "https://current.example/v1" || !next.InsecureTLS || next.Model != "gpt-5" || next.CWD != "/repo/child" || !next.NoSkill || !next.NoContextFiles || next.Orchestrate || !next.ResidentChild {
 		t.Fatalf("resident child args = %#v", next)
 	}
 }
