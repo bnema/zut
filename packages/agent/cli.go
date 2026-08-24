@@ -2571,7 +2571,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),
 		ExtensionThemes:                extMgr.ThemeOptions,
-		AutoSubagentsSystemAddendum: AutoSubagentsSystemAddendumFor(
+		AutoSubagentsSystemAddendum: ProactiveSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowedForSession,
 			autoSubagentsStopToolAllowedForSession,
 			autoSubagentsResumeToolAllowedForSession,

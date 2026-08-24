@@ -1,11 +1,73 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 )
+
+func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testing.T) {
+	root := t.TempDir()
+	zutHome := filepath.Join(root, "zut-home")
+	home := filepath.Join(root, "home")
+	project := filepath.Join(root, "project")
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profilesDir := filepath.Join(home, ".agents", "agents")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "reviewer.md"), []byte("---\nname: reviewer\ndescription: Review delegated work\n---\nReview the requested scope."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if err := SaveConfig(Config{AutoSubagentsEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := Args{
+		Provider: "ollama",
+		Model:    "any-local-model",
+		CWD:      project,
+		NoLSP:    true,
+		NoSkill:  true,
+	}
+	interactive, err := Resolve(base, false)
+	if err != nil {
+		t.Fatalf("resolve interactive: %v", err)
+	}
+	if !strings.Contains(interactive.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(interactive.SystemPrompt, StrictOrchestratorSystemAddendum) || !strings.Contains(interactive.SystemPrompt, "[subagents_list]") || !strings.Contains(interactive.SystemPrompt, "- reviewer: Review delegated work") {
+		t.Fatalf("interactive prompt did not select proactive primary policy and reviewer profile:\n%s", interactive.SystemPrompt)
+	}
+
+	childArgs := residentChildArgs(base, "ollama", subagents.ResidentChildSpec{Provider: "ollama", Model: "any-local-model"})
+	child, err := Resolve(childArgs, false)
+	if err != nil {
+		t.Fatalf("resolve resident child: %v", err)
+	}
+	if strings.Contains(child.SystemPrompt, ProactiveSubagentsSystemAddendum) || strings.Contains(child.SystemPrompt, StrictOrchestratorSystemAddendum) || strings.Contains(child.SystemPrompt, "[subagents_list]") {
+		t.Fatalf("resident child inherited primary delegation policy or profiles:\n%s", child.SystemPrompt)
+	}
+
+	headlessArgs := base
+	headlessArgs.Mode = ModePrint
+	headlessArgs.Orchestrate = true
+	headless, err := Resolve(headlessArgs, false)
+	if err != nil {
+		t.Fatalf("resolve headless orchestrator: %v", err)
+	}
+	if !strings.Contains(headless.SystemPrompt, StrictOrchestratorSystemAddendum) || strings.Contains(headless.SystemPrompt, ProactiveSubagentsSystemAddendum) {
+		t.Fatalf("headless prompt did not select strict policy:\n%s", headless.SystemPrompt)
+	}
+}
 
 func TestOrchestratorAlwaysReceivesResearchTools(t *testing.T) {
 	for _, tc := range []struct {

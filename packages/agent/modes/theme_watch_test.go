@@ -22,6 +22,22 @@ func writeWatchedTheme(t *testing.T, home, body string) string {
 	return path
 }
 
+func advanceThemeWatch(t *testing.T, ticks chan<- time.Time, processed <-chan struct{}, now time.Time) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	select {
+	case ticks <- now:
+	case <-deadline.C:
+		t.Fatal("watcher did not accept tick")
+	}
+	select {
+	case <-processed:
+	case <-deadline.C:
+		t.Fatal("watcher did not process tick")
+	}
+}
+
 func TestWatchThemeSourceTicksPublishesOnlyValidRevisions(t *testing.T) {
 	home := t.TempDir()
 	path := writeWatchedTheme(t, home, `{"colors":{"accent":20}}`)
@@ -32,13 +48,14 @@ func TestWatchThemeSourceTicksPublishesOnlyValidRevisions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ticks := make(chan time.Time)
+	processed := make(chan struct{})
 	events := make(chan themeWatchEvent, 3)
-	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events)
+	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events, processed)
 
 	if err := os.WriteFile(path, []byte(`{"colors":{"accent":21}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ticks <- time.Unix(1, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(1, 0))
 	select {
 	case event := <-events:
 		if event.source == nil || event.source.File.Colors.Base.Accent == nil || event.source.File.Colors.Base.Accent.Index != 21 {
@@ -51,7 +68,7 @@ func TestWatchThemeSourceTicksPublishesOnlyValidRevisions(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"colors":{"accent":999}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ticks <- time.Unix(2, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(2, 0))
 	select {
 	case event := <-events:
 		if event.err == nil || event.source != nil {
@@ -72,17 +89,18 @@ func TestWatchThemeSourceTicksRestartsDeletionGraceAfterInvalidReappearance(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ticks := make(chan time.Time)
+	processed := make(chan struct{})
 	events := make(chan themeWatchEvent, 1)
-	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events)
+	go watchThemeSourceTicks(ctx, home, "live", accepted, ticks, events, processed)
 
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	ticks <- time.Unix(1, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(1, 0))
 	if err := os.WriteFile(path, []byte(`{"colors":{"accent":999}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ticks <- time.Unix(2, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(2, 0))
 	select {
 	case event := <-events:
 		if event.err == nil {
@@ -95,14 +113,14 @@ func TestWatchThemeSourceTicksRestartsDeletionGraceAfterInvalidReappearance(t *t
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	ticks <- time.Unix(3, 0)
-	ticks <- time.Unix(4, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(3, 0))
+	advanceThemeWatch(t, ticks, processed, time.Unix(4, 0))
 	select {
 	case event := <-events:
 		t.Fatalf("deletion happened before restarted grace period: %#v", event)
 	default:
 	}
-	ticks <- time.Unix(6, 0)
+	advanceThemeWatch(t, ticks, processed, time.Unix(6, 0))
 	select {
 	case event := <-events:
 		if !event.deleted {

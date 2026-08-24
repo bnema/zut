@@ -32,8 +32,8 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Content) == 0 {
-		t.Fatal("spawn returned no result")
+	if got := toolResultText(t, result); !strings.Contains(got, "owns the delegated scope") || !strings.Contains(got, "Do not repeat that work in the parent") {
+		t.Fatalf("spawn result lacks ownership guidance: %q", got)
 	}
 	if got := <-runs; got != "initial" {
 		t.Fatalf("initial prompt = %q", got)
@@ -52,6 +52,29 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	}
 	if got := <-runs; got != "follow up" {
 		t.Fatalf("follow-up prompt = %q", got)
+	}
+}
+
+func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
+	spawn := &SubagentSpawnTool{}
+	for _, want := range []string{"independent sidecar", "keep immediate blockers local", "never duplicate it in the parent", "end or yield the parent turn"} {
+		if got := spawn.Description(); !strings.Contains(got, want) {
+			t.Fatalf("description missing %q: %s", want, got)
+		}
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(spawn.Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	task := schema.Properties["task"].Description
+	for _, want := range []string{"concrete, bounded scope", "explicit ownership", "does not overlap", "Shared isolation uses this working directory", "worktree isolation captures a patch without merging it"} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("task schema missing %q: %s", want, task)
+		}
 	}
 }
 

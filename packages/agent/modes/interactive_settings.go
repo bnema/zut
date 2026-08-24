@@ -277,8 +277,8 @@ func (i *Interactive) openSettingsDialog() {
 		},
 		{
 			key:      "auto_subagents_enabled",
-			label:    "Subagent Orchestrator",
-			desc:     "automatically delegate coding work to sub-agents; tools stay available when disabled",
+			label:    "proactive delegation",
+			desc:     "delegate independent sidecar work while keeping the critical path local",
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,

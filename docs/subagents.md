@@ -94,6 +94,29 @@ settings, including `tui_subagent_position`, are ignored.
 Failed, cancelled, and interrupted required work remains unresolved until an
 explicit successful follow-up. A host restart never retries it automatically.
 
+## Delegation ownership
+
+Interactive proactive delegation keeps the primary agent on the critical path.
+Before spawning, it selects useful local work and delegates only a concrete,
+bounded sidecar with a non-overlapping question, responsibility, package, or
+file set. Immediate blockers and tightly coupled work stay local. While a child
+is active, it owns that scope; the primary continues only its preselected
+independent work instead of repeating the investigation, review, testing, or
+implementation. If an explicit user request or active workflow hands blocking
+work to a child, the primary yields for the completion update. Once a worktree
+child succeeds, the primary may apply and verify its captured patch without
+redoing the delegated task.
+
+Explicit headless `--orchestrate` remains manager-only. Its primary divides the
+request into disjoint worker scopes, coordinates active children, and yields
+rather than implementing or reproducing delegated work. Children do not inherit
+the parent's strict orchestrator role. Headless orchestration waits for every
+accepted child before continuing its completion wave; `required: true`
+additionally creates a durable obligation. When proactive
+interactive delegation cannot spawn because of launch-time policy, the primary
+continues locally; a strict headless orchestrator instead reports the missing
+required capability.
+
 ## Tools and slash commands
 
 The model-facing tools retain their logical names:

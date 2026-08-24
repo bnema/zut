@@ -809,8 +809,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	primaryInteractive := interactiveMode
-	primaryOrchestrator := args.Orchestrate
+	primaryInteractive := interactiveMode && !args.ResidentChild
+	primaryOrchestrator := args.Orchestrate && !args.ResidentChild
 	if (primaryInteractive || primaryOrchestrator) && autoSubagentsToolAllowed(args) {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
@@ -820,14 +820,14 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	if primaryOrchestrator {
 		// Headless orchestration owns its strict prompt contract rather than
-		// inheriting the interactive setting.
-		append_ = append(append_, AutoSubagentsSystemAddendumFor(
+		// inheriting the interactive collaboration setting.
+		append_ = append(append_, StrictOrchestratorSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),
 		))
 	} else if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		append_ = append(append_, AutoSubagentsSystemAddendumFor(
+		append_ = append(append_, ProactiveSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),

@@ -51,12 +51,12 @@ func watchThemeSource(ctx context.Context, home, preference string, accepted *tu
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	watchThemeSourceTicks(ctx, home, preference, accepted, ticker.C, events)
+	watchThemeSourceTicks(ctx, home, preference, accepted, ticker.C, events, nil)
 }
 
 // watchThemeSourceTicks is the test seam for polling: tests advance explicit
-// timestamps rather than synchronizing with sleeps.
-func watchThemeSourceTicks(ctx context.Context, home, preference string, accepted *tui.ThemeSource, ticks <-chan time.Time, events chan<- themeWatchEvent) {
+// timestamps and may receive a processed acknowledgement instead of sleeping.
+func watchThemeSourceTicks(ctx context.Context, home, preference string, accepted *tui.ThemeSource, ticks <-chan time.Time, events chan<- themeWatchEvent, processed chan<- struct{}) {
 	if accepted == nil || accepted.Path == "" {
 		return
 	}
@@ -68,34 +68,46 @@ func watchThemeSourceTicks(ctx context.Context, home, preference string, accepte
 		case <-ctx.Done():
 			return
 		case now := <-ticks:
+			stop := false
 			if _, statErr := os.Stat(accepted.Path); errors.Is(statErr, os.ErrNotExist) {
 				if missingSince.IsZero() {
 					missingSince = now
 				}
 				if now.Sub(missingSince) >= themeMissingGrace {
 					sendThemeWatchEvent(ctx, events, themeWatchEvent{path: accepted.Path, deleted: true})
-					return
+					stop = true
 				}
-				continue
-			}
-			// A present-but-invalid revision remains watchable and must restart
-			// the deletion grace period just like a valid replacement does.
-			missingSince = time.Time{}
-			source, err := tui.LoadThemeSource(home, preference)
-			if err == nil && source != nil {
-				lastError = ""
-				if source.Path != accepted.Path || source.Digest == lastDigest {
-					continue
+			} else {
+				// A present-but-invalid revision remains watchable and must restart
+				// the deletion grace period just like a valid replacement does.
+				missingSince = time.Time{}
+				source, err := tui.LoadThemeSource(home, preference)
+				if err == nil && source != nil {
+					lastError = ""
+					if source.Path == accepted.Path && source.Digest != lastDigest {
+						lastDigest = source.Digest
+						sendThemeWatchEvent(ctx, events, themeWatchEvent{path: accepted.Path, source: source})
+					}
+				} else if err != nil && err.Error() != lastError {
+					lastError = err.Error()
+					sendThemeWatchEvent(ctx, events, themeWatchEvent{path: accepted.Path, err: err})
 				}
-				lastDigest = source.Digest
-				sendThemeWatchEvent(ctx, events, themeWatchEvent{path: accepted.Path, source: source})
-				continue
 			}
-			if err != nil && err.Error() != lastError {
-				lastError = err.Error()
-				sendThemeWatchEvent(ctx, events, themeWatchEvent{path: accepted.Path, err: err})
+			acknowledgeThemeWatchTick(ctx, processed)
+			if stop {
+				return
 			}
 		}
+	}
+}
+
+func acknowledgeThemeWatchTick(ctx context.Context, processed chan<- struct{}) {
+	if processed == nil {
+		return
+	}
+	select {
+	case processed <- struct{}{}:
+	case <-ctx.Done():
 	}
 }
 

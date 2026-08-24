@@ -16,8 +16,10 @@ import (
 )
 
 // SubagentSpawnTool lets the main agent delegate work through the resident
-// manager. Every spawn returns immediately and runs in the background. Required work records a durable obligation that must be
-// resolved before the parent can produce its terminal response.
+// manager. A spawn without wait returns after acceptance; an explicit bounded
+// wait may return the initial completion or expire while the child stays active.
+// Required work records a durable obligation that must be resolved before the
+// parent can produce its terminal response.
 //
 // Available when the host's launch-time tool policy permits delegation. The
 // primary-agent prompt decides whether delegation is proactive or only on an
@@ -82,7 +84,7 @@ const subagentSpawnSchemaTemplate = `{
   "properties": {
     "task": {
       "type": "string",
-      "description": "The full task description for the sub-agent. Be specific: the child normally has the main agent's built-in tools, including lsp when enabled, but a selected profile can restrict its tools; it shares this working directory and starts with NO context from this conversation."
+      "description": "The full task description for the sub-agent. Assign a concrete, bounded scope and explicit ownership that does not overlap other active work. Be specific: the child normally has the main agent's built-in tools, including lsp when enabled, but a selected profile can restrict its tools; it starts with NO context from this conversation. Shared isolation uses this working directory; worktree isolation captures a patch without merging it."
     },
     "agent": {
       "type": "string",
@@ -107,7 +109,7 @@ const subagentSpawnSchemaTemplate = `{
     },
     "required": {
       "type": "boolean",
-      "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. Failed, timed-out, or canceled work remains unmet until a successful retry or explicit user removal. An outcome unobserved across host restart requires explicit user reconciliation."
+      "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. A bounded wait expiring does not terminate the accepted child and must not be retried while it remains active. Terminal failure or cancellation remains unmet until a successful follow-up. An outcome unobserved across host restart requires explicit user reconciliation."
     },
     "wait": {
       "type": "integer",
@@ -126,7 +128,7 @@ const subagentSpawnSchemaTemplate = `{
 
 func (t *SubagentSpawnTool) Name() string { return SubagentSpawnToolName }
 func (t *SubagentSpawnTool) Description() string {
-	return "Delegate work to a resident sub-agent. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait. Work on unrelated independent tasks or end/yield your turn."
+	return "Delegate a concrete, bounded scope to a resident sub-agent. For proactive delegation, use an independent sidecar only when the parent has useful non-overlapping work; keep immediate blockers local. A worker owns its scope until completion, so never duplicate it in the parent. If delegation owns the blocking task, end or yield the parent turn. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentSpawnSchemaTemplate)
@@ -292,7 +294,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	if a.Wait != nil {
 		if waitTimedOut {
 			fmt.Fprintf(&sb, "wait: timed out after %d seconds\n", *a.Wait)
-			sb.WriteString("\nThe accepted sub-agent remains active in the background. Completion is host-event-driven through [auto-subagents update].")
+			sb.WriteString("\nThe accepted sub-agent remains active in the background. It owns the delegated scope: do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].")
 		} else if completion.Err != nil {
 			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
 			if completion.Summary != "" {
@@ -304,7 +306,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			}
 		}
 	} else {
-		sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven through [auto-subagents update].")
+		sb.WriteString("\nThe sub-agent is running in the background and owns the delegated scope. Do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].")
 	}
 	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: sb.String()}}}, nil
 }
