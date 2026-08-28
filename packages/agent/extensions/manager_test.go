@@ -103,6 +103,38 @@ func (s *stubHooks) ClearExtensionChrome(name string) {
 	s.chromeClears = append(s.chromeClears, name)
 }
 
+func TestDiscoverIgnoresDirectoriesWithoutManifest(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+
+	orphanedDataDir := filepath.Join(cwd, ".zut", "extensions", "example", "projects")
+	if err := os.MkdirAll(orphanedDataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanedDataDir, "state.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	globalExtDir := filepath.Join(home, "extensions", "example")
+	if err := os.MkdirAll(globalExtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalExtDir, "extension.json"), []byte(`{"name":"example"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalExtDir, "theme.json"), []byte(`{"name":"Example"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(home, cwd, "0.0.0-test", "", "", nil)
+	if errs := mgr.Discover(context.Background()); len(errs) > 0 {
+		t.Fatalf("discover errors = %v, want none", errs)
+	}
+	if _, ok := mgr.ext["example"]; !ok {
+		t.Fatal("global extension was shadowed by a project directory without a manifest")
+	}
+}
+
 // writeMockExtension creates a minimal extension on disk that uses a
 // shell script (or batch file on windows) to drive the protocol. The
 // script reads commands from stdin and emits hard-coded responses,
