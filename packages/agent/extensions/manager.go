@@ -289,11 +289,15 @@ func (m *Manager) Discover(ctx context.Context) []error {
 			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
+			extDir := filepath.Join(dir, e.Name())
+			if _, err := os.Stat(filepath.Join(extDir, "extension.json")); errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			if seenDirs[e.Name()] {
 				continue // higher-priority location already queued
 			}
 			seenDirs[e.Name()] = true
-			jobs = append(jobs, loadJob{dir: filepath.Join(dir, e.Name())})
+			jobs = append(jobs, loadJob{dir: extDir})
 		}
 	}
 
