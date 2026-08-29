@@ -1,7 +1,6 @@
 package modes
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -86,32 +85,10 @@ func TestPersistentExtensionStatusRowsAreBounded(t *testing.T) {
 	}
 }
 
-func TestNarrowRightBarFallbackCapsCombinedExtensionChrome(t *testing.T) {
-	i := newNotesTestInteractive()
-	for n := 0; n < 3; n++ {
-		lines := make([]string, 4)
-		for row := range lines {
-			lines[row] = fmt.Sprintf("extension-%d-line-%d", n, row)
-		}
-		i.SetWidget(fmt.Sprintf("extension-%d", n), "plan", "right_bar", "Plan", lines)
-	}
-	i.SetStatus("status-extension", "progress", "info", "still visible")
-
-	i.mu.Lock()
-	got := i.extensionChromeLinesForLayoutLocked(72, false, true)
-	i.mu.Unlock()
-	if len(got) != maxNarrowExtensionChromeRows {
-		t.Fatalf("narrow fallback rows = %d, want %d: %v", len(got), maxNarrowExtensionChromeRows, got)
-	}
-	if !strings.Contains(strings.Join(got, "\n"), "extension chrome truncated") {
-		t.Fatalf("narrow fallback omitted truncation marker: %v", got)
-	}
-}
-
 func TestPersistentExtensionStatusAndWidget(t *testing.T) {
 	i := newNotesTestInteractive()
-	i.SetStatus("tasked-phases", "progress", "success", "2/4 tasks checked")
-	i.SetWidget("tasked-phases", "plan", "above_input", "Tasked phases", []string{"Current phase: parse", "[ ] read files"})
+	i.SetStatus("sample", "progress", "success", "2/4 tasks checked")
+	i.SetWidget("sample", "plan", "above_input", "Plan", []string{"Current phase: parse", "[ ] read files"})
 
 	i.mu.Lock()
 	lines := i.extensionChromeLinesLocked(80)
@@ -119,55 +96,29 @@ func TestPersistentExtensionStatusAndWidget(t *testing.T) {
 	widgetKey := i.extensionWidgetsKeyLocked()
 	i.mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "2/4 tasks checked") || !strings.Contains(joined, "Tasked phases") || !strings.Contains(joined, "[ ] read files") {
+	if !strings.Contains(joined, "2/4 tasks checked") || !strings.Contains(joined, "Plan") || !strings.Contains(joined, "[ ] read files") {
 		t.Fatalf("persistent extension chrome = %q", joined)
 	}
-	if !strings.Contains(statusKey, "tasked-phases/progress/success/2/4 tasks checked") {
+	if !strings.Contains(statusKey, "sample/progress/success/2/4 tasks checked") {
 		t.Fatalf("status cache key = %q", statusKey)
 	}
-	if !strings.Contains(widgetKey, "tasked-phases/plan/above_input/Tasked phases") {
+	if !strings.Contains(widgetKey, "sample/plan/above_input/Plan") {
 		t.Fatalf("widget cache key = %q", widgetKey)
 	}
 
-	i.SetStatus("tasked-phases", "progress", "", "")
-	i.ClearWidget("tasked-phases", "plan")
+	i.SetStatus("sample", "progress", "", "")
+	i.ClearWidget("sample", "plan")
 	if len(i.extStatuses) != 0 || len(i.extWidgets) != 0 {
 		t.Fatalf("persistent extension chrome was not cleared: statuses=%v widgets=%v", i.extStatuses, i.extWidgets)
-	}
-}
-
-func TestRightBarWidgetsAreDeterministicAndFallbackAboveInput(t *testing.T) {
-	i := newNotesTestInteractive()
-	i.SetWidget("zeta", "plan", "right_bar", "Zeta", []string{"zeta line"})
-	i.SetWidget("alpha", "second", "right_bar", "Second", []string{"second line"})
-	i.SetWidget("alpha", "first", "right_bar", "First", []string{"first line"})
-	i.SetWidget("legacy", "plan", "above_input", "Legacy", []string{"legacy line"})
-
-	i.mu.Lock()
-	widgets := i.rightBarWidgetsLocked()
-	wideAbove := i.extensionChromeLinesAtLocked(80, true)
-	narrowFallback := i.extensionChromeLinesAtLocked(72, false)
-	i.mu.Unlock()
-
-	if len(widgets) != 3 || widgets[0].Extension != "alpha" || widgets[0].ID != "first" || widgets[1].ID != "second" || widgets[2].Extension != "zeta" {
-		t.Fatalf("right-bar ordering = %+v", widgets)
-	}
-	wideText := strings.Join(wideAbove, "\n")
-	if strings.Contains(wideText, "Zeta") || strings.Contains(wideText, "Second") || strings.Contains(wideText, "First") {
-		t.Fatalf("right-bar widgets leaked into wide above-input chrome: %q", wideText)
-	}
-	fallbackText := strings.Join(narrowFallback, "\n")
-	if !strings.Contains(fallbackText, "Zeta") || !strings.Contains(fallbackText, "First") || !strings.Contains(fallbackText, "Legacy") {
-		t.Fatalf("narrow fallback omitted widgets: %q", fallbackText)
 	}
 }
 
 func TestClearExtensionChromeRemovesOnlyTheExitedExtension(t *testing.T) {
 	i := newNotesTestInteractive()
 	i.SetStatus("gone", "progress", "success", "done")
-	i.SetWidget("gone", "plan", "right_bar", "Gone", []string{"old"})
+	i.SetWidget("gone", "plan", "above_input", "Gone", []string{"old"})
 	i.SetStatus("keep", "progress", "info", "still here")
-	i.SetWidget("keep", "plan", "right_bar", "Keep", []string{"new"})
+	i.SetWidget("keep", "plan", "above_input", "Keep", []string{"new"})
 	i.extNotes = []string{"[gone] old note", "[keep] keep note"}
 
 	i.ClearExtensionChrome("gone")
@@ -189,46 +140,15 @@ func TestClearExtensionChromeRemovesOnlyTheExitedExtension(t *testing.T) {
 	}
 }
 
-func TestInteractiveRedrawPlacesWideRightBarBesideMainPane(t *testing.T) {
+func TestInteractiveRedrawPlacesWidgetAboveInput(t *testing.T) {
 	term := &alertTestTerminal{}
 	i := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
 	i.rend.Resize(80, 24)
-	i.SetWidget("tasked-phases", "plan", "right_bar", "Plan", []string{"[ ] read files"})
+	i.SetWidget("sample", "plan", "above_input", "Plan", []string{"[ ] read files"})
 	i.redraw()
 
 	out := stripANSIBytes(term.String())
 	if !strings.Contains(out, "Plan") || !strings.Contains(out, "[ ] read files") {
-		t.Fatalf("wide redraw omitted right-bar content: %q", out)
-	}
-	if !strings.Contains(out, "│") {
-		t.Fatal("wide redraw omitted the main-pane divider")
-	}
-}
-
-func TestCtrlBTogglesRightBarAndFallsBackAboveInput(t *testing.T) {
-	term := &alertTestTerminal{}
-	i := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
-	i.SetWidget("tasked-phases", "plan", "right_bar", "Plan", []string{"[ ] read files"})
-
-	if i.rightBarHidden {
-		t.Fatal("right bar starts hidden")
-	}
-	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlB}); done {
-		t.Fatal("ctrl+b unexpectedly exited interactive mode")
-	}
-	if !i.rightBarHidden {
-		t.Fatal("ctrl+b did not hide the right bar")
-	}
-
-	i.mu.Lock()
-	fallback := strings.Join(i.extensionChromeLinesForLayoutLocked(80, false, true), "\n")
-	i.mu.Unlock()
-	if !strings.Contains(fallback, "Plan") {
-		t.Fatalf("hidden right-bar widget did not fall back above input: %q", fallback)
-	}
-
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlB})
-	if i.rightBarHidden {
-		t.Fatal("second ctrl+b did not show the right bar")
+		t.Fatalf("redraw omitted above-input widget: %q", out)
 	}
 }

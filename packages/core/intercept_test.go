@@ -21,6 +21,10 @@ type resultTool struct {
 	panic  bool
 }
 
+type immutableResultTool struct{ resultTool }
+
+func (*immutableResultTool) AllowArgumentRewrite() bool { return false }
+
 func (t *resultTool) Name() string            { return "result" }
 func (t *resultTool) Description() string     { return "result" }
 func (t *resultTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -80,6 +84,37 @@ func TestToolResultPersistenceFailureBecomesToolError(t *testing.T) {
 	}
 }
 
+func TestExecuteToolsEmitsPlanUpdateBeforeResult(t *testing.T) {
+	update := PlanUpdate{Plan: []PlanStep{{Step: "Implement", Status: PlanInProgress}}}
+	agent := NewAgent(nil, "test", "", Registry{
+		"result": &resultTool{result: ToolResult{
+			Content: []provider.Content{provider.TextBlock{Text: "Plan updated"}},
+			Details: update,
+		}},
+	})
+	message := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{
+		provider.ToolCallBlock{ID: "call-1", Name: "result", Arguments: json.RawMessage(`{}`)},
+	}}
+	var events []AgentEvent
+	agent.executeTools(context.Background(), message, func(event AgentEvent) {
+		switch event.(type) {
+		case EvPlanUpdate, EvToolResult:
+			events = append(events, event)
+		}
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want plan update and tool result", events)
+	}
+	planEvent, ok := events[0].(EvPlanUpdate)
+	if !ok || len(planEvent.Update.Plan) != 1 || planEvent.Update.Plan[0].Step != "Implement" {
+		t.Fatalf("first event = %#v, want plan update", events[0])
+	}
+	if _, ok := events[1].(EvToolResult); !ok {
+		t.Fatalf("second event = %T, want EvToolResult", events[1])
+	}
+}
+
 func TestToolResultCommitErrorUsesSafeMessage(t *testing.T) {
 	agent := NewAgent(nil, "test", "", Registry{
 		"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "done"}}}},
@@ -98,9 +133,26 @@ func TestToolResultCommitErrorUsesSafeMessage(t *testing.T) {
 	}
 }
 
-// TestBeforeToolExecuteModifiesArgs verifies that a non-nil
-// modifiedArgs returned from BeforeToolExecute is what the tool
-// actually sees.
+func TestBeforeToolExecuteRejectsRewriteForImmutableTool(t *testing.T) {
+	tool := &immutableResultTool{}
+	agent := NewAgent(nil, "test", "", Registry{"result": tool})
+	agent.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		return true, "", json.RawMessage(`{"rewritten":true}`)
+	}
+
+	result := agent.runOneTool(context.Background(), provider.ToolCallBlock{
+		ID: "T1", Name: "result", Arguments: json.RawMessage(`{"original":true}`),
+	}, agent.ToolsSnapshot(), func(AgentEvent) {})
+	if !result.IsError {
+		t.Fatalf("result = %#v, want rewrite error", result)
+	}
+	if got := result.Content[0].(provider.TextBlock).Text; got != "tool arguments cannot be rewritten" {
+		t.Fatalf("rewrite error = %q", got)
+	}
+}
+
+// TestBeforeToolExecuteModifiesArgs verifies that a non-nil modifiedArgs
+// returned from BeforeToolExecute is what the tool actually sees.
 func TestBeforeToolExecuteModifiesArgs(t *testing.T) {
 	rec := &recordingTool{}
 	reg := Registry{"echo": rec}

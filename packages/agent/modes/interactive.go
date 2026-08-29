@@ -702,7 +702,6 @@ type Interactive struct {
 	reloadStatusSeq   uint64
 	extStatuses       map[string]map[string]extensionStatus
 	extWidgets        map[string]map[string]extensionWidget
-	rightBarHidden    bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
 	liveBlock         []string // live streaming/tool progress rendered outside scrollback
 	helpBlock         []string // rendered above the chat when /help was typed
 	sessionInfoBlocks []sessionInfoBlock
@@ -1615,10 +1614,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 const maxExtensionWidgetRows = 12
 const maxExtensionStatusRows = 6
-
-// maxNarrowExtensionChromeRows bounds right-bar widgets when they fall back
-// above the input, leaving one row for the truncation marker.
-const maxNarrowExtensionChromeRows = 6
 
 // sessionsRoot returns the session namespace for this run.
 

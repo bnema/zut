@@ -17,10 +17,7 @@
 // correlate; events and notifications never carry an ID.
 package extproto
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "encoding/json"
 
 // ProtocolVersion is the extension protocol major. Version 2 introduces the
 // zut_version wire key and requires both sides to reject mismatched majors.
@@ -144,25 +141,18 @@ type StatusFromExt struct {
 
 const (
 	WidgetPositionAboveInput = "above_input"
-	WidgetPositionRightBar   = "right_bar"
+	// WidgetPositionRightBar is retained for source compatibility. The right
+	// sidebar no longer exists, so this placement resolves above the input.
+	WidgetPositionRightBar = WidgetPositionAboveInput
 )
 
-// NormalizeWidgetPosition returns the host's canonical widget placement.
-// Empty and unknown values intentionally retain the historical above-input
-// behavior so older extensions and future placement hints remain compatible.
-func NormalizeWidgetPosition(position string) string {
-	switch strings.ToLower(strings.TrimSpace(position)) {
-	case WidgetPositionRightBar:
-		return WidgetPositionRightBar
-	default:
-		return WidgetPositionAboveInput
-	}
-}
+// NormalizeWidgetPosition keeps extension widgets in the single supported
+// above-input placement. Unknown and removed placement hints remain compatible.
+func NormalizeWidgetPosition(string) string { return WidgetPositionAboveInput }
 
 // WidgetFromExt sets or replaces one persistent widget owned by an
 // extension. Position is a host-defined placement hint. Interactive hosts
-// support "above_input" and "right_bar"; empty and unknown values retain
-// the historical "above_input" behavior.
+// render widgets above the input; empty and unknown values use that placement.
 type WidgetFromExt struct {
 	Type     string   `json:"type"`
 	ID       string   `json:"id"`

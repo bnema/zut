@@ -32,6 +32,12 @@ type ToolPreviewer interface {
 	Preview(ctx context.Context, args json.RawMessage) (ToolResult, error)
 }
 
+// ToolArgumentRewritePolicy optionally prevents extension guards from
+// replacing a tool call's arguments before execution.
+type ToolArgumentRewritePolicy interface {
+	AllowArgumentRewrite() bool
+}
+
 // ToolResult is the outcome of Tool.Execute.
 type ToolResult struct {
 	// Content is sent back to the LLM (text and/or images).

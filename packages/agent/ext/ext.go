@@ -422,9 +422,10 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 //
 // Conflicts with active built-in tool names (read, write, edit, bash,
 // create_worktree, grep, lsp, web_search, web_open, web_find, web_click,
-// schedule, update_goal, and skill) are silently shadowed by the built-in.
-// Every native public-web name, plus grep, schedule, and update_goal, is
-// reserved even when unavailable, so an extension cannot claim or replace it.
+// schedule, update_goal, update_plan, and skill) are silently shadowed by the
+// built-in. Every native public-web name, plus grep, schedule, update_goal, and
+// update_plan, is reserved even when unavailable, so an extension cannot claim
+// or replace it.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
 	e.registerTool(name, description, schema, false, fn)
 }
@@ -527,13 +528,14 @@ const (
 	// WidgetPositionAboveInput keeps a widget in the persistent chrome above
 	// the editor. It is the default for empty and unknown positions.
 	WidgetPositionAboveInput = extproto.WidgetPositionAboveInput
-	// WidgetPositionRightBar keeps a widget in the host-owned side rail when
-	// the terminal is wide enough; narrow terminals fall back above the input.
+	// WidgetPositionRightBar is retained for source compatibility. Widgets use
+	// the above-input placement because the right sidebar no longer exists.
+	// Deprecated: use WidgetPositionAboveInput.
 	WidgetPositionRightBar = extproto.WidgetPositionRightBar
 )
 
 // SetWidget replaces one persistent widget owned by this extension. Use
-// WidgetPositionAboveInput or WidgetPositionRightBar for the position.
+// WidgetPositionAboveInput for the position.
 func (e *Extension) SetWidget(id, position, title string, lines []string) {
 	_ = e.send(extproto.WidgetFromExt{Type: "widget", ID: id, Position: position, Title: title, Lines: lines})
 }

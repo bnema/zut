@@ -131,7 +131,6 @@ are omitted from the model's startup context.
 See `examples/skills/` for starter skills:
 
 - `code-review/` — self-review pass on a recent diff
-- `tasked-phases/` — spec-to-phase checklist workflow for the `tasked-phases` extension and its `tasked_phases` tool
 - `test-fix/` — diagnose + minimally fix a failing test
 
 ## Comparison to other discovery layouts

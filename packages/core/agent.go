@@ -1301,6 +1301,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if a.OnToolResult != nil {
 			a.OnToolResult(tc.ID, res)
 		}
+		if update, ok := res.Details.(PlanUpdate); ok && !res.IsError {
+			sink(EvPlanUpdate{Update: update})
+		}
 		sink(EvToolResult{ID: tc.ID, Result: res})
 	}
 
@@ -1356,6 +1359,12 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 			}
 		}
 		if len(modified) > 0 && json.Valid(modified) {
+			if policy, ok := tool.(ToolArgumentRewritePolicy); ok && !policy.AllowArgumentRewrite() {
+				return ToolResult{
+					Content: []provider.Content{provider.TextBlock{Text: "tool arguments cannot be rewritten"}},
+					IsError: true,
+				}
+			}
 			args = modified
 		}
 	}

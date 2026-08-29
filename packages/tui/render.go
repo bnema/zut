@@ -46,24 +46,15 @@ type Renderer struct {
 	logLines  []string
 	// Raw logical rows let DrawLog reject an unchanged frame before
 	// truncating and repainting every transcript row.
-	logRawChat        []string
-	logRawBottom      []string
-	logRawCols        int
-	logRawRows        int
-	logRawContentCols int
-	logRawBackground  string
-	logRawHasThemeBG  bool
-	logViewportTop    int
-	logHardwareRow    int
-	logInit           bool
-
-	// The right bar is a viewport overlay on top of the main-screen flow
-	// renderer. Keeping its cache separate prevents persistent chrome from
-	// replacing the transcript's logical buffer and native scrollback.
-	rightBarActive   bool
-	rightBarLines    []string
-	rightBarMainCols int
-	rightBarDimmed   bool
+	logRawChat       []string
+	logRawBottom     []string
+	logRawCols       int
+	logRawRows       int
+	logRawBackground string
+	logRawHasThemeBG bool
+	logViewportTop   int
+	logHardwareRow   int
+	logInit          bool
 
 	// keepScrollback is true when we must NOT emit \x1b[3J
 	// (erase-in-display 3, "clear scrollback").
@@ -142,9 +133,6 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.logViewportTop = 0
 		r.logHardwareRow = 0
 		r.logInit = false
-		r.rightBarActive = false
-		r.rightBarLines = nil
-		r.rightBarMainCols = 0
 		if r.out != nil {
 			if r.keepScrollback {
 				// A resize is a discrete user action, like Ctrl+L: the
@@ -181,9 +169,6 @@ func (r *Renderer) Clear() {
 	r.logViewportTop = 0
 	r.logHardwareRow = 0
 	r.logInit = false
-	r.rightBarActive = false
-	r.rightBarLines = nil
-	r.rightBarMainCols = 0
 	if r.keepScrollback {
 		// On VS Code's xterm.js the transcript is taller than the
 		// viewport, so an in-place clear (home + erase-to-end) only
@@ -599,34 +584,27 @@ func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int
 //
 // cursorBottomRow/cursorCol are offsets into bottom, not the full frame.
 func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int) {
-	if r.rightBarActive {
-		r.clearRightBarOverlay()
-	}
-	r.drawLog(chat, bottom, cursorBottomRow, cursorCol, r.cols)
+	r.drawLog(chat, bottom, cursorBottomRow, cursorCol)
 }
 
-// drawLog is DrawLog's owning flow implementation. contentCols may reserve
-// terminal columns for a separately composited viewport overlay.
-func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, contentCols int) bool {
+// drawLog is DrawLog's owning flow implementation.
+func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int) bool {
 	if r.cols == 0 || r.rows == 0 {
 		return false
-	}
-	if contentCols <= 0 || contentCols > r.cols {
-		contentCols = r.cols
 	}
 	if len(bottom) == 0 {
 		bottom = []string{""}
 	}
-	if r.logRawFrameUnchanged(chat, bottom, cursorBottomRow, cursorCol, contentCols) {
+	if r.logRawFrameUnchanged(chat, bottom, cursorBottomRow, cursorCol) {
 		return false
 	}
 	chatFrame := make([]string, len(chat))
 	for i, line := range chat {
-		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, contentCols), contentCols, r.backgroundStyle)
+		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
 	}
 	bottomFrame := make([]string, len(bottom))
 	for i, line := range bottom {
-		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, contentCols), contentCols, r.backgroundStyle)
+		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
 	}
 
 	// Always reserve one real row below the editor/status band. This is
@@ -638,7 +616,7 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 	lines = append(lines, chatFrame...)
 	lines = append(lines, bottomFrame...)
 	for range bottomMarginRows {
-		lines = append(lines, paintBackgroundRow("", contentCols, r.backgroundStyle))
+		lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
 	}
 	// In main-screen flow mode zut normally emits only its logical
 	// content rows and leaves the rest of the terminal viewport alone.
@@ -648,7 +626,7 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 	// default transparent case.
 	if r.theme.Background != nil {
 		for len(lines) < r.rows {
-			lines = append(lines, paintBackgroundRow("", contentCols, r.backgroundStyle))
+			lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
 		}
 	}
 	if len(lines) == 0 {
@@ -670,8 +648,7 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 	// that never blinks, because we keep "showing" it before the
 	// terminal can blink it off. Bailing out here lets the OS run
 	// its blink cycle.
-	if r.logInit && r.logRawContentCols == contentCols &&
-		cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol && sameLines(lines, r.logLines) {
+	if r.logInit && cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol && sameLines(lines, r.logLines) {
 		return false
 	}
 
@@ -770,8 +747,8 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 		if physicalCursorCol < 0 {
 			physicalCursorCol = 0
 		}
-		if physicalCursorCol >= contentCols {
-			physicalCursorCol = contentCols - 1
+		if physicalCursorCol >= r.cols {
+			physicalCursorCol = r.cols - 1
 		}
 		if physicalCursorCol > 0 {
 			w.WriteString("\x1b[" + itoa(physicalCursorCol) + "C")
@@ -1052,7 +1029,6 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 	r.logRawBottom = append(r.logRawBottom[:0], bottom...)
 	r.logRawCols = r.cols
 	r.logRawRows = r.rows
-	r.logRawContentCols = contentCols
 	r.logRawBackground = r.backgroundStyle
 	r.logRawHasThemeBG = r.theme.Background != nil
 	r.cursorRow = cursorBottomRow
@@ -1060,14 +1036,14 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, co
 	return true
 }
 
-func (r *Renderer) logRawFrameUnchanged(chat, bottom []string, cursorBottomRow, cursorCol, contentCols int) bool {
+func (r *Renderer) logRawFrameUnchanged(chat, bottom []string, cursorBottomRow, cursorCol int) bool {
 	return cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol &&
-		r.logRawContentUnchanged(chat, bottom, contentCols)
+		r.logRawContentUnchanged(chat, bottom)
 }
 
-func (r *Renderer) logRawContentUnchanged(chat, bottom []string, contentCols int) bool {
+func (r *Renderer) logRawContentUnchanged(chat, bottom []string) bool {
 	return r.logInit && len(r.logLines) > 0 &&
-		r.logRawCols == r.cols && r.logRawRows == r.rows && r.logRawContentCols == contentCols &&
+		r.logRawCols == r.cols && r.logRawRows == r.rows &&
 		r.logRawBackground == r.backgroundStyle && r.logRawHasThemeBG == (r.theme.Background != nil) &&
 		sameLines(chat, r.logRawChat) && sameLines(bottom, r.logRawBottom)
 }

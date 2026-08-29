@@ -42,6 +42,10 @@ type Event struct {
 	IsError bool           `json:"is_error,omitempty"`
 	Result  []ContentBlock `json:"content,omitempty"`
 
+	// plan_update
+	Explanation *string     `json:"explanation,omitempty"`
+	Plan        *[]PlanStep `json:"plan,omitempty"`
+
 	// usage
 	Usage      *Usage `json:"usage,omitempty"`
 	Cumulative *Usage `json:"cumulative,omitempty"`
@@ -57,6 +61,12 @@ type Event struct {
 
 	// error
 	Error string `json:"error,omitempty"`
+}
+
+// PlanStep is one model-maintained task in a plan update.
+type PlanStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
 }
 
 // Message is one transcript entry — a user prompt, assistant reply,
@@ -189,6 +199,13 @@ func toEvent(ev core.AgentEvent) Event {
 	case core.EvToolProgress:
 		out.ID = e.ID
 		out.Text = e.Text
+	case core.EvPlanUpdate:
+		out.Explanation = e.Update.Explanation
+		plan := make([]PlanStep, len(e.Update.Plan))
+		for idx, step := range e.Update.Plan {
+			plan[idx] = PlanStep{Step: step.Step, Status: string(step.Status)}
+		}
+		out.Plan = &plan
 	case core.EvToolResult:
 		out.ID = e.ID
 		out.IsError = e.Result.IsError

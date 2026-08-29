@@ -35,6 +35,32 @@ func TestToEventPreservesCacheDiagnostics(t *testing.T) {
 	}
 }
 
+func TestToEventPreservesPlanUpdate(t *testing.T) {
+	explanation := "Discovery complete"
+	event := toEvent(core.EvPlanUpdate{Update: core.PlanUpdate{
+		Explanation: &explanation,
+		Plan: []core.PlanStep{
+			{Step: "Implement", Status: core.PlanInProgress},
+			{Step: "Verify", Status: core.PlanPending},
+		},
+	}})
+	if event.Type != "plan_update" || event.Explanation == nil || *event.Explanation != explanation {
+		t.Fatalf("plan event = %#v", event)
+	}
+	if event.Plan == nil || len(*event.Plan) != 2 || (*event.Plan)[0].Status != "in_progress" {
+		t.Fatalf("plan payload = %#v", event.Plan)
+	}
+
+	empty := toEvent(core.EvPlanUpdate{Update: core.PlanUpdate{Plan: []core.PlanStep{}}})
+	encoded, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"plan":[]`) {
+		t.Fatalf("empty plan JSON = %s, want explicit empty list", encoded)
+	}
+}
+
 func TestToEventPreservesActivityAndToolStreamFacts(t *testing.T) {
 	retry := toEvent(core.EvRetryScheduled{
 		Scope: core.RetryScopeProvider, Attempt: 2, MaxAttempts: 3, Delay: 250 * time.Millisecond,

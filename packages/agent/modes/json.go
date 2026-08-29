@@ -109,6 +109,13 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvToolProgress:
 		m["id"] = e.ID
 		m["text"] = e.Text
+	case core.EvPlanUpdate:
+		if e.Update.Explanation != nil {
+			m["explanation"] = *e.Update.Explanation
+		} else {
+			m["explanation"] = nil
+		}
+		m["plan"] = e.Update.Plan
 	case core.EvToolResult:
 		m["id"] = e.ID
 		m["is_error"] = e.Result.IsError

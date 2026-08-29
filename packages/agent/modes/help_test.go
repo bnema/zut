@@ -9,9 +9,6 @@ import (
 
 func TestHelpShowsLlamaOnlyWhenConfigured(t *testing.T) {
 	without := strings.Join(renderHelpBlock(tui.Theme{}, 80, false), "\n")
-	if !strings.Contains(without, "ctrl+b") {
-		t.Fatalf("help omitted the right-sidebar shortcut: %q", without)
-	}
 	if strings.Contains(without, "/llama") {
 		t.Fatalf("help exposed /llama without login: %q", without)
 	}

@@ -226,11 +226,11 @@ describing the tool's args (the same shape Anthropic and OpenAI accept).
 
 Tool names live in the same namespace as built-in tools (`read`,
 `write`, `edit`, `bash`, `create_worktree`, `grep`, `lsp`, `web_search`,
-`web_open`, `web_find`, `web_click`, `schedule`, `update_goal`, `skill`).
-Conflicts with active built-ins are silently shadowed by the built-in. Every
-native public-web capability name, plus `grep`, `schedule`, and `update_goal`,
-is reserved even when it is unavailable, so an extension cannot claim or
-replace it.
+`web_open`, `web_find`, `web_click`, `schedule`, `update_goal`, `update_plan`,
+`skill`). Conflicts with active built-ins are silently shadowed by the built-in.
+Every native public-web capability name, plus `grep`, `schedule`, `update_goal`,
+and `update_plan`, is reserved even when it is unavailable, so an extension
+cannot claim or replace it.
 
 Set `"deferred": true` to register a tool without advertising its definition initially. A loader tool can activate registered deferred tools by returning their names in `activate_tools`:
 
@@ -425,22 +425,14 @@ Sets or replaces one status item owned by the extension. Sending an empty
 
 #### `widget` (one-way, persistent)
 
-Sets or replaces a compact widget. `position` is a host-defined placement
-hint with these interactive-zut values:
-
-- `"above_input"` keeps the widget in the existing persistent chrome above
-  the editor.
-- `"right_bar"` keeps the widget in a display-only side rail beside the
-  transcript when the terminal is wide enough.
-
-The host owns right-bar layout: it orders widgets, bounds width and height,
-and truncates content. Narrow terminals and `Ctrl+B` use a bounded
-`above_input` fallback. Empty or unknown positions keep the historical
-`above_input` behavior. Use `open_panel` for interaction or navigation.
+Sets or replaces a compact widget. Interactive zut renders widgets in the
+persistent chrome above the editor. Use `"above_input"` as the `position`;
+empty and unknown positions resolve to the same placement. Use `open_panel`
+for interaction or navigation.
 
 ```json
-{"type":"widget","id":"plan","position":"right_bar",
- "title":"Tasked phases","lines":["Current phase: parse","[ ] validate inputs"]}
+{"type":"widget","id":"progress","position":"above_input",
+ "title":"Progress","lines":["Indexing files","12/20 complete"]}
 ```
 
 #### `widget_clear` (one-way)
@@ -722,12 +714,11 @@ latest persisted snapshot. A tool can return opaque state with
 request. `SetStatus`, `SetWidget`, and their clear methods update persistent
 interactive chrome without entering the transcript.
 
-For Go extensions, use the SDK constants so the host can choose the responsive
-layout without extension-specific terminal code:
+For Go extensions, use the SDK placement constant:
 
 ```go
-e.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", lines)
-e.ClearWidget("plan")
+e.SetWidget("progress", ext.WidgetPositionAboveInput, "Progress", lines)
+e.ClearWidget("progress")
 ```
 
 The SDK has four interceptor hooks, all optional:
@@ -770,16 +761,7 @@ See:
 - `examples/extensions/guard/` — event subscriptions + tool-call
   interception (refuses dangerous bash patterns)
 - `examples/extensions/todo/` — interactive persistent panel + tool
-- `examples/extensions/tasked-phases/` — spec, phased checklist, persistent tool, and `/phases` panel
 - `examples/extensions/scratchpad/` — source-run TypeScript commands + tool
-
-The `tasked-phases` example bundles its companion skill under
-`examples/extensions/tasked-phases/skills/` and declares it in
-`extension.json`. Installing the extension therefore installs the workflow
-skill automatically. The standalone copy at `examples/skills/tasked-phases/`
-remains useful for project-local skill installation. Its state is restored per
-session branch when zut session persistence is enabled; the extension keeps a
-project-file fallback for hosts that do not persist sessions.
 
 ### Hot reload
 
