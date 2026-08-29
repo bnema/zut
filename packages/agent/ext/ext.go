@@ -528,6 +528,10 @@ const (
 	// WidgetPositionAboveInput keeps a widget in the persistent chrome above
 	// the editor. It is the default for empty and unknown positions.
 	WidgetPositionAboveInput = extproto.WidgetPositionAboveInput
+	// WidgetPositionRightBar is retained for source compatibility. Widgets use
+	// the above-input placement because the right sidebar no longer exists.
+	// Deprecated: use WidgetPositionAboveInput.
+	WidgetPositionRightBar = extproto.WidgetPositionRightBar
 )
 
 // SetWidget replaces one persistent widget owned by this extension. Use

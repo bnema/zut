@@ -1359,6 +1359,12 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 			}
 		}
 		if len(modified) > 0 && json.Valid(modified) {
+			if policy, ok := tool.(ToolArgumentRewritePolicy); ok && !policy.AllowArgumentRewrite() {
+				return ToolResult{
+					Content: []provider.Content{provider.TextBlock{Text: "tool arguments cannot be rewritten"}},
+					IsError: true,
+				}
+			}
 			args = modified
 		}
 	}

@@ -7,10 +7,10 @@ import (
 
 func TestNormalizeWidgetPosition(t *testing.T) {
 	cases := map[string]string{
-		"right_bar":              WidgetPositionAboveInput,
-		WidgetPositionAboveInput: WidgetPositionAboveInput,
-		"":                       WidgetPositionAboveInput,
-		"unknown":                WidgetPositionAboveInput,
+		WidgetPositionRightBar: WidgetPositionAboveInput,
+		"right_bar":            WidgetPositionAboveInput,
+		"":                     WidgetPositionAboveInput,
+		"unknown":              WidgetPositionAboveInput,
 	}
 	for input, want := range cases {
 		if got := NormalizeWidgetPosition(input); got != want {

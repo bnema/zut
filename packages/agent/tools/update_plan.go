@@ -18,6 +18,8 @@ const (
 // UpdatePlanTool lets the model maintain a turn-scoped task checklist.
 type UpdatePlanTool struct{}
 
+var _ core.ToolArgumentRewritePolicy = (*UpdatePlanTool)(nil)
+
 type updatePlanArgs struct {
 	Explanation *string           `json:"explanation"`
 	Plan        *[]updatePlanStep `json:"plan"`
@@ -30,8 +32,12 @@ type updatePlanStep struct {
 
 func (t *UpdatePlanTool) Name() string { return UpdatePlanToolName }
 
+// AllowArgumentRewrite keeps the displayed checklist identical to the plan the
+// model submitted. Guards may still allow or refuse the call.
+func (t *UpdatePlanTool) AllowArgumentRewrite() bool { return false }
+
 func (t *UpdatePlanTool) Description() string {
-	return "Track steps and progress for complex, ambiguous, or multi-phase work. Skip trivial tasks; keep the plan current with exactly one in_progress step until all steps are completed."
+	return "Track steps and progress for complex, ambiguous, or multi-phase work. Skip trivial tasks and keep the plan current as work progresses."
 }
 
 func (t *UpdatePlanTool) Schema() json.RawMessage { return json.RawMessage(updatePlanSchema) }

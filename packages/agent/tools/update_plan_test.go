@@ -58,6 +58,16 @@ func TestUpdatePlanToolAcceptsEmptyPlan(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanToolAcceptsMultipleInProgressSteps(t *testing.T) {
+	result, err := (&UpdatePlanTool{}).Execute(context.Background(), json.RawMessage(`{"plan":[{"step":"one","status":"in_progress"},{"step":"two","status":"in_progress"}]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("result = %#v, want Codex-compatible acceptance", result)
+	}
+}
+
 func TestUpdatePlanToolRejectsMalformedArguments(t *testing.T) {
 	tests := []string{
 		`{}`,

@@ -21,6 +21,10 @@ type resultTool struct {
 	panic  bool
 }
 
+type immutableResultTool struct{ resultTool }
+
+func (*immutableResultTool) AllowArgumentRewrite() bool { return false }
+
 func (t *resultTool) Name() string            { return "result" }
 func (t *resultTool) Description() string     { return "result" }
 func (t *resultTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
@@ -129,9 +133,26 @@ func TestToolResultCommitErrorUsesSafeMessage(t *testing.T) {
 	}
 }
 
-// TestBeforeToolExecuteModifiesArgs verifies that a non-nil
-// modifiedArgs returned from BeforeToolExecute is what the tool
-// actually sees.
+func TestBeforeToolExecuteRejectsRewriteForImmutableTool(t *testing.T) {
+	tool := &immutableResultTool{}
+	agent := NewAgent(nil, "test", "", Registry{"result": tool})
+	agent.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		return true, "", json.RawMessage(`{"rewritten":true}`)
+	}
+
+	result := agent.runOneTool(context.Background(), provider.ToolCallBlock{
+		ID: "T1", Name: "result", Arguments: json.RawMessage(`{"original":true}`),
+	}, agent.ToolsSnapshot(), func(AgentEvent) {})
+	if !result.IsError {
+		t.Fatalf("result = %#v, want rewrite error", result)
+	}
+	if got := result.Content[0].(provider.TextBlock).Text; got != "tool arguments cannot be rewritten" {
+		t.Fatalf("rewrite error = %q", got)
+	}
+}
+
+// TestBeforeToolExecuteModifiesArgs verifies that a non-nil modifiedArgs
+// returned from BeforeToolExecute is what the tool actually sees.
 func TestBeforeToolExecuteModifiesArgs(t *testing.T) {
 	rec := &recordingTool{}
 	reg := Registry{"echo": rec}

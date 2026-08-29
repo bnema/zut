@@ -139,7 +139,12 @@ type StatusFromExt struct {
 	Text  string `json:"text,omitempty"`
 }
 
-const WidgetPositionAboveInput = "above_input"
+const (
+	WidgetPositionAboveInput = "above_input"
+	// WidgetPositionRightBar is retained for source compatibility. The right
+	// sidebar no longer exists, so this placement resolves above the input.
+	WidgetPositionRightBar = WidgetPositionAboveInput
+)
 
 // NormalizeWidgetPosition keeps extension widgets in the single supported
 // above-input placement. Unknown and removed placement hints remain compatible.

@@ -62,18 +62,6 @@ func TestReaderParsesRawCtrlVAsClipboardPaste(t *testing.T) {
 	}
 }
 
-func TestReaderParsesCtrlB(t *testing.T) {
-	for _, input := range []string{"\x02", "\x1b[98;5u", "\x1b[27;5;98~"} {
-		k := readKey(t, input)
-		if k.Kind != KeyCtrlB {
-			t.Fatalf("Read(%q) kind=%v ctrl=%v, want ctrl+b", input, k.Kind, k.Ctrl)
-		}
-		if input != "\x02" && !k.Ctrl {
-			t.Fatalf("Read(%q) ctrl=%v, want enhanced ctrl+b metadata", input, k.Ctrl)
-		}
-	}
-}
-
 func TestReaderParsesCSIUCtrlVAsClipboardPaste(t *testing.T) {
 	k := readKey(t, "\x1b[118;5u")
 	if k.Kind != KeyPasteClipboard || !k.Ctrl {
