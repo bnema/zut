@@ -118,6 +118,19 @@ func (i *Interactive) reasoningSettingItem() settingsItem {
 func (i *Interactive) openReasoningDialog() {
 	i.settingsDialog.OpenDirectOption(i.reasoningSettingItem())
 }
+func (i *Interactive) cycleReasoningSetting() {
+	item := i.reasoningSettingItem()
+	if len(item.options) <= 1 {
+		i.mu.Lock()
+		i.statusOK = item.hint
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	next := item.options[(item.choice+1)%len(item.options)]
+	i.applyReasoningSetting(next.value)
+}
 func (i *Interactive) openSettingsDialog() {
 	detected := tui.DetectImageProtocol()
 	imgEnabled := detected != tui.ImageProtocolNone
