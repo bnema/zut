@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -277,6 +279,8 @@ func (v *View) CloneForRender() *View {
 	clone.toolPaths = cloneStringMap(v.toolPaths)
 	clone.toolStartLines = cloneIntMap(v.toolStartLines)
 	clone.toolCallLabels = cloneStringMap(v.toolCallLabels)
+	clone.toolCallNames = cloneStringMap(v.toolCallNames)
+	clone.toolCallArgs = cloneRawMessageMap(v.toolCallArgs)
 	clone.liveBodyHigh = cloneIntMap(v.liveBodyHigh)
 	if v.renderCache != nil {
 		clone.renderCache = make(map[msgCacheKey][]string, len(v.renderCache))
@@ -301,6 +305,17 @@ func cloneStringMap(src map[string]string) map[string]string {
 	dst := make(map[string]string, len(src))
 	for key, value := range src {
 		dst[key] = value
+	}
+	return dst
+}
+
+func cloneRawMessageMap(src map[string]json.RawMessage) map[string]json.RawMessage {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]json.RawMessage, len(src))
+	for key, value := range src {
+		dst[key] = append(json.RawMessage(nil), value...)
 	}
 	return dst
 }
@@ -331,6 +346,8 @@ func (v *View) AdoptRenderCacheFrom(snapshot *View) {
 	v.toolPaths = snapshot.toolPaths
 	v.toolStartLines = snapshot.toolStartLines
 	v.toolCallLabels = snapshot.toolCallLabels
+	v.toolCallNames = snapshot.toolCallNames
+	v.toolCallArgs = snapshot.toolCallArgs
 	v.toolPathRevision = snapshot.toolPathRevision
 }
 
@@ -938,17 +955,41 @@ type planUpdateStep struct {
 	Status string `json:"status"`
 }
 
+type planUpdateWire struct {
+	Explanation *string               `json:"explanation"`
+	Plan        *[]planUpdateStepWire `json:"plan"`
+}
+
+type planUpdateStepWire struct {
+	Step   *string `json:"step"`
+	Status *string `json:"status"`
+}
+
 func parsePlanUpdate(raw json.RawMessage) (planUpdateArgs, bool) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	var wire planUpdateWire
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
 		return planUpdateArgs{}, false
 	}
-	if _, ok := fields["plan"]; !ok {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF || wire.Plan == nil {
 		return planUpdateArgs{}, false
 	}
-	var update planUpdateArgs
-	if err := json.Unmarshal(raw, &update); err != nil || update.Plan == nil {
-		return planUpdateArgs{}, false
+
+	update := planUpdateArgs{Plan: make([]planUpdateStep, len(*wire.Plan))}
+	if wire.Explanation != nil {
+		update.Explanation = *wire.Explanation
+	}
+	for idx, step := range *wire.Plan {
+		if step.Step == nil || step.Status == nil {
+			return planUpdateArgs{}, false
+		}
+		switch *step.Status {
+		case "pending", "in_progress", "completed":
+		default:
+			return planUpdateArgs{}, false
+		}
+		update.Plan[idx] = planUpdateStep{Step: *step.Step, Status: *step.Status}
 	}
 	return update, true
 }
