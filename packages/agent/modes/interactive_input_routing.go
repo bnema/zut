@@ -647,6 +647,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	case tui.KeyCtrlO:
 		i.toggleToolExpansion()
 		return false
+	case tui.KeyCtrlR:
+		i.cycleReasoningSetting()
+		return false
 	case tui.KeyPageUp:
 		i.scrollBy(+i.chatPage())
 		return false

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -44,6 +45,55 @@ func TestReasoningSelectorOnlyOffersOffForUnsupportedModel(t *testing.T) {
 	}
 	if item.hint != "current model does not support reasoning" {
 		t.Fatalf("hint = %q", item.hint)
+	}
+}
+
+func TestCtrlRCyclesCurrentModelReasoningLevels(t *testing.T) {
+	var changed []string
+	i := NewInteractive(InteractiveConfig{
+		Theme:     tui.Dark,
+		Provider:  "openai",
+		Model:     "gpt-5.6-sol",
+		Reasoning: "high",
+		OnReasoningChanged: func(level string) {
+			changed = append(changed, level)
+		},
+	})
+	i.agent = &core.Agent{Reasoning: "high"}
+	i.rend = nil
+
+	for _, want := range []string{"xhigh", "max", ""} {
+		if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlR}); done {
+			t.Fatal("ctrl+r exited the interactive session")
+		}
+		if i.cfg.Reasoning != want || i.agent.Reasoning != want {
+			t.Fatalf("reasoning = cfg %q agent %q, want %q", i.cfg.Reasoning, i.agent.Reasoning, want)
+		}
+	}
+	if !slices.Equal(changed, []string{"xhigh", "max", ""}) {
+		t.Fatalf("reasoning callbacks = %q", changed)
+	}
+	if i.statusOK != "reasoning level off" {
+		t.Fatalf("reasoning status = %q", i.statusOK)
+	}
+}
+
+func TestCtrlRReportsUnsupportedCurrentModel(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{
+		Theme:     tui.Dark,
+		Provider:  "google",
+		Model:     "gemini-2.0-flash",
+		Reasoning: "high",
+	})
+	i.rend = nil
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlR})
+
+	if i.cfg.Reasoning != "high" {
+		t.Fatalf("reasoning changed to %q for unsupported model", i.cfg.Reasoning)
+	}
+	if i.statusOK != "current model does not support reasoning" {
+		t.Fatalf("reasoning status = %q", i.statusOK)
 	}
 }
 

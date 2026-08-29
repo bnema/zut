@@ -27,6 +27,21 @@ func TestReaderParsesCSIUCtrlC(t *testing.T) {
 	}
 }
 
+func TestReaderParsesCtrlR(t *testing.T) {
+	for name, sequence := range map[string]string{
+		"raw":               "\x12",
+		"kitty protocol":    "\x1b[114;5u",
+		"modify other keys": "\x1b[27;5;114~",
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := readKey(t, sequence)
+			if k.Kind != KeyCtrlR {
+				t.Fatalf("Read kind=%v, want ctrl+r", k.Kind)
+			}
+		})
+	}
+}
+
 func TestReaderParsesCSIUCtrlNumber(t *testing.T) {
 	k := readKey(t, "\x1b[49;5u")
 	if k.Kind != KeyRune || k.Rune != '1' || !k.Ctrl {
