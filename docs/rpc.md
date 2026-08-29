@@ -204,6 +204,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
 | `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
+| `plan_update` | nullable `explanation`, `plan` | The built-in `update_plan` tool replaced the current turn checklist. Each plan item has `step` and `status`. |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
 | `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. |
@@ -212,7 +213,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |
 | `ext_alert` | `extension`, `kind`, optional `reason` | An extension requested a host alert; RPC clients can map it to their own notification UI. |
-| `ext_widget` | `extension`, `id`, `position`, `title`, `lines` | Persistent extension widget update. `position` may be `above_input` or `right_bar`; clients choose their own layout. |
+| `ext_widget` | `extension`, `id`, `position`, `title`, `lines` | Persistent extension widget update. Interactive zut renders widgets above the input; RPC clients choose their own layout. |
 | `ext_widget_clear` | `extension`, `id` | Remove one persistent extension widget. |
 | `ext_chrome_clear` | `extension` | The extension exited; discard all persistent status/widget chrome owned by it. |
 

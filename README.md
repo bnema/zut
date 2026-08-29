@@ -9,7 +9,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- thirteen core built-in tools (read, write, edit, bash, create_worktree, grep, lsp, web_search, web_open, web_find, web_click, update_goal, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
+- fourteen core built-in tools (read, write, edit, bash, create_worktree, grep, lsp, web_search, web_open, web_find, web_click, update_goal, update_plan, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -255,6 +255,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 - `web_search`: search DuckDuckGo HTML and return bounded source titles, URLs, snippets, and opaque references. `web_open`, `web_find`, and `web_click` respectively open a referenced page, find literal text in an opened page, and follow a displayed link. The four tools are enabled together by default for normal CLI sessions and unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
 - `update_goal`: let the main agent start its own mission when none is active, set the next bounded goal within an active mission, or mark the active goal `done` or `blocked`. Pausing, resuming, and clearing missions remain user-controlled through `/goal`.
+- `update_plan`: maintain a turn-scoped checklist of `pending`, `in_progress`, and `completed` steps. Successful updates appear inline as an Updated Plan checklist and emit `plan_update` events in JSON and RPC modes.
 - `schedule`: add, list, or cancel recurring five-field cron prompts for the current interactive session. A task captures the machine's current timezone when it is created. While this zut process remains open, a due task waits for an active target turn to finish, or resumes an inactive target session in the background; its output is recorded in that target transcript. Resumed background tasks also show a completion notification in the current TUI. Scheduling is in-memory only: quitting zut cancels pending tasks, and schedules do not survive restart or reboot. Print, stream, JSON, and RPC modes do not expose this tool.
 
 When the sandbox is on (see `/jail`), filesystem tools, `grep`, and LSP workspace edits refuse paths outside the session cwd. `create_worktree` also requires its repository root, configured worktree destination, optional `.gitignore`, and Git metadata to remain inside the jail. Jail does not sandbox web-search network egress.
@@ -921,7 +922,6 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
 | `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |
-| `ctrl+b` | Toggle the right sidebar; hidden or narrow widgets use a bounded above-input fallback. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, create_worktree, grep, lsp, and web_search outputs over ~12 lines). |
@@ -1006,7 +1006,7 @@ An extension may ship only a theme: `extension.json` plus `theme.json` (or `them
 
 ### Reference
 
-`examples/extensions/` ships reference implementations in Go, TypeScript, Node, and shell, including `tasked-phases` for spec-driven phase/checklist tracking. See [docs/extensions.md](docs/extensions.md) for the full protocol, the SDK API (`packages/agent/ext`), and the phase roadmap.
+`examples/extensions/` ships reference implementations in Go, TypeScript, Node, and shell. See [docs/extensions.md](docs/extensions.md) for the full protocol and the SDK API (`packages/agent/ext`).
 
 ## Skills
 

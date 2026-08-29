@@ -57,14 +57,6 @@ type Renderer struct {
 	logHardwareRow    int
 	logInit           bool
 
-	// The right bar is a viewport overlay on top of the main-screen flow
-	// renderer. Keeping its cache separate prevents persistent chrome from
-	// replacing the transcript's logical buffer and native scrollback.
-	rightBarActive   bool
-	rightBarLines    []string
-	rightBarMainCols int
-	rightBarDimmed   bool
-
 	// keepScrollback is true when we must NOT emit \x1b[3J
 	// (erase-in-display 3, "clear scrollback").
 	//
@@ -142,9 +134,6 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.logViewportTop = 0
 		r.logHardwareRow = 0
 		r.logInit = false
-		r.rightBarActive = false
-		r.rightBarLines = nil
-		r.rightBarMainCols = 0
 		if r.out != nil {
 			if r.keepScrollback {
 				// A resize is a discrete user action, like Ctrl+L: the
@@ -181,9 +170,6 @@ func (r *Renderer) Clear() {
 	r.logViewportTop = 0
 	r.logHardwareRow = 0
 	r.logInit = false
-	r.rightBarActive = false
-	r.rightBarLines = nil
-	r.rightBarMainCols = 0
 	if r.keepScrollback {
 		// On VS Code's xterm.js the transcript is taller than the
 		// viewport, so an in-place clear (home + erase-to-end) only
@@ -599,9 +585,6 @@ func (r *Renderer) DrawFloating(pane FloatingPaneFrame, cursorRow, cursorCol int
 //
 // cursorBottomRow/cursorCol are offsets into bottom, not the full frame.
 func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int) {
-	if r.rightBarActive {
-		r.clearRightBarOverlay()
-	}
 	r.drawLog(chat, bottom, cursorBottomRow, cursorCol, r.cols)
 }
 

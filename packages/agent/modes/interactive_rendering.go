@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -122,38 +121,7 @@ func (i *Interactive) extensionWidgetsKeyLocked() string {
 	}
 	return sb.String()
 }
-func (i *Interactive) rightBarWidgetsLocked() []tui.RightBarWidget {
-	var out []tui.RightBarWidget
-	for _, extName := range sortedNestedOuterKeys(i.extWidgets) {
-		for _, id := range sortedNestedInnerKeys(i.extWidgets, extName) {
-			widget := i.extWidgets[extName][id]
-			if extproto.NormalizeWidgetPosition(widget.Position) != extproto.WidgetPositionRightBar {
-				continue
-			}
-			out = append(out, tui.RightBarWidget{
-				Extension: extName,
-				ID:        id,
-				Title:     widget.Title,
-				Lines:     append([]string(nil), widget.Lines...),
-			})
-		}
-	}
-	return out
-}
 func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
-	return i.extensionChromeLinesAtLocked(cols, false)
-}
-func (i *Interactive) extensionChromeLinesForLayoutLocked(cols int, rightBarActive, rightBarFallback bool) []string {
-	lines := i.extensionChromeLinesAtLocked(cols, rightBarActive)
-	if !rightBarFallback || len(lines) <= maxNarrowExtensionChromeRows {
-		return lines
-	}
-	limit := maxNarrowExtensionChromeRows
-	trimmed := append([]string(nil), lines[:limit-1]...)
-	trimmed = append(trimmed, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, truncateLine("  ... extension chrome truncated ...", cols)))
-	return trimmed
-}
-func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool) []string {
 	var out []string
 	bodyWidth := cols - 2
 	if bodyWidth < 1 {
@@ -178,9 +146,6 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 		}
 		for _, id := range sortedNestedInnerKeys(i.extWidgets, extName) {
 			widget := i.extWidgets[extName][id]
-			if rightBarActive && extproto.NormalizeWidgetPosition(widget.Position) == extproto.WidgetPositionRightBar {
-				continue
-			}
 			label := "  [" + extName + "]"
 			if widget.Title != "" {
 				label += " " + widget.Title
@@ -500,17 +465,6 @@ func (i *Interactive) redraw() {
 
 	cols, rows := i.cfg.Terminal.Size()
 	mainCols := cols
-	rightBarWidgets := i.rightBarWidgetsLocked()
-	rightBarActive := false
-	var rightBarWidth int
-	if !i.rightBarHidden && len(rightBarWidgets) > 0 {
-		if width, rail, ok := tui.RightBarColumns(cols); ok {
-			mainCols = width
-			rightBarWidth = rail
-			rightBarActive = true
-		}
-	}
-	rightBarFallback := len(rightBarWidgets) > 0 && !rightBarActive
 	i.renderOutsideLock = true
 	chat := i.cachedChatLocked(mainCols)
 	i.renderOutsideLock = false
@@ -783,7 +737,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, hint))
 	}
 
-	extensionLines := i.extensionChromeLinesForLayoutLocked(mainCols, rightBarActive, rightBarFallback)
+	extensionLines := i.extensionChromeLinesLocked(mainCols)
 
 	// Bottom-sticky sections (always visible, never scroll). Each
 	// non-empty subsection (dialog, suggest popup, sliding-in queue)
@@ -1077,15 +1031,8 @@ func (i *Interactive) redraw() {
 	i.mu.Unlock()
 	if modalBackdrop {
 		background := floatingBackgroundFrame(visibleChat, bottom, rows)
-		if rightBarActive {
-			rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
-			background = floatingRightBarFrame(theme, background, rightBar, mainCols, rightBarWidth)
-		}
 		pane, paneCursorRow, paneCursorCol := i.floatingPane.Compose(theme, dialogID, dialogTitle, background, dialog, cols, rows, dialogCursorRow, dialogCursorCol)
 		i.rend.DrawFloating(pane, paneCursorRow, paneCursorCol)
-	} else if rightBarActive {
-		rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
-		i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
 	} else {
 		_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
@@ -1148,17 +1095,6 @@ func floatingBackgroundFrame(chat, bottom []string, rows int) []string {
 	// frame so opening a pane does not visibly jump the whole session down.
 	copy(frame, lines)
 	return frame
-}
-
-func floatingRightBarFrame(theme tui.Theme, main, rightBar []string, mainWidth, rightBarWidth int) []string {
-	for row := range main {
-		barLine := ""
-		if row < len(rightBar) {
-			barLine = rightBar[row]
-		}
-		main[row] = tui.JoinRightBar(theme, main[row], barLine, mainWidth, rightBarWidth)
-	}
-	return main
 }
 
 func hasImageEscape(line string) bool {

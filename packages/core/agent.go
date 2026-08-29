@@ -1301,6 +1301,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if a.OnToolResult != nil {
 			a.OnToolResult(tc.ID, res)
 		}
+		if update, ok := res.Details.(PlanUpdate); ok && !res.IsError {
+			sink(EvPlanUpdate{Update: update})
+		}
 		sink(EvToolResult{ID: tc.ID, Result: res})
 	}
 

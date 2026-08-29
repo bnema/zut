@@ -100,7 +100,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "schedule" || info.Name == "update_goal" {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.UpdatePlanToolName {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -1232,6 +1232,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
 		"grep":            &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
 		"update_goal":     &tools.UpdateGoalTool{},
+		"update_plan":     &tools.UpdatePlanTool{},
 	}
 	if webSearchAllowedForRegistry(args) {
 		for name, tool := range tools.NewWebTools() {
@@ -1343,7 +1344,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

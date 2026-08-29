@@ -30,6 +30,22 @@ func TestBuildToolRegistryWebCapabilityBundle(t *testing.T) {
 	}
 }
 
+func TestBuildToolRegistryIncludesUpdatePlanByDefaultAndExplicitSelection(t *testing.T) {
+	cwd := t.TempDir()
+	defaultRegistry := buildToolRegistry(Args{}, cwd, nil, false, false, false)
+	if _, ok := defaultRegistry[tools.UpdatePlanToolName].(*tools.UpdatePlanTool); !ok {
+		t.Fatalf("default update_plan has type %T", defaultRegistry[tools.UpdatePlanToolName])
+	}
+
+	selected := buildToolRegistry(Args{Tools: []string{tools.UpdatePlanToolName}}, cwd, nil, false, false, false)
+	if len(selected) != 1 {
+		t.Fatalf("selected registry has %d tools, want one", len(selected))
+	}
+	if _, ok := selected[tools.UpdatePlanToolName].(*tools.UpdatePlanTool); !ok {
+		t.Fatalf("selected update_plan has type %T", selected[tools.UpdatePlanToolName])
+	}
+}
+
 func TestBuildToolRegistryGrepSelectionAndDefaults(t *testing.T) {
 	cwd := t.TempDir()
 

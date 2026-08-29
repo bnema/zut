@@ -171,6 +171,34 @@ type EvToolProgress struct {
 
 func (EvToolProgress) Type() string { return "tool_progress" }
 
+// PlanStepStatus is the state of one update_plan checklist step.
+type PlanStepStatus string
+
+const (
+	PlanPending    PlanStepStatus = "pending"
+	PlanInProgress PlanStepStatus = "in_progress"
+	PlanCompleted  PlanStepStatus = "completed"
+)
+
+// PlanStep is one model-maintained task in a plan update.
+type PlanStep struct {
+	Step   string         `json:"step"`
+	Status PlanStepStatus `json:"status"`
+}
+
+// PlanUpdate replaces the model's current task checklist for a turn.
+type PlanUpdate struct {
+	Explanation *string    `json:"explanation"`
+	Plan        []PlanStep `json:"plan"`
+}
+
+// EvPlanUpdate reports a successful update_plan call before its tool result.
+type EvPlanUpdate struct {
+	Update PlanUpdate
+}
+
+func (EvPlanUpdate) Type() string { return "plan_update" }
+
 type EvToolResult struct {
 	ID     string
 	Result ToolResult

@@ -80,6 +80,37 @@ func TestToolResultPersistenceFailureBecomesToolError(t *testing.T) {
 	}
 }
 
+func TestExecuteToolsEmitsPlanUpdateBeforeResult(t *testing.T) {
+	update := PlanUpdate{Plan: []PlanStep{{Step: "Implement", Status: PlanInProgress}}}
+	agent := NewAgent(nil, "test", "", Registry{
+		"result": &resultTool{result: ToolResult{
+			Content: []provider.Content{provider.TextBlock{Text: "Plan updated"}},
+			Details: update,
+		}},
+	})
+	message := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{
+		provider.ToolCallBlock{ID: "call-1", Name: "result", Arguments: json.RawMessage(`{}`)},
+	}}
+	var events []AgentEvent
+	agent.executeTools(context.Background(), message, func(event AgentEvent) {
+		switch event.(type) {
+		case EvPlanUpdate, EvToolResult:
+			events = append(events, event)
+		}
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want plan update and tool result", events)
+	}
+	planEvent, ok := events[0].(EvPlanUpdate)
+	if !ok || len(planEvent.Update.Plan) != 1 || planEvent.Update.Plan[0].Step != "Implement" {
+		t.Fatalf("first event = %#v, want plan update", events[0])
+	}
+	if _, ok := events[1].(EvToolResult); !ok {
+		t.Fatalf("second event = %T, want EvToolResult", events[1])
+	}
+}
+
 func TestToolResultCommitErrorUsesSafeMessage(t *testing.T) {
 	agent := NewAgent(nil, "test", "", Registry{
 		"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "done"}}}},

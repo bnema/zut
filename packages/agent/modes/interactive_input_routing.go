@@ -637,13 +637,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if i.ed.IsEmpty() && !i.busy {
 			return true
 		}
-	case tui.KeyCtrlB:
-		i.mu.Lock()
-		i.rightBarHidden = !i.rightBarHidden
-		i.mu.Unlock()
-		i.requestRendererInvalidate()
-		i.invalidate()
-		return false
 	case tui.KeyCtrlL:
 		i.requestRendererClear()
 		i.invalidate()

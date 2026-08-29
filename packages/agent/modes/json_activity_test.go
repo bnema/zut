@@ -83,6 +83,25 @@ func TestEventToJSONCacheDiagnosticsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestEventToJSONPlanUpdate(t *testing.T) {
+	explanation := "Discovery complete"
+	event := EventToJSON(core.EvPlanUpdate{Update: core.PlanUpdate{
+		Explanation: &explanation,
+		Plan:        []core.PlanStep{{Step: "Implement", Status: core.PlanInProgress}},
+	}})
+	if event["type"] != "plan_update" || event["explanation"] != "Discovery complete" {
+		t.Fatalf("plan event = %#v", event)
+	}
+	plan, ok := event["plan"].([]core.PlanStep)
+	if !ok || len(plan) != 1 || plan[0].Status != core.PlanInProgress {
+		t.Fatalf("plan payload = %#v", event["plan"])
+	}
+	withoutExplanation := EventToJSON(core.EvPlanUpdate{Update: core.PlanUpdate{Plan: []core.PlanStep{}}})
+	if withoutExplanation["explanation"] != nil {
+		t.Fatalf("missing explanation = %#v, want null", withoutExplanation["explanation"])
+	}
+}
+
 func TestEventToJSONActivityLifecycle(t *testing.T) {
 	request := EventToJSON(core.EvRequestStarted{
 		Provider:    "anthropic",

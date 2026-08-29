@@ -128,6 +128,8 @@ type View struct {
 	// the box top edge without having to look back at the assistant
 	// message that originated the call. Rebuilt on each Build().
 	toolCallLabels  map[string]string
+	toolCallNames   map[string]string
+	toolCallArgs    map[string]json.RawMessage
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -698,6 +700,8 @@ func (v *View) refreshToolPaths() {
 	v.toolPaths = map[string]string{}
 	v.toolStartLines = map[string]int{}
 	v.toolCallLabels = map[string]string{}
+	v.toolCallNames = map[string]string{}
+	v.toolCallArgs = map[string]json.RawMessage{}
 	for _, m := range v.Messages {
 		for _, c := range m.Content {
 			if tc, ok := c.(provider.ToolCallBlock); ok {
@@ -708,6 +712,8 @@ func (v *View) refreshToolPaths() {
 					v.toolStartLines[tc.ID] = off
 				}
 				v.toolCallLabels[tc.ID] = tc.Name + " " + ShortArgs(tc.Name, tc.Arguments)
+				v.toolCallNames[tc.ID] = tc.Name
+				v.toolCallArgs[tc.ID] = tc.Arguments
 			}
 		}
 	}
@@ -922,6 +928,79 @@ func fnv64aWrite(h uint64, p []byte) uint64 {
 	return h
 }
 
+type planUpdateArgs struct {
+	Explanation string           `json:"explanation,omitempty"`
+	Plan        []planUpdateStep `json:"plan"`
+}
+
+type planUpdateStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
+func parsePlanUpdate(raw json.RawMessage) (planUpdateArgs, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return planUpdateArgs{}, false
+	}
+	if _, ok := fields["plan"]; !ok {
+		return planUpdateArgs{}, false
+	}
+	var update planUpdateArgs
+	if err := json.Unmarshal(raw, &update); err != nil || update.Plan == nil {
+		return planUpdateArgs{}, false
+	}
+	return update, true
+}
+
+func (v *View) renderPlanUpdate(update planUpdateArgs, width int) []string {
+	lines := []string{v.Theme.FGColor(v.Theme.Muted, "• ") + Bold("Updated Plan")}
+	bodyWidth := width - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	var body []string
+	if explanation := strings.TrimSpace(update.Explanation); explanation != "" {
+		for _, line := range wrapLine(explanation, bodyWidth, "") {
+			body = append(body, Dim(Italic(line)))
+		}
+	}
+	if len(update.Plan) == 0 {
+		body = append(body, Dim(Italic("(no steps provided)")))
+	} else {
+		for _, step := range update.Plan {
+			marker := "□ "
+			style := func(text string) string { return Dim(text) }
+			switch step.Status {
+			case "completed":
+				marker = "✓ "
+			case "in_progress":
+				style = func(text string) string { return v.Theme.FGColor(v.Theme.Accent, Bold(text)) }
+			}
+			stepWidth := bodyWidth - 2
+			if stepWidth < 1 {
+				stepWidth = 1
+			}
+			wrapped := wrapLine(step.Step, stepWidth, "")
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
+			}
+			body = append(body, style(marker+wrapped[0]))
+			for _, continuation := range wrapped[1:] {
+				body = append(body, style("  "+continuation))
+			}
+		}
+	}
+	for idx, line := range body {
+		prefix := "    "
+		if idx == 0 {
+			prefix = v.Theme.FGColor(v.Theme.Muted, "  └ ")
+		}
+		lines = append(lines, prefix+line)
+	}
+	return lines
+}
+
 func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []string {
 	var lines []string
 
@@ -1032,6 +1111,12 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 	case provider.RoleTool:
 		for _, c := range m.Content {
 			if tr, ok := c.(provider.ToolResultBlock); ok {
+				if !tr.IsError && v.toolCallNames[tr.CallID] == "update_plan" {
+					if update, ok := parsePlanUpdate(v.toolCallArgs[tr.CallID]); ok {
+						lines = append(lines, v.renderPlanUpdate(update, width)...)
+						continue
+					}
+				}
 				color := v.Theme.ToolOut
 				if tr.IsError {
 					color = v.Theme.Error
@@ -1237,6 +1322,12 @@ func hashThemeColor(h uint64, c TerminalColor) uint64 {
 }
 
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
+	if tc.Name == "update_plan" && tc.Done && !tc.Error {
+		if update, ok := parsePlanUpdate(json.RawMessage(tc.RawJSONBuf)); ok {
+			return v.renderPlanUpdate(update, width)
+		}
+	}
+
 	var lines []string
 
 	// Header label. While the call is still streaming, prefer the
