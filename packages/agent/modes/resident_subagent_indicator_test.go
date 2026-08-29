@@ -233,6 +233,15 @@ func TestRenderResidentSubagentActivityLinesRightAlignsUsageMetadataWhenItFits(t
 	}
 }
 
+func TestResidentUsageMetadataShowsRolloutBudget(t *testing.T) {
+	metadata := residentUsageMetadata(subagents.ResidentSnapshot{
+		Budget: subagents.BudgetSnapshot{Used: 337_500, Limit: 375_000, Percent: 90, State: subagents.BudgetFinalizing},
+	})
+	if metadata != "budget:finalizing 90%/375k" {
+		t.Fatalf("budget metadata = %q", metadata)
+	}
+}
+
 func TestRenderResidentSubagentActivityLinesWrapsUsageMetadataWhenItDoesNotFit(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	const width = 34

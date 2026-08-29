@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,13 +25,15 @@ type QuickModelShortcut struct {
 
 // SubagentsConfig contains the resident manager policy. max_concurrent limits
 // simultaneous turns, queue_timeout bounds admission waits, allowed_tools
-// limits child capabilities, and allowed_roots limits eligible workspaces.
-// Obsolete keys such as tui_subagent_position are ignored.
+// limits child capabilities, allowed_roots limits eligible workspaces, and
+// budget_ratio derives each child's cumulative rollout budget from the active
+// parent model's context window. Obsolete keys are ignored.
 type SubagentsConfig struct {
 	MaxConcurrent int      `json:"max_concurrent,omitempty"`
 	QueueTimeout  string   `json:"queue_timeout,omitempty"`
 	AllowedTools  []string `json:"allowed_tools,omitempty"`
 	AllowedRoots  []string `json:"allowed_roots,omitempty"`
+	BudgetRatio   *float64 `json:"budget_ratio,omitempty"`
 }
 
 // GoalsConfig controls optional resource limits for autonomous goals. A nil
@@ -315,13 +318,16 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("parse config: %w", err)
 	}
-	if err := validateSubagentDurations(c.Subagents); err != nil {
+	if err := validateSubagentConfig(c.Subagents); err != nil {
 		return c, err
 	}
 	return c, nil
 }
 
-func validateSubagentDurations(cfg SubagentsConfig) error {
+func validateSubagentConfig(cfg SubagentsConfig) error {
+	if cfg.BudgetRatio != nil && (math.IsNaN(*cfg.BudgetRatio) || math.IsInf(*cfg.BudgetRatio, 0) || *cfg.BudgetRatio <= 0 || *cfg.BudgetRatio > 1) {
+		return fmt.Errorf("parse config: subagents.budget_ratio must be greater than 0 and at most 1")
+	}
 	values := []struct {
 		name  string
 		value string

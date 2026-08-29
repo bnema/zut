@@ -101,7 +101,21 @@ func residentUsageMetadata(snapshot subagents.ResidentSnapshot) string {
 	if context := tui.ContextUsageText(snapshot.ContextUsed, snapshot.ContextMax); context != "" {
 		parts = append(parts, context)
 	}
+	if snapshot.Budget.Limit > 0 {
+		parts = append(parts, fmt.Sprintf("budget:%s %d%%/%s", snapshot.Budget.State, snapshot.Budget.Percent, compactResidentTokens(snapshot.Budget.Limit)))
+	}
 	return strings.Join(parts, " ")
+}
+
+func compactResidentTokens(tokens int64) string {
+	switch {
+	case tokens >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	case tokens >= 1_000:
+		return fmt.Sprintf("%.0fk", float64(tokens)/1_000)
+	default:
+		return fmt.Sprintf("%d", tokens)
+	}
 }
 
 func turnStartTime(snapshot subagents.ResidentSnapshot) time.Time {

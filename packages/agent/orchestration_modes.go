@@ -78,6 +78,8 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 		return runtime.PrepareRegistry(reg)
 	}
 	runtime.SetProvider(r.Provider)
+	runtime.SetModel(r.Model)
+	runtime.SetContextWindow(r.ContextWindow)
 	runtime.SetProviderSettings(r.BaseURL, r.InsecureTLS)
 	runtime.SetFastMode(r.FastMode)
 	runtime.PrepareResolvedRegistry(r.ToolRegistry, r.WebSearchPolicy)
@@ -203,6 +205,7 @@ func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config
 		BaseURL:         r.BaseURL,
 		InsecureTLS:     r.InsecureTLS,
 		FastMode:        r.FastMode,
+		ContextWindow:   r.ContextWindow,
 		Policy:          subagentPolicyFromConfig(cfg.Subagents),
 		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
 		ResidentCompletion: func(completion subagents.ResidentCompletion) {

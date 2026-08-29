@@ -55,6 +55,32 @@ func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 	}
 }
 
+func TestResidentManagerRejectsResumeAfterBudgetExhaustion(t *testing.T) {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			return journal.RecordAgentEvent(core.EvUsage{Cumulative: provider.Usage{InputTokens: 100}})
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spec := ResidentChildSpec{ID: "budget-exhausted", SessionID: "budget-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5", BudgetLimit: 100}
+	completion, cancelWait := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
+	defer cancelWait()
+	if _, err := manager.Spawn(context.Background(), spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	result := <-completion
+	if result.Err != nil {
+		t.Fatalf("initial completion error = %v", result.Err)
+	}
+	snapshot, ok := manager.SnapshotFor(spec.ID)
+	if !ok || snapshot.State != ResidentIdle || snapshot.Budget.State != BudgetExceeded {
+		t.Fatalf("terminal snapshot = %#v, found=%t", snapshot, ok)
+	}
+	if err := manager.Resume(context.Background(), spec.ID, "continue"); err == nil || !strings.Contains(err.Error(), "budget is exhausted") {
+		t.Fatalf("resume error = %v", err)
+	}
+}
+
 func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
 	completed := make(chan ResidentCompletion, 1)
 	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {

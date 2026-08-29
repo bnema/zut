@@ -164,6 +164,9 @@ func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
 		{name: "invalid-project-context", field: "inheritProjectContext: sometimes"},
 		{name: "invalid-skills", field: "inheritSkills: sometimes"},
 		{name: "invalid-fast-mode", field: "fastMode: sometimes"},
+		{name: "invalid-budget-ratio", field: "budgetRatio: 1.2"},
+		{name: "invalid-budget-tokens", field: "budgetTokens: 0"},
+		{name: "conflicting-budget", field: "budgetRatio: 0.5\nbudgetTokens: 1000"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +176,18 @@ func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
 				t.Fatalf("load succeeded for invalid metadata %q", tc.field)
 			}
 		})
+	}
+}
+
+func TestLoadProfileBudgetOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.md")
+	writeProfile(t, path, "---\nname: reviewer\nbudgetRatio: 0.6\n---\nInstructions.\n")
+	profile, err := load(path, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.BudgetRatio == nil || *profile.BudgetRatio != 0.6 || profile.BudgetTokens != nil {
+		t.Fatalf("profile budget = ratio %v tokens %v", profile.BudgetRatio, profile.BudgetTokens)
 	}
 }
 

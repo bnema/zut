@@ -644,6 +644,7 @@ func applyInitialSessionResumeWithRuntime(ctx context.Context, args Args, base R
 			if runtime != nil {
 				runtime.SetProvider(resolved.Provider)
 				runtime.SetModel(resolved.Model)
+				runtime.SetContextWindow(resolved.ContextWindow)
 				runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 				runtime.SetFastMode(resolved.FastMode)
 				runtime.PrepareResolvedRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
@@ -1581,6 +1582,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		BaseURL:            r.BaseURL,
 		InsecureTLS:        r.InsecureTLS,
 		FastMode:           r.FastMode,
+		ContextWindow:      r.ContextWindow,
 		Policy:             subagentPolicyFromConfig(initialCfg.Subagents),
 		WebSearchPolicy:    webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
 		WebSearchGuard:     webSearchGuard,
@@ -1723,6 +1725,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
+		runtime.SetModel(resolved.Model)
+		runtime.SetContextWindow(resolved.ContextWindow)
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
@@ -1746,6 +1750,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
+		runtime.SetModel(resolved.Model)
+		runtime.SetContextWindow(resolved.ContextWindow)
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)
@@ -1777,6 +1783,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
+		runtime.SetModel(resolved.Model)
+		runtime.SetContextWindow(resolved.ContextWindow)
 		runtime.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		runtime.SetFastMode(resolved.FastMode)
 		resolved.MergeExtensionTools(extToolAdapter)

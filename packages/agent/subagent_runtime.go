@@ -34,6 +34,7 @@ type subagentRuntime struct {
 	insecureTLS        bool
 	fastMode           bool
 	repoRoot           string
+	contextWindow      int
 
 	activeProvider  func() string
 	activeModel     func() string
@@ -57,6 +58,7 @@ type subagentRuntimeConfiguration struct {
 	insecureTLS     bool
 	fastMode        bool
 	repoRoot        string
+	contextWindow   int
 	webSearchPolicy subagents.WebSearchPolicy
 }
 
@@ -68,12 +70,13 @@ type subagentRuntimeConfig struct {
 	Root     string
 	RepoRoot string
 
-	Provider    string
-	Model       string
-	Reasoning   string
-	BaseURL     string
-	InsecureTLS bool
-	FastMode    bool
+	Provider      string
+	Model         string
+	Reasoning     string
+	BaseURL       string
+	InsecureTLS   bool
+	FastMode      bool
+	ContextWindow int
 
 	Policy             subagents.SubagentPolicy
 	WebSearchPolicy    subagents.WebSearchPolicy
@@ -97,6 +100,7 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 		insecureTLS:        cfg.InsecureTLS,
 		fastMode:           cfg.FastMode,
 		repoRoot:           cfg.RepoRoot,
+		contextWindow:      cfg.ContextWindow,
 		activeProvider:     cfg.ActiveProvider,
 		activeModel:        cfg.ActiveModel,
 		activeReasoning:    cfg.ActiveReasoning,
@@ -179,6 +183,15 @@ func (rt *subagentRuntime) SetModel(model string) {
 	rt.settingsMu.Unlock()
 }
 
+func (rt *subagentRuntime) SetContextWindow(contextWindow int) {
+	if rt == nil {
+		return
+	}
+	rt.settingsMu.Lock()
+	rt.contextWindow = contextWindow
+	rt.settingsMu.Unlock()
+}
+
 func (rt *subagentRuntime) SetReasoning(reasoning string) {
 	if rt == nil {
 		return
@@ -250,6 +263,7 @@ func (rt *subagentRuntime) snapshotConfiguration() subagentRuntimeConfiguration 
 		insecureTLS:     rt.insecureTLS,
 		fastMode:        rt.fastMode,
 		repoRoot:        rt.repoRoot,
+		contextWindow:   rt.contextWindow,
 		webSearchPolicy: rt.webSearchPolicy,
 	}
 }
@@ -265,6 +279,7 @@ func (rt *subagentRuntime) restoreConfiguration(snapshot subagentRuntimeConfigur
 	rt.insecureTLS = snapshot.insecureTLS
 	rt.fastMode = snapshot.fastMode
 	rt.repoRoot = snapshot.repoRoot
+	rt.contextWindow = snapshot.contextWindow
 	rt.webSearchPolicy = snapshot.webSearchPolicy
 	rt.settingsMu.Unlock()
 }
@@ -292,7 +307,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	providerID, model, reasoning := activeProvider, rt.model, rt.reasoning
 	baseURL, insecureTLS := rt.baseURL, rt.insecureTLS
 	workspace, parentSession := rt.repoRoot, rt.activeSession
-	fastMode, policy := rt.fastMode, rt.policy
+	fastMode, policy, parentContextWindow := rt.fastMode, rt.policy, rt.contextWindow
 	rt.settingsMu.RUnlock()
 	if strings.TrimSpace(request.Provider) != "" {
 		providerID = strings.TrimSpace(request.Provider)
@@ -349,11 +364,16 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	if workspaceMode == "" {
 		workspaceMode = subagents.WorkspaceShared
 	}
+	budgetLimit, resolvedBudgetRatio, budgetSource, err := resolveResidentBudget(parentContextWindow, policy.BudgetRatio, policy.BudgetRatioConfigured, request.Profile, request.BudgetRatio, request.BudgetTokens)
+	if err != nil {
+		return subagents.ResidentChildSpec{}, err
+	}
 	spec := subagents.ResidentChildSpec{
 		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: parentSession, ParentSessionID: parentSession,
 		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
 		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode, Tools: childTools,
 		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,
+		BudgetLimit: budgetLimit, BudgetRatio: resolvedBudgetRatio, BudgetSource: budgetSource,
 	}
 	if request.Profile != nil {
 		spec.Profile = request.Profile.Name
@@ -363,6 +383,30 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		spec.InheritSkills = request.Profile.InheritSkills
 	}
 	return spec, nil
+}
+
+func resolveResidentBudget(parentContextWindow int, policyRatio float64, policyConfigured bool, profile *subagents.Profile, spawnRatio *float64, spawnTokens *int64) (int64, float64, string, error) {
+	ratio, source := policyRatio, "default_ratio"
+	if policyConfigured {
+		source = "config_ratio"
+	}
+	var tokens int64
+	if profile != nil {
+		if profile.BudgetTokens != nil {
+			tokens, source = *profile.BudgetTokens, "profile_tokens"
+		} else if profile.BudgetRatio != nil {
+			ratio, source = *profile.BudgetRatio, "profile_ratio"
+		}
+	}
+	if spawnTokens != nil {
+		tokens, source = *spawnTokens, "spawn_tokens"
+		ratio = 0
+	} else if spawnRatio != nil {
+		ratio, source = *spawnRatio, "spawn_ratio"
+		tokens = 0
+	}
+	limit, resolvedRatio, err := subagents.BudgetLimit(parentContextWindow, ratio, tokens)
+	return limit, resolvedRatio, source, err
 }
 
 func expandWebCapabilityTools(selected, catalogue []string, permitted func(string) bool) []string {
@@ -524,10 +568,16 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 		}
 		return parsed
 	}
+	budgetRatio := subagents.DefaultBudgetRatio
+	if cfg.BudgetRatio != nil {
+		budgetRatio = *cfg.BudgetRatio
+	}
 	return subagents.SubagentPolicy{
-		MaxConcurrent: cfg.MaxConcurrent,
-		QueueTimeout:  parseDuration(cfg.QueueTimeout),
-		AllowedTools:  append([]string(nil), cfg.AllowedTools...),
-		AllowedRoots:  append([]string(nil), cfg.AllowedRoots...),
+		MaxConcurrent:         cfg.MaxConcurrent,
+		QueueTimeout:          parseDuration(cfg.QueueTimeout),
+		AllowedTools:          append([]string(nil), cfg.AllowedTools...),
+		AllowedRoots:          append([]string(nil), cfg.AllowedRoots...),
+		BudgetRatio:           budgetRatio,
+		BudgetRatioConfigured: cfg.BudgetRatio != nil,
 	}
 }

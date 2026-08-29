@@ -91,6 +91,9 @@ type ResidentChildSpec struct {
 	InheritSkills         *bool         `json:"inherit_skills,omitempty"`
 	Permissions           []string      `json:"permissions,omitempty"`
 	Required              bool          `json:"required,omitempty"`
+	BudgetLimit           int64         `json:"budget_limit,omitempty"`
+	BudgetRatio           float64       `json:"budget_ratio,omitempty"`
+	BudgetSource          string        `json:"budget_source,omitempty"`
 }
 
 type residentRecord struct {

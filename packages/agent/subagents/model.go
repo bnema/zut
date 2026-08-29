@@ -47,10 +47,12 @@ const (
 
 // SubagentPolicy contains the resident manager's limits and capability ceiling.
 type SubagentPolicy struct {
-	MaxConcurrent int
-	QueueTimeout  time.Duration
-	AllowedTools  []string
-	AllowedRoots  []string
+	MaxConcurrent         int
+	QueueTimeout          time.Duration
+	AllowedTools          []string
+	AllowedRoots          []string
+	BudgetRatio           float64
+	BudgetRatioConfigured bool
 }
 
 func (p SubagentPolicy) allowedTool(name string) bool {
