@@ -1,0 +1,52 @@
+package core
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSessionLogProjectionsRejectInvalidRowsConsistently(t *testing.T) {
+	meta := SessionMeta{ID: "session-1", CWD: "/workspace", Started: time.Now().UTC()}
+	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "missing meta", contents: `{"type":"message","message":{"role":"user","content":[{"text":"hello"}]}}` + "\n", want: "first row is not meta"},
+		{name: "invalid message", contents: string(metaLine) + "\n" + `{"type":"message","message":{"role":"user"}}` + "\n", want: "invalid message row"},
+		{name: "invalid usage", contents: string(metaLine) + "\n" + `{"type":"usage","cumulative":null}` + "\n", want: "usage row has no cumulative usage"},
+		{name: "invalid rename", contents: string(metaLine) + "\n" + `{"type":"rename"}` + "\n", want: "rename row has no title"},
+		{name: "unknown type", contents: string(metaLine) + "\n" + `{"type":"future-row"}` + "\n", want: `unknown row type "future-row"`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(path, []byte(test.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, snapshotErr := ReadSessionSnapshot(path)
+			_, historyErr := ReadSessionHistory(path)
+			_, branchErr := readExtensionStateAtFork(path, 0)
+			for name, err := range map[string]error{
+				"snapshot": snapshotErr,
+				"history":  historyErr,
+				"branch":   branchErr,
+			} {
+				if err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Errorf("%s error = %v, want substring %q", name, err, test.want)
+				}
+			}
+		})
+	}
+}

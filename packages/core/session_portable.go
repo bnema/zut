@@ -377,54 +377,35 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 		}
 		return clone
 	}
-	applyState := func(target map[string]json.RawMessage, row sessionLine) {
-		if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
-			delete(target, row.Extension)
+	applyState := func(target map[string]json.RawMessage, row sessionLogRow) {
+		if len(row.state) == 0 || strings.TrimSpace(string(row.state)) == "null" {
+			delete(target, row.extension)
 			return
 		}
-		if json.Valid(row.State) {
-			target[row.Extension] = append(json.RawMessage(nil), row.State...)
+		if json.Valid(row.state) {
+			target[row.extension] = append(json.RawMessage(nil), row.state...)
 		}
 	}
 	effectiveCount := 0
-	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil {
-			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
-		}
-		switch head.Type {
-		case "meta", "usage", "rename":
-			return nil
+	err = forEachSessionLogRowContext(context.Background(), f, func(row sessionLogRow) error {
+		switch row.typeName {
 		case "message":
-			if _, err := hydrateMessage(line); err != nil {
-				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
-			}
 			effectiveCount++
 		case "compaction":
-			messages, err := hydrateCompaction(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
-			}
-			effectiveCount = len(messages)
+			effectiveCount = len(row.messages)
 			// A compaction replaces the effective transcript. State that was
 			// recorded anywhere before this boundary belongs to every fork
 			// inside the replacement transcript, even when its old message
 			// index was after the requested fork point.
 			forkState = cloneState(state)
 		case "extension_state":
-			var row sessionLine
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
-			}
-			if row.Extension == "" || len(row.State) > maxExtensionStateBytes {
+			if row.extension == "" || len(row.state) > maxExtensionStateBytes {
 				return nil
 			}
 			applyState(state, row)
 			if effectiveCount <= limit {
 				applyState(forkState, row)
 			}
-		default:
-			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
 		}
 		return nil
 	})
