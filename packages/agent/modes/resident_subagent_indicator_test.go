@@ -233,6 +233,31 @@ func TestRenderResidentSubagentActivityLinesRightAlignsUsageMetadataWhenItFits(t
 	}
 }
 
+func TestResidentUsageMetadataShowsRolloutBudget(t *testing.T) {
+	metadata := residentUsageMetadata(subagents.ResidentSnapshot{
+		Budget: subagents.BudgetSnapshot{Used: 337_500, Limit: 375_000, Percent: 90, State: subagents.BudgetFinalizing},
+	})
+	if metadata != "budget:finalizing 90%/375k" {
+		t.Fatalf("budget metadata = %q", metadata)
+	}
+}
+
+func TestCompactResidentTokensAvoidsThousandKBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		tokens int64
+		want   string
+	}{
+		{tokens: 999_499, want: "999k"},
+		{tokens: 999_500, want: "1.0M"},
+		{tokens: 999_999, want: "1.0M"},
+		{tokens: 1_000_000, want: "1.0M"},
+	} {
+		if got := compactResidentTokens(tc.tokens); got != tc.want {
+			t.Errorf("compactResidentTokens(%d) = %q, want %q", tc.tokens, got, tc.want)
+		}
+	}
+}
+
 func TestRenderResidentSubagentActivityLinesWrapsUsageMetadataWhenItDoesNotFit(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	const width = 34

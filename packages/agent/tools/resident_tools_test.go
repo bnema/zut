@@ -187,6 +187,9 @@ func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 		`{"task":"x","wait":0}`,
 		`{"task":"x","wait":301}`,
 		`{"task":"x","isolation":"outside"}`,
+		`{"task":"x","budget_ratio":0}`,
+		`{"task":"x","budget_tokens":-1}`,
+		`{"task":"x","budget_ratio":0.5,"budget_tokens":1000}`,
 	} {
 		result, err := spawn.Execute(context.Background(), json.RawMessage(raw), nil)
 		if err != nil && !strings.Contains(err.Error(), "invalid args") {
@@ -207,6 +210,7 @@ func TestResidentSpawnProfileAndExplicitOverridesReachFactory(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	profileFast := false
+	profileBudget := 0.6
 	var got ResidentSpawnRequest
 	spawn := &SubagentSpawnTool{
 		ResidentManager:  manager,
@@ -215,18 +219,18 @@ func TestResidentSpawnProfileAndExplicitOverridesReachFactory(t *testing.T) {
 		DefaultProvider:  func() string { return "host-provider" },
 		DefaultReasoning: func() string { return "medium" },
 		ResolveSubagent: func(name string) (*subagents.Profile, error) {
-			return &subagents.Profile{Name: name, Model: "openai/gpt-5.6-sol", Thinking: "low", FastMode: &profileFast}, nil
+			return &subagents.Profile{Name: name, Model: "openai/gpt-5.6-sol", Thinking: "low", FastMode: &profileFast, BudgetRatio: &profileBudget}, nil
 		},
 		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
 			got = request
 			return subagents.ResidentChildSpec{ID: "profiled", SessionID: "child", Provider: request.Provider, Model: request.Model, Profile: request.Profile.Name}, nil
 		},
 	}
-	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"review","agent":"reviewer","reasoning":"high","fast_mode":true}`), nil)
+	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"review","agent":"reviewer","reasoning":"high","fast_mode":true,"budget_tokens":42000}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("Execute = (%#v, %v)", result, err)
 	}
-	if got.Model != "gpt-5.6-sol" || got.Provider != "openai" || got.Reasoning != "high" || got.FastMode == nil || !*got.FastMode {
+	if got.Model != "gpt-5.6-sol" || got.Provider != "openai" || got.Reasoning != "high" || got.FastMode == nil || !*got.FastMode || got.BudgetTokens == nil || *got.BudgetTokens != 42_000 {
 		t.Fatalf("factory request = %#v", got)
 	}
 }
@@ -256,6 +260,15 @@ func toolResultText(t *testing.T, result core.ToolResult) string {
 		t.Fatalf("content = %#v, want text block", result.Content)
 	}
 	return block.Text
+}
+
+func TestPublicResidentStatusIncludesRolloutBudget(t *testing.T) {
+	entry := publicResidentStatus(subagents.ResidentSnapshot{
+		ID: "budgeted", Budget: subagents.BudgetSnapshot{Used: 70, Limit: 100, Percent: 70, State: subagents.BudgetFocused}, BudgetSource: "default_ratio",
+	})
+	if entry.Budget == nil || entry.Budget.State != subagents.BudgetFocused || entry.BudgetSource != "default_ratio" {
+		t.Fatalf("status budget = %#v", entry)
+	}
 }
 
 func TestFindResidentStatusSnapshotRejectsAmbiguousPrefix(t *testing.T) {

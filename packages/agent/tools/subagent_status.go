@@ -32,14 +32,16 @@ type subagentStatusResponse struct {
 }
 
 type subagentStatusEntry struct {
-	ID             string                  `json:"agent_id"`
-	State          subagents.ResidentState `json:"state"`
-	Profile        string                  `json:"profile,omitempty"`
-	Provider       string                  `json:"provider"`
-	Model          string                  `json:"model"`
-	Workspace      subagents.WorkspaceMode `json:"workspace_mode,omitempty"`
-	Required       bool                    `json:"required,omitempty"`
-	OwnedElsewhere bool                    `json:"owned_elsewhere,omitempty"`
+	ID             string                    `json:"agent_id"`
+	State          subagents.ResidentState   `json:"state"`
+	Profile        string                    `json:"profile,omitempty"`
+	Provider       string                    `json:"provider"`
+	Model          string                    `json:"model"`
+	Workspace      subagents.WorkspaceMode   `json:"workspace_mode,omitempty"`
+	Required       bool                      `json:"required,omitempty"`
+	OwnedElsewhere bool                      `json:"owned_elsewhere,omitempty"`
+	Budget         *subagents.BudgetSnapshot `json:"budget,omitempty"`
+	BudgetSource   string                    `json:"budget_source,omitempty"`
 }
 
 const subagentStatusSchema = `{
@@ -117,7 +119,12 @@ func findResidentStatusSnapshot(snapshots []subagents.ResidentSnapshot, id strin
 }
 
 func publicResidentStatus(snapshot subagents.ResidentSnapshot) subagentStatusEntry {
-	return subagentStatusEntry{ID: snapshot.ID, State: snapshot.State, Profile: snapshot.Profile, Provider: snapshot.Provider, Model: snapshot.Model, Workspace: snapshot.WorkspaceMode, Required: snapshot.Required, OwnedElsewhere: snapshot.OwnedElsewhere}
+	entry := subagentStatusEntry{ID: snapshot.ID, State: snapshot.State, Profile: snapshot.Profile, Provider: snapshot.Provider, Model: snapshot.Model, Workspace: snapshot.WorkspaceMode, Required: snapshot.Required, OwnedElsewhere: snapshot.OwnedElsewhere, BudgetSource: snapshot.BudgetSource}
+	if snapshot.Budget.Limit > 0 {
+		budget := snapshot.Budget
+		entry.Budget = &budget
+	}
+	return entry
 }
 
 func renderSubagentStatus(response subagentStatusResponse) (core.ToolResult, error) {

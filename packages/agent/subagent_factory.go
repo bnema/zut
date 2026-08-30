@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +11,7 @@ import (
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // newResidentChildRunner is the host-owned construction boundary for one
@@ -36,6 +39,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			system = strings.TrimSpace(system) + "\n\n" + extra
 		}
 	}
+	budgetLimit := subagents.EffectiveBudgetLimit(spec.BudgetLimit, resolved.ContextWindow)
+	if guidance := subagents.BudgetSystemPrompt(budgetLimit); guidance != "" {
+		system = strings.TrimSpace(system) + "\n\n" + guidance
+	}
 	agent := core.NewAgent(resolved.NewClient(), resolved.Model, system, registry)
 	agent.MaxSteps = resolved.MaxSteps
 	agent.ContextWindow = resolved.ContextWindow
@@ -43,10 +50,13 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	agent.Reasoning = resolved.Reasoning
 	agent.Temperature = resolved.Temperature
 	agent.FastMode = resolved.FastMode
+	var baseline subagents.ResidentUsageSnapshot
 	if journal != nil {
-		baseline := journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
+		baseline = journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
 		agent.SeedCost(baseline.Usage)
 	}
+	budget := subagents.NewRolloutBudget(budgetLimit, baseline.Usage)
+	configureResidentBudget(agent, budget)
 	rootCacheID := strings.TrimSpace(spec.RootCacheID)
 	if rootCacheID == "" {
 		// Journals written before root cache identity was persisted can still
@@ -74,9 +84,13 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		startedExhausted := budget.Snapshot().State == subagents.BudgetExceeded
 		var journalErr error
 		var journalMu sync.Mutex
 		err := agent.Prompt(turnCtx, prompt, nil, func(event core.AgentEvent) {
+			if usage, ok := event.(core.EvUsage); ok {
+				budget.Observe(usage.Cumulative)
+			}
 			if err := journal.RecordAgentEvent(event); err != nil {
 				journalMu.Lock()
 				if journalErr == nil {
@@ -91,8 +105,55 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		if journalErr != nil {
 			return fmt.Errorf("persist resident child transcript: %w", journalErr)
 		}
+		if budget.Snapshot().State == subagents.BudgetExceeded {
+			if !startedExhausted && err == nil {
+				return nil
+			}
+			return errors.Join(err, subagents.ErrBudgetExceeded)
+		}
 		return err
 	}, nil
+}
+
+func configureResidentBudget(agent *core.Agent, budget *subagents.RolloutBudget) {
+	if agent == nil || budget == nil {
+		return
+	}
+	agent.BeforeTurnContext = func(_ context.Context, _ int) (bool, string, string) {
+		instruction, exceeded := budget.TurnContext()
+		if exceeded {
+			return false, subagents.ErrBudgetExceeded.Error(), ""
+		}
+		snapshot := budget.Snapshot()
+		if snapshot.Limit > 0 {
+			remaining := residentBudgetOutputLimit(snapshot.Limit - snapshot.Used)
+			if agent.MaxTokens <= 0 || agent.MaxTokens > remaining {
+				agent.MaxTokens = remaining
+			}
+		}
+		if snapshot.State == subagents.BudgetFinalizing {
+			agent.SetTools(core.Registry{})
+		}
+		return true, "", instruction
+	}
+	agent.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		state := budget.Snapshot().State
+		if state == subagents.BudgetFinalizing || state == subagents.BudgetExceeded {
+			return false, "subagent rollout budget is reserved for the final response; tools are disabled", nil
+		}
+		return true, "", nil
+	}
+}
+
+func residentBudgetOutputLimit(remaining int64) int {
+	if remaining <= 1 {
+		return 1
+	}
+	maxInt := int64(^uint(0) >> 1)
+	if remaining > maxInt {
+		return int(maxInt)
+	}
+	return int(remaining)
 }
 
 // residentChildArgs applies the complete durable child specification without
