@@ -174,6 +174,9 @@ type codexTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
+	// Responses otherwise attempts to normalize schemas into strict mode,
+	// which makes non-nullable optional properties required model output.
+	Strict bool `json:"strict"`
 }
 
 type codexReasoningConfig struct {
