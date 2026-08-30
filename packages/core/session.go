@@ -406,7 +406,6 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 	defer f.Close()
 
 	var snapshot SessionSnapshot
-	var sawMeta bool
 	generation := 0
 	type rawCheckpoint struct {
 		messageCount int
@@ -417,114 +416,48 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 	titleFromRename := false
 	extensionState := map[string]json.RawMessage{}
 
-	err = forEachStrictJSONLLineContext(ctx, f, func(line []byte, lineNo int) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil {
-			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
-		}
-		if head.Type == "" {
-			return fmt.Errorf("line %d: missing row type", lineNo)
-		}
-		if !sawMeta && head.Type != "meta" {
-			return fmt.Errorf("line %d: first row is not meta", lineNo)
-		}
-
-		switch head.Type {
+	err = forEachSessionLogRowContext(ctx, f, func(row sessionLogRow) error {
+		switch row.typeName {
 		case "meta":
-			var row sessionLine
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
+			snapshot.Meta = *row.meta
+			if !titleFromRename && row.meta.Title != "" {
+				snapshot.Title = row.meta.Title
 			}
-			if row.Meta == nil || row.Meta.ID == "" {
-				return fmt.Errorf("line %d: meta row has no session id", lineNo)
-			}
-			snapshot.Meta = *row.Meta
-			if !titleFromRename && row.Meta.Title != "" {
-				snapshot.Title = row.Meta.Title
-			}
-			sawMeta = true
-
 		case "message":
-			msg, err := hydrateMessage(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
-			}
-			snapshot.Messages = append(snapshot.Messages, msg)
-
+			snapshot.Messages = append(snapshot.Messages, *row.message)
 		case "compaction":
-			compacted, err := hydrateCompaction(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
-			}
-			snapshot.Messages = compacted
+			snapshot.Messages = row.messages
 			generation++
-			cumulative, err := hydrateCompactionUsage(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction usage: %w", lineNo, err)
-			}
-			if cumulative != nil {
+			if row.cumulative != nil {
 				rawCheckpoints = append(rawCheckpoints, rawCheckpoint{
 					messageCount: len(snapshot.Messages),
-					cumulative:   *cumulative,
+					cumulative:   *row.cumulative,
 					generation:   generation,
 				})
 			}
-
 		case "usage":
-			var row struct {
-				Usage      *provider.Usage `json:"usage"`
-				Cumulative *provider.Usage `json:"cumulative"`
-			}
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid usage row: %w", lineNo, err)
-			}
-			if row.Cumulative == nil {
-				return fmt.Errorf("line %d: usage row has no cumulative usage", lineNo)
-			}
 			rawCheckpoints = append(rawCheckpoints, rawCheckpoint{
 				messageCount: len(snapshot.Messages),
-				cumulative:   *row.Cumulative,
+				cumulative:   *row.cumulative,
 				generation:   generation,
 			})
-
 		case "rename":
-			var row struct {
-				Title *string `json:"title"`
-			}
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid rename row: %w", lineNo, err)
-			}
-			if row.Title == nil {
-				return fmt.Errorf("line %d: rename row has no title", lineNo)
-			}
 			titleFromRename = true
-			snapshot.Title = *row.Title
-
+			snapshot.Title = *row.title
 		case "extension_state":
-			var row sessionLine
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
-			}
-			if row.Extension != "" && len(row.State) <= maxExtensionStateBytes {
-				if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
-					delete(extensionState, row.Extension)
-				} else if json.Valid(row.State) {
-					extensionState[row.Extension] = append(json.RawMessage(nil), row.State...)
+			if row.extension != "" && len(row.state) <= maxExtensionStateBytes {
+				if len(row.state) == 0 || strings.TrimSpace(string(row.state)) == "null" {
+					delete(extensionState, row.extension)
+				} else if json.Valid(row.state) {
+					extensionState[row.extension] = append(json.RawMessage(nil), row.state...)
 				}
 			}
-
-		default:
-			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
 		}
 		return nil
 	})
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: %w", path, err)
 	}
-	if !sawMeta {
-		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: file is empty", path)
-	}
-
 	normalizeSessionGoalMeta(&snapshot.Meta)
 	snapshot.CompactionGeneration = generation
 	snapshot.ExtensionState = extensionState
@@ -581,7 +514,6 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 	defer f.Close()
 
 	var history SessionHistory
-	var sawMeta bool
 	type rawCheckpoint struct {
 		messageCount int
 		cumulative   provider.Usage
@@ -611,108 +543,41 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 		current = rawSegment{}
 	}
 
-	err = forEachStrictJSONLLineContext(ctx, f, func(line []byte, lineNo int) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil {
-			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
-		}
-		if head.Type == "" {
-			return fmt.Errorf("line %d: missing row type", lineNo)
-		}
-		if !sawMeta && head.Type != "meta" {
-			return fmt.Errorf("line %d: first row is not meta", lineNo)
-		}
-
-		switch head.Type {
+	err = forEachSessionLogRowContext(ctx, f, func(row sessionLogRow) error {
+		switch row.typeName {
 		case "meta":
-			var row sessionLine
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
-			}
-			if row.Meta == nil || row.Meta.ID == "" {
-				return fmt.Errorf("line %d: meta row has no session id", lineNo)
-			}
-			history.Meta = *row.Meta
-			sawMeta = true
-
+			history.Meta = *row.meta
 		case "message":
-			message, err := hydrateMessage(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
-			}
-			current.messages = append(current.messages, message)
-
+			current.messages = append(current.messages, *row.message)
 		case "compaction":
-			compacted, err := hydrateCompaction(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
-			}
 			appendCurrent()
-			current = rawSegment{compacted: true, messages: compacted}
-			cumulative, err := hydrateCompactionUsage(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction usage: %w", lineNo, err)
-			}
-			if cumulative != nil {
+			current = rawSegment{compacted: true, messages: row.messages}
+			if row.cumulative != nil {
 				current.checkpoints = append(current.checkpoints, rawCheckpoint{
 					messageCount: len(current.messages),
-					cumulative:   *cumulative,
+					cumulative:   *row.cumulative,
 				})
 			}
-
 		case "usage":
-			var row struct {
-				Cumulative *provider.Usage `json:"cumulative"`
-			}
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid usage row: %w", lineNo, err)
-			}
-			if row.Cumulative == nil {
-				return fmt.Errorf("line %d: usage row has no cumulative usage", lineNo)
-			}
 			current.checkpoints = append(current.checkpoints, rawCheckpoint{
 				messageCount: len(current.messages),
-				cumulative:   *row.Cumulative,
+				cumulative:   *row.cumulative,
 			})
-
-		case "extension_state":
-			// Extension state is session metadata rather than transcript history.
-			// The snapshot reader restores it for resume; tree history only needs
-			// provider messages and usage checkpoints.
-
-		case "rename":
-			var row struct {
-				Title *string `json:"title"`
-			}
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid rename row: %w", lineNo, err)
-			}
-			if row.Title == nil {
-				return fmt.Errorf("line %d: rename row has no title", lineNo)
-			}
-
-		default:
-			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
+		case "extension_state", "rename":
+			// Extension state and titles are session metadata rather than
+			// transcript history. The decoder still validates their row shape.
 		}
 		return nil
 	})
 	if err != nil {
 		return SessionHistory{}, fmt.Errorf("session history %q: %w", path, err)
 	}
-	if !sawMeta {
-		return SessionHistory{}, fmt.Errorf("session history %q: file is empty", path)
-	}
 	appendCurrent()
 	return history, nil
 }
 
-// forEachStrictJSONLLine is the complete-read counterpart to
-// forEachJSONLLine. It rejects malformed and blank rows and reports the
-// line number so callers cannot accidentally proceed with a partial file.
-func forEachStrictJSONLLine(r io.Reader, fn func([]byte, int) error) error {
-	return forEachStrictJSONLLineContext(context.Background(), r, fn)
-}
-
+// forEachStrictJSONLLineContext rejects malformed and blank rows and reports
+// the line number so callers cannot accidentally proceed with a partial file.
 func forEachStrictJSONLLineContext(ctx context.Context, r io.Reader, fn func([]byte, int) error) error {
 	br := bufio.NewReader(r)
 	lineNo := 0
@@ -1788,16 +1653,6 @@ func (s *Session) writeLineLocked(row sessionLine) error {
 // We persist messages by reading the raw "message" object back and
 // rebuilding Content from discriminated fields.
 
-func hydrateCompactionUsage(lineBytes []byte) (*provider.Usage, error) {
-	var row struct {
-		Cumulative *provider.Usage `json:"cumulative"`
-	}
-	if err := json.Unmarshal(lineBytes, &row); err != nil {
-		return nil, err
-	}
-	return row.Cumulative, nil
-}
-
 func hydrateCompaction(lineBytes []byte) ([]provider.Message, error) {
 	var row struct {
 		Messages json.RawMessage `json:"messages"`
@@ -1805,37 +1660,7 @@ func hydrateCompaction(lineBytes []byte) ([]provider.Message, error) {
 	if err := json.Unmarshal(lineBytes, &row); err != nil {
 		return nil, err
 	}
-	if len(row.Messages) == 0 || bytes.Equal(bytes.TrimSpace(row.Messages), []byte("null")) {
-		// Older writers omitted the field for an empty compaction and some
-		// wrote it as null. Both represent a valid empty replacement.
-		return []provider.Message{}, nil
-	}
-	var rawMessages []json.RawMessage
-	if err := json.Unmarshal(row.Messages, &rawMessages); err != nil {
-		return nil, fmt.Errorf("invalid messages: %w", err)
-	}
-	messages := make([]provider.Message, 0, len(rawMessages))
-	for idx, raw := range rawMessages {
-		msg, err := hydrateMessageObject(raw)
-		if err != nil {
-			return nil, fmt.Errorf("message %d: %w", idx, err)
-		}
-		messages = append(messages, msg)
-	}
-	return messages, nil
-}
-
-func hydrateMessage(lineBytes []byte) (provider.Message, error) {
-	var row struct {
-		Message json.RawMessage `json:"message"`
-	}
-	if err := json.Unmarshal(lineBytes, &row); err != nil {
-		return provider.Message{}, err
-	}
-	if len(row.Message) == 0 || bytes.Equal(bytes.TrimSpace(row.Message), []byte("null")) {
-		return provider.Message{}, fmt.Errorf("message row has no message")
-	}
-	return hydrateMessageObject(row.Message)
+	return hydrateCompactionMessages(row.Messages)
 }
 
 func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {

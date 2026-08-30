@@ -284,16 +284,16 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 //
 // Returns the path of the new session file, ready for OpenSession.
 func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
-	return branchSession(parentPath, root, cwd, version, upToMessageIdx, false)
+	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, false)
 }
 
 // BranchSessionHidden creates a branch that participates in /session tree but
 // is hidden from the flat /sessions picker. Used for in-place tree navigation.
 func BranchSessionHidden(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
-	return branchSession(parentPath, root, cwd, version, upToMessageIdx, true)
+	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, true)
 }
 
-func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hideFromSessions bool) (string, error) {
+func branchSession(ctx context.Context, parentPath, root, cwd, version string, upToMessageIdx int, hideFromSessions bool) (string, error) {
 	if parentPath == "" {
 		return "", errors.New("branch: parent path is empty")
 	}
@@ -318,7 +318,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		limit++
 	}
 
-	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	extensionState, err := readExtensionStateAtFork(ctx, parentPath, limit)
 	if err != nil {
 		return "", err
 	}
@@ -350,7 +350,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 	if limit > 0 && limit < len(segment.Messages) && messageHasToolCalls(segment.Messages[limit-1]) && segment.Messages[limit].Role == provider.RoleTool {
 		limit++
 	}
-	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	extensionState, err := readExtensionStateAtFork(context.Background(), parentPath, limit)
 	if err != nil {
 		return "", err
 	}
@@ -361,7 +361,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 // persisted at or before a branch boundary. Extension state is independent of
 // provider messages, but its timeline still follows the effective message
 // stream across compaction rows.
-func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessage, error) {
+func readExtensionStateAtFork(ctx context.Context, path string, limit int) (map[string]json.RawMessage, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("branch: open parent for extension state: %w", err)
@@ -377,54 +377,35 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 		}
 		return clone
 	}
-	applyState := func(target map[string]json.RawMessage, row sessionLine) {
-		if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
-			delete(target, row.Extension)
+	applyState := func(target map[string]json.RawMessage, row sessionLogRow) {
+		if len(row.state) == 0 || strings.TrimSpace(string(row.state)) == "null" {
+			delete(target, row.extension)
 			return
 		}
-		if json.Valid(row.State) {
-			target[row.Extension] = append(json.RawMessage(nil), row.State...)
+		if json.Valid(row.state) {
+			target[row.extension] = append(json.RawMessage(nil), row.state...)
 		}
 	}
 	effectiveCount := 0
-	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil {
-			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
-		}
-		switch head.Type {
-		case "meta", "usage", "rename":
-			return nil
+	err = forEachSessionLogRowContext(ctx, f, func(row sessionLogRow) error {
+		switch row.typeName {
 		case "message":
-			if _, err := hydrateMessage(line); err != nil {
-				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
-			}
 			effectiveCount++
 		case "compaction":
-			messages, err := hydrateCompaction(line)
-			if err != nil {
-				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
-			}
-			effectiveCount = len(messages)
+			effectiveCount = len(row.messages)
 			// A compaction replaces the effective transcript. State that was
 			// recorded anywhere before this boundary belongs to every fork
 			// inside the replacement transcript, even when its old message
 			// index was after the requested fork point.
 			forkState = cloneState(state)
 		case "extension_state":
-			var row sessionLine
-			if err := json.Unmarshal(line, &row); err != nil {
-				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
-			}
-			if row.Extension == "" || len(row.State) > maxExtensionStateBytes {
+			if row.extension == "" || len(row.state) > maxExtensionStateBytes {
 				return nil
 			}
 			applyState(state, row)
 			if effectiveCount <= limit {
 				applyState(forkState, row)
 			}
-		default:
-			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
 		}
 		return nil
 	})
