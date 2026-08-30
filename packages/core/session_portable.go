@@ -284,16 +284,16 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 //
 // Returns the path of the new session file, ready for OpenSession.
 func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
-	return branchSession(parentPath, root, cwd, version, upToMessageIdx, false)
+	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, false)
 }
 
 // BranchSessionHidden creates a branch that participates in /session tree but
 // is hidden from the flat /sessions picker. Used for in-place tree navigation.
 func BranchSessionHidden(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
-	return branchSession(parentPath, root, cwd, version, upToMessageIdx, true)
+	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, true)
 }
 
-func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hideFromSessions bool) (string, error) {
+func branchSession(ctx context.Context, parentPath, root, cwd, version string, upToMessageIdx int, hideFromSessions bool) (string, error) {
 	if parentPath == "" {
 		return "", errors.New("branch: parent path is empty")
 	}
@@ -318,7 +318,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		limit++
 	}
 
-	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	extensionState, err := readExtensionStateAtFork(ctx, parentPath, limit)
 	if err != nil {
 		return "", err
 	}
@@ -350,7 +350,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 	if limit > 0 && limit < len(segment.Messages) && messageHasToolCalls(segment.Messages[limit-1]) && segment.Messages[limit].Role == provider.RoleTool {
 		limit++
 	}
-	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	extensionState, err := readExtensionStateAtFork(context.Background(), parentPath, limit)
 	if err != nil {
 		return "", err
 	}
@@ -361,7 +361,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 // persisted at or before a branch boundary. Extension state is independent of
 // provider messages, but its timeline still follows the effective message
 // stream across compaction rows.
-func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessage, error) {
+func readExtensionStateAtFork(ctx context.Context, path string, limit int) (map[string]json.RawMessage, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("branch: open parent for extension state: %w", err)
@@ -387,7 +387,7 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 		}
 	}
 	effectiveCount := 0
-	err = forEachSessionLogRowContext(context.Background(), f, func(row sessionLogRow) error {
+	err = forEachSessionLogRowContext(ctx, f, func(row sessionLogRow) error {
 		switch row.typeName {
 		case "message":
 			effectiveCount++

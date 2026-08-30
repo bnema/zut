@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +39,7 @@ func TestSessionLogProjectionsRejectInvalidRowsConsistently(t *testing.T) {
 
 			_, snapshotErr := ReadSessionSnapshot(path)
 			_, historyErr := ReadSessionHistory(path)
-			_, branchErr := readExtensionStateAtFork(path, 0)
+			_, branchErr := readExtensionStateAtFork(context.Background(), path, 0)
 			for name, err := range map[string]error{
 				"snapshot": snapshotErr,
 				"history":  historyErr,
@@ -48,5 +50,26 @@ func TestSessionLogProjectionsRejectInvalidRowsConsistently(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBranchSessionThreadsCancellationToExtensionStateRead(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/workspace", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendExtensionState("extension", json.RawMessage(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := branchSession(ctx, path, root, "/workspace", "test", 0, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("branchSession error = %v, want context.Canceled", err)
 	}
 }

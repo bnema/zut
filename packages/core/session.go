@@ -576,13 +576,8 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 	return history, nil
 }
 
-// forEachStrictJSONLLine is the complete-read counterpart to
-// forEachJSONLLine. It rejects malformed and blank rows and reports the
-// line number so callers cannot accidentally proceed with a partial file.
-func forEachStrictJSONLLine(r io.Reader, fn func([]byte, int) error) error {
-	return forEachStrictJSONLLineContext(context.Background(), r, fn)
-}
-
+// forEachStrictJSONLLineContext rejects malformed and blank rows and reports
+// the line number so callers cannot accidentally proceed with a partial file.
 func forEachStrictJSONLLineContext(ctx context.Context, r io.Reader, fn func([]byte, int) error) error {
 	br := bufio.NewReader(r)
 	lineNo := 0
