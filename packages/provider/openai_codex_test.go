@@ -146,6 +146,35 @@ func TestGPT56UsesNativeMaxReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestResponsesToolsExplicitlyDisableStrictSchemaNormalization(t *testing.T) {
+	c := newOpenAICodexClient("token", "acct", "")
+	wire, err := c.buildRequest(Request{
+		Model: "gpt-5.6-sol",
+		Tools: []Tool{{
+			Name: "subagent_spawn",
+			Schema: json.RawMessage(`{
+				"type":"object",
+				"properties":{
+					"task":{"type":"string"},
+					"budget_ratio":{"type":"number"},
+					"budget_tokens":{"type":"integer"}
+				},
+				"required":["task"]
+			}`),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(wire.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"strict":false`)) {
+		t.Fatalf("responses tool omitted strict opt-out: %s", encoded)
+	}
+}
+
 func TestResponsesRequestUsesExplicitReasoningLevelMap(t *testing.T) {
 	SetLiveModels([]Model{{
 		Provider:          "custom-responses",
