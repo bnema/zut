@@ -109,7 +109,7 @@ func residentUsageMetadata(snapshot subagents.ResidentSnapshot) string {
 
 func compactResidentTokens(tokens int64) string {
 	switch {
-	case tokens >= 1_000_000:
+	case tokens >= 999_500:
 		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
 	case tokens >= 1_000:
 		return fmt.Sprintf("%.0fk", float64(tokens)/1_000)
