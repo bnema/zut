@@ -301,7 +301,7 @@ func branchSession(ctx context.Context, parentPath, root, cwd, version string, u
 		return "", errors.New("branch: upToMessageIdx must be >= 0")
 	}
 
-	snapshot, err := ReadSessionSnapshot(parentPath)
+	snapshot, err := readSessionSnapshot(ctx, parentPath)
 	if err != nil {
 		return "", fmt.Errorf("branch: read parent snapshot: %w", err)
 	}

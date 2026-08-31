@@ -53,6 +53,17 @@ func TestSessionLogProjectionsRejectInvalidRowsConsistently(t *testing.T) {
 	}
 }
 
+func TestBranchSessionHonorsCancellationBeforeSnapshotRead(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	missingParent := filepath.Join(root, "missing.jsonl")
+	if _, err := branchSession(ctx, missingParent, root, "/workspace", "test", 0, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("branchSession error = %v, want context.Canceled", err)
+	}
+}
+
 func TestBranchSessionThreadsCancellationToExtensionStateRead(t *testing.T) {
 	root := t.TempDir()
 	session, err := NewSession(root, "/workspace", "provider", "model", "test")
