@@ -963,9 +963,10 @@ func FindSessionByID(root, cwd, id string) string {
 
 // FindManagedSessionByID looks up a session UUID across zut's managed
 // session stores, independent of cwd. A nil error and empty path mean no
-// matching session was found. Directory, storage, and duplicate-ID failures
-// are returned to the caller. Files with unreadable or invalid headers are
-// ignored because they cannot be associated with a requested UUID.
+// matching session was found. Directory enumeration, cancellation, and
+// duplicate-ID failures are returned to the caller. Candidate files that
+// cannot be inspected or whose headers are unreadable or invalid are ignored
+// because they cannot be associated with a requested UUID.
 func FindManagedSessionByID(ctx context.Context, root, id string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", errors.New("find managed session: root is empty")
@@ -1041,7 +1042,7 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 				continue
 			}
 			path := filepath.Join(bucketPath, file.Name())
-			info, err := file.Info()
+			info, err := os.Lstat(path)
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
