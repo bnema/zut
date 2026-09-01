@@ -28,6 +28,7 @@ func TestSessionLogProjectionsRejectInvalidRowsConsistently(t *testing.T) {
 		{name: "invalid usage", contents: string(metaLine) + "\n" + `{"type":"usage","cumulative":null}` + "\n", want: "usage row has no cumulative usage"},
 		{name: "invalid rename", contents: string(metaLine) + "\n" + `{"type":"rename"}` + "\n", want: "rename row has no title"},
 		{name: "unknown type", contents: string(metaLine) + "\n" + `{"type":"future-row"}` + "\n", want: `unknown row type "future-row"`},
+		{name: "changed session id", contents: string(metaLine) + "\n" + `{"type":"meta","meta":{"id":"session-2","cwd":"/workspace"}}` + "\n", want: `session id changed from "session-1" to "session-2"`},
 	}
 
 	for _, test := range tests {

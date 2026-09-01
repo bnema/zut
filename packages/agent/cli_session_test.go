@@ -555,27 +555,38 @@ func TestOpenOrCreateSessionUnknownUUIDDoesNotCreateSession(t *testing.T) {
 	}
 }
 
-func TestOpenOrCreateSessionUUIDLookupReturnsMetadataErrors(t *testing.T) {
+func TestOpenOrCreateSessionUUIDLookupIgnoresUnrelatedCorruption(t *testing.T) {
 	root := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("ZUT_HOME", root)
-	if err := os.MkdirAll(core.SessionsDir(root, cwd), 0o755); err != nil {
+	target, err := core.NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "resume me"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(core.SessionsDir(root, cwd), "bad.jsonl"), []byte("not json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := openOrCreateSession(context.Background(), Args{
+	session, err := openOrCreateSession(context.Background(), Args{
 		CWD:             cwd,
 		Resume:          true,
-		ResumeSessionID: uuid.NewString(),
+		ResumeSessionID: target.ID,
 	}, Resolved{Provider: "provider", Model: "model"}, core.NewAgent(nil, "model", "", nil), "test")
-	if err == nil {
-		t.Fatal("malformed UUID lookup unexpectedly succeeded")
+	if err != nil {
+		t.Fatalf("openOrCreateSession: %v", err)
 	}
-	if !strings.Contains(err.Error(), "metadata") || strings.Contains(err.Error(), "not found") {
-		t.Fatalf("malformed UUID lookup error = %v, want strict metadata error", err)
+	defer session.Close()
+	if session.Path != target.Path {
+		t.Fatalf("resumed session path = %q, want %q", session.Path, target.Path)
 	}
 }
 

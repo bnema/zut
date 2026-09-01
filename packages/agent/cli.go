@@ -3007,8 +3007,9 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 	}
 	// Sweep meta-only files left over from older zut versions (and from
 	// any session that crashed before its first AppendMessage) for the
-	// cwd-scoped picker paths. Explicit UUID lookup stays strict so it
-	// can report metadata failures instead of turning them into misses.
+	// cwd-scoped picker paths. Explicit UUID lookup identifies candidates
+	// from their headers so unrelated transcript corruption does not block
+	// a valid resume.
 	sessionsRoot := agentSessionsRoot(ZutHome(), args)
 	if args.ResumeSessionID == "" {
 		core.PruneEmptySessions(sessionsRoot, args.CWD)
@@ -3042,6 +3043,13 @@ func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Ag
 				return nil, fmt.Errorf("session %q not found", args.ResumeSessionID)
 			}
 			s, msgs, err = core.OpenSession(picked)
+			if err == nil && s.ID != args.ResumeSessionID {
+				closeErr := s.Close()
+				return nil, errors.Join(
+					fmt.Errorf("session %q changed during resume", args.ResumeSessionID),
+					closeErr,
+				)
+			}
 			break
 		}
 		picked, perr := pickSession(sessionsRoot, args.CWD)
