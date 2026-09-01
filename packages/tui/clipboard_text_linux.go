@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 )
@@ -41,7 +42,7 @@ func ReadClipboardText() (string, bool, error) {
 
 // WriteClipboardText writes plain text to a Wayland or X11 clipboard. Small
 // command-line clients keep zut's build CGO-free.
-func WriteClipboardText(text string) error {
+func WriteClipboardText(ctx context.Context, text string) error {
 	var commands []clipboardTextCommand
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		commands = append(commands, clipboardTextCommand{name: "wl-copy", args: []string{"--type", "text/plain"}})
@@ -59,7 +60,7 @@ func WriteClipboardText(text string) error {
 			{name: "xsel", args: []string{"--clipboard", "--input"}},
 		}
 	}
-	if err := writeClipboardTextCommands(text, commands...); err != nil {
+	if err := writeClipboardTextCommands(ctx, text, commands...); err != nil {
 		if err == errClipboardCommandUnavailable {
 			return fmt.Errorf("text clipboard unavailable: install wl-clipboard, xclip, or xsel")
 		}

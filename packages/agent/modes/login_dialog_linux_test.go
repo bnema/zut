@@ -7,10 +7,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/tui"
 )
+
+type blockingLoginClipboardTerminal struct {
+	alertTestTerminal
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (t *blockingLoginClipboardTerminal) Write(p []byte) (int, error) {
+	t.once.Do(func() { close(t.started) })
+	<-t.release
+	return t.alertTestTerminal.Write(p)
+}
+
+func (t *blockingLoginClipboardTerminal) WriteString(s string) (int, error) {
+	return t.Write([]byte(s))
+}
 
 func TestInteractiveAltCUsesSystemClipboardWithoutTerminal(t *testing.T) {
 	dir := t.TempDir()
@@ -66,5 +85,38 @@ func TestInteractiveAltCReportsSystemClipboardError(t *testing.T) {
 	}
 	if i.statusOK != "" {
 		t.Fatalf("success status = %q, want empty", i.statusOK)
+	}
+}
+
+func TestInteractiveAltCDoesNotHoldMutexDuringTerminalWrite(t *testing.T) {
+	term := &blockingLoginClipboardTerminal{started: make(chan struct{}), release: make(chan struct{})}
+	i := NewInteractive(InteractiveConfig{Terminal: term})
+	i.dialog.Open(t.TempDir())
+	i.dialog.ShowWaiting("https://example.com/oauth/authorize?state=xyz")
+
+	done := make(chan struct{})
+	go func() {
+		i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'c', Alt: true})
+		close(done)
+	}()
+	<-term.started
+
+	unlocked := make(chan struct{})
+	go func() {
+		i.mu.Lock()
+		i.mu.Unlock()
+		close(unlocked)
+	}()
+	select {
+	case <-unlocked:
+	case <-time.After(time.Second):
+		t.Fatal("interactive mutex remained locked during terminal write")
+	}
+
+	close(term.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("copy did not finish after terminal write unblocked")
 	}
 }

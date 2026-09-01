@@ -125,7 +125,7 @@ exec /bin/cat > "$CLIPBOARD_TEST_PAYLOAD"
 	t.Setenv("DISPLAY", "")
 	t.Setenv("CLIPBOARD_TEST_PAYLOAD", payload)
 
-	if err := WriteClipboardText("https://example.com/oauth?state=xyz"); err != nil {
+	if err := WriteClipboardText(context.Background(), "https://example.com/oauth?state=xyz"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(payload)

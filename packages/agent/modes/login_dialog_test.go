@@ -93,15 +93,19 @@ func TestLoginDialogCursorPosMatchesPaddedInputRow(t *testing.T) {
 }
 
 func TestLoginDialogWaitingShowsCopyURLShortcut(t *testing.T) {
-	d := newLoginDialog()
-	d.Open(t.TempDir())
-	d.method = "oauth"
-	d.provider = "openai-codex"
-	d.ShowWaiting("https://example.com/oauth/authorize?state=xyz")
+	for _, provider := range []string{"openai-codex", "kimi", "xai", "github-copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			d := newLoginDialog()
+			d.Open(t.TempDir())
+			d.method = "oauth"
+			d.provider = provider
+			d.ShowWaiting("https://example.com/oauth/authorize?state=xyz")
 
-	lines := strings.Join(d.Render(tui.Theme{}, 80), "\n")
-	if !strings.Contains(lines, "alt+c copies URL") {
-		t.Fatalf("login dialog does not advertise the copy shortcut: %q", lines)
+			lines := strings.Join(d.Render(tui.Theme{}, 80), "\n")
+			if !strings.Contains(lines, "alt+c copies URL") {
+				t.Fatalf("login dialog does not advertise the copy shortcut: %q", lines)
+			}
+		})
 	}
 }
 

@@ -2,7 +2,10 @@
 
 package tui
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // ReadClipboardText reads plain text from the macOS system clipboard.
 func ReadClipboardText() (string, bool, error) {
@@ -14,8 +17,8 @@ func ReadClipboardText() (string, bool, error) {
 }
 
 // WriteClipboardText writes plain text to the macOS system clipboard.
-func WriteClipboardText(text string) error {
-	if err := writeClipboardTextCommands(text, clipboardTextCommand{name: "/usr/bin/pbcopy"}); err != nil {
+func WriteClipboardText(ctx context.Context, text string) error {
+	if err := writeClipboardTextCommands(ctx, text, clipboardTextCommand{name: "/usr/bin/pbcopy"}); err != nil {
 		if err == errClipboardCommandUnavailable {
 			return fmt.Errorf("text clipboard unavailable: pbcopy was not found")
 		}

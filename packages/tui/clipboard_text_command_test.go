@@ -2,6 +2,8 @@ package tui
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,7 +51,7 @@ func TestWriteClipboardTextCommandsPassesTextOnStdin(t *testing.T) {
 	t.Setenv("PATH", dir)
 	t.Setenv("CLIPBOARD_TEST_PAYLOAD", payload)
 
-	if err := writeClipboardTextCommands("https://example.com/oauth?state=xyz", clipboardTextCommand{name: "clipboard-test"}); err != nil {
+	if err := writeClipboardTextCommands(context.Background(), "https://example.com/oauth?state=xyz", clipboardTextCommand{name: "clipboard-test"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(payload)
@@ -58,6 +60,25 @@ func TestWriteClipboardTextCommandsPassesTextOnStdin(t *testing.T) {
 	}
 	if string(got) != "https://example.com/oauth?state=xyz" {
 		t.Fatalf("clipboard payload = %q", got)
+	}
+}
+
+func TestWriteClipboardTextCommandsHonorsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a shell script")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "clipboard-test")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := writeClipboardTextCommands(ctx, "clipboard text", clipboardTextCommand{name: "clipboard-test"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
 	}
 }
 

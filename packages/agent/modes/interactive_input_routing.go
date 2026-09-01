@@ -151,7 +151,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.saveLlamaCPPLogin(act.LlamaURL, act.LlamaAPIKey)
 		}
 		if act.CopyURL {
-			i.copyLoginURL()
+			i.copyLoginURL(ctx)
 		}
 		return false
 	}

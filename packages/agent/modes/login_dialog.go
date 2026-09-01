@@ -213,7 +213,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, "")
 		if d.provider == "kimi" || d.provider == "xai" || d.provider == "github-copilot" {
-			lines = append(lines, th.FGColor(th.Muted, "complete sign-in in the browser - esc cancels"))
+			lines = append(lines, th.FGColor(th.Muted, "alt+c copies URL - complete sign-in in the browser - esc cancels"))
 			lines = append(lines, frameRule(th, width))
 			break
 		}

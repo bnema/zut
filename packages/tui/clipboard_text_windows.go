@@ -2,7 +2,10 @@
 
 package tui
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // ReadClipboardText reads plain text through the PowerShell installation
 // included with supported Windows versions.
@@ -22,8 +25,8 @@ func ReadClipboardText() (string, bool, error) {
 
 // WriteClipboardText writes plain text through the PowerShell installation
 // included with supported Windows versions.
-func WriteClipboardText(text string) error {
-	if err := writeClipboardTextCommands(text,
+func WriteClipboardText(ctx context.Context, text string) error {
+	if err := writeClipboardTextCommands(ctx, text,
 		clipboardTextCommand{name: "powershell.exe", args: []string{"-NoProfile", "-NonInteractive", "-Command", "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())"}},
 		clipboardTextCommand{name: "pwsh.exe", args: []string{"-NoProfile", "-NonInteractive", "-Command", "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())"}},
 	); err != nil {
