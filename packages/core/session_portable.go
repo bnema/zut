@@ -963,8 +963,10 @@ func FindSessionByID(root, cwd, id string) string {
 
 // FindManagedSessionByID looks up a session UUID across zut's managed
 // session stores, independent of cwd. A nil error and empty path mean no
-// matching session was found. Read, storage, metadata, and duplicate-ID
-// failures are returned to the caller instead of being reported as a miss.
+// matching session was found. Directory enumeration, cancellation, and
+// duplicate-ID failures are returned to the caller. Candidate files that
+// cannot be inspected or whose headers are unreadable or invalid are ignored
+// because they cannot be associated with a requested UUID.
 func FindManagedSessionByID(ctx context.Context, root, id string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", errors.New("find managed session: root is empty")
@@ -1024,7 +1026,7 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 		if err := contextErr(ctx); err != nil {
 			return err
 		}
-		if !bucket.IsDir() || bucket.Name() == "agents" || !isSessionBucketName(bucket.Name()) {
+		if bucket.Type()&os.ModeSymlink != 0 || !bucket.IsDir() || bucket.Name() == "agents" || !isSessionBucketName(bucket.Name()) {
 			continue
 		}
 		bucketPath := filepath.Join(dir, bucket.Name())
@@ -1036,13 +1038,17 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 			if err := contextErr(ctx); err != nil {
 				return err
 			}
-			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+			if file.Type()&os.ModeSymlink != 0 || file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
 				continue
 			}
 			path := filepath.Join(bucketPath, file.Name())
-			meta, err := scanSessionMetaContext(ctx, path)
-			if err != nil {
-				return fmt.Errorf("find managed session: read metadata %q: %w", path, err)
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			meta, err := readSessionMetaHeader(path)
+			if err != nil || meta.CWD == "" || filepath.Clean(SessionsDir(root, meta.CWD)) != filepath.Clean(bucketPath) {
+				continue
 			}
 			if meta.ID == id {
 				*matches = append(*matches, path)

@@ -29,6 +29,7 @@ type sessionLogRow struct {
 // content hydration. Callers only implement projection-specific reduction.
 func forEachSessionLogRowContext(ctx context.Context, r io.Reader, fn func(sessionLogRow) error) error {
 	sawMeta := false
+	sessionID := ""
 	err := forEachStrictJSONLLineContext(ctx, r, func(line []byte, lineNo int) error {
 		row, err := decodeSessionLogRow(line)
 		if err != nil {
@@ -38,6 +39,10 @@ func forEachSessionLogRowContext(ctx context.Context, r io.Reader, fn func(sessi
 			return fmt.Errorf("line %d: first row is not meta", lineNo)
 		}
 		if row.typeName == "meta" {
+			if sessionID != "" && row.meta.ID != sessionID {
+				return fmt.Errorf("line %d: session id changed from %q to %q", lineNo, sessionID, row.meta.ID)
+			}
+			sessionID = row.meta.ID
 			sawMeta = true
 		}
 		return fn(row)

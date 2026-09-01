@@ -12,7 +12,7 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(t *testing.T) {
+func TestFindManagedSessionByIDScopesManagedStoresAndIgnoresUnrelatedCorruption(t *testing.T) {
 	root := t.TempDir()
 	cwd := t.TempDir()
 	session, err := NewSession(root, cwd, "provider", "model", "test")
@@ -59,14 +59,158 @@ func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(
 		t.Fatalf("agent managed session path = %q, want %q", got, agentSession.Path)
 	}
 
-	badPath := filepath.Join(SessionsDir(root, cwd), "bad.jsonl")
-	if err := os.WriteFile(badPath, []byte("not json\n"), 0o644); err != nil {
+	badMeta, err := json.Marshal(sessionLine{Type: "meta", Meta: &SessionMeta{ID: "unrelated", CWD: cwd}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FindManagedSessionByID(context.Background(), root, "missing"); err == nil {
-		t.Fatal("malformed managed metadata was reported as not found")
-	} else if !strings.Contains(err.Error(), "metadata") {
-		t.Fatalf("malformed metadata error = %v, want metadata context", err)
+	badPath := filepath.Join(SessionsDir(root, cwd), "bad.jsonl")
+	if err := os.WriteFile(badPath, append(append(badMeta, '\n'), []byte("not json\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = FindManagedSessionByID(context.Background(), root, session.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID with unrelated corrupt session: %v", err)
+	}
+	if got != session.Path {
+		t.Fatalf("managed session path with unrelated corruption = %q, want %q", got, session.Path)
+	}
+}
+
+func TestFindManagedSessionByIDFindsTargetWithCorruptBody(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "keep the session"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.OpenFile(session.Path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("not json\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindManagedSessionByID(context.Background(), root, session.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID: %v", err)
+	}
+	if got != session.Path {
+		t.Fatalf("managed session path = %q, want %q", got, session.Path)
+	}
+	if _, _, err := OpenSession(got); err == nil || !strings.Contains(err.Error(), "invalid JSON") {
+		t.Fatalf("OpenSession corrupt target error = %v, want invalid JSON", err)
+	}
+}
+
+func TestFindManagedSessionByIDRejectsDuplicateHeaders(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "duplicate me"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(session.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicatePath := filepath.Join(SessionsDir(root, cwd), "duplicate.jsonl")
+	if err := os.WriteFile(duplicatePath, contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := FindManagedSessionByID(context.Background(), root, session.ID); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("FindManagedSessionByID duplicate error = %v, want ambiguity", err)
+	}
+}
+
+func TestFindManagedSessionByIDIgnoresSessionInWrongBucket(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "keep the session"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(session.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongBucket := filepath.Join(root, "sessions", "0123456789abcdef")
+	if err := os.MkdirAll(wrongBucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wrongBucket, "misplaced.jsonl"), contents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindManagedSessionByID(context.Background(), root, session.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID: %v", err)
+	}
+	if got != session.Path {
+		t.Fatalf("managed session path = %q, want %q", got, session.Path)
+	}
+}
+
+func TestFindManagedSessionByIDIgnoresSymlink(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "keep the session"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(SessionsDir(root, cwd), "link.jsonl")
+	if err := os.Symlink(session.Path, symlink); err != nil {
+		t.Skipf("create session symlink: %v", err)
+	}
+
+	got, err := FindManagedSessionByID(context.Background(), root, session.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID: %v", err)
+	}
+	if got != session.Path {
+		t.Fatalf("managed session path = %q, want %q", got, session.Path)
 	}
 }
 

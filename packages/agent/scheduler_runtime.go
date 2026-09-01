@@ -27,6 +27,13 @@ func runScheduledSession(ctx context.Context, task scheduler.Task, args Args, ba
 	if err != nil {
 		return fmt.Errorf("open scheduled session: %w", err)
 	}
+	if sess.ID != task.SessionID {
+		closeErr := sess.Close()
+		if closeErr != nil {
+			return fmt.Errorf("scheduled session %q changed during resume: %w", task.SessionID, closeErr)
+		}
+		return fmt.Errorf("scheduled session %q changed during resume", task.SessionID)
+	}
 	defer sess.Close()
 
 	providerName := strings.TrimSpace(sess.Meta.Provider)
