@@ -68,6 +68,13 @@ func WriteClipboardTextOSC52(w io.Writer, text string) error {
 	return err
 }
 
+// SupportsOSC52Clipboard reports whether the terminal environment is known to
+// relay OSC 52 clipboard requests. Vev uses OSC 52 for its own copy operation
+// and exposes TERM_PROGRAM=vev to child processes.
+func SupportsOSC52Clipboard() bool {
+	return strings.EqualFold(os.Getenv("TERM_PROGRAM"), "vev")
+}
+
 // SetTitle returns an OSC 0 sequence that sets the terminal's tab/window
 // title. Control characters are removed from the payload so user- or
 // model-provided text cannot inject another terminal control sequence.

@@ -113,6 +113,7 @@ func TestInteractiveAltCSendsLoginURLToTerminalClipboard(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("DISPLAY", "")
+	t.Setenv("TERM_PROGRAM", "vev")
 
 	const loginURL = "https://example.com/oauth/authorize?state=xyz"
 	term := &alertTestTerminal{}
@@ -148,6 +149,7 @@ func TestInteractiveAltCUsesTerminalClipboardBeforeSystemClipboard(t *testing.T)
 	t.Setenv("PATH", dir)
 	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
 	t.Setenv("DISPLAY", "")
+	t.Setenv("TERM_PROGRAM", "vev")
 	t.Setenv("CLIPBOARD_TEST_STATE", state)
 
 	const loginURL = "https://example.com/oauth/authorize?state=xyz"

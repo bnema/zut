@@ -92,3 +92,17 @@ func TestWriteClipboardTextOSC52EncodesPayload(t *testing.T) {
 		t.Fatalf("OSC 52 = %q, want %q", got, want)
 	}
 }
+
+func TestSupportsOSC52ClipboardForVev(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vev")
+	if !SupportsOSC52Clipboard() {
+		t.Fatal("Vev terminal did not advertise OSC 52 clipboard support")
+	}
+}
+
+func TestSupportsOSC52ClipboardRejectsUnknownTerminal(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+	if SupportsOSC52Clipboard() {
+		t.Fatal("unknown terminal advertised OSC 52 clipboard support")
+	}
+}

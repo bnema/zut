@@ -15,7 +15,7 @@ func (i *Interactive) copyLoginURL(ctx context.Context) {
 	term := i.cfg.Terminal
 	i.mu.Unlock()
 
-	if term != nil && tui.WriteClipboardTextOSC52(term, url) == nil {
+	if term != nil && tui.SupportsOSC52Clipboard() && tui.WriteClipboardTextOSC52(term, url) == nil {
 		i.mu.Lock()
 		i.statusErr = ""
 		i.statusOK = "sent login URL to terminal clipboard"

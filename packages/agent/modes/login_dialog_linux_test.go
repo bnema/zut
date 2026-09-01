@@ -88,7 +88,40 @@ func TestInteractiveAltCReportsSystemClipboardError(t *testing.T) {
 	}
 }
 
+func TestInteractiveAltCUsesSystemClipboardWhenOSC52IsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	payload := filepath.Join(dir, "clipboard-payload")
+	if err := os.WriteFile(filepath.Join(dir, "wl-copy"), []byte("#!/bin/sh\nexec /bin/cat > \"$CLIPBOARD_TEST_PAYLOAD\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+	t.Setenv("DISPLAY", "")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("CLIPBOARD_TEST_PAYLOAD", payload)
+
+	const loginURL = "https://example.com/oauth/authorize?state=xyz"
+	term := &alertTestTerminal{}
+	i := NewInteractive(InteractiveConfig{Terminal: term})
+	i.dialog.Open(t.TempDir())
+	i.dialog.ShowWaiting(loginURL)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'c', Alt: true})
+
+	if got := term.String(); got != "" {
+		t.Fatalf("terminal output = %q, want no OSC 52 request", got)
+	}
+	got, err := os.ReadFile(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != loginURL {
+		t.Fatalf("clipboard payload = %q, want %q", got, loginURL)
+	}
+}
+
 func TestInteractiveAltCDoesNotHoldMutexDuringTerminalWrite(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vev")
 	term := &blockingLoginClipboardTerminal{started: make(chan struct{}), release: make(chan struct{})}
 	i := NewInteractive(InteractiveConfig{Terminal: term})
 	i.dialog.Open(t.TempDir())
@@ -104,8 +137,8 @@ func TestInteractiveAltCDoesNotHoldMutexDuringTerminalWrite(t *testing.T) {
 	unlocked := make(chan struct{})
 	go func() {
 		i.mu.Lock()
-		i.mu.Unlock()
 		close(unlocked)
+		i.mu.Unlock()
 	}()
 	select {
 	case <-unlocked:
