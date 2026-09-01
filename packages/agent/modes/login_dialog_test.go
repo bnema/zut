@@ -1,6 +1,9 @@
 package modes
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,5 +89,76 @@ func TestLoginDialogCursorPosMatchesPaddedInputRow(t *testing.T) {
 	}
 	if got := stripANSIBytes(lines[row]); !strings.Contains(got, "▌") {
 		t.Fatalf("CursorPos row %d = %q; want editor input row", row, got)
+	}
+}
+
+func TestLoginDialogWaitingShowsCopyURLShortcut(t *testing.T) {
+	d := newLoginDialog()
+	d.Open(t.TempDir())
+	d.method = "oauth"
+	d.provider = "openai-codex"
+	d.ShowWaiting("https://example.com/oauth/authorize?state=xyz")
+
+	lines := strings.Join(d.Render(tui.Theme{}, 80), "\n")
+	if !strings.Contains(lines, "alt+c copies URL") {
+		t.Fatalf("login dialog does not advertise the copy shortcut: %q", lines)
+	}
+}
+
+func TestInteractiveAltCSendsLoginURLToTerminalClipboard(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
+
+	const loginURL = "https://example.com/oauth/authorize?state=xyz"
+	term := &alertTestTerminal{}
+	i := NewInteractive(InteractiveConfig{Terminal: term})
+	i.dialog.Open(t.TempDir())
+	i.dialog.method = "oauth"
+	i.dialog.provider = "openai-codex"
+	i.dialog.ShowWaiting(loginURL)
+	i.dialog.Render(tui.Theme{}, 80)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'c', Alt: true})
+
+	const want = "\x1b]52;c;aHR0cHM6Ly9leGFtcGxlLmNvbS9vYXV0aC9hdXRob3JpemU/c3RhdGU9eHl6\a"
+	if got := term.String(); got != want {
+		t.Fatalf("terminal output = %q, want OSC 52 copy %q", got, want)
+	}
+	if got := i.dialog.codeEd.SubmitValue(); got != "" {
+		t.Fatalf("authorization code input = %q after alt+c, want unchanged", got)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.statusOK != "sent login URL to terminal clipboard" || i.statusErr != "" {
+		t.Fatalf("status = (%q, %q), want successful terminal copy request", i.statusOK, i.statusErr)
+	}
+}
+
+func TestInteractiveAltCUsesTerminalClipboardBeforeSystemClipboard(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "wl-copy-called")
+	if err := os.WriteFile(filepath.Join(dir, "wl-copy"), []byte("#!/bin/sh\n: > \"$CLIPBOARD_TEST_STATE\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+	t.Setenv("DISPLAY", "")
+	t.Setenv("CLIPBOARD_TEST_STATE", state)
+
+	const loginURL = "https://example.com/oauth/authorize?state=xyz"
+	term := &alertTestTerminal{}
+	i := NewInteractive(InteractiveConfig{Terminal: term})
+	i.dialog.Open(t.TempDir())
+	i.dialog.ShowWaiting(loginURL)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'c', Alt: true})
+
+	const want = "\x1b]52;c;aHR0cHM6Ly9leGFtcGxlLmNvbS9vYXV0aC9hdXRob3JpemU/c3RhdGU9eHl6\a"
+	if got := term.String(); got != want {
+		t.Fatalf("terminal output = %q, want OSC 52 copy %q", got, want)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("system clipboard helper ran: %v", err)
 	}
 }

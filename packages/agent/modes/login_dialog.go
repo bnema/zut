@@ -224,7 +224,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		lines = append(lines, "")
-		lines = append(lines, th.FGColor(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
+		lines = append(lines, th.FGColor(th.Muted, "alt+c copies URL - enter submits - esc cancels - waiting for browser callback in background"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepPasteCode:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider)+" - paste code", width))
@@ -244,7 +244,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		lines = append(lines, "")
-		lines = append(lines, th.FGColor(th.Muted, "enter submits - esc cancels"))
+		lines = append(lines, th.FGColor(th.Muted, "alt+c copies URL - enter submits - esc cancels"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepInfo:
 		title := d.infoTitle
@@ -428,6 +428,7 @@ type loginDialogAction struct {
 	LlamaAPIKey string
 	Close       bool
 	SubmitCode  string
+	CopyURL     bool
 }
 
 // HandleKey advances the dialog and returns an action to apply, if any.
@@ -610,6 +611,9 @@ func (d *loginDialog) handleWaitingKey(k tui.Key) loginDialogAction {
 		d.Close()
 		return loginDialogAction{Close: true}
 	}
+	if k.Kind == tui.KeyRune && k.Alt && !k.Ctrl && (k.Rune == 'c' || k.Rune == 'C') {
+		return loginDialogAction{CopyURL: true}
+	}
 	if d.codeEd == nil {
 		return loginDialogAction{}
 	}
@@ -625,6 +629,9 @@ func (d *loginDialog) handlePasteCodeKey(k tui.Key) loginDialogAction {
 	if k.Kind == tui.KeyEsc {
 		d.Close()
 		return loginDialogAction{Close: true}
+	}
+	if k.Kind == tui.KeyRune && k.Alt && !k.Ctrl && (k.Rune == 'c' || k.Rune == 'C') {
+		return loginDialogAction{CopyURL: true}
 	}
 	if d.codeEd == nil {
 		return loginDialogAction{}

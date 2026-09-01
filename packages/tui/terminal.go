@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/base64"
 	"io"
 	"os"
 	"path/filepath"
@@ -56,6 +57,14 @@ func (p *ProcTerm) Write(b []byte) (int, error) {
 // so redraws and alerts share the host's output boundary.
 func WriteBell(w io.Writer) error {
 	_, err := io.WriteString(w, "\a")
+	return err
+}
+
+// WriteClipboardTextOSC52 asks the connected terminal to copy text to its
+// clipboard. OSC 52 reaches the local terminal through SSH and multiplexers
+// where a process-local clipboard command cannot.
+func WriteClipboardTextOSC52(w io.Writer, text string) error {
+	_, err := io.WriteString(w, "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(text))+"\a")
 	return err
 }
 

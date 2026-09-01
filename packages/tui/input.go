@@ -506,6 +506,9 @@ func keyFromModifiedCode(code, mod int) (Key, bool) {
 	if code >= '0' && code <= '9' {
 		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
 	}
+	if !ctrl && code >= 0x20 && code <= 0x7e {
+		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
+	}
 	return Key{}, false
 }
 

@@ -111,6 +111,32 @@ exit 1
 	}
 }
 
+func TestWriteClipboardTextWaylandUsesWlCopy(t *testing.T) {
+	dir := t.TempDir()
+	payload := filepath.Join(dir, "clipboard-payload")
+	writeClipboardTestHelper(t, dir, "wl-copy", `#!/bin/sh
+if [ "$1" != "--type" ] || [ "$2" != "text/plain" ]; then
+  exit 1
+fi
+exec /bin/cat > "$CLIPBOARD_TEST_PAYLOAD"
+`)
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+	t.Setenv("DISPLAY", "")
+	t.Setenv("CLIPBOARD_TEST_PAYLOAD", payload)
+
+	if err := WriteClipboardText("https://example.com/oauth?state=xyz"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "https://example.com/oauth?state=xyz" {
+		t.Fatalf("clipboard payload = %q", got)
+	}
+}
+
 func TestRunClipboardImageCommandEnforcesSizeLimit(t *testing.T) {
 	dir := t.TempDir()
 	payload := filepath.Join(dir, "payload")

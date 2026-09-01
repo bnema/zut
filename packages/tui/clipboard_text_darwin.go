@@ -12,3 +12,14 @@ func ReadClipboardText() (string, bool, error) {
 	}
 	return text, ok, err
 }
+
+// WriteClipboardText writes plain text to the macOS system clipboard.
+func WriteClipboardText(text string) error {
+	if err := writeClipboardTextCommands(text, clipboardTextCommand{name: "/usr/bin/pbcopy"}); err != nil {
+		if err == errClipboardCommandUnavailable {
+			return fmt.Errorf("text clipboard unavailable: pbcopy was not found")
+		}
+		return fmt.Errorf("write text clipboard: %w", err)
+	}
+	return nil
+}

@@ -38,3 +38,32 @@ func ReadClipboardText() (string, bool, error) {
 	}
 	return text, ok, nil
 }
+
+// WriteClipboardText writes plain text to a Wayland or X11 clipboard. Small
+// command-line clients keep zut's build CGO-free.
+func WriteClipboardText(text string) error {
+	var commands []clipboardTextCommand
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		commands = append(commands, clipboardTextCommand{name: "wl-copy", args: []string{"--type", "text/plain"}})
+	}
+	if os.Getenv("DISPLAY") != "" {
+		commands = append(commands,
+			clipboardTextCommand{name: "xclip", args: []string{"-selection", "clipboard", "-in"}},
+			clipboardTextCommand{name: "xsel", args: []string{"--clipboard", "--input"}},
+		)
+	}
+	if len(commands) == 0 {
+		commands = []clipboardTextCommand{
+			{name: "wl-copy", args: []string{"--type", "text/plain"}},
+			{name: "xclip", args: []string{"-selection", "clipboard", "-in"}},
+			{name: "xsel", args: []string{"--clipboard", "--input"}},
+		}
+	}
+	if err := writeClipboardTextCommands(text, commands...); err != nil {
+		if err == errClipboardCommandUnavailable {
+			return fmt.Errorf("text clipboard unavailable: install wl-clipboard, xclip, or xsel")
+		}
+		return fmt.Errorf("write text clipboard: %w", err)
+	}
+	return nil
+}
