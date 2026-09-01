@@ -77,6 +77,34 @@ func TestReaderParsesRawCtrlVAsClipboardPaste(t *testing.T) {
 	}
 }
 
+func TestReaderParsesRawAltC(t *testing.T) {
+	k := readKey(t, "\x1bc")
+	if k.Kind != KeyRune || k.Rune != 'c' || !k.Alt {
+		t.Fatalf("Read = %+v, want alt+c", k)
+	}
+}
+
+func TestReaderParsesEnhancedAltC(t *testing.T) {
+	for name, sequence := range map[string]string{
+		"kitty protocol":    "\x1b[99;3u",
+		"modify other keys": "\x1b[27;3;99~",
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := readKey(t, sequence)
+			if k.Kind != KeyRune || k.Rune != 'c' || !k.Alt {
+				t.Fatalf("Read = %+v, want alt+c", k)
+			}
+		})
+	}
+}
+
+func TestReaderKeepsUnknownEnhancedCtrlLetterUnknown(t *testing.T) {
+	k := readKey(t, "\x1b[122;5u")
+	if k.Kind != KeyUnknown {
+		t.Fatalf("Read = %+v, want unknown ctrl+z", k)
+	}
+}
+
 func TestReaderParsesCSIUCtrlVAsClipboardPaste(t *testing.T) {
 	k := readKey(t, "\x1b[118;5u")
 	if k.Kind != KeyPasteClipboard || !k.Ctrl {

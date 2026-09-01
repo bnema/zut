@@ -150,6 +150,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.SaveLlama {
 			i.saveLlamaCPPLogin(act.LlamaURL, act.LlamaAPIKey)
 		}
+		if act.CopyURL {
+			i.copyLoginURL(ctx)
+		}
 		return false
 	}
 	if i.modelDialog.Active() {

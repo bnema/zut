@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -41,4 +42,32 @@ func readClipboardTextCommands(commands ...clipboardTextCommand) (string, bool, 
 		return "", false, errClipboardCommandUnavailable
 	}
 	return "", false, lastErr
+}
+
+// writeClipboardTextCommands tries each installed command in order. Text is
+// supplied on stdin so it never becomes part of an executable command line.
+func writeClipboardTextCommands(ctx context.Context, text string, commands ...clipboardTextCommand) error {
+	var lastErr error
+	found := false
+	for _, candidate := range commands {
+		path, err := exec.LookPath(candidate.name)
+		if err != nil {
+			continue
+		}
+		found = true
+		commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cmd := exec.CommandContext(commandCtx, path, candidate.args...)
+		cmd.Stdin = strings.NewReader(text)
+		err = cmd.Run()
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if !found {
+		return errClipboardCommandUnavailable
+	}
+	return lastErr
 }
