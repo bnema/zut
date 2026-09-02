@@ -3,10 +3,9 @@
 // a YAML-like metadata block followed by the agent's system prompt.
 //
 // Discovery prefers explicitly configured directories, then the shared
-// ~/.agents/agents directory, and finally the optional ~/.pi/agent/agents
-// compatibility directory. Profiles are metadata plus instructions; the main
-// agent sees only the compact manifest, while a selected child loads the full
-// profile itself.
+// ~/.agents/agents directory. Profiles are metadata plus instructions; the
+// main agent sees only the compact manifest, while a selected child loads the
+// full profile itself.
 package subagents
 
 import (
@@ -233,9 +232,6 @@ func searchDirs(cwd, userHome string) []location {
 	}
 	if userHome != "" {
 		add(filepath.Join(userHome, ".agents", "agents"), "global (agents)")
-		// This is an additional compatibility location. The shared .agents
-		// path above remains zut's documented default.
-		add(filepath.Join(userHome, ".pi", "agent", "agents"), "global (pi)")
 	}
 	return out
 }

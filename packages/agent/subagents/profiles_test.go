@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverLoadsGlobalAgentsProfilesAndPiFallback(t *testing.T) {
+func TestDiscoverLoadsGlobalAgentsProfilesAndIgnoresPiProfiles(t *testing.T) {
 	home := t.TempDir()
 	agentsDir := filepath.Join(home, ".agents", "agents")
 	piDir := filepath.Join(home, ".pi", "agent", "agents")
@@ -45,11 +45,11 @@ Implement the requested change.
 	if len(errs) != 0 {
 		t.Fatalf("Discover errors = %v", errs)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("profiles = %d, want 2: %#v", len(profiles), profiles)
+	if len(profiles) != 1 {
+		t.Fatalf("profiles = %d, want 1: %#v", len(profiles), profiles)
 	}
-	if profiles[0].Name != "implementer" || profiles[1].Name != "reviewer" {
-		t.Fatalf("profiles not sorted by name: %#v", profiles)
+	if profiles[0].Name != "reviewer" {
+		t.Fatalf("profile = %q, want reviewer", profiles[0].Name)
 	}
 	reviewer := Find(profiles, "reviewer")
 	if reviewer == nil {
@@ -70,9 +70,8 @@ Implement the requested change.
 	if reviewer.FastMode == nil || *reviewer.FastMode {
 		t.Fatalf("fast mode = %#v, want false", reviewer.FastMode)
 	}
-	implementer := Find(profiles, "implementer")
-	if implementer == nil || implementer.FastMode != nil {
-		t.Fatalf("unset fast mode = %#v, want nil", implementer)
+	if implementer := Find(profiles, "implementer"); implementer != nil {
+		t.Fatalf("Pi profile was discovered: %#v", implementer)
 	}
 }
 

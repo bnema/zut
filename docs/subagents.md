@@ -11,9 +11,8 @@ journal. Starting a child never launches another zut executable.
 
 ## Profiles
 
-Profiles are Markdown files discovered from `~/.agents/agents/*.md`, paths in
-`ZUT_AGENT_PROFILES`, and the `~/.pi/agent/agents/*.md` compatibility discovery
-location. They are inputs only; zut does not execute them.
+Profiles are Markdown files discovered from `~/.agents/agents/*.md` and paths
+in `ZUT_AGENT_PROFILES`. They are inputs only; zut does not execute them.
 
 ```markdown
 ---
