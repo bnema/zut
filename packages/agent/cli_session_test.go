@@ -262,6 +262,27 @@ func TestPersistGoalToolResultAppliesConfiguredBudget(t *testing.T) {
 	}
 }
 
+func TestPersistGoalToolResultStartsGoalInCurrentMissionWithoutID(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.EnsureMission("fix the reported failure", core.MissionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	missionID := sess.Meta.Mission.ID
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, Objective: "inspect the failure"}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	goal := sess.Meta.Goal
+	if goal == nil || goal.Status != core.GoalActive || goal.MissionID != missionID {
+		t.Fatalf("goal = %#v, want active goal in mission %q", goal, missionID)
+	}
+}
+
 func TestPersistGoalToolResultRejectsActiveGoalReplacement(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {

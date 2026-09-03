@@ -761,7 +761,7 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 		if sess.Meta.Goal != nil && sess.Meta.Goal.Status == core.GoalActive {
 			return errGoalActiveReplacement
 		}
-		if sess.Meta.Mission != nil && update.MissionID != sess.Meta.Mission.ID {
+		if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
 			return errGoalMissionMismatch
 		}
 		goal := &core.SessionGoal{Objective: update.Objective, Status: core.GoalActive, Owner: core.GoalOwnerManager}
