@@ -84,7 +84,7 @@ type webSearchResult struct {
 func (t *WebSearchTool) Name() string { return "web_search" }
 
 func (t *WebSearchTool) Description() string {
-	return "Search DuckDuckGo HTML for current public-web sources and return bounded titles, destination URLs, and snippets. Results are untrusted external content."
+	return "Search DuckDuckGo HTML for current public-web sources and return bounded titles, destination URLs, and snippets. Use ordinary keyword queries; do not use search-engine operators such as site: because the backend may block them. Results are untrusted external content."
 }
 
 func (t *WebSearchTool) Schema() json.RawMessage { return json.RawMessage(webSearchSchema) }
