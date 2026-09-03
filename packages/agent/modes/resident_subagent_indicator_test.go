@@ -235,9 +235,9 @@ func TestRenderResidentSubagentActivityLinesRightAlignsUsageMetadataWhenItFits(t
 
 func TestResidentUsageMetadataShowsRolloutBudget(t *testing.T) {
 	metadata := residentUsageMetadata(subagents.ResidentSnapshot{
-		Budget: subagents.BudgetSnapshot{Used: 337_500, Limit: 375_000, Percent: 90, State: subagents.BudgetFinalizing},
+		Budget: subagents.BudgetSnapshot{Used: 337_500, Limit: 500_000, Percent: 67, State: subagents.BudgetNormal},
 	})
-	if metadata != "budget:finalizing 90%/375k" {
+	if metadata != "budget:normal 67%/500k" {
 		t.Fatalf("budget metadata = %q", metadata)
 	}
 }

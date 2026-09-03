@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/provider"
 )
 
 // newResidentChildRunner is the host-owned construction boundary for one
@@ -40,9 +38,6 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 	}
 	budgetLimit := subagents.EffectiveBudgetLimit(spec.BudgetLimit, resolved.ContextWindow)
-	if guidance := subagents.BudgetSystemPrompt(budgetLimit); guidance != "" {
-		system = strings.TrimSpace(system) + "\n\n" + guidance
-	}
 	agent := core.NewAgent(resolved.NewClient(), resolved.Model, system, registry)
 	agent.MaxSteps = resolved.MaxSteps
 	agent.ContextWindow = resolved.ContextWindow
@@ -120,40 +115,11 @@ func configureResidentBudget(agent *core.Agent, budget *subagents.RolloutBudget)
 		return
 	}
 	agent.BeforeTurnContext = func(_ context.Context, _ int) (bool, string, string) {
-		instruction, exceeded := budget.TurnContext()
-		if exceeded {
+		if budget.Snapshot().State == subagents.BudgetExceeded {
 			return false, subagents.ErrBudgetExceeded.Error(), ""
 		}
-		snapshot := budget.Snapshot()
-		if snapshot.Limit > 0 {
-			remaining := residentBudgetOutputLimit(snapshot.Limit - snapshot.Used)
-			if agent.MaxTokens <= 0 || agent.MaxTokens > remaining {
-				agent.MaxTokens = remaining
-			}
-		}
-		if snapshot.State == subagents.BudgetFinalizing {
-			agent.SetTools(core.Registry{})
-		}
-		return true, "", instruction
+		return true, "", ""
 	}
-	agent.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
-		state := budget.Snapshot().State
-		if state == subagents.BudgetFinalizing || state == subagents.BudgetExceeded {
-			return false, "subagent rollout budget is reserved for the final response; tools are disabled", nil
-		}
-		return true, "", nil
-	}
-}
-
-func residentBudgetOutputLimit(remaining int64) int {
-	if remaining <= 1 {
-		return 1
-	}
-	maxInt := int64(^uint(0) >> 1)
-	if remaining > maxInt {
-		return int(maxInt)
-	}
-	return int(remaining)
 }
 
 // residentChildArgs applies the complete durable child specification without

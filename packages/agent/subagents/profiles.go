@@ -10,7 +10,6 @@ package subagents
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,11 +34,6 @@ type Profile struct {
 
 	// Nil means the profile did not specify whether fast mode is enabled.
 	FastMode *bool
-
-	// BudgetRatio and BudgetTokens override the host's inherited rollout
-	// budget. At most one may be declared.
-	BudgetRatio  *float64
-	BudgetTokens *int64
 
 	// SystemPromptMode is "append" (the default) or "replace".
 	SystemPromptMode string
@@ -193,12 +187,6 @@ func SystemPromptAddendum(profiles []*Profile) string {
 		if profile.FastMode != nil {
 			metadata = append(metadata, "fastMode="+strconv.FormatBool(*profile.FastMode))
 		}
-		if profile.BudgetRatio != nil {
-			metadata = append(metadata, "budgetRatio="+strconv.FormatFloat(*profile.BudgetRatio, 'f', -1, 64))
-		}
-		if profile.BudgetTokens != nil {
-			metadata = append(metadata, "budgetTokens="+strconv.FormatInt(*profile.BudgetTokens, 10))
-		}
 		if len(metadata) > 0 {
 			fmt.Fprintf(&sb, "- %s [%s]: %s\n", name, strings.Join(metadata, " "), description)
 		} else {
@@ -319,23 +307,6 @@ func load(path, source string) (*Profile, error) {
 			return nil, fmt.Errorf("fastMode must be true or false")
 		}
 		profile.FastMode = &value
-	}
-	if raw, ok := values["budgetratio"]; ok {
-		value, err := strconv.ParseFloat(strings.TrimSpace(unquote(raw)), 64)
-		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value > 1 {
-			return nil, fmt.Errorf("budgetRatio must be greater than 0 and at most 1")
-		}
-		profile.BudgetRatio = &value
-	}
-	if raw, ok := values["budgettokens"]; ok {
-		value, err := strconv.ParseInt(strings.TrimSpace(unquote(raw)), 10, 64)
-		if err != nil || value <= 0 {
-			return nil, fmt.Errorf("budgetTokens must be a positive integer")
-		}
-		profile.BudgetTokens = &value
-	}
-	if profile.BudgetRatio != nil && profile.BudgetTokens != nil {
-		return nil, fmt.Errorf("budgetRatio and budgetTokens are mutually exclusive")
 	}
 	return profile, nil
 }

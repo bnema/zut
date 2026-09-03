@@ -424,7 +424,7 @@ Resident subagents run alongside the main session as independent in-process agen
 
 The fair global scheduler defaults to six concurrent turns, one active turn per child. `subagents.max_concurrent` overrides that limit. Queueing has no default deadline; a positive `subagents.queue_timeout` durably fails a prompt that waits too long for a slot. Required child work remains an obligation until an explicit successful follow-up.
 
-Each child receives a cumulative rollout budget equal to 75% of the active parent model's context window. `subagents.budget_ratio`, profile frontmatter (`budgetRatio` or `budgetTokens`), and spawn arguments (`budget_ratio` or `budget_tokens`) can override it. The child and dashboard show progressive budget states; at 90% zut disables tools and reserves the remainder for finalization, and at 100% it makes the current response terminal. Budget-exhausted children reject follow-ups.
+Each child receives a cumulative rollout budget equal to its resolved model's context window. The dashboard shows its usage, and zut allows normal work until the hard limit is reached. Budget-exhausted children reject follow-ups.
 
 Worktree isolation captures a patch and changed-file list without applying it. Shared children use the host checkout. The available logical references are `subagent://<id>`, `subagent://<id>/history`, `subagent://<id>/result`, and `subagent://<id>/patch`.
 

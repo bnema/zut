@@ -37,24 +37,18 @@ func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T
 	}
 }
 
-func TestConfigureResidentBudgetEnforcesFinalizationAndExhaustion(t *testing.T) {
+func TestConfigureResidentBudgetOnlyStopsAtExhaustion(t *testing.T) {
 	agent := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
 	budget := subagents.NewRolloutBudget(1_000, provider.Usage{})
 	configureResidentBudget(agent, budget)
 
 	budget.Observe(provider.Usage{InputTokens: 900})
 	allowed, reason, contextText := agent.BeforeTurnContext(t.Context(), 1)
-	if !allowed || reason != "" || !strings.Contains(contextText, "Finalization is required") {
-		t.Fatalf("finalization context = allowed=%t reason=%q context=%q", allowed, reason, contextText)
+	if !allowed || reason != "" || contextText != "" {
+		t.Fatalf("near-limit context = allowed=%t reason=%q context=%q", allowed, reason, contextText)
 	}
-	if len(agent.ToolsSnapshot()) != 0 {
-		t.Fatalf("finalization tools = %#v, want none", agent.ToolsSnapshot())
-	}
-	if agent.MaxTokens != 100 {
-		t.Fatalf("finalization max tokens = %d, want 100", agent.MaxTokens)
-	}
-	if allowed, reason, _ := agent.BeforeToolExecute(provider.ToolCallBlock{Name: "read"}); allowed || !strings.Contains(reason, "tools are disabled") {
-		t.Fatalf("finalization tool guard = allowed=%t reason=%q", allowed, reason)
+	if len(agent.ToolsSnapshot()) != 1 || agent.MaxTokens != 0 {
+		t.Fatalf("near-limit agent = tools=%#v max_tokens=%d", agent.ToolsSnapshot(), agent.MaxTokens)
 	}
 
 	budget.Observe(provider.Usage{InputTokens: 1_000})
@@ -64,7 +58,7 @@ func TestConfigureResidentBudgetEnforcesFinalizationAndExhaustion(t *testing.T) 
 	}
 }
 
-func TestResidentChildRunnerFinalizesWithoutToolsAtNinetyPercent(t *testing.T) {
+func TestResidentChildRunnerKeepsToolsAtNinetyPercent(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestNumber := requests.Add(1)
@@ -74,8 +68,8 @@ func TestResidentChildRunnerFinalizesWithoutToolsAtNinetyPercent(t *testing.T) {
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		if requestNumber == 1 {
-			if got := requestMaxTokens(t, body); got != 1_000 {
-				t.Errorf("initial max_tokens = %d, want 1000", got)
+			if got := requestMaxTokens(t, body); got != 16_384 {
+				t.Errorf("initial max_tokens = %d, want 16384", got)
 			}
 			writeOpenAIChunk(t, w, map[string]any{
 				"choices": []any{map[string]any{
@@ -90,11 +84,11 @@ func TestResidentChildRunnerFinalizesWithoutToolsAtNinetyPercent(t *testing.T) {
 			})
 			return
 		}
-		if tools, ok := body["tools"].([]any); ok && len(tools) != 0 {
-			t.Errorf("finalization request tools = %#v, want none", tools)
+		if tools, ok := body["tools"].([]any); !ok || len(tools) == 0 {
+			t.Errorf("near-limit request tools = %#v, want registered tools", body["tools"])
 		}
-		if got := requestMaxTokens(t, body); got != 100 {
-			t.Errorf("finalization max_tokens = %d, want 100", got)
+		if got := requestMaxTokens(t, body); got <= 100 {
+			t.Errorf("near-limit max_tokens = %d, want model output limit", got)
 		}
 		writeOpenAIChunk(t, w, map[string]any{
 			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "final result"}, "finish_reason": "stop"}},
@@ -123,8 +117,8 @@ func TestResidentChildRunnerTerminatesAtBudgetLimit(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if got := requestMaxTokens(t, body); got != 1_000 {
-			t.Errorf("initial max_tokens = %d, want 1000", got)
+		if got := requestMaxTokens(t, body); got != 16_384 {
+			t.Errorf("initial max_tokens = %d, want 16384", got)
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		writeOpenAIChunk(t, w, map[string]any{

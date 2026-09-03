@@ -243,7 +243,7 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 func residentBudgetSnapshot(usage provider.Usage, limit int64, source string, contextWindow int) (BudgetSnapshot, string) {
 	effective := EffectiveBudgetLimit(limit, contextWindow)
 	if effective > 0 && source == "" {
-		source = "default_ratio"
+		source = "model_context"
 	}
 	return BudgetSnapshotFor(usage, effective), source
 }
