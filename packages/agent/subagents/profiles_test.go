@@ -9,6 +9,7 @@ import (
 )
 
 func TestDiscoverLoadsGlobalAgentsProfilesAndIgnoresPiProfiles(t *testing.T) {
+	t.Setenv("ZUT_AGENT_PROFILES", "")
 	home := t.TempDir()
 	agentsDir := filepath.Join(home, ".agents", "agents")
 	piDir := filepath.Join(home, ".pi", "agent", "agents")
