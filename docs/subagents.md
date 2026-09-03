@@ -21,7 +21,6 @@ description: Read-only code reviewer
 tools: [read, grep]
 model: openai-codex/gpt-5.6-luna
 thinking: high
-budgetRatio: 0.6
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
@@ -36,11 +35,9 @@ catalogue, `tools: []` grants no tools, and an explicit list replaces the
 default. Names unavailable to the child (including host-only extensions) and
 tools denied by `subagents.allowed_tools` are omitted from an explicit list;
 they never grant the child additional access. `model`, `provider`, `thinking`,
-the prompt mode, project/skill inheritance, `fastMode`, and optional
-`budgetRatio` or `budgetTokens` override are resolved before the child is
-accepted. Spawn-level model, provider, reasoning, fast-mode, or budget values
-take precedence where supplied. `budgetRatio` and `budgetTokens` are mutually
-exclusive.
+the prompt mode, project/skill inheritance, and `fastMode` are resolved before
+the child is accepted. Spawn-level model, provider, reasoning, and fast-mode
+values take precedence where supplied.
 
 Children are always fresh conversations: they receive the delegated task and
 resolved host/profile context, never the parent transcript or hidden reasoning.
@@ -89,23 +86,21 @@ one turn for each child, and defaults to six concurrent turns. Set
 unlimited by default; a positive `subagents.queue_timeout` cancels an accepted
 prompt that has not received a slot and records its terminal failure durably.
 `subagents.allowed_tools` is an allowlist for child-visible tools and
-`subagents.allowed_roots` limits eligible child workspaces. Each child also
-inherits a cumulative weighted-token budget equal to 75% of the active parent
-model's context window. Set `subagents.budget_ratio` to another value greater
-than zero and at most one, or override one spawn/profile with `budget_ratio` or
-`budget_tokens`. Removed legacy settings, including `tui_subagent_position`,
-are ignored.
+`subagents.allowed_roots` limits eligible child workspaces. Each child receives
+a cumulative weighted-token budget equal to its resolved model's context window.
+Removed legacy settings, including `tui_subagent_position` and
+`subagents.budget_ratio`, are ignored. Resident journals created before this
+budget policy are incompatible: zut leaves them untouched, reports a recovery
+error, and requires a new child rather than resuming them.
 
 Budget accounting charges uncached input, cache writes, and output fully; cache
 reads count at 25%. It is separate from active context-window usage and survives
-follow-up turns and compaction. The child and TUI receive progressive states at
-50% (`notice`), 70% (`focused`), 85% (`verifying`), and 90% (`finalizing`). At
-90%, zut disables further tool use and reserves the remaining budget for the
-final response. Every request's output cap is also clamped to the remaining
-budget. Providers report exact input usage only after a response, so the
-terminal response can make displayed usage exceed 100%; no later request is
-sent. An exhausted child cannot accept follow-up turns; spawn a replacement
-with an explicitly larger override when more work is required.
+follow-up turns and compaction. The TUI shows the child's current budget usage,
+but does not alter its instructions, tools, or output cap before exhaustion.
+Providers report exact input usage only after a response, so the terminal
+response can make displayed usage exceed 100%; no later request is sent. An
+exhausted child cannot accept follow-up turns; spawn a replacement when more
+work is required.
 
 `required: true` makes a delegated result an obligation of the parent turn.
 Failed, cancelled, and interrupted required work remains unresolved until an
@@ -139,8 +134,8 @@ required capability.
 The model-facing tools retain their logical names:
 
 - `subagent_spawn` accepts `task`, optional `agent`, `model` and `provider`,
-  `reasoning`, `fast_mode`, `required`, `wait`, `isolation` (`shared` or
-  `worktree`), and mutually exclusive `budget_ratio` or `budget_tokens`.
+  `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
+  `worktree`).
   `wait` is an explicit whole-second value from 1 through 300; when omitted,
   spawning returns immediately. A timed-out wait leaves the
   accepted child active, whether it is queued or running. Do not retry that

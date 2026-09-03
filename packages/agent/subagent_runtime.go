@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -307,7 +308,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	providerID, model, reasoning := activeProvider, rt.model, rt.reasoning
 	baseURL, insecureTLS := rt.baseURL, rt.insecureTLS
 	workspace, parentSession := rt.repoRoot, rt.activeSession
-	fastMode, policy, parentContextWindow := rt.fastMode, rt.policy, rt.contextWindow
+	fastMode, policy := rt.fastMode, rt.policy
 	rt.settingsMu.RUnlock()
 	if strings.TrimSpace(request.Provider) != "" {
 		providerID = strings.TrimSpace(request.Provider)
@@ -364,16 +365,11 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	if workspaceMode == "" {
 		workspaceMode = subagents.WorkspaceShared
 	}
-	budgetLimit, resolvedBudgetRatio, budgetSource, err := resolveResidentBudget(parentContextWindow, policy.BudgetRatio, policy.BudgetRatioConfigured, request.Profile, request.BudgetRatio, request.BudgetTokens)
-	if err != nil {
-		return subagents.ResidentChildSpec{}, err
-	}
 	spec := subagents.ResidentChildSpec{
 		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: parentSession, ParentSessionID: parentSession,
 		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
 		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode, Tools: childTools,
 		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,
-		BudgetLimit: budgetLimit, BudgetRatio: resolvedBudgetRatio, BudgetSource: budgetSource,
 	}
 	if request.Profile != nil {
 		spec.Profile = request.Profile.Name
@@ -382,31 +378,17 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		spec.InheritProjectContext = request.Profile.InheritProjectContext
 		spec.InheritSkills = request.Profile.InheritSkills
 	}
+	resolved, err := Resolve(residentChildArgs(rt.args, rt.credentialProvider, spec), false)
+	if err != nil {
+		return subagents.ResidentChildSpec{}, fmt.Errorf("resolve resident child model: %w", err)
+	}
+	budgetLimit, err := subagents.ContextBudgetLimit(resolved.ContextWindow)
+	if err != nil {
+		return subagents.ResidentChildSpec{}, err
+	}
+	spec.BudgetLimit = budgetLimit
+	spec.BudgetSource = "model_context"
 	return spec, nil
-}
-
-func resolveResidentBudget(parentContextWindow int, policyRatio float64, policyConfigured bool, profile *subagents.Profile, spawnRatio *float64, spawnTokens *int64) (int64, float64, string, error) {
-	ratio, source := policyRatio, "default_ratio"
-	if policyConfigured {
-		source = "config_ratio"
-	}
-	var tokens int64
-	if profile != nil {
-		if profile.BudgetTokens != nil {
-			tokens, source = *profile.BudgetTokens, "profile_tokens"
-		} else if profile.BudgetRatio != nil {
-			ratio, source = *profile.BudgetRatio, "profile_ratio"
-		}
-	}
-	if spawnTokens != nil {
-		tokens, source = *spawnTokens, "spawn_tokens"
-		ratio = 0
-	} else if spawnRatio != nil {
-		ratio, source = *spawnRatio, "spawn_ratio"
-		tokens = 0
-	}
-	limit, resolvedRatio, err := subagents.BudgetLimit(parentContextWindow, ratio, tokens)
-	return limit, resolvedRatio, source, err
 }
 
 func expandWebCapabilityTools(selected, catalogue []string, permitted func(string) bool) []string {
@@ -568,16 +550,10 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 		}
 		return parsed
 	}
-	budgetRatio := subagents.DefaultBudgetRatio
-	if cfg.BudgetRatio != nil {
-		budgetRatio = *cfg.BudgetRatio
-	}
 	return subagents.SubagentPolicy{
-		MaxConcurrent:         cfg.MaxConcurrent,
-		QueueTimeout:          parseDuration(cfg.QueueTimeout),
-		AllowedTools:          append([]string(nil), cfg.AllowedTools...),
-		AllowedRoots:          append([]string(nil), cfg.AllowedRoots...),
-		BudgetRatio:           budgetRatio,
-		BudgetRatioConfigured: cfg.BudgetRatio != nil,
+		MaxConcurrent: cfg.MaxConcurrent,
+		QueueTimeout:  parseDuration(cfg.QueueTimeout),
+		AllowedTools:  append([]string(nil), cfg.AllowedTools...),
+		AllowedRoots:  append([]string(nil), cfg.AllowedRoots...),
 	}
 }

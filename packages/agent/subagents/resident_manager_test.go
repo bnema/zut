@@ -584,6 +584,49 @@ func TestResidentManagerRejectsDuplicateBeforeSecondJournalAcceptance(t *testing
 	}
 }
 
+func TestResidentManagerReconcileRejectsIncompatibleBudgetJournal(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "legacy-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "legacy-budget", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(root, spec.ID, residentTranscriptName)
+	data, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(data), `"version":2`, `"version":1`, 1)
+	if legacy == string(data) {
+		t.Fatal("accepted record has no journal version")
+	}
+	if err := os.WriteFile(transcript, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewResidentManager(root, nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	errs := manager.Reconcile()
+	if len(errs) != 1 || !errors.Is(errs[0], ErrIncompatibleResidentBudget) {
+		t.Fatalf("Reconcile errors = %v", errs)
+	}
+	if snapshots := manager.Snapshot(); len(snapshots) != 0 {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+	unchanged, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unchanged) != legacy {
+		t.Fatal("Reconcile modified incompatible journal")
+	}
+}
+
 func TestResidentManagerReconcileMakesInterruptedJournalDiscoverableWithoutReplay(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "recovered")

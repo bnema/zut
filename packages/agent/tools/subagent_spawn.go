@@ -65,22 +65,18 @@ type ResidentSpawnRequest struct {
 	FastMode      *bool
 	Required      bool
 	WorkspaceMode subagents.WorkspaceMode
-	BudgetRatio   *float64
-	BudgetTokens  *int64
 }
 
 type subagentSpawnArgs struct {
-	Task         string   `json:"task"`
-	Agent        string   `json:"agent,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Provider     string   `json:"provider,omitempty"`
-	Reasoning    string   `json:"reasoning,omitempty"`
-	FastMode     *bool    `json:"fast_mode,omitempty"`
-	Required     bool     `json:"required,omitempty"`
-	Wait         *int     `json:"wait,omitempty"`
-	Isolation    string   `json:"isolation,omitempty"`
-	BudgetRatio  *float64 `json:"budget_ratio,omitempty"`
-	BudgetTokens *int64   `json:"budget_tokens,omitempty"`
+	Task      string `json:"task"`
+	Agent     string `json:"agent,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+	FastMode  *bool  `json:"fast_mode,omitempty"`
+	Required  bool   `json:"required,omitempty"`
+	Wait      *int   `json:"wait,omitempty"`
+	Isolation string `json:"isolation,omitempty"`
 }
 
 const subagentSpawnSchemaTemplate = `{
@@ -125,17 +121,6 @@ const subagentSpawnSchemaTemplate = `{
       "type": "string",
       "enum": ["shared", "worktree"],
       "description": "Workspace mode. Shared preserves existing behavior; worktree captures a patch without merging it."
-    },
-    "budget_ratio": {
-      "type": "number",
-      "exclusiveMinimum": 0,
-      "maximum": 1,
-      "description": "Optional cumulative rollout budget as a fraction of the parent model context window. Overrides the selected profile and host default. Mutually exclusive with budget_tokens."
-    },
-    "budget_tokens": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Optional absolute cumulative weighted-token budget. Overrides the selected profile and host default. Mutually exclusive with budget_ratio."
     }
   },
   "required": ["task"]
@@ -167,15 +152,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	}
 	if a.Wait != nil && (*a.Wait < 1 || *a.Wait > maxSubagentWaitSeconds) {
 		return protocolToolError(fmt.Sprintf("%s: wait must be between 1 and %d seconds", prefix, maxSubagentWaitSeconds))
-	}
-	if a.BudgetRatio != nil && (*a.BudgetRatio <= 0 || *a.BudgetRatio > 1) {
-		return protocolToolError(prefix + ": budget_ratio must be greater than 0 and at most 1")
-	}
-	if a.BudgetTokens != nil && *a.BudgetTokens <= 0 {
-		return protocolToolError(prefix + ": budget_tokens must be positive")
-	}
-	if a.BudgetRatio != nil && a.BudgetTokens != nil {
-		return protocolToolError(prefix + ": budget_ratio and budget_tokens are mutually exclusive")
 	}
 
 	workspaceMode := subagents.WorkspaceShared
@@ -251,7 +227,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	spec, err := t.BuildResidentSpec(ctx, ResidentSpawnRequest{
 		Task: task, Profile: profile, Model: model, Provider: providerID,
 		Reasoning: reasoning, FastMode: fastModeOverride, Required: a.Required,
-		WorkspaceMode: workspaceMode, BudgetRatio: a.BudgetRatio, BudgetTokens: a.BudgetTokens,
+		WorkspaceMode: workspaceMode,
 	})
 	if err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
