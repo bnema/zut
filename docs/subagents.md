@@ -21,7 +21,6 @@ description: Read-only code reviewer
 tools: [read, grep]
 model: openai-codex/gpt-5.6-luna
 thinking: high
-budgetRatio: 0.6
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
@@ -36,11 +35,9 @@ catalogue, `tools: []` grants no tools, and an explicit list replaces the
 default. Names unavailable to the child (including host-only extensions) and
 tools denied by `subagents.allowed_tools` are omitted from an explicit list;
 they never grant the child additional access. `model`, `provider`, `thinking`,
-the prompt mode, project/skill inheritance, `fastMode`, and optional
-`budgetRatio` or `budgetTokens` override are resolved before the child is
-accepted. Spawn-level model, provider, reasoning, fast-mode, or budget values
-take precedence where supplied. `budgetRatio` and `budgetTokens` are mutually
-exclusive.
+the prompt mode, project/skill inheritance, and `fastMode` are resolved before
+the child is accepted. Spawn-level model, provider, reasoning, and fast-mode
+values take precedence where supplied.
 
 Children are always fresh conversations: they receive the delegated task and
 resolved host/profile context, never the parent transcript or hidden reasoning.
