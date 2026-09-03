@@ -338,7 +338,7 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### `/goal`
 
-In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts one leased hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. When no mission is active, the main agent can use `update_goal` to start one of its own; within an active mission, it can settle the current goal or set a bounded next goal. Subagents cannot start or update missions. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session.
+In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts one leased hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. When no mission is active, the main agent can use `update_goal` to start one of its own; within an active mission, it can settle the current goal or set a bounded next goal. An omitted `mission_id` targets the current mission; when supplied, it must match that mission. Subagents cannot start or update missions. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session.
 
 Goals are unlimited by default. Zut records token use for each goal but only enforces a budget when it is explicitly configured in `config.json`:
 
