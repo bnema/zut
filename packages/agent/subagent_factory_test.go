@@ -150,7 +150,7 @@ func newBudgetedResidentTestRunner(t *testing.T, baseURL string, limit int64) (s
 	t.Helper()
 	spec := subagents.ResidentChildSpec{
 		ID: "budget-child", SessionID: "budget-session", Provider: "openai", Model: "gpt-4o",
-		Tools: []string{"read"}, BudgetLimit: limit,
+		Tools: []string{"read"}, BudgetLimit: limit, BudgetSource: "model_context",
 	}
 	journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
 	if err != nil {

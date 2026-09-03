@@ -50,19 +50,6 @@ func WeightedBudgetUsage(usage provider.Usage) int64 {
 	return int64(math.Ceil(weighted))
 }
 
-// EffectiveBudgetLimit preserves explicit limits in legacy resident specs.
-// New specs always store the resolved child model context window.
-func EffectiveBudgetLimit(limit int64, contextWindow int) int64 {
-	if limit > 0 {
-		return limit
-	}
-	derived, err := ContextBudgetLimit(contextWindow)
-	if err != nil {
-		return 0
-	}
-	return derived
-}
-
 func BudgetSnapshotFor(usage provider.Usage, limit int64) BudgetSnapshot {
 	if limit <= 0 {
 		return BudgetSnapshot{}

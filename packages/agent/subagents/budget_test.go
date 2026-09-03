@@ -19,12 +19,18 @@ func TestContextBudgetLimitUsesFullModelContext(t *testing.T) {
 	}
 }
 
-func TestEffectiveBudgetLimitPreservesLegacyLimit(t *testing.T) {
-	if got := EffectiveBudgetLimit(0, 500_000); got != 500_000 {
-		t.Fatalf("default budget limit = %d, want 500000", got)
+func TestValidateResidentBudgetRequiresModelContext(t *testing.T) {
+	if err := ValidateResidentBudget(ResidentChildSpec{BudgetLimit: 500_000, BudgetSource: "model_context"}); err != nil {
+		t.Fatal(err)
 	}
-	if got := EffectiveBudgetLimit(42_000, 500_000); got != 42_000 {
-		t.Fatalf("persisted budget limit = %d, want 42000", got)
+	for _, spec := range []ResidentChildSpec{
+		{},
+		{BudgetLimit: 500_000},
+		{BudgetLimit: 375_000, BudgetSource: "default_ratio"},
+	} {
+		if err := ValidateResidentBudget(spec); err == nil {
+			t.Fatalf("ValidateResidentBudget(%#v) succeeded", spec)
+		}
 	}
 }
 

@@ -37,7 +37,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			system = strings.TrimSpace(system) + "\n\n" + extra
 		}
 	}
-	budgetLimit := subagents.EffectiveBudgetLimit(spec.BudgetLimit, resolved.ContextWindow)
+	if err := subagents.ValidateResidentBudget(spec); err != nil {
+		return nil, fmt.Errorf("resident child %q: %w", spec.ID, err)
+	}
+	budgetLimit := spec.BudgetLimit
 	agent := core.NewAgent(resolved.NewClient(), resolved.Model, system, registry)
 	agent.MaxSteps = resolved.MaxSteps
 	agent.ContextWindow = resolved.ContextWindow

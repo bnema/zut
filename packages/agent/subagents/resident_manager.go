@@ -230,7 +230,7 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		return ResidentSnapshot{}
 	}
 	live := child.Live()
-	budget, budgetSource := residentBudgetSnapshot(live.Usage, child.spec.BudgetLimit, child.spec.BudgetSource, live.ContextMax)
+	budget, budgetSource := residentBudgetSnapshot(live.Usage, child.spec.BudgetLimit, child.spec.BudgetSource)
 	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
@@ -240,16 +240,8 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		Budget: budget, BudgetSource: budgetSource}
 }
 
-func residentBudgetSnapshot(usage provider.Usage, limit int64, source string, contextWindow int) (BudgetSnapshot, string) {
-	effective := EffectiveBudgetLimit(limit, contextWindow)
-	if effective > 0 && source == "" {
-		if limit > 0 {
-			source = "legacy_limit"
-		} else {
-			source = "model_context"
-		}
-	}
-	return BudgetSnapshotFor(usage, effective), source
+func residentBudgetSnapshot(usage provider.Usage, limit int64, source string) (BudgetSnapshot, string) {
+	return BudgetSnapshotFor(usage, limit), source
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -884,7 +876,7 @@ func (m *ResidentManager) Reconcile() []error {
 			errs = append(errs, fmt.Errorf("resident child %s: %w", childID, reconcileErr))
 			continue
 		}
-		budget, budgetSource := residentBudgetSnapshot(metadata.Usage, spec.BudgetLimit, spec.BudgetSource, metadata.ContextMax)
+		budget, budgetSource := residentBudgetSnapshot(metadata.Usage, spec.BudgetLimit, spec.BudgetSource)
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
 			m.recovered[childID] = ResidentSnapshot{

@@ -269,37 +269,6 @@ func TestPublicResidentStatusIncludesRolloutBudget(t *testing.T) {
 	}
 }
 
-func TestPublicResidentStatusPreservesLegacyBudgetLimitSourceAfterReconcile(t *testing.T) {
-	root := t.TempDir()
-	journal, err := subagents.OpenResidentJournal(root, "legacy-budget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := subagents.ResidentChildSpec{
-		ID: "legacy-budget", SessionID: "child-session", Provider: "openai", Model: "gpt-5",
-		BudgetLimit: 375_000,
-	}
-	if err := journal.Accept(spec, "review"); err != nil {
-		t.Fatal(err)
-	}
-	if err := journal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	manager := subagents.NewResidentManager(root, nil)
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	if errs := manager.Reconcile(); len(errs) != 0 {
-		t.Fatalf("Reconcile errors = %v", errs)
-	}
-	snapshots := manager.Snapshot()
-	if len(snapshots) != 1 {
-		t.Fatalf("snapshots = %#v", snapshots)
-	}
-	entry := publicResidentStatus(snapshots[0])
-	if entry.Budget == nil || entry.Budget.Limit != 375_000 || entry.BudgetSource != "legacy_limit" {
-		t.Fatalf("status = %#v", entry)
-	}
-}
-
 func TestFindResidentStatusSnapshotRejectsAmbiguousPrefix(t *testing.T) {
 	_, ok := findResidentStatusSnapshot([]subagents.ResidentSnapshot{{ID: "resident-abcd"}, {ID: "resident-abef"}}, "resident-ab")
 	if ok {

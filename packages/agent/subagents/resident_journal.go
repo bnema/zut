@@ -18,6 +18,8 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+var ErrIncompatibleResidentBudget = errors.New("resident journal: incompatible rollout budget; start a new subagent")
+
 const (
 	residentMetadataName       = "metadata.json"
 	residentTranscriptName     = "transcript.jsonl"
@@ -34,7 +36,7 @@ const (
 	residentRecordToolCall     = "tool.call"
 	residentRecordToolResult   = "tool.result"
 	residentRecordUsage        = "usage"
-	residentJournalVersion     = 1
+	residentJournalVersion     = 2
 	residentInterruptedText    = "tool interrupted by resident host restart"
 	residentMaxRecordBytes     = 2 << 20
 	residentResultSummaryBytes = 256 << 10
@@ -384,6 +386,14 @@ func (j *ResidentJournal) Dir() string {
 	return j.dir
 }
 
+// ValidateResidentBudget ensures a new child has a model-context budget.
+func ValidateResidentBudget(spec ResidentChildSpec) error {
+	if spec.BudgetLimit <= 0 || spec.BudgetSource != "model_context" {
+		return ErrIncompatibleResidentBudget
+	}
+	return nil
+}
+
 // Accept establishes the authoritative spawn commit point. The transcript is
 // synced before metadata is projected so a crash cannot fabricate acceptance.
 func (j *ResidentJournal) Accept(spec ResidentChildSpec, prompt string) error {
@@ -730,14 +740,17 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	if err != nil {
 		return ResidentMetadata{}, err
 	}
+	if len(records) == 0 || records[0].Type != residentRecordAccepted || records[0].Spec == nil {
+		return ResidentMetadata{}, errors.New("resident journal: missing accepted child record")
+	}
+	if records[0].Version != residentJournalVersion {
+		return ResidentMetadata{}, ErrIncompatibleResidentBudget
+	}
 	if repaired, ok := repairLegacyFalseRecovery(records); ok {
 		if err := journal.rewriteTranscript(repaired); err != nil {
 			return ResidentMetadata{}, err
 		}
 		records = repaired
-	}
-	if len(records) == 0 || records[0].Type != residentRecordAccepted || records[0].Spec == nil {
-		return ResidentMetadata{}, errors.New("resident journal: missing accepted child record")
 	}
 	spec := *records[0].Spec
 	if spec.ID == "" || spec.SessionID == "" {
