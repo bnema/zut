@@ -418,7 +418,7 @@ func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
 	}
 	profile := subagents.Find(profiles, name)
 	if profile == nil {
-		return nil, fmt.Errorf("subagent profile %q not found (looked in ~/.agents/agents and compatibility locations)", name)
+		return nil, fmt.Errorf("subagent profile %q not found (looked in ~/.agents/agents and configured ZUT_AGENT_PROFILES paths)", name)
 	}
 	return profile, nil
 }
