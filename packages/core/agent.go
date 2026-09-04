@@ -785,7 +785,11 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 	if errors.As(err, &openErr) {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// An idle timeout already bounds a full period without provider progress.
+	// Retrying it would restart that deadline for every attempt, allowing one
+	// silent model continuation to keep an agent running for more than thirty
+	// minutes under the default retry policy.
+	if errors.Is(err, ErrStreamIdleTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	msg := strings.ToLower(err.Error())

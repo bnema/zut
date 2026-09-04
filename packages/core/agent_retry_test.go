@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -70,6 +71,32 @@ func (activeStreamClient) Stream(context.Context, provider.Request) (<-chan prov
 	out <- provider.EventStart{}
 	out <- provider.EventDone{Stop: provider.StopEnd}
 	close(out)
+	return out, nil
+}
+
+type postToolSilentClient struct {
+	calls atomic.Int32
+}
+
+func (c *postToolSilentClient) Name() string { return "post-tool-silent" }
+
+func (c *postToolSilentClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	if c.calls.Add(1) == 1 {
+		out := make(chan provider.Event, 1)
+		out <- provider.EventDone{Stop: provider.StopToolUse, Message: provider.Message{
+			Role: provider.RoleAssistant,
+			Content: []provider.Content{provider.ToolCallBlock{
+				ID: "call-1", Name: "result", Arguments: json.RawMessage(`{}`),
+			}},
+		}}
+		close(out)
+		return out, nil
+	}
+	out := make(chan provider.Event)
+	go func() {
+		defer close(out)
+		<-ctx.Done()
+	}()
 	return out, nil
 }
 
@@ -159,19 +186,50 @@ func TestAgentResetsIdleDeadlineForEveryStreamEvent(t *testing.T) {
 	}
 }
 
-func TestAgentRetriesSilentStreamWithoutEndingTurn(t *testing.T) {
+func TestAgentDoesNotRetrySilentStream(t *testing.T) {
 	client := &retryFakeClient{firstErr: ErrStreamIdleTimeout}
 	a := NewAgent(client, "fake-model", "system", Registry{})
-	a.MaxRetries = 1
 	a.RetryBaseDelay = time.Millisecond
-	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
-		t.Fatalf("Prompt returned %v", err)
+	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
 	}
-	if got := atomic.LoadInt32(&client.calls); got != 2 {
-		t.Fatalf("Stream calls = %d; want reconnect after idle timeout", got)
+	if got := atomic.LoadInt32(&client.calls); got != 1 {
+		t.Fatalf("Stream calls = %d; want no reconnect after idle deadline", got)
 	}
-	if got := extractText(a.Messages()[1]); got != "ok" {
-		t.Fatalf("final assistant text = %q; want ok", got)
+}
+
+func TestAgentFailsSilentContinuationAfterToolResult(t *testing.T) {
+	client := &postToolSilentClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{
+		"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "ok"}}}},
+	})
+	a.RetryBaseDelay = time.Millisecond
+	var timers atomic.Int32
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		idle := make(chan time.Time, 1)
+		if timers.Add(1) > 1 {
+			idle <- time.Now()
+		}
+		return idle, func() {}, func() {}
+	}
+	var durable []string
+	err := a.Prompt(context.Background(), "review", nil, func(event AgentEvent) {
+		switch event.(type) {
+		case EvUserMessage, EvAssistantMessage, EvToolCall, EvToolResult:
+			durable = append(durable, event.Type())
+		}
+	})
+	if !errors.Is(err, ErrStreamIdleTimeout) {
+		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	}
+	if got := client.calls.Load(); got != 2 {
+		t.Fatalf("provider calls = %d, want tool request plus one bounded continuation", got)
+	}
+	if len(durable) == 0 {
+		t.Fatal("agent emitted no durable events")
+	}
+	if got, want := durable[len(durable)-1], "tool_result"; got != want {
+		t.Fatalf("last durable event = %q, want %q; events = %v", got, want, durable)
 	}
 }
 
