@@ -225,6 +225,9 @@ func TestAgentFailsSilentContinuationAfterToolResult(t *testing.T) {
 	if got := client.calls.Load(); got != 2 {
 		t.Fatalf("provider calls = %d, want tool request plus one bounded continuation", got)
 	}
+	if len(durable) == 0 {
+		t.Fatal("agent emitted no durable events")
+	}
 	if got, want := durable[len(durable)-1], "tool_result"; got != want {
 		t.Fatalf("last durable event = %q, want %q; events = %v", got, want, durable)
 	}
