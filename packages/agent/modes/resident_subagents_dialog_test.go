@@ -100,6 +100,16 @@ func TestResidentResultStatusIncludesFinalSummary(t *testing.T) {
 	}
 }
 
+func TestResidentResultStatusSanitizesHandoff(t *testing.T) {
+	got := residentResultStatus("child", subagents.ResidentResult{
+		State:   subagents.ResidentBudgetExhausted,
+		Handoff: "Workspace: /tmp/\x1b[31mrepo\x1b[0m\x1b]52;c;secret\a\r\x00",
+	})
+	if got != "budget_exhausted result child: Workspace: /tmp/repo" {
+		t.Fatalf("result status = %q", got)
+	}
+}
+
 func TestResidentSubagentsDialogRefreshAllowsNilReceiver(t *testing.T) {
 	var dialog *residentSubagentsDialog
 	dialog.refresh(1)

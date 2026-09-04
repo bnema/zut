@@ -93,7 +93,7 @@ func residentResultStatus(id string, result subagents.ResidentResult) string {
 	if result.Handoff != "" {
 		text = result.Handoff
 	}
-	if summary := truncateStatus(text, 240); summary != "" {
+	if summary := truncateStatus(sanitizeSessionTreeText(text), 240); summary != "" {
 		status += ": " + summary
 	}
 	return status
