@@ -76,6 +76,15 @@ const webSearchFixture = `<!doctype html><html><body>
 <div class="result"><a class="result__a" href="https://example.org/two#fragment">Two</a><div class="result__snippet">Second snippet.</div></div>
 </body></html>`
 
+func TestWebSearchDescriptionAvoidsSearchOperators(t *testing.T) {
+	description := NewWebSearchTool().Description()
+	for _, want := range []string{"ordinary keyword queries", "site:"} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description = %q, want %q", description, want)
+		}
+	}
+}
+
 func TestWebSearchRequestAndResultContract(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
