@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -127,25 +128,42 @@ func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
 }
 
 func TestResidentSpawnWaitReturnsInitialCompletion(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
-	})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawn := &SubagentSpawnTool{
-		ResidentManager: manager,
-		Enabled:         func() bool { return true },
-		DefaultProvider: func() string { return "openai" },
-		DefaultModel:    func() string { return "gpt-5" },
-		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
-			return subagents.ResidentChildSpec{ID: "wait-for-completion", SessionID: "child-session", Provider: request.Provider, Model: request.Model}, nil
-		},
-	}
-	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"finish now","wait":1}`), nil)
-	if err != nil || result.IsError {
-		t.Fatalf("Execute = (%#v, %v)", result, err)
-	}
-	if got := toolResultText(t, result); !strings.Contains(got, "state: completed") {
-		t.Fatalf("wait result = %q, want completed state", got)
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status string
+	}{
+		{"success", nil, "completed"},
+		{"failure", errors.New("worker failed"), "failed"},
+		{"budget", subagents.ErrBudgetExceeded, "budget_exhausted"},
+		{"cancellation", context.Canceled, "interrupted"},
+		{"cancellation and budget", errors.Join(context.Canceled, subagents.ErrBudgetExceeded), "interrupted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+				return func(context.Context, string) error { return tc.err }, nil
+			})
+			t.Cleanup(func() { _ = manager.Close(context.Background()) })
+			spawn := &SubagentSpawnTool{
+				ResidentManager: manager,
+				Enabled:         func() bool { return true },
+				DefaultProvider: func() string { return "openai" },
+				DefaultModel:    func() string { return "gpt-5" },
+				BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
+					return subagents.ResidentChildSpec{ID: "wait-for-completion", SessionID: "child-session", Provider: request.Provider, Model: request.Model, Required: request.Required}, nil
+				},
+			}
+			result, err := spawn.Execute(t.Context(), json.RawMessage(`{"task":"finish now","wait":1,"required":true}`), nil)
+			if err != nil || result.IsError {
+				t.Fatalf("Execute = (%#v, %v)", result, err)
+			}
+			if got := toolResultText(t, result); !strings.Contains(got, "\nstate: "+tc.status+"\n") || !strings.Contains(got, "\nrequired: "+tc.status+"\n") {
+				t.Fatalf("wait result = %q, want %s state", got, tc.status)
+			}
+			if unmet := len(manager.UnmetRequired()); (unmet != 0) != (tc.err != nil) {
+				t.Fatalf("unmet required = %d, error = %v", unmet, tc.err)
+			}
+		})
 	}
 }
 

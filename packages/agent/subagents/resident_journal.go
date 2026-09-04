@@ -1142,9 +1142,10 @@ func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata Resident
 		}
 	}
 	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt}
-	if outcome == "failed" {
+	switch outcome {
+	case "failed":
 		result.ErrorCode = "turn_failed"
-	} else if outcome == "budget_exhausted" {
+	case "budget_exhausted":
 		result.ErrorCode = "budget_exhausted"
 		result.Handoff = residentBudgetHandoff(dir, spec)
 	}

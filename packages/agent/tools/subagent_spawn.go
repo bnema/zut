@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -273,13 +272,8 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			if current, ok := t.ResidentManager.State(spec.ID); ok {
 				state = string(current)
 			}
-		} else if completion.Err != nil {
-			state = "failed"
-			if errors.Is(completion.Err, subagents.ErrBudgetExceeded) {
-				state = "budget_exhausted"
-			}
 		} else {
-			state = "completed"
+			state = completion.Completion().Status
 		}
 	}
 	var sb strings.Builder
