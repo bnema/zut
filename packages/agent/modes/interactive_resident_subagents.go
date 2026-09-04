@@ -38,6 +38,8 @@ func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentComple
 		status, errText = "failed", completion.Err.Error()
 		if errors.Is(completion.Err, context.Canceled) {
 			status = "interrupted"
+		} else if errors.Is(completion.Err, subagents.ErrBudgetExceeded) {
+			status = "budget_exhausted"
 		}
 	}
 	if !i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, TurnID: completion.TurnID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary}) {

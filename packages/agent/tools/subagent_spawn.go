@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -274,6 +275,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 			}
 		} else if completion.Err != nil {
 			state = "failed"
+			if errors.Is(completion.Err, subagents.ErrBudgetExceeded) {
+				state = "budget_exhausted"
+			}
 		} else {
 			state = "completed"
 		}
@@ -300,7 +304,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		} else if completion.Err != nil {
 			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
 			if completion.Summary != "" {
-				fmt.Fprintf(&sb, "final: %s\n", completion.Summary)
+				fmt.Fprintf(&sb, "partial: %s\n", completion.Summary)
 			}
 		} else {
 			if completion.Summary != "" {

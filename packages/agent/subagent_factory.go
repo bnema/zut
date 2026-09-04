@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -82,10 +83,15 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		budget.SetBaseline(journal.BudgetBaseline())
 		startedExhausted := budget.Snapshot().State == subagents.BudgetExceeded
+		var budgetStopped atomic.Bool
 		var journalErr error
 		var journalMu sync.Mutex
 		err := agent.Prompt(turnCtx, prompt, nil, func(event core.AgentEvent) {
+			if end, ok := event.(core.EvTurnEnd); ok && end.Err != nil && budget.Snapshot().State == subagents.BudgetExceeded {
+				budgetStopped.Store(true)
+			}
 			if usage, ok := event.(core.EvUsage); ok {
 				budget.Observe(usage.Cumulative)
 			}
@@ -104,7 +110,7 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			return fmt.Errorf("persist resident child transcript: %w", journalErr)
 		}
 		if budget.Snapshot().State == subagents.BudgetExceeded {
-			if !startedExhausted && err == nil {
+			if !startedExhausted && !budgetStopped.Load() && err == nil {
 				return nil
 			}
 			return errors.Join(err, subagents.ErrBudgetExceeded)

@@ -55,7 +55,7 @@ func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 	}
 }
 
-func TestResidentManagerRejectsResumeAfterBudgetExhaustion(t *testing.T) {
+func TestResidentManagerCompletedAnswerAtBudgetLimitCanResume(t *testing.T) {
 	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
 		return func(context.Context, string) error {
 			return journal.RecordAgentEvent(core.EvUsage{Cumulative: provider.Usage{InputTokens: 100}})
@@ -73,10 +73,10 @@ func TestResidentManagerRejectsResumeAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("initial completion error = %v", result.Err)
 	}
 	snapshot, ok := manager.SnapshotFor(spec.ID)
-	if !ok || snapshot.State != ResidentIdle || snapshot.Budget.State != BudgetExceeded {
+	if !ok || snapshot.State != ResidentCompleted || snapshot.Budget.State != BudgetExceeded {
 		t.Fatalf("terminal snapshot = %#v, found=%t", snapshot, ok)
 	}
-	if err := manager.Resume(context.Background(), spec.ID, "continue"); err == nil || !strings.Contains(err.Error(), "budget is exhausted") {
+	if err := manager.Resume(context.Background(), spec.ID, "continue"); err != nil {
 		t.Fatalf("resume error = %v", err)
 	}
 }

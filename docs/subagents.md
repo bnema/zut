@@ -53,7 +53,7 @@ subagents/<child-id>/
   owner.lock        # host-ownership coordination; do not modify or remove
   .transcript-backup-* # retained private pre-repair transcript, when repaired
   metadata.json     # rebuildable bounded state
-  result.json       # latest state plus a bounded final assistant summary
+  result.json       # latest outcome, final summary or partial handoff, artifacts
   patch.diff        # optional worktree capture
 ```
 
@@ -98,13 +98,38 @@ reads count at 25%. It is separate from active context-window usage and survives
 follow-up turns and compaction. The TUI shows the child's current budget usage,
 but does not alter its instructions, tools, or output cap before exhaustion.
 Providers report exact input usage only after a response, so the terminal
-response can make displayed usage exceed 100%; no later request is sent. An
-exhausted child cannot accept follow-up turns; spawn a replacement when more
-work is required.
+response can make displayed usage exceed 100%; no later request is sent in that
+turn. If the worker still needs another model step, it reports
+`budget_exhausted`, not successful idle work. A final answer that completes on
+the response crossing the limit remains successful and reports `completed`.
+
+Budget exhaustion publishes a terminal completion with a host-generated partial
+handoff, capped at 16 KiB. It includes recent visible messages, tool arguments
+and results (including checks and reported side effects), workspace and history
+references, and recovery guidance. These are observations, not a claim that the
+task or verification finished; older or truncated details remain in the durable
+transcript. Worktree changes are captured even on budget exhaustion, and the
+worktree is retained for recovery. Shared-workspace changes are not rolled back.
+
+Retrieve the saved result without executing a model:
+
+```json
+{"agent_id":"<child-id>","include_result":true}
+```
+
+Pass this to `subagent_status`, then reconcile the history and artifacts before
+repeating any side effects. Explicit `subagent_resume` after terminal exhaustion
+opens a fresh allowance of the **same size**, retaining the session, workspace,
+and cumulative cost. This permits additional spending; it does not enlarge the
+configured limit or automatically retry the task. The allowance baseline is
+journaled and survives restart. Ordinary non-exhausted follow-ups continue using
+the existing allowance.
 
 `required: true` makes a delegated result an obligation of the parent turn.
-Failed, cancelled, and interrupted required work remains unresolved until an
-explicit successful follow-up. A host restart never retries it automatically.
+Failed, cancelled, interrupted, and budget-exhausted required work remains
+unresolved until an explicit successful follow-up. Reading a partial handoff or
+accepting a recovery prompt does not satisfy the obligation. A host restart never
+retries it automatically.
 
 ## Delegation ownership
 
@@ -142,15 +167,18 @@ The model-facing tools retain their logical names:
   task until it reaches a terminal failure, cancellation, or interruption. It
   returns a logical `subagent://<id>` reference.
 - `subagent_status` returns bounded current state for one child or the current
-  set immediately.
+  set immediately. With `agent_id` and `include_result: true`, it also reads the
+  saved terminal result or partial handoff without model execution. Without this
+  option it remains metadata-only; foreign-owned results cannot be read.
 - `subagent_stop` stops one live child.
 - `subagent_resume` accepts an explicit follow-up prompt for an existing child.
-  Budget-exhausted children are terminal and reject follow-ups.
+  After terminal budget exhaustion, this grants a fresh same-size allowance
+  while preserving progress. Inspect the saved handoff before resuming.
 
 Child execution started by `subagent_spawn` is asynchronous unless it receives
 an explicit `wait` value. For an unwaited spawn, completion arrives through the
-host’s typed completion update; `subagent_status` only returns the current
-state immediately. Do not use sleep loops, repeated status calls, journal
+host’s typed completion update; `subagent_status` returns immediately and does
+not wait for completion. Do not use sleep loops, repeated status calls, journal
 files, or terminal UI inspection as a completion signal.
 Successful completions include the final visible assistant summary, capped at
 256 KiB; open the child session for the complete durable transcript.

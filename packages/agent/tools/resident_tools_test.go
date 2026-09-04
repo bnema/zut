@@ -13,6 +13,54 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestResidentStatusRetrievesBudgetHandoffWithoutExecution(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(context.Context, string) error {
+			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "partial finding"}}}}); err != nil {
+				return err
+			}
+			return subagents.ErrBudgetExceeded
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spec := subagents.ResidentChildSpec{ID: "budget-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
+	completed, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
+	defer cancel()
+	if _, err := manager.Spawn(t.Context(), spec, "investigate"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("no completion")
+	}
+	status := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	for _, include := range []bool{false, true} {
+		raw := json.RawMessage(`{"agent_id":"budget-status"}`)
+		if include {
+			raw = json.RawMessage(`{"agent_id":"budget-status","include_result":true}`)
+		}
+		result, err := status.Execute(t.Context(), raw, nil)
+		if err != nil || result.IsError {
+			t.Fatalf("status: %#v, %v", result, err)
+		}
+		response := result.Details.(subagentStatusResponse)
+		if response.Agent.State != subagents.ResidentBudgetExhausted || (response.Result != nil) != include {
+			t.Fatalf("response = %#v", response)
+		}
+		if include && (!strings.Contains(response.Result.Handoff, "partial finding") || response.Result.ErrorCode != "budget_exhausted") {
+			t.Fatalf("result = %#v", response.Result)
+		}
+	}
+	result, err := status.Execute(t.Context(), json.RawMessage(`{"include_result":true}`), nil)
+	if err != nil || !result.IsError {
+		t.Fatalf("missing child ID must fail: %#v, %v", result, err)
+	}
+	if len(manager.UnmetRequired()) != 1 {
+		t.Fatal("reading a handoff satisfied required work")
+	}
+}
+
 func TestResidentToolsUseManagerOnly(t *testing.T) {
 	runs := make(chan string, 2)
 	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {

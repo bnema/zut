@@ -14,21 +14,22 @@ import (
 // SubagentStatusTool reports live state for background sub-agents without
 // waiting for a child to finish. An omitted agent_id lists resident children;
 // an agent_id queries one child.
-// The result deliberately contains metadata only: it does not expose
-// transcripts, result output, credentials, provider settings, or filesystem
-// paths.
+// By default the result contains metadata only. Explicit include_result reads
+// the bounded durable outcome/handoff for one child without model execution.
 type SubagentStatusTool struct {
 	ResidentManager *subagents.ResidentManager
 	Enabled         func() bool
 }
 
 type subagentStatusArgs struct {
-	AgentID string `json:"agent_id,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	IncludeResult bool   `json:"include_result,omitempty"`
 }
 
 type subagentStatusResponse struct {
-	Agent  *subagentStatusEntry  `json:"agent,omitempty"`
-	Agents []subagentStatusEntry `json:"agents"`
+	Agent  *subagentStatusEntry      `json:"agent,omitempty"`
+	Agents []subagentStatusEntry     `json:"agents"`
+	Result *subagents.ResidentResult `json:"result,omitempty"`
 }
 
 type subagentStatusEntry struct {
@@ -50,6 +51,10 @@ const subagentStatusSchema = `{
     "agent_id": {
       "type": "string",
 		"description": "Optional child id or unique id prefix. Omit it to list all resident sub-agents."
+    },
+    "include_result": {
+      "type": "boolean",
+      "description": "With agent_id, retrieve the saved terminal result or partial budget handoff without running the child."
     }
   }
 }`
@@ -57,7 +62,7 @@ const subagentStatusSchema = `{
 func (t *SubagentStatusTool) Name() string { return SubagentStatusToolName }
 
 func (t *SubagentStatusTool) Description() string {
-	return "Query live status for one background sub-agent or list all visible workers without waiting for completion."
+	return "Query live status for one background sub-agent or list all visible workers without waiting for completion. Set include_result with agent_id to retrieve its saved result or partial handoff without model execution."
 }
 
 func (t *SubagentStatusTool) Schema() json.RawMessage {
@@ -87,6 +92,9 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 	snapshots := t.ResidentManager.Snapshot()
 	id := strings.TrimSpace(args.AgentID)
 	if id == "" {
+		if args.IncludeResult {
+			return protocolToolError(prefix + ": include_result requires agent_id")
+		}
 		entries := make([]subagentStatusEntry, 0, len(snapshots))
 		for _, snapshot := range snapshots {
 			entries = append(entries, publicResidentStatus(snapshot))
@@ -98,7 +106,15 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
 	entry := publicResidentStatus(snapshot)
-	return renderSubagentStatus(subagentStatusResponse{Agent: &entry})
+	response := subagentStatusResponse{Agent: &entry}
+	if args.IncludeResult {
+		result, err := t.ResidentManager.Result(snapshot.ID)
+		if err != nil {
+			return protocolToolError(prefix + ": saved result is unavailable")
+		}
+		response.Result = &result
+	}
+	return renderSubagentStatus(response)
 }
 
 func findResidentStatusSnapshot(snapshots []subagents.ResidentSnapshot, id string) (subagents.ResidentSnapshot, bool) {

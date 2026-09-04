@@ -41,7 +41,7 @@ const subagentResumeSchema = `{
 func (t *SubagentResumeTool) Name() string { return SubagentResumeToolName }
 
 func (t *SubagentResumeTool) Description() string {
-	return "Continue a resident sub-agent with a follow-up prompt and retained session."
+	return "Continue a resident sub-agent with a follow-up prompt and retained session. After terminal budget exhaustion, inspect its saved handoff first; explicit resume grants a fresh same-size allowance without discarding progress or satisfying required work."
 }
 
 func (t *SubagentResumeTool) Schema() json.RawMessage {

@@ -138,7 +138,11 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 			fmt.Fprintf(&b, " — %s", completion.Task)
 		}
 		if completion.Summary != "" {
-			fmt.Fprintf(&b, "\n  final: %s", completion.Summary)
+			label := "final"
+			if completion.Status != "completed" {
+				label = "partial"
+			}
+			fmt.Fprintf(&b, "\n  %s: %s", label, completion.Summary)
 		}
 		b.WriteByte('\n')
 	}
