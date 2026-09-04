@@ -1,6 +1,7 @@
 package subagents
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -17,7 +18,7 @@ func residentBudgetHandoff(dir string, spec ResidentChildSpec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Partial result: budget exhausted; work is NOT complete.\nHistory: %s\nResult: %s\nWorkspace: %s\n", HistoryRef(spec.ID), ResultRef(spec.ID), spec.Workspace)
 	b.WriteString("Recovery: inspect the saved history and artifacts before repeating side effects, then use subagent_resume with the remaining task. Explicit resume grants a fresh allowance of the same size; required work remains unmet until success.\n")
-	b.WriteString("The following are bounded recent observations, not verified findings or an exhaustive list of side effects. Unfinished steps must be reconciled against the accepted task.\n")
+	b.WriteString("The following are bounded recent observations, not verified findings or an exhaustive list of side effects. Unfinished steps must be reconciled against the accepted task. Raw tool arguments and output are omitted because they may contain secrets; inspect them in the child history.\n")
 	items, err := ReadResidentHistory(dir, 16)
 	if err != nil {
 		b.WriteString("Recent history unavailable; inspect the durable child session before retrying.\n")
@@ -38,9 +39,17 @@ func residentBudgetHandoff(dir string, spec ResidentChildSpec) string {
 				fmt.Fprintf(&b, "%s: %s\n", item.Type, handoffExcerpt(residentAssistantSummary(message), 1024))
 			}
 		case residentRecordToolCall:
-			fmt.Fprintf(&b, "tool %s (%s), arguments: %s\n", item.ToolName, item.ToolID, handoffExcerpt(string(item.ToolArgs), 1024))
+			fmt.Fprintf(&b, "tool %s (%s): called; arguments retained in history\n", item.ToolName, item.ToolID)
 		case residentRecordToolResult:
-			fmt.Fprintf(&b, "tool result (%s): %s\n", item.ToolID, handoffExcerpt(string(item.ToolResult), 1024))
+			var result struct {
+				IsError bool
+			}
+			if err := json.Unmarshal(item.ToolResult, &result); err == nil {
+				fmt.Fprintf(&b, "tool result (%s): is_error=%t; output retained in history\n", item.ToolID, result.IsError)
+			}
+		}
+		if b.Len() >= residentHandoffBytes {
+			break
 		}
 	}
 	return handoffExcerpt(b.String(), residentHandoffBytes)

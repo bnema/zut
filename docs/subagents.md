@@ -104,12 +104,14 @@ turn. If the worker still needs another model step, it reports
 the response crossing the limit remains successful and reports `completed`.
 
 Budget exhaustion publishes a terminal completion with a host-generated partial
-handoff, capped at 16 KiB. It includes recent visible messages, tool arguments
-and results (including checks and reported side effects), workspace and history
-references, and recovery guidance. These are observations, not a claim that the
-task or verification finished; older or truncated details remain in the durable
-transcript. Worktree changes are captured even on budget exhaustion, and the
-worktree is retained for recovery. Shared-workspace changes are not rolled back.
+handoff, capped at 16 KiB. It includes recent visible progress messages, tool
+names and error flags, workspace and history references, and recovery guidance.
+Raw tool arguments and output are omitted from this automatic handoff because
+they may contain secrets; they remain retrievable in the child's durable history.
+These are observations, not a claim that the task or verification finished;
+older or truncated details also remain in the durable transcript. Worktree
+changes are captured even on budget exhaustion, and the worktree is retained
+for recovery. Shared-workspace changes are not rolled back.
 
 Retrieve the saved result without executing a model:
 

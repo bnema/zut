@@ -58,7 +58,7 @@ func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
 						args := json.RawMessage(`{"path":"README.md"}`)
 						for _, event := range []core.AgentEvent{
 							core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: prompt}}}},
-							core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "working on README"}, provider.ToolCallBlock{ID: "call", Name: tool, Arguments: args}}}},
+							core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "working on README.md; verification unfinished"}, provider.ToolCallBlock{ID: "call", Name: tool, Arguments: args}}}},
 							core.EvToolCall{ID: "call", Name: tool, Args: args},
 							core.EvToolResult{ID: "call", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: output}}}},
 							core.EvUsage{Cumulative: provider.Usage{InputTokens: 100}},
