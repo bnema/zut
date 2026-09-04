@@ -207,10 +207,23 @@ private local session data.
 ## Worktrees and references
 
 Shared children use the host working directory. With `isolation: "worktree"`,
-zut prepares a detached Git worktree, captures a patch and changed-file list on
-successful completion, and never applies that patch automatically. Failed or
-interrupted worktrees are retained for inspection; an idle successful worktree
-is cleaned when its child is explicitly stopped.
+zut prepares a detached Git worktree and captures a patch and changed-file list
+on successful completion or budget exhaustion. Budget-exhausted turns retain
+partial work in the worktree, along with any captured patch and changed-file
+list. zut never applies a captured patch automatically. Failed or interrupted
+worktrees are retained for inspection; an idle successful worktree is cleaned
+when its child is explicitly stopped.
+
+Use `subagent_status` with `agent_id` and `include_result: true` to retrieve the
+saved handoff, `changed_files`, and `patch_ref` when a patch was captured. The
+patch bytes are stored in `subagents/<child-id>/patch.diff` under the managed
+state root shown above; logical references are identifiers, not filesystem
+paths. Inspect the retained worktree and patch before resuming or applying
+partial changes.
+
+New terminal journal records also save the capture metadata, so reconciliation
+can restore it if `result.json` is missing or corrupt. Older records remain
+readable, but cannot reconstruct artifact metadata they never recorded.
 
 Logical references avoid exposing runtime paths:
 

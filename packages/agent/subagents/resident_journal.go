@@ -119,6 +119,8 @@ type residentRecord struct {
 	TurnID         string             `json:"turn_id,omitempty"`
 	Prompt         string             `json:"prompt,omitempty"`
 	Outcome        string             `json:"outcome,omitempty"`
+	PatchRef       string             `json:"patch_ref,omitempty"`
+	ChangedFiles   []string           `json:"changed_files,omitempty"`
 	BudgetBaseline int64              `json:"budget_baseline,omitempty"`
 	Message        json.RawMessage    `json:"message,omitempty"`
 	ToolID         string             `json:"tool_id,omitempty"`
@@ -482,7 +484,7 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 }
 
 func (j *ResidentJournal) RecordTurnStarted(spec ResidentChildSpec, turnID string) error {
-	if err := j.recordTurnBoundary(spec, residentRecordTurnStarted, turnID, ResidentRunning, ""); err != nil {
+	if err := j.recordTurnBoundary(spec, ResidentRunning, residentRecord{Type: residentRecordTurnStarted, TurnID: turnID}); err != nil {
 		return err
 	}
 	j.summaryMu.Lock()
@@ -535,7 +537,10 @@ func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turn
 			result.PatchRef = PatchRef(spec.ID)
 		}
 	}
-	if recordErr := j.recordTurnBoundary(spec, recordType, turnID, state, outcome); recordErr != nil {
+	// Persist artifact metadata with the terminal boundary so result.json can
+	// be rebuilt without guessing which turn produced the patch on disk.
+	record := residentRecord{Type: recordType, TurnID: turnID, Outcome: outcome, PatchRef: result.PatchRef, ChangedFiles: result.ChangedFiles}
+	if recordErr := j.recordTurnBoundary(spec, state, record); recordErr != nil {
 		return ResidentResult{}, recordErr
 	}
 	if err := writeResidentResult(j.dir, result); err != nil {
@@ -596,11 +601,11 @@ func truncateResidentResultSummary(text string) string {
 }
 
 func (j *ResidentJournal) RecordTurnInterrupted(spec ResidentChildSpec, turnID string) error {
-	return j.recordTurnBoundary(spec, residentRecordInterrupted, turnID, ResidentInterrupted, residentOutcomeInterrupted)
+	return j.recordTurnBoundary(spec, ResidentInterrupted, residentRecord{Type: residentRecordInterrupted, TurnID: turnID, Outcome: residentOutcomeInterrupted})
 }
 
-func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, recordType, turnID string, state ResidentState, outcome string) error {
-	if strings.TrimSpace(turnID) == "" {
+func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, state ResidentState, record residentRecord) error {
+	if strings.TrimSpace(record.TurnID) == "" {
 		return errors.New("resident journal: missing turn ID")
 	}
 	j.mu.Lock()
@@ -608,11 +613,11 @@ func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, recordType,
 	if j.file == nil {
 		return errors.New("resident journal: closed")
 	}
-	now := time.Now().UTC()
-	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: recordType, Time: now, TurnID: turnID, Outcome: outcome}); err != nil {
+	record.Version, record.Time = residentJournalVersion, time.Now().UTC()
+	if err := j.appendSync(record); err != nil {
 		return err
 	}
-	return writeResidentMetadata(j.dir, j.metadata(spec, state, now))
+	return writeResidentMetadata(j.dir, j.metadata(spec, state, record.Time))
 }
 
 func (j *ResidentJournal) metadata(spec ResidentChildSpec, state ResidentState, updatedAt time.Time) ResidentMetadata {
@@ -817,7 +822,8 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	}
 	state := ResidentQueued
 	lastStateAt := records[0].Time
-	lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary := "", "", ""
+	var lastFinished residentRecord
+	lastAssistantSummary := ""
 	usage := ResidentUsageSnapshot{}
 	seenTurns := make(map[string]string)
 	// The initial prompt is accepted atomically with child.accepted rather than
@@ -853,7 +859,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 				return ResidentMetadata{}, errors.New("resident journal: turn finished without start")
 			}
 			seenTurns[record.TurnID] = residentRecordTurnFinished
-			lastFinishedTurn, lastFinishedOutcome = record.TurnID, record.Outcome
+			lastFinished = record
 			switch record.Outcome {
 			case residentOutcomeFailed:
 				state = ResidentFailed
@@ -945,7 +951,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			if err := writeResidentMetadata(dir, metadata); err != nil {
 				return ResidentMetadata{}, err
 			}
-			if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary); err != nil {
+			if err := rebuildResidentResult(dir, spec, metadata, lastFinished, lastAssistantSummary); err != nil {
 				return ResidentMetadata{}, err
 			}
 			return metadata, nil
@@ -976,7 +982,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	if err := writeResidentMetadata(dir, metadata); err != nil {
 		return ResidentMetadata{}, err
 	}
-	if err := rebuildResidentResult(dir, spec, metadata, lastFinishedTurn, lastFinishedOutcome, lastAssistantSummary); err != nil {
+	if err := rebuildResidentResult(dir, spec, metadata, lastFinished, lastAssistantSummary); err != nil {
 		return ResidentMetadata{}, err
 	}
 	return metadata, nil
@@ -1145,7 +1151,8 @@ func (j *ResidentJournal) rewriteTranscript(records []residentRecord) error {
 	return nil
 }
 
-func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata ResidentMetadata, turnID, outcome, summary string) error {
+func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata ResidentMetadata, finished residentRecord, summary string) error {
+	turnID := finished.TurnID
 	if turnID == "" {
 		return nil
 	}
@@ -1157,8 +1164,10 @@ func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata Resident
 			return fmt.Errorf("resident journal remove corrupt result projection: %w", removeErr)
 		}
 	}
-	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt}
-	switch outcome {
+	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt,
+		PatchRef: finished.PatchRef, ChangedFiles: append([]string(nil), finished.ChangedFiles...),
+	}
+	switch finished.Outcome {
 	case residentOutcomeFailed:
 		result.ErrorCode = residentErrorTurnFailed
 	case residentOutcomeBudgetExhausted:
