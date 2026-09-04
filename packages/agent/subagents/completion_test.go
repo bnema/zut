@@ -2,9 +2,41 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestResidentCompletionProjection(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status string
+	}{
+		{nil, "completed"},
+		{errors.New("failure"), "failed"},
+		{context.Canceled, "interrupted"},
+		{errors.Join(ErrBudgetExceeded, errors.New("capture failed")), "budget_exhausted"},
+		{errors.Join(context.Canceled, ErrBudgetExceeded), "interrupted"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			got := (ResidentCompletion{ChildID: "child", TurnID: "turn", Task: "task", Summary: "saved progress", Err: tc.err}).Completion()
+			if got.Status != tc.status || got.AgentID != "child" || got.TurnID != "turn" || got.Task != "task" || got.Summary != "saved progress" {
+				t.Fatalf("completion = %#v", got)
+			}
+			if tc.err != nil && got.Error != tc.err.Error() {
+				t.Fatalf("error = %q, want %q", got.Error, tc.err.Error())
+			}
+			text := FormatCompletionUpdate([]Completion{got}, "")
+			label := "partial: "
+			if tc.err == nil {
+				label = "final: "
+			}
+			if !strings.Contains(text, label+"saved progress") {
+				t.Fatalf("update = %q", text)
+			}
+		})
+	}
+}
 
 func TestFormatCompletionUpdateIncludesFinalSummary(t *testing.T) {
 	got := FormatCompletionUpdate([]Completion{{AgentID: "child", Status: "completed", Task: "review", Summary: "found the regression"}}, "")

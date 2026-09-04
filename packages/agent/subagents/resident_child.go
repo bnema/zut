@@ -420,13 +420,6 @@ func (c *ResidentChild) run() {
 					capture = &captured
 				}
 			}
-			persistenceFailed := false
-			if c.journal != nil {
-				if err := c.journal.RecordTurnFinishedWithCapture(c.spec, result.turnID, terminalErr, capture); err != nil {
-					terminalErr = fmt.Errorf("persist resident child terminal state: %w", err)
-					persistenceFailed = true
-				}
-			}
 			state := ResidentIdle
 			if terminalErr != nil {
 				state = ResidentFailed
@@ -435,12 +428,16 @@ func (c *ResidentChild) run() {
 				}
 			}
 			summary := ""
-			if c.journal != nil && !persistenceFailed {
-				if result, err := c.journal.Result(); err == nil {
-					state = result.State
-					summary = result.Summary
-					if result.Handoff != "" {
-						summary = result.Handoff
+			persistenceFailed := false
+			if c.journal != nil {
+				projection, err := c.journal.finishTurn(c.spec, result.turnID, terminalErr, capture)
+				if err != nil {
+					terminalErr = fmt.Errorf("persist resident child terminal state: %w", err)
+					state, persistenceFailed = ResidentFailed, true
+				} else {
+					state, summary = projection.State, projection.Summary
+					if projection.Handoff != "" {
+						summary = projection.Handoff
 					}
 				}
 			}

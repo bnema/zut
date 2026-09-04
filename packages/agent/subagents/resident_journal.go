@@ -486,6 +486,13 @@ func (j *ResidentJournal) RecordTurnFinished(spec ResidentChildSpec, turnID stri
 // RecordTurnFinishedWithCapture publishes bounded workspace artifacts before
 // the terminal projection. The transcript remains the lifecycle authority.
 func (j *ResidentJournal) RecordTurnFinishedWithCapture(spec ResidentChildSpec, turnID string, turnErr error, capture *WorkspaceCapture) error {
+	_, err := j.finishTurn(spec, turnID, turnErr, capture)
+	return err
+}
+
+// finishTurn returns the exact persisted projection to the live child, avoiding
+// a second filesystem read at the terminal notification boundary.
+func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turnErr error, capture *WorkspaceCapture) (ResidentResult, error) {
 	state, outcome := ResidentIdle, "completed"
 	if turnErr != nil {
 		state, outcome = ResidentFailed, "failed"
@@ -507,15 +514,18 @@ func (j *ResidentJournal) RecordTurnFinishedWithCapture(spec ResidentChildSpec, 
 		result.ChangedFiles = append([]string(nil), capture.ChangedFiles...)
 		if len(capture.Patch) > 0 {
 			if err := writeResidentPatch(j.dir, capture.Patch); err != nil {
-				return fmt.Errorf("resident journal write workspace patch: %w", err)
+				return ResidentResult{}, fmt.Errorf("resident journal write workspace patch: %w", err)
 			}
 			result.PatchRef = PatchRef(spec.ID)
 		}
 	}
 	if recordErr := j.recordTurnBoundary(spec, residentRecordTurnFinished, turnID, state, outcome); recordErr != nil {
-		return recordErr
+		return ResidentResult{}, recordErr
 	}
-	return writeResidentResult(j.dir, result)
+	if err := writeResidentResult(j.dir, result); err != nil {
+		return ResidentResult{}, err
+	}
+	return result, nil
 }
 
 func (j *ResidentJournal) recordAssistantSummary(message provider.Message) {
