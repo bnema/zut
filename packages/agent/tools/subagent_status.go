@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -110,7 +111,18 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if args.IncludeResult {
 		result, err := t.ResidentManager.Result(snapshot.ID)
 		if err != nil {
-			return protocolToolError(prefix + ": saved result is unavailable")
+			message := "saved result is unavailable"
+			switch {
+			case snapshot.OwnedElsewhere:
+				message += ": child is owned by another zut process"
+			case os.IsNotExist(err):
+				message += ": no saved result exists yet"
+			case os.IsPermission(err):
+				message += ": permission denied"
+			default:
+				message += ": could not read or decode the saved result"
+			}
+			return protocolToolError(prefix + ": " + message)
 		}
 		response.Result = &result
 	}

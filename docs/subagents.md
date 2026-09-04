@@ -172,6 +172,8 @@ The model-facing tools retain their logical names:
   set immediately. With `agent_id` and `include_result: true`, it also reads the
   saved terminal result or partial handoff without model execution. Without this
   option it remains metadata-only; foreign-owned results cannot be read.
+  Result-read errors distinguish foreign ownership, a missing saved result,
+  and permission denial without exposing filesystem paths or saved content.
 - `subagent_stop` stops one live child.
 - `subagent_resume` accepts an explicit follow-up prompt for an existing child.
   After terminal budget exhaustion, this grants a fresh same-size allowance

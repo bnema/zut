@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -508,7 +509,11 @@ func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turn
 	if turnErr != nil {
 		state, outcome = ResidentFailed, residentOutcomeFailed
 	}
-	if errors.Is(turnErr, ErrBudgetExceeded) {
+	recordType := residentRecordTurnFinished
+	if errors.Is(turnErr, context.Canceled) {
+		state, outcome = ResidentInterrupted, residentOutcomeInterrupted
+		recordType = residentRecordInterrupted
+	} else if errors.Is(turnErr, ErrBudgetExceeded) {
 		state, outcome = ResidentBudgetExhausted, residentOutcomeBudgetExhausted
 	} else if turnErr == nil && budgetSnapshotSince(j.usageSnapshot().Usage, spec.BudgetLimit, j.BudgetBaseline()).State == BudgetExceeded {
 		state, outcome = ResidentCompleted, residentOutcomeCompletedBudgetExhausted
@@ -517,7 +522,7 @@ func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turn
 	if turnErr != nil {
 		result.ErrorCode = residentErrorTurnFailed
 	}
-	if errors.Is(turnErr, ErrBudgetExceeded) {
+	if state == ResidentBudgetExhausted {
 		result.ErrorCode = residentErrorBudgetExhausted
 		result.Handoff = residentBudgetHandoff(j.dir, spec)
 	}
@@ -530,7 +535,7 @@ func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turn
 			result.PatchRef = PatchRef(spec.ID)
 		}
 	}
-	if recordErr := j.recordTurnBoundary(spec, residentRecordTurnFinished, turnID, state, outcome); recordErr != nil {
+	if recordErr := j.recordTurnBoundary(spec, recordType, turnID, state, outcome); recordErr != nil {
 		return ResidentResult{}, recordErr
 	}
 	if err := writeResidentResult(j.dir, result); err != nil {
