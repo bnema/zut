@@ -266,16 +266,14 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	} else if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
-	state := "queued"
+	state := string(subagents.ResidentQueued)
 	if a.Wait != nil {
 		if waitTimedOut {
 			if current, ok := t.ResidentManager.State(spec.ID); ok {
 				state = string(current)
 			}
-		} else if completion.Err != nil {
-			state = "failed"
 		} else {
-			state = "completed"
+			state = completion.Completion().Status
 		}
 	}
 	var sb strings.Builder
@@ -300,7 +298,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		} else if completion.Err != nil {
 			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
 			if completion.Summary != "" {
-				fmt.Fprintf(&sb, "final: %s\n", completion.Summary)
+				fmt.Fprintf(&sb, "partial: %s\n", completion.Summary)
 			}
 		} else {
 			if completion.Summary != "" {

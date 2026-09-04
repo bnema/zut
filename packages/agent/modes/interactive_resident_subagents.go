@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,14 +32,7 @@ func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentComple
 	if i == nil {
 		return
 	}
-	status, errText := "completed", ""
-	if completion.Err != nil {
-		status, errText = "failed", completion.Err.Error()
-		if errors.Is(completion.Err, context.Canceled) {
-			status = "interrupted"
-		}
-	}
-	if !i.ensureCompletionTracker().Report(subagents.Completion{AgentID: completion.ChildID, TurnID: completion.TurnID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary}) {
+	if !i.ensureCompletionTracker().Report(completion.Completion()) {
 		return
 	}
 	i.reloadOpenResidentChildSession(completion.ChildID)

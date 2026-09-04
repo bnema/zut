@@ -89,7 +89,11 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 
 func residentResultStatus(id string, result subagents.ResidentResult) string {
 	status := fmt.Sprintf("%s result %s", residentDisplayState(result.State), id)
-	if summary := truncateStatus(result.Summary, 240); summary != "" {
+	text := result.Summary
+	if result.Handoff != "" {
+		text = result.Handoff
+	}
+	if summary := truncateStatus(sanitizeSessionTreeText(text), 240); summary != "" {
 		status += ": " + summary
 	}
 	return status

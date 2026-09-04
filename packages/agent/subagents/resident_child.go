@@ -308,7 +308,7 @@ func (c *ResidentChild) Close(ctx context.Context) error {
 	}
 	c.once.Do(func() {
 		c.mu.Lock()
-		c.cleanupWorkspace = c.state == ResidentIdle
+		c.cleanupWorkspace = c.state == ResidentIdle || c.state == ResidentCompleted
 		c.mu.Unlock()
 		c.cancel()
 	})
@@ -412,35 +412,38 @@ func (c *ResidentChild) run() {
 			}
 			terminalErr := result.err
 			var capture *WorkspaceCapture
-			if terminalErr == nil && c.workspace != nil && c.workspace.Mode() == WorkspaceWorktree {
+			if (terminalErr == nil || errors.Is(terminalErr, ErrBudgetExceeded)) && c.workspace != nil && c.workspace.Mode() == WorkspaceWorktree {
 				captured, err := c.workspace.Capture(c.ctx)
 				if err != nil {
-					terminalErr = fmt.Errorf("capture resident worktree: %w", err)
+					terminalErr = errors.Join(terminalErr, fmt.Errorf("capture resident worktree: %w", err))
 				} else {
 					capture = &captured
 				}
 			}
+			state := ResidentIdle
+			if terminalErr != nil {
+				state = ResidentFailed
+				if errors.Is(terminalErr, ErrBudgetExceeded) {
+					state = ResidentBudgetExhausted
+				}
+			}
+			summary := ""
 			persistenceFailed := false
 			if c.journal != nil {
-				if err := c.journal.RecordTurnFinishedWithCapture(c.spec, result.turnID, terminalErr, capture); err != nil {
+				projection, err := c.journal.finishTurn(c.spec, result.turnID, terminalErr, capture)
+				if err != nil {
 					terminalErr = fmt.Errorf("persist resident child terminal state: %w", err)
-					persistenceFailed = true
-				}
-			}
-			if terminalErr != nil {
-				c.live.Finish(ResidentFailed)
-				c.setState(ResidentFailed)
-			} else {
-				c.live.Finish(ResidentIdle)
-				c.setState(ResidentIdle)
-			}
-			if c.onCompletion != nil {
-				summary := ""
-				if c.journal != nil {
-					if result, err := c.journal.Result(); err == nil {
-						summary = result.Summary
+					state, persistenceFailed = ResidentFailed, true
+				} else {
+					state, summary = projection.State, projection.Summary
+					if projection.Handoff != "" {
+						summary = projection.Handoff
 					}
 				}
+			}
+			c.live.Finish(state)
+			c.setState(state)
+			if c.onCompletion != nil {
 				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: result.turnID, Task: active.prompt, Err: terminalErr, Summary: summary})
 				if persistenceFailed {
 					for _, pending := range queue {

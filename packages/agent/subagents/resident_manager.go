@@ -230,7 +230,7 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		return ResidentSnapshot{}
 	}
 	live := child.Live()
-	budget, budgetSource := residentBudgetSnapshot(live.Usage, child.spec.BudgetLimit, child.spec.BudgetSource)
+	budget, budgetSource := residentBudgetSnapshot(live.Usage, child.spec.BudgetLimit, child.spec.BudgetSource, child.journal.BudgetBaseline())
 	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
@@ -240,8 +240,8 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		Budget: budget, BudgetSource: budgetSource}
 }
 
-func residentBudgetSnapshot(usage provider.Usage, limit int64, source string) (BudgetSnapshot, string) {
-	return BudgetSnapshotFor(usage, limit), source
+func residentBudgetSnapshot(usage provider.Usage, limit int64, source string, baseline int64) (BudgetSnapshot, string) {
+	return budgetSnapshotSince(usage, limit, baseline), source
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -470,10 +470,6 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	if child == nil && snapshot.OwnedElsewhere {
 		recovered = true
 	}
-	if child == nil && recovered && snapshot.Budget.State == BudgetExceeded {
-		m.mu.Unlock()
-		return errors.New("resident manager: child rollout budget is exhausted; spawn a replacement with a larger override")
-	}
 	if child == nil && recovered {
 		if _, pending := m.pending[childID]; pending {
 			m.mu.Unlock()
@@ -482,8 +478,8 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 		m.pending[childID] = struct{}{}
 	}
 	m.mu.Unlock()
-	if child != nil && residentSnapshot(child).Budget.State == BudgetExceeded {
-		return errors.New("resident manager: child rollout budget is exhausted; spawn a replacement with a larger override")
+	if child != nil && residentSnapshot(child).Budget.State == BudgetExceeded && (child.State() == ResidentRunning || child.State() == ResidentQueued) {
+		return errors.New("resident manager: wait for the budget-exhausted turn's terminal notification before resuming")
 	}
 	if child == nil && recovered {
 		defer func() { m.mu.Lock(); delete(m.pending, childID); m.mu.Unlock() }()
@@ -494,10 +490,12 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 			}
 			return err
 		}
-		if _, err := reconcileOwnedResidentJournal(journal); err != nil {
+		metadata, err := reconcileOwnedResidentJournal(journal)
+		if err != nil {
 			_ = journal.Close()
 			return err
 		}
+		journal.ConfigureUsage(metadata.ContextMax, metadata.Subscription)
 		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
 		if err != nil || len(records) == 0 || records[0].Spec == nil {
 			_ = journal.Close()
@@ -876,7 +874,7 @@ func (m *ResidentManager) Reconcile() []error {
 			errs = append(errs, fmt.Errorf("resident child %s: %w", childID, reconcileErr))
 			continue
 		}
-		budget, budgetSource := residentBudgetSnapshot(metadata.Usage, spec.BudgetLimit, spec.BudgetSource)
+		budget, budgetSource := residentBudgetSnapshot(metadata.Usage, spec.BudgetLimit, spec.BudgetSource, metadata.BudgetBaseline)
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
 			m.recovered[childID] = ResidentSnapshot{
@@ -899,7 +897,7 @@ func (m *ResidentManager) UnmetRequired() []ResidentSnapshot {
 	all := m.Snapshot()
 	result := all[:0]
 	for _, snapshot := range all {
-		if snapshot.Required && snapshot.State != ResidentIdle {
+		if snapshot.Required && snapshot.State != ResidentIdle && snapshot.State != ResidentCompleted {
 			result = append(result, snapshot)
 		}
 	}

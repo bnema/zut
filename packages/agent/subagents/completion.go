@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +16,21 @@ type Completion struct {
 	Task    string
 	Error   string
 	Summary string
+}
+
+// Completion projects a typed resident outcome into the parent notification
+// shared by interactive and orchestrated modes.
+func (c ResidentCompletion) Completion() Completion {
+	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: string(ResidentCompleted), Task: c.Task, Summary: c.Summary}
+	if c.Err != nil {
+		result.Status, result.Error = string(ResidentFailed), c.Err.Error()
+		if errors.Is(c.Err, context.Canceled) {
+			result.Status = string(ResidentInterrupted)
+		} else if errors.Is(c.Err, ErrBudgetExceeded) {
+			result.Status = string(ResidentBudgetExhausted)
+		}
+	}
+	return result
 }
 
 // CompletionTracker coordinates resident child completions with the parent
@@ -138,7 +154,11 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 			fmt.Fprintf(&b, " — %s", completion.Task)
 		}
 		if completion.Summary != "" {
-			fmt.Fprintf(&b, "\n  final: %s", completion.Summary)
+			label := "final"
+			if completion.Status != string(ResidentCompleted) {
+				label = "partial"
+			}
+			fmt.Fprintf(&b, "\n  %s: %s", label, completion.Summary)
 		}
 		b.WriteByte('\n')
 	}

@@ -209,15 +209,7 @@ func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config
 		Policy:          subagentPolicyFromConfig(cfg.Subagents),
 		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
 		ResidentCompletion: func(completion subagents.ResidentCompletion) {
-			status := "completed"
-			errText := ""
-			if completion.Err != nil {
-				status, errText = "failed", completion.Err.Error()
-				if errors.Is(completion.Err, context.Canceled) {
-					status = "interrupted"
-				}
-			}
-			tracker.Report(subagents.Completion{AgentID: completion.ChildID, TurnID: completion.TurnID, Status: status, Task: completion.Task, Error: errText, Summary: completion.Summary})
+			tracker.Report(completion.Completion())
 		},
 		OnResidentSpawned: func(spec subagents.ResidentChildSpec, turnID, _ string) { tracker.TrackResident(spec.ID, turnID) },
 	})

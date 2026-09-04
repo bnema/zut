@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
@@ -143,6 +145,91 @@ func TestResidentChildRunnerTerminatesAtBudgetLimit(t *testing.T) {
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("exhausted follow-up made %d provider requests, want 1 total", got)
+	}
+}
+
+func TestResidentChildRunnerReportsBudgetStopAfterToolWork(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("content-type", "text/event-stream")
+		writeOpenAIChunk(t, w, map[string]any{
+			"choices": []any{map[string]any{
+				"index": 0,
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "call-budget", "type": "function",
+					"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
+				}}},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]int{"prompt_tokens": 1200, "completion_tokens": 0},
+		})
+	}))
+	defer server.Close()
+	runner, _ := newBudgetedResidentTestRunner(t, server.URL, 1000)
+	if err := runner(t.Context(), "review"); !errors.Is(err, subagents.ErrBudgetExceeded) {
+		t.Fatalf("budget-stopped tool turn = %v, want ErrBudgetExceeded", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestResidentChildRunnerResumesWithSameSizeAllowance(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		w.Header().Set("content-type", "text/event-stream")
+		if request == 1 {
+			writeOpenAIChunk(t, w, map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "first result"}, "finish_reason": "stop"}},
+				"usage":   map[string]int{"prompt_tokens": 1200, "completion_tokens": 0},
+			})
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		encoded, _ := json.Marshal(body["messages"])
+		if !strings.Contains(string(encoded), "first result") {
+			t.Errorf("resume lost prior messages: %s", encoded)
+		}
+		writeOpenAIChunk(t, w, map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "recovered result"}, "finish_reason": "stop"}},
+			"usage":   map[string]int{"prompt_tokens": 20, "completion_tokens": 10},
+		})
+	}))
+	defer server.Close()
+	cwd := t.TempDir()
+	manager := subagents.NewResidentManager(t.TempDir(), func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return newResidentChildRunner(Args{Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL, CWD: cwd, NoContextFiles: true, NoSkill: true}, spec, journal)
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	completed := make(chan subagents.ResidentCompletion, 2)
+	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) { completed <- c })
+	spec := subagents.ResidentChildSpec{ID: "resume-budget", SessionID: "session", Provider: "openai", Model: "gpt-4o", BudgetLimit: 1000, BudgetSource: "model_context"}
+	if _, err := manager.Spawn(t.Context(), spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	for turn := 0; turn < 2; turn++ {
+		select {
+		case completion := <-completed:
+			if completion.Err != nil {
+				t.Fatal(completion.Err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("no completion")
+		}
+		if turn == 0 {
+			if err := manager.Resume(t.Context(), spec.ID, "follow up using previous results"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	snapshot, _ := manager.SnapshotFor(spec.ID)
+	if requests.Load() != 2 || snapshot.Budget.Used != 30 || snapshot.Budget.Limit != 1000 || snapshot.Usage.InputTokens != 1220 {
+		t.Fatalf("requests=%d, snapshot=%#v", requests.Load(), snapshot)
 	}
 }
 

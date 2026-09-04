@@ -54,7 +54,14 @@ func BudgetSnapshotFor(usage provider.Usage, limit int64) BudgetSnapshot {
 	if limit <= 0 {
 		return BudgetSnapshot{}
 	}
-	used := WeightedBudgetUsage(usage)
+	return budgetSnapshotSince(usage, limit, 0)
+}
+
+func budgetSnapshotSince(usage provider.Usage, limit, baseline int64) BudgetSnapshot {
+	if limit <= 0 {
+		return BudgetSnapshot{}
+	}
+	used := max(WeightedBudgetUsage(usage)-baseline, 0)
 	percent := int(math.Floor(float64(used) * 100 / float64(limit)))
 	return BudgetSnapshot{Used: used, Limit: limit, Percent: percent, State: budgetState(used, limit)}
 }
@@ -73,11 +80,13 @@ func budgetState(used, limit int64) BudgetState {
 type RolloutBudget struct {
 	mu       sync.Mutex
 	limit    int64
+	baseline int64
+	usage    provider.Usage
 	snapshot BudgetSnapshot
 }
 
 func NewRolloutBudget(limit int64, usage provider.Usage) *RolloutBudget {
-	budget := &RolloutBudget{limit: limit}
+	budget := &RolloutBudget{limit: limit, usage: usage}
 	budget.snapshot = BudgetSnapshotFor(usage, limit)
 	return budget
 }
@@ -87,10 +96,23 @@ func (b *RolloutBudget) Observe(usage provider.Usage) BudgetSnapshot {
 		return BudgetSnapshot{}
 	}
 	b.mu.Lock()
-	b.snapshot = BudgetSnapshotFor(usage, b.limit)
+	b.usage = usage
+	b.snapshot = budgetSnapshotSince(usage, b.limit, b.baseline)
 	snapshot := b.snapshot
 	b.mu.Unlock()
 	return snapshot
+}
+
+// SetBaseline applies an explicitly accepted recovery allowance without
+// discarding cumulative cost or conversation history.
+func (b *RolloutBudget) SetBaseline(baseline int64) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.baseline = baseline
+	b.snapshot = budgetSnapshotSince(b.usage, b.limit, baseline)
+	b.mu.Unlock()
 }
 
 func (b *RolloutBudget) Snapshot() BudgetSnapshot {
