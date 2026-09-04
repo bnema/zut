@@ -63,6 +63,17 @@ const (
 	ResidentBudgetExhausted ResidentState = "budget_exhausted"
 )
 
+// Journal outcomes and result error codes are persisted compatibility values.
+const (
+	residentOutcomeCompleted                = string(ResidentCompleted)
+	residentOutcomeFailed                   = string(ResidentFailed)
+	residentOutcomeInterrupted              = string(ResidentInterrupted)
+	residentOutcomeBudgetExhausted          = string(ResidentBudgetExhausted)
+	residentOutcomeCompletedBudgetExhausted = "completed_budget_exhausted"
+	residentErrorTurnFailed                 = "turn_failed"
+	residentErrorBudgetExhausted            = string(ResidentBudgetExhausted)
+)
+
 // ResidentChildSpec is the non-secret configuration required to reconstruct
 // one resident child. Credentials are intentionally excluded; the selected
 // provider endpoint and TLS mode are retained so explicit resume reconstructs
@@ -493,21 +504,21 @@ func (j *ResidentJournal) RecordTurnFinishedWithCapture(spec ResidentChildSpec, 
 // finishTurn returns the exact persisted projection to the live child, avoiding
 // a second filesystem read at the terminal notification boundary.
 func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turnErr error, capture *WorkspaceCapture) (ResidentResult, error) {
-	state, outcome := ResidentIdle, "completed"
+	state, outcome := ResidentIdle, residentOutcomeCompleted
 	if turnErr != nil {
-		state, outcome = ResidentFailed, "failed"
+		state, outcome = ResidentFailed, residentOutcomeFailed
 	}
 	if errors.Is(turnErr, ErrBudgetExceeded) {
-		state, outcome = ResidentBudgetExhausted, "budget_exhausted"
+		state, outcome = ResidentBudgetExhausted, residentOutcomeBudgetExhausted
 	} else if turnErr == nil && budgetSnapshotSince(j.usageSnapshot().Usage, spec.BudgetLimit, j.BudgetBaseline()).State == BudgetExceeded {
-		state, outcome = ResidentCompleted, "completed_budget_exhausted"
+		state, outcome = ResidentCompleted, residentOutcomeCompletedBudgetExhausted
 	}
 	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: state, Summary: j.latestAssistantSummary(), CreatedAt: time.Now().UTC()}
 	if turnErr != nil {
-		result.ErrorCode = "turn_failed"
+		result.ErrorCode = residentErrorTurnFailed
 	}
 	if errors.Is(turnErr, ErrBudgetExceeded) {
-		result.ErrorCode = "budget_exhausted"
+		result.ErrorCode = residentErrorBudgetExhausted
 		result.Handoff = residentBudgetHandoff(j.dir, spec)
 	}
 	if capture != nil {
@@ -580,7 +591,7 @@ func truncateResidentResultSummary(text string) string {
 }
 
 func (j *ResidentJournal) RecordTurnInterrupted(spec ResidentChildSpec, turnID string) error {
-	return j.recordTurnBoundary(spec, residentRecordInterrupted, turnID, ResidentInterrupted, "interrupted")
+	return j.recordTurnBoundary(spec, residentRecordInterrupted, turnID, ResidentInterrupted, residentOutcomeInterrupted)
 }
 
 func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, recordType, turnID string, state ResidentState, outcome string) error {
@@ -839,11 +850,11 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			seenTurns[record.TurnID] = residentRecordTurnFinished
 			lastFinishedTurn, lastFinishedOutcome = record.TurnID, record.Outcome
 			switch record.Outcome {
-			case "failed":
+			case residentOutcomeFailed:
 				state = ResidentFailed
-			case "budget_exhausted":
+			case residentOutcomeBudgetExhausted:
 				state = ResidentBudgetExhausted
-			case "completed_budget_exhausted":
+			case residentOutcomeCompletedBudgetExhausted:
 				state = ResidentCompleted
 			default:
 				state = ResidentIdle
@@ -1143,10 +1154,10 @@ func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata Resident
 	}
 	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: metadata.State, Summary: summary, CreatedAt: metadata.UpdatedAt}
 	switch outcome {
-	case "failed":
-		result.ErrorCode = "turn_failed"
-	case "budget_exhausted":
-		result.ErrorCode = "budget_exhausted"
+	case residentOutcomeFailed:
+		result.ErrorCode = residentErrorTurnFailed
+	case residentOutcomeBudgetExhausted:
+		result.ErrorCode = residentErrorBudgetExhausted
 		result.Handoff = residentBudgetHandoff(dir, spec)
 	}
 	return writeResidentResult(dir, result)

@@ -21,13 +21,13 @@ type Completion struct {
 // Completion projects a typed resident outcome into the parent notification
 // shared by interactive and orchestrated modes.
 func (c ResidentCompletion) Completion() Completion {
-	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: "completed", Task: c.Task, Summary: c.Summary}
+	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: string(ResidentCompleted), Task: c.Task, Summary: c.Summary}
 	if c.Err != nil {
-		result.Status, result.Error = "failed", c.Err.Error()
+		result.Status, result.Error = string(ResidentFailed), c.Err.Error()
 		if errors.Is(c.Err, context.Canceled) {
-			result.Status = "interrupted"
+			result.Status = string(ResidentInterrupted)
 		} else if errors.Is(c.Err, ErrBudgetExceeded) {
-			result.Status = "budget_exhausted"
+			result.Status = string(ResidentBudgetExhausted)
 		}
 	}
 	return result
@@ -155,7 +155,7 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 		}
 		if completion.Summary != "" {
 			label := "final"
-			if completion.Status != "completed" {
+			if completion.Status != string(ResidentCompleted) {
 				label = "partial"
 			}
 			fmt.Fprintf(&b, "\n  %s: %s", label, completion.Summary)

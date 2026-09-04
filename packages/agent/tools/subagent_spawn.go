@@ -266,7 +266,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	} else if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
-	state := "queued"
+	state := string(subagents.ResidentQueued)
 	if a.Wait != nil {
 		if waitTimedOut {
 			if current, ok := t.ResidentManager.State(spec.ID); ok {
