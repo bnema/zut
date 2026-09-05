@@ -10,6 +10,7 @@ import (
 type UsageStatsParams struct {
 	Usage        provider.Usage
 	Subscription bool
+	Compact      bool // main status bar; detailed surfaces retain billing labels and precision
 }
 
 // UsageStatsParts returns compact, provider-neutral token and cost labels.
@@ -22,17 +23,29 @@ func UsageStatsParts(p UsageStatsParams) []string {
 		parts = append(parts, fmt.Sprintf("↓%s", formatTokens(p.Usage.OutputTokens)))
 	}
 	if p.Usage.CacheReadTokens > 0 {
-		parts = append(parts, fmt.Sprintf("R%s/", formatTokens(p.Usage.CacheReadTokens)))
+		read := "R" + formatTokens(p.Usage.CacheReadTokens)
+		if !p.Compact {
+			read += "/"
+		}
+		parts = append(parts, read)
 	}
 	if ratio, ok := p.Usage.CacheHitRatio(); ok {
-		parts = append(parts, fmt.Sprintf("C%.1f%%", ratio*100))
+		precision := 1
+		if p.Compact {
+			precision = 0
+		}
+		parts = append(parts, fmt.Sprintf("C%.*f%%", precision, ratio*100))
 	}
 	if p.Usage.CacheWriteTokens > 0 {
 		parts = append(parts, fmt.Sprintf("W%s", formatTokens(p.Usage.CacheWriteTokens)))
 	}
 	if p.Usage.CostUSD > 0 || p.Subscription {
-		cost := fmt.Sprintf("$%.3f", p.Usage.CostUSD)
-		if p.Subscription {
+		precision := 3
+		if p.Compact {
+			precision = 2
+		}
+		cost := fmt.Sprintf("$%.*f", precision, p.Usage.CostUSD)
+		if p.Subscription && !p.Compact {
 			cost += " (sub)"
 		}
 		parts = append(parts, cost)

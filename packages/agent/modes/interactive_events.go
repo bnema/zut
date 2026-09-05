@@ -242,6 +242,8 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 	return oldTools, true
 }
 func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
+	// This runs inside the replacement commit, never during candidate builds.
+	i.resetCodexUsageLocked()
 	if ag == nil {
 		i.setWebSearchAvailable(false)
 		return

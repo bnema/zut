@@ -2992,9 +2992,12 @@ type StatusBarParams struct {
 	Usage provider.Usage
 	// Subscription is true when the credential is an OAuth token (claude
 	// pro/max, chatgpt plus/pro) rather than a paid api key. We still
-	// compute a cost for visibility and append "(sub)" so the user
-	// knows no real money moved.
+	// compute an API-equivalent cost for visibility, not an actual charge.
 	Subscription bool
+
+	// WeeklyUsage is the account's remaining weekly allowance, already
+	// formatted by the caller (empty for providers without this meter).
+	WeeklyUsage string
 
 	// Last turn's input+cache tokens (approximates current live context).
 	ContextUsed int
@@ -3010,19 +3013,16 @@ type StatusBarParams struct {
 	// glance that dms are being mirrored into this session.
 	Telegram bool
 
-	Cols int // terminal width; drives right-alignment of cwd
+	Cols int // terminal width; drives status wrapping
 }
 
-// StatusBar builds the status shown above the editor. Always returns
-// two lines when a cwd is provided: the stats on the first line, the
-// cwd on its own line below, indented to match the stats column. This
-// keeps the status bar stable across terminal resizes (the cwd never
-// jumps from right-aligned-on-line-1 to flush-left-on-line-2) and
-// makes a long cwd safe at any width.
+// StatusBar builds the status shown above the editor. The cwd stays on its
+// own final line, indented to match the stats column. Narrow terminals split
+// model and usage onto additional lines rather than hard-wrapping metrics.
 //
 // Layout:
 //
-//	<busyPrefix>  (provider) model  stats   <- line 1
+//	<busyPrefix>  model:reasoning  stats   <- line 1
 //	  cwd                                   <- line 2 (2-space indent)
 //
 // The old "ctrl+c exit - /help" / "esc cancel" hint is gone entirely.
@@ -3031,7 +3031,10 @@ type StatusBarParams struct {
 func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
 
-	stats := UsageStatsParts(UsageStatsParams{Usage: p.Usage, Subscription: p.Subscription})
+	stats := UsageStatsParts(UsageStatsParams{Usage: p.Usage, Subscription: p.Subscription, Compact: true})
+	if p.WeeklyUsage != "" {
+		stats = append(stats, p.WeeklyUsage)
+	}
 	if p.GoalStatus != "" {
 		stats = append(stats, "goal:"+p.GoalStatus)
 	}
@@ -3039,6 +3042,10 @@ func StatusBar(p StatusBarParams) []string {
 	// Context %. Color-coded: yellow >70, red >90.
 	ctx, ctxColor := contextUsage(th, p.ContextUsed, p.ContextMax)
 	if ctx != "" {
+		if p.ContextMax > 0 {
+			ctx = fmt.Sprintf("%.0f%%/%s", float64(p.ContextUsed)/float64(p.ContextMax)*100, formatTokens(p.ContextMax))
+		}
+		ctx = "ctx" + ctx
 		if p.AutoCompacting {
 			ctx += " (auto)"
 		}
@@ -3046,17 +3053,16 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	// Layout uses exactly 2 spaces of horizontal padding everywhere:
-	//   2 spaces  (openai) gpt-5.4  $0.000 (sub) 0.0%/400k  ~/Sites/zut
+	//   2 spaces  gpt-5.4:medium  $0.00 ctx0%/400k
 	// matches the editor prompt's left inset so the bar lines up
 	// vertically with the conversation column.
 	const pad = "  " // 2 spaces
 
-	left := fmt.Sprintf("(%s) %s", p.Provider, p.Model)
-	reasoning := reasoningLevelLabel(p.Reasoning)
-	reasoningText := ""
-	if reasoning != "" {
-		reasoningText = "reasoning: " + reasoning
+	left := p.Model
+	if reasoning := reasoningLevelLabel(p.Reasoning); reasoning != "" {
+		left += ":" + reasoning
 	}
+	modelColor := reasoningStatusColor(th, left)
 	fastText := ""
 	if p.FastMode {
 		fastText = "fast mode"
@@ -3065,9 +3071,6 @@ func StatusBar(p StatusBarParams) []string {
 	middleParts := make([]string, 0, 3)
 	if fastText != "" {
 		middleParts = append(middleParts, fastText)
-	}
-	if reasoningText != "" {
-		middleParts = append(middleParts, reasoningText)
 	}
 	if statsText != "" {
 		middleParts = append(middleParts, statsText)
@@ -3082,7 +3085,7 @@ func StatusBar(p StatusBarParams) []string {
 		// those choices. The pad itself needs no color (it's spaces).
 		leftBuilder.WriteString(pad + p.BusyPrefix)
 		// Exactly one pad (2 spaces) between the busy segment and
-		// the provider/model block. The leading pad above covers
+		// the model block. The leading pad above covers
 		// the left indent.
 		leftBuilder.WriteString(pad)
 	} else {
@@ -3092,11 +3095,10 @@ func StatusBar(p StatusBarParams) []string {
 		// prefix there's no trailing separator to double-pad.
 		leftBuilder.WriteString(pad)
 	}
-	leftBuilder.WriteString(th.FGColor(th.Muted, left))
+	leftBuilder.WriteString(th.FGColor(modelColor, left))
 	if middle != "" {
 		leftBuilder.WriteString(pad)
-		// Highlight the opt-in max tier; other status information stays muted.
-		leftBuilder.WriteString(th.FGColor(reasoningStatusColor(th, reasoningText), middle))
+		leftBuilder.WriteString(th.FGColor(th.Muted, middle))
 	}
 
 	cwd := shortenHome(p.CWD)
@@ -3122,16 +3124,16 @@ func StatusBar(p StatusBarParams) []string {
 	// stats on their own rows. This mirrors the idle split below.
 	if p.Cols > 0 && p.BusyPrefix != "" && visibleWidth(primary) > p.Cols {
 		busyLine := pad + p.BusyPrefix
-		modelLine := pad + th.FGColor(th.Muted, left)
+		modelLine := pad + th.FGColor(modelColor, left)
 		lines := []string{busyLine}
-		if middle != "" && visibleWidth(modelLine+pad+th.FGColor(th.Muted, middle)) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, stats, p.Cols)
+		if visibleWidth(modelLine+pad+middle) > p.Cols {
+			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, stats, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
 			if middle != "" {
 				infoBuilder.WriteString(pad)
-				infoBuilder.WriteString(th.FGColor(reasoningStatusColor(th, reasoningText), middle))
+				infoBuilder.WriteString(th.FGColor(th.Muted, middle))
 			}
 			lines = append(lines, infoBuilder.String())
 		}
@@ -3141,13 +3143,13 @@ func StatusBar(p StatusBarParams) []string {
 		return lines
 	}
 
-	// Idle narrow split: keep provider/model on the first status line,
+	// Idle narrow split: keep model/reasoning on the first status line,
 	// move usage/cost/context stats to the next, then cwd below. This
 	// avoids the terminal's hard wrap cutting the stats or pushing cwd
 	// into an awkward position on small widths.
-	if p.Cols > 0 && p.BusyPrefix == "" && middle != "" && visibleWidth(primary) > p.Cols {
+	if p.Cols > 0 && p.BusyPrefix == "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, stats, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, stats, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
@@ -3159,42 +3161,19 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	// Second line: indent with the same 2-space pad so the cwd lines
-	// up under the "(provider)" column on line 1.
+	// up under the model column on line 1.
 	cwdRendered := pad + th.FGColor(th.Muted, cwd)
 	return []string{primary, cwdRendered}
 }
 
-func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText, reasoningText string, stats []string, cols int) []string {
-	modelLine := pad + th.FGColor(th.Muted, modelText)
-	infoParts := make([]string, 0, 2)
-	if fastText != "" {
-		infoParts = append(infoParts, fastText)
+func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText string, stats []string, cols int) []string {
+	modelLine := pad + th.FGColor(reasoningStatusColor(th, modelText), modelText)
+	if fastText != "" && visibleWidth(modelLine+pad+fastText) <= cols {
+		modelLine += pad + th.FGColor(th.Muted, fastText)
+	} else if fastText != "" {
+		stats = append([]string{fastText}, stats...)
 	}
-	if reasoningText != "" {
-		infoParts = append(infoParts, reasoningText)
-	}
-	infoText := strings.Join(infoParts, pad)
-	if infoText == "" {
-		lines = append(lines, modelLine)
-		return appendWrappedUsageStats(lines, th, pad, stats, cols)
-	}
-
-	modelInfoPlain := pad + modelText + pad + infoText
-	infoColor := th.Muted
-	if reasoningText != "" {
-		infoColor = reasoningStatusColor(th, reasoningText)
-	}
-	if cols <= 0 || visibleWidth(modelInfoPlain) <= cols {
-		lines = append(lines, pad+th.FGColor(infoColor, modelText+pad+infoText))
-	} else {
-		lines = append(lines, modelLine)
-		if fastText != "" {
-			lines = append(lines, pad+th.FGColor(th.Muted, fastText))
-		}
-		if reasoningText != "" {
-			lines = append(lines, pad+th.FGColor(reasoningStatusColor(th, reasoningText), reasoningText))
-		}
-	}
+	lines = append(lines, truncateToWidth(modelLine, cols))
 	return appendWrappedUsageStats(lines, th, pad, stats, cols)
 }
 
@@ -3227,7 +3206,7 @@ func appendWrappedUsageStats(lines []string, th Theme, pad string, stats []strin
 }
 
 func reasoningStatusColor(th Theme, reasoningText string) TerminalColor {
-	if strings.HasSuffix(reasoningText, ": max") {
+	if strings.HasSuffix(reasoningText, ":max") {
 		return th.ThinkingMax
 	}
 	return th.Muted

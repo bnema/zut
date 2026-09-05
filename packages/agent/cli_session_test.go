@@ -893,6 +893,43 @@ func TestPrepareSessionResumeRebuildsForStoredProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestCanceledPreparedSessionPreservesLiveAgentClient(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	old := (Resolved{Provider: "openai-codex", Model: "old-model", AuthMethod: "oauth",
+		Credential: "synthetic-token", AccountID: "old-account"}).newInteractiveAgent()
+	old.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "current transcript"}}}})
+	iv := modes.NewInteractive(modes.InteractiveConfig{Agent: old, Provider: "openai-codex", Model: "old-model"})
+	oldClient := old.Client
+	path := syntheticSession(t, "openai-codex", "new-model", provider.Usage{})
+	loadCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	candidate, err := prepareSessionResume(path, old, "openai-codex", "old-model", func(p, m string) (*core.Agent, string, string, error) {
+		resolved := Resolved{Provider: p, Model: m, AuthMethod: "oauth", Credential: "synthetic-token", AccountID: "new-account"}
+		return resolved.newInteractiveAgent(), p, m, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.session.Close()
+	if !candidate.rebuilt || candidate.agent.Client == oldClient {
+		t.Fatal("expected a private rebuilt candidate with its own usage client")
+	}
+	// Match the loader's cancellation check after preparation and before its
+	// ApplySessionAgentWithCompactHandoff commit boundary.
+	cancel()
+	if loadCtx.Err() == nil {
+		iv.ApplySessionAgentWithCompactHandoff(candidate.agent, candidate.provider, candidate.model, nil)
+	}
+	if iv.Agent() != old || iv.Agent().Client != oldClient || firstMessageText(old.Messages()) != "current transcript" {
+		t.Fatal("canceled preparation changed the live agent or its usage client")
+	}
+	// A later successful load publishes the candidate client with the agent.
+	iv.ApplySessionAgentWithCompactHandoff(candidate.agent, candidate.provider, candidate.model, nil)
+	if iv.Agent() != candidate.agent || iv.Agent().Client == oldClient {
+		t.Fatal("successful commit did not install candidate client")
+	}
+}
+
 func TestApplySessionResumeBindsRebuiltAgentToDurableSessionID(t *testing.T) {
 	path := syntheticSession(t, "stored-provider", "stored-model", provider.Usage{})
 	sess, _, err := core.OpenSession(path)
