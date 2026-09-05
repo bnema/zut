@@ -148,6 +148,25 @@ provider currently returns an error instead of silently changing that provider's
 request. Subagent children inherit the setting from their parent unless their
 profile sets `fastMode` explicitly.
 
+## GPT-6 Astra
+
+`gpt-6-astra` is available through `openai` (Responses API with an API key)
+and `openai-codex` (ChatGPT subscription). Both catalog entries deliberately
+use a **500,000-token working context budget**, rather than the larger advertised
+maximum, and retain a 128,000-token maximum output. Native reasoning efforts
+`low`, `medium`, `high`, `xhigh`, and `max` are supported. Selecting reasoning off
+omits the effort parameter; it does not disable Astra's reasoning.
+
+Standard API rates per million tokens are $10 input, $50 output, $1 cache reads,
+and $12.50 cache writes. Above **272,000 total input tokens**, including cache
+reads and writes, rates for the entire request become $20 input, $75 output,
+$2 cache reads, and $25 cache writes. The 500k working budget does not avoid
+this pricing tier. Codex catalog dollar estimates use these API-equivalent
+rates, not subscription billing or quota measurements.
+
+Sources: [Astra model specifications](https://developers.openai.com/api/docs/models/gpt-6-astra)
+and [prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
+
 ## Session identity and caching
 
 zut supplies every provider request with a root cache identity, a
@@ -170,6 +189,13 @@ cache miss; no percentage means the provider or historical session did not
 report cache detail. Cache writes remain separate from that hit rate. Provider
 retention and eviction, request routing, and OpenAI's 1,024-token eligibility
 minimum can still produce a miss even when the stable prefix is unchanged.
+
+On the official public OpenAI Responses endpoint, GPT-5.6 and GPT-6 Astra
+requests include an explicit cache breakpoint after the stable instruction/tool
+prefix while retaining implicit caching for conversation history. The Codex
+subscription route and custom Responses endpoints do not receive these explicit
+cache controls. Changing request-level reasoning effort can still disrupt prefix
+reuse: zut does not yet send cache-preserving `configuration_update` items.
 
 ### OpenAI Responses WebSocket mode
 

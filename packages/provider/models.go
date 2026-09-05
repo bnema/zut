@@ -6,6 +6,7 @@ import (
 	"sync"
 )
 
+// Deliberate working budget, not the models' advertised maximum context.
 const openAIContextWindowTarget = 500_000
 
 // Model describes a single LLM we know about.
@@ -358,8 +359,9 @@ var Catalog = []Model{
 	{
 		Provider: "openai", ID: "gpt-6-astra", DisplayName: "GPT-6 Astra", API: APIResponses,
 		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 5, PriceOutput: 30, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
-		Speculative: true,
+		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      20, PriceOutputAbove: 75, PriceCacheReadAbove: 2, PriceCacheWriteAbove: 25,
 	},
 	// ---- OpenAI Codex / ChatGPT subscription backend ----
 	// Same model ids as the OpenAI family, but routed through the
@@ -406,7 +408,9 @@ var Catalog = []Model{
 	{
 		Provider: "openai-codex", ID: "gpt-6-astra", DisplayName: "GPT-6 Astra",
 		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 5, PriceOutput: 30, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
+		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      20, PriceOutputAbove: 75, PriceCacheReadAbove: 2, PriceCacheWriteAbove: 25,
 	},
 }
 

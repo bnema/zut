@@ -214,8 +214,9 @@ func (c *codexClient) findModel(id string) (Model, error) {
 	return FindModel("openai", id)
 }
 
-func isGPT56Model(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.6-")
+func supportsOpenAIExplicitPromptCache(model string) bool {
+	id := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra"
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
@@ -243,7 +244,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	if req.FastMode {
 		body.ServiceTier = fastModeServiceTier
 	}
-	if c.capabilities.ExplicitPromptCacheBreakpoint && isGPT56Model(req.Model) {
+	if c.capabilities.ExplicitPromptCacheBreakpoint && supportsOpenAIExplicitPromptCache(req.Model) {
 		// Keep implicit mode so OpenAI can retain later conversation
 		// checkpoints as well as this stable instruction/tool boundary.
 		body.PromptCacheOptions = &codexPromptCacheOptions{Mode: "implicit"}
