@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -20,17 +21,27 @@ type codexUsageState struct {
 	cancel context.CancelFunc
 }
 
-// SetCodexWeeklyUsageFetcher follows a successfully resolved model route. The
-// host supplies nil for API keys, custom endpoints, and other providers.
-func (i *Interactive) SetCodexWeeklyUsageFetcher(fetch func(context.Context) (*provider.CodexWeeklyUsage, error)) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.resetCodexUsageLocked()
-	i.cfg.FetchCodexWeeklyUsage = fetch
+type codexUsageClient struct {
+	provider.Client
+	fetch func(context.Context) (*provider.CodexWeeklyUsage, error)
 }
 
-func (i *Interactive) codexUsageEnabledLocked() bool {
-	return i.agent != nil && i.cfg.Provider == "openai-codex" && i.cfg.FetchCodexWeeklyUsage != nil
+// BindCodexWeeklyUsageFetcher attaches the optional meter to a private candidate
+// before publication. Preparing or discarding it cannot affect the live meter.
+// The host supplies nil for API keys, custom endpoints, and other providers.
+func BindCodexWeeklyUsageFetcher(ag *core.Agent, fetch func(context.Context) (*provider.CodexWeeklyUsage, error)) {
+	if fetch != nil {
+		ag.Client = &codexUsageClient{Client: ag.Client, fetch: fetch}
+	}
+}
+
+func (i *Interactive) codexUsageFetcherLocked() func(context.Context) (*provider.CodexWeeklyUsage, error) {
+	if i.agent != nil && i.cfg.Provider == "openai-codex" {
+		if client, ok := i.agent.Client.(*codexUsageClient); ok {
+			return client.fetch
+		}
+	}
+	return nil
 }
 
 func (i *Interactive) resetCodexUsage() {
@@ -49,7 +60,8 @@ func (i *Interactive) resetCodexUsageLocked() {
 func (i *Interactive) refreshCodexUsage(ctx context.Context, now time.Time) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if !i.codexUsageEnabledLocked() || ctx.Err() != nil {
+	fetch := i.codexUsageFetcherLocked()
+	if fetch == nil || ctx.Err() != nil {
 		i.resetCodexUsageLocked()
 		return
 	}
@@ -73,7 +85,6 @@ func (i *Interactive) refreshCodexUsage(ctx context.Context, now time.Time) {
 	state.cancel = cancel
 	result := make(chan *provider.CodexWeeklyUsage, 1)
 	state.result = result
-	fetch := i.cfg.FetchCodexWeeklyUsage
 	go func() {
 		defer cancel()
 		usage, err := fetch(requestCtx)
@@ -87,7 +98,7 @@ func (i *Interactive) refreshCodexUsage(ctx context.Context, now time.Time) {
 }
 
 func (i *Interactive) codexWeeklyLabelLocked(now time.Time) string {
-	if !i.codexUsageEnabledLocked() {
+	if i.codexUsageFetcherLocked() == nil {
 		return ""
 	}
 	usage := i.codexUsage.usage

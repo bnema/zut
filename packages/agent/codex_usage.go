@@ -5,8 +5,16 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
+
+func (r Resolved) newInteractiveAgent() *core.Agent {
+	ag := r.NewAgent()
+	modes.BindCodexWeeklyUsageFetcher(ag, r.codexWeeklyUsageFetcher())
+	return ag
+}
 
 // Build the optional meter from the resolved route, not the TUI's startup auth
 // metadata. Rebuilds replace it alongside the model client (including rescue).

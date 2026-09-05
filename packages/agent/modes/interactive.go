@@ -37,10 +37,6 @@ type InteractiveConfig struct {
 	MaxSteps        int
 	CWD             string
 
-	// FetchCodexWeeklyUsage resolves current subscription credentials and reads
-	// the account allowance. It must honor cancellation; nil disables polling.
-	FetchCodexWeeklyUsage func(context.Context) (*provider.CodexWeeklyUsage, error)
-
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
 	StartupAgentName      string

@@ -12,8 +12,9 @@ import (
 )
 
 func newCodexUsageTestInteractive(fetch func(context.Context) (*provider.CodexWeeklyUsage, error)) *Interactive {
-	return NewInteractive(InteractiveConfig{Provider: "openai-codex", AuthMethod: "oauth",
-		Agent: core.NewAgent(nil, "test", "", nil), FetchCodexWeeklyUsage: fetch})
+	ag := core.NewAgent(nil, "test", "", nil)
+	BindCodexWeeklyUsageFetcher(ag, fetch)
+	return NewInteractive(InteractiveConfig{Provider: "openai-codex", AuthMethod: "oauth", Agent: ag})
 }
 
 // Wait for the worker's channel, then make that result available to the normal
@@ -92,7 +93,12 @@ func TestCodexUsageAsyncSingleFlightAndCancellation(t *testing.T) {
 	if i.codexUsage.result != oldResult {
 		t.Fatal("started overlapping request")
 	}
-	i.SetCodexWeeklyUsageFetcher(i.cfg.FetchCodexWeeklyUsage) // route/account rebuild
+	candidate := core.NewAgent(nil, "replacement", "", nil)
+	BindCodexWeeklyUsageFetcher(candidate, i.codexUsageFetcherLocked())
+	if requestCtx.Err() != nil || i.codexUsage.result != oldResult {
+		t.Fatal("preparing candidate disturbed live request")
+	}
+	i.ApplySessionAgentWithCompactHandoff(candidate, "openai-codex", "replacement", nil)
 	select {
 	case <-requestCtx.Done():
 	case <-time.After(time.Second):
@@ -124,13 +130,13 @@ func TestCodexUsageEligibilityAndProviderSwitch(t *testing.T) {
 		}
 	}
 	i.cfg.Provider = "openai-codex"
-	fetch := i.cfg.FetchCodexWeeklyUsage
-	i.SetCodexWeeklyUsageFetcher(nil) // custom/API-key route resolved by the host
+	subscriptionAgent := i.agent
+	i.ApplySessionAgent(core.NewAgent(nil, "custom", "", nil), "openai-codex", "custom")
 	i.refreshCodexUsage(context.Background(), now)
 	if calls.Load() != 0 || i.codexWeeklyLabelLocked(now) != "" {
 		t.Fatal("polled disabled route")
 	}
-	i.SetCodexWeeklyUsageFetcher(fetch)
+	i.ApplySessionAgent(subscriptionAgent, "openai-codex", "test")
 	i.cfg.AuthMethod = "apikey" // startup metadata from the previous provider
 	i.refreshCodexUsage(context.Background(), now)
 	finishCodexUsageRequest(t, i, now)
@@ -141,6 +147,38 @@ func TestCodexUsageEligibilityAndProviderSwitch(t *testing.T) {
 	i.refreshCodexUsage(context.Background(), now)
 	if i.codexWeeklyLabelLocked(now) != "" || i.codexUsage.usage != nil {
 		t.Fatal("logout retained usage")
+	}
+}
+
+func TestCodexUsageCandidateIsPrivateUntilSessionCommit(t *testing.T) {
+	now := time.Now()
+	i := newCodexUsageTestInteractive(func(context.Context) (*provider.CodexWeeklyUsage, error) {
+		return &provider.CodexWeeklyUsage{RemainingPercent: 69}, nil
+	})
+	defer i.resetCodexUsage()
+	i.refreshCodexUsage(context.Background(), now)
+	finishCodexUsageRequest(t, i, now)
+	previous := i.codexUsage
+	var candidateCalls atomic.Int32
+	candidate := core.NewAgent(nil, "replacement", "", nil)
+	BindCodexWeeklyUsageFetcher(candidate, func(context.Context) (*provider.CodexWeeklyUsage, error) {
+		candidateCalls.Add(1)
+		return &provider.CodexWeeklyUsage{RemainingPercent: 42}, nil
+	})
+	// A prepared candidate may be discarded by a canceled session load.
+	i.refreshCodexUsage(context.Background(), now.Add(time.Minute))
+	if i.codexUsage.usage != previous.usage || i.codexUsage.next != previous.next ||
+		i.codexWeeklyLabelLocked(now) != "weekly:69%" || candidateCalls.Load() != 0 {
+		t.Fatal("private candidate changed the live meter or polling schedule")
+	}
+	i.ApplySessionAgentWithCompactHandoff(candidate, "openai-codex", "replacement", nil)
+	if i.codexWeeklyLabelLocked(now) != "weekly:?" || !i.codexUsage.next.IsZero() {
+		t.Fatal("commit retained the previous account's sample or schedule")
+	}
+	i.refreshCodexUsage(context.Background(), now)
+	finishCodexUsageRequest(t, i, now)
+	if i.codexWeeklyLabelLocked(now) != "weekly:42%" || candidateCalls.Load() != 1 {
+		t.Fatal("commit did not activate the candidate meter")
 	}
 }
 
