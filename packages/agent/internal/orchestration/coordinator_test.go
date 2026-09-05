@@ -20,6 +20,30 @@ func TestCoordinatorSealsWorkerWaveAndWakesOnce(t *testing.T) {
 	}})
 }
 
+func TestCoordinatorSlidesCompletionIntoActiveManagerOnce(t *testing.T) {
+	c := New()
+	c.Apply(Event{Kind: EventManagerStarted})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a"})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "b"})
+	completion := subagents.Completion{AgentID: "a", Status: "completed"}
+	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a", Completion: completion}), []Action{{
+		Kind: ActionQueueManager, Reason: WakeWorkers, Completions: []subagents.Completion{completion},
+	}})
+	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a", Completion: completion}), nil)
+	assertActions(t, c.Apply(Event{Kind: EventManagerFinished}), []Action{{Kind: ActionWait}})
+	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "b", Completion: subagents.Completion{AgentID: "b"}}), []Action{{
+		Kind: ActionRunManager, Reason: WakeWorkers, Completions: []subagents.Completion{{AgentID: "b"}},
+	}})
+}
+
+func TestCoordinatorDoesNotWakeForAlreadyQueuedCompletion(t *testing.T) {
+	c := New()
+	c.Apply(Event{Kind: EventManagerStarted})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a"})
+	c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a"})
+	assertActions(t, c.Apply(Event{Kind: EventManagerFinished}), nil)
+}
+
 func TestCoordinatorGivesQueuedUserInputPriority(t *testing.T) {
 	c := New()
 	c.Apply(Event{Kind: EventManagerStarted})

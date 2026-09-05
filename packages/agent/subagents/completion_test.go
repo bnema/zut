@@ -63,6 +63,32 @@ func TestCompletionTrackerDropsReportsAfterCancellationReset(t *testing.T) {
 	}
 }
 
+func TestCompletionTrackerWaitReadyDoesNotWaitForSiblings(t *testing.T) {
+	tracker := NewCompletionTracker()
+	tracker.TrackResident("a", "turn-a")
+	tracker.TrackResident("b", "turn-b")
+	want := Completion{AgentID: "a", TurnID: "turn-a", Summary: "result"}
+	tracker.Report(want)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, err := tracker.WaitReady(ctx)
+	if err != nil || len(got) != 1 || got[0] != want {
+		t.Fatalf("WaitReady = %#v, %v, want ready result despite pending sibling", got, err)
+	}
+	if _, err := tracker.WaitReady(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second WaitReady error = %v, want cancellation with no duplicate result", err)
+	}
+	tracker.Report(Completion{AgentID: "b", TurnID: "turn-b"})
+	got, err = tracker.WaitIdle(context.Background())
+	if err != nil || len(got) != 1 || got[0].AgentID != "b" {
+		t.Fatalf("WaitIdle = %#v, %v, want only remaining sibling", got, err)
+	}
+	got, err = tracker.WaitReady(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("idle WaitReady = %#v, %v", got, err)
+	}
+}
+
 func TestCompletionTrackerMatchesTerminalReportsToAcceptedTurns(t *testing.T) {
 	tracker := NewCompletionTracker()
 	if !tracker.TrackResident("child", "turn-1") || !tracker.TrackResident("child", "turn-2") {
