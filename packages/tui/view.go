@@ -3013,15 +3013,12 @@ type StatusBarParams struct {
 	// glance that dms are being mirrored into this session.
 	Telegram bool
 
-	Cols int // terminal width; drives right-alignment of cwd
+	Cols int // terminal width; drives status wrapping
 }
 
-// StatusBar builds the status shown above the editor. Always returns
-// two lines when a cwd is provided: the stats on the first line, the
-// cwd on its own line below, indented to match the stats column. This
-// keeps the status bar stable across terminal resizes (the cwd never
-// jumps from right-aligned-on-line-1 to flush-left-on-line-2) and
-// makes a long cwd safe at any width.
+// StatusBar builds the status shown above the editor. The cwd stays on its
+// own final line, indented to match the stats column. Narrow terminals split
+// model and usage onto additional lines rather than hard-wrapping metrics.
 //
 // Layout:
 //
@@ -3088,7 +3085,7 @@ func StatusBar(p StatusBarParams) []string {
 		// those choices. The pad itself needs no color (it's spaces).
 		leftBuilder.WriteString(pad + p.BusyPrefix)
 		// Exactly one pad (2 spaces) between the busy segment and
-		// the provider/model block. The leading pad above covers
+		// the model block. The leading pad above covers
 		// the left indent.
 		leftBuilder.WriteString(pad)
 	} else {
@@ -3146,7 +3143,7 @@ func StatusBar(p StatusBarParams) []string {
 		return lines
 	}
 
-	// Idle narrow split: keep provider/model on the first status line,
+	// Idle narrow split: keep model/reasoning on the first status line,
 	// move usage/cost/context stats to the next, then cwd below. This
 	// avoids the terminal's hard wrap cutting the stats or pushing cwd
 	// into an awkward position on small widths.
@@ -3164,7 +3161,7 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	// Second line: indent with the same 2-space pad so the cwd lines
-	// up under the "(provider)" column on line 1.
+	// up under the model column on line 1.
 	cwdRendered := pad + th.FGColor(th.Muted, cwd)
 	return []string{primary, cwdRendered}
 }

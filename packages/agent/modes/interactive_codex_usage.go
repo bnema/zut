@@ -10,11 +10,10 @@ import (
 
 const codexUsageInterval = 5 * time.Minute
 
-// Only the interactive loop touches this state, under i.mu. Each request has
+// State is protected by i.mu. Each request has
 // its own buffered result channel, so canceled/account-switched requests can
 // finish without blocking or publishing into the new account's display.
 type codexUsageState struct {
-	key    string
 	next   time.Time
 	usage  *provider.CodexWeeklyUsage
 	result <-chan *provider.CodexWeeklyUsage
@@ -30,11 +29,8 @@ func (i *Interactive) SetCodexWeeklyUsageFetcher(fetch func(context.Context) (*p
 	i.cfg.FetchCodexWeeklyUsage = fetch
 }
 
-func (i *Interactive) codexUsageKeyLocked() string {
-	if i.agent == nil || i.cfg.Provider != "openai-codex" || i.cfg.FetchCodexWeeklyUsage == nil {
-		return ""
-	}
-	return i.cfg.Provider
+func (i *Interactive) codexUsageEnabledLocked() bool {
+	return i.agent != nil && i.cfg.Provider == "openai-codex" && i.cfg.FetchCodexWeeklyUsage != nil
 }
 
 func (i *Interactive) resetCodexUsage() {
@@ -53,12 +49,8 @@ func (i *Interactive) resetCodexUsageLocked() {
 func (i *Interactive) refreshCodexUsage(ctx context.Context, now time.Time) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	key := i.codexUsageKeyLocked()
-	if key != i.codexUsage.key {
+	if !i.codexUsageEnabledLocked() || ctx.Err() != nil {
 		i.resetCodexUsageLocked()
-		i.codexUsage.key = key
-	}
-	if key == "" || ctx.Err() != nil {
 		return
 	}
 	state := &i.codexUsage
@@ -95,12 +87,11 @@ func (i *Interactive) refreshCodexUsage(ctx context.Context, now time.Time) {
 }
 
 func (i *Interactive) codexWeeklyLabelLocked(now time.Time) string {
-	key := i.codexUsageKeyLocked()
-	if key == "" {
+	if !i.codexUsageEnabledLocked() {
 		return ""
 	}
 	usage := i.codexUsage.usage
-	if key != i.codexUsage.key || usage == nil ||
+	if usage == nil ||
 		!now.Before(i.codexUsage.next) ||
 		(!usage.ResetsAt.IsZero() && !now.Before(usage.ResetsAt)) {
 		return "weekly:?"

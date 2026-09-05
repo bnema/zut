@@ -92,7 +92,7 @@ func TestCodexUsageAsyncSingleFlightAndCancellation(t *testing.T) {
 	if i.codexUsage.result != oldResult {
 		t.Fatal("started overlapping request")
 	}
-	i.resetCodexUsage() // same path used by auth events and Run shutdown
+	i.SetCodexWeeklyUsageFetcher(i.cfg.FetchCodexWeeklyUsage) // route/account rebuild
 	select {
 	case <-requestCtx.Done():
 	case <-time.After(time.Second):

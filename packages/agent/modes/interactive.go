@@ -1508,9 +1508,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.invalidate()
 		case ev := <-authEvents:
 			i.handleAuthEvent(ev)
-			if ev.Provider == "openai" || ev.Provider == "openai-codex" {
-				i.resetCodexUsage()
-			}
 			i.invalidate()
 		case result := <-i.modelRefresh:
 			i.mu.Lock()

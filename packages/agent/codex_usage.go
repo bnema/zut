@@ -21,9 +21,11 @@ func (r Resolved) codexWeeklyUsageFetcher() func(context.Context) (*provider.Cod
 		if tok == nil || tok.AccountID != accountID {
 			return nil, fmt.Errorf("codex usage: subscription account changed")
 		}
-		tok, err := refreshIfExpiredContext(ctx, "openai", tok)
-		if err != nil {
-			return nil, err
+		// A passive meter must not rotate credentials alongside an inference
+		// request or write them back after logout. Normal model requests/login
+		// own refresh; the next poll picks up their newly stored token.
+		if tok.Expired() {
+			return nil, fmt.Errorf("codex usage: subscription token expired")
 		}
 		return provider.FetchCodexWeeklyUsage(ctx, nil, tok.AccessToken, accountID)
 	}
