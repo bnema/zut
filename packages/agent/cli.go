@@ -1732,7 +1732,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		resolved.MergeExtensionTools(extToolAdapter)
 		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
-		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
+		return wireAgentExt(resolved.newInteractiveAgent()), resolved.Provider, resolved.Model, nil
 	}
 
 	// Rebuild agent with an explicit provider/model override.
@@ -1757,7 +1757,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		resolved.MergeExtensionTools(extToolAdapter)
 		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
-		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
+		return wireAgentExt(resolved.newInteractiveAgent()), resolved.Provider, resolved.Model, nil
 	}
 
 	// Rebuild agent for the rescue picker after a recoverable failure.
@@ -1790,11 +1790,11 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		resolved.MergeExtensionTools(extToolAdapter)
 		installSchedulerTool(resolved.ToolRegistry)
 		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
-		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
+		return wireAgentExt(resolved.newInteractiveAgent()), resolved.Provider, resolved.Model, nil
 	}
 
 	if r.HasCredential() {
-		ag = wireAgentExt(r.NewAgent())
+		ag = wireAgentExt(r.newInteractiveAgent())
 	}
 
 	// /reload-ext callback: after the manager has respawned every
