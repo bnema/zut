@@ -29,6 +29,9 @@ const (
 type QueuedMessage struct {
 	Text   string
 	Images []provider.ImageBlock
+	// HostEvent distinguishes host evidence from ordinary input so hosts can
+	// retain it after a failed turn. Explicit cancellation may still discard it.
+	HostEvent bool
 }
 
 type queuedMessage struct {
@@ -286,11 +289,16 @@ func (a *Agent) FastModeEnabled() bool {
 // sense that it never waits for model/tool work; it only takes the transcript
 // mutex briefly. Prompts without text or images are ignored.
 func (a *Agent) QueueMessage(text string, images []provider.ImageBlock) bool {
-	text = strings.TrimSpace(text)
-	if text == "" && len(images) == 0 {
+	return a.QueuePrompt(QueuedMessage{Text: text, Images: images})
+}
+
+// QueuePrompt queues a prompt with its host provenance at the next safe boundary.
+func (a *Agent) QueuePrompt(prompt QueuedMessage) bool {
+	prompt.Text = strings.TrimSpace(prompt.Text)
+	if prompt.Text == "" && len(prompt.Images) == 0 {
 		return false
 	}
-	message := cloneQueuedMessage(QueuedMessage{Text: text, Images: images})
+	message := cloneQueuedMessage(prompt)
 	a.mu.Lock()
 	a.queued = append(a.queued, queuedMessage{message: message, accepted: time.Now()})
 	a.mu.Unlock()
@@ -345,7 +353,7 @@ func (a *Agent) DrainQueuedMessages() []QueuedMessage {
 }
 
 func cloneQueuedMessage(message QueuedMessage) QueuedMessage {
-	clone := QueuedMessage{Text: message.Text}
+	clone := QueuedMessage{Text: message.Text, HostEvent: message.HostEvent}
 	if len(message.Images) == 0 {
 		return clone
 	}

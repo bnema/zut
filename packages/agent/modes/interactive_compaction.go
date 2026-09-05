@@ -286,21 +286,15 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			} else {
 				i.statusOK = "compaction cancelled"
 			}
-			i.queued = nil // drop queue on cancel
+			i.discardQueuedMessagesLocked(false)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
 		case err != nil:
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
-			i.queued = nil // drop queue on error
+			i.discardQueuedMessagesLocked(true)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
 		default:
 			i.statusErr = ""
 			// Read token count from the compaction message meta.

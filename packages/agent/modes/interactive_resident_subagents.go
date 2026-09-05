@@ -186,7 +186,7 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 			}
 		}
 		if prompt != "" || len(action.Images) != 0 {
-			i.submitOrQueue(prompt, action.Images, false)
+			i.submitOrQueueMessage(core.QueuedMessage{Text: prompt, Images: action.Images, HostEvent: len(action.Completions) != 0}, false)
 		} else if action.Reason == orchestration.WakeGoal {
 			parent := i.runCtx
 			if parent == nil {

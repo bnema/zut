@@ -342,10 +342,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// Scheduler follow-ups deliberately remain: they are distinct turns
 		// whose due time must not let them steer this failed turn.
 		if ctx.Err() != nil || (err != nil && !recoverContextOverflow) {
-			i.queued = nil
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
+			i.discardQueuedMessagesLocked(ctx.Err() == nil)
 		}
 		var scheduled scheduledFollowUp
 		var hasScheduled bool

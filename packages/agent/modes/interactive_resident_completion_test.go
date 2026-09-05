@@ -44,7 +44,7 @@ func TestResidentCompletionSlidesIntoBusyParent(t *testing.T) {
 				}
 				i.mu.Unlock()
 				if len(queued) != 0 {
-					if len(queued) != 1 || !strings.Contains(queued[0].Text, "saved result") || !strings.Contains(queued[0].Text, "[auto-subagents update]") {
+					if len(queued) != 1 || !queued[0].HostEvent || !strings.Contains(queued[0].Text, "saved result") || !strings.Contains(queued[0].Text, "[auto-subagents update]") {
 						t.Fatalf("queued completions = %#v", queued)
 					}
 					if tc.err != nil && !strings.Contains(queued[0].Text, tc.err.Error()) {
