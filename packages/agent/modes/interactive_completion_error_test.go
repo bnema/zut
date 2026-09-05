@@ -39,22 +39,27 @@ func (c *completionErrorClient) Stream(ctx context.Context, req provider.Request
 }
 
 func TestCompletionSurvivesParentError(t *testing.T) {
-	for _, compacting := range []bool{false, true} {
-		name := "provider"
-		if compacting {
-			name = "compaction"
-		}
+	for _, name := range []string{"provider", "compaction", "idle-pre-turn-compaction"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			client := &completionErrorClient{started: make(chan struct{}), release: make(chan struct{}), requests: make(chan provider.Request, 4)}
 			ag := core.NewAgent(client, "test-model", "", nil)
 			ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "existing task"}}}})
-			i := NewInteractive(InteractiveConfig{Agent: ag})
+			threshold := 70
+			i := NewInteractive(InteractiveConfig{Agent: ag, Provider: "anthropic", Model: "claude-sonnet-4-5", AutoCompactThreshold: &threshold})
 			i.runCtx = ctx
-			if compacting {
+			report := func() {
+				i.TrackResidentSubagent("worker", "turn")
+				i.ReportResidentSubagent(subagents.ResidentCompletion{ChildID: "worker", TurnID: "turn", Summary: "retained evidence"})
+			}
+			switch name {
+			case "idle-pre-turn-compaction":
+				i.lastCtxInput = 150000
+				report()
+			case "compaction":
 				i.runCompact(ctx, compactContinuationRequest{origin: compactOriginManual})
-			} else {
+			default:
 				i.startTurn(ctx, "work")
 			}
 			select {
@@ -62,8 +67,9 @@ func TestCompletionSurvivesParentError(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("request did not start")
 			}
-			i.TrackResidentSubagent("worker", "turn")
-			i.ReportResidentSubagent(subagents.ResidentCompletion{ChildID: "worker", TurnID: "turn", Summary: "retained evidence"})
+			if name != "idle-pre-turn-compaction" {
+				report()
+			}
 			deadline := time.Now().Add(2 * time.Second)
 			for {
 				i.mu.Lock()
@@ -87,6 +93,9 @@ func TestCompletionSurvivesParentError(t *testing.T) {
 			if client.calls.Load() != 1 {
 				t.Fatal("error automatically retried")
 			}
+			i.mu.Lock()
+			i.lastCtxInput = 0 // the explicit retry no longer needs compaction
+			i.mu.Unlock()
 			i.startTurn(ctx, "retry now")
 			select {
 			case req := <-client.requests:

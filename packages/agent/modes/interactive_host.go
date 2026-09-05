@@ -319,7 +319,7 @@ func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput
 		return
 	}
 	i.mu.Unlock()
-	i.startTurnWithImages(i.runCtx, text, images)
+	i.startQueuedTurn(i.runCtx, message)
 }
 
 // discardQueuedMessagesLocked drops stale input after an error or cancellation.
