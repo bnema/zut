@@ -121,6 +121,18 @@ Run `zut` and type `/login`. Pick one of two methods:
 
 > **Note on subscription login.** The OAuth client IDs used are the ones published in Anthropic's Claude Code CLI, OpenAI's Codex CLI, Kimi Code CLI, xAI's device flow, and GitHub Copilot's device-code flow. Reusing them from a third-party tool may be against their terms of service and may be revoked at any time. Use it at your own risk; the API-key flow is the safe default.
 
+### Compact status bar
+
+The interactive status bar combines the model and reasoning level and rounds cache/context percentages and costs:
+
+```text
+gpt-6-astra:medium  ↑261k ↓34k R12M C98% $8.52 weekly:69% ctx31%/500k
+```
+
+`↑` / `↓` are session input/output tokens, `R` is cache-read tokens, `C` is the measured cache-hit rate, and `ctx` is context used / model capacity. The provider prefix and `(sub)` tag are omitted from this compact view. For subscription sessions, the dollar amount is an API-equivalent estimate, **not an additional charge**. Detailed session/subagent surfaces retain their existing precision and billing labels; `/session info` shows the provider.
+
+For the default `openai-codex` subscription route, `weekly:69%` means **69% of the account's seven-day allowance remains**, across clients—not just this session. zut reads ChatGPT's usage endpoint asynchronously at startup and every five minutes while Codex is selected. Requests time out after ten seconds and are canceled when the session exits or leaves Codex. `weekly:?` means loading, unavailable, stale, or no seven-day window was reported; it never means zero remaining. Custom endpoints and other providers do not receive these usage requests. The meter does not show the separate short-term limit or model-specific allowances and is not a guarantee that the next request will be accepted.
+
 ### Token refresh
 
 OAuth access tokens are short-lived (Anthropic ~8h, OpenAI ~30d; Kimi, xAI, and GitHub Copilot also use refresh/exchange flows). zut refreshes or exchanges them automatically:

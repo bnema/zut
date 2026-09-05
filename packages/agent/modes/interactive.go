@@ -28,7 +28,7 @@ type InteractiveConfig struct {
 	Theme           tui.Theme
 	Model           string
 	Provider        string
-	AuthMethod      string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
+	AuthMethod      string // "apikey" | "oauth" — distinguishes API charges from subscription estimates
 	BaseURL         string
 	Reasoning       string
 	SystemPrompt    string
@@ -36,6 +36,10 @@ type InteractiveConfig struct {
 	Tools           core.Registry
 	MaxSteps        int
 	CWD             string
+
+	// FetchCodexWeeklyUsage resolves current subscription credentials and reads
+	// the account allowance. It must honor cancellation; nil disables polling.
+	FetchCodexWeeklyUsage func(context.Context) (*provider.CodexWeeklyUsage, error)
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
@@ -706,6 +710,7 @@ type Interactive struct {
 	helpBlock         []string // rendered above the chat when /help was typed
 	sessionInfoBlocks []sessionInfoBlock
 	cumUsage          provider.Usage
+	codexUsage        codexUsageState
 	lastCtxInput      int // input_tokens of the most recent turn — approximates current context size
 	busy              bool
 	ctrlCExit         bool
@@ -1326,6 +1331,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// transcript doesn't spin the cpu.
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
+	i.refreshCodexUsage(ctx, time.Now())
+	defer i.resetCodexUsage()
 
 	// Redraw throttle: coalesce bursts of invalidate() calls so we paint
 	// at most once every redrawMinInterval. Huge tool-result dumps can
@@ -1501,6 +1508,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.invalidate()
 		case ev := <-authEvents:
 			i.handleAuthEvent(ev)
+			if ev.Provider == "openai" || ev.Provider == "openai-codex" {
+				i.resetCodexUsage()
+			}
 			i.invalidate()
 		case result := <-i.modelRefresh:
 			i.mu.Lock()
@@ -1567,6 +1577,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			requestRedraw()
 		case <-tick.C:
 			now := time.Now()
+			i.refreshCodexUsage(ctx, now)
 			if !appearanceDeadline.IsZero() && !now.Before(appearanceDeadline) {
 				appearanceParser.SetPendingColors(false)
 				appearanceParser.SetPendingScheme(false)

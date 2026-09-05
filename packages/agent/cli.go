@@ -1516,6 +1516,15 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	// extension-defined tools into the registry. Attach the interactive
 	// host after constructing it below so startup alerts can be buffered.
 	var iv *modes.Interactive
+	codexUsageFetch := r.codexWeeklyUsageFetcher()
+	setCodexUsageFetcher := func(resolved Resolved) {
+		fetch := resolved.codexWeeklyUsageFetcher()
+		if iv == nil {
+			codexUsageFetch = fetch
+		} else {
+			iv.SetCodexWeeklyUsageFetcher(fetch)
+		}
+	}
 	extHooks := &interactiveExtHooks{}
 	extMgr := extensions.New(ZutHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	var startupExtensionErrors []string
@@ -1723,6 +1732,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if err != nil {
 			return nil, "", "", err
 		}
+		setCodexUsageFetcher(resolved)
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
 		runtime.SetModel(resolved.Model)
@@ -1748,6 +1758,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if err != nil {
 			return nil, "", "", err
 		}
+		setCodexUsageFetcher(resolved)
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
 		runtime.SetModel(resolved.Model)
@@ -1781,6 +1792,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if err != nil {
 			return nil, "", "", err
 		}
+		setCodexUsageFetcher(resolved)
 		resolved.UseSandbox(sharedSandbox)
 		runtime.SetProvider(resolved.Provider)
 		runtime.SetModel(resolved.Model)
@@ -2590,6 +2602,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		Model:                           r.Model,
 		Provider:                        r.Provider,
 		AuthMethod:                      r.AuthMethod,
+		FetchCodexWeeklyUsage:           codexUsageFetch,
 		BaseURL:                         r.BaseURL,
 		Reasoning:                       r.Reasoning,
 		OnReasoningChanged:              runtime.SetReasoning,
