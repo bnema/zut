@@ -450,7 +450,7 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
-		!((onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && needsOpenCodeGoRefresh(cached)) {
+		((onlyProvider != "" && onlyProvider != provider.ProviderOpenCodeGo) || !needsOpenCodeGoRefresh(cached)) {
 		return
 	}
 

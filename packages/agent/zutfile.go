@@ -368,7 +368,7 @@ func PrepareRuntimeCatalog(ctx context.Context, waitForRefresh bool, explicitPro
 	preparedProvider, preparedBaseURL := prepareRuntimeCatalog(catalogProvider, catalogAPIKey, explicitBaseURL, userModels, modelID)
 	modelCatalogMu.Unlock()
 	if waitForRefresh {
-		refreshModelsWithMode(preparedProvider, catalogAPIKey, preparedBaseURL, "", apiKeyCommandExecute)
+		refreshModelsWithContext(ctx, preparedProvider, catalogAPIKey, preparedBaseURL, "", apiKeyCommandExecute)
 	} else {
 		RefreshModelsAsync(preparedProvider, explicitAPIKey, preparedBaseURL)
 	}

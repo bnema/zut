@@ -438,6 +438,48 @@ func TestSynchronousOpenCodeGoAPIKeyHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimeCatalogRefreshHonorsCancellation(t *testing.T) {
+	preserveProviderCatalog(t)
+	t.Setenv("ZUT_HOME", t.TempDir())
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	called := make(chan struct{})
+	release := make(chan struct{})
+	discoverOpenCodeGoFn = func(ctx context.Context, _, _ string) ([]provider.Model, error) {
+		close(called)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-release:
+			return nil, fmt.Errorf("released discovery")
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		PrepareRuntimeCatalog(ctx, true, provider.ProviderOpenCodeGo, "synthetic-key", "", nil)
+		close(done)
+	}()
+
+	select {
+	case <-called:
+		cancel()
+	case <-time.After(2 * time.Second):
+		cancel()
+		close(release)
+		<-done
+		t.Fatal("catalog discovery did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		close(release)
+		<-done
+		t.Fatal("canceled catalog refresh did not exit promptly")
+	}
+}
+
 func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
 	preserveProviderCatalog(t)
 	home := t.TempDir()

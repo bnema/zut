@@ -114,6 +114,16 @@ type Runtime struct {
 // New constructs a Runtime from cfg. Returns an error if no
 // credential is available for the requested provider.
 func New(cfg Config) (*Runtime, error) {
+	return NewContext(context.Background(), cfg)
+}
+
+// NewContext constructs a Runtime from cfg and uses ctx for credential
+// resolution and initial model catalog discovery. Canceling ctx stops setup
+// and any refresh started for this runtime.
+func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	webSearchPolicy := subagents.WebSearchDeny
 	for _, name := range cfg.Tools {
 		if name == "web_search" {
@@ -138,7 +148,7 @@ func New(cfg Config) (*Runtime, error) {
 		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}
-	r, err := agent.ResolveSDK(context.Background(), args)
+	r, err := agent.ResolveSDK(ctx, args)
 	if err != nil {
 		return nil, err
 	}

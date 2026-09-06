@@ -1,12 +1,24 @@
 package sdk
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestNewContextHonorsCancellation(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewContext(ctx, Config{Provider: provider.ProviderOpenCodeGo}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewContext error = %v, want context.Canceled", err)
+	}
+}
 
 func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 	const model = "muse-spark-1.2-contributor"
