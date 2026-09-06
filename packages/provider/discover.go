@@ -334,6 +334,22 @@ func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) 
 	return levelMap, effortMap
 }
 
+// DynamicOpenCodeGoModel returns bootstrap metadata for an OpenCode Go model
+// that is not present in a discovered catalog yet.
+func DynamicOpenCodeGoModel(providerName, modelID, baseURL string) Model {
+	return Model{
+		Provider:      providerName,
+		ID:            modelID,
+		DisplayName:   modelID,
+		ContextWindow: 128000,
+		MaxOutput:     16384,
+		Reasoning:     true,
+		API:           OpenCodeGoAPIForModel(modelID),
+		BaseURL:       baseURL,
+		Source:        "dynamic",
+	}
+}
+
 // OpenCodeGoAPIForModel reports the wire API for an OpenCode Go model family.
 // OpenCode Go currently serves GPT-5.6 models on its Responses endpoint while
 // the rest of the Go catalog uses Chat Completions.

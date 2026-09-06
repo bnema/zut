@@ -47,6 +47,25 @@ func TestRuntimeSetModelUpdatesAgentMetadata(t *testing.T) {
 	}
 }
 
+func TestRuntimeSetModelPreservesExistingLimitsWhenMetadataIsMissing(t *testing.T) {
+	const model = "metadata-without-limits"
+	r := &Runtime{
+		provider: provider.ProviderOpenCodeGo,
+		model:    "old-model",
+		agent:    &core.Agent{Model: "old-model", ContextWindow: 111, MaxTokens: 222},
+		modelCatalog: []provider.Model{{
+			Provider: provider.ProviderOpenCodeGo,
+			ID:       model,
+		}},
+	}
+	if err := r.SetModel(model); err != nil {
+		t.Fatal(err)
+	}
+	if r.agent.ContextWindow != 111 || r.agent.MaxTokens != 222 {
+		t.Fatalf("missing limits changed agent values = context %d output %d, want 111/222", r.agent.ContextWindow, r.agent.MaxTokens)
+	}
+}
+
 func TestRuntimeSetModelRejectsUnknownAuthoritativeModel(t *testing.T) {
 	r := &Runtime{
 		provider:                  provider.ProviderOpenCodeGo,

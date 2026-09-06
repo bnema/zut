@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -13,6 +14,15 @@ type routeCaptureClient struct {
 func (c *routeCaptureClient) Name() string { return c.name }
 func (c *routeCaptureClient) Stream(_ context.Context, req Request) (<-chan Event, error) {
 	c.models = append(c.models, req.Model)
+	out := make(chan Event)
+	close(out)
+	return out, nil
+}
+
+type noOpClient struct{ name string }
+
+func (c *noOpClient) Name() string { return c.name }
+func (c *noOpClient) Stream(context.Context, Request) (<-chan Event, error) {
 	out := make(chan Event)
 	close(out)
 	return out, nil
@@ -43,6 +53,8 @@ func TestModelRouterDispatchesByModelAPI(t *testing.T) {
 }
 
 func TestModelRouterRejectsMissingAPIClient(t *testing.T) {
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{{Provider: "xai", ID: "grok-4.5", API: APIResponses}})
 	router := NewModelRouter("xai", &routeCaptureClient{name: "xai"}, nil)
 	if _, err := router.Stream(context.Background(), Request{Model: "grok-4.5"}); err == nil {
 		t.Fatal("expected missing API client error")
@@ -84,6 +96,26 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	}
 	if len(completionsCapture.models) != 2 || completionsCapture.models[0] != "kimi-k3" || completionsCapture.models[1] != "shape-completions" {
 		t.Fatalf("Completions models = %v", completionsCapture.models)
+	}
+}
+
+func TestOpenCodeGoScopedEmptyRouterIgnoresGlobalCatalog(t *testing.T) {
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{{Provider: ProviderOpenCodeGo, ID: "global-model", API: APIResponses}})
+
+	fallback := &routeCaptureClient{name: ProviderOpenCodeGo}
+	responses := &routeCaptureClient{name: ProviderOpenCodeGo}
+	router := NewOpenCodeGoWithModels("token", "https://example.com/go/v1", []Model{}).(*modelRouter)
+	router.fallback = fallback
+	router.byAPI[APIResponses] = responses
+	stream, err := router.Stream(context.Background(), Request{Model: "global-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if len(fallback.models) != 1 || len(responses.models) != 0 {
+		t.Fatalf("scoped empty router used global catalog: fallback=%v responses=%v", fallback.models, responses.models)
 	}
 }
 
@@ -152,4 +184,67 @@ func TestOpenCodeGoDynamicRouterRejectsUnknownAuthoritativeModel(t *testing.T) {
 	if _, err := router.Stream(context.Background(), Request{Model: "removed-model"}); err == nil {
 		t.Fatal("authoritative OpenCode Go router accepted removed model")
 	}
+}
+
+func TestModelRouterConcurrentStreamAndMetadataUpdates(t *testing.T) {
+	router := NewModelRouter("test", &noOpClient{name: "test"}, map[string]Client{
+		APIResponses: &noOpClient{name: "test"},
+	}).(*modelRouter)
+	model := Model{Provider: "test", ID: "concurrent-model", API: APIResponses}
+	router.SetModelMetadata(model)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			updated := model
+			updated.API = APIResponses
+			if i%2 == 0 {
+				updated.API = APICompletions
+			}
+			router.SetModelMetadata(updated)
+		}(i)
+		go func() {
+			defer wg.Done()
+			stream, err := router.Stream(context.Background(), Request{Model: model.ID})
+			if err != nil {
+				t.Errorf("stream: %v", err)
+				return
+			}
+			for range stream {
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestModelMetadataConcurrentAccess(t *testing.T) {
+	model := Model{Provider: ProviderOpenAICodex, ID: "concurrent-model", ContextWindow: 128000, MaxOutput: 8192}
+	openai := &openaiClient{name: ProviderOpenAI}
+	codex := &codexClient{providerName: ProviderOpenAICodex}
+	openai.SetModelMetadata(model)
+	codex.SetModelMetadata(model)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			openai.SetModelMetadata(model)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = openai.buildRequest(Request{Model: model.ID})
+		}()
+		go func() {
+			defer wg.Done()
+			codex.SetModelMetadata(model)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = codex.buildRequest(Request{Model: model.ID})
+		}()
+	}
+	wg.Wait()
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,6 +43,7 @@ type openaiClient struct {
 	oauth               bool // when true, apiKey actually holds an OAuth access token
 	headers             map[string]string
 	http                *http.Client
+	modelOverridesMu    sync.RWMutex
 	modelOverrides      map[string]Model
 }
 
@@ -115,10 +117,13 @@ func (c *openaiClient) Name() string {
 }
 
 func (c *openaiClient) SetModelMetadata(model Model) {
+	model = cloneModel(model)
+	c.modelOverridesMu.Lock()
 	if c.modelOverrides == nil {
 		c.modelOverrides = make(map[string]Model)
 	}
-	c.modelOverrides[model.ID] = cloneModel(model)
+	c.modelOverrides[model.ID] = model
+	c.modelOverridesMu.Unlock()
 }
 
 // ---- wire types ----
@@ -191,7 +196,13 @@ type oaiRequest struct {
 
 func (c *openaiClient) modelForRequest(id string) (Model, error) {
 	id = strings.TrimSpace(id)
-	if model, ok := c.modelOverrides[id]; ok {
+	c.modelOverridesMu.RLock()
+	model, ok := c.modelOverrides[id]
+	if ok {
+		model = cloneModel(model)
+	}
+	c.modelOverridesMu.RUnlock()
+	if ok {
 		return model, nil
 	}
 	model, err := FindModel(c.Name(), id)

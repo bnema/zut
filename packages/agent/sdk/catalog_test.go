@@ -18,6 +18,9 @@ import (
 
 func testCredentialEndpointScope(credential, baseURL string) string {
 	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if endpoint == "" {
+		endpoint = provider.OpenCodeGoDefaultBaseURL
+	}
 	digest := sha256.Sum256([]byte(credential + "\x00" + endpoint))
 	return fmt.Sprintf("sha256:%x", digest)
 }

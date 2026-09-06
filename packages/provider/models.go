@@ -452,6 +452,63 @@ var (
 	userModels               []Model // highest-precedence models loaded from models.json
 )
 
+// CatalogSnapshot captures the mutable catalog overlays so a caller can
+// restore provider state after temporarily installing test or runtime data.
+// Use SnapshotCatalog and RestoreCatalog instead of replacing the live
+// overlay with nil, which can discard another caller's active catalog.
+type CatalogSnapshot struct {
+	active                   []Model
+	activeSet                bool
+	authoritativeProviderSet map[string]struct{}
+	managedModels            []Model
+	userModels               []Model
+}
+
+// SnapshotCatalog returns a deep copy of the mutable provider catalog state.
+func SnapshotCatalog() CatalogSnapshot {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+
+	snapshot := CatalogSnapshot{
+		activeSet:                activeSet,
+		authoritativeProviderSet: maps.Clone(authoritativeProviderSet),
+	}
+	if active != nil {
+		snapshot.active = cloneModels(active)
+	}
+	if managedModels != nil {
+		snapshot.managedModels = cloneModels(managedModels)
+	}
+	if userModels != nil {
+		snapshot.userModels = cloneModels(userModels)
+	}
+	return snapshot
+}
+
+// RestoreCatalog restores a snapshot returned by SnapshotCatalog.
+func RestoreCatalog(snapshot CatalogSnapshot) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+
+	if snapshot.active != nil {
+		active = cloneModels(snapshot.active)
+	} else {
+		active = nil
+	}
+	activeSet = snapshot.activeSet
+	authoritativeProviderSet = maps.Clone(snapshot.authoritativeProviderSet)
+	if snapshot.managedModels != nil {
+		managedModels = cloneModels(snapshot.managedModels)
+	} else {
+		managedModels = nil
+	}
+	if snapshot.userModels != nil {
+		userModels = cloneModels(snapshot.userModels)
+	} else {
+		userModels = nil
+	}
+}
+
 func cloneModel(model Model) Model {
 	model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
 	model.ReasoningEffortMap = maps.Clone(model.ReasoningEffortMap)

@@ -292,16 +292,7 @@ func resolveRPCModel(providerName, modelID string) (provider.Model, error) {
 		return model, nil
 	}
 	if providerName == provider.ProviderOpenCodeGo && provider.AcceptsUnlistedModels(providerName) {
-		return provider.Model{
-			Provider:      providerName,
-			ID:            modelID,
-			DisplayName:   modelID,
-			ContextWindow: 128000,
-			MaxOutput:     16384,
-			Reasoning:     true,
-			API:           provider.OpenCodeGoAPIForModel(modelID),
-			Source:        "dynamic",
-		}, nil
+		return provider.DynamicOpenCodeGoModel(providerName, modelID, ""), nil
 	}
 	return provider.Model{}, err
 }
@@ -361,6 +352,12 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 		s.writeResponse(id, cmd, nil)
 
 	case "set_model":
+		if !s.turnMu.TryLock() {
+			s.writeError(id, cmd, "runtime is busy")
+			return
+		}
+		defer s.turnMu.Unlock()
+
 		var req struct {
 			Model string `json:"model"`
 		}
@@ -381,8 +378,12 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 		if setter, ok := s.agent.Client.(provider.ModelMetadataSetter); ok {
 			setter.SetModelMetadata(metadata)
 		}
-		s.agent.ContextWindow = metadata.ContextWindow
-		s.agent.MaxTokens = metadata.MaxOutput
+		if metadata.ContextWindow > 0 {
+			s.agent.ContextWindow = metadata.ContextWindow
+		}
+		if metadata.MaxOutput > 0 {
+			s.agent.MaxTokens = metadata.MaxOutput
+		}
 		s.agent.Model = model
 		s.model = model
 		s.writeResponse(id, cmd, map[string]any{"model": model})

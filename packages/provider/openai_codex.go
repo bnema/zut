@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,7 @@ type codexClient struct {
 	cliRoutingAll     bool
 	capabilities      responsesCapabilities
 	http              *http.Client
+	modelOverridesMu  sync.RWMutex
 	modelOverrides    map[string]Model
 }
 
@@ -97,10 +99,13 @@ func newOpenAICodexClient(token, accountID, baseURL string) *codexClient {
 func (c *codexClient) Name() string { return ProviderOpenAICodex }
 
 func (c *codexClient) SetModelMetadata(model Model) {
+	model = cloneModel(model)
+	c.modelOverridesMu.Lock()
 	if c.modelOverrides == nil {
 		c.modelOverrides = make(map[string]Model)
 	}
-	c.modelOverrides[model.ID] = cloneModel(model)
+	c.modelOverrides[model.ID] = model
+	c.modelOverridesMu.Unlock()
 }
 
 // ---- Responses API wire types (subset needed for zut's surface) ----
@@ -212,7 +217,13 @@ type codexRequest struct {
 
 func (c *codexClient) findModel(id string) (Model, error) {
 	id = strings.TrimSpace(id)
-	if model, ok := c.modelOverrides[id]; ok {
+	c.modelOverridesMu.RLock()
+	model, ok := c.modelOverrides[id]
+	if ok {
+		model = cloneModel(model)
+	}
+	c.modelOverridesMu.RUnlock()
+	if ok {
 		return model, nil
 	}
 	if c.providerName != "" && c.providerName != ProviderOpenAICodex {

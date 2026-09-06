@@ -138,7 +138,7 @@ func New(cfg Config) (*Runtime, error) {
 		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}
-	r, err := agent.ResolveSDK(args)
+	r, err := agent.ResolveSDK(context.Background(), args)
 	if err != nil {
 		return nil, err
 	}
@@ -337,17 +337,7 @@ func (r *Runtime) SetModel(model string) error {
 			return fmt.Errorf("unknown model %q (provider=%q)", model, r.provider)
 		}
 		if !found {
-			metadata = provider.Model{
-				Provider:      r.provider,
-				ID:            model,
-				DisplayName:   model,
-				ContextWindow: 128000,
-				MaxOutput:     16384,
-				Reasoning:     true,
-				API:           provider.OpenCodeGoAPIForModel(model),
-				Source:        "dynamic",
-			}
-			r.modelCatalog = append(r.modelCatalog, metadata)
+			metadata = provider.DynamicOpenCodeGoModel(r.provider, model, "")
 		}
 	} else {
 		var err error
@@ -361,8 +351,12 @@ func (r *Runtime) SetModel(model string) error {
 		if setter, ok := r.agent.Client.(provider.ModelMetadataSetter); ok {
 			setter.SetModelMetadata(metadata)
 		}
-		r.agent.ContextWindow = metadata.ContextWindow
-		r.agent.MaxTokens = metadata.MaxOutput
+		if metadata.ContextWindow > 0 {
+			r.agent.ContextWindow = metadata.ContextWindow
+		}
+		if metadata.MaxOutput > 0 {
+			r.agent.MaxTokens = metadata.MaxOutput
+		}
 	}
 	r.agent.Model = model
 	r.model = model

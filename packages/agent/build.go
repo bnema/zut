@@ -525,6 +525,16 @@ func acceptsUnlistedModel(providerName string, args Args) bool {
 	return provider.AcceptsUnlistedModels(providerName)
 }
 
+func defaultModelForResolve(providerName string, args Args) string {
+	if providerName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		if len(args.modelCatalog) > 0 {
+			return args.modelCatalog[0].ID
+		}
+		return openCodeGoBootstrapModel
+	}
+	return defaultModelForProvider(providerName)
+}
+
 // Resolve merges args, config, and env into a Resolved set.
 //
 // Unlike the earlier version, Resolve NEVER returns an error for
@@ -662,13 +672,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			return Resolved{}, fmt.Errorf("%s requires --model or a model selected from its manager", provName)
 		}
 		if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
-			if len(args.modelCatalog) > 0 {
-				model = args.modelCatalog[0].ID
-			} else {
-				// Keep a scope with no discovered models on the safe
-				// bootstrap id instead of consulting another runtime's catalog.
-				model = openCodeGoBootstrapModel
-			}
+			// Keep model selection inside the runtime snapshot instead of
+			// consulting another runtime's mutable catalog.
+			model = defaultModelForResolve(provName, args)
 		} else {
 			model = defaultModelForProvider(provName)
 		}
@@ -682,7 +688,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if autoFellBack && provName != "ollama" {
 		if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
 			if _, err := findModelForResolve(provName, model, args.modelCatalog); err != nil {
-				model = openCodeGoBootstrapModel
+				model = defaultModelForResolve(provName, args)
 			}
 		} else if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
 			model = defaultModelForProvider(provName)
@@ -708,17 +714,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// the provider request will be the final authority if no catalog data is
 	// available yet.
 	if err != nil && acceptsUnlistedModel(provName, args) {
-		resolvedModel = provider.Model{
-			Provider:      provName,
-			ID:            model,
-			DisplayName:   model,
-			ContextWindow: 128000,
-			MaxOutput:     16384,
-			Reasoning:     true,
-			API:           provider.OpenCodeGoAPIForModel(model),
-			BaseURL:       args.BaseURL,
-			Source:        "dynamic",
-		}
+		resolvedModel = provider.DynamicOpenCodeGoModel(provName, model, args.BaseURL)
 		err = nil
 	}
 	// Custom providers are open-catalogue like ollama: any model id the
@@ -767,13 +763,18 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			}
 			// Don't repair config — the routed model id may be valid upstream.
 		} else {
-			fallback := defaultModelForProvider(provName)
-			fm, ferr := provider.FindModel(provName, fallback)
+			fallback := defaultModelForResolve(provName, args)
+			fm, ferr := findModelForResolve(provName, fallback, args.modelCatalog)
 			if ferr != nil {
 				// Even the provider default is gone (catastrophic
 				// catalogue trim). Last resort: any model on this
-				// provider, then the global DefaultModel.
-				if candidates := provider.ModelsForProvider(provName); len(candidates) > 0 {
+				// provider, then the global DefaultModel. A scoped
+				// OpenCode Go runtime must stay inside its snapshot.
+				candidates := provider.ModelsForProvider(provName)
+				if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+					candidates = args.modelCatalog
+				}
+				if len(candidates) > 0 {
 					fm = candidates[0]
 				} else {
 					fm = provider.DefaultModel

@@ -1,9 +1,6 @@
 package provider
 
-import (
-	"maps"
-	"testing"
-)
+import "testing"
 
 func TestMergeCatalogForProvidersPrunesUnavailableStaticModels(t *testing.T) {
 	const (
@@ -67,18 +64,7 @@ func TestSetLiveModelsForProvidersPrunesEmptyAuthoritativeCatalog(t *testing.T) 
 	if _, err := FindModel("openai-codex", "gpt-5.6-luna"); err != nil {
 		t.Fatalf("fixture drift: static Codex model missing: %v", err)
 	}
-	activeMu.RLock()
-	previousActive := active
-	previousSet := activeSet
-	previousAuthoritative := maps.Clone(authoritativeProviderSet)
-	activeMu.RUnlock()
-	t.Cleanup(func() {
-		activeMu.Lock()
-		active = previousActive
-		activeSet = previousSet
-		authoritativeProviderSet = previousAuthoritative
-		activeMu.Unlock()
-	})
+	preserveActiveCatalog(t)
 
 	SetLiveModelsForProviders(nil, []string{"openai-codex"})
 	if _, err := FindModel("openai-codex", "gpt-5.6-luna"); err == nil {

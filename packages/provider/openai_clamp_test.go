@@ -1,9 +1,6 @@
 package provider
 
-import (
-	"maps"
-	"testing"
-)
+import "testing"
 
 // withLiveModels installs a synthetic catalog overlay for the duration
 // of a test and restores the previous state afterwards. It lets these
@@ -11,21 +8,8 @@ import (
 // the real catalog.
 func withLiveModels(t *testing.T, models []Model) {
 	t.Helper()
-	activeMu.Lock()
-	prevActive := active
-	prevSet := activeSet
-	prevAuthoritative := maps.Clone(authoritativeProviderSet)
-	activeMu.Unlock()
-
+	preserveActiveCatalog(t)
 	SetLiveModels(models)
-
-	t.Cleanup(func() {
-		activeMu.Lock()
-		active = prevActive
-		activeSet = prevSet
-		authoritativeProviderSet = prevAuthoritative
-		activeMu.Unlock()
-	})
 }
 
 // outputBudget pulls whichever max-output field buildRequest populated

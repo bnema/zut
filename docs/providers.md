@@ -129,6 +129,13 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+Example:
+
+```bash
+export OPENROUTER_API_KEY=...
+zut --provider openrouter
+```
+
 ### OpenCode Go model catalog
 
 OpenCode Go is synchronized instead of using a hand-maintained model list. When
@@ -146,13 +153,6 @@ refresh when the cache is stale, while SDK runtimes load matching cached
 metadata before resolving. Synchronous refreshes resolve configured
 `api_key_command` credentials; unsolicited startup refreshes leave those
 commands untouched.
-
-Example:
-
-```bash
-export OPENROUTER_API_KEY=...
-zut --provider openrouter
-```
 
 ## Fast mode
 

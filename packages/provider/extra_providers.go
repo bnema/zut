@@ -142,6 +142,7 @@ func NewOpenCodeGoWithModels(apiKey, baseURL string, models []Model) Client {
 		APIResponses: responses,
 	}).(*modelRouter)
 	router.dynamicCatalog = models == nil
+	router.scopedCatalog = models != nil
 	for _, model := range models {
 		router.SetModelMetadata(model)
 	}

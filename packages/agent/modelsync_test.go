@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -261,6 +262,7 @@ func TestResolveAllowsUnknownOpenCodeGoModelBeforeDiscovery(t *testing.T) {
 }
 
 func TestResolveRejectsUnknownOpenCodeGoModelAfterDiscovery(t *testing.T) {
+	preserveProviderCatalog(t)
 	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENCODE_API_KEY", "")
 	provider.SetLiveModelsForProviders([]provider.Model{{
@@ -270,10 +272,6 @@ func TestResolveRejectsUnknownOpenCodeGoModelAfterDiscovery(t *testing.T) {
 		MaxOutput:     16384,
 	}}, []string{provider.ProviderOpenCodeGo})
 	provider.SetUserModels(nil)
-	t.Cleanup(func() {
-		provider.SetLiveModels(nil)
-		provider.SetUserModels(nil)
-	})
 
 	resolved, err := Resolve(Args{Provider: provider.ProviderOpenCodeGo, Model: "removed-model"}, false)
 	if err != nil {
@@ -281,6 +279,48 @@ func TestResolveRejectsUnknownOpenCodeGoModelAfterDiscovery(t *testing.T) {
 	}
 	if resolved.Model != "served-model" {
 		t.Fatalf("unknown model resolved to %q, want served-model", resolved.Model)
+	}
+}
+
+func TestResolveFallbackUsesCapturedOpenCodeGoCatalog(t *testing.T) {
+	preserveProviderCatalog(t)
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	const modelID = "shared-scoped-model"
+	provider.SetLiveModelsForProviders([]provider.Model{{
+		Provider:      provider.ProviderOpenCodeGo,
+		ID:            modelID,
+		ContextWindow: 111000,
+		MaxOutput:     11000,
+		BaseURL:       "https://account-a.example/v1",
+	}}, []string{provider.ProviderOpenCodeGo})
+	args := Args{
+		Provider:                  provider.ProviderOpenCodeGo,
+		Model:                     "removed-from-account-a",
+		APIKey:                    "account-a-key",
+		modelCatalog:              provider.ModelsForProvider(provider.ProviderOpenCodeGo),
+		modelCatalogAuthoritative: true,
+		NoTools:                   true,
+	}
+
+	// A later runtime replaces the process-global catalog with another
+	// credential's endpoint. The first runtime must resolve its fallback from
+	// the snapshot it captured before that replacement.
+	provider.SetLiveModelsForProviders([]provider.Model{{
+		Provider:      provider.ProviderOpenCodeGo,
+		ID:            modelID,
+		ContextWindow: 222000,
+		MaxOutput:     22000,
+		BaseURL:       "https://account-b.example/v1",
+	}}, []string{provider.ProviderOpenCodeGo})
+
+	resolved, err := Resolve(args, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != modelID || resolved.ContextWindow != 111000 || resolved.MaxOutput != 11000 || resolved.BaseURL != "https://account-a.example/v1" {
+		t.Fatalf("fallback resolved from the wrong catalog: provider=%q model=%q context=%d output=%d base=%q", resolved.Provider, resolved.Model, resolved.ContextWindow, resolved.MaxOutput, resolved.BaseURL)
 	}
 }
 
@@ -355,7 +395,51 @@ func TestCurrentModelProviderScopesHashesOpenCodeGoCredential(t *testing.T) {
 	}
 }
 
+func TestSynchronousOpenCodeGoAPIKeyHonorsCancellation(t *testing.T) {
+	preserveProviderCatalog(t)
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+	t.Setenv("ZUT_AGENT_API_KEY_COMMAND_HELPER", "1")
+	marker := filepath.Join(home, "canceled-command-ran")
+	credentials := auth.Credentials{AdditionalAPIKeyCreds: map[string]auth.ProviderCreds{
+		provider.ProviderOpenCodeGo: {
+			APIKeyCommand: &auth.APIKeyCommand{
+				Program: os.Args[0],
+				Args:    []string{"-test.run=^TestAgentAPIKeyCommandHelperProcess$", "--", marker},
+			},
+		},
+	}}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	discoverOpenCodeGoFn = func(context.Context, string, string) ([]provider.Model, error) {
+		t.Fatal("canceled catalog preparation reached discovery")
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ResolveSDK(ctx, Args{Provider: provider.ProviderOpenCodeGo}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveSDK error = %v, want context.Canceled", err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	PrepareRuntimeCatalog(ctx, true, provider.ProviderOpenCodeGo, "", "", nil)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("canceled credential command marker = %v", err)
+	}
+}
+
 func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
+	preserveProviderCatalog(t)
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 	t.Setenv("OPENCODE_API_KEY", "")
@@ -404,6 +488,7 @@ func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
 }
 
 func TestResolveSDKRefreshReusesResolvedCommandCredential(t *testing.T) {
+	preserveProviderCatalog(t)
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 	t.Setenv("OPENCODE_API_KEY", "")
@@ -432,7 +517,7 @@ func TestResolveSDKRefreshReusesResolvedCommandCredential(t *testing.T) {
 		return nil, fmt.Errorf("synthetic discovery stop")
 	}
 
-	if _, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, BaseURL: "https://proxy.example/v1"}); err != nil {
+	if _, err := ResolveSDK(context.Background(), Args{Provider: provider.ProviderOpenCodeGo, BaseURL: "https://proxy.example/v1"}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -578,7 +663,7 @@ func TestZutfilePreferredDynamicModelRefreshesBeforeRequirements(t *testing.T) {
 	manifest.Model.MinContext = 200000
 	manifest.Model.Preferred = []string{modelID}
 	catalogProvider, catalogModel := zutfileCatalogSelection(Args{Provider: provider.ProviderOpenCodeGo}, manifest, nil)
-	PrepareRuntimeCatalog(true, catalogProvider, key, "", catalogModel)
+	PrepareRuntimeCatalog(context.Background(), true, catalogProvider, key, "", nil, catalogModel)
 
 	args := Args{}
 	if err := applyZutfileModelRequirements(&args, manifest); err != nil {
@@ -618,7 +703,7 @@ func TestResolveSDKUsesUserModelEndpointForDiscovery(t *testing.T) {
 		return nil, fmt.Errorf("synthetic discovery stop")
 	}
 
-	resolved, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, Model: modelID, APIKey: key})
+	resolved, err := ResolveSDK(context.Background(), Args{Provider: provider.ProviderOpenCodeGo, Model: modelID, APIKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +746,7 @@ func TestResolveSDKDoesNotInheritLiveEndpointForMetadataOnlyUserModel(t *testing
 		return nil, fmt.Errorf("synthetic discovery stop")
 	}
 
-	resolved, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, Model: "metadata-only", APIKey: key})
+	resolved, err := ResolveSDK(context.Background(), Args{Provider: provider.ProviderOpenCodeGo, Model: "metadata-only", APIKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +829,7 @@ func TestResolveSDKFollowsActiveModelProfile(t *testing.T) {
 			}
 
 			modelCatalogMu.Lock()
-			_, _ = prepareRuntimeCatalog("", key, baseURL, "")
+			_, _ = prepareRuntimeCatalog("", key, baseURL, nil, "")
 			resolved, err := Resolve(Args{APIKey: key, BaseURL: baseURL}, false)
 			modelCatalogMu.Unlock()
 			if err != nil {
@@ -757,6 +842,23 @@ func TestResolveSDKFollowsActiveModelProfile(t *testing.T) {
 				t.Fatalf("cached OpenCode Go context = %d, want %d", resolved.ContextWindow, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestEligibleProviderDiscoveryIncompleteIncludesUnscopedProviders(t *testing.T) {
+	eligible := map[string]struct{}{
+		provider.ProviderOpenAI:     {},
+		provider.ProviderOpenCodeGo: {},
+	}
+	discovered := map[string][]provider.Model{
+		provider.ProviderOpenCodeGo: {{Provider: provider.ProviderOpenCodeGo, ID: "served"}},
+	}
+	if !eligibleProviderDiscoveryIncomplete(eligible, discovered) {
+		t.Fatal("missing unscoped provider discovery was not detected")
+	}
+	discovered[provider.ProviderOpenAI] = nil
+	if eligibleProviderDiscoveryIncomplete(eligible, discovered) {
+		t.Fatal("providers present in discovery were treated as missing")
 	}
 }
 

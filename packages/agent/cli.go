@@ -904,7 +904,8 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 	}
 	// Model catalog: load any cached discovery data before we inspect
 	// the model list (list-models, print/json, interactive).
-	PrepareRuntimeCatalog(args.ListModels, args.Provider, args.APIKey, args.BaseURL, args.Model)
+	userModels := LoadUserModels()
+	PrepareRuntimeCatalog(context.Background(), args.ListModels, args.Provider, args.APIKey, args.BaseURL, userModels, args.Model)
 
 	if args.ListModels {
 		printModels()

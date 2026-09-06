@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 const (
@@ -17,11 +18,13 @@ const (
 // This lets one provider expose models that use different wire protocols while
 // remaining reusable across model switches.
 type modelRouter struct {
-	name           string
-	fallback       Client
-	byAPI          map[string]Client
-	modelOverrides map[string]Model
-	dynamicCatalog bool
+	name             string
+	fallback         Client
+	byAPI            map[string]Client
+	modelOverridesMu sync.RWMutex
+	modelOverrides   map[string]Model
+	dynamicCatalog   bool
+	scopedCatalog    bool
 }
 
 // ModelMetadataSetter lets a runtime-owned client retain model metadata
@@ -39,15 +42,28 @@ func NewModelRouter(name string, fallback Client, byAPI map[string]Client) Clien
 func (c *modelRouter) Name() string { return c.name }
 
 func (c *modelRouter) SetModelMetadata(model Model) {
+	model = cloneModel(model)
+	c.modelOverridesMu.Lock()
 	if c.modelOverrides == nil {
 		c.modelOverrides = make(map[string]Model)
 	}
-	model = cloneModel(model)
 	c.modelOverrides[model.ID] = model
+	c.modelOverridesMu.Unlock()
+
 	setModelMetadata(c.fallback, model)
 	for _, client := range c.byAPI {
 		setModelMetadata(client, model)
 	}
+}
+
+func (c *modelRouter) modelOverride(id string) (Model, bool) {
+	c.modelOverridesMu.RLock()
+	model, ok := c.modelOverrides[id]
+	if ok {
+		model = cloneModel(model)
+	}
+	c.modelOverridesMu.RUnlock()
+	return model, ok
 }
 
 func setModelMetadata(client Client, model Model) {
@@ -73,22 +89,24 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 			found = true
 			c.SetModelMetadata(model)
 		} else if !IsProviderCatalogAuthoritative(c.name) {
-			if model, ok := c.modelOverrides[req.Model]; ok {
+			if model, ok := c.modelOverride(req.Model); ok {
 				api = model.API
 				found = true
 			}
 		}
-	} else if model, ok := c.modelOverrides[req.Model]; ok {
+	} else if model, ok := c.modelOverride(req.Model); ok {
 		api = model.API
 		found = true
-	} else if model, err := FindModel(c.name, req.Model); err == nil {
-		api = model.API
-		found = true
+	} else if !c.scopedCatalog {
+		if model, err := FindModel(c.name, req.Model); err == nil {
+			api = model.API
+			found = true
+		}
 	}
 	if !found && c.dynamicCatalog && IsProviderCatalogAuthoritative(c.name) {
 		return nil, fmt.Errorf("unknown model %q (provider=%q)", req.Model, c.name)
 	}
-	if api == "" && AcceptsUnlistedModels(c.name) {
+	if api == "" && !c.scopedCatalog && AcceptsUnlistedModels(c.name) {
 		// The OpenCode Go catalog is intentionally live-only. Preserve the
 		// family route for an explicit model while the first discovery is
 		// still in flight or unavailable.
