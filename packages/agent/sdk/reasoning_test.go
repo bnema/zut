@@ -22,6 +22,22 @@ func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 	}
 }
 
+func TestRuntimeSetModelRejectsBlankOpenCodeGoModel(t *testing.T) {
+	for _, model := range []string{"", "   "} {
+		r := &Runtime{
+			provider: "opencode-go",
+			model:    "kimi-k2.6",
+			agent:    &core.Agent{Model: "kimi-k2.6"},
+		}
+		if err := r.SetModel(model); err == nil {
+			t.Fatalf("SetModel(%q) returned nil", model)
+		}
+		if r.model != "kimi-k2.6" || r.agent.Model != "kimi-k2.6" {
+			t.Fatalf("blank model %q changed active model: runtime=%q agent=%q", model, r.model, r.agent.Model)
+		}
+	}
+}
+
 func TestRuntimeSetReasoningMax(t *testing.T) {
 	r := &Runtime{agent: &core.Agent{}}
 	if err := r.SetReasoning("max"); err != nil {

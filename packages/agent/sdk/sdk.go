@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/bnema/zut/packages/agent"
@@ -308,6 +309,9 @@ func (r *Runtime) SetModel(model string) error {
 	defer r.mu.Unlock()
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
+	}
+	if strings.TrimSpace(model) == "" {
+		return fmt.Errorf("sdk: model must not be empty")
 	}
 	if _, err := provider.FindModel(r.provider, model); err != nil && !provider.AcceptsUnlistedModels(r.provider) {
 		return err

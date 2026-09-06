@@ -348,6 +348,10 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
+		if strings.TrimSpace(req.Model) == "" {
+			s.writeError(id, cmd, "model must not be empty")
+			return
+		}
 		if _, err := provider.FindModel(s.provider, req.Model); err != nil && !provider.AcceptsUnlistedModels(s.provider) {
 			s.writeError(id, cmd, err.Error())
 			return
