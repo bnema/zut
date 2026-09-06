@@ -130,6 +130,17 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 func (i *Interactive) startTurnWithImages(parent context.Context, prompt string, images []provider.ImageBlock) {
 	i.startTurnRequest(parent, prompt, images, false, false)
 }
+
+// startQueuedTurn keeps host provenance in the agent queue until injection,
+// including when the next turn first needs pre-turn compaction.
+func (i *Interactive) startQueuedTurn(parent context.Context, message core.QueuedMessage) {
+	if message.HostEvent && i.agent != nil {
+		i.agent.QueuePrompt(message)
+		i.startTurnRequest(parent, "", nil, true, false)
+		return
+	}
+	i.startTurnWithImages(parent, message.Text, message.Images)
+}
 func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, continueExisting, overflowRecoveryAttempted bool) {
 	if i.agent == nil {
 		// Text startup pre cannot run without credentials; continue so
@@ -342,10 +353,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// Scheduler follow-ups deliberately remain: they are distinct turns
 		// whose due time must not let them steer this failed turn.
 		if ctx.Err() != nil || (err != nil && !recoverContextOverflow) {
-			i.queued = nil
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
+			i.discardQueuedMessagesLocked(ctx.Err() == nil)
 		}
 		var scheduled scheduledFollowUp
 		var hasScheduled bool
@@ -409,7 +417,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		switch {
 		case hasNext:
-			i.startTurnWithImages(parent, next.Text, next.Images)
+			i.startQueuedTurn(parent, next)
 		case hasScheduled:
 			// The scheduler holds the session transition read lock until this
 			// acknowledgement, so accepting here binds the prompt to the agent

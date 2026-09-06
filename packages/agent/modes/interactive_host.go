@@ -262,6 +262,10 @@ func (i *Interactive) SubmitFollowUp(ctx context.Context, text string) error {
 	return nil
 }
 func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, userInput bool) {
+	i.submitOrQueueMessage(core.QueuedMessage{Text: text, Images: images}, userInput)
+}
+func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput bool) {
+	text, images := message.Text, message.Images
 	if cmd, ok := shellEscapeCommand(text); ok {
 		i.startShellEscape(i.runCtx, cmd)
 		return
@@ -302,10 +306,10 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 		var persistHandoff bool
 		if i.agent != nil && !i.compacting {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.agent.QueueMessage(text, images)
+			i.agent.QueuePrompt(message)
 		} else {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.queued = append(i.queued, core.QueuedMessage{Text: text, Images: images})
+			i.queued = append(i.queued, message)
 		}
 		i.mu.Unlock()
 		if persistHandoff {
@@ -315,8 +319,34 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 		return
 	}
 	i.mu.Unlock()
-	i.startTurnWithImages(i.runCtx, text, images)
+	i.startQueuedTurn(i.runCtx, message)
 }
+
+// discardQueuedMessagesLocked drops stale input after an error or cancellation.
+// Host evidence survives errors in the agent queue for the next explicit turn;
+// it must not automatically retry the failed provider or compaction request.
+func (i *Interactive) discardQueuedMessagesLocked(preserveHostEvents bool) {
+	var pending []core.QueuedMessage
+	if i.agent != nil {
+		pending = i.agent.DrainQueuedMessages()
+	}
+	pending = append(pending, i.queued...)
+	i.queued = nil
+	if !preserveHostEvents {
+		return
+	}
+	for _, message := range pending {
+		if !message.HostEvent {
+			continue
+		}
+		if i.agent != nil {
+			i.agent.QueuePrompt(message)
+		} else {
+			i.queued = append(i.queued, message)
+		}
+	}
+}
+
 func (i *Interactive) ChangelogVersion() string {
 	if i.changelogDialog != nil {
 		return i.changelogDialog.version

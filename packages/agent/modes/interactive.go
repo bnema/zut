@@ -2102,10 +2102,9 @@ type telegramSenderAdapter struct {
 // picked up before the waiter exits, so a later worker cannot be lost in the
 // handoff between batches.
 
-// beginCompletionDeliveryHold keeps all completions observed during one
-// parent model turn together. Tool calls are executed sequentially inside the
-// core agent, so the release point is the owning registration boundary for
-// same-parent-turn batching rather than a timing-based debounce.
+// beginCompletionDeliveryHold marks the owning parent turn's registration
+// boundary. Results slide into an active turn; release seals the remaining
+// worker wave for idle-parent batching rather than delaying active delivery.
 
 // autoSubagentsAddenda returns the prompt blocks owned by subagent prompting,
 // in the same order Resolve appends them to a new agent. The profile manifest

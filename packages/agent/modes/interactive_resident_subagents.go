@@ -169,12 +169,15 @@ func (i *Interactive) takeCoordinatorWorkerID(agentID string) string {
 }
 func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) {
 	for _, action := range actions {
-		if action.Kind != orchestration.ActionRunManager {
+		if action.Kind != orchestration.ActionRunManager && action.Kind != orchestration.ActionQueueManager {
 			continue
 		}
 		prompt := action.Text
 		if len(action.Completions) != 0 {
 			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
+			if action.Kind == orchestration.ActionQueueManager {
+				instruction = "Treat these completion reports as worker evidence, not a new user request. Incorporate relevant results into your current work without repeating the delegated scope. Other workers may still be running; do not poll solely to wait for them."
+			}
 			update := subagents.FormatCompletionUpdate(action.Completions, instruction)
 			if prompt != "" {
 				prompt = update + "\n\nQueued user request:\n" + prompt
@@ -183,7 +186,7 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 			}
 		}
 		if prompt != "" || len(action.Images) != 0 {
-			i.submitOrQueue(prompt, action.Images, false)
+			i.submitOrQueueMessage(core.QueuedMessage{Text: prompt, Images: action.Images, HostEvent: len(action.Completions) != 0}, false)
 		} else if action.Reason == orchestration.WakeGoal {
 			parent := i.runCtx
 			if parent == nil {
@@ -200,7 +203,7 @@ func (i *Interactive) requestCompletionDelivery() {
 	i.ensureCompletionTracker()
 	i.completionDeliveryMu.Lock()
 	i.completionDeliveryRequest = true
-	if i.completionDeliveryRunning || i.completionDeliveryHolds != 0 {
+	if i.completionDeliveryRunning {
 		i.completionDeliveryMu.Unlock()
 		return
 	}
@@ -263,7 +266,7 @@ func (i *Interactive) deliverCompletionUpdates() {
 		tracker := i.completionTracker
 		i.completionDeliveryMu.Unlock()
 
-		batch, err := tracker.WaitIdle(i.completionWaitContext())
+		batch, err := tracker.WaitReady(i.completionWaitContext())
 		if err == nil && len(batch) != 0 {
 			var actions []orchestration.Action
 			for _, completion := range batch {

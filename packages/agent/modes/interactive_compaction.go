@@ -269,8 +269,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		// continues the user message already in the transcript. Pre-turn
 		// compaction preserves its complete text-and-images request. Regular
 		// prompts typed during compaction remain in the host queue.
-		var next string
-		var nextImages []provider.ImageBlock
+		var next core.QueuedMessage
 		var hasNext bool
 		var continueExisting bool
 		var continueAutomatically bool
@@ -286,21 +285,15 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			} else {
 				i.statusOK = "compaction cancelled"
 			}
-			i.queued = nil // drop queue on cancel
+			i.discardQueuedMessagesLocked(false)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
 		case err != nil:
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
-			i.queued = nil // drop queue on error
+			i.discardQueuedMessagesLocked(true)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			if i.agent != nil {
-				i.agent.DrainQueuedMessages()
-			}
 		default:
 			i.statusErr = ""
 			// Read token count from the compaction message meta.
@@ -329,8 +322,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				continueExisting = true
 				i.continueAfterCompact = false
 			case i.hasPendingCompactPrompt:
-				next = i.pendingCompactPrompt
-				nextImages = i.pendingCompactImages
+				next = core.QueuedMessage{Text: i.pendingCompactPrompt, Images: i.pendingCompactImages}
 				i.pendingCompactPrompt = ""
 				i.pendingCompactImages = nil
 				i.hasPendingCompactPrompt = false
@@ -341,10 +333,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				continueAutomatically = true
 			case len(i.queued) > 0:
-				queued := i.queued[0]
-				i.queued = i.queued[1:]
-				next = queued.Text
-				nextImages = queued.Images
+				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			case continuationReason == compactContinuationStructuralTail || continuationReason == compactContinuationStatusRescue:
@@ -395,7 +384,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			case continueExisting:
 				i.startTurnRequest(p, "", nil, true, true)
 			case hasNext:
-				i.startTurnWithImages(p, next, nextImages)
+				i.startQueuedTurn(p, next)
 			case continueAutomatically:
 				i.startAutoCompactContinuation(p)
 			case continueGoal:

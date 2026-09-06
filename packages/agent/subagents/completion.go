@@ -116,12 +116,22 @@ func (t *CompletionTracker) Reset() {
 }
 
 func (t *CompletionTracker) WaitIdle(ctx context.Context) ([]Completion, error) {
+	return t.wait(ctx, true)
+}
+
+// WaitReady returns available completions without waiting for sibling turns.
+// It returns an empty batch when no accepted turns remain.
+func (t *CompletionTracker) WaitReady(ctx context.Context) ([]Completion, error) {
+	return t.wait(ctx, false)
+}
+
+func (t *CompletionTracker) wait(ctx context.Context, idle bool) ([]Completion, error) {
 	if t == nil {
 		return nil, nil
 	}
 	for {
 		t.mu.Lock()
-		if len(t.pending) == 0 {
+		if len(t.pending) == 0 || (!idle && len(t.ready) != 0) {
 			ready := append([]Completion(nil), t.ready...)
 			t.ready = nil
 			t.mu.Unlock()

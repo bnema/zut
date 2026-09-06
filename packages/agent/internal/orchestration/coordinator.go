@@ -9,10 +9,10 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// Coordinator collects one sealed worker wave per manager turn. A terminal
-// worker cannot wake the manager until the owning turn is sealed. Queued user
-// input wins the next wake; an active goal is used only when no user input or
-// worker result remains.
+// Coordinator queues terminal worker results into an active manager turn.
+// When the manager is idle, it collects the remaining sealed worker wave.
+// Queued user input wins the next wake; an active goal is used only when no
+// user input or worker result remains.
 type Coordinator struct {
 	managerActive bool
 	waveSealed    bool
@@ -29,6 +29,7 @@ type queuedUserInput struct {
 }
 
 type worker struct {
+	delivered  bool
 	terminal   bool
 	completion subagents.Completion
 }
@@ -61,6 +62,7 @@ const (
 	ActionRunManager ActionKind = iota + 1
 	ActionWait
 	ActionStop
+	ActionQueueManager
 )
 
 type WakeReason uint8
@@ -130,6 +132,10 @@ func (c *Coordinator) Apply(event Event) Result {
 		}
 		w.terminal = true
 		w.completion = event.Completion
+		if c.managerActive {
+			w.delivered = true
+			return Result{Actions: []Action{{Kind: ActionQueueManager, Reason: WakeWorkers, Completions: []subagents.Completion{event.Completion}}}}
+		}
 		if !c.managerActive && c.waveSealed && !c.hasPendingWorkers() {
 			return c.wakeIfIdle()
 		}
@@ -200,7 +206,7 @@ func (c *Coordinator) completedWorkers() []subagents.Completion {
 	}
 	completions := make([]subagents.Completion, 0, len(c.workerOrder))
 	for _, workerID := range c.workerOrder {
-		if worker := c.workers[workerID]; worker != nil && worker.terminal {
+		if worker := c.workers[workerID]; worker != nil && worker.terminal && !worker.delivered {
 			completions = append(completions, worker.completion)
 		}
 	}

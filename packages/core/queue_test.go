@@ -184,6 +184,25 @@ func TestQueuedMessageKeepsAcceptedTimeAcrossDrain(t *testing.T) {
 	}
 }
 
+func TestQueuePromptPreservesHostProvenance(t *testing.T) {
+	a := NewAgent(nil, "fake", "", Registry{})
+	prompt := QueuedMessage{Text: "host evidence", HostEvent: true}
+	if !a.QueuePrompt(prompt) {
+		t.Fatal("QueuePrompt rejected host event")
+	}
+	if got := a.PendingQueuedMessages(); len(got) != 1 || !got[0].HostEvent {
+		t.Fatalf("snapshot lost host provenance: %#v", got)
+	}
+	got := a.DrainQueuedMessages()
+	if len(got) != 1 || !got[0].HostEvent {
+		t.Fatalf("drain lost host provenance: %#v", got)
+	}
+	a.QueuePrompt(got[0])
+	if popped, ok := a.PopQueuedMessage(); !ok || !popped.HostEvent {
+		t.Fatalf("requeued prompt lost host provenance: %#v, %v", popped, ok)
+	}
+}
+
 func TestQueueMessageSnapshotPopAndDrain(t *testing.T) {
 	a := NewAgent(nil, "fake", "", Registry{})
 	if a.QueueMessage("   ", nil) {

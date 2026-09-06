@@ -184,6 +184,17 @@ an explicit `wait` value. For an unwaited spawn, completion arrives through the
 host’s typed completion update; `subagent_status` returns immediately and does
 not wait for completion. Do not use sleep loops, repeated status calls, journal
 files, or terminal UI inspection as a completion signal.
+In interactive mode, a result received while the primary is busy enters the
+visible **sliding in** queue and reaches the model at its next safe boundary,
+without interrupting a model request or tool call and without waiting for other
+children. Results already queued are not repeated when the parent turn ends.
+Undelivered results remain queued after a provider or compaction error for the
+next turn; they do not automatically retry the failed request. Explicit
+cancellation clears pending queue entries. The queue is in memory, while the
+child’s saved result remains available through `subagent_status`.
+When the primary is idle, remaining children are collected into one completion
+wave. Headless orchestration still waits for every accepted child before its
+next parent turn.
 Successful completions include the final visible assistant summary, capped at
 256 KiB; open the child session for the complete durable transcript.
 
