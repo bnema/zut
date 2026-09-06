@@ -3249,13 +3249,6 @@ func appendWrappedUsageStats(lines []string, th Theme, pad string, stats []strin
 	return lines
 }
 
-func reasoningStatusColor(th Theme, reasoningText string) TerminalColor {
-	if strings.HasSuffix(reasoningText, ":max") {
-		return th.ThinkingMax
-	}
-	return th.Muted
-}
-
 func reasoningLevelLabel(level string) string {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "", "off", "none", "no", "false", "disabled":
