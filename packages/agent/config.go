@@ -18,8 +18,9 @@ import (
 
 // QuickModelShortcut is one configured keyboard shortcut slot.
 type QuickModelShortcut struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // SubagentsConfig contains the resident manager policy. max_concurrent limits
@@ -69,6 +70,7 @@ type Config struct {
 	// QuickModelShortcuts maps slots 1-9 to provider/model pairs used by
 	// Ctrl+1..9. Cmd+1..9 may also work on terminals that forward Super.
 	QuickModelShortcuts []QuickModelShortcut `json:"quick_model_shortcuts,omitempty"`
+	ActiveModelProfile  int                  `json:"active_model_profile,omitempty"`
 
 	// InlineImagesEnabled controls whether zut draws screenshots inline
 	// when the terminal supports an image protocol. nil/missing means
@@ -319,6 +321,35 @@ func LoadConfig() (Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// normalizedModelProfile keeps startup defaults and the TUI's copy consistent.
+// Unknown/open-catalog models retain their configured reasoning until resolved.
+func normalizedModelProfile(p QuickModelShortcut) QuickModelShortcut {
+	p.Provider = canonicalProvider(p.Provider)
+	p.Reasoning = providerpkg.NormalizeReasoning(p.Reasoning)
+	if model, err := providerpkg.FindModel(p.Provider, p.Model); err == nil {
+		p.Reasoning = providerpkg.ClampReasoningForModel(model, p.Reasoning)
+	}
+	return p
+}
+
+// applyActiveModelProfile supplies defaults without rewriting the config and
+// returns their source slot (0 when none). Explicit flags retain precedence.
+func (c *Config) applyActiveModelProfile() int {
+	slot := c.ActiveModelProfile
+	if slot < 1 || slot > 9 {
+		slot = 1
+	}
+	if slot > len(c.QuickModelShortcuts) {
+		return 0
+	}
+	p := normalizedModelProfile(c.QuickModelShortcuts[slot-1])
+	if p.Provider == "" || p.Model == "" {
+		return 0
+	}
+	c.Provider, c.Model, c.Reasoning = p.Provider, p.Model, p.Reasoning
+	return slot
 }
 
 func validateSubagentConfig(cfg SubagentsConfig) error {

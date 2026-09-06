@@ -299,6 +299,14 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			i.statusOK = ""
 			i.mu.Unlock()
 		}
+	case "/profile":
+		if len(parts) != 2 || len(parts[1]) != 1 || parts[1][0] < '1' || parts[1][0] > '9' {
+			i.mu.Lock()
+			i.statusErr, i.statusOK = "usage: /profile <1-9>", ""
+			i.mu.Unlock()
+			break
+		}
+		i.applyQuickModelShortcut(int(parts[1][0] - '0'))
 	case "/reasoning":
 		i.openReasoningDialog()
 	case "/fast":
@@ -1101,7 +1109,11 @@ func (i *Interactive) applyRescueModelSelection(prov, model string) {
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
 	var replaced bool
 	swap := func() {
-		replaced = i.swapModelUnserialized(prov, model, builder, rescue)
+		var success bool
+		replaced, success = i.swapModelUnserialized(prov, model, builder, rescue)
+		if success {
+			i.saveActiveModelProfile()
+		}
 	}
 	if i.cfg.SessionTransition != nil {
 		i.cfg.SessionTransition(swap)
@@ -1112,16 +1124,19 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 		i.resetCompactHandoff()
 	}
 }
-func (i *Interactive) swapModelUnserialized(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) bool {
+
+// swapModelUnserialized reports agent replacement separately from success: a
+// same-provider model change succeeds without replacing the agent.
+func (i *Interactive) swapModelUnserialized(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) (replaced, success bool) {
 	if model == "" {
-		return false
+		return false, false
 	}
 	m, err := provider.FindModel(prov, model)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = err.Error()
 		i.mu.Unlock()
-		return false
+		return false, false
 	}
 	// Same provider AND not a rescue retry: just swap the model on
 	// the existing agent. Mixed-API providers dispatch from model metadata,
@@ -1137,13 +1152,13 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 		if i.cfg.PersistModel != nil {
 			i.cfg.PersistModel(i.cfg.Provider, m.ID)
 		}
-		return false
+		return false, true
 	}
 	if builder == nil {
 		i.mu.Lock()
 		i.statusErr = "cannot switch provider: no builder configured"
 		i.mu.Unlock()
-		return false
+		return false, false
 	}
 	// Snapshot the current transcript and cumulative usage BEFORE we
 	// build the replacement agent so we can hand them off. Without
@@ -1161,7 +1176,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 		i.mu.Lock()
 		i.statusErr = err.Error()
 		i.mu.Unlock()
-		return false
+		return false, false
 	}
 
 	// Replay the transcript and seed the cost on the freshly-built
@@ -1204,7 +1219,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
 	}
-	return true
+	return true, true
 }
 func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	switch ev.Kind {
@@ -1234,6 +1249,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
+			i.cfg.detachMismatchedModelProfile()
 			i.statusErr = ""
 			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 			i.mu.Unlock()

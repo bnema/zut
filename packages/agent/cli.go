@@ -1489,6 +1489,15 @@ func reloadResourcesAfterStartupPreWithRegistry(ctx context.Context, args Args, 
 
 // ---- interactive mode: opens the TUI even without credentials ----
 
+func interactiveQuickModelShortcuts(shortcuts []QuickModelShortcut) []modes.QuickModelShortcut {
+	result := make([]modes.QuickModelShortcut, len(shortcuts))
+	for idx, s := range shortcuts {
+		p := normalizedModelProfile(s)
+		result[idx] = modes.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning}
+	}
+	return result
+}
+
 func runInteractive(ctx context.Context, args Args, version string) (runErr error) {
 	initialCfg, _ := LoadConfig()
 	if initialCfg.Goals.MaxTokenBudget != nil && *initialCfg.Goals.MaxTokenBudget == 0 {
@@ -1498,6 +1507,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	r, err := Resolve(args, false)
 	if err != nil {
 		return err
+	}
+	// Resolve may have repaired a stale favorite. Use the saved repair for
+	// the UI's active-profile comparison instead of the pre-resolution copy.
+	if resolvedCfg, err := LoadConfig(); err == nil {
+		initialCfg.QuickModelShortcuts = resolvedCfg.QuickModelShortcuts
+		initialCfg.ActiveModelProfile = resolvedCfg.ActiveModelProfile
 	}
 
 	authStore := AuthStoreFor()
@@ -2515,10 +2530,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	}
 
 	fastMode := r.FastMode
-	quickModelShortcuts := make([]modes.QuickModelShortcut, len(initialCfg.QuickModelShortcuts))
-	for idx, s := range initialCfg.QuickModelShortcuts {
-		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
-	}
+	quickModelShortcuts := interactiveQuickModelShortcuts(initialCfg.QuickModelShortcuts)
 	themeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME")))
 	if themeEnv != "" && themeEnv != "auto" && themeEnv != "dark" && themeEnv != "light" {
 		fmt.Fprintf(os.Stderr, "theme override: unsupported ZUT_THEME=%q; ignoring it\n", themeEnv)
@@ -2589,6 +2601,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		GoalMaxTokenBudget:             initialCfg.Goals.MaxTokenBudget,
 		JailByDefault:                  initialCfg.JailByDefault,
 		QuickModelShortcuts:            quickModelShortcuts,
+		ActiveModelProfile:             initialCfg.ActiveModelProfile,
 		RecursiveFileSuggest:           initialCfg.RecursiveFileSuggest,
 		RespectGitignore:               initialCfg.RespectGitignore,
 		CompactMode:                    initialCfg.CompactMode,

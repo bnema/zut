@@ -673,6 +673,7 @@ func (i *Interactive) redraw() {
 		Provider:       i.cfg.Provider,
 		Model:          i.cfg.Model,
 		Reasoning:      i.cfg.Reasoning,
+		ModelProfile:   i.cfg.ActiveModelProfile,
 		FastMode:       i.cfg.FastMode != nil && *i.cfg.FastMode,
 		Busy:           i.busy,
 		BusyPrefix:     statusBusyPrefix,

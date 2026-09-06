@@ -175,6 +175,7 @@ type InteractiveConfig struct {
 	// shortcuts are Ctrl+1..9. Cmd+1..9 may also work when the terminal
 	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
 	QuickModelShortcuts []QuickModelShortcut
+	ActiveModelProfile  int // 0 means no active profile; otherwise 1–9
 
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
@@ -480,8 +481,9 @@ type chatCacheKey struct {
 
 // QuickModelShortcut is one configured quick model switch slot.
 type QuickModelShortcut struct {
-	Provider string
-	Model    string
+	Provider  string
+	Model     string
+	Reasoning string
 }
 
 type extensionStatus struct {
@@ -509,6 +511,12 @@ type SettingsStore interface {
 	SetTUIWorkingPosition(position string) error
 	SetReasoning(level string) error
 	SetTheme(name string) error
+}
+
+// Optional so existing SettingsStore implementations remain source-compatible.
+// Stores without this method retain model-only shortcuts.
+type modelProfileSettingsStore interface {
+	SetModelProfile(slot int, profile QuickModelShortcut, activeSlot int) error
 }
 
 type terminalAlertsSettingsStore interface {
@@ -833,6 +841,7 @@ type Interactive struct {
 	settingsDialog          *settingsDialog
 	floatingPane            tui.FloatingPane
 	quickModelAssign        int
+	quickModelActivate      bool // picker was opened by an empty-slot shortcut
 	telegramBridge          *telegram.Bridge
 	sessionOpsDialog        *sessionOpsDialog
 	sessionTreeDialog       *sessionTreeDialog
@@ -980,6 +989,21 @@ type startupPreResult struct {
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
+	if cfg.ActiveModelProfile < 1 || cfg.ActiveModelProfile > 9 {
+		cfg.ActiveModelProfile = 1
+	}
+	// An unassigned default remains active so subsequent model/reasoning
+	// edits save into slot 1. Explicit overrides must not overwrite a favorite.
+	if slot := cfg.ActiveModelProfile; slot <= len(cfg.QuickModelShortcuts) {
+		if p := cfg.QuickModelShortcuts[slot-1]; p.Provider != "" || p.Model != "" {
+			cfg.detachMismatchedModelProfile()
+		}
+	}
+	if cfg.SettingsStore != nil {
+		if _, ok := cfg.SettingsStore.(modelProfileSettingsStore); !ok {
+			cfg.ActiveModelProfile = 0
+		}
+	}
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
 	startupAgentName := ""

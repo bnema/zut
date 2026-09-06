@@ -326,6 +326,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/login` | Log in via API key or subscription (opens a dialog). |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
+| `/profile <1-9>` | Activate a saved model + reasoning profile, like `Ctrl+1` through `Ctrl+9`; empty slots open the model picker. See [Model profiles](#model-profiles). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls. |
 | `/orchestrator` | Toggle proactive subagent delegation. When disabled, subagent tools remain available for explicit delegation. |
@@ -468,7 +469,34 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **TUI settings**: opens a sub-view for input layout in display order: status, working spinner, input, then subagent operations. **Input style** can be `plain` (default prompt line), `lines` (separator lines above and below the input), or `block` (a user-bubble-style input block). **Status position** places model, usage, and working-directory information above or below the input. **Working spinner position** places the busy spinner above or below the input. Changes apply immediately and persist to `config.json` as `tui_input_style`, `tui_status_position`, and `tui_working_position`.
 - **reasoning level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call. Use `/reasoning` to open this selector directly, or press `Ctrl+R` to cycle through the active model's supported levels. The selector only shows distinct levels supported by the active model; models without reasoning support only offer `off`.
 - **color theme** — `auto` follows the terminal foreground, background, ANSI palette, color depth, and supported live appearance changes. Choose fixed dark/light palettes or JSON overlays discovered under `$ZUT_HOME/themes` and loaded extensions. Active custom files reload safely; invalid edits retain the last valid appearance and persistent deletion resets to auto. See [docs/themes.md](docs/themes.md).
-- **model shortcuts** — opens a sub-view with nine slots (`model 1` ... `model 9`). `enter` on a slot opens the same `/model` selector and binds the chosen provider/model to that slot; `backspace` clears a slot. Once assigned, press `Ctrl+1` ... `Ctrl+9` from the editor to switch the active model instantly (the same cross-provider swap `/model` performs, transcript and cost carried over). Assigning a shortcut does not change the current model. Shortcuts are skipped while a turn is running.
+- **model profiles** — nine favorites containing a provider, model, and reasoning level. `enter` on a slot opens the `/model` picker; `left`/`right` chooses that favorite's reasoning without changing the live model. `enter` saves the assignment; `backspace` clears it. Editing the active slot immediately applies and saves its new model and reasoning. Assigning other slots does not change the live model. Clearing the active slot detaches it for this run without changing the live model. See [Model profiles](#model-profiles).
+
+### Model profiles
+
+Press `Ctrl+1` ... `Ctrl+9` from the editor, or run `/profile 1` ... `/profile 9`:
+
+- An empty slot opens the `/model` picker. Choose a model and use `left`/`right` to adjust reasoning; `enter` saves and activates the slot. `esc` cancels without changing the current selection.
+- An assigned slot restores its saved selection, carrying the transcript and accumulated cost across provider changes. Reasoning is clamped to the selected model's supported levels.
+- While a slot is active, `/model`, `/reasoning`, and `Ctrl+R` changes automatically save back to it. Choose another slot first if you want to keep the old favorite.
+- The status bar shows the active slot as `[1]` ... `[9]`. Status messages confirm creation, activation, and updates, or report switching/saving errors. Switching is rejected while a turn is running; dialogs retain their normal key handling.
+
+If a model switch succeeds but saving its profile fails, zut reports **model switched; profile not saved** and detaches the active indicator. The live model and any model/session metadata already saved are retained; the favorite and startup selection are not guaranteed to reflect that change. Fix the save error and select the profile again. Switching and saving are not a transaction across config and session files.
+
+Profiles and the active slot persist in `$ZUT_HOME/config.json`, using the existing `quick_model_shortcuts` array (positions 1–9) and `active_model_profile`. For example, merge these fields into your config while zut is closed:
+
+```json
+{
+  "active_model_profile": 1,
+  "quick_model_shortcuts": [
+    {"provider": "openai-codex", "model": "gpt-6-astra", "reasoning": "medium"},
+    {"provider": "openai", "model": "gpt-5.6-sol", "reasoning": "max"}
+  ]
+}
+```
+
+Use `{}` for an empty position. If `active_model_profile` is missing, `0`, or outside 1–9, **slot 1 is the default**. Once another slot is activated, that slot is remembered across restarts. On a fresh config, model/reasoning edits save automatically into the default slot; pressing its shortcut before assigning a model still opens the picker. Old model-only slots still load; missing or empty `reasoning` means off. The active profile supplies startup defaults, with provider aliases normalized and reasoning clamped to the model's supported levels. If its provider or model is no longer available, startup repairs that profile to the resolved fallback. Explicit CLI options and session restoration keep their usual precedence; a different model/reasoning selection detaches the profile for that run rather than overwriting a favorite. These favorites are separate from named Zutfile or subagent profiles.
+
+**AZERTY and terminals:** Ctrl plus the French AZERTY top row (`&`, `é`, `"`, `'`, `(`, `-`, `è`, `_`, `ç`) selects slots 1–9 without Shift. Modified digits also work. Zut requests enhanced keyboard reporting (Kitty/CSI-u or xterm modifyOtherKeys), but your terminal or multiplexer must forward the chord. If it reserves the shortcut for tabs or emits an indistinguishable legacy control byte, configure it to forward the enhanced key sequence, or use `/profile N`. Zut does not reinterpret bare punctuation or ambiguous control bytes as profile shortcuts. On macOS, Command plus these keys also works if the terminal forwards Super.
 
 ### `/skills`
 
@@ -942,7 +970,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, create_worktree, grep, lsp, and web_search outputs over ~12 lines). |
 | `ctrl+r` | Cycle through the reasoning levels supported by the active model. The selected level applies to subsequent model calls and persists to `config.json`. |
-| `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
+| `ctrl+1` ... `ctrl+9` | Activate a persistent model + reasoning profile; empty slots open the model picker. French AZERTY Ctrl + top-row symbols also work when forwarded by the terminal. Rejected while a turn is running. See [Model profiles](#model-profiles); `/profile N` is the terminal-independent fallback. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
 ### File picker (`@`)

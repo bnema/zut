@@ -3,15 +3,31 @@ package agent
 import (
 	"fmt"
 
+	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
 type configSettingsStore struct{}
 
-func (configSettingsStore) SetQuickModelShortcut(slot int, providerName, model string) error {
+// Retain the original SettingsStore contract for model-only callers.
+func (s configSettingsStore) SetQuickModelShortcut(slot int, providerName, model string) error {
 	if slot < 1 || slot > 9 {
 		return nil
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.ActiveModelProfile == slot {
+		cfg.ActiveModelProfile = 0
+	}
+	return s.SetModelProfile(slot, modes.QuickModelShortcut{Provider: providerName, Model: model}, cfg.ActiveModelProfile)
+}
+
+func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelShortcut, activeSlot int) error {
+	if slot < 1 || slot > 9 || activeSlot < 0 || activeSlot > 9 {
+		return fmt.Errorf("model profile slot must be between 1 and 9 (active may be 0)")
 	}
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -22,7 +38,15 @@ func (configSettingsStore) SetQuickModelShortcut(slot int, providerName, model s
 		copy(next, cfg.QuickModelShortcuts)
 		cfg.QuickModelShortcuts = next
 	}
-	cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{Provider: providerName, Model: model}
+	cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{Provider: profile.Provider, Model: profile.Model, Reasoning: provider.NormalizeReasoning(profile.Reasoning)}
+	cfg.ActiveModelProfile = activeSlot
+	if activeSlot == slot {
+		if profile.Provider == "" || profile.Model == "" {
+			return fmt.Errorf("cannot activate an empty model profile")
+		}
+		cfg.Provider, cfg.Model = profile.Provider, profile.Model
+		cfg.Reasoning = provider.NormalizeReasoning(profile.Reasoning)
+	}
 	// Trim trailing empty slots so config.json stays compact.
 	for len(cfg.QuickModelShortcuts) > 0 {
 		last := cfg.QuickModelShortcuts[len(cfg.QuickModelShortcuts)-1]

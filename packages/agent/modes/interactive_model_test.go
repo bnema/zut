@@ -73,7 +73,7 @@ func TestCtrlRCyclesCurrentModelReasoningLevels(t *testing.T) {
 	if !slices.Equal(changed, []string{"xhigh", "max", ""}) {
 		t.Fatalf("reasoning callbacks = %q", changed)
 	}
-	if i.statusOK != "reasoning level off" {
+	if i.statusOK != "reasoning level off — profile 1 updated" {
 		t.Fatalf("reasoning status = %q", i.statusOK)
 	}
 }
