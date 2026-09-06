@@ -210,7 +210,7 @@ func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
 		},
 	}
 	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
-	persistedHandoff := make(chan string, 1)
+	persistedHandoff := make(chan string, 4)
 	interactive := NewInteractive(InteractiveConfig{
 		Agent:       agent,
 		CurrentGoal: currentGoal,
@@ -234,7 +234,7 @@ func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
 	}
 	select {
 	case handoff := <-persistedHandoff:
-		if handoff != `{"version":1,"reason":"goal"}` {
+		if handoff != `{"version":1,"reason":"goal_compaction_pending"}` {
 			t.Fatalf("pre-compaction handoff = %q, want durable goal owner", handoff)
 		}
 	case <-time.After(2 * time.Second):
@@ -249,6 +249,52 @@ func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
 		t.Fatalf("post-compaction request tail = %#v, want leased goal continuation", continued.Messages)
 	}
 
+	waitInteractiveIdle(t, interactive)
+}
+
+func TestRestoredPendingGoalCompactionRunsBeforeGoalLease(t *testing.T) {
+	var goalMu sync.Mutex
+	goal := &core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		goalMu.Lock()
+		defer goalMu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		goalMu.Lock()
+		goal = cloneSessionGoal(next)
+		goalMu.Unlock()
+		return nil
+	}
+	client := &goalLengthClient{
+		requests: make(chan provider.Request, 2),
+		calls:    1,
+		onThird: func() {
+			_ = persistGoal(&core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalPaused})
+		},
+	}
+	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "original goal work"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "truncated"}}},
+	})
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                 agent,
+		CurrentGoal:           currentGoal,
+		PersistGoal:           persistGoal,
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"goal_compaction_pending"}`),
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startRestoredCompactHandoff(context.Background())
+	compaction := receiveRequest(t, client.requests)
+	if compaction.MaxTokens != 4096 {
+		t.Fatalf("restored first request MaxTokens = %d, want compaction", compaction.MaxTokens)
+	}
+	request := receiveRequest(t, client.requests)
+	if request.Messages[len(request.Messages)-1].Meta[goalContinueMetaKey] != "true" {
+		t.Fatalf("restored request tail = %#v, want goal continuation", request.Messages)
+	}
 	waitInteractiveIdle(t, interactive)
 }
 

@@ -317,6 +317,11 @@ func TestDecodeCompactHandoff(t *testing.T) {
 			want: compactContinuationState{reason: compactContinuationForcedLength},
 		},
 		{
+			name: "goal compaction pending",
+			raw:  `{"version":1,"reason":"goal_compaction_pending"}`,
+			want: compactContinuationState{reason: compactContinuationGoalCompactionPending},
+		},
+		{
 			name: "goal",
 			raw:  `{"version":1,"reason":"goal"}`,
 			want: compactContinuationState{reason: compactContinuationGoal},
