@@ -835,6 +835,7 @@ type Interactive struct {
 	settingsDialog          *settingsDialog
 	floatingPane            tui.FloatingPane
 	quickModelAssign        int
+	quickModelActivate      bool // picker was opened by an empty-slot shortcut
 	telegramBridge          *telegram.Bridge
 	sessionOpsDialog        *sessionOpsDialog
 	sessionTreeDialog       *sessionTreeDialog
@@ -982,8 +983,16 @@ type startupPreResult struct {
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
-	// Explicit CLI/session model overrides must not silently overwrite a favorite.
-	cfg.detachMismatchedModelProfile()
+	if cfg.ActiveModelProfile < 1 || cfg.ActiveModelProfile > 9 {
+		cfg.ActiveModelProfile = 1
+	}
+	// An unassigned default remains active so subsequent model/reasoning
+	// edits save into slot 1. Explicit overrides must not overwrite a favorite.
+	if slot := cfg.ActiveModelProfile; slot <= len(cfg.QuickModelShortcuts) {
+		if p := cfg.QuickModelShortcuts[slot-1]; p.Provider != "" || p.Model != "" {
+			cfg.detachMismatchedModelProfile()
+		}
+	}
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
 	startupAgentName := ""

@@ -327,7 +327,10 @@ func LoadConfig() (Config, error) {
 // flags and session restoration retain their normal precedence in Resolve.
 func (c *Config) applyActiveModelProfile() {
 	slot := c.ActiveModelProfile
-	if slot < 1 || slot > 9 || slot > len(c.QuickModelShortcuts) {
+	if slot < 1 || slot > 9 {
+		slot = 1
+	}
+	if slot > len(c.QuickModelShortcuts) {
 		return
 	}
 	p := c.QuickModelShortcuts[slot-1]

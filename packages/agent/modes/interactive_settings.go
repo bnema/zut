@@ -529,6 +529,7 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 		return
 	}
 	i.quickModelAssign = slot
+	i.quickModelActivate = false
 	current, reasoning := i.cfg.Model, i.cfg.Reasoning
 	if len(i.cfg.QuickModelShortcuts) >= slot && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
 		current = i.cfg.QuickModelShortcuts[slot-1].Model
@@ -541,7 +542,13 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	i.modelDialog.Open(current, loggedIn, reasoning)
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
-	i.setQuickModelProfile(slot, QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning})
+	p := QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning}
+	if i.quickModelActivate {
+		i.activateModelProfile(slot, p)
+	} else {
+		i.setQuickModelProfile(slot, p)
+	}
+	i.quickModelActivate = false
 }
 func (i *Interactive) applyQuickModelShortcut(slot int) {
 	if slot < 1 || slot > 9 {
@@ -555,7 +562,21 @@ func (i *Interactive) applyQuickModelShortcut(slot int) {
 		i.invalidate()
 		return
 	}
-	i.activateModelProfile(slot)
+	p := QuickModelShortcut{}
+	if slot <= len(i.cfg.QuickModelShortcuts) {
+		p = i.cfg.QuickModelShortcuts[slot-1]
+	}
+	if p.Provider == "" && p.Model == "" {
+		i.openQuickModelPicker(slot)
+		i.quickModelActivate = true
+		i.mu.Lock()
+		i.statusErr = ""
+		i.statusOK = fmt.Sprintf("choose a model for profile %d; Enter saves and activates", slot)
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.activateModelProfile(slot, p)
 }
 func (i *Interactive) applyQuickModelSetting(key, value string) {
 	slotText := strings.TrimPrefix(key, "quick_model_")

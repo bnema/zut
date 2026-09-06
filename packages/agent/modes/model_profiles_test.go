@@ -30,20 +30,33 @@ func (s *profileSettingsStore) SetModelProfile(slot int, p QuickModelShortcut, a
 func newProfileInteractive(t *testing.T) (*Interactive, *profileSettingsStore) {
 	t.Helper()
 	s := &profileSettingsStore{profiles: make(map[int]QuickModelShortcut)}
-	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s})
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s,
+		QuickModelShortcuts: []QuickModelShortcut{{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}},
+	})
 	i.rend = nil
 	i.agent = core.NewAgent(nil, i.cfg.Model, "", nil)
 	i.agent.Reasoning = i.cfg.Reasoning
 	return i, s
 }
 
-func TestModelProfileCaptureRecallAndAutosave(t *testing.T) {
+func selectProfileModel(t *testing.T, i *Interactive, prov, model string) {
+	t.Helper()
+	m, err := provider.FindModel(prov, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.modelDialog.view = []provider.Model{m}
+	i.modelDialog.cursor = 0
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+}
+
+func TestModelProfileRecallAndAutosave(t *testing.T) {
 	i, s := newProfileInteractive(t)
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '&', Ctrl: true})
 	if i.cfg.ActiveModelProfile != 1 || s.active != 1 || s.profiles[1].Reasoning != "high" {
 		t.Fatalf("capture: cfg=%+v store=%+v", i.cfg.QuickModelShortcuts, s)
 	}
-	if !strings.Contains(i.statusOK, "created and active") {
+	if i.modelDialog.Active() || !strings.Contains(i.statusOK, "profile 1 active") {
 		t.Fatal(i.statusOK)
 	}
 	i.applyReasoningSetting("max")
@@ -51,6 +64,7 @@ func TestModelProfileCaptureRecallAndAutosave(t *testing.T) {
 		t.Fatal("reasoning not saved to active slot")
 	}
 	i.applyQuickModelShortcut(2)
+	selectProfileModel(t, i, "openai", "gpt-5.5")
 	i.applyReasoningSetting("")
 	i.applyModelSelection("openai", "gpt-5.5")
 	if s.profiles[2].Model != "gpt-5.5" || s.profiles[2].Reasoning != "" {
@@ -62,6 +76,46 @@ func TestModelProfileCaptureRecallAndAutosave(t *testing.T) {
 	}
 	if s.profiles[2].Model != "gpt-5.5" {
 		t.Fatal("recall overwrote previous slot")
+	}
+}
+
+func TestModelProfileEmptyShortcutOpensPickerAndCancelPreservesSelection(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.applyQuickModelShortcut(1)
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'é', Ctrl: true})
+	if !i.modelDialog.Active() || i.quickModelAssign != 2 || i.cfg.ActiveModelProfile != 1 || len(s.profiles) != 1 {
+		t.Fatal("empty shortcut did not open a non-mutating picker")
+	}
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+	if i.quickModelActivate || i.quickModelAssign != 0 || i.cfg.ActiveModelProfile != 1 || len(s.profiles) != 1 {
+		t.Fatal("cancellation changed profile state")
+	}
+	i.runSlash(context.Background(), "/profile 2")
+	selectProfileModel(t, i, "openai", "gpt-5.5")
+	if i.cfg.ActiveModelProfile != 2 || s.active != 2 || s.profiles[2].Model != "gpt-5.5" || i.modelDialog.Active() {
+		t.Fatalf("picker did not save and activate: %+v", s)
+	}
+}
+
+func TestModelProfileDefaultSlotAndActiveSettingsEdits(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	if i.cfg.ActiveModelProfile != 1 {
+		t.Fatal("missing active slot did not default to 1")
+	}
+	i.openQuickModelPicker(1)
+	i.modelDialog.reasoning = "low"
+	selectProfileModel(t, i, "openai", "gpt-5.5")
+	if s.active != 1 || s.profiles[1].Model != "gpt-5.5" || s.profiles[1].Reasoning != "low" || i.agent.Model != "gpt-5.5" || i.agent.Reasoning != "low" {
+		t.Fatalf("active settings edit did not apply and save: %+v", s)
+	}
+	fresh := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s})
+	fresh.rend = nil
+	if fresh.cfg.ActiveModelProfile != 1 {
+		t.Fatal("fresh configuration has no default slot")
+	}
+	fresh.applyReasoningSetting("low")
+	if s.active != 1 || s.profiles[1].Model != "gpt-5.6-sol" || s.profiles[1].Reasoning != "low" {
+		t.Fatal("default slot edits not saved")
 	}
 }
 

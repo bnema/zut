@@ -74,8 +74,11 @@ func (i *Interactive) setQuickModelProfile(slot int, p QuickModelShortcut) {
 		p.Reasoning = provider.ClampReasoningForModel(m, p.Reasoning)
 	}
 	active := i.cfg.ActiveModelProfile
-	// Assigning in settings never changes the live agent. Rebinding its slot
-	// detaches it until the user explicitly activates the new favorite.
+	if active == slot && p.Model != "" {
+		i.activateModelProfile(slot, p)
+		return
+	}
+	// Clearing the active favorite leaves the live model unchanged.
 	if active == slot {
 		active = 0
 	}
@@ -112,19 +115,16 @@ func (i *Interactive) saveActiveModelProfile() {
 	}
 }
 
-func (i *Interactive) activateModelProfile(slot int) {
+func (i *Interactive) activateModelProfile(slot int, p QuickModelShortcut) {
 	defer i.invalidate()
 	if slot < 1 || slot > 9 {
 		return
 	}
-	p := QuickModelShortcut{}
-	if slot <= len(i.cfg.QuickModelShortcuts) {
-		p = i.cfg.QuickModelShortcuts[slot-1]
-	}
-	// First use captures the current selection; no picker or extra save chord.
-	created := p.Provider == "" && p.Model == ""
-	if created {
-		p = QuickModelShortcut{Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: i.cfg.Reasoning}
+	if i.busy {
+		i.mu.Lock()
+		i.statusErr, i.statusOK = "cannot switch model while a turn is running", ""
+		i.mu.Unlock()
+		return
 	}
 	if p.Provider == "" || p.Model == "" {
 		i.mu.Lock()
@@ -151,11 +151,7 @@ func (i *Interactive) activateModelProfile(slot int) {
 			return
 		}
 		i.mu.Lock()
-		action := "active"
-		if created {
-			action = "created and active"
-		}
-		i.statusOK = fmt.Sprintf("profile %d %s: %s", slot, action, modelProfileDescription(p))
+		i.statusOK = fmt.Sprintf("profile %d active: %s", slot, modelProfileDescription(p))
 		i.mu.Unlock()
 	}
 	if i.cfg.SessionTransition != nil {

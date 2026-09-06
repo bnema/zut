@@ -159,11 +159,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if k.Kind == tui.KeyCtrlC {
 			i.modelDialog.Close()
 			i.quickModelAssign = 0
+			i.quickModelActivate = false
 			return false
 		}
 		act := i.modelDialog.HandleKey(k)
 		if act.Close {
 			i.quickModelAssign = 0
+			i.quickModelActivate = false
 		}
 		if act.ReasoningChanged && i.quickModelAssign == 0 {
 			i.applyReasoningSetting(act.Reasoning)

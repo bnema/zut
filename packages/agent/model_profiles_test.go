@@ -2,7 +2,6 @@ package agent
 
 import (
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/modes"
@@ -56,10 +55,13 @@ func TestModelProfileConfigLegacyAndInvalidActiveSlots(t *testing.T) {
 	for _, slot := range []int{-1, 0, 2, 10} {
 		copy := cfg
 		copy.ActiveModelProfile = slot
-		before := copy
 		copy.applyActiveModelProfile()
-		if !reflect.DeepEqual(copy, before) {
-			t.Fatalf("invalid active slot %d changed defaults", slot)
+		want := "gpt-5.6-sol" // missing/out-of-range active slot defaults to 1
+		if slot == 2 {
+			want = "gpt-5.5"
+		} // valid but unassigned slot
+		if copy.Model != want {
+			t.Fatalf("active slot %d: model %s, want %s", slot, copy.Model, want)
 		}
 	}
 	cfg.ActiveModelProfile = 1

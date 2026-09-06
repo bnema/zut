@@ -7,7 +7,7 @@ import (
 )
 
 func TestReaderParsesAZERTYProfileKeys(t *testing.T) {
-	for _, r := range []rune("&é\"'(-è_ç") {
+	for _, r := range "&é\"'(-è_ç" {
 		for _, sequence := range []string{
 			fmt.Sprintf("\x1b[%d;5u", r),
 			fmt.Sprintf("\x1b[%d:49:49;5u", r),
