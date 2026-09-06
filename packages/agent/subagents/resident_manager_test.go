@@ -584,7 +584,7 @@ func TestResidentManagerRejectsDuplicateBeforeSecondJournalAcceptance(t *testing
 	}
 }
 
-func TestResidentManagerReconcileRejectsIncompatibleBudgetJournal(t *testing.T) {
+func TestResidentManagerReconcileSkipsIncompatibleBudgetJournal(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "legacy-budget")
 	if err != nil {
@@ -611,9 +611,13 @@ func TestResidentManagerReconcileRejectsIncompatibleBudgetJournal(t *testing.T) 
 	}
 	manager := NewResidentManager(root, nil)
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	errs := manager.Reconcile()
-	if len(errs) != 1 || !errors.Is(errs[0], ErrIncompatibleResidentBudget) {
-		t.Fatalf("Reconcile errors = %v", errs)
+	for range 2 {
+		if errs := manager.Reconcile(); len(errs) != 0 {
+			t.Fatalf("Reconcile errors = %v", errs)
+		}
+	}
+	if _, err := ReconcileResidentJournal(filepath.Dir(transcript)); !errors.Is(err, ErrIncompatibleResidentBudget) {
+		t.Fatalf("explicit reconciliation error = %v, want incompatible budget", err)
 	}
 	if snapshots := manager.Snapshot(); len(snapshots) != 0 {
 		t.Fatalf("snapshots = %#v", snapshots)
@@ -624,6 +628,34 @@ func TestResidentManagerReconcileRejectsIncompatibleBudgetJournal(t *testing.T) 
 	}
 	if string(unchanged) != legacy {
 		t.Fatal("Reconcile modified incompatible journal")
+	}
+
+	valid, err := OpenResidentJournal(root, "valid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ID = "valid"
+	if err := valid.Accept(spec, "keep discoverable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := valid.Close(); err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := OpenResidentJournal(root, "corrupt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := corrupt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		errs := manager.Reconcile()
+		if len(errs) != 1 || !strings.Contains(errs[0].Error(), "resident child corrupt:") {
+			t.Fatalf("Reconcile errors = %v, want corrupt child error only", errs)
+		}
+		if snapshots := manager.Snapshot(); len(snapshots) != 1 || snapshots[0].ID != "valid" {
+			t.Fatalf("snapshots = %#v, want valid sibling only", snapshots)
+		}
 	}
 }
 
