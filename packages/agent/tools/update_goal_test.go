@@ -45,6 +45,21 @@ func TestUpdateGoalToolReturnsPersistableManagerGoal(t *testing.T) {
 	}
 }
 
+func TestUpdateGoalToolReturnsPersistableSupersedingGoal(t *testing.T) {
+	tool := &UpdateGoalTool{}
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"superseded","objective":"use the supported API","goal_id":"goal-1","mission_id":"mission-1"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, ok := GoalUpdateFromResult(result)
+	if !ok {
+		t.Fatalf("details = %#v, want superseding goal update", result.Details)
+	}
+	if update.Status != core.GoalSuperseded || update.Objective != "use the supported API" || update.GoalID != "goal-1" || update.MissionID != "mission-1" {
+		t.Fatalf("update = %#v", update)
+	}
+}
+
 func TestUpdateGoalToolRejectsUnknownFields(t *testing.T) {
 	tool := &UpdateGoalTool{}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"complete","unexpected":true}`), nil)
@@ -70,6 +85,17 @@ func TestGoalUpdateFromResultRejectsBlockedWithoutReason(t *testing.T) {
 	result.Details = GoalUpdate{Status: core.GoalDone}
 	if _, ok := GoalUpdateFromResult(result); !ok {
 		t.Fatal("completed update without reason was rejected")
+	}
+}
+
+func TestUpdateGoalToolRejectsSupersededWithoutReplacement(t *testing.T) {
+	tool := &UpdateGoalTool{}
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"superseded"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("result = %#v, want tool error", result)
 	}
 }
 

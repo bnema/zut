@@ -336,6 +336,65 @@ func TestSessionGoalTransitionLimitRollsBackState(t *testing.T) {
 	}
 }
 
+func TestSessionSupersedeGoalArchivesAndReplacesAtomically(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&SessionGoal{Objective: "use the legacy API", Status: GoalActive, Owner: GoalOwnerUser}); err != nil {
+		t.Fatal(err)
+	}
+	missionID := sess.Meta.Mission.ID
+	originalID := sess.Meta.Goal.ID
+
+	if err := sess.SupersedeGoal(&SessionGoal{Objective: "use the supported API", Status: GoalActive, Owner: GoalOwnerManager}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Objective != "use the supported API" || got.Status != GoalActive || got.MissionID != missionID || got.ID == originalID {
+		t.Fatalf("replacement goal = %#v", got)
+	}
+	if len(sess.Meta.GoalHistory) != 1 {
+		t.Fatalf("goal history = %#v", sess.Meta.GoalHistory)
+	}
+	archived := sess.Meta.GoalHistory[0]
+	if archived.ID != originalID || archived.Status != GoalSuperseded || archived.Reason == "" {
+		t.Fatalf("archived goal = %#v", archived)
+	}
+	if sess.Meta.Mission.TransitionCount != 1 || sess.Meta.Mission.ActiveGoalID != sess.Meta.Goal.ID {
+		t.Fatalf("mission = %#v", sess.Meta.Mission)
+	}
+}
+
+func TestSessionSupersedeGoalRejectsInvalidReplacement(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		replacement *SessionGoal
+	}{
+		{name: "blank objective", replacement: &SessionGoal{Status: GoalActive}},
+		{name: "reused id", replacement: &SessionGoal{ID: "old-goal", Objective: "replacement", Status: GoalActive}},
+		{name: "other mission", replacement: &SessionGoal{MissionID: "other", Objective: "replacement", Status: GoalActive}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			if err := sess.UpdateGoal(&SessionGoal{ID: "old-goal", Objective: "current", Status: GoalActive}); err != nil {
+				t.Fatal(err)
+			}
+			before := *sess.Meta.Goal
+			if err := sess.SupersedeGoal(test.replacement); err == nil {
+				t.Fatal("invalid replacement was accepted")
+			}
+			if *sess.Meta.Goal != before || len(sess.Meta.GoalHistory) != 0 {
+				t.Fatalf("state changed after rejection: goal=%#v history=%#v", sess.Meta.Goal, sess.Meta.GoalHistory)
+			}
+		})
+	}
+}
+
 func TestSessionGoalResumeDoesNotConsumeTransitionLimit(t *testing.T) {
 	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
 	if err != nil {

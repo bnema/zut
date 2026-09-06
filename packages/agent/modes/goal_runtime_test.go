@@ -108,7 +108,7 @@ func TestGoalRuntimeStallsAfterRepeatedNoProgress(t *testing.T) {
 	if err != nil || first == nil {
 		t.Fatalf("start first goal run = (%v, %v), want run without error", first, err)
 	}
-	if !interactive.finishGoalRun() {
+	if !interactive.finishGoalRun(false) {
 		t.Fatal("first non-progress run should receive one corrective continuation")
 	}
 	if got := current(); got.ConsecutiveNoProgressTurns != 1 || got.Status != core.GoalActive || got.ContinuationID != "" {
@@ -119,7 +119,7 @@ func TestGoalRuntimeStallsAfterRepeatedNoProgress(t *testing.T) {
 	if err != nil || second == nil {
 		t.Fatalf("start second goal run = (%v, %v), want run without error", second, err)
 	}
-	if interactive.finishGoalRun() {
+	if interactive.finishGoalRun(false) {
 		t.Fatal("second non-progress run scheduled another continuation")
 	}
 	got := current()
@@ -128,6 +128,37 @@ func TestGoalRuntimeStallsAfterRepeatedNoProgress(t *testing.T) {
 	}
 	if got.Reason == "" || got.ContinuationID != "" {
 		t.Fatalf("stalled goal diagnostics = %#v", got)
+	}
+}
+
+func TestGoalRuntimeContextLimitDoesNotConsumeNoProgressAllowance(t *testing.T) {
+	var mu sync.Mutex
+	goal := &core.SessionGoal{
+		ID:                         "goal-1",
+		Objective:                  "finish the work",
+		Status:                     core.GoalActive,
+		ConsecutiveNoProgressTurns: 1,
+	}
+	current := func() *core.SessionGoal {
+		mu.Lock()
+		defer mu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persist := func(next *core.SessionGoal) error {
+		mu.Lock()
+		goal = cloneSessionGoal(next)
+		mu.Unlock()
+		return nil
+	}
+	interactive := NewInteractive(InteractiveConfig{CurrentGoal: current, PersistGoal: persist, PersistGoalRuntime: persist})
+	if run, err := interactive.startGoalRun(current()); err != nil || run == nil {
+		t.Fatalf("start goal run = (%v, %v)", run, err)
+	}
+	if !interactive.finishGoalRun(true) {
+		t.Fatal("context-limited run did not request a fresh continuation")
+	}
+	if got := current(); got.Status != core.GoalActive || got.ConsecutiveNoProgressTurns != 1 {
+		t.Fatalf("context-limited goal = %#v", got)
 	}
 }
 
@@ -162,7 +193,7 @@ func TestGoalRuntimeBudgetIsOptionalAndEnforcedWhenSet(t *testing.T) {
 			}
 			interactive.observeGoalRun(core.EvToolCall{Name: "bash"})
 			interactive.observeGoalRun(core.EvUsage{Usage: provider.Usage{InputTokens: 40, OutputTokens: 60}})
-			if got := interactive.finishGoalRun(); got != test.wantNext {
+			if got := interactive.finishGoalRun(false); got != test.wantNext {
 				t.Fatalf("finish goal run = %t, want %t", got, test.wantNext)
 			}
 			got := current()
@@ -219,7 +250,7 @@ func TestGoalRuntimeRejectsStaleRun(t *testing.T) {
 	if err := persist(&core.SessionGoal{ID: "goal-2", Objective: "new goal", Status: core.GoalActive}); err != nil {
 		t.Fatal(err)
 	}
-	if interactive.finishGoalRun() {
+	if interactive.finishGoalRun(false) {
 		t.Fatal("stale run scheduled a continuation")
 	}
 	if got := current(); got.ID != "goal-2" || got.ContinuationID != "" || got.TokensUsed != 0 {

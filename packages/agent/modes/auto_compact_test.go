@@ -317,6 +317,16 @@ func TestDecodeCompactHandoff(t *testing.T) {
 			want: compactContinuationState{reason: compactContinuationForcedLength},
 		},
 		{
+			name: "goal compaction pending",
+			raw:  `{"version":1,"reason":"goal_compaction_pending"}`,
+			want: compactContinuationState{reason: compactContinuationGoalCompactionPending},
+		},
+		{
+			name: "goal",
+			raw:  `{"version":1,"reason":"goal"}`,
+			want: compactContinuationState{reason: compactContinuationGoal},
+		},
+		{
 			name: "invalid status attempt", raw: `{"version":1,"reason":"status_rescue","rescue_attempts":3}`},
 		{name: "unknown reason", raw: `{"version":1,"reason":"other"}`},
 		{name: "invalid JSON", raw: `{`},

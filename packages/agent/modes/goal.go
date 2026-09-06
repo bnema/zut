@@ -30,9 +30,12 @@ func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
 		return provider.Message{}, false
 	}
 	text := goal.Objective +
-		"\n\nContinue working autonomously toward this active goal. Do not stop at a progress update. Continue until the goal is complete or blocked, then call update_goal."
+		"\n\nContinue working autonomously toward this active goal. Do not stop at a progress update. Continue until the goal is complete or blocked, then call update_goal. If the current objective has become invalid and a replacement is necessary, you may supersede it only with a concrete objective inside the same mission; never use superseded to avoid difficult work or broaden scope."
 	if goal.ConsecutiveNoProgressTurns > 0 {
 		text += " You ended the prior continuation without taking a concrete action. Inspect the current state and take the next action now; do not merely say that you will continue."
+	}
+	if goal.ID != "" {
+		text += " When superseding this goal, use goal_id " + goal.ID + "."
 	}
 	if goal.MissionID != "" {
 		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
@@ -80,6 +83,43 @@ func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool
 	}
 	i.startGoalContinuation(parent, message, run)
 	return true
+}
+
+// startReservedGoalContinuation starts a goal turn after another controller
+// has already reserved the interactive turn slot by setting busy. It is used
+// by compact handoffs so a fresh-context continuation receives the same lease,
+// accounting, and no-progress policy as an ordinary idle goal turn.
+func (i *Interactive) startReservedGoalContinuation(parent context.Context) {
+	message, ok := i.goalContinuationMessage()
+	if !ok || i.cfg.CurrentGoal == nil {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		i.resetCompactHandoff()
+		i.invalidate()
+		return
+	}
+	goal := copySessionGoal(i.cfg.CurrentGoal())
+	if goal == nil || i.limitGoalBeforeRun(goal) {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		i.resetCompactHandoff()
+		i.invalidate()
+		return
+	}
+	run, err := i.startGoalRun(goal)
+	if err != nil || run == nil {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		if err != nil {
+			i.ReportError(err)
+		}
+		i.invalidate()
+		return
+	}
+	i.startGoalContinuation(parent, message, run)
 }
 
 func (i *Interactive) startGoalContinuation(parent context.Context, message provider.Message, run *goalContinuationRun) {

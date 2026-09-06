@@ -113,17 +113,23 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 	var next core.QueuedMessage
 	var hasNext bool
 	continueQueued := false
+	resumeGoalCompaction := false
+	resumeGoal := false
 	var resume compactHandoffResume
 	var handoff json.RawMessage
 	var persistHandoff bool
 	switch {
-	case state.reason != compactContinuationForcedLength && len(i.queued) > 0:
+	case state.reason != compactContinuationForcedLength && state.reason != compactContinuationGoalCompactionPending && len(i.queued) > 0:
 		next, i.queued = i.queued[0], i.queued[1:]
 		hasNext = true
 		handoff, persistHandoff = i.resetCompactContinuationLocked()
-	case state.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0:
+	case state.reason != compactContinuationForcedLength && state.reason != compactContinuationGoalCompactionPending && ag.QueuedMessageCount() > 0:
 		continueQueued = true
 		handoff, persistHandoff = i.resetCompactContinuationLocked()
+	case state.reason == compactContinuationGoalCompactionPending:
+		resumeGoalCompaction = true
+	case state.reason == compactContinuationGoal:
+		resumeGoal = true
 	default:
 		resume = classifyCompactHandoffResume(ag.Messages())
 		if resume == compactHandoffDiscard {
@@ -132,7 +138,7 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 	}
 	// Reserve the turn slot before persisting or dispatching so concurrent input
 	// can only queue behind the restored handoff, never start a competing turn.
-	starting := hasNext || continueQueued || resume == compactHandoffContinueExisting || resume == compactHandoffAppendPrompt
+	starting := hasNext || continueQueued || resumeGoalCompaction || resumeGoal || resume == compactHandoffContinueExisting || resume == compactHandoffAppendPrompt
 	i.busy = starting
 	i.mu.Unlock()
 	if persistHandoff {
@@ -147,6 +153,10 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 		i.startTurnWithImages(parent, next.Text, next.Images)
 	case continueQueued:
 		i.startTurnRequest(parent, "", nil, true, false)
+	case resumeGoalCompaction:
+		i.runCompact(parent, compactContinuationRequest{origin: compactOriginRecovery, force: true})
+	case resumeGoal:
+		i.startReservedGoalContinuation(parent)
 	case resume == compactHandoffContinueExisting:
 		i.startTurnRequest(parent, "", nil, true, false)
 	case resume == compactHandoffAppendPrompt:
@@ -217,7 +227,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 	i.cancelTurn = cancel
 	var initialHandoff json.RawMessage
 	persistInitialHandoff := false
-	if request.origin == compactOriginManual || request.origin == compactOriginRecovery {
+	if request.origin == compactOriginManual || (request.origin == compactOriginRecovery && i.compactContinuation.reason != compactContinuationGoalCompactionPending) {
 		initialHandoff, persistInitialHandoff = i.resetCompactContinuationLocked()
 	}
 	i.statusErr = ""
@@ -255,7 +265,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		}
 		summary, err := i.agent.Compact(ctx, keepTail, sink)
 		_ = summary
-		goalMessage, goalActive := i.goalContinuationMessage()
+		_, goalActive := i.goalContinuationMessage()
 		i.mu.Lock()
 		// Keep busy/compacting asserted while cleanup and queue selection run.
 		// Completion updates can arrive in this window; clearing busy before
@@ -327,6 +337,11 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				i.pendingCompactImages = nil
 				i.hasPendingCompactPrompt = false
 				hasNext = true
+			case continuationReason == compactContinuationForcedLength && goalActive:
+				// Preserve the goal as the durable handoff owner so the fresh
+				// turn uses goal accounting and can be resumed after a restart.
+				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: compactContinuationGoal})
+				continueGoal = !i.coordinatorHasPendingWorkers()
 			case continuationReason == compactContinuationForcedLength:
 				// Forced truncated-output continuation keeps its existing
 				// priority over an explicitly queued prompt.
@@ -388,23 +403,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			case continueAutomatically:
 				i.startAutoCompactContinuation(p)
 			case continueGoal:
-				var run *goalContinuationRun
-				if i.cfg.CurrentGoal != nil {
-					goal := copySessionGoal(i.cfg.CurrentGoal())
-					if !i.limitGoalBeforeRun(goal) {
-						run, err = i.startGoalRun(goal)
-					}
-				}
-				if err != nil || run == nil {
-					i.mu.Lock()
-					i.busy = false
-					i.mu.Unlock()
-					if err != nil {
-						i.ReportError(err)
-					}
-					return
-				}
-				i.startGoalContinuation(p, goalMessage, run)
+				i.startReservedGoalContinuation(p)
 			}
 		}
 	}()
