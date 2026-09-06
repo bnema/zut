@@ -10,14 +10,22 @@ import (
 
 // ModelCache is the on-disk shape for discovered models.
 type ModelCache struct {
+	Version                int               `json:"version,omitempty"`
 	FetchedAt              time.Time         `json:"fetched_at"`
 	Models                 []Model           `json:"models"`
 	AuthoritativeProviders []string          `json:"authoritative_providers,omitempty"`
 	ProviderScopes         map[string]string `json:"provider_scopes,omitempty"`
 }
 
-// CacheTTL is how long a discovered list is considered fresh.
-const CacheTTL = 6 * time.Hour
+// ModelCacheVersion invalidates caches created before the catalog merge
+// semantics changed. Older caches remain readable as a temporary fallback but
+// are refreshed before they are written again.
+const ModelCacheVersion = 2
+
+// CacheTTL is how long a discovered list is considered fresh. Model metadata
+// and availability change less often than a typical process starts, so keep
+// the synchronized catalog for one day before querying its sources again.
+const CacheTTL = 24 * time.Hour
 
 // LoadCache reads the model cache from path. Returns an empty ModelCache
 // (no error) if the file does not exist.
@@ -43,6 +51,9 @@ func LoadCache(path string) (ModelCache, error) {
 
 // SaveCache writes the cache atomically.
 func SaveCache(path string, c ModelCache) error {
+	if c.Version == 0 {
+		c.Version = ModelCacheVersion
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

@@ -148,7 +148,7 @@ $ZUT_HOME/
 ├── config.json         # last-used provider/model/theme and persistent settings
 ├── auth.json           # api keys and oauth tokens (mode 0600)
 ├── sessions/           # jsonl transcripts, one dir per cwd
-├── models-cache.json   # live /v1/models discovery cache (6h ttl)
+├── models-cache.json   # live model discovery cache (24h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the built-in identity; addenda remain
 ├── skills/             # optional: user SKILL.md files
@@ -536,7 +536,7 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 `--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
 
 - **Catalog**: models baked into zut, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
-- **Live**: IDs discovered from `GET /v1/models` using your stored API key (cached for 6h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup).
+- **Live**: IDs discovered from provider model endpoints using your stored API key (cached for 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup). OpenCode Go joins its authoritative `https://opencode.ai/zen/go/v1/models` list with limits, prices, names, and reasoning metadata from `https://models.dev/api.json`; models.dev is the JSON source behind the linked provider page.
 - **Speculative**: IDs that appear in the upstream generator but aren't live on the public API yet. They'll 404 today and start working the moment the provider ships them.
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed. Tool output is still shown in full through the normal transcript rendering and retained in the session transcript. To keep long-running sessions usable, zut bounds the historical tool-result text included in provider-facing context; this projection affects what is sent to the model, not what is displayed or persisted, and it preserves the tool-call/result structure.

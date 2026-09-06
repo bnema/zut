@@ -302,6 +302,12 @@ func defaultModelForProvider(prov string) string {
 	case "opencode":
 		return "claude-sonnet-4-5"
 	case "opencode-go":
+		// OpenCode Go is synchronized at runtime, so prefer the first
+		// currently served model and keep the former default only as a
+		// bootstrap while the first refresh is still in flight.
+		if models := provider.ModelsForProvider(prov); len(models) > 0 {
+			return models[0].ID
+		}
 		return "kimi-k2.6"
 	case "amazon-bedrock":
 		return "anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -636,6 +642,23 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			MaxOutput:     16384,
 			BaseURL:       args.BaseURL,
 			Source:        provName,
+		}
+		err = nil
+	}
+	// OpenCode Go publishes its authoritative model list at runtime. Keep
+	// explicit model ids usable during the first refresh or while offline;
+	// the provider request will be the final authority if no catalog data is
+	// available yet.
+	if err != nil && provName == "opencode-go" {
+		resolvedModel = provider.Model{
+			Provider:      provName,
+			ID:            model,
+			DisplayName:   model,
+			ContextWindow: 128000,
+			MaxOutput:     16384,
+			Reasoning:     true,
+			BaseURL:       args.BaseURL,
+			Source:        "dynamic",
 		}
 		err = nil
 	}

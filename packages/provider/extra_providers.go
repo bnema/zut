@@ -125,12 +125,13 @@ func NewOpenCode(apiKey, baseURL string) Client {
 }
 
 // NewOpenCodeGo routes each model through the wire API exposed by OpenCode Go.
+// Model availability and metadata are synchronized by the agent package at
+// startup; this constructor keeps a bootstrap endpoint for early requests.
 func NewOpenCodeGo(apiKey, baseURL string) Client {
-	const defaultBaseURL = "https://opencode.ai/zen/go/v1"
 	return NewModelRouter("opencode-go",
-		NewOpenAICompat("opencode-go", apiKey, baseURL, defaultBaseURL),
+		NewOpenAICompat("opencode-go", apiKey, baseURL, openCodeGoDefaultBaseURL),
 		map[string]Client{
-			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode-go"),
+			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, openCodeGoDefaultBaseURL), "opencode-go"),
 		})
 }
 

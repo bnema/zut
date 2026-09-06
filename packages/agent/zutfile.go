@@ -127,7 +127,7 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 }
 
 func runLocalZutfile(ref string, args Args, version string) error {
-	prepareRuntimeCatalog()
+	prepareRuntimeCatalog(false)
 	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
@@ -286,7 +286,7 @@ func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
 	return fmt.Errorf("no catalog model satisfies the agent requirements")
 }
 
-func prepareRuntimeCatalog() {
+func prepareRuntimeCatalog(waitForRefresh bool) {
 	LoadCachedModels()
 	LoadUserModels()
 	if cps := provider.CustomProviders(); len(cps) > 0 {
@@ -299,7 +299,11 @@ func prepareRuntimeCatalog() {
 		auth.SetExtraAPIKeyProviders(names)
 	}
 	ValidateAndRepairConfig()
-	RefreshModelsAsync()
+	if waitForRefresh {
+		refreshModels()
+	} else {
+		RefreshModelsAsync()
+	}
 }
 
 func zutPack(dir, out string) error {

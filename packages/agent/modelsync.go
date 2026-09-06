@@ -52,6 +52,7 @@ func currentModelProviderScopes() map[string]string {
 // of treating another account's empty catalog as authoritative.
 func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string) provider.ModelCache {
 	out := provider.ModelCache{
+		Version:                c.Version,
 		FetchedAt:              c.FetchedAt,
 		Models:                 append([]provider.Model(nil), c.Models...),
 		AuthoritativeProviders: append([]string(nil), c.AuthoritativeProviders...),
@@ -159,6 +160,8 @@ func isGatewayRoutedModelID(model string) bool {
 //
 // Gateway providers are exempt from the cross-provider model check for routed
 // model IDs because those IDs can be valid even when absent from zut's catalog.
+// OpenCode Go is also exempt from the unknown-model repair because its
+// provider catalog is authoritative but live-only.
 //
 // Silent on success; one stderr line per repair. Errors loading or
 // saving the file are non-fatal — the caller continues with defaults.
@@ -179,10 +182,11 @@ func ValidateAndRepairConfig() {
 
 	if cfg.Provider != "" && cfg.Model != "" {
 		if _, err := provider.FindModel(cfg.Provider, cfg.Model); err != nil {
-			// Gateway providers can serve routed model ids like
-			// "deepseek/deepseek-v4-flash" even when the local catalog does not
-			// know them. Preserve only routed ids; plain typos are still repaired.
-			if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model) {
+			// OpenCode Go is authoritative at runtime and intentionally has no
+			// baked-in entries, so an uncached id must survive startup repair.
+			if cfg.Provider == "opencode-go" {
+				// The live refresh will validate the id when it is available.
+			} else if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model) {
 				// Provider is a router and the id is route-qualified; preserve it.
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
@@ -191,7 +195,7 @@ func ValidateAndRepairConfig() {
 					cfg.Model, m.Provider, cfg.Provider, fix)
 				cfg.Model = fix
 				changed = true
-			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID {
+			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID && cfg.Provider != "opencode-go" {
 				// Model id not in any catalog. Reset to provider's default.
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -249,10 +253,33 @@ func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) e
 	return nil
 }
 
+// needsOpenCodeGoRefresh handles a credential added after a fresh cache was
+// written. Without this check, a cache created before the first OpenCode Go
+// login would hide the provider until the 24-hour TTL expired.
+func needsOpenCodeGoRefresh(c provider.ModelCache) bool {
+	if !CredentialAvailable("opencode-go") {
+		return false
+	}
+	for _, model := range c.Models {
+		if model.Provider == "opencode-go" {
+			return false
+		}
+	}
+	for _, name := range c.AuthoritativeProviders {
+		if name == "opencode-go" {
+			return false
+		}
+	}
+	return true
+}
+
 func refreshModels() {
 	cached, _ := provider.LoadCache(ModelCachePath())
 	currentScopes := currentModelProviderScopes()
-	if cached.IsFresh() && providerScopesEqual(cached.ProviderScopes, currentScopes) {
+	if cached.IsFresh() &&
+		cached.Version == provider.ModelCacheVersion &&
+		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
+		!needsOpenCodeGoRefresh(cached) {
 		return
 	}
 
@@ -262,7 +289,7 @@ func refreshModels() {
 	var all []provider.Model
 	var authoritativeProviders []string
 	providerScopes := make(map[string]string)
-	if cached.IsFresh() {
+	if cached.IsFresh() && cached.Version == provider.ModelCacheVersion {
 		cached = filterCacheByProviderScopes(cached, currentScopes)
 		all = append(all, cached.Models...)
 		authoritativeProviders = append(authoritativeProviders, cached.AuthoritativeProviders...)
@@ -296,6 +323,14 @@ func refreshModels() {
 			}
 		}
 	}
+	if cred, method, err := resolveCredentialForBackground(ctx, "opencode-go"); err == nil && method == "apikey" {
+		if live, err := provider.DiscoverOpenCodeGo(ctx, cred, ""); err == nil {
+			all = filterModelsByProvider(all, "opencode-go")
+			authoritativeProviders = filterProviderNames(authoritativeProviders, "opencode-go")
+			all = append(all, live...)
+			authoritativeProviders = append(authoritativeProviders, "opencode-go")
+		}
+	}
 	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
 			for i := range live {
@@ -323,6 +358,7 @@ func refreshModels() {
 	}
 	provider.SetLiveModelsForProviders(all, authoritativeProviders)
 	_ = provider.SaveCache(ModelCachePath(), provider.ModelCache{
+		Version:                provider.ModelCacheVersion,
 		FetchedAt:              time.Now().UTC(),
 		Models:                 all,
 		AuthoritativeProviders: authoritativeProviders,

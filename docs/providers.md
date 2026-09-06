@@ -129,6 +129,19 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+### OpenCode Go model catalog
+
+OpenCode Go is synchronized instead of using a hand-maintained model list. When
+`OPENCODE_API_KEY` is available, zut reads the account's served IDs from
+[`https://opencode.ai/zen/go/v1/models`](https://opencode.ai/zen/go/v1/models)
+and enriches them with names, limits, prices, and reasoning options from the
+[Models.dev JSON API](https://models.dev/api.json), which powers the
+[OpenCode Go provider page](https://models.dev/providers/opencode-go/). The
+result is authoritative for OpenCode Go, so models removed from the provider
+are removed from the picker as well. The merged catalog is cached in
+`$ZUT_HOME/models-cache.json` for 24 hours; `--list-models` waits for a refresh
+when the cache is stale.
+
 Example:
 
 ```bash

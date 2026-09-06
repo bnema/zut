@@ -113,6 +113,218 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	return out, nil
 }
 
+const (
+	modelsDevAPIURL          = "https://models.dev/api.json"
+	openCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"
+)
+
+// DiscoverOpenCodeGo joins the account's currently served model ids with
+// model metadata from models.dev. The OpenCode Go /models endpoint is the
+// authority for availability; models.dev supplies display names, limits,
+// reasoning capabilities, and pricing.
+func DiscoverOpenCodeGo(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
+	return discoverOpenCodeGo(ctx, apiKey, baseURL, modelsDevAPIURL)
+}
+
+// discoverOpenCodeGo is split out so tests can use a local models.dev fixture.
+func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string) ([]Model, error) {
+	if baseURL == "" {
+		baseURL = openCodeGoDefaultBaseURL
+	}
+	if metadataURL == "" {
+		metadataURL = modelsDevAPIURL
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	metadataBody, err := fetchDiscoveryJSON(ctx, client, metadataURL, "")
+	if err != nil {
+		return nil, fmt.Errorf("opencode-go metadata: %w", err)
+	}
+	var providers map[string]modelsDevProvider
+	if err := json.Unmarshal(metadataBody, &providers); err != nil {
+		return nil, fmt.Errorf("opencode-go metadata parse: %w", err)
+	}
+	metadata, ok := providers["opencode-go"]
+	if !ok {
+		return nil, fmt.Errorf("opencode-go metadata provider is missing")
+	}
+	modelsBody, err := fetchDiscoveryJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", "Bearer "+apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("opencode-go models: %w", err)
+	}
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(modelsBody, &page); err != nil {
+		return nil, fmt.Errorf("opencode-go models parse: %w", err)
+	}
+
+	out := make([]Model, 0, len(page.Data))
+	for _, live := range page.Data {
+		if live.ID == "" {
+			continue
+		}
+		model := Model{
+			Provider:    "opencode-go",
+			ID:          live.ID,
+			DisplayName: live.ID,
+			BaseURL:     strings.TrimRight(baseURL, "/"),
+			Source:      "live",
+			API:         openCodeGoAPIForModel(live.ID),
+		}
+		if details, ok := metadata.Models[live.ID]; ok {
+			if details.Name != "" {
+				model.DisplayName = details.Name
+			}
+			model.ContextWindow = details.Limit.Context
+			model.MaxOutput = details.Limit.Output
+			model.Reasoning = details.Reasoning
+			model.ReasoningLevelMap, model.ReasoningEffortMap = modelsDevReasoningMaps(details.Reasoning, details.ReasoningOptions)
+			model.PriceInput = details.Cost.Input
+			model.PriceOutput = details.Cost.Output
+			model.PriceCacheRead = details.Cost.CacheRead
+			model.PriceCacheWrite = details.Cost.CacheWrite
+			for _, tier := range details.Cost.Tiers {
+				if tier.Tier.Type != "context" || tier.Tier.Size <= 0 {
+					continue
+				}
+				model.PriceTierInputTokens = tier.Tier.Size
+				model.PriceInputAbove = tier.Input
+				model.PriceOutputAbove = tier.Output
+				model.PriceCacheReadAbove = tier.CacheRead
+				model.PriceCacheWriteAbove = tier.CacheWrite
+				break
+			}
+		}
+		out = append(out, model)
+	}
+	return out, nil
+}
+
+// modelsDevProvider and its nested types intentionally cover only the stable
+// subset needed by provider.Model. models.dev adds fields over time, and the
+// JSON decoder safely ignores those additions.
+type modelsDevProvider struct {
+	Models map[string]modelsDevModel `json:"models"`
+}
+
+type modelsDevModel struct {
+	Name             string                     `json:"name"`
+	Reasoning        bool                       `json:"reasoning"`
+	ReasoningOptions []modelsDevReasoningOption `json:"reasoning_options"`
+	Limit            modelsDevLimit             `json:"limit"`
+	Cost             modelsDevCost              `json:"cost"`
+}
+
+type modelsDevReasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+}
+
+type modelsDevLimit struct {
+	Context int `json:"context"`
+	Output  int `json:"output"`
+}
+
+type modelsDevCost struct {
+	Input      float64             `json:"input"`
+	Output     float64             `json:"output"`
+	CacheRead  float64             `json:"cache_read"`
+	CacheWrite float64             `json:"cache_write"`
+	Tiers      []modelsDevCostTier `json:"tiers"`
+}
+
+type modelsDevCostTier struct {
+	Input      float64            `json:"input"`
+	Output     float64            `json:"output"`
+	CacheRead  float64            `json:"cache_read"`
+	CacheWrite float64            `json:"cache_write"`
+	Tier       modelsDevCostLimit `json:"tier"`
+}
+
+type modelsDevCostLimit struct {
+	Type string `json:"type"`
+	Size int    `json:"size"`
+}
+
+// modelsDevReasoningMaps translates the effort values used by models.dev
+// into zut's reasoning levels and exact provider wire values. Generic OpenAI
+// defaults include low/medium/high; remove unsupported defaults and add
+// supported minimum/xhigh/max levels.
+func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) (map[string]string, map[string]string) {
+	if !reasoning {
+		return nil, nil
+	}
+	supported := make(map[string]string)
+	for _, option := range options {
+		if option.Type != "effort" {
+			continue
+		}
+		for _, value := range option.Values {
+			level := NormalizeReasoning(value)
+			if reasoningLevelRank(level) > 0 {
+				supported[level] = strings.ToLower(strings.TrimSpace(value))
+			}
+		}
+	}
+	if len(supported) == 0 {
+		return nil, nil
+	}
+
+	levels := []string{"minimum", "low", "medium", "high", "xhigh", "max"}
+	defaults := map[string]bool{"low": true, "medium": true, "high": true}
+	levelMap := make(map[string]string)
+	effortMap := make(map[string]string)
+	for _, level := range levels {
+		switch {
+		case supported[level] != "":
+			levelMap[level] = level
+			effortMap[level] = supported[level]
+		case defaults[level]:
+			levelMap[level] = ""
+		}
+	}
+	return levelMap, effortMap
+}
+
+// OpenCode Go currently serves GPT-5.6 models on its Responses endpoint while
+// the rest of the Go catalog uses Chat Completions. Keep this rule based on the
+// model family rather than maintaining another list of model ids.
+func openCodeGoAPIForModel(id string) string {
+	if strings.HasPrefix(strings.ToLower(id), "gpt-5.6-") {
+		return APIResponses
+	}
+	return ""
+}
+
+func fetchDiscoveryJSON(ctx context.Context, client *http.Client, url, authorization string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if authorization != "" {
+		req.Header.Set("authorization", authorization)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxDiscoveryResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxDiscoveryResponseBytes)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
 // DiscoverGoogle lists Gemini model ids visible to key on
 // generativelanguage.googleapis.com. The API paginates with
 // nextPageToken; we follow it until exhausted.

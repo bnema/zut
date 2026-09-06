@@ -211,7 +211,23 @@ func (c *codexClient) findModel(id string) (Model, error) {
 	if m, err := FindModel("openai-codex", id); err == nil {
 		return m, nil
 	}
-	return FindModel("openai", id)
+	m, err := FindModel("openai", id)
+	if err == nil {
+		return m, nil
+	}
+	if c.providerName == "opencode-go" {
+		if api := openCodeGoAPIForModel(id); api != "" {
+			return Model{
+				Provider:      "opencode-go",
+				ID:            id,
+				API:           api,
+				ContextWindow: 128000,
+				MaxOutput:     16384,
+				Reasoning:     true,
+			}, nil
+		}
+	}
+	return m, err
 }
 
 func supportsOpenAIExplicitPromptCache(model string) bool {
@@ -259,9 +275,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 	if m.Reasoning {
 		effort := OpenAICodexReasoningEffort(reasoning, req.Model)
-		if hasReasoningLevelOverride(m, req.Reasoning) {
-			effort = reasoning
-		}
+		effort = reasoningEffortForModel(m, req.Reasoning, reasoning, effort)
 		if effort != "" {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
 		}

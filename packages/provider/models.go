@@ -19,6 +19,10 @@ type Model struct {
 	MaxOutput         int
 	Reasoning         bool              // supports reasoning
 	ReasoningLevelMap map[string]string // optional level overrides; empty values remove a level
+	// ReasoningEffortMap translates normalized zut reasoning levels to the
+	// provider's exact effort values when a model-specific catalog supplies
+	// them (for example, minimum -> minimal).
+	ReasoningEffortMap map[string]string `json:"reasoning_effort_map,omitempty"`
 
 	// AdaptiveThinking marks Anthropic models that only support the
 	// adaptive thinking mode (Opus 4.7+). These reject explicit
@@ -66,7 +70,8 @@ type Model struct {
 // Prices are USD per 1M tokens. The list is curated to what zut's
 // clients (Anthropic Messages + OpenAI Chat Completions) can actually
 // talk to; models that are only reachable through the OpenAI Responses
-// API (o1-pro, o3-pro, gpt-5-pro) are omitted.
+// API (o1-pro, o3-pro, gpt-5-pro) are omitted. OpenCode Go is populated
+// separately by runtime discovery from its provider API and models.dev.
 var Catalog = []Model{
 	// ---- Anthropic / Claude 4.x ----
 	{
@@ -472,6 +477,7 @@ func Active() []Model {
 	copy(out, src)
 	for i := range out {
 		out[i].ReasoningLevelMap = maps.Clone(out[i].ReasoningLevelMap)
+		out[i].ReasoningEffortMap = maps.Clone(out[i].ReasoningEffortMap)
 	}
 	if len(managedModels) == 0 {
 		return out

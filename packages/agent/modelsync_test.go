@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -166,6 +167,69 @@ func TestValidateAndRepairConfig_UnknownModel(t *testing.T) {
 	}
 	if out.Model == "" || out.Model == "claude-deleted-model" {
 		t.Errorf("model not repaired: %q", out.Model)
+	}
+}
+
+func TestValidateAndRepairConfig_OpenCodeGoPreservesDynamicModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+
+	const model = "muse-spark-1.2-contributor"
+	b, _ := json.Marshal(Config{Provider: "opencode-go", Model: model})
+	if err := os.WriteFile(filepath.Join(home, "config.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ValidateAndRepairConfig()
+
+	out, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Provider != "opencode-go" || out.Model != model {
+		t.Fatalf("dynamic OpenCode Go config changed: provider=%q model=%q", out.Provider, out.Model)
+	}
+}
+
+func TestResolveAllowsUnknownOpenCodeGoModelBeforeDiscovery(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	const model = "muse-spark-1.2-contributor"
+	resolved, err := Resolve(Args{Provider: "opencode-go", Model: model}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Provider != "opencode-go" || resolved.Model != model {
+		t.Fatalf("resolved dynamic model = provider=%q model=%q", resolved.Provider, resolved.Model)
+	}
+	if resolved.ContextWindow != 128000 || resolved.MaxOutput != 16384 {
+		t.Fatalf("bootstrap model limits = context %d output %d", resolved.ContextWindow, resolved.MaxOutput)
+	}
+}
+
+func TestNeedsOpenCodeGoRefreshWhenCredentialAppearsAfterCache(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "synthetic-key")
+
+	freshWithoutOpenCode := provider.ModelCache{
+		Version:   provider.ModelCacheVersion,
+		FetchedAt: time.Now(),
+		Models:    []provider.Model{{Provider: "openai", ID: "gpt-5"}},
+	}
+	if !needsOpenCodeGoRefresh(freshWithoutOpenCode) {
+		t.Fatal("fresh cache without OpenCode Go should refresh after credential appears")
+	}
+
+	freshWithOpenCode := freshWithoutOpenCode
+	freshWithOpenCode.Models = append(freshWithOpenCode.Models, provider.Model{Provider: "opencode-go", ID: "served"})
+	if needsOpenCodeGoRefresh(freshWithOpenCode) {
+		t.Fatal("cache with OpenCode Go models should remain fresh")
+	}
+
+	t.Setenv("OPENCODE_API_KEY", "")
+	if needsOpenCodeGoRefresh(freshWithoutOpenCode) {
+		t.Fatal("cache without an OpenCode Go credential should not refresh")
 	}
 }
 

@@ -50,6 +50,12 @@ func TestModelRouterRejectsMissingAPIClient(t *testing.T) {
 }
 
 func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
+	SetLiveModels([]Model{
+		{Provider: "opencode-go", ID: "gpt-5.6-luna", API: APIResponses},
+		{Provider: "opencode-go", ID: "kimi-k3"},
+	})
+	t.Cleanup(func() { SetLiveModels(nil) })
+
 	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
 	if got := router.fallback.(*openaiClient).baseURL; got != "https://example.com/go/v1" {
 		t.Fatalf("Completions base URL = %q", got)
@@ -77,5 +83,28 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	}
 	if len(completionsCapture.models) != 1 || completionsCapture.models[0] != "kimi-k3" {
 		t.Fatalf("Completions models = %v", completionsCapture.models)
+	}
+}
+
+func TestOpenCodeGoRoutesUncataloguedGPT56ToResponses(t *testing.T) {
+	SetLiveModels(nil)
+	t.Cleanup(func() { SetLiveModels(nil) })
+
+	responses := &routeCaptureClient{name: "opencode-go"}
+	completions := &routeCaptureClient{name: "opencode-go"}
+	router := NewModelRouter("opencode-go", completions, map[string]Client{
+		APIResponses: responses,
+	})
+	stream, err := router.Stream(context.Background(), Request{Model: "gpt-5.6-future"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if len(responses.models) != 1 || responses.models[0] != "gpt-5.6-future" {
+		t.Fatalf("Responses models = %v", responses.models)
+	}
+	if len(completions.models) != 0 {
+		t.Fatalf("Completions models = %v, want none", completions.models)
 	}
 }

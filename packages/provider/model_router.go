@@ -34,10 +34,20 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 		return nil, err
 	}
 	client := c.fallback
-	if model, err := FindModel(c.name, req.Model); err == nil && model.API != "" {
-		routed := c.byAPI[model.API]
+	api := ""
+	if model, err := FindModel(c.name, req.Model); err == nil {
+		api = model.API
+	}
+	if api == "" && c.name == "opencode-go" {
+		// The OpenCode Go catalog is intentionally live-only. Preserve the
+		// family route for an explicit model while the first discovery is
+		// still in flight or unavailable.
+		api = openCodeGoAPIForModel(req.Model)
+	}
+	if api != "" {
+		routed := c.byAPI[api]
 		if routed == nil {
-			return nil, fmt.Errorf("provider %q has no client for model API %q", c.name, model.API)
+			return nil, fmt.Errorf("provider %q has no client for model API %q", c.name, api)
 		}
 		client = routed
 	}
