@@ -55,8 +55,11 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 							"reasoning_options": [{"type":"effort","values":["minimal","low","medium","high","xhigh"]}],
 							"limit": {"context": 1048576, "output": 131072},
 							"cost": {"input": 0.1, "output": 0.2, "cache_read": 0.002, "cache_write": 0.003,
-								"tiers": [{"input": 0.4, "output": 0.8, "cache_read": 0.004, "cache_write": 0.005,
-									"tier": {"type": "context", "size": 272000}}]}
+								"tiers": [
+									{"input": 0.9, "output": 1.8, "cache_read": 0.009, "cache_write": 0.01,
+										"tier": {"type": "context", "size": 500000}},
+									{"input": 0.4, "output": 0.8, "cache_read": 0.004, "cache_write": 0.005,
+										"tier": {"type": "context", "size": 272000}}]}
 						},
 						"not-served": {
 							"id": "not-served",
@@ -103,17 +106,24 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 	}
 }
 
-func TestDiscoverOpenCodeGoRequiresProviderMetadata(t *testing.T) {
+func TestDiscoverOpenCodeGoKeepsLiveIDsWithoutProviderMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api.json" {
+		switch r.URL.Path {
+		case "/api.json":
 			_, _ = w.Write([]byte(`{"other-provider":{"models":{}}}`))
-			return
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"served"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
-	if _, err := discoverOpenCodeGo(context.Background(), "key", server.URL, server.URL+"/api.json"); err == nil {
-		t.Fatal("missing models.dev provider returned nil error")
+	models, err := discoverOpenCodeGo(context.Background(), "key", server.URL, server.URL+"/api.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].ID != "served" || models[0].DisplayName != "served" {
+		t.Fatalf("models = %+v, want the live id with fallback metadata", models)
 	}
 }

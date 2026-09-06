@@ -287,14 +287,14 @@ func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
 }
 
 func prepareRuntimeCatalog(waitForRefresh bool, explicitProvider, explicitAPIKey string) {
-	LoadCachedModels()
-	LoadUserModels()
 	explicitProvider = canonicalProvider(explicitProvider)
 	if explicitProvider == "" && explicitAPIKey != "" {
 		if cfg, err := LoadConfig(); err == nil {
 			explicitProvider = canonicalProvider(cfg.Provider)
 		}
 	}
+	loadCachedModels(modelProviderScopes(explicitProvider, explicitAPIKey))
+	LoadUserModels()
 	if cps := provider.CustomProviders(); len(cps) > 0 {
 		var names []string
 		for name := range cps {

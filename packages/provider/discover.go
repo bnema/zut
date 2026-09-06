@@ -136,18 +136,16 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	metadataBody, err := fetchDiscoveryJSON(ctx, client, metadataURL, "")
-	if err != nil {
-		return nil, fmt.Errorf("opencode-go metadata: %w", err)
+	// Models.dev is enrichment only. Keep serving IDs even when its public
+	// catalog is temporarily unavailable or has not published this provider.
+	var metadata modelsDevProvider
+	if metadataBody, err := fetchDiscoveryJSON(ctx, client, metadataURL, ""); err == nil {
+		var providers map[string]modelsDevProvider
+		if err := json.Unmarshal(metadataBody, &providers); err == nil {
+			metadata = providers["opencode-go"]
+		}
 	}
-	var providers map[string]modelsDevProvider
-	if err := json.Unmarshal(metadataBody, &providers); err != nil {
-		return nil, fmt.Errorf("opencode-go metadata parse: %w", err)
-	}
-	metadata, ok := providers["opencode-go"]
-	if !ok {
-		return nil, fmt.Errorf("opencode-go metadata provider is missing")
-	}
+
 	modelsBody, err := fetchDiscoveryJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", "Bearer "+apiKey)
 	if err != nil {
 		return nil, fmt.Errorf("opencode-go models: %w", err)
@@ -186,16 +184,22 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 			model.PriceOutput = details.Cost.Output
 			model.PriceCacheRead = details.Cost.CacheRead
 			model.PriceCacheWrite = details.Cost.CacheWrite
-			for _, tier := range details.Cost.Tiers {
+			var selectedTier *modelsDevCostTier
+			for i := range details.Cost.Tiers {
+				tier := &details.Cost.Tiers[i]
 				if tier.Tier.Type != "context" || tier.Tier.Size <= 0 {
 					continue
 				}
-				model.PriceTierInputTokens = tier.Tier.Size
-				model.PriceInputAbove = tier.Input
-				model.PriceOutputAbove = tier.Output
-				model.PriceCacheReadAbove = tier.CacheRead
-				model.PriceCacheWriteAbove = tier.CacheWrite
-				break
+				if selectedTier == nil || tier.Tier.Size < selectedTier.Tier.Size {
+					selectedTier = tier
+				}
+			}
+			if selectedTier != nil {
+				model.PriceTierInputTokens = selectedTier.Tier.Size
+				model.PriceInputAbove = selectedTier.Input
+				model.PriceOutputAbove = selectedTier.Output
+				model.PriceCacheReadAbove = selectedTier.CacheRead
+				model.PriceCacheWriteAbove = selectedTier.CacheWrite
 			}
 		}
 		out = append(out, model)

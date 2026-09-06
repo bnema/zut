@@ -26,11 +26,15 @@ func UserModelsPath() string {
 // package so FindModel / ModelsForProvider see live ids immediately.
 // Safe to call before any credentials are known.
 func LoadCachedModels() {
+	loadCachedModels(currentModelProviderScopes())
+}
+
+func loadCachedModels(scopes map[string]string) {
 	c, err := provider.LoadCache(ModelCachePath())
 	if err != nil {
 		return
 	}
-	c = filterCacheByProviderScopes(c, currentModelProviderScopes())
+	c = filterCacheByProviderScopes(c, scopes)
 	if len(c.Models) > 0 || len(c.AuthoritativeProviders) > 0 {
 		provider.SetLiveModelsForProviders(c.Models, c.AuthoritativeProviders)
 	}
@@ -55,6 +59,14 @@ func currentModelProviderScopes() map[string]string {
 // protected with restrictive file permissions.
 func credentialScope(credential string) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(credential)))
+}
+
+func modelProviderScopes(explicitProvider, explicitAPIKey string) map[string]string {
+	scopes := currentModelProviderScopes()
+	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
+		scopes["opencode-go"] = credentialScope(explicitAPIKey)
+	}
+	return scopes
 }
 
 // filterCacheByProviderScopes removes cached entries whose provider scope no
@@ -286,10 +298,7 @@ func needsOpenCodeGoRefresh(c provider.ModelCache) bool {
 
 func refreshModels(explicitProvider, explicitAPIKey string) {
 	cached, _ := provider.LoadCache(ModelCachePath())
-	currentScopes := currentModelProviderScopes()
-	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
-		currentScopes["opencode-go"] = credentialScope(explicitAPIKey)
-	}
+	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey)
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&

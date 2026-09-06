@@ -22,7 +22,7 @@ type Model struct {
 	// ReasoningEffortMap translates normalized zut reasoning levels to the
 	// provider's exact effort values when a model-specific catalog supplies
 	// them (for example, minimum -> minimal).
-	ReasoningEffortMap map[string]string `json:"reasoning_effort_map,omitempty"`
+	ReasoningEffortMap map[string]string
 
 	// AdaptiveThinking marks Anthropic models that only support the
 	// adaptive thinking mode (Opus 4.7+). These reject explicit
@@ -488,6 +488,7 @@ func Active() []Model {
 	}
 	for _, model := range managedModels {
 		model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
+		model.ReasoningEffortMap = maps.Clone(model.ReasoningEffortMap)
 		key := model.Provider + "\x00" + model.ID
 		if i, ok := index[key]; ok {
 			out[i] = model

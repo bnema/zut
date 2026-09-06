@@ -62,6 +62,29 @@ func TestFilterCacheByProviderScopesRemovesRotatedOpenCodeGoCredential(t *testin
 	}
 }
 
+func TestLoadCachedModelsFiltersExplicitOpenCodeGoCredentialScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	if err := provider.SaveCache(filepath.Join(home, "models-cache.json"), provider.ModelCache{
+		Version:                provider.ModelCacheVersion,
+		FetchedAt:              time.Now(),
+		Models:                 []provider.Model{{Provider: "opencode-go", ID: "old-key-model"}},
+		AuthoritativeProviders: []string{"opencode-go"},
+		ProviderScopes:         map[string]string{"opencode-go": credentialScope("old-key")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	loadCachedModels(map[string]string{"opencode-go": credentialScope("new-key")})
+	if _, err := provider.FindModel("opencode-go", "old-key-model"); err == nil {
+		t.Fatal("cached model from another OpenCode Go credential remained active")
+	}
+}
+
 func TestFilterCacheByProviderScopesDropsLegacyAuthoritativeCodex(t *testing.T) {
 	cache := provider.ModelCache{
 		Models:                 []provider.Model{{Provider: "openai-codex", ID: "legacy"}},
