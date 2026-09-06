@@ -146,6 +146,13 @@ func TestStatusBarReasoningSuffix(t *testing.T) {
 	}
 }
 
+func TestStatusLabelValueOmitsEmptyStyledSegments(t *testing.T) {
+	want := Dark.FGColor(Dark.Muted, "goal:") + Dark.FGColor(Dark.FG, "paused")
+	if got := statusLabelValue(Dark, "goal:", "paused", Dark.FG); got != want {
+		t.Fatalf("status label/value = %q, want %q", got, want)
+	}
+}
+
 func TestStatusBarHighlightsValuesForDarkAndLightThemes(t *testing.T) {
 	for _, th := range []Theme{Dark, Light} {
 		lines := StatusBar(StatusBarParams{

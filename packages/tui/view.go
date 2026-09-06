@@ -3185,7 +3185,17 @@ func statusLabelValue(th Theme, label, value string, valueColor TerminalColor) s
 }
 
 func statusLabelValueSuffix(th Theme, label, value, suffix string, valueColor TerminalColor) string {
-	return th.FGColor(th.Muted, label) + th.FGColor(valueColor, value) + th.FGColor(th.Muted, suffix)
+	var rendered strings.Builder
+	if label != "" {
+		rendered.WriteString(th.FGColor(th.Muted, label))
+	}
+	if value != "" {
+		rendered.WriteString(th.FGColor(valueColor, value))
+	}
+	if suffix != "" {
+		rendered.WriteString(th.FGColor(th.Muted, suffix))
+	}
+	return rendered.String()
 }
 
 func renderStatusModel(th Theme, model, reasoning string) string {
