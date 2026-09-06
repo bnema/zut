@@ -53,6 +53,14 @@ func TestBuildSystemPromptAlwaysIncludesTaskAndSkillGuidance(t *testing.T) {
 				Custom: custom,
 				Append: []string{"Workspace context", "Available skills"},
 			})
+			previous := strings.Index(prompt, "Available skills")
+			for _, guidance := range []string{taskExecutionGuidance, skillPriorityGuidance, writingGuidance} {
+				index := strings.Index(prompt, guidance)
+				if index <= previous {
+					t.Fatalf("shared guidance must follow appended context in task/skill/writing order")
+				}
+				previous = index
+			}
 			for _, want := range []string{
 				"Treat requests such as \"can you\" as instructions to do the requested work",
 				"do not stop at a plan or an offer to continue",

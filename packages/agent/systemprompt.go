@@ -68,10 +68,6 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 
 	sb.WriteString("\n\n")
 	sb.WriteString(compactedSummaryHandoffInstruction)
-	sb.WriteString("\n\n")
-	sb.WriteString(taskExecutionGuidance)
-	sb.WriteString("\n\n")
-	sb.WriteString(skillPriorityGuidance)
 
 	if o.Custom == "" && strings.TrimSpace(o.ZutDocsDir) != "" {
 		sb.WriteString("\n\nZut's own docs are installed under ")
@@ -87,8 +83,11 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		sb.WriteString(a)
 	}
 
-	// Keep the universal writing policy after optional context so narrower
-	// addenda cannot accidentally disable it.
+	// Keep shared guidance after optional context, with writing policy last.
+	sb.WriteString("\n\n")
+	sb.WriteString(taskExecutionGuidance)
+	sb.WriteString("\n\n")
+	sb.WriteString(skillPriorityGuidance)
 	sb.WriteString("\n\n")
 	sb.WriteString(writingGuidance)
 
