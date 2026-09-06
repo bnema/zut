@@ -18,8 +18,9 @@ import (
 
 // QuickModelShortcut is one configured keyboard shortcut slot.
 type QuickModelShortcut struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // SubagentsConfig contains the resident manager policy. max_concurrent limits
@@ -69,6 +70,7 @@ type Config struct {
 	// QuickModelShortcuts maps slots 1-9 to provider/model pairs used by
 	// Ctrl+1..9. Cmd+1..9 may also work on terminals that forward Super.
 	QuickModelShortcuts []QuickModelShortcut `json:"quick_model_shortcuts,omitempty"`
+	ActiveModelProfile  int                  `json:"active_model_profile,omitempty"`
 
 	// InlineImagesEnabled controls whether zut draws screenshots inline
 	// when the terminal supports an image protocol. nil/missing means
@@ -319,6 +321,20 @@ func LoadConfig() (Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// applyActiveModelProfile supplies defaults without rewriting the config. Explicit
+// flags and session restoration retain their normal precedence in Resolve.
+func (c *Config) applyActiveModelProfile() {
+	slot := c.ActiveModelProfile
+	if slot < 1 || slot > 9 || slot > len(c.QuickModelShortcuts) {
+		return
+	}
+	p := c.QuickModelShortcuts[slot-1]
+	if p.Provider == "" || p.Model == "" {
+		return
+	}
+	c.Provider, c.Model, c.Reasoning = p.Provider, p.Model, p.Reasoning
 }
 
 func validateSubagentConfig(cfg SubagentsConfig) error {

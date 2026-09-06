@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Key is a parsed keypress.
@@ -411,7 +412,10 @@ func parseCSIU(params string) (Key, bool) {
 	if len(parts) == 0 {
 		return Key{}, false
 	}
-	code, err := strconv.Atoi(parts[0])
+	// Kitty may include shifted and base-layout alternatives (code:shifted:base).
+	// The primary code preserves the user's layout, including AZERTY punctuation.
+	primary, _, _ := strings.Cut(parts[0], ":")
+	code, err := strconv.Atoi(primary)
 	if err != nil {
 		return Key{}, false
 	}
@@ -506,7 +510,9 @@ func keyFromModifiedCode(code, mod int) (Key, bool) {
 	if code >= '0' && code <= '9' {
 		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
 	}
-	if !ctrl && code >= 0x20 && code <= 0x7e {
+	// Preserve printable layout-specific keys and their modifiers. Unknown
+	// ASCII Ctrl+letter chords remain unknown rather than becoming editor text.
+	if code >= 0x20 && code <= unicode.MaxRune && unicode.IsPrint(rune(code)) && (!ctrl || code > 0x7f || !unicode.IsLetter(rune(code))) {
 		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
 	}
 	return Key{}, false

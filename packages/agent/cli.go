@@ -2517,7 +2517,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	fastMode := r.FastMode
 	quickModelShortcuts := make([]modes.QuickModelShortcut, len(initialCfg.QuickModelShortcuts))
 	for idx, s := range initialCfg.QuickModelShortcuts {
-		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
+		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model, Reasoning: s.Reasoning}
 	}
 	themeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME")))
 	if themeEnv != "" && themeEnv != "auto" && themeEnv != "dark" && themeEnv != "light" {
@@ -2589,6 +2589,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		GoalMaxTokenBudget:             initialCfg.Goals.MaxTokenBudget,
 		JailByDefault:                  initialCfg.JailByDefault,
 		QuickModelShortcuts:            quickModelShortcuts,
+		ActiveModelProfile:             initialCfg.ActiveModelProfile,
 		RecursiveFileSuggest:           initialCfg.RecursiveFileSuggest,
 		RespectGitignore:               initialCfg.RespectGitignore,
 		CompactMode:                    initialCfg.CompactMode,

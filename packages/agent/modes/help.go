@@ -23,6 +23,7 @@ var helpKeyRows = [][2]string{
 	{"ctrl+l", "redraw the screen"},
 	{"ctrl+o", "expand / collapse long tool results"},
 	{"ctrl+r", "cycle reasoning levels for the active model"},
+	{"ctrl+1…9", "activate model + reasoning profile (AZERTY top row also works); empty slots save current selection"},
 	{"pgup / pgdn", "scroll the chat one page up / down"},
 	{"up / down", "move in input, browse prompt history at top edge, scroll chat when empty"},
 }

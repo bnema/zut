@@ -52,6 +52,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/logout", Desc: "clear a provider's credentials"},
 	{Name: "/model", Desc: "pick a model (or /model <id>)"},
 	{Name: "/reasoning", Desc: "set the reasoning level"},
+	{Name: "/profile", Desc: "activate model + reasoning profile (/profile <1-9>)"},
 	{Name: "/fast", Desc: "toggle fast mode"},
 	{Name: "/orchestrator", Desc: "toggle automatic subagent orchestration"},
 	{Name: "/goal", Desc: "start or control an autonomous goal"},

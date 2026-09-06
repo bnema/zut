@@ -165,7 +165,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Close {
 			i.quickModelAssign = 0
 		}
-		if act.ReasoningChanged {
+		if act.ReasoningChanged && i.quickModelAssign == 0 {
 			i.applyReasoningSetting(act.Reasoning)
 		}
 		if act.Select {

@@ -494,6 +494,7 @@ func webSearchAllowedForRegistry(args Args) bool {
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
 	cfg, cfgErr := LoadConfig()
+	cfg.applyActiveModelProfile()
 	// Programmatic callers historically supplied Tools without the parser's
 	// provenance bit. Treat a non-empty list as explicit before a named profile
 	// can contribute its defaults.

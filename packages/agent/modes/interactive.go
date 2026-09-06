@@ -175,6 +175,7 @@ type InteractiveConfig struct {
 	// shortcuts are Ctrl+1..9. Cmd+1..9 may also work when the terminal
 	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
 	QuickModelShortcuts []QuickModelShortcut
+	ActiveModelProfile  int // 0 means no active profile; otherwise 1–9
 
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
@@ -480,8 +481,9 @@ type chatCacheKey struct {
 
 // QuickModelShortcut is one configured quick model switch slot.
 type QuickModelShortcut struct {
-	Provider string
-	Model    string
+	Provider  string
+	Model     string
+	Reasoning string
 }
 
 type extensionStatus struct {
@@ -497,7 +499,7 @@ type extensionWidget struct {
 
 // SettingsStore persists user-toggleable settings surfaced by /settings.
 type SettingsStore interface {
-	SetQuickModelShortcut(slot int, providerName, model string) error
+	SetModelProfile(slot int, profile QuickModelShortcut, activeSlot int) error
 	SetInlineImages(enabled bool) error
 	SetAutoSubagents(enabled bool) error
 	SetJailByDefault(enabled bool) error
@@ -980,6 +982,8 @@ type startupPreResult struct {
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
+	// Explicit CLI/session model overrides must not silently overwrite a favorite.
+	cfg.detachMismatchedModelProfile()
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
 	startupAgentName := ""

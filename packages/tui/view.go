@@ -2976,19 +2976,20 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 // StatusBarParams groups the many bits of state the status bar needs.
 // Grew from a flat argument list once we settled on the layout.
 type StatusBarParams struct {
-	Theme       Theme
-	Provider    string
-	Model       string
-	Reasoning   string // "" means thinking off
-	FastMode    bool   // show the provider's opt-in fast tier when enabled
-	Busy        bool
-	BusyPrefix  string // spinner + funny line when busy
-	CWD         string
-	Locked      bool   // sandbox on?
-	NoYolo      bool   // confirmation mode enabled?
-	GoalStatus  string // autonomous goal lifecycle, empty when none
-	PlanCurrent int    // one-based in-progress plan step; 0 hides plan progress
-	PlanTotal   int
+	Theme        Theme
+	Provider     string
+	Model        string
+	Reasoning    string // "" means thinking off
+	ModelProfile int    // 1–9 identifies the active model/reasoning favorite
+	FastMode     bool   // show the provider's opt-in fast tier when enabled
+	Busy         bool
+	BusyPrefix   string // spinner + funny line when busy
+	CWD          string
+	Locked       bool   // sandbox on?
+	NoYolo       bool   // confirmation mode enabled?
+	GoalStatus   string // autonomous goal lifecycle, empty when none
+	PlanCurrent  int    // one-based in-progress plan step; 0 hides plan progress
+	PlanTotal    int
 
 	// Cumulative session usage and cost.
 	Usage provider.Usage
@@ -3076,7 +3077,11 @@ func StatusBar(p StatusBarParams) []string {
 	const pad = "  " // 2 spaces
 
 	reasoning := reasoningLevelLabel(p.Reasoning)
-	left := renderStatusModel(th, p.Model, reasoning)
+	modelLabel := p.Model
+	if p.ModelProfile >= 1 && p.ModelProfile <= 9 {
+		modelLabel = fmt.Sprintf("[%d] %s", p.ModelProfile, modelLabel)
+	}
+	left := renderStatusModel(th, modelLabel, reasoning)
 	fastText := ""
 	if p.FastMode {
 		fastText = th.FGColor(th.Muted, "fast mode")
@@ -3141,7 +3146,7 @@ func StatusBar(p StatusBarParams) []string {
 		modelLine := pad + left
 		lines := []string{busyLine}
 		if visibleWidth(modelLine+pad+middle) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, p.Model, reasoning, fastText, stats, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, modelLabel, reasoning, fastText, stats, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
@@ -3163,7 +3168,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, p.Model, reasoning, fastText, stats, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, modelLabel, reasoning, fastText, stats, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}

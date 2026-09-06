@@ -408,8 +408,8 @@ func (i *Interactive) openSettingsDialog() {
 	if len(quickItems) > 0 {
 		items = append(items, settingsItem{
 			key:      "quick_models",
-			label:    "model shortcuts",
-			desc:     "configure " + quickModelShortcutPrefix() + "+1 through " + quickModelShortcutPrefix() + "+9 quick model switches",
+			label:    "model profiles",
+			desc:     "configure " + quickModelShortcutPrefix() + "+1 through " + quickModelShortcutPrefix() + "+9 model and reasoning profiles",
 			children: quickItems,
 		})
 	}
@@ -479,12 +479,15 @@ func (i *Interactive) quickModelSettingItem(slot int) settingsItem {
 	}
 	hint := "not assigned"
 	if current.Provider != "" && current.Model != "" {
-		hint = current.Provider + " / " + current.Model
+		hint = modelProfileDescription(current)
+	}
+	if slot == i.cfg.ActiveModelProfile {
+		hint += " (active)"
 	}
 	return settingsItem{
 		key:    "quick_model_" + strconv.Itoa(slot),
-		label:  "model " + strconv.Itoa(slot),
-		desc:   quickModelShortcutLabel(slot) + " switches to this model. Enter opens the /model selector, Backspace clears.",
+		label:  "profile " + strconv.Itoa(slot),
+		desc:   quickModelShortcutLabel(slot) + " recalls model + reasoning. Enter assigns, Left/Right in the picker sets reasoning, Backspace clears.",
 		picker: true,
 		hint:   hint,
 	}
@@ -493,7 +496,7 @@ func (i *Interactive) compactModeEnabled() bool {
 	return i.cfg.CompactMode != nil && *i.cfg.CompactMode
 }
 func quickModelShortcutSlot(k tui.Key) int {
-	if k.Kind != tui.KeyRune || k.Rune < '1' || k.Rune > '9' {
+	if k.Kind != tui.KeyRune || k.Alt {
 		return 0
 	}
 	if runtime.GOOS == "darwin" {
@@ -503,7 +506,17 @@ func quickModelShortcutSlot(k tui.Key) int {
 	} else if !k.Ctrl {
 		return 0
 	}
-	return int(k.Rune - '0')
+	if k.Rune >= '1' && k.Rune <= '9' {
+		return int(k.Rune - '0')
+	}
+	// French AZERTY's unshifted number row. Require a modifier so normal
+	// typing and pasted punctuation never activate profiles.
+	for idx, r := range []rune("&é\"'(-è_ç") {
+		if k.Rune == r {
+			return idx + 1
+		}
+	}
+	return 0
 }
 func quickModelShortcutPrefix() string {
 	return "Ctrl"
@@ -516,18 +529,19 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 		return
 	}
 	i.quickModelAssign = slot
-	current := i.cfg.Model
+	current, reasoning := i.cfg.Model, i.cfg.Reasoning
 	if len(i.cfg.QuickModelShortcuts) >= slot && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
 		current = i.cfg.QuickModelShortcuts[slot-1].Model
+		reasoning = i.cfg.QuickModelShortcuts[slot-1].Reasoning
 	}
 	var loggedIn []string
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
-	i.modelDialog.Open(current, loggedIn, i.cfg.Reasoning)
+	i.modelDialog.Open(current, loggedIn, reasoning)
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
-	i.setQuickModelShortcut(slot, providerName, model)
+	i.setQuickModelProfile(slot, QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning})
 }
 func (i *Interactive) applyQuickModelShortcut(slot int) {
 	if slot < 1 || slot > 9 {
@@ -541,25 +555,7 @@ func (i *Interactive) applyQuickModelShortcut(slot int) {
 		i.invalidate()
 		return
 	}
-	if len(i.cfg.QuickModelShortcuts) < slot {
-		i.mu.Lock()
-		i.statusErr = quickModelShortcutLabel(slot) + " is not assigned"
-		i.statusOK = ""
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	shortcut := i.cfg.QuickModelShortcuts[slot-1]
-	if shortcut.Provider == "" || shortcut.Model == "" {
-		i.mu.Lock()
-		i.statusErr = quickModelShortcutLabel(slot) + " is not assigned"
-		i.statusOK = ""
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	i.swapModel(shortcut.Provider, shortcut.Model, i.cfg.BuildAgentFor, false)
-	i.invalidate()
+	i.activateModelProfile(slot)
 }
 func (i *Interactive) applyQuickModelSetting(key, value string) {
 	slotText := strings.TrimPrefix(key, "quick_model_")
@@ -577,30 +573,7 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	i.setQuickModelShortcut(slot, providerName, model)
 }
 func (i *Interactive) setQuickModelShortcut(slot int, providerName, model string) {
-	if len(i.cfg.QuickModelShortcuts) < slot {
-		next := make([]QuickModelShortcut, slot)
-		copy(next, i.cfg.QuickModelShortcuts)
-		i.cfg.QuickModelShortcuts = next
-	}
-	i.cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{Provider: providerName, Model: model}
-	if i.cfg.SettingsStore != nil {
-		if err := i.cfg.SettingsStore.SetQuickModelShortcut(slot, providerName, model); err != nil {
-			i.mu.Lock()
-			i.statusErr = "settings: " + err.Error()
-			i.mu.Unlock()
-			return
-		}
-	}
-	i.mu.Lock()
-	if model == "" {
-		i.statusOK = quickModelShortcutLabel(slot) + " cleared"
-	} else {
-		i.statusOK = quickModelShortcutLabel(slot) + " set to " + providerName + " / " + model
-	}
-	i.statusErr = ""
-	i.mu.Unlock()
-	i.refreshQuickModelSettingsItem(slot)
-	i.invalidate()
+	i.setQuickModelProfile(slot, QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.cfg.Reasoning})
 }
 func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 	if i.settingsDialog == nil || !i.settingsDialog.Active() || len(i.settingsDialog.items) == 0 {
@@ -1258,8 +1231,12 @@ func (i *Interactive) applyReasoningSetting(level string) {
 		i.invalidate()
 	}()
 	level = provider.NormalizeReasoning(level)
-	i.cfg.Reasoning = level
-	if i.cfg.SettingsStore != nil {
+	if slot := i.cfg.ActiveModelProfile; slot > 0 {
+		p := QuickModelShortcut{Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: level}
+		if !i.persistModelProfile(slot, p, slot) {
+			return
+		}
+	} else if i.cfg.SettingsStore != nil {
 		if err := i.cfg.SettingsStore.SetReasoning(level); err != nil {
 			i.mu.Lock()
 			i.statusErr = "settings: " + err.Error()
@@ -1267,18 +1244,16 @@ func (i *Interactive) applyReasoningSetting(level string) {
 			return
 		}
 	}
-	if i.cfg.OnReasoningChanged != nil {
-		i.cfg.OnReasoningChanged(level)
-	}
+	i.setLiveReasoning(level)
 	i.mu.Lock()
-	if i.agent != nil {
-		i.agent.Reasoning = level
-	}
 	label := level
 	if label == "" {
 		label = "off"
 	}
 	i.statusOK = "reasoning level " + label
+	if i.cfg.ActiveModelProfile > 0 {
+		i.statusOK += fmt.Sprintf(" — profile %d updated", i.cfg.ActiveModelProfile)
+	}
 	i.statusErr = ""
 	i.mu.Unlock()
 }
