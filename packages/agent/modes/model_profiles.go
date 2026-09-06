@@ -15,7 +15,8 @@ func (c *InteractiveConfig) detachMismatchedModelProfile() {
 		return
 	}
 	p := c.QuickModelShortcuts[slot-1]
-	if p.Provider != c.Provider || p.Model != c.Model || provider.NormalizeReasoning(p.Reasoning) != provider.NormalizeReasoning(c.Reasoning) {
+	liveFastMode := c.FastMode != nil && *c.FastMode
+	if p.Provider != c.Provider || p.Model != c.Model || provider.NormalizeReasoning(p.Reasoning) != provider.NormalizeReasoning(c.Reasoning) || p.FastMode != liveFastMode {
 		c.ActiveModelProfile = 0
 	}
 }
@@ -25,7 +26,11 @@ func modelProfileDescription(p QuickModelShortcut) string {
 	if level == "" {
 		level = "off"
 	}
-	return p.Provider + " / " + p.Model + " (reasoning: " + level + ")"
+	fast := "off"
+	if p.FastMode {
+		fast = "on"
+	}
+	return p.Provider + " / " + p.Model + " (reasoning: " + level + ", fast: " + fast + ")"
 }
 
 // persistModelProfile changes in-memory favorites only after saving succeeds.
@@ -108,7 +113,10 @@ func (i *Interactive) saveActiveModelProfile() {
 	if slot < 1 || slot > 9 {
 		return
 	}
-	p := QuickModelShortcut{Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: i.cfg.Reasoning}
+	p := QuickModelShortcut{
+		Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: i.cfg.Reasoning,
+		FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,
+	}
 	if m, err := provider.FindModel(p.Provider, p.Model); err == nil {
 		p.Reasoning = provider.ClampReasoningForModel(m, p.Reasoning)
 		if p.Reasoning != i.cfg.Reasoning {
@@ -169,6 +177,7 @@ func (i *Interactive) activateModelProfile(slot int, p QuickModelShortcut) {
 		p.Provider, p.Model = i.cfg.Provider, i.cfg.Model
 		p.Reasoning = provider.ClampReasoningForModel(m, p.Reasoning)
 		i.setLiveReasoning(p.Reasoning)
+		i.setLiveFastMode(p.FastMode)
 		if !i.persistModelProfile(slot, p, slot) {
 			i.detachUnsavedModelProfile()
 			return
@@ -197,4 +206,23 @@ func (i *Interactive) setLiveReasoning(level string) {
 		i.agent.Reasoning = level
 	}
 	i.mu.Unlock()
+}
+
+func (i *Interactive) setLiveFastMode(enabled bool) {
+	// Agent replacement publishes under agentMu -> mu. Hold agentMu across
+	// the snapshot and update so a replacement cannot appear with stale mode.
+	i.agentMu.Lock()
+	i.mu.Lock()
+	value := enabled
+	i.cfg.FastMode = &value
+	agent := i.agent
+	onChanged := i.cfg.OnFastModeChanged
+	i.mu.Unlock()
+	if agent != nil {
+		agent.SetFastMode(enabled)
+	}
+	i.agentMu.Unlock()
+	if onChanged != nil {
+		onChanged(enabled)
+	}
 }

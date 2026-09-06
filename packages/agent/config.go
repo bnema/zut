@@ -16,11 +16,12 @@ import (
 	"github.com/bnema/zut/packages/provider/auth"
 )
 
-// QuickModelShortcut is one configured keyboard shortcut slot.
+// QuickModelShortcut is one configured model profile slot.
 type QuickModelShortcut struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning,omitempty"`
+	FastMode  bool   `json:"fast_mode,omitempty"`
 }
 
 // SubagentsConfig contains the resident manager policy. max_concurrent limits
@@ -50,7 +51,8 @@ type Config struct {
 	Theme       string   `json:"theme"`
 
 	// FastMode requests OpenAI's fast service tier. Off by default;
-	// nil/missing means disabled. Other providers reject fast-mode
+	// nil/missing means disabled. An active model profile supplies its
+	// per-profile value at startup. Other providers reject fast-mode
 	// requests at the provider boundary.
 	FastMode *bool `json:"fast_mode,omitempty"`
 
@@ -67,7 +69,7 @@ type Config struct {
 	// overrides this when set.
 	CompactInput *bool `json:"compact_input,omitempty"`
 
-	// QuickModelShortcuts maps slots 1-9 to provider/model pairs used by
+	// QuickModelShortcuts maps slots 1-9 to model profiles used by
 	// Ctrl+1..9. Cmd+1..9 may also work on terminals that forward Super.
 	QuickModelShortcuts []QuickModelShortcut `json:"quick_model_shortcuts,omitempty"`
 	ActiveModelProfile  int                  `json:"active_model_profile,omitempty"`
@@ -349,6 +351,8 @@ func (c *Config) applyActiveModelProfile() int {
 		return 0
 	}
 	c.Provider, c.Model, c.Reasoning = p.Provider, p.Model, p.Reasoning
+	fastMode := p.FastMode
+	c.FastMode = &fastMode
 	return slot
 }
 

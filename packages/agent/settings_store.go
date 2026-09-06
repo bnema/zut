@@ -22,7 +22,13 @@ func (s configSettingsStore) SetQuickModelShortcut(slot int, providerName, model
 	if cfg.ActiveModelProfile == slot {
 		cfg.ActiveModelProfile = 0
 	}
-	return s.SetModelProfile(slot, modes.QuickModelShortcut{Provider: providerName, Model: model}, cfg.ActiveModelProfile)
+	profile := modes.QuickModelShortcut{Provider: providerName, Model: model}
+	if slot <= len(cfg.QuickModelShortcuts) {
+		current := cfg.QuickModelShortcuts[slot-1]
+		profile.Reasoning = current.Reasoning
+		profile.FastMode = current.FastMode
+	}
+	return s.SetModelProfile(slot, profile, cfg.ActiveModelProfile)
 }
 
 func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelShortcut, activeSlot int) error {
@@ -38,7 +44,10 @@ func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelSho
 		copy(next, cfg.QuickModelShortcuts)
 		cfg.QuickModelShortcuts = next
 	}
-	cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{Provider: profile.Provider, Model: profile.Model, Reasoning: provider.NormalizeReasoning(profile.Reasoning)}
+	cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{
+		Provider: profile.Provider, Model: profile.Model,
+		Reasoning: provider.NormalizeReasoning(profile.Reasoning), FastMode: profile.FastMode,
+	}
 	cfg.ActiveModelProfile = activeSlot
 	if activeSlot == slot {
 		if profile.Provider == "" || profile.Model == "" {
@@ -46,6 +55,8 @@ func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelSho
 		}
 		cfg.Provider, cfg.Model = profile.Provider, profile.Model
 		cfg.Reasoning = provider.NormalizeReasoning(profile.Reasoning)
+		fastMode := profile.FastMode
+		cfg.FastMode = &fastMode
 	}
 	// Trim trailing empty slots so config.json stays compact.
 	for len(cfg.QuickModelShortcuts) > 0 {

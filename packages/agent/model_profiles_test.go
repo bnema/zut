@@ -55,13 +55,35 @@ func TestActiveAliasedModelProfilePreservesAutosave(t *testing.T) {
 	}
 }
 
+func TestLegacyQuickModelShortcutPreservesProfileState(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	if err := SaveConfig(Config{
+		QuickModelShortcuts: []QuickModelShortcut{{
+			Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", FastMode: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (configSettingsStore{}).SetQuickModelShortcut(1, "openai", "gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := cfg.QuickModelShortcuts[0]
+	if profile.Model != "gpt-5.5" || profile.Reasoning != "high" || !profile.FastMode {
+		t.Fatalf("legacy shortcut update lost profile state: %+v", profile)
+	}
+}
+
 func TestModelProfileConfigRoundTrip(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 	store := configSettingsStore{}
-	p := modes.QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "max"}
+	p := modes.QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "max", FastMode: true}
 	if err := store.SetModelProfile(9, p, 9); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +91,7 @@ func TestModelProfileConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ActiveModelProfile != 9 || len(cfg.QuickModelShortcuts) != 9 || cfg.Reasoning != "max" || cfg.Model != p.Model || cfg.Theme != "dark" {
+	if cfg.ActiveModelProfile != 9 || len(cfg.QuickModelShortcuts) != 9 || cfg.Reasoning != "max" || cfg.Model != p.Model || cfg.FastMode == nil || !*cfg.FastMode || cfg.QuickModelShortcuts[8].FastMode != p.FastMode || cfg.Theme != "dark" {
 		t.Fatalf("config=%+v", cfg)
 	}
 	// The selected profile is authoritative even after hand-editing its model

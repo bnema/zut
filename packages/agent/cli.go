@@ -1493,7 +1493,7 @@ func interactiveQuickModelShortcuts(shortcuts []QuickModelShortcut) []modes.Quic
 	result := make([]modes.QuickModelShortcut, len(shortcuts))
 	for idx, s := range shortcuts {
 		p := normalizedModelProfile(s)
-		result[idx] = modes.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning}
+		result[idx] = modes.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
 	}
 	return result
 }
@@ -2629,6 +2629,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		BaseURL:                         r.BaseURL,
 		Reasoning:                       r.Reasoning,
 		OnReasoningChanged:              runtime.SetReasoning,
+		OnFastModeChanged:               runtime.SetFastMode,
 		SystemPrompt:                    r.SystemPrompt,
 		WritingGuidance:                 WritingGuidance(),
 		Tools:                           r.ToolRegistry,

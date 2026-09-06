@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -62,6 +63,31 @@ func TestResolveFastModeRemainsEnabledForUnsupportedProviderUntilRequest(t *test
 	}
 	if !r.FastMode {
 		t.Fatal("FastMode = false, want true from config")
+	}
+}
+
+func TestResolveFastModeFromActiveModelProfile(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		t.Run(fmt.Sprintf("%v", want), func(t *testing.T) {
+			t.Setenv("ZUT_HOME", t.TempDir())
+			global := !want
+			if err := SaveConfig(Config{
+				Provider: "openai", Model: "gpt-5", FastMode: &global,
+				ActiveModelProfile: 1,
+				QuickModelShortcuts: []QuickModelShortcut{{
+					Provider: "openai", Model: "gpt-5", FastMode: want,
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Resolve(Args{}, false)
+			if err != nil {
+				t.Fatalf("Resolve failed: %v", err)
+			}
+			if r.FastMode != want {
+				t.Fatalf("FastMode = %v, want %v", r.FastMode, want)
+			}
+		})
 	}
 }
 
