@@ -380,6 +380,12 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		continueStatusRescue := false
 		var handoff json.RawMessage
 		var persistHandoff bool
+		if goalNeedsFreshContext {
+			// Persist ownership before compaction starts. If the process exits
+			// while condensing, session resume can still provision a fresh
+			// leased goal turn from the last durable transcript state.
+			handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: compactContinuationGoal})
+		}
 		if statusRescueActive && i.agent != nil && !awaitingPre && !hasNext && !continueQueued && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil {
 			followUpMessages := i.agent.Messages()
 			reason := classifyCompactionContinuation(compactOriginManual, true, lastStop, lastTurnErr, followUpMessages)

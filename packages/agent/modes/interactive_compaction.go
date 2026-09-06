@@ -332,7 +332,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				i.pendingCompactImages = nil
 				i.hasPendingCompactPrompt = false
 				hasNext = true
-			case continuationReason == compactContinuationForcedLength && goalActive:
+			case continuationReason == compactContinuationForcedLength && goalActive && !i.coordinatorHasPendingWorkers():
 				// Preserve the goal as the durable handoff owner so the fresh
 				// turn uses goal accounting and can be resumed after a restart.
 				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: compactContinuationGoal})

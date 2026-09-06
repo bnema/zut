@@ -210,10 +210,15 @@ func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
 		},
 	}
 	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	persistedHandoff := make(chan string, 1)
 	interactive := NewInteractive(InteractiveConfig{
 		Agent:       agent,
 		CurrentGoal: currentGoal,
 		PersistGoal: persistGoal,
+		PersistCompactHandoff: func(state json.RawMessage) error {
+			persistedHandoff <- string(state)
+			return nil
+		},
 	})
 	interactive.runCtx = context.Background()
 
@@ -226,6 +231,14 @@ func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
 	first := receiveRequest(t, client.requests)
 	if first.Messages[len(first.Messages)-1].Meta[goalContinueMetaKey] != "true" {
 		t.Fatalf("initial request tail = %#v, want goal continuation", first.Messages)
+	}
+	select {
+	case handoff := <-persistedHandoff:
+		if handoff != `{"version":1,"reason":"goal"}` {
+			t.Fatalf("pre-compaction handoff = %q, want durable goal owner", handoff)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("goal handoff was not persisted before compaction")
 	}
 	compaction := receiveRequest(t, client.requests)
 	if compaction.MaxTokens != 4096 {

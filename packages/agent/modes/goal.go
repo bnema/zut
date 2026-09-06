@@ -34,6 +34,9 @@ func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
 	if goal.ConsecutiveNoProgressTurns > 0 {
 		text += " You ended the prior continuation without taking a concrete action. Inspect the current state and take the next action now; do not merely say that you will continue."
 	}
+	if goal.ID != "" {
+		text += " When superseding this goal, use goal_id " + goal.ID + "."
+	}
 	if goal.MissionID != "" {
 		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
 	}
@@ -92,6 +95,7 @@ func (i *Interactive) startReservedGoalContinuation(parent context.Context) {
 		i.mu.Lock()
 		i.busy = false
 		i.mu.Unlock()
+		i.resetCompactHandoff()
 		i.invalidate()
 		return
 	}
@@ -100,6 +104,7 @@ func (i *Interactive) startReservedGoalContinuation(parent context.Context) {
 		i.mu.Lock()
 		i.busy = false
 		i.mu.Unlock()
+		i.resetCompactHandoff()
 		i.invalidate()
 		return
 	}

@@ -47,7 +47,7 @@ func TestUpdateGoalToolReturnsPersistableManagerGoal(t *testing.T) {
 
 func TestUpdateGoalToolReturnsPersistableSupersedingGoal(t *testing.T) {
 	tool := &UpdateGoalTool{}
-	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"superseded","objective":"use the supported API","mission_id":"mission-1"}`), nil)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"superseded","objective":"use the supported API","goal_id":"goal-1","mission_id":"mission-1"}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestUpdateGoalToolReturnsPersistableSupersedingGoal(t *testing.T) {
 	if !ok {
 		t.Fatalf("details = %#v, want superseding goal update", result.Details)
 	}
-	if update.Status != core.GoalSuperseded || update.Objective != "use the supported API" || update.MissionID != "mission-1" {
+	if update.Status != core.GoalSuperseded || update.Objective != "use the supported API" || update.GoalID != "goal-1" || update.MissionID != "mission-1" {
 		t.Fatalf("update = %#v", update)
 	}
 }

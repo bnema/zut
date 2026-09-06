@@ -1319,6 +1319,18 @@ func (s *Session) SupersedeGoal(replacement *SessionGoal) error {
 	if s.Meta.Goal == nil || s.Meta.Goal.Status != GoalActive || replacement == nil || replacement.Status != GoalActive {
 		return errors.New("supersede goal requires an active goal and replacement")
 	}
+	if strings.TrimSpace(replacement.Objective) == "" {
+		return errors.New("supersede goal requires a replacement objective")
+	}
+	if replacement.ID != "" {
+		return errors.New("supersede goal replacement must not reuse a goal ID")
+	}
+	if replacement.MissionID != "" && (s.Meta.Mission == nil || replacement.MissionID != s.Meta.Mission.ID) {
+		return errors.New("supersede goal replacement does not belong to the active mission")
+	}
+	replacement = cloneSessionGoal(replacement)
+	replacement.Objective = strings.TrimSpace(replacement.Objective)
+	replacement.Owner = GoalOwnerManager
 	original := cloneSessionGoal(s.Meta.Goal)
 	superseded := *original
 	superseded.Status = GoalSuperseded

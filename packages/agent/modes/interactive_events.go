@@ -161,7 +161,11 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.bumpToolRevisionLocked(tc)
 		}
 		if update, ok := toolspkg.GoalUpdateFromResult(e.Result); ok {
-			if update.Status == core.GoalActive {
+			if update.Status == core.GoalSuperseded && i.cfg.CurrentGoal != nil {
+				if current := i.cfg.CurrentGoal(); current != nil {
+					i.goalStatus = current.Status
+				}
+			} else if update.Status == core.GoalActive {
 				// A manager may advance a terminal goal to the next persisted
 				// goal in the same mission. Do not let a late tool result resume
 				// a goal explicitly paused by the user.

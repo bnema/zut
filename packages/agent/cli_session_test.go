@@ -314,7 +314,7 @@ func TestPersistGoalToolResultSupersedesActiveGoalInMission(t *testing.T) {
 	missionID := sess.Meta.Mission.ID
 	originalID := sess.Meta.Goal.ID
 
-	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalSuperseded, Objective: "use the supported API", MissionID: missionID}}
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalSuperseded, Objective: "use the supported API", GoalID: originalID, MissionID: missionID}}
 	if err := persistGoalToolResult(sess, result); err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +323,26 @@ func TestPersistGoalToolResultSupersedesActiveGoalInMission(t *testing.T) {
 	}
 	if len(sess.Meta.GoalHistory) != 1 || sess.Meta.GoalHistory[0].ID != originalID || sess.Meta.GoalHistory[0].Status != core.GoalSuperseded {
 		t.Fatalf("goal history = %#v", sess.Meta.GoalHistory)
+	}
+}
+
+func TestPersistGoalToolResultRejectsStaleSupersedingGoal(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "new user goal", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+	before := *sess.Meta.Goal
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalSuperseded, Objective: "stale replacement", GoalID: "older-goal", MissionID: sess.Meta.Mission.ID}}
+	if err := persistGoalToolResult(sess, result); !errors.Is(err, errGoalStaleUpdate) {
+		t.Fatalf("persist stale supersede error = %v", err)
+	}
+	if *sess.Meta.Goal != before || len(sess.Meta.GoalHistory) != 0 {
+		t.Fatalf("stale supersede changed state: goal=%#v history=%#v", sess.Meta.Goal, sess.Meta.GoalHistory)
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 
 const (
 	UpdateGoalToolName = "update_goal"
-	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked","superseded"],"description":"Start a mission, set the next active goal, settle the active goal, or atomically replace it within the same mission."},"objective":{"type":"string","description":"Concrete objective required for active and superseded."},"mission_id":{"type":"string","description":"Optional identifier from the active-goal context. When supplied, it must match the current mission; omit it when starting or continuing the current mission."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
+	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked","superseded"],"description":"Start a mission, set the next active goal, settle the active goal, or atomically replace it within the same mission."},"objective":{"type":"string","description":"Concrete objective required for active and superseded."},"goal_id":{"type":"string","description":"Current goal identifier required for superseded, copied from the active-goal context."},"mission_id":{"type":"string","description":"Optional identifier from the active-goal context. When supplied, it must match the current mission; omit it when starting or continuing the current mission."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
 )
 
 // UpdateGoalTool lets the main agent start a mission, set its next concrete
@@ -25,6 +25,7 @@ type UpdateGoalTool struct{}
 type updateGoalArgs struct {
 	Status    string `json:"status"`
 	Objective string `json:"objective,omitempty"`
+	GoalID    string `json:"goal_id,omitempty"`
 	MissionID string `json:"mission_id,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
@@ -33,6 +34,7 @@ type updateGoalArgs struct {
 type GoalUpdate struct {
 	Status    core.GoalStatus
 	Objective string
+	GoalID    string
 	MissionID string
 	Reason    string
 }
@@ -57,6 +59,7 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 	}
 	args.Status = strings.TrimSpace(args.Status)
 	args.Objective = strings.TrimSpace(args.Objective)
+	args.GoalID = strings.TrimSpace(args.GoalID)
 	args.MissionID = strings.TrimSpace(args.MissionID)
 	args.Reason = strings.TrimSpace(args.Reason)
 
@@ -75,8 +78,12 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 		if args.Objective == "" {
 			return goalToolError("objective is required when superseding a goal"), nil
 		}
+		if args.GoalID == "" {
+			return goalToolError("goal_id is required when superseding a goal"), nil
+		}
 		update.Status = core.GoalSuperseded
 		update.Objective = args.Objective
+		update.GoalID = args.GoalID
 		update.MissionID = args.MissionID
 	case "blocked":
 		if args.Reason == "" {
@@ -111,6 +118,9 @@ func GoalUpdateFromResult(result core.ToolResult) (GoalUpdate, bool) {
 		return GoalUpdate{}, false
 	}
 	if (update.Status == core.GoalActive || update.Status == core.GoalSuperseded) && strings.TrimSpace(update.Objective) == "" {
+		return GoalUpdate{}, false
+	}
+	if update.Status == core.GoalSuperseded && strings.TrimSpace(update.GoalID) == "" {
 		return GoalUpdate{}, false
 	}
 	if update.Status == core.GoalBlocked && strings.TrimSpace(update.Reason) == "" {
