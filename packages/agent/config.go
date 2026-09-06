@@ -323,21 +323,33 @@ func LoadConfig() (Config, error) {
 	return c, nil
 }
 
-// applyActiveModelProfile supplies defaults without rewriting the config. Explicit
-// flags and session restoration retain their normal precedence in Resolve.
-func (c *Config) applyActiveModelProfile() {
+// normalizedModelProfile keeps startup defaults and the TUI's copy consistent.
+// Unknown/open-catalog models retain their configured reasoning until resolved.
+func normalizedModelProfile(p QuickModelShortcut) QuickModelShortcut {
+	p.Provider = canonicalProvider(p.Provider)
+	p.Reasoning = providerpkg.NormalizeReasoning(p.Reasoning)
+	if model, err := providerpkg.FindModel(p.Provider, p.Model); err == nil {
+		p.Reasoning = providerpkg.ClampReasoningForModel(model, p.Reasoning)
+	}
+	return p
+}
+
+// applyActiveModelProfile supplies defaults without rewriting the config and
+// returns their source slot (0 when none). Explicit flags retain precedence.
+func (c *Config) applyActiveModelProfile() int {
 	slot := c.ActiveModelProfile
 	if slot < 1 || slot > 9 {
 		slot = 1
 	}
 	if slot > len(c.QuickModelShortcuts) {
-		return
+		return 0
 	}
-	p := c.QuickModelShortcuts[slot-1]
+	p := normalizedModelProfile(c.QuickModelShortcuts[slot-1])
 	if p.Provider == "" || p.Model == "" {
-		return
+		return 0
 	}
 	c.Provider, c.Model, c.Reasoning = p.Provider, p.Model, p.Reasoning
+	return slot
 }
 
 func validateSubagentConfig(cfg SubagentsConfig) error {

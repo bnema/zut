@@ -326,6 +326,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/login` | Log in via API key or subscription (opens a dialog). |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
+| `/profile <1-9>` | Activate a saved model + reasoning profile, like `Ctrl+1` through `Ctrl+9`; empty slots open the model picker. See [Model profiles](#model-profiles). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls. |
 | `/orchestrator` | Toggle proactive subagent delegation. When disabled, subagent tools remain available for explicit delegation. |
@@ -493,7 +494,7 @@ Profiles and the active slot persist in `$ZUT_HOME/config.json`, using the exist
 }
 ```
 
-Use `{}` for an empty position. If `active_model_profile` is missing, `0`, or outside 1–9, **slot 1 is the default**. Once another slot is activated, that slot is remembered across restarts. On a fresh config, model/reasoning edits save automatically into the default slot; pressing its shortcut before assigning a model still opens the picker. Old model-only slots still load; missing or empty `reasoning` means off. The active profile supplies startup defaults. Explicit CLI options and session restoration keep their usual precedence; a different model/reasoning selection detaches the profile for that run rather than overwriting a favorite. These favorites are separate from named Zutfile or subagent profiles.
+Use `{}` for an empty position. If `active_model_profile` is missing, `0`, or outside 1–9, **slot 1 is the default**. Once another slot is activated, that slot is remembered across restarts. On a fresh config, model/reasoning edits save automatically into the default slot; pressing its shortcut before assigning a model still opens the picker. Old model-only slots still load; missing or empty `reasoning` means off. The active profile supplies startup defaults, with provider aliases normalized and reasoning clamped to the model's supported levels. If its provider or model is no longer available, startup repairs that profile to the resolved fallback. Explicit CLI options and session restoration keep their usual precedence; a different model/reasoning selection detaches the profile for that run rather than overwriting a favorite. These favorites are separate from named Zutfile or subagent profiles.
 
 **AZERTY and terminals:** Ctrl plus the French AZERTY top row (`&`, `é`, `"`, `'`, `(`, `-`, `è`, `_`, `ç`) selects slots 1–9 without Shift. Modified digits also work. Zut requests enhanced keyboard reporting (Kitty/CSI-u or xterm modifyOtherKeys), but your terminal or multiplexer must forward the chord. If it reserves the shortcut for tabs or emits an indistinguishable legacy control byte, configure it to forward the enhanced key sequence, or use `/profile N`. Zut does not reinterpret bare punctuation or ambiguous control bytes as profile shortcuts. On macOS, Command plus these keys also works if the terminal forwards Super.
 

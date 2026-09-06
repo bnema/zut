@@ -494,7 +494,8 @@ func webSearchAllowedForRegistry(args Args) bool {
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
 	cfg, cfgErr := LoadConfig()
-	cfg.applyActiveModelProfile()
+	profileSlot := cfg.applyActiveModelProfile()
+	repairConfig := false
 	// Programmatic callers historically supplied Tools without the parser's
 	// provenance bit. Treat a non-empty list as explicit before a named profile
 	// can contribute its defaults.
@@ -535,7 +536,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// Reset the saved config so this doesn't keep happening.
 		cfg.Provider = provName
 		cfg.Model = ""
-		_ = SaveConfig(cfg)
+		repairConfig = true
 	}
 
 	var (
@@ -703,11 +704,25 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 				model, fm.ID)
 			if args.Model == "" && cfg.Model == model {
 				cfg.Model = fm.ID
-				_ = SaveConfig(cfg)
+				repairConfig = true
 			}
 			resolvedModel = fm
 			model = fm.ID
 		}
+	}
+
+	if repairConfig {
+		// Repair the source favorite as well as legacy defaults, but never
+		// overwrite it because an explicit CLI override required fallback.
+		if profileSlot > 0 && args.Provider == "" && args.Model == "" {
+			cfg.Provider, cfg.Model = provName, model
+			cfg.Reasoning = provider.ClampReasoningForModel(resolvedModel, cfg.Reasoning)
+			cfg.QuickModelShortcuts[profileSlot-1] = QuickModelShortcut{
+				Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
+			}
+			cfg.ActiveModelProfile = profileSlot
+		}
+		_ = SaveConfig(cfg)
 	}
 
 	explicitBaseURL := args.BaseURL != "" || (resolvedModel.Source == "user" && resolvedModel.BaseURL != "")

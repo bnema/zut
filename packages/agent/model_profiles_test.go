@@ -5,7 +5,55 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/tui"
 )
+
+func TestActiveAliasedModelProfilePreservesAutosave(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	cfg := Config{
+		ActiveModelProfile: 2,
+		QuickModelShortcuts: []QuickModelShortcut{
+			{},
+			{Provider: "bedrock", Model: "amazon.nova-lite-v1:0"},
+		},
+	}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{APIKey: "synthetic-test-key"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Provider != "amazon-bedrock" {
+		t.Fatalf("resolved provider = %q", r.Provider)
+	}
+	i := modes.NewInteractive(modes.InteractiveConfig{
+		Theme: tui.Dark, Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning,
+		Agent:               core.NewAgent(nil, r.Model, "", nil),
+		SettingsStore:       configSettingsStore{},
+		QuickModelShortcuts: interactiveQuickModelShortcuts(cfg.QuickModelShortcuts),
+		ActiveModelProfile:  cfg.ActiveModelProfile,
+	})
+	// A manual model edit must save to the already-active slot, not require
+	// selecting /profile again to repair a spurious startup detachment.
+	const nextModel = "amazon.nova-micro-v1:0"
+	i.SubmitSlash("/model " + nextModel)
+	if i.Agent().Model != nextModel {
+		t.Fatal("model edit was not applied")
+	}
+	saved, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := QuickModelShortcut{Provider: "amazon-bedrock", Model: nextModel}
+	if saved.ActiveModelProfile != 2 || saved.QuickModelShortcuts[1] != want {
+		t.Fatalf("active aliased profile did not autosave: active=%d profile=%+v", saved.ActiveModelProfile, saved.QuickModelShortcuts[1])
+	}
+	if saved.QuickModelShortcuts[0] != (QuickModelShortcut{}) || cfg.QuickModelShortcuts[1].Provider != "bedrock" {
+		t.Fatal("conversion or saving changed an unrelated slot or the input config")
+	}
+}
 
 func TestModelProfileConfigRoundTrip(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())

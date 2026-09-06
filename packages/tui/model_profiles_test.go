@@ -25,6 +25,25 @@ func TestReaderParsesAZERTYProfileKeys(t *testing.T) {
 	}
 }
 
+func TestReaderKeepsUnboundEnhancedCtrlPrintablesUnknown(t *testing.T) {
+	for _, r := range "[/\\=ö" {
+		for _, sequence := range []string{
+			fmt.Sprintf("\x1b[%d;5u", r),
+			fmt.Sprintf("\x1b[27;5;%d~", r),
+		} {
+			k := readKey(t, sequence)
+			if k.Kind != KeyUnknown {
+				t.Fatalf("Ctrl+%c parsed as %+v, want unknown", r, k)
+			}
+			ed := NewEditor("")
+			ed.HandleKey(k)
+			if ed.Value() != "" {
+				t.Fatalf("Ctrl+%c inserted %q", r, ed.Value())
+			}
+		}
+	}
+}
+
 func TestStatusBarModelProfileIndicator(t *testing.T) {
 	for _, cols := range []int{10, 25, 80, 160} {
 		lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-5.6-sol", Reasoning: "max", ModelProfile: 9, Cols: cols})

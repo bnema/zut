@@ -510,9 +510,10 @@ func keyFromModifiedCode(code, mod int) (Key, bool) {
 	if code >= '0' && code <= '9' {
 		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
 	}
-	// Preserve printable layout-specific keys and their modifiers. Unknown
-	// ASCII Ctrl+letter chords remain unknown rather than becoming editor text.
-	if code >= 0x20 && code <= unicode.MaxRune && unicode.IsPrint(rune(code)) && (!ctrl || code > 0x7f || !unicode.IsLetter(rune(code))) {
+	// Only the AZERTY profile shortcuts are printable Ctrl exceptions. Other
+	// Ctrl chords must remain unknown rather than becoming editor text.
+	azertyProfileKey := !alt && strings.ContainsRune("&é\"'(-è_ç", rune(code))
+	if code >= 0x20 && code <= unicode.MaxRune && unicode.IsPrint(rune(code)) && (!ctrl || azertyProfileKey) {
 		return Key{Kind: KeyRune, Rune: rune(code), Shift: shift, Alt: alt, Ctrl: ctrl, Super: super}, true
 	}
 	return Key{}, false
