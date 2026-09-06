@@ -499,7 +499,7 @@ type extensionWidget struct {
 
 // SettingsStore persists user-toggleable settings surfaced by /settings.
 type SettingsStore interface {
-	SetModelProfile(slot int, profile QuickModelShortcut, activeSlot int) error
+	SetQuickModelShortcut(slot int, providerName, model string) error
 	SetInlineImages(enabled bool) error
 	SetAutoSubagents(enabled bool) error
 	SetJailByDefault(enabled bool) error
@@ -511,6 +511,12 @@ type SettingsStore interface {
 	SetTUIWorkingPosition(position string) error
 	SetReasoning(level string) error
 	SetTheme(name string) error
+}
+
+// Optional so existing SettingsStore implementations remain source-compatible.
+// Stores without this method retain model-only shortcuts.
+type modelProfileSettingsStore interface {
+	SetModelProfile(slot int, profile QuickModelShortcut, activeSlot int) error
 }
 
 type terminalAlertsSettingsStore interface {
@@ -991,6 +997,11 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if slot := cfg.ActiveModelProfile; slot <= len(cfg.QuickModelShortcuts) {
 		if p := cfg.QuickModelShortcuts[slot-1]; p.Provider != "" || p.Model != "" {
 			cfg.detachMismatchedModelProfile()
+		}
+	}
+	if cfg.SettingsStore != nil {
+		if _, ok := cfg.SettingsStore.(modelProfileSettingsStore); !ok {
+			cfg.ActiveModelProfile = 0
 		}
 	}
 	renderer := tui.NewRenderer(cfg.Terminal)

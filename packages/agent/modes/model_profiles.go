@@ -31,7 +31,14 @@ func modelProfileDescription(p QuickModelShortcut) string {
 // persistModelProfile changes in-memory favorites only after saving succeeds.
 func (i *Interactive) persistModelProfile(slot int, p QuickModelShortcut, active int) bool {
 	if i.cfg.SettingsStore != nil {
-		if err := i.cfg.SettingsStore.SetModelProfile(slot, p, active); err != nil {
+		var err error
+		if store, ok := i.cfg.SettingsStore.(modelProfileSettingsStore); ok {
+			err = store.SetModelProfile(slot, p, active)
+		} else {
+			err = i.cfg.SettingsStore.SetQuickModelShortcut(slot, p.Provider, p.Model)
+			active = 0 // legacy stores only persist provider/model bindings
+		}
+		if err != nil {
 			i.mu.Lock()
 			i.statusOK = ""
 			i.statusErr = "profile not saved: " + err.Error()
@@ -112,7 +119,18 @@ func (i *Interactive) saveActiveModelProfile() {
 		i.mu.Lock()
 		i.statusOK = fmt.Sprintf("profile %d updated: %s", slot, modelProfileDescription(p))
 		i.mu.Unlock()
+	} else {
+		i.detachUnsavedModelProfile()
 	}
+}
+
+func (i *Interactive) detachUnsavedModelProfile() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.cfg.ActiveModelProfile = 0
+	// The model/session callback already ran. Do not imply rollback:
+	// only the favorite and active-slot save failed.
+	i.statusErr = "model switched; " + i.statusErr
 }
 
 func (i *Interactive) activateModelProfile(slot int, p QuickModelShortcut) {
@@ -132,6 +150,14 @@ func (i *Interactive) activateModelProfile(slot int, p QuickModelShortcut) {
 		i.mu.Unlock()
 		return
 	}
+	if i.cfg.SettingsStore != nil {
+		if _, ok := i.cfg.SettingsStore.(modelProfileSettingsStore); !ok {
+			if i.persistModelProfile(slot, p, 0) {
+				i.swapModel(p.Provider, p.Model, i.cfg.BuildAgentFor, false)
+			}
+			return
+		}
+	}
 	var replaced bool
 	activate := func() {
 		var success bool
@@ -144,10 +170,7 @@ func (i *Interactive) activateModelProfile(slot int, p QuickModelShortcut) {
 		p.Reasoning = provider.ClampReasoningForModel(m, p.Reasoning)
 		i.setLiveReasoning(p.Reasoning)
 		if !i.persistModelProfile(slot, p, slot) {
-			i.mu.Lock()
-			i.cfg.ActiveModelProfile = 0
-			i.statusErr = "model changed for this run; " + i.statusErr
-			i.mu.Unlock()
+			i.detachUnsavedModelProfile()
 			return
 		}
 		i.mu.Lock()

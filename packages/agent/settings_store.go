@@ -10,6 +10,21 @@ import (
 
 type configSettingsStore struct{}
 
+// Retain the original SettingsStore contract for model-only callers.
+func (s configSettingsStore) SetQuickModelShortcut(slot int, providerName, model string) error {
+	if slot < 1 || slot > 9 {
+		return nil
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.ActiveModelProfile == slot {
+		cfg.ActiveModelProfile = 0
+	}
+	return s.SetModelProfile(slot, modes.QuickModelShortcut{Provider: providerName, Model: model}, cfg.ActiveModelProfile)
+}
+
 func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelShortcut, activeSlot int) error {
 	if slot < 1 || slot > 9 || activeSlot < 0 || activeSlot > 9 {
 		return fmt.Errorf("model profile slot must be between 1 and 9 (active may be 0)")

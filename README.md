@@ -479,6 +479,8 @@ Press `Ctrl+1` ... `Ctrl+9` from the editor, or run `/profile 1` ... `/profile 9
 - While a slot is active, `/model`, `/reasoning`, and `Ctrl+R` changes automatically save back to it. Choose another slot first if you want to keep the old favorite.
 - The status bar shows the active slot as `[1]` ... `[9]`. Status messages confirm creation, activation, and updates, or report switching/saving errors. Switching is rejected while a turn is running; dialogs retain their normal key handling.
 
+If a model switch succeeds but saving its profile fails, zut reports **model switched; profile not saved** and detaches the active indicator. The live model and any model/session metadata already saved are retained; the favorite and startup selection are not guaranteed to reflect that change. Fix the save error and select the profile again. Switching and saving are not a transaction across config and session files.
+
 Profiles and the active slot persist in `$ZUT_HOME/config.json`, using the existing `quick_model_shortcuts` array (positions 1–9) and `active_model_profile`. For example, merge these fields into your config while zut is closed:
 
 ```json

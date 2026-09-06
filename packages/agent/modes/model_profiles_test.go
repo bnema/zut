@@ -168,10 +168,64 @@ func TestModelProfileFailureDoesNotSelectOrOverwrite(t *testing.T) {
 			if failure != "save" && (i.cfg.ActiveModelProfile != 1 || i.cfg.Reasoning != "high") {
 				t.Fatal("failed switch changed live profile")
 			}
-			if failure == "save" && (i.cfg.ActiveModelProfile != 0 || !strings.Contains(i.statusErr, "this run")) {
+			if failure == "save" && (i.cfg.ActiveModelProfile != 0 || !strings.Contains(i.statusErr, "model switched; profile not saved")) {
 				t.Fatal("save failure misrepresents persistence")
 			}
 		})
+	}
+}
+
+func TestModelProfileSaveFailureReportsRetainedModelPersistence(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		i, s := newProfileInteractive(t)
+		i.applyQuickModelShortcut(1)
+		before := s.profiles[1]
+		i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5", Reasoning: "low"})
+		var persistedModel string
+		i.cfg.PersistModel = func(_, model string) { persistedModel = model }
+		s.err = errors.New("disk full")
+		if manual {
+			i.applyModelSelection("openai", "gpt-5.5")
+		} else {
+			i.applyQuickModelShortcut(2)
+		}
+		if persistedModel != "gpt-5.5" || i.agent.Model != persistedModel {
+			t.Fatal("live model and model/session persistence must agree")
+		}
+		if s.active != 1 || s.profiles[1] != before || i.cfg.ActiveModelProfile != 0 || i.statusOK != "" || !strings.Contains(i.statusErr, "model switched; profile not saved") {
+			t.Fatalf("failed favorite save misreported: %s", i.statusErr)
+		}
+	}
+}
+
+type legacyProfileSettingsStore struct {
+	SettingsStore
+	shortcut  QuickModelShortcut
+	reasoning string
+}
+
+func (s *legacyProfileSettingsStore) SetQuickModelShortcut(_ int, prov, model string) error {
+	s.shortcut = QuickModelShortcut{Provider: prov, Model: model}
+	return nil
+}
+func (s *legacyProfileSettingsStore) SetReasoning(level string) error {
+	s.reasoning = level
+	return nil
+}
+
+func TestModelProfileLegacySettingsStoreCompatibility(t *testing.T) {
+	s := &legacyProfileSettingsStore{}
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s})
+	i.rend = nil
+	i.agent = core.NewAgent(nil, i.cfg.Model, "", nil)
+	if i.cfg.ActiveModelProfile != 0 {
+		t.Fatal("legacy store cannot persist an active profile")
+	}
+	i.applyReasoningSetting("low")
+	i.setQuickModelProfile(2, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.applyQuickModelShortcut(2)
+	if s.reasoning != "low" || s.shortcut.Model != "gpt-5.5" || i.agent.Model != "gpt-5.5" || i.cfg.ActiveModelProfile != 0 {
+		t.Fatal("legacy reasoning/model-only settings no longer work")
 	}
 }
 
