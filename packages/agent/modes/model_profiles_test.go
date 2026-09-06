@@ -79,6 +79,46 @@ func TestModelProfileRecallAndAutosave(t *testing.T) {
 	}
 }
 
+func TestModelProfileRestoresFastModePerSlot(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	enabled := true
+	i.cfg.FastMode = &enabled
+	i.agent.SetFastMode(true)
+	i.cfg.QuickModelShortcuts = []QuickModelShortcut{
+		{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", FastMode: true},
+		{Provider: "openai", Model: "gpt-5.5", FastMode: false},
+	}
+
+	i.applyQuickModelShortcut(1)
+	if !i.agent.FastModeEnabled() {
+		t.Fatal("profile 1 did not restore fast mode")
+	}
+	i.applyQuickModelShortcut(2)
+	if i.agent.FastModeEnabled() || i.cfg.FastMode == nil || *i.cfg.FastMode || s.profiles[2].FastMode {
+		t.Fatalf("profile 2 did not restore fast mode off: agent=%v cfg=%v store=%+v", i.agent.FastModeEnabled(), i.cfg.FastMode, s)
+	}
+	i.applyQuickModelShortcut(1)
+	if !i.agent.FastModeEnabled() || s.profiles[1].FastMode == false {
+		t.Fatalf("profile 1 did not restore fast mode on: agent=%v store=%+v", i.agent.FastModeEnabled(), s)
+	}
+}
+
+func TestModelProfileFastModeToggleAutosavesActiveSlot(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	var changed []bool
+	i.cfg.OnFastModeChanged = func(enabled bool) { changed = append(changed, enabled) }
+	i.applyQuickModelShortcut(1)
+	changed = nil
+	i.applySettingToggle("fast_mode", true)
+	if i.cfg.FastMode == nil || !*i.cfg.FastMode || !i.agent.FastModeEnabled() || !s.profiles[1].FastMode || !reflect.DeepEqual(changed, []bool{true}) {
+		t.Fatalf("fast mode enable was not applied to active profile: cfg=%v agent=%v store=%+v", i.cfg.FastMode, i.agent.FastModeEnabled(), s)
+	}
+	i.applySettingToggle("fast_mode", false)
+	if i.cfg.FastMode == nil || *i.cfg.FastMode || i.agent.FastModeEnabled() || s.profiles[1].FastMode || !reflect.DeepEqual(changed, []bool{true, false}) {
+		t.Fatalf("fast mode disable was not applied to active profile: cfg=%v agent=%v store=%+v", i.cfg.FastMode, i.agent.FastModeEnabled(), s)
+	}
+}
+
 func TestModelProfileEmptyShortcutOpensPickerAndCancelPreservesSelection(t *testing.T) {
 	i, s := newProfileInteractive(t)
 	i.applyQuickModelShortcut(1)
@@ -202,6 +242,7 @@ type legacyProfileSettingsStore struct {
 	SettingsStore
 	shortcut  QuickModelShortcut
 	reasoning string
+	fastMode  bool
 }
 
 func (s *legacyProfileSettingsStore) SetQuickModelShortcut(_ int, prov, model string) error {
@@ -210,6 +251,10 @@ func (s *legacyProfileSettingsStore) SetQuickModelShortcut(_ int, prov, model st
 }
 func (s *legacyProfileSettingsStore) SetReasoning(level string) error {
 	s.reasoning = level
+	return nil
+}
+func (s *legacyProfileSettingsStore) SetFastMode(enabled bool) error {
+	s.fastMode = enabled
 	return nil
 }
 
@@ -222,9 +267,10 @@ func TestModelProfileLegacySettingsStoreCompatibility(t *testing.T) {
 		t.Fatal("legacy store cannot persist an active profile")
 	}
 	i.applyReasoningSetting("low")
+	i.applySettingToggle("fast_mode", true)
 	i.setQuickModelProfile(2, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
 	i.applyQuickModelShortcut(2)
-	if s.reasoning != "low" || s.shortcut.Model != "gpt-5.5" || i.agent.Model != "gpt-5.5" || i.cfg.ActiveModelProfile != 0 {
+	if s.reasoning != "low" || !s.fastMode || !i.agent.FastModeEnabled() || s.shortcut.Model != "gpt-5.5" || i.agent.Model != "gpt-5.5" || i.cfg.ActiveModelProfile != 0 {
 		t.Fatal("legacy reasoning/model-only settings no longer work")
 	}
 }

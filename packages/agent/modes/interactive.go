@@ -101,9 +101,10 @@ type InteractiveConfig struct {
 	AutoSubagentsStopToolAllowed   *bool
 	AutoSubagentsResumeToolAllowed *bool
 
-	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
-	// nil/missing means disabled. Unsupported providers reject attempts
-	// to enable it and reject requests when it remains enabled.
+	// FastMode mirrors the active profile's or global persisted OpenAI
+	// fast-mode flag at startup. nil/missing means disabled. Unsupported
+	// providers reject attempts to enable it and reject requests when it
+	// remains enabled.
 	FastMode *bool
 
 	// LSPEnabled controls the main session's built-in lsp tool. nil means
@@ -171,9 +172,9 @@ type InteractiveConfig struct {
 	// above or below the main input.
 	TUIWorkingPosition string
 
-	// QuickModelShortcuts maps slots 1-9 to provider/model pairs. The
-	// shortcuts are Ctrl+1..9. Cmd+1..9 may also work when the terminal
-	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
+	// QuickModelShortcuts maps slots 1-9 to model profiles. The shortcuts
+	// are Ctrl+1..9. Cmd+1..9 may also work when the terminal forwards
+	// Command/Super keypresses, but Ctrl is the displayed chord.
 	QuickModelShortcuts []QuickModelShortcut
 	ActiveModelProfile  int // 0 means no active profile; otherwise 1–9
 
@@ -355,6 +356,9 @@ type InteractiveConfig struct {
 	// OnReasoningChanged updates host-owned runtime defaults after the setting
 	// has been persisted successfully.
 	OnReasoningChanged func(level string)
+	// OnFastModeChanged updates host-owned runtime defaults after the setting
+	// has been persisted successfully.
+	OnFastModeChanged func(enabled bool)
 
 	// InitialSessionTitle is the persisted title of the session loaded before
 	// the TUI starts. It is shown in the terminal without another model call.
@@ -479,11 +483,12 @@ type chatCacheKey struct {
 	viewCacheRev         uint64
 }
 
-// QuickModelShortcut is one configured quick model switch slot.
+// QuickModelShortcut is one configured model profile slot.
 type QuickModelShortcut struct {
 	Provider  string
 	Model     string
 	Reasoning string
+	FastMode  bool
 }
 
 type extensionStatus struct {

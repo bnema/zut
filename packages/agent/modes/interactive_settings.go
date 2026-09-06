@@ -409,7 +409,7 @@ func (i *Interactive) openSettingsDialog() {
 		items = append(items, settingsItem{
 			key:      "quick_models",
 			label:    "model profiles",
-			desc:     "configure " + quickModelShortcutPrefix() + "+1 through " + quickModelShortcutPrefix() + "+9 model and reasoning profiles",
+			desc:     "configure " + quickModelShortcutPrefix() + "+1 through " + quickModelShortcutPrefix() + "+9 model, reasoning, and fast-mode profiles",
 			children: quickItems,
 		})
 	}
@@ -487,7 +487,7 @@ func (i *Interactive) quickModelSettingItem(slot int) settingsItem {
 	return settingsItem{
 		key:    "quick_model_" + strconv.Itoa(slot),
 		label:  "profile " + strconv.Itoa(slot),
-		desc:   quickModelShortcutLabel(slot) + " recalls model + reasoning. Enter assigns, Left/Right in the picker sets reasoning, Backspace clears.",
+		desc:   quickModelShortcutLabel(slot) + " recalls model, reasoning, and fast mode. Enter assigns, Left/Right in the picker sets reasoning, Backspace clears.",
 		picker: true,
 		hint:   hint,
 	}
@@ -542,7 +542,11 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	i.modelDialog.Open(current, loggedIn, reasoning)
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
-	p := QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning}
+	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
+	if slot <= len(i.cfg.QuickModelShortcuts) && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
+		fastMode = i.cfg.QuickModelShortcuts[slot-1].FastMode
+	}
+	p := QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning, FastMode: fastMode}
 	if i.quickModelActivate {
 		i.activateModelProfile(slot, p)
 	} else {
@@ -594,7 +598,10 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	i.setQuickModelShortcut(slot, providerName, model)
 }
 func (i *Interactive) setQuickModelShortcut(slot int, providerName, model string) {
-	i.setQuickModelProfile(slot, QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.cfg.Reasoning})
+	i.setQuickModelProfile(slot, QuickModelShortcut{
+		Provider: providerName, Model: model, Reasoning: i.cfg.Reasoning,
+		FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,
+	})
 }
 func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 	if i.settingsDialog == nil || !i.settingsDialog.Active() || len(i.settingsDialog.items) == 0 {
@@ -916,6 +923,25 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 			i.mu.Unlock()
 			return
 		}
+		if slot := i.cfg.ActiveModelProfile; slot > 0 {
+			_, profileStore := i.cfg.SettingsStore.(modelProfileSettingsStore)
+			if i.cfg.SettingsStore == nil || profileStore {
+				p := QuickModelShortcut{
+					Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: i.cfg.Reasoning,
+					FastMode: value,
+				}
+				if !i.persistModelProfile(slot, p, slot) {
+					i.resetSettingsToggle(key, previous)
+					return
+				}
+				i.setLiveFastMode(value)
+				i.mu.Lock()
+				i.statusOK = "fast mode " + onOff(value) + fmt.Sprintf(" — profile %d updated", slot)
+				i.statusErr = ""
+				i.mu.Unlock()
+				return
+			}
+		}
 		if store, ok := i.cfg.SettingsStore.(fastModeSettingsStore); ok {
 			if err := store.SetFastMode(value); err != nil {
 				i.resetSettingsToggle(key, previous)
@@ -925,11 +951,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
-		val := value
-		i.cfg.FastMode = &val
-		if i.agent != nil {
-			i.agent.SetFastMode(value)
-		}
+		i.setLiveFastMode(value)
 		i.mu.Lock()
 		i.statusOK = "fast mode " + onOff(value)
 		i.statusErr = ""
@@ -1253,7 +1275,10 @@ func (i *Interactive) applyReasoningSetting(level string) {
 	}()
 	level = provider.NormalizeReasoning(level)
 	if slot := i.cfg.ActiveModelProfile; slot > 0 {
-		p := QuickModelShortcut{Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: level}
+		p := QuickModelShortcut{
+			Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: level,
+			FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,
+		}
 		if !i.persistModelProfile(slot, p, slot) {
 			return
 		}

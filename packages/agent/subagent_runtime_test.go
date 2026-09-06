@@ -67,6 +67,30 @@ func TestResidentChildSpecSnapshotsCurrentProviderTransportSettings(t *testing.T
 	}
 }
 
+func TestResidentChildSpecTracksFastMode(t *testing.T) {
+	runtime := newSubagentRuntime(subagentRuntimeConfig{
+		Args: Args{}, Root: t.TempDir(), RepoRoot: t.TempDir(),
+		Provider: "openai", Model: "gpt-5.6-sol", FastMode: false,
+	})
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+
+	spec, err := runtime.buildResidentChildSpec(context.Background(), tools.ResidentSpawnRequest{Task: "review"}, core.Registry{"read": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.FastMode {
+		t.Fatal("initial resident fast mode = true, want false")
+	}
+	runtime.SetFastMode(true)
+	spec, err = runtime.buildResidentChildSpec(context.Background(), tools.ResidentSpawnRequest{Task: "review"}, core.Registry{"read": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.FastMode {
+		t.Fatal("resident fast mode = false after update, want true")
+	}
+}
+
 func TestResidentChildSpecUsesSelectedModelContextForBudget(t *testing.T) {
 	runtime := newSubagentRuntime(subagentRuntimeConfig{
 		Args: Args{}, Root: t.TempDir(), RepoRoot: t.TempDir(),

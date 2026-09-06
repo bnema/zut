@@ -719,6 +719,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			cfg.Reasoning = provider.ClampReasoningForModel(resolvedModel, cfg.Reasoning)
 			cfg.QuickModelShortcuts[profileSlot-1] = QuickModelShortcut{
 				Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
+				FastMode: cfg.FastMode != nil && *cfg.FastMode,
 			}
 			cfg.ActiveModelProfile = profileSlot
 		}
