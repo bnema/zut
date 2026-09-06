@@ -5,6 +5,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
@@ -19,6 +20,46 @@ func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 	}
 	if r.model != model || r.agent.Model != model {
 		t.Fatalf("model = runtime:%q agent:%q, want trimmed %q", r.model, r.agent.Model, model)
+	}
+	if r.agent.ContextWindow != 128000 || r.agent.MaxTokens != 16384 {
+		t.Fatalf("bootstrap limits = context %d output %d, want 128000/16384", r.agent.ContextWindow, r.agent.MaxTokens)
+	}
+}
+
+func TestRuntimeSetModelUpdatesAgentMetadata(t *testing.T) {
+	const model = "served-opencode-model"
+	r := &Runtime{
+		provider: provider.ProviderOpenCodeGo,
+		model:    "old-model",
+		agent:    &core.Agent{Model: "old-model", ContextWindow: 1, MaxTokens: 2},
+		modelCatalog: []provider.Model{{
+			Provider:      provider.ProviderOpenCodeGo,
+			ID:            model,
+			ContextWindow: 200000,
+			MaxOutput:     50000,
+		}},
+	}
+	if err := r.SetModel(model); err != nil {
+		t.Fatal(err)
+	}
+	if r.agent.ContextWindow != 200000 || r.agent.MaxTokens != 50000 {
+		t.Fatalf("agent limits = context %d output %d, want 200000/50000", r.agent.ContextWindow, r.agent.MaxTokens)
+	}
+}
+
+func TestRuntimeSetModelRejectsUnknownAuthoritativeModel(t *testing.T) {
+	r := &Runtime{
+		provider:                  provider.ProviderOpenCodeGo,
+		model:                     "served-model",
+		modelCatalogAuthoritative: true,
+		modelCatalog:              []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "served-model"}},
+		agent:                     &core.Agent{Model: "served-model"},
+	}
+	if err := r.SetModel("removed-model"); err == nil {
+		t.Fatal("authoritative SDK snapshot accepted removed model")
+	}
+	if r.model != "served-model" || r.agent.Model != "served-model" {
+		t.Fatalf("rejected switch changed model: runtime=%q agent=%q", r.model, r.agent.Model)
 	}
 }
 

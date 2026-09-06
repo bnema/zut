@@ -18,12 +18,14 @@ func preserveActiveCatalog(t *testing.T) {
 		previousActive[i].ReasoningEffortMap = maps.Clone(previousActive[i].ReasoningEffortMap)
 	}
 	previousSet := activeSet
+	previousAuthoritative := maps.Clone(authoritativeProviderSet)
 	activeMu.RUnlock()
 
 	t.Cleanup(func() {
 		activeMu.Lock()
 		active = previousActive
 		activeSet = previousSet
+		authoritativeProviderSet = previousAuthoritative
 		activeMu.Unlock()
 	})
 }
@@ -151,5 +153,51 @@ func TestDiscoverOpenCodeGoKeepsLiveIDsWithoutProviderMetadata(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "served" || models[0].DisplayName != "served" {
 		t.Fatalf("models = %+v, want the live id with fallback metadata", models)
+	}
+}
+
+func TestDiscoverOpenCodeGoUsesModelsDevRoutingAndEmptyReasoningMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api.json":
+			_, _ = w.Write([]byte(`{
+				"opencode-go": {"models": {
+					"shape-responses": {
+						"name": "Shape Responses",
+						"reasoning": true,
+						"reasoning_options": [{"type":"effort","values":["low","high"]}],
+						"provider": {"shape":"responses"}
+					},
+					"gpt-5.6-completions": {
+						"name": "Shape Completions",
+						"reasoning": true,
+						"reasoning_options": [],
+						"provider": {"shape":"completions"}
+					}
+				}}
+			}`))
+		case "/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"shape-responses"},{"id":"gpt-5.6-completions"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	models, err := discoverOpenCodeGo(context.Background(), "key", server.URL, server.URL+"/api.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %+v, want two models", models)
+	}
+	if models[0].API != APIResponses {
+		t.Fatalf("Responses-shaped model API = %q, want %q", models[0].API, APIResponses)
+	}
+	if models[1].API != APICompletions {
+		t.Fatalf("Completions-shaped model API = %q, want %q", models[1].API, APICompletions)
+	}
+	if got := AvailableReasoningLevels(models[1]); len(got) != 1 || got[0] != "" {
+		t.Fatalf("empty reasoning options produced levels %q, want only off", got)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/auth"
 )
 
 func TestFilterCacheByProviderScopesRemovesMismatchedProvider(t *testing.T) {
@@ -254,6 +255,33 @@ func TestResolveAllowsUnknownOpenCodeGoModelBeforeDiscovery(t *testing.T) {
 	if resolved.ContextWindow != 128000 || resolved.MaxOutput != 16384 {
 		t.Fatalf("bootstrap model limits = context %d output %d", resolved.ContextWindow, resolved.MaxOutput)
 	}
+	if resolved.ModelCatalogSnapshot() != nil {
+		t.Fatal("normal Resolve captured a private OpenCode Go catalog snapshot")
+	}
+}
+
+func TestResolveRejectsUnknownOpenCodeGoModelAfterDiscovery(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("OPENCODE_API_KEY", "")
+	provider.SetLiveModelsForProviders([]provider.Model{{
+		Provider:      provider.ProviderOpenCodeGo,
+		ID:            "served-model",
+		ContextWindow: 128000,
+		MaxOutput:     16384,
+	}}, []string{provider.ProviderOpenCodeGo})
+	provider.SetUserModels(nil)
+	t.Cleanup(func() {
+		provider.SetLiveModels(nil)
+		provider.SetUserModels(nil)
+	})
+
+	resolved, err := Resolve(Args{Provider: provider.ProviderOpenCodeGo, Model: "removed-model"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "served-model" {
+		t.Fatalf("unknown model resolved to %q, want served-model", resolved.Model)
+	}
 }
 
 func TestValidateAndRepairConfigPreservesPaddedDynamicModel(t *testing.T) {
@@ -324,6 +352,96 @@ func TestCurrentModelProviderScopesHashesOpenCodeGoCredential(t *testing.T) {
 	}
 	if scopes["opencode-go"] == key {
 		t.Fatal("OpenCode Go credential was stored directly in its cache scope")
+	}
+}
+
+func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+	t.Setenv("ZUT_AGENT_API_KEY_COMMAND_HELPER", "1")
+	marker := filepath.Join(home, "command-ran")
+	credentials := auth.Credentials{AdditionalAPIKeyCreds: map[string]auth.ProviderCreds{
+		provider.ProviderOpenCodeGo: {
+			APIKeyCommand: &auth.APIKeyCommand{
+				Program: os.Args[0],
+				Args:    []string{"-test.run=^TestAgentAPIKeyCommandHelperProcess$", "--", marker},
+			},
+		},
+	}}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	var gotKey string
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		gotKey = apiKey
+		if endpoint != "" {
+			t.Fatalf("discovery endpoint = %q, want default", endpoint)
+		}
+		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "command-model"}}, nil
+	}
+
+	refreshModelsWithMode(provider.ProviderOpenCodeGo, "", "", provider.ProviderOpenCodeGo, apiKeyCommandExecute)
+	if gotKey != "resolved-secret" {
+		t.Fatalf("discovery key = %q, want command result", gotKey)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("credential command marker: %v", err)
+	}
+	cache, err := provider.LoadCache(ModelCachePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.ProviderScopes[provider.ProviderOpenCodeGo] != credentialScopeForEndpoint(gotKey, "") {
+		t.Fatalf("cache scope = %q, want command credential scope", cache.ProviderScopes[provider.ProviderOpenCodeGo])
+	}
+}
+
+func TestResolveSDKRefreshReusesResolvedCommandCredential(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+	t.Setenv("ZUT_AGENT_API_KEY_COMMAND_HELPER", "1")
+	marker := filepath.Join(home, "sdk-command-ran")
+	credentials := auth.Credentials{AdditionalAPIKeyCreds: map[string]auth.ProviderCreds{
+		provider.ProviderOpenCodeGo: {
+			APIKeyCommand: &auth.APIKeyCommand{
+				Program: os.Args[0],
+				Args:    []string{"-test.run=^TestAgentAPIKeyCommandHelperProcess$", "--", marker},
+			},
+		},
+	}}
+	encoded, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	called := make(chan string, 1)
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		called <- apiKey + "\x00" + endpoint
+		return nil, fmt.Errorf("synthetic discovery stop")
+	}
+
+	if _, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, BaseURL: "https://proxy.example/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-called:
+		if got != "resolved-secret\x00https://proxy.example/v1" {
+			t.Fatalf("discovery inputs = %q, want resolved credential and endpoint", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SDK OpenCode Go discovery was not invoked")
 	}
 }
 
@@ -402,6 +520,72 @@ func TestRefreshModelsReplacesUnchangedOpenCodeGoScope(t *testing.T) {
 	}
 	if cache.IsFresh() {
 		t.Fatal("partial upgrade of a legacy cache must still require a full refresh")
+	}
+}
+
+func TestEffectiveCatalogBaseURLUsesProviderLevelOpenCodeGoEndpoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	path := filepath.Join(home, "models.json")
+	const baseURL = "https://provider-proxy.example/v1"
+	if err := os.WriteFile(path, []byte(`{"providers":{"opencode-go":{"baseUrl":"`+baseURL+`","models":[]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models := LoadUserModels()
+	t.Cleanup(func() {
+		_ = os.WriteFile(path, []byte(`{"providers":{}}`), 0o600)
+		LoadUserModels()
+		provider.SetUserModels(nil)
+	})
+
+	if got := effectiveCatalogBaseURL(provider.ProviderOpenCodeGo, "new-live-model", "", models); got != baseURL {
+		t.Fatalf("provider-level endpoint = %q, want %q", got, baseURL)
+	}
+	manifest := ZutfileManifest{}
+	manifest.Model.Preferred = []string{"new-live-model"}
+	gotProvider, gotModel := zutfileCatalogSelection(Args{}, manifest, models)
+	if gotProvider != provider.ProviderOpenCodeGo || gotModel != "new-live-model" {
+		t.Fatalf("catalog selection = provider=%q model=%q, want %q/new-live-model", gotProvider, gotModel, provider.ProviderOpenCodeGo)
+	}
+}
+
+func TestZutfilePreferredDynamicModelRefreshesBeforeRequirements(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	provider.SetLiveModels(nil)
+	provider.SetUserModels(nil)
+	t.Cleanup(func() {
+		provider.SetLiveModels(nil)
+		provider.SetUserModels(nil)
+	})
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	const (
+		key     = "synthetic-zutfile-key"
+		modelID = "new-preferred-model"
+	)
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		if apiKey != key || endpoint != "" {
+			t.Fatalf("discovery inputs = key %q endpoint %q", apiKey, endpoint)
+		}
+		return []provider.Model{{
+			Provider:      provider.ProviderOpenCodeGo,
+			ID:            modelID,
+			ContextWindow: 256000,
+			MaxOutput:     32000,
+		}}, nil
+	}
+	manifest := ZutfileManifest{}
+	manifest.Model.MinContext = 200000
+	manifest.Model.Preferred = []string{modelID}
+	catalogProvider, catalogModel := zutfileCatalogSelection(Args{Provider: provider.ProviderOpenCodeGo}, manifest, nil)
+	PrepareRuntimeCatalog(true, catalogProvider, key, "", catalogModel)
+
+	args := Args{}
+	if err := applyZutfileModelRequirements(&args, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if args.Provider != provider.ProviderOpenCodeGo || args.Model != modelID {
+		t.Fatalf("selected model = provider=%q model=%q, want %q/%q", args.Provider, args.Model, provider.ProviderOpenCodeGo, modelID)
 	}
 }
 

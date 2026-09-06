@@ -286,6 +286,26 @@ func (s *rpcServer) run(in io.Reader) error {
 	return err
 }
 
+func resolveRPCModel(providerName, modelID string) (provider.Model, error) {
+	model, err := provider.FindModel(providerName, modelID)
+	if err == nil {
+		return model, nil
+	}
+	if providerName == provider.ProviderOpenCodeGo && provider.AcceptsUnlistedModels(providerName) {
+		return provider.Model{
+			Provider:      providerName,
+			ID:            modelID,
+			DisplayName:   modelID,
+			ContextWindow: 128000,
+			MaxOutput:     16384,
+			Reasoning:     true,
+			API:           provider.OpenCodeGoAPIForModel(modelID),
+			Source:        "dynamic",
+		}, nil
+	}
+	return provider.Model{}, err
+}
+
 // dispatch routes a command. Long-running commands (prompt, compact)
 // run on their own goroutine so the read loop stays responsive.
 func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
@@ -353,10 +373,16 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, "model must not be empty")
 			return
 		}
-		if _, err := provider.FindModel(s.provider, model); err != nil && !provider.AcceptsUnlistedModels(s.provider) {
+		metadata, err := resolveRPCModel(s.provider, model)
+		if err != nil {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
+		if setter, ok := s.agent.Client.(provider.ModelMetadataSetter); ok {
+			setter.SetModelMetadata(metadata)
+		}
+		s.agent.ContextWindow = metadata.ContextWindow
+		s.agent.MaxTokens = metadata.MaxOutput
 		s.agent.Model = model
 		s.model = model
 		s.writeResponse(id, cmd, map[string]any{"model": model})

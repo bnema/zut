@@ -175,13 +175,16 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 			API:         openCodeGoAPIForModel(id),
 		}
 		if details, ok := metadata.Models[id]; ok {
+			model.API = modelsDevAPIForModel(details, id)
 			if details.Name != "" {
 				model.DisplayName = details.Name
 			}
 			model.ContextWindow = details.Limit.Context
 			model.MaxOutput = details.Limit.Output
 			model.Reasoning = details.Reasoning
-			model.ReasoningLevelMap, model.ReasoningEffortMap = modelsDevReasoningMaps(details.Reasoning, details.ReasoningOptions)
+			if details.ReasoningOptions != nil {
+				model.ReasoningLevelMap, model.ReasoningEffortMap = modelsDevReasoningMaps(details.Reasoning, *details.ReasoningOptions)
+			}
 			model.PriceInput = details.Cost.Input
 			model.PriceOutput = details.Cost.Output
 			model.PriceCacheRead = details.Cost.CacheRead
@@ -211,11 +214,29 @@ type modelsDevProvider struct {
 }
 
 type modelsDevModel struct {
-	Name             string                     `json:"name"`
-	Reasoning        bool                       `json:"reasoning"`
-	ReasoningOptions []modelsDevReasoningOption `json:"reasoning_options"`
-	Limit            modelsDevLimit             `json:"limit"`
-	Cost             modelsDevCost              `json:"cost"`
+	Name             string                          `json:"name"`
+	Reasoning        bool                            `json:"reasoning"`
+	ReasoningOptions *[]modelsDevReasoningOption     `json:"reasoning_options"`
+	Provider         *modelsDevModelProviderOverride `json:"provider"`
+	Limit            modelsDevLimit                  `json:"limit"`
+	Cost             modelsDevCost                   `json:"cost"`
+}
+
+type modelsDevModelProviderOverride struct {
+	API   string `json:"api"`
+	Shape string `json:"shape"`
+}
+
+func modelsDevAPIForModel(model modelsDevModel, id string) string {
+	if model.Provider != nil {
+		switch strings.ToLower(strings.TrimSpace(model.Provider.Shape)) {
+		case "responses":
+			return APIResponses
+		case "completions":
+			return APICompletions
+		}
+	}
+	return openCodeGoAPIForModel(id)
 }
 
 type modelsDevReasoningOption struct {
@@ -289,11 +310,15 @@ func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) 
 			}
 		}
 	}
+	levels := []string{"minimum", "low", "medium", "high", "xhigh", "max"}
 	if len(supported) == 0 {
-		return nil, nil
+		levelMap := make(map[string]string, len(levels))
+		for _, level := range levels {
+			levelMap[level] = ""
+		}
+		return levelMap, nil
 	}
 
-	levels := []string{"minimum", "low", "medium", "high", "xhigh", "max"}
 	levelMap := make(map[string]string, len(levels))
 	effortMap := make(map[string]string, len(supported))
 	for _, level := range levels {

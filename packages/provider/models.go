@@ -444,11 +444,12 @@ var DefaultModel = Catalog[0] // claude-sonnet-4-5
 // models loaded via SetLiveModels.
 
 var (
-	activeMu      sync.RWMutex
-	active        []Model // live overlay merged in via SetLiveModels; nil = none yet
-	activeSet     bool    // true once SetLiveModels has run (even with empty live)
-	managedModels []Model // ephemeral models exposed by local model managers
-	userModels    []Model // highest-precedence models loaded from models.json
+	activeMu                 sync.RWMutex
+	active                   []Model // live overlay merged in via SetLiveModels; nil = none yet
+	activeSet                bool    // true once SetLiveModels has run (even with empty live)
+	authoritativeProviderSet map[string]struct{}
+	managedModels            []Model // ephemeral models exposed by local model managers
+	userModels               []Model // highest-precedence models loaded from models.json
 )
 
 func cloneModel(model Model) Model {
@@ -484,6 +485,14 @@ func mergeUserModels(active, users []Model) []Model {
 			existing := active[idx]
 			// Preserve catalog values when an override leaves an optional
 			// field at its zero value, matching models.json semantics.
+			// A positive price override replaces tiered pricing too;
+			// otherwise ComputeCost would retain discovered tier rates.
+			if user.PriceInput > 0 || user.PriceOutput > 0 || user.PriceCacheRead > 0 || user.PriceCacheWrite > 0 {
+				existing.PriceTiers = nil
+				existing.PriceTierInputTokens = 0
+				existing.PriceInputAbove, existing.PriceOutputAbove = 0, 0
+				existing.PriceCacheReadAbove, existing.PriceCacheWriteAbove = 0, 0
+			}
 			if user.PriceInput > 0 {
 				existing.PriceInput = user.PriceInput
 			}
@@ -543,6 +552,10 @@ func SetLiveModelsForProviders(live []Model, authoritativeProviders []string) {
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	activeSet = true
+	authoritativeProviderSet = make(map[string]struct{}, len(authoritativeProviders))
+	for _, name := range authoritativeProviders {
+		authoritativeProviderSet[name] = struct{}{}
+	}
 	if len(live) == 0 && len(authoritativeProviders) == 0 {
 		active = nil
 		return
@@ -556,6 +569,7 @@ func SetLiveModelsForProviders(live []Model, authoritativeProviders []string) {
 func ClearLiveModelsForProvider(name string) {
 	activeMu.Lock()
 	defer activeMu.Unlock()
+	delete(authoritativeProviderSet, name)
 	if !activeSet || len(active) == 0 {
 		return
 	}
@@ -629,10 +643,20 @@ func FindModel(provider, id string) (Model, error) {
 	return Model{}, fmt.Errorf("unknown model %q (provider=%q)", id, provider)
 }
 
-// AcceptsUnlistedModels reports whether a provider's runtime API is the
-// authority for model IDs that are not in the local catalog.
+// IsProviderCatalogAuthoritative reports whether a successful live catalog
+// has declared the provider's available model IDs authoritative.
+func IsProviderCatalogAuthoritative(provider string) bool {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	_, ok := authoritativeProviderSet[provider]
+	return ok
+}
+
+// AcceptsUnlistedModels reports whether a provider may be queried with an
+// ID that is not in the local catalog. OpenCode Go permits this only before
+// a successful authoritative live catalog has been loaded.
 func AcceptsUnlistedModels(provider string) bool {
-	return provider == ProviderOpenCodeGo
+	return provider == ProviderOpenCodeGo && !IsProviderCatalogAuthoritative(provider)
 }
 
 // ModelsForProvider returns all models for the given provider, from the

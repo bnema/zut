@@ -60,7 +60,8 @@ type Resolved struct {
 	// modelCatalog is a runtime-owned snapshot for providers whose model
 	// metadata is account- or endpoint-scoped. It prevents a later SDK
 	// runtime from changing request shaping for an already-created runtime.
-	modelCatalog []provider.Model
+	modelCatalog              []provider.Model
+	modelCatalogAuthoritative bool
 
 	// customProviderConfig snapshots user-provider transport settings so
 	// client construction does not reread a mutable global registry.
@@ -98,6 +99,12 @@ func (r Resolved) HasCredential() bool { return r.Credential != "" }
 // credential or endpoint.
 func (r Resolved) ModelCatalogSnapshot() []provider.Model {
 	return append([]provider.Model(nil), r.modelCatalog...)
+}
+
+// ModelCatalogIsAuthoritative reports whether the runtime snapshot came from
+// a successful provider catalog that is authoritative for model IDs.
+func (r Resolved) ModelCatalogIsAuthoritative() bool {
+	return r.modelCatalogAuthoritative
 }
 
 // MergeExtensionTools folds every tool registered by an extension
@@ -511,6 +518,13 @@ func findModelForResolve(providerName, modelID string, scopedCatalog []provider.
 	return provider.FindModel(providerName, modelID)
 }
 
+func acceptsUnlistedModel(providerName string, args Args) bool {
+	if providerName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		return !args.modelCatalogAuthoritative
+	}
+	return provider.AcceptsUnlistedModels(providerName)
+}
+
 // Resolve merges args, config, and env into a Resolved set.
 //
 // Unlike the earlier version, Resolve NEVER returns an error for
@@ -693,7 +707,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// explicit model ids usable during the first refresh or while offline;
 	// the provider request will be the final authority if no catalog data is
 	// available yet.
-	if err != nil && provider.AcceptsUnlistedModels(provName) {
+	if err != nil && acceptsUnlistedModel(provName, args) {
 		resolvedModel = provider.Model{
 			Provider:      provName,
 			ID:            model,
@@ -946,12 +960,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	max := args.MaxSteps // 0 = unlimited
 
 	var modelCatalog []provider.Model
-	if provName == provider.ProviderOpenCodeGo {
-		if args.modelCatalog != nil {
-			modelCatalog = append([]provider.Model{}, args.modelCatalog...)
-		} else {
-			modelCatalog = provider.ModelsForProvider(provName)
-		}
+	if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		modelCatalog = append([]provider.Model{}, args.modelCatalog...)
 		found := false
 		for _, catalogModel := range modelCatalog {
 			if catalogModel.ID == model {
@@ -965,34 +975,35 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 
 	return Resolved{
-		Provider:             provName,
-		Model:                model,
-		Credential:           cred,
-		AuthMethod:           method,
-		AccountID:            accountID,
-		BaseURL:              args.BaseURL,
-		InsecureTLS:          insecureTLS,
-		CWD:                  args.CWD,
-		Reasoning:            reasoning,
-		Temperature:          temperature,
-		FastMode:             fastMode,
-		WebSearchPolicy:      webSearchPolicy,
-		ToolRegistry:         reg,
-		ToolSummary:          summaries,
-		SystemPrompt:         sys,
-		MaxSteps:             max,
-		ContextWindow:        resolvedModel.ContextWindow,
-		MaxOutput:            resolvedModel.MaxOutput,
-		modelCatalog:         modelCatalog,
-		customProviderConfig: customProviderConfig,
-		Sandbox:              sandbox,
-		SkillTool:            skillTool,
-		skillsEnabled:        skillsEnabled,
-		ContextFiles:         contextFiles,
-		systemAppend:         append_,
-		systemCustom:         custom,
-		skillAddendum:        skillAddendum,
-		toolDescriptions:     descMapFromSummaries(summaries),
+		Provider:                  provName,
+		Model:                     model,
+		Credential:                cred,
+		AuthMethod:                method,
+		AccountID:                 accountID,
+		BaseURL:                   args.BaseURL,
+		InsecureTLS:               insecureTLS,
+		CWD:                       args.CWD,
+		Reasoning:                 reasoning,
+		Temperature:               temperature,
+		FastMode:                  fastMode,
+		WebSearchPolicy:           webSearchPolicy,
+		ToolRegistry:              reg,
+		ToolSummary:               summaries,
+		SystemPrompt:              sys,
+		MaxSteps:                  max,
+		ContextWindow:             resolvedModel.ContextWindow,
+		MaxOutput:                 resolvedModel.MaxOutput,
+		modelCatalog:              modelCatalog,
+		modelCatalogAuthoritative: args.modelCatalogAuthoritative,
+		customProviderConfig:      customProviderConfig,
+		Sandbox:                   sandbox,
+		SkillTool:                 skillTool,
+		skillsEnabled:             skillsEnabled,
+		ContextFiles:              contextFiles,
+		systemAppend:              append_,
+		systemCustom:              custom,
+		skillAddendum:             skillAddendum,
+		toolDescriptions:          descMapFromSummaries(summaries),
 	}, nil
 }
 

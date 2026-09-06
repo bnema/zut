@@ -132,7 +132,8 @@ show instructions and should be configured with environment variables.
 ### OpenCode Go model catalog
 
 OpenCode Go is synchronized instead of using a hand-maintained model list. When
-`OPENCODE_API_KEY` is available, zut reads the account's served IDs from
+`OPENCODE_API_KEY` or a configured OpenCode Go credential is available, zut
+reads the account's served IDs from
 [`https://opencode.ai/zen/go/v1/models`](https://opencode.ai/zen/go/v1/models)
 and enriches them with names, limits, prices, and reasoning options from the
 [Models.dev JSON API](https://models.dev/api.json), which powers the
@@ -142,7 +143,9 @@ are removed from the picker as well. The merged catalog is cached in
 `$ZUT_HOME/models-cache.json` for 24 hours; OpenCode Go entries are scoped to
 both the credential fingerprint and endpoint. `--list-models` waits for a
 refresh when the cache is stale, while SDK runtimes load matching cached
-metadata before resolving.
+metadata before resolving. Synchronous refreshes resolve configured
+`api_key_command` credentials; unsolicited startup refreshes leave those
+commands untouched.
 
 Example:
 

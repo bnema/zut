@@ -21,6 +21,7 @@ type modelRouter struct {
 	fallback       Client
 	byAPI          map[string]Client
 	modelOverrides map[string]Model
+	dynamicCatalog bool
 }
 
 // ModelMetadataSetter lets a runtime-owned client retain model metadata
@@ -62,10 +63,30 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 	}
 	client := c.fallback
 	api := ""
-	if model, ok := c.modelOverrides[req.Model]; ok {
+	found := false
+	if c.dynamicCatalog {
+		// Normal CLI/RPC runtimes follow the process-global catalog so a
+		// background refresh can replace stale request metadata. Keep a
+		// bootstrap override only until an authoritative live entry exists.
+		if model, err := FindModel(c.name, req.Model); err == nil {
+			api = model.API
+			found = true
+			c.SetModelMetadata(model)
+		} else if !IsProviderCatalogAuthoritative(c.name) {
+			if model, ok := c.modelOverrides[req.Model]; ok {
+				api = model.API
+				found = true
+			}
+		}
+	} else if model, ok := c.modelOverrides[req.Model]; ok {
 		api = model.API
+		found = true
 	} else if model, err := FindModel(c.name, req.Model); err == nil {
 		api = model.API
+		found = true
+	}
+	if !found && c.dynamicCatalog && IsProviderCatalogAuthoritative(c.name) {
+		return nil, fmt.Errorf("unknown model %q (provider=%q)", req.Model, c.name)
 	}
 	if api == "" && AcceptsUnlistedModels(c.name) {
 		// The OpenCode Go catalog is intentionally live-only. Preserve the
@@ -75,6 +96,9 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 	}
 	if api != "" {
 		routed := c.byAPI[api]
+		if routed == nil && api == APICompletions {
+			routed = c.fallback
+		}
 		if routed == nil {
 			return nil, fmt.Errorf("provider %q has no client for model API %q", c.name, api)
 		}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestRPCSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
@@ -22,8 +23,33 @@ func TestRPCSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 	if s.agent.Model != model || s.model != model {
 		t.Fatalf("model = agent:%q server:%q, want trimmed %q", s.agent.Model, s.model, model)
 	}
+	if s.agent.ContextWindow != 128000 || s.agent.MaxTokens != 16384 {
+		t.Fatalf("bootstrap limits = context %d output %d, want 128000/16384", s.agent.ContextWindow, s.agent.MaxTokens)
+	}
 	if !strings.Contains(out.String(), `"success":true`) || !strings.Contains(out.String(), `"model":"`+model+`"`) {
 		t.Fatalf("response = %q", out.String())
+	}
+}
+
+func TestRPCSetModelUsesKnownModelMetadata(t *testing.T) {
+	provider.SetLiveModels([]provider.Model{{
+		Provider:      provider.ProviderOpenCodeGo,
+		ID:            "served-model",
+		ContextWindow: 300000,
+		MaxOutput:     60000,
+	}})
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	var out bytes.Buffer
+	s := &rpcServer{
+		provider: provider.ProviderOpenCodeGo,
+		model:    "old-model",
+		agent:    &core.Agent{Model: "old-model", ContextWindow: 1, MaxTokens: 2},
+		out:      &out,
+	}
+	s.dispatch("set_model", "1", []byte(`{"model":"served-model"}`))
+	if s.agent.ContextWindow != 300000 || s.agent.MaxTokens != 60000 {
+		t.Fatalf("known limits = context %d output %d, want 300000/60000", s.agent.ContextWindow, s.agent.MaxTokens)
 	}
 }
 

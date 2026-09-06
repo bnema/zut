@@ -217,3 +217,40 @@ func TestLoadUserModelsWarnsOnUnknownAPI(t *testing.T) {
 		t.Fatalf("api = %q, want openai", cfg.API)
 	}
 }
+
+func TestUserPriceOverrideClearsCatalogTiers(t *testing.T) {
+	SetLiveModels([]Model{{
+		Provider:             ProviderOpenCodeGo,
+		ID:                   "tiered-model",
+		PriceInput:           1,
+		PriceOutput:          2,
+		PriceTiers:           []ModelPriceTier{{InputTokens: 100, PriceInput: 9, PriceOutput: 10}},
+		PriceTierInputTokens: 100,
+		PriceInputAbove:      9,
+		PriceOutputAbove:     10,
+		PriceCacheReadAbove:  11,
+		PriceCacheWriteAbove: 12,
+	}})
+	SetUserModels([]Model{{
+		Provider:    ProviderOpenCodeGo,
+		ID:          "tiered-model",
+		PriceInput:  3,
+		PriceOutput: 4,
+	}})
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+	})
+
+	model, err := FindModel(ProviderOpenCodeGo, "tiered-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.PriceTiers) != 0 || model.PriceTierInputTokens != 0 || model.PriceInputAbove != 0 || model.PriceOutputAbove != 0 || model.PriceCacheReadAbove != 0 || model.PriceCacheWriteAbove != 0 {
+		t.Fatalf("user price override retained catalog tiers: %+v", model)
+	}
+	want := 100 * 3 / 1_000_000.0
+	if got := ComputeCost(model, Usage{InputTokens: 100}); got != want {
+		t.Fatalf("cost = %v, want user base price %v", got, want)
+	}
+}

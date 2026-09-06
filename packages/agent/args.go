@@ -39,11 +39,12 @@ type Args struct {
 	BaseURL string // override provider base URL (for tests/self-hosted)
 	// modelCatalog is set by ResolveSDK so dynamic model lookup uses the
 	// scope captured during preparation rather than the global live overlay.
-	modelCatalog       []provider.Model
-	SystemPrompt       string
-	AppendSystemPrompt []string
-	Reasoning          string
-	Temperature        *float32
+	modelCatalog              []provider.Model
+	modelCatalogAuthoritative bool
+	SystemPrompt              string
+	AppendSystemPrompt        []string
+	Reasoning                 string
+	Temperature               *float32
 
 	// FastMode is an internal resident-child propagation value.
 	FastMode bool

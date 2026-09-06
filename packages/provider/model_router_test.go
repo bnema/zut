@@ -54,6 +54,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	SetLiveModels([]Model{
 		{Provider: "opencode-go", ID: "gpt-5.6-luna", API: APIResponses},
 		{Provider: "opencode-go", ID: "kimi-k3"},
+		{Provider: "opencode-go", ID: "shape-completions", API: APICompletions},
 	})
 
 	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
@@ -69,7 +70,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	responsesCapture := &routeCaptureClient{name: "opencode-go"}
 	router.fallback = completionsCapture
 	router.byAPI[APIResponses] = responsesCapture
-	for _, model := range []string{"gpt-5.6-luna", "kimi-k3"} {
+	for _, model := range []string{"gpt-5.6-luna", "kimi-k3", "shape-completions"} {
 		stream, err := router.Stream(context.Background(), Request{Model: model})
 		if err != nil {
 			t.Fatal(err)
@@ -81,7 +82,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	if len(responsesCapture.models) != 1 || responsesCapture.models[0] != "gpt-5.6-luna" {
 		t.Fatalf("Responses models = %v", responsesCapture.models)
 	}
-	if len(completionsCapture.models) != 1 || completionsCapture.models[0] != "kimi-k3" {
+	if len(completionsCapture.models) != 2 || completionsCapture.models[0] != "kimi-k3" || completionsCapture.models[1] != "shape-completions" {
 		t.Fatalf("Completions models = %v", completionsCapture.models)
 	}
 }
@@ -106,5 +107,49 @@ func TestOpenCodeGoRoutesUncataloguedGPT56ToResponses(t *testing.T) {
 	}
 	if len(completions.models) != 0 {
 		t.Fatalf("Completions models = %v, want none", completions.models)
+	}
+}
+
+func TestOpenCodeGoDynamicRouterRefreshesMetadata(t *testing.T) {
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{{Provider: ProviderOpenCodeGo, ID: "refreshable-model", API: APIResponses}})
+
+	responses := &routeCaptureClient{name: ProviderOpenCodeGo}
+	completions := &routeCaptureClient{name: ProviderOpenCodeGo}
+	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
+	router.fallback = completions
+	router.byAPI[APIResponses] = responses
+	stream, err := router.Stream(context.Background(), Request{Model: "refreshable-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if router.modelOverrides["refreshable-model"].API != APIResponses {
+		t.Fatalf("initial router metadata = %+v", router.modelOverrides["refreshable-model"])
+	}
+
+	SetLiveModels([]Model{{Provider: ProviderOpenCodeGo, ID: "refreshable-model", API: APICompletions}})
+	stream, err = router.Stream(context.Background(), Request{Model: "refreshable-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	if router.modelOverrides["refreshable-model"].API != APICompletions {
+		t.Fatalf("refreshed router metadata = %+v, want completions", router.modelOverrides["refreshable-model"])
+	}
+	if len(completions.models) != 1 || completions.models[0] != "refreshable-model" {
+		t.Fatalf("Completions models = %v, want refreshed model", completions.models)
+	}
+}
+
+func TestOpenCodeGoDynamicRouterRejectsUnknownAuthoritativeModel(t *testing.T) {
+	preserveActiveCatalog(t)
+	SetLiveModelsForProviders([]Model{{Provider: ProviderOpenCodeGo, ID: "served-model"}}, []string{ProviderOpenCodeGo})
+
+	router := NewOpenCodeGo("token", "https://example.com/go/v1")
+	if _, err := router.Stream(context.Background(), Request{Model: "removed-model"}); err == nil {
+		t.Fatal("authoritative OpenCode Go router accepted removed model")
 	}
 }

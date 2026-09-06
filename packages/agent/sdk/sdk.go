@@ -100,7 +100,8 @@ type Runtime struct {
 	model    string
 	cwd      string
 	// modelCatalog is a private metadata snapshot for dynamic providers.
-	modelCatalog []provider.Model
+	modelCatalog              []provider.Model
+	modelCatalogAuthoritative bool
 
 	// activeCancel is set while a Prompt or Compact is running.
 	activeCancel context.CancelFunc
@@ -146,11 +147,12 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	ag := r.NewAgent()
 	return &Runtime{
-		agent:        ag,
-		provider:     r.Provider,
-		model:        r.Model,
-		cwd:          r.CWD,
-		modelCatalog: r.ModelCatalogSnapshot(),
+		agent:                     ag,
+		provider:                  r.Provider,
+		model:                     r.Model,
+		cwd:                       r.CWD,
+		modelCatalog:              r.ModelCatalogSnapshot(),
+		modelCatalogAuthoritative: r.ModelCatalogIsAuthoritative(),
 	}, nil
 }
 
@@ -323,13 +325,16 @@ func (r *Runtime) SetModel(model string) error {
 
 	var metadata provider.Model
 	found := false
-	if provider.AcceptsUnlistedModels(r.provider) {
+	if r.provider == provider.ProviderOpenCodeGo {
 		for _, candidate := range r.modelCatalog {
 			if candidate.ID == model {
 				metadata = candidate
 				found = true
 				break
 			}
+		}
+		if !found && r.modelCatalogAuthoritative {
+			return fmt.Errorf("unknown model %q (provider=%q)", model, r.provider)
 		}
 		if !found {
 			metadata = provider.Model{
@@ -352,10 +357,12 @@ func (r *Runtime) SetModel(model string) error {
 		}
 		found = true
 	}
-	if found || provider.AcceptsUnlistedModels(r.provider) {
+	if found || r.provider == provider.ProviderOpenCodeGo {
 		if setter, ok := r.agent.Client.(provider.ModelMetadataSetter); ok {
 			setter.SetModelMetadata(metadata)
 		}
+		r.agent.ContextWindow = metadata.ContextWindow
+		r.agent.MaxTokens = metadata.MaxOutput
 	}
 	r.agent.Model = model
 	r.model = model
@@ -428,7 +435,7 @@ func (r *Runtime) ListModels() []ModelInfo {
 	providerName := r.provider
 	models := append([]provider.Model(nil), r.modelCatalog...)
 	r.mu.Unlock()
-	if !provider.AcceptsUnlistedModels(providerName) {
+	if providerName != provider.ProviderOpenCodeGo {
 		models = provider.ModelsForProvider(providerName)
 	}
 	out := make([]ModelInfo, 0, len(models))

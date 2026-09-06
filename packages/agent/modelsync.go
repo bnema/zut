@@ -36,22 +36,38 @@ func LoadCachedModels() {
 	loadCachedModels(currentModelProviderScopes())
 }
 
+func synchronousOpenCodeGoAPIKey(explicitProvider, explicitAPIKey string) string {
+	providerName := effectiveCatalogProvider(explicitProvider)
+	if explicitAPIKey != "" || (providerName != "" && providerName != provider.ProviderOpenCodeGo) {
+		return explicitAPIKey
+	}
+	key, method, _, err := resolveCredentialFull(context.Background(), provider.ProviderOpenCodeGo, "", apiKeyCommandExecute)
+	if err != nil || method != "apikey" {
+		return ""
+	}
+	return key
+}
+
 // ResolveSDK prepares the credential-scoped catalog and resolves an SDK
 // runtime against a private model snapshot. Preparation and snapshot capture
 // are coordinated with background publication, while credential resolution
 // itself remains outside the process-wide catalog lock.
 func ResolveSDK(args Args) (Resolved, error) {
+	if args.APIKey == "" && effectiveCatalogProvider(args.Provider) == provider.ProviderOpenCodeGo {
+		args.APIKey = synchronousOpenCodeGoAPIKey(args.Provider, args.APIKey)
+	}
 	modelCatalogMu.Lock()
 	_, _ = prepareRuntimeCatalog(args.Provider, args.APIKey, args.BaseURL, args.Model)
 	// Keep an explicit empty snapshot as well: if Resolve later falls back
 	// to OpenCode Go because only that provider has credentials, it must not
 	// reread a concurrently changing global overlay.
 	args.modelCatalog = append([]provider.Model{}, provider.ModelsForProvider(provider.ProviderOpenCodeGo)...)
+	args.modelCatalogAuthoritative = provider.IsProviderCatalogAuthoritative(provider.ProviderOpenCodeGo)
 	modelCatalogMu.Unlock()
 
 	resolved, err := Resolve(args, true)
 	if err == nil && resolved.Provider == provider.ProviderOpenCodeGo {
-		refreshModelsAsyncForProvider(resolved.Provider, args.APIKey, resolved.BaseURL, provider.ProviderOpenCodeGo)
+		refreshModelsAsyncForProvider(resolved.Provider, resolved.Credential, resolved.BaseURL, provider.ProviderOpenCodeGo)
 	}
 	return resolved, err
 }
@@ -374,18 +390,40 @@ func cacheSnapshotsEqual(a provider.ModelCache, aErr error, b provider.ModelCach
 }
 
 func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider string) {
+	refreshModelsWithMode(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider, apiKeyCommandSkip)
+}
+
+func resolveCredentialForCatalog(ctx context.Context, providerName string, mode apiKeyCommandMode) (cred, method string, err error) {
+	cred, method, _, err = resolveCredentialFull(ctx, providerName, "", mode)
+	return cred, method, err
+}
+
+func refreshModelsWithMode(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider string, commandMode apiKeyCommandMode) {
 	explicitProvider = effectiveCatalogProvider(explicitProvider)
 	cached, cachedErr := provider.LoadCache(ModelCachePath())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	openCodeGoCred, openCodeGoMethod := "", ""
+	if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
+		openCodeGoCred, openCodeGoMethod = explicitAPIKey, "apikey"
+	} else {
+		openCodeGoCred, openCodeGoMethod, _, _ = resolveCredentialFull(ctx, provider.ProviderOpenCodeGo, "", commandMode)
+	}
 	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL)
+	openCodeGoBaseURL := ""
+	if explicitProvider == provider.ProviderOpenCodeGo {
+		openCodeGoBaseURL = explicitBaseURL
+	}
+	if openCodeGoMethod == "apikey" && openCodeGoCred != "" {
+		currentScopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(openCodeGoCred, openCodeGoBaseURL)
+	}
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
-		(onlyProvider != provider.ProviderOpenCodeGo || !needsOpenCodeGoRefresh(cached)) {
+		!((onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && needsOpenCodeGoRefresh(cached)) {
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 
 	discovered := make(map[string][]provider.Model)
 	authoritativeDiscovered := make(map[string]bool)
@@ -400,7 +438,7 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderAnthropic {
-		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderAnthropic); err == nil && method == "apikey" {
+		if cred, method, err := resolveCredentialForCatalog(ctx, provider.ProviderAnthropic, commandMode); err == nil && method == "apikey" {
 			// /v1/models on Anthropic is API-key only; OAuth tokens can
 			// also list models via the bearer header, but we skip OAuth
 			// here to avoid surprise rate-limit hits on subscription keys.
@@ -410,36 +448,28 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderOpenAI {
-		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderOpenAI); err == nil && method == "apikey" {
+		if cred, method, err := resolveCredentialForCatalog(ctx, provider.ProviderOpenAI, commandMode); err == nil && method == "apikey" {
 			if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
 				recordDiscovery(provider.ProviderOpenAI, live, false, "")
 			}
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderOpenAICodex {
-		if cred, method, accountID, err := resolveCredentialFull(ctx, provider.ProviderOpenAICodex, "", apiKeyCommandSkip); err == nil && method == "oauth" {
+		if cred, method, accountID, err := resolveCredentialFull(ctx, provider.ProviderOpenAICodex, "", commandMode); err == nil && method == "oauth" {
 			if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
 				recordDiscovery(provider.ProviderOpenAICodex, live, accountID != "", accountID)
 			}
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo {
-		openCodeGoCred, openCodeGoMethod, openCodeGoErr := resolveCredentialForBackground(ctx, provider.ProviderOpenCodeGo)
-		if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
-			openCodeGoCred, openCodeGoMethod, openCodeGoErr = explicitAPIKey, "apikey", nil
-		}
-		openCodeGoBaseURL := ""
-		if explicitProvider == provider.ProviderOpenCodeGo {
-			openCodeGoBaseURL = explicitBaseURL
-		}
-		if openCodeGoErr == nil && openCodeGoMethod == "apikey" {
+		if openCodeGoMethod == "apikey" {
 			if live, err := discoverOpenCodeGoFn(ctx, openCodeGoCred, openCodeGoBaseURL); err == nil {
 				recordDiscovery(provider.ProviderOpenCodeGo, live, true, credentialScopeForEndpoint(openCodeGoCred, openCodeGoBaseURL))
 			}
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderKimi {
-		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderKimi); err == nil && method == "apikey" {
+		if cred, method, err := resolveCredentialForCatalog(ctx, provider.ProviderKimi, commandMode); err == nil && method == "apikey" {
 			if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
 				for i := range live {
 					live[i].Provider = provider.ProviderKimi
@@ -450,14 +480,14 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderGoogle {
-		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderGoogle); err == nil && method == "apikey" {
+		if cred, method, err := resolveCredentialForCatalog(ctx, provider.ProviderGoogle, commandMode); err == nil && method == "apikey" {
 			if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
 				recordDiscovery(provider.ProviderGoogle, live, false, "")
 			}
 		}
 	}
 	if onlyProvider == "" || onlyProvider == provider.ProviderOpenRouter {
-		if _, _, err := resolveCredentialForBackground(ctx, provider.ProviderOpenRouter); err == nil {
+		if _, _, err := resolveCredentialForCatalog(ctx, provider.ProviderOpenRouter, commandMode); err == nil {
 			// /models is public; gate on a credential so the picker only
 			// fills with OpenRouter's hundreds of routes for users who use it.
 			if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {
@@ -473,6 +503,15 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 	modelCatalogMu.Lock()
 	defer modelCatalogMu.Unlock()
 	latest, latestErr := provider.LoadCache(ModelCachePath())
+	preserveFullRefreshFreshness := false
+	if onlyProvider == "" {
+		for name := range currentScopes {
+			if _, ok := discovered[name]; !ok {
+				preserveFullRefreshFreshness = true
+				break
+			}
+		}
+	}
 	var all []provider.Model
 	var authoritativeProviders []string
 	var providerScopes map[string]string
@@ -488,12 +527,10 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 	if len(discovered) == 0 {
 		return
 	}
-	if latest.Version == provider.ModelCacheVersion {
-		if keepOpenCodeGo {
-			latest = filterCacheByProviderScopesExcept(latest, currentScopes, provider.ProviderOpenCodeGo)
-		} else {
-			latest = filterCacheByProviderScopes(latest, currentScopes)
-		}
+	if keepOpenCodeGo {
+		latest = filterCacheByProviderScopesExcept(latest, currentScopes, provider.ProviderOpenCodeGo)
+	} else {
+		latest = filterCacheByProviderScopes(latest, currentScopes)
 	}
 	all = append([]provider.Model(nil), latest.Models...)
 	authoritativeProviders = append([]string(nil), latest.AuthoritativeProviders...)
@@ -526,6 +563,10 @@ func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvid
 		} else {
 			fetchedAt = time.Time{}
 		}
+	} else if preserveFullRefreshFreshness {
+		// A failed eligible discovery must not make stale metadata appear
+		// fresh merely because another provider refreshed successfully.
+		fetchedAt = latest.FetchedAt
 	}
 	_ = provider.SaveCache(ModelCachePath(), provider.ModelCache{
 		Version:                provider.ModelCacheVersion,

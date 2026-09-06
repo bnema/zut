@@ -127,7 +127,6 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 }
 
 func runLocalZutfile(ref string, args Args, version string) error {
-	PrepareRuntimeCatalog(false, args.Provider, args.APIKey, args.BaseURL, args.Model)
 	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
@@ -157,6 +156,9 @@ func runLocalZutfile(ref string, args Args, version string) error {
 	if !allowed {
 		return nil
 	}
+	userModels := LoadUserModels()
+	catalogProvider, catalogModel := zutfileCatalogSelection(args, zf.Manifest, userModels)
+	PrepareRuntimeCatalog(true, catalogProvider, args.APIKey, args.BaseURL, catalogModel)
 	if err := applyZutfileModelRequirements(&args, zf.Manifest); err != nil {
 		return err
 	}
@@ -218,6 +220,56 @@ func zutInspect(ref string) error {
 		fmt.Println("  " + filepath.ToSlash(rel))
 		return nil
 	})
+}
+
+// zutfileCatalogSelection derives the provider/model scope needed to refresh
+// dynamic catalogs before manifest preferences are applied. Unknown preferred
+// IDs remain useful as a model scope when the configured provider is dynamic.
+func zutfileCatalogSelection(args Args, m ZutfileManifest, userModels []provider.Model) (string, string) {
+	providerName := canonicalProvider(args.Provider)
+	modelID := strings.TrimSpace(args.Model)
+	if cfg, err := LoadConfig(); err == nil {
+		cfg.applyActiveModelProfile()
+		if providerName == "" {
+			providerName = canonicalProvider(cfg.Provider)
+		}
+		if modelID == "" {
+			modelID = strings.TrimSpace(cfg.Model)
+		}
+	}
+	if providerName == "" {
+		if _, ok := provider.CustomProviders()[provider.ProviderOpenCodeGo]; ok {
+			providerName = provider.ProviderOpenCodeGo
+		}
+	}
+	findProvider := func(id string) string {
+		for _, model := range userModels {
+			if strings.TrimSpace(model.ID) == id {
+				return canonicalProvider(model.Provider)
+			}
+		}
+		if model, err := provider.FindModel("", id); err == nil {
+			return canonicalProvider(model.Provider)
+		}
+		return ""
+	}
+	if providerName == "" && modelID != "" {
+		providerName = findProvider(modelID)
+	}
+	if modelID == "" {
+		for _, preferred := range m.Model.Preferred {
+			preferred = strings.TrimSpace(preferred)
+			if preferred == "" {
+				continue
+			}
+			modelID = preferred
+			if providerName == "" {
+				providerName = findProvider(preferred)
+			}
+			break
+		}
+	}
+	return providerName, modelID
 }
 
 func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
@@ -296,9 +348,17 @@ func PrepareRuntimeCatalog(waitForRefresh bool, explicitProvider, explicitAPIKey
 	if len(explicitModel) > 0 {
 		modelID = explicitModel[0]
 	}
-	preparedProvider, preparedBaseURL := prepareRuntimeCatalog(explicitProvider, explicitAPIKey, explicitBaseURL, modelID)
+	catalogAPIKey := explicitAPIKey
+	catalogProvider := explicitProvider
+	if waitForRefresh && catalogAPIKey == "" {
+		catalogAPIKey = synchronousOpenCodeGoAPIKey(explicitProvider, explicitAPIKey)
+		if catalogAPIKey != "" && effectiveCatalogProvider(explicitProvider) == "" {
+			catalogProvider = provider.ProviderOpenCodeGo
+		}
+	}
+	preparedProvider, preparedBaseURL := prepareRuntimeCatalog(catalogProvider, catalogAPIKey, explicitBaseURL, modelID)
 	if waitForRefresh {
-		refreshModels(preparedProvider, explicitAPIKey, preparedBaseURL, "")
+		refreshModelsWithMode(preparedProvider, catalogAPIKey, preparedBaseURL, "", apiKeyCommandExecute)
 	} else {
 		RefreshModelsAsync(preparedProvider, explicitAPIKey, preparedBaseURL)
 	}
@@ -335,6 +395,9 @@ func effectiveCatalogBaseURL(explicitProvider, explicitModel, explicitBaseURL st
 		if modelID == "" || strings.TrimSpace(model.ID) == modelID {
 			return strings.TrimSpace(model.BaseURL)
 		}
+	}
+	if cfg, ok := provider.CustomProviders()[provider.ProviderOpenCodeGo]; ok {
+		return strings.TrimSpace(cfg.BaseURL)
 	}
 	return ""
 }

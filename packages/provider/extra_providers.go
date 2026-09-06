@@ -141,6 +141,7 @@ func NewOpenCodeGoWithModels(apiKey, baseURL string, models []Model) Client {
 	router := NewModelRouter(ProviderOpenCodeGo, fallback, map[string]Client{
 		APIResponses: responses,
 	}).(*modelRouter)
+	router.dynamicCatalog = models == nil
 	for _, model := range models {
 		router.SetModelMetadata(model)
 	}
