@@ -90,8 +90,10 @@ prompt that has not received a slot and records its terminal failure durably.
 a cumulative weighted-token budget equal to its resolved model's context window.
 Removed legacy settings, including `tui_subagent_position` and
 `subagents.budget_ratio`, are ignored. Resident journals created before this
-budget policy are incompatible: zut leaves them untouched, reports a recovery
-error, and requires a new child rather than resuming them.
+budget policy are incompatible: zut leaves them untouched on disk and excludes
+them from automatic discovery without reporting an error at every startup.
+They cannot be resumed; start a new child instead. Other journal recovery
+errors are still reported.
 
 Budget accounting charges uncached input, cache writes, and output fully; cache
 reads count at 25%. It is separate from active context-window usage and survives

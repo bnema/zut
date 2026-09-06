@@ -809,8 +809,9 @@ func (m *ResidentManager) SnapshotFor(childID string) (ResidentSnapshot, bool) {
 
 // Reconcile discovers journals left by an earlier host, repairs their bounded
 // projections, and marks queued/running work interrupted. It never creates a
-// live child or replays a prompt. Per-child errors are returned for callers to
-// surface without hiding valid sibling journals.
+// live child or replays a prompt. Incompatible budget journals are left untouched
+// and excluded from discovery. Other per-child errors are returned for callers
+// to surface without hiding valid sibling journals.
 func (m *ResidentManager) Reconcile() []error {
 	if m == nil {
 		return []error{errors.New("resident manager: unavailable")}
@@ -850,6 +851,12 @@ func (m *ResidentManager) Reconcile() []error {
 		}
 		childDir := filepath.Join(m.root, childID)
 		metadata, spec, reconcileErr := reconcileResidentJournalWithSpec(childDir)
+		// Old budget journals cannot be resumed. Leave them on disk without
+		// reporting the same incompatibility at every host startup. Match the
+		// exact sentinel so a joined journal-close error is still reported.
+		if reconcileErr == ErrIncompatibleResidentBudget {
+			continue
+		}
 		if errors.Is(reconcileErr, ErrResidentLeaseBusy) {
 			foreign, readErr := ReadResidentMetadata(filepath.Join(childDir, residentMetadataName))
 			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
