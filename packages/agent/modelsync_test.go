@@ -49,6 +49,19 @@ func TestFilterCacheByProviderScopesRetainsMatchingScopedProvider(t *testing.T) 
 	}
 }
 
+func TestFilterCacheByProviderScopesRemovesRotatedOpenCodeGoCredential(t *testing.T) {
+	cache := provider.ModelCache{
+		Models:                 []provider.Model{{Provider: "opencode-go", ID: "old-key-model"}},
+		AuthoritativeProviders: []string{"opencode-go"},
+		ProviderScopes:         map[string]string{"opencode-go": credentialScope("old-key")},
+	}
+
+	filtered := filterCacheByProviderScopes(cache, map[string]string{"opencode-go": credentialScope("new-key")})
+	if len(filtered.Models) != 0 || len(filtered.AuthoritativeProviders) != 0 || len(filtered.ProviderScopes) != 0 {
+		t.Fatalf("rotated OpenCode Go cache was retained: %+v", filtered)
+	}
+}
+
 func TestFilterCacheByProviderScopesDropsLegacyAuthoritativeCodex(t *testing.T) {
 	cache := provider.ModelCache{
 		Models:                 []provider.Model{{Provider: "openai-codex", ID: "legacy"}},
@@ -205,6 +218,20 @@ func TestResolveAllowsUnknownOpenCodeGoModelBeforeDiscovery(t *testing.T) {
 	}
 	if resolved.ContextWindow != 128000 || resolved.MaxOutput != 16384 {
 		t.Fatalf("bootstrap model limits = context %d output %d", resolved.ContextWindow, resolved.MaxOutput)
+	}
+}
+
+func TestCurrentModelProviderScopesHashesOpenCodeGoCredential(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	const key = "synthetic-opencode-key"
+	t.Setenv("OPENCODE_API_KEY", key)
+
+	scopes := currentModelProviderScopes()
+	if got, want := scopes["opencode-go"], credentialScope(key); got != want {
+		t.Fatalf("OpenCode Go scope = %q, want %q", got, want)
+	}
+	if scopes["opencode-go"] == key {
+		t.Fatal("OpenCode Go credential was stored directly in its cache scope")
 	}
 }
 

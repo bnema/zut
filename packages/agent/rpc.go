@@ -348,7 +348,7 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		if _, err := provider.FindModel(s.provider, req.Model); err != nil {
+		if _, err := provider.FindModel(s.provider, req.Model); err != nil && !provider.AcceptsUnlistedModels(s.provider) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}

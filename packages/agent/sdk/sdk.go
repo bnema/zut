@@ -309,7 +309,7 @@ func (r *Runtime) SetModel(model string) error {
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
 	}
-	if _, err := provider.FindModel(r.provider, model); err != nil {
+	if _, err := provider.FindModel(r.provider, model); err != nil && !provider.AcceptsUnlistedModels(r.provider) {
 		return err
 	}
 	r.agent.Model = model

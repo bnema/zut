@@ -520,6 +520,12 @@ func FindModel(provider, id string) (Model, error) {
 	return Model{}, fmt.Errorf("unknown model %q (provider=%q)", id, provider)
 }
 
+// AcceptsUnlistedModels reports whether a provider's runtime API is the
+// authority for model IDs that are not in the local catalog.
+func AcceptsUnlistedModels(provider string) bool {
+	return provider == "opencode-go"
+}
+
 // ModelsForProvider returns all models for the given provider, from the
 // merged active catalog.
 func ModelsForProvider(provider string) []Model {

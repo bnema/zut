@@ -8,6 +8,25 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
+func TestRPCSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
+	var out bytes.Buffer
+	const model = "muse-spark-1.2-contributor"
+	s := &rpcServer{
+		provider: "opencode-go",
+		model:    "kimi-k2.6",
+		agent:    &core.Agent{Model: "kimi-k2.6"},
+		out:      &out,
+	}
+	s.dispatch("set_model", "1", []byte(`{"model":"`+model+`"}`))
+
+	if s.agent.Model != model || s.model != model {
+		t.Fatalf("model = agent:%q server:%q, want %q", s.agent.Model, s.model, model)
+	}
+	if !strings.Contains(out.String(), `"success":true`) {
+		t.Fatalf("response = %q", out.String())
+	}
+}
+
 func TestRPCSetReasoningMax(t *testing.T) {
 	var out bytes.Buffer
 	s := &rpcServer{agent: &core.Agent{}, out: &out}

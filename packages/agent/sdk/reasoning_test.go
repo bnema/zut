@@ -7,6 +7,21 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
+func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
+	const model = "muse-spark-1.2-contributor"
+	r := &Runtime{
+		provider: "opencode-go",
+		model:    "kimi-k2.6",
+		agent:    &core.Agent{Model: "kimi-k2.6"},
+	}
+	if err := r.SetModel(model); err != nil {
+		t.Fatal(err)
+	}
+	if r.model != model || r.agent.Model != model {
+		t.Fatalf("model = runtime:%q agent:%q, want %q", r.model, r.agent.Model, model)
+	}
+}
+
 func TestRuntimeSetReasoningMax(t *testing.T) {
 	r := &Runtime{agent: &core.Agent{}}
 	if err := r.SetReasoning("max"); err != nil {

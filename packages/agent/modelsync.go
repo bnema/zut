@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,17 @@ func currentModelProviderScopes() map[string]string {
 	if token := loadOAuthToken("openai"); token != nil && token.AccountID != "" {
 		scopes["openai-codex"] = token.AccountID
 	}
+	if key, method, _, err := resolveCredentialFull(context.Background(), "opencode-go", "", apiKeyCommandSkip); err == nil && method == "apikey" && key != "" {
+		scopes["opencode-go"] = credentialScope(key)
+	}
 	return scopes
+}
+
+// credentialScope lets a cache follow a credential without storing the
+// credential itself. API keys are high-entropy values, and the cache is also
+// protected with restrictive file permissions.
+func credentialScope(credential string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(credential)))
 }
 
 // filterCacheByProviderScopes removes cached entries whose provider scope no
@@ -184,7 +195,7 @@ func ValidateAndRepairConfig() {
 		if _, err := provider.FindModel(cfg.Provider, cfg.Model); err != nil {
 			// OpenCode Go is authoritative at runtime and intentionally has no
 			// baked-in entries, so an uncached id must survive startup repair.
-			if cfg.Provider == "opencode-go" {
+			if provider.AcceptsUnlistedModels(cfg.Provider) {
 				// The live refresh will validate the id when it is available.
 			} else if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model) {
 				// Provider is a router and the id is route-qualified; preserve it.
@@ -195,7 +206,7 @@ func ValidateAndRepairConfig() {
 					cfg.Model, m.Provider, cfg.Provider, fix)
 				cfg.Model = fix
 				changed = true
-			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID && cfg.Provider != "opencode-go" {
+			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID && !provider.AcceptsUnlistedModels(cfg.Provider) {
 				// Model id not in any catalog. Reset to provider's default.
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -220,8 +231,8 @@ func ValidateAndRepairConfig() {
 //
 // Silent on error: discovery is a nice-to-have. Callers can still use
 // the baked-in catalog if this fails.
-func RefreshModelsAsync() {
-	go refreshModels()
+func RefreshModelsAsync(explicitProvider, explicitAPIKey string) {
+	go refreshModels(explicitProvider, explicitAPIKey)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -273,9 +284,12 @@ func needsOpenCodeGoRefresh(c provider.ModelCache) bool {
 	return true
 }
 
-func refreshModels() {
+func refreshModels(explicitProvider, explicitAPIKey string) {
 	cached, _ := provider.LoadCache(ModelCachePath())
 	currentScopes := currentModelProviderScopes()
+	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
+		currentScopes["opencode-go"] = credentialScope(explicitAPIKey)
+	}
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
@@ -323,12 +337,17 @@ func refreshModels() {
 			}
 		}
 	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "opencode-go"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverOpenCodeGo(ctx, cred, ""); err == nil {
+	openCodeGoCred, openCodeGoMethod, openCodeGoErr := resolveCredentialForBackground(ctx, "opencode-go")
+	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
+		openCodeGoCred, openCodeGoMethod, openCodeGoErr = explicitAPIKey, "apikey", nil
+	}
+	if openCodeGoErr == nil && openCodeGoMethod == "apikey" {
+		if live, err := provider.DiscoverOpenCodeGo(ctx, openCodeGoCred, ""); err == nil {
 			all = filterModelsByProvider(all, "opencode-go")
 			authoritativeProviders = filterProviderNames(authoritativeProviders, "opencode-go")
 			all = append(all, live...)
 			authoritativeProviders = append(authoritativeProviders, "opencode-go")
+			providerScopes["opencode-go"] = credentialScope(openCodeGoCred)
 		}
 	}
 	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {

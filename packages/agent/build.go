@@ -649,7 +649,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// explicit model ids usable during the first refresh or while offline;
 	// the provider request will be the final authority if no catalog data is
 	// available yet.
-	if err != nil && provName == "opencode-go" {
+	if err != nil && provider.AcceptsUnlistedModels(provName) {
 		resolvedModel = provider.Model{
 			Provider:      provName,
 			ID:            model,

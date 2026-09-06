@@ -38,7 +38,7 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 	if model, err := FindModel(c.name, req.Model); err == nil {
 		api = model.API
 	}
-	if api == "" && c.name == "opencode-go" {
+	if api == "" && AcceptsUnlistedModels(c.name) {
 		// The OpenCode Go catalog is intentionally live-only. Preserve the
 		// family route for an explicit model while the first discovery is
 		// still in flight or unavailable.
