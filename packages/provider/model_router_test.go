@@ -50,11 +50,11 @@ func TestModelRouterRejectsMissingAPIClient(t *testing.T) {
 }
 
 func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
+	preserveActiveCatalog(t)
 	SetLiveModels([]Model{
 		{Provider: "opencode-go", ID: "gpt-5.6-luna", API: APIResponses},
 		{Provider: "opencode-go", ID: "kimi-k3"},
 	})
-	t.Cleanup(func() { SetLiveModels(nil) })
 
 	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
 	if got := router.fallback.(*openaiClient).baseURL; got != "https://example.com/go/v1" {
@@ -87,8 +87,8 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 }
 
 func TestOpenCodeGoRoutesUncataloguedGPT56ToResponses(t *testing.T) {
+	preserveActiveCatalog(t)
 	SetLiveModels(nil)
-	t.Cleanup(func() { SetLiveModels(nil) })
 
 	responses := &routeCaptureClient{name: "opencode-go"}
 	completions := &routeCaptureClient{name: "opencode-go"}

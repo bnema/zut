@@ -2,10 +2,30 @@ package provider
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func preserveActiveCatalog(t *testing.T) {
+	t.Helper()
+	activeMu.RLock()
+	previousActive := append([]Model(nil), active...)
+	for i := range previousActive {
+		previousActive[i].ReasoningLevelMap = maps.Clone(previousActive[i].ReasoningLevelMap)
+		previousActive[i].ReasoningEffortMap = maps.Clone(previousActive[i].ReasoningEffortMap)
+	}
+	previousSet := activeSet
+	activeMu.RUnlock()
+
+	t.Cleanup(func() {
+		activeMu.Lock()
+		active = previousActive
+		activeSet = previousSet
+		activeMu.Unlock()
+	})
+}
 
 func TestOpenCodeGoCatalogIsDiscoveredAtRuntime(t *testing.T) {
 	for _, model := range Catalog {

@@ -127,7 +127,7 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 }
 
 func runLocalZutfile(ref string, args Args, version string) error {
-	prepareRuntimeCatalog(false, "", "")
+	prepareRuntimeCatalog(false, args.Provider, args.APIKey)
 	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()

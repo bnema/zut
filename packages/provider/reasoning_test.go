@@ -113,6 +113,7 @@ func TestOpenAIRequestUsesReasoningLevelMap(t *testing.T) {
 }
 
 func TestOpenAIRequestUsesExactReasoningEffortMap(t *testing.T) {
+	preserveActiveCatalog(t)
 	SetLiveModels([]Model{{
 		Provider:           "opencode-go",
 		ID:                 "muse-spark-1.2-contributor",
@@ -120,7 +121,6 @@ func TestOpenAIRequestUsesExactReasoningEffortMap(t *testing.T) {
 		ReasoningLevelMap:  map[string]string{"minimum": "minimum"},
 		ReasoningEffortMap: map[string]string{"minimum": "minimal"},
 	}})
-	t.Cleanup(func() { SetLiveModels(nil) })
 
 	client := NewOpenAICompat("opencode-go", "test", "", "").(*openaiClient)
 	request, err := client.buildRequest(Request{Model: "muse-spark-1.2-contributor", Reasoning: "minimum"})
