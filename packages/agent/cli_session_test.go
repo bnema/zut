@@ -302,6 +302,30 @@ func TestPersistGoalToolResultRejectsActiveGoalReplacement(t *testing.T) {
 	}
 }
 
+func TestPersistGoalToolResultSupersedesActiveGoalInMission(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "try the legacy API", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+	missionID := sess.Meta.Mission.ID
+	originalID := sess.Meta.Goal.ID
+
+	result := core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalSuperseded, Objective: "use the supported API", MissionID: missionID}}
+	if err := persistGoalToolResult(sess, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Objective != "use the supported API" || got.Status != core.GoalActive || got.MissionID != missionID || got.Owner != core.GoalOwnerManager {
+		t.Fatalf("replacement goal = %#v", got)
+	}
+	if len(sess.Meta.GoalHistory) != 1 || sess.Meta.GoalHistory[0].ID != originalID || sess.Meta.GoalHistory[0].Status != core.GoalSuperseded {
+		t.Fatalf("goal history = %#v", sess.Meta.GoalHistory)
+	}
+}
+
 func TestPersistGoalToolResultCreatesNextGoalInMission(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {

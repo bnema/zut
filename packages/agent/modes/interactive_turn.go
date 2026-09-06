@@ -334,7 +334,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if terminalGoalError {
 			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
 		}
-		continueGoal := i.finishGoalRun()
+		goalContextLimited := lastStop == provider.StopLength
+		continueGoal := i.finishGoalRun(goalContextLimited)
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
@@ -370,7 +371,12 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			agentQueued = i.agent.QueuedMessageCount()
 		}
 		continueQueued := !awaitingPre && !hasNext && agentQueued > 0 && err == nil && ctx.Err() == nil
-		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		// A truncated autonomous goal needs fresh execution capacity even when
+		// context-usage metadata is absent or below the configured threshold.
+		// Route it through compaction rather than immediately reusing the same
+		// exhausted transcript.
+		goalNeedsFreshContext := continueGoal && goalContextLimited
+		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && (goalNeedsFreshContext || i.shouldAutoCompactLocked())
 		continueStatusRescue := false
 		var handoff json.RawMessage
 		var persistHandoff bool

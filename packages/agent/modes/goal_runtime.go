@@ -124,9 +124,11 @@ func (i *Interactive) observeGoalRun(ev core.AgentEvent) {
 }
 
 // finishGoalRun records accounting exactly once and returns whether the
-// controller should attempt another autonomous continuation. A stale run is
-// discarded without changing a newer goal.
-func (i *Interactive) finishGoalRun() bool {
+// controller should attempt another autonomous continuation. Context-limited
+// turns retain their prior progress classification because output truncation
+// is not evidence that the agent stopped acting. A stale run is discarded
+// without changing a newer goal.
+func (i *Interactive) finishGoalRun(contextLimited bool) bool {
 	i.mu.Lock()
 	run := i.goalRun
 	i.goalRun = nil
@@ -170,7 +172,10 @@ func (i *Interactive) finishGoalRun() bool {
 		i.setGoalStatus(goal)
 		return false
 	}
-	if run.hadTool {
+	if contextLimited {
+		// The compact handoff provisions a fresh turn below. Do not let an
+		// execution-capacity boundary consume the no-progress allowance.
+	} else if run.hadTool {
 		goal.ConsecutiveNoProgressTurns = 0
 	} else {
 		goal.ConsecutiveNoProgressTurns++

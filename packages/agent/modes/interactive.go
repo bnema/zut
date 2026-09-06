@@ -566,6 +566,7 @@ const (
 	compactContinuationNone compactContinuationReason = iota
 	compactContinuationStructuralTail
 	compactContinuationForcedLength
+	compactContinuationGoal
 	compactContinuationStatusRescue
 )
 
@@ -598,6 +599,10 @@ func decodeCompactHandoff(raw json.RawMessage) compactContinuationState {
 		if persisted.RescueAttempts == 0 {
 			return compactContinuationState{reason: compactContinuationForcedLength}
 		}
+	case "goal":
+		if persisted.RescueAttempts == 0 {
+			return compactContinuationState{reason: compactContinuationGoal}
+		}
 	case "status_rescue":
 		if persisted.RescueAttempts >= 1 && persisted.RescueAttempts <= maxStatusRescueContinuations {
 			return compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: persisted.RescueAttempts}
@@ -613,6 +618,8 @@ func encodeCompactHandoff(state compactContinuationState) json.RawMessage {
 		reason = "structural_tail"
 	case compactContinuationForcedLength:
 		reason = "forced_length"
+	case compactContinuationGoal:
+		reason = "goal"
 	case compactContinuationStatusRescue:
 		reason = "status_rescue"
 	default:

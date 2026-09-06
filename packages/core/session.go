@@ -65,6 +65,7 @@ const (
 	GoalDone          GoalStatus = "done"
 	GoalBudgetLimited GoalStatus = "budget_limited"
 	GoalStalled       GoalStatus = "stalled"
+	GoalSuperseded    GoalStatus = "superseded"
 )
 
 // GoalOwner identifies who established a session goal. Missing owners in
@@ -1308,6 +1309,28 @@ func (s *Session) UpdateGoal(goal *SessionGoal) error {
 	return nil
 }
 
+// SupersedeGoal atomically archives the active goal as superseded and starts
+// its replacement in the same mission. Mission assignment enforces the normal
+// manager transition bound.
+func (s *Session) SupersedeGoal(replacement *SessionGoal) error {
+	if s == nil {
+		return nil
+	}
+	if s.Meta.Goal == nil || s.Meta.Goal.Status != GoalActive || replacement == nil || replacement.Status != GoalActive {
+		return errors.New("supersede goal requires an active goal and replacement")
+	}
+	original := cloneSessionGoal(s.Meta.Goal)
+	superseded := *original
+	superseded.Status = GoalSuperseded
+	superseded.Reason = "superseded by a new goal"
+	s.Meta.Goal = &superseded
+	if err := s.UpdateGoal(replacement); err != nil {
+		s.Meta.Goal = original
+		return fmt.Errorf("supersede goal: %w", err)
+	}
+	return nil
+}
+
 // UpdateGoalRuntime persists mutable execution state without treating each
 // continuation as a mission transition. The goal ID must match the current
 // goal so stale workers cannot overwrite a newer user or manager goal.
@@ -1375,7 +1398,7 @@ func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
 		case GoalPaused:
 			mission.Status = MissionPaused
 			mission.Reason = ""
-		case GoalBlocked, GoalBudgetLimited, GoalStalled:
+		case GoalBlocked, GoalBudgetLimited, GoalStalled, GoalSuperseded:
 			mission.Status = MissionBlocked
 			mission.Reason = goal.Reason
 		}

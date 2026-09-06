@@ -69,6 +69,54 @@ type autoCompactPacerClient struct {
 	calls int
 }
 
+type goalLengthClient struct {
+	requests chan provider.Request
+	onThird  func()
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *goalLengthClient) Name() string { return "goal-length-test" }
+
+func (c *goalLengthClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+
+	out := make(chan provider.Event, 2)
+	go func() {
+		defer close(out)
+		c.requests <- req
+		switch call {
+		case 1:
+			out <- provider.EventDone{
+				Stop: provider.StopLength,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: "partial work"}},
+				},
+			}
+		case 2:
+			out <- provider.EventTextDelta{Delta: "durable summary"}
+			out <- provider.EventDone{Stop: provider.StopEnd}
+		default:
+			if c.onThird != nil {
+				c.onThird()
+			}
+			out <- provider.EventDone{
+				Stop: provider.StopEnd,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: "continued"}},
+				},
+			}
+		}
+	}()
+	return out, nil
+}
+
 func (c *autoCompactPacerClient) Name() string { return "auto-compact-pacer-test" }
 
 func (c *autoCompactPacerClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
@@ -139,6 +187,114 @@ func TestAutoCompactionSettlesFinalStreamingStateBeforeCompacting(t *testing.T) 
 	}
 
 	close(client.releaseCompaction)
+}
+
+func TestActiveGoalLengthStopCompactsAndContinuesAsGoal(t *testing.T) {
+	var goalMu sync.Mutex
+	goal := &core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		goalMu.Lock()
+		defer goalMu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		goalMu.Lock()
+		goal = cloneSessionGoal(next)
+		goalMu.Unlock()
+		return nil
+	}
+	client := &goalLengthClient{
+		requests: make(chan provider.Request, 3),
+		onThird: func() {
+			_ = persistGoal(&core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalPaused})
+		},
+	}
+	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:       agent,
+		CurrentGoal: currentGoal,
+		PersistGoal: persistGoal,
+	})
+	interactive.runCtx = context.Background()
+
+	run, err := interactive.startGoalRun(currentGoal())
+	if err != nil || run == nil {
+		t.Fatalf("start goal run = (%v, %v)", run, err)
+	}
+	interactive.startGoalContinuation(context.Background(), mustGoalContinuationMessage(t, interactive), run)
+
+	first := receiveRequest(t, client.requests)
+	if first.Messages[len(first.Messages)-1].Meta[goalContinueMetaKey] != "true" {
+		t.Fatalf("initial request tail = %#v, want goal continuation", first.Messages)
+	}
+	compaction := receiveRequest(t, client.requests)
+	if compaction.MaxTokens != 4096 {
+		t.Fatalf("second request MaxTokens = %d, want compaction request", compaction.MaxTokens)
+	}
+	continued := receiveRequest(t, client.requests)
+	if continued.Messages[len(continued.Messages)-1].Meta[goalContinueMetaKey] != "true" {
+		t.Fatalf("post-compaction request tail = %#v, want leased goal continuation", continued.Messages)
+	}
+
+	waitInteractiveIdle(t, interactive)
+}
+
+func TestRestoredGoalCompactHandoffResumesWithGoalLease(t *testing.T) {
+	var goalMu sync.Mutex
+	goal := &core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalActive}
+	currentGoal := func() *core.SessionGoal {
+		goalMu.Lock()
+		defer goalMu.Unlock()
+		return cloneSessionGoal(goal)
+	}
+	persistGoal := func(next *core.SessionGoal) error {
+		goalMu.Lock()
+		goal = cloneSessionGoal(next)
+		goalMu.Unlock()
+		return nil
+	}
+	client := &goalLengthClient{
+		requests: make(chan provider.Request, 1),
+		calls:    2,
+		onThird: func() {
+			_ = persistGoal(&core.SessionGoal{ID: "goal-1", Objective: "finish the goal", Status: core.GoalPaused})
+		},
+	}
+	agent := core.NewAgent(client, "test-model", "", goalToolRegistry())
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                 agent,
+		CurrentGoal:           currentGoal,
+		PersistGoal:           persistGoal,
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"goal"}`),
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startRestoredCompactHandoff(context.Background())
+	request := receiveRequest(t, client.requests)
+	if request.Messages[len(request.Messages)-1].Meta[goalContinueMetaKey] != "true" {
+		t.Fatalf("restored request tail = %#v, want goal continuation", request.Messages)
+	}
+	waitInteractiveIdle(t, interactive)
+}
+
+func mustGoalContinuationMessage(t *testing.T, interactive *Interactive) provider.Message {
+	t.Helper()
+	message, ok := interactive.goalContinuationMessage()
+	if !ok {
+		t.Fatal("goal continuation message unavailable")
+	}
+	return message
+}
+
+func receiveRequest(t *testing.T, requests <-chan provider.Request) provider.Request {
+	t.Helper()
+	select {
+	case req := <-requests:
+		return req
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider request")
+		return provider.Request{}
+	}
 }
 
 func TestActiveGoalContinuesAfterAutomaticCompaction(t *testing.T) {
