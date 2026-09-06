@@ -53,10 +53,10 @@ func TestFilterCacheByProviderScopesRemovesRotatedOpenCodeGoCredential(t *testin
 	cache := provider.ModelCache{
 		Models:                 []provider.Model{{Provider: "opencode-go", ID: "old-key-model"}},
 		AuthoritativeProviders: []string{"opencode-go"},
-		ProviderScopes:         map[string]string{"opencode-go": credentialScope("old-key")},
+		ProviderScopes:         map[string]string{"opencode-go": credentialScopeForEndpoint("old-key", "")},
 	}
 
-	filtered := filterCacheByProviderScopes(cache, map[string]string{"opencode-go": credentialScope("new-key")})
+	filtered := filterCacheByProviderScopes(cache, map[string]string{"opencode-go": credentialScopeForEndpoint("new-key", "")})
 	if len(filtered.Models) != 0 || len(filtered.AuthoritativeProviders) != 0 || len(filtered.ProviderScopes) != 0 {
 		t.Fatalf("rotated OpenCode Go cache was retained: %+v", filtered)
 	}
@@ -72,16 +72,28 @@ func TestLoadCachedModelsFiltersExplicitOpenCodeGoCredentialScope(t *testing.T) 
 		FetchedAt:              time.Now(),
 		Models:                 []provider.Model{{Provider: "opencode-go", ID: "old-key-model"}},
 		AuthoritativeProviders: []string{"opencode-go"},
-		ProviderScopes:         map[string]string{"opencode-go": credentialScope("old-key")},
+		ProviderScopes:         map[string]string{"opencode-go": credentialScopeForEndpoint("old-key", "")},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	provider.SetLiveModels(nil)
 	t.Cleanup(func() { provider.SetLiveModels(nil) })
 
-	loadCachedModels(map[string]string{"opencode-go": credentialScope("new-key")})
+	loadCachedModels(map[string]string{"opencode-go": credentialScopeForEndpoint("new-key", "")})
 	if _, err := provider.FindModel("opencode-go", "old-key-model"); err == nil {
 		t.Fatal("cached model from another OpenCode Go credential remained active")
+	}
+}
+
+func TestLoadCachedModelsClearsMismatchedActiveOpenCodeGoOverlay(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	provider.SetLiveModels([]provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "stale-model", BaseURL: "https://old.example/v1"}})
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	loadCachedModels(map[string]string{provider.ProviderOpenCodeGo: credentialScopeForEndpoint("new-key", "https://new.example/v1")})
+	if _, err := provider.FindModel(provider.ProviderOpenCodeGo, "stale-model"); err == nil {
+		t.Fatal("mismatched OpenCode Go metadata remained active after cache filtering")
 	}
 }
 
@@ -244,18 +256,385 @@ func TestResolveAllowsUnknownOpenCodeGoModelBeforeDiscovery(t *testing.T) {
 	}
 }
 
+func TestValidateAndRepairConfigPreservesPaddedDynamicModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	const model = "muse-spark-1.2-contributor"
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"provider":"opencode-go","model":" `+model+` "}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ValidateAndRepairConfig()
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "opencode-go" || cfg.Model != " "+model+" " {
+		t.Fatalf("padded dynamic model was repaired: provider=%q model=%q", cfg.Provider, cfg.Model)
+	}
+	resolved, err := Resolve(Args{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != model {
+		t.Fatalf("resolved model = %q, want trimmed dynamic id", resolved.Model)
+	}
+}
+
+func TestResolveTrimsModelID(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+
+	resolved, err := Resolve(Args{Provider: "openai", Model: " gpt-5.6-sol "}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "gpt-5.6-sol" {
+		t.Fatalf("resolved model = %q, want trimmed id", resolved.Model)
+	}
+}
+
+func TestResolveTreatsWhitespaceConfigModelAsMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"provider":"openai","model":" \t "}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(Args{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Provider != "openai" || resolved.Model != defaultModelForProvider("openai") {
+		t.Fatalf("whitespace config model resolved to provider=%q model=%q", resolved.Provider, resolved.Model)
+	}
+}
+
 func TestCurrentModelProviderScopesHashesOpenCodeGoCredential(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	const key = "synthetic-opencode-key"
 	t.Setenv("OPENCODE_API_KEY", key)
 
 	scopes := currentModelProviderScopes()
-	if got, want := scopes["opencode-go"], credentialScope(key); got != want {
+	if got, want := scopes["opencode-go"], credentialScopeForEndpoint(key, ""); got != want {
 		t.Fatalf("OpenCode Go scope = %q, want %q", got, want)
+	}
+	if got, other := scopes["opencode-go"], credentialScopeForEndpoint(key, "https://proxy.example/v1"); got == other {
+		t.Fatal("OpenCode Go cache scope did not change with the endpoint")
 	}
 	if scopes["opencode-go"] == key {
 		t.Fatal("OpenCode Go credential was stored directly in its cache scope")
 	}
+}
+
+func TestRefreshModelsUsesExplicitOpenCodeGoEndpoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	const (
+		key     = "synthetic-proxy-key"
+		baseURL = "https://proxy.example/v1"
+		modelID = "proxy-model"
+	)
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	var gotKey, gotBaseURL string
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		gotKey, gotBaseURL = apiKey, endpoint
+		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: modelID, BaseURL: endpoint, Source: "live"}}, nil
+	}
+
+	refreshModels(provider.ProviderOpenCodeGo, key, baseURL, provider.ProviderOpenCodeGo)
+	if gotKey != key || gotBaseURL != baseURL {
+		t.Fatalf("discovery received key=%q endpoint=%q, want key=%q endpoint=%q", gotKey, gotBaseURL, key, baseURL)
+	}
+	cache, err := provider.LoadCache(ModelCachePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.ProviderScopes[provider.ProviderOpenCodeGo] != credentialScopeForEndpoint(key, baseURL) {
+		t.Fatalf("cache scope = %q, want endpoint-scoped credential", cache.ProviderScopes[provider.ProviderOpenCodeGo])
+	}
+}
+
+func TestRefreshModelsReplacesUnchangedOpenCodeGoScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	const (
+		oldKey  = "synthetic-old-key"
+		oldBase = "https://old.example/v1"
+		newKey  = "synthetic-new-key"
+		newBase = "https://new.example/v1"
+	)
+	if err := provider.SaveCache(ModelCachePath(), provider.ModelCache{
+		Version:                2,
+		FetchedAt:              time.Now().Add(-48 * time.Hour),
+		Models:                 []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "old-model", BaseURL: oldBase}},
+		AuthoritativeProviders: []string{provider.ProviderOpenCodeGo},
+		ProviderScopes:         map[string]string{provider.ProviderOpenCodeGo: credentialScope(oldKey)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		if apiKey != newKey || endpoint != newBase {
+			t.Fatalf("discovery inputs = key %q endpoint %q", apiKey, endpoint)
+		}
+		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "new-model", BaseURL: endpoint, Source: "live"}}, nil
+	}
+
+	refreshModels(provider.ProviderOpenCodeGo, newKey, newBase, provider.ProviderOpenCodeGo)
+	cache, err := provider.LoadCache(ModelCachePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.ProviderScopes[provider.ProviderOpenCodeGo] != credentialScopeForEndpoint(newKey, newBase) {
+		t.Fatalf("scope = %q, want new endpoint-scoped scope", cache.ProviderScopes[provider.ProviderOpenCodeGo])
+	}
+	if _, ok := findCachedModel(cache.Models, provider.ProviderOpenCodeGo, "new-model"); !ok {
+		t.Fatalf("new OpenCode Go model missing: %+v", cache.Models)
+	}
+	if cache.IsFresh() {
+		t.Fatal("partial upgrade of a legacy cache must still require a full refresh")
+	}
+}
+
+func TestResolveSDKUsesUserModelEndpointForDiscovery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+	provider.SetLiveModels(nil)
+	provider.SetUserModels(nil)
+	t.Cleanup(func() {
+		provider.SetLiveModels(nil)
+		provider.SetUserModels(nil)
+	})
+
+	const (
+		key     = "synthetic-proxy-key"
+		baseURL = "https://model-proxy.example/v1"
+		modelID = "proxy-model"
+	)
+	if err := os.WriteFile(UserModelsPath(), []byte(`{"providers":{"opencode-go":{"models":[{"id":"`+modelID+`","baseUrl":"`+baseURL+`"}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	called := make(chan struct{}, 1)
+	var gotKey, gotBaseURL string
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		gotKey, gotBaseURL = apiKey, endpoint
+		called <- struct{}{}
+		return nil, fmt.Errorf("synthetic discovery stop")
+	}
+
+	resolved, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, Model: modelID, APIKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.BaseURL != baseURL {
+		t.Fatalf("resolved base URL = %q, want user model endpoint %q", resolved.BaseURL, baseURL)
+	}
+	select {
+	case <-called:
+		if gotKey != key || gotBaseURL != baseURL {
+			t.Fatalf("discovery received key=%q endpoint=%q, want key=%q endpoint=%q", gotKey, gotBaseURL, key, baseURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenCode Go discovery was not invoked")
+	}
+}
+
+func TestResolveSDKDoesNotInheritLiveEndpointForMetadataOnlyUserModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "")
+	provider.SetLiveModels([]provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "metadata-only", BaseURL: "https://old.example/v1", Source: "live"}})
+	provider.SetUserModels(nil)
+	t.Cleanup(func() {
+		provider.SetLiveModels(nil)
+		provider.SetUserModels(nil)
+	})
+	if err := os.WriteFile(UserModelsPath(), []byte(`{"providers":{"opencode-go":{"models":[{"id":"metadata-only","contextWindow":90000}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const key = "synthetic-metadata-key"
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	called := make(chan string, 1)
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		if apiKey != key {
+			t.Errorf("discovery key = %q, want %q", apiKey, key)
+		}
+		called <- endpoint
+		return nil, fmt.Errorf("synthetic discovery stop")
+	}
+
+	resolved, err := ResolveSDK(Args{Provider: provider.ProviderOpenCodeGo, Model: "metadata-only", APIKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.BaseURL != "" {
+		t.Fatalf("metadata-only user model inherited base URL %q", resolved.BaseURL)
+	}
+	select {
+	case endpoint := <-called:
+		if endpoint != "" {
+			t.Fatalf("discovery endpoint = %q, want default endpoint", endpoint)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenCode Go discovery was not invoked")
+	}
+}
+
+func TestResolveSDKFollowsActiveModelProfile(t *testing.T) {
+	const (
+		key     = "synthetic-profile-key"
+		baseURL = "https://profile-proxy.example/v1"
+	)
+	for _, tc := range []struct {
+		name            string
+		topProvider     string
+		topModel        string
+		profileProvider string
+		profileModel    string
+		wantContext     int
+		wantCachedModel bool
+	}{
+		{
+			name:            "profile switches to OpenCode Go",
+			topProvider:     provider.ProviderAnthropic,
+			topModel:        "claude-sonnet-4-5",
+			profileProvider: provider.ProviderOpenCodeGo,
+			profileModel:    "profile-opencode-model",
+			wantContext:     654321,
+			wantCachedModel: true,
+		},
+		{
+			name:            "profile switches away from OpenCode Go",
+			topProvider:     provider.ProviderOpenCodeGo,
+			topModel:        "profile-opencode-model",
+			profileProvider: provider.ProviderAnthropic,
+			profileModel:    "claude-sonnet-4-5",
+			wantCachedModel: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("ZUT_HOME", home)
+			provider.SetLiveModels(nil)
+			provider.SetUserModels(nil)
+			t.Cleanup(func() {
+				provider.SetLiveModels(nil)
+				provider.SetUserModels(nil)
+			})
+
+			if err := SaveConfig(Config{
+				Provider:           tc.topProvider,
+				Model:              tc.topModel,
+				ActiveModelProfile: 1,
+				QuickModelShortcuts: []QuickModelShortcut{{
+					Provider: tc.profileProvider,
+					Model:    tc.profileModel,
+				}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantCachedModel {
+				if err := provider.SaveCache(filepath.Join(home, "models-cache.json"), provider.ModelCache{
+					Version:                provider.ModelCacheVersion,
+					FetchedAt:              time.Now().UTC(),
+					Models:                 []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: tc.profileModel, ContextWindow: tc.wantContext, MaxOutput: 8192, BaseURL: baseURL}},
+					AuthoritativeProviders: []string{provider.ProviderOpenCodeGo},
+					ProviderScopes:         map[string]string{provider.ProviderOpenCodeGo: credentialScopeForEndpoint(key, baseURL)},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			modelCatalogMu.Lock()
+			_, _ = prepareRuntimeCatalog("", key, baseURL, "")
+			resolved, err := Resolve(Args{APIKey: key, BaseURL: baseURL}, false)
+			modelCatalogMu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Provider != tc.profileProvider || resolved.Model != tc.profileModel {
+				t.Fatalf("resolved profile = provider=%q model=%q, want provider=%q model=%q", resolved.Provider, resolved.Model, tc.profileProvider, tc.profileModel)
+			}
+			if tc.wantCachedModel && resolved.ContextWindow != tc.wantContext {
+				t.Fatalf("cached OpenCode Go context = %d, want %d", resolved.ContextWindow, tc.wantContext)
+			}
+		})
+	}
+}
+
+func TestPartialOpenCodeGoRefreshPreservesFullCatalogFreshness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	const (
+		key     = "synthetic-partial-key"
+		baseURL = "https://partial-proxy.example/v1"
+	)
+	staleAt := time.Now().Add(-48 * time.Hour)
+	if err := provider.SaveCache(ModelCachePath(), provider.ModelCache{
+		Version:   provider.ModelCacheVersion,
+		FetchedAt: staleAt,
+		Models: []provider.Model{
+			{Provider: provider.ProviderOpenAI, ID: "cached-openai"},
+			{Provider: provider.ProviderOpenCodeGo, ID: "old-opencode"},
+		},
+		AuthoritativeProviders: []string{provider.ProviderOpenCodeGo},
+		ProviderScopes:         map[string]string{provider.ProviderOpenCodeGo: credentialScopeForEndpoint(key, baseURL)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previous := discoverOpenCodeGoFn
+	t.Cleanup(func() { discoverOpenCodeGoFn = previous })
+	calls := 0
+	discoverOpenCodeGoFn = func(_ context.Context, apiKey, endpoint string) ([]provider.Model, error) {
+		calls++
+		if apiKey != key || endpoint != baseURL {
+			t.Fatalf("discovery inputs = key %q endpoint %q", apiKey, endpoint)
+		}
+		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "new-opencode", Source: "live"}}, nil
+	}
+
+	refreshModels(provider.ProviderOpenCodeGo, key, baseURL, provider.ProviderOpenCodeGo)
+	partial, err := provider.LoadCache(ModelCachePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial.IsFresh() {
+		t.Fatal("partial OpenCode Go refresh made a stale full catalog fresh")
+	}
+	if _, ok := findCachedModel(partial.Models, provider.ProviderOpenAI, "cached-openai"); !ok {
+		t.Fatalf("partial refresh dropped unrelated cached model: %+v", partial.Models)
+	}
+
+	refreshModels(provider.ProviderOpenCodeGo, key, baseURL, "")
+	if calls != 2 {
+		t.Fatalf("full refresh calls = %d, want a refresh after partial stale cache", calls)
+	}
+}
+
+func findCachedModel(models []provider.Model, providerName, id string) (provider.Model, bool) {
+	for _, model := range models {
+		if model.Provider == providerName && model.ID == id {
+			return model, true
+		}
+	}
+	return provider.Model{}, false
 }
 
 func TestNeedsOpenCodeGoRefreshWhenCredentialAppearsAfterCache(t *testing.T) {

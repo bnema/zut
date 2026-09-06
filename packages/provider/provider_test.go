@@ -205,16 +205,45 @@ func TestComputeCostInputTier(t *testing.T) {
 		PriceTierInputTokens: 100,
 		PriceInputAbove:      3, PriceOutputAbove: 4, PriceCacheReadAbove: 0.2,
 	}
-	below := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 50})
-	wantBelow := (50.0*1 + 10*2 + 50*0.1) / 1_000_000
+	below := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 49})
+	wantBelow := (50.0*1 + 10*2 + 49*0.1) / 1_000_000
 	if math.Abs(below-wantBelow) > 1e-12 {
 		t.Fatalf("below-tier cost=%v want=%v", below, wantBelow)
 	}
 
-	above := ComputeCost(m, Usage{InputTokens: 51, OutputTokens: 10, CacheReadTokens: 50})
-	wantAbove := (51.0*3 + 10*4 + 50*0.2) / 1_000_000
-	if math.Abs(above-wantAbove) > 1e-12 {
-		t.Fatalf("above-tier cost=%v want=%v", above, wantAbove)
+	atThreshold := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 50})
+	wantAtThreshold := (50.0*3 + 10*4 + 50*0.2) / 1_000_000
+	if math.Abs(atThreshold-wantAtThreshold) > 1e-12 {
+		t.Fatalf("at-tier cost=%v want=%v", atThreshold, wantAtThreshold)
+	}
+}
+
+func TestComputeCostMultipleInputTiers(t *testing.T) {
+	m := Model{
+		PriceInput: 1,
+		PriceTiers: []ModelPriceTier{
+			{InputTokens: 500000, PriceInput: 5},
+			{InputTokens: 272000, PriceInput: 3},
+		},
+	}
+	for _, tc := range []struct {
+		name  string
+		input int
+		price float64
+	}{
+		{"below_first", 271999, 1},
+		{"at_first", 272000, 3},
+		{"between", 499999, 3},
+		{"at_second", 500000, 5},
+		{"above_second", 600000, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ComputeCost(m, Usage{InputTokens: tc.input})
+			want := float64(tc.input) * tc.price / 1_000_000
+			if math.Abs(got-want) > 1e-12 {
+				t.Fatalf("cost = %.12f, want %.12f", got, want)
+			}
+		})
 	}
 }
 

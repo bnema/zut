@@ -42,6 +42,7 @@ type openaiClient struct {
 	oauth               bool // when true, apiKey actually holds an OAuth access token
 	headers             map[string]string
 	http                *http.Client
+	modelOverrides      map[string]Model
 }
 
 // NewOpenAI creates an OpenAI client using an API key. baseURL may be empty.
@@ -113,6 +114,13 @@ func (c *openaiClient) Name() string {
 	return "openai"
 }
 
+func (c *openaiClient) SetModelMetadata(model Model) {
+	if c.modelOverrides == nil {
+		c.modelOverrides = make(map[string]Model)
+	}
+	c.modelOverrides[model.ID] = cloneModel(model)
+}
+
 // ---- wire types ----
 
 type oaiContentText struct {
@@ -181,16 +189,26 @@ type oaiRequest struct {
 
 // ---- request building ----
 
+func (c *openaiClient) modelForRequest(id string) (Model, error) {
+	id = strings.TrimSpace(id)
+	if model, ok := c.modelOverrides[id]; ok {
+		return model, nil
+	}
+	model, err := FindModel(c.Name(), id)
+	if err != nil {
+		model, err = FindModel("", id)
+	}
+	return model, err
+}
+
 func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
 		return nil, err
 	}
 	// The OpenAI wire client is shared by many providers, so prefer its own
 	// provider namespace before falling back to a provider-agnostic lookup.
-	m, err := FindModel(c.Name(), req.Model)
-	if err != nil {
-		m, err = FindModel("", req.Model)
-	}
+	m, err := c.modelForRequest(req.Model)
 	if err != nil {
 		// Unknown model: use sensible defaults so local/custom
 		// models still work without a catalog entry.
@@ -494,6 +512,7 @@ func (c *openaiClient) chatCompletionsURL() string {
 }
 
 func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	endpoint := c.chatCompletionsURL()
 	wire, err := c.buildRequest(req)
 	if err != nil {
@@ -536,7 +555,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer close(out)
 	defer resp.Body.Close()
 
-	model, _ := FindModel("", req.Model)
+	model, _ := c.modelForRequest(req.Model)
 	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)

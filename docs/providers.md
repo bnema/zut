@@ -139,8 +139,10 @@ and enriches them with names, limits, prices, and reasoning options from the
 [OpenCode Go provider page](https://models.dev/providers/opencode-go/). The
 result is authoritative for OpenCode Go, so models removed from the provider
 are removed from the picker as well. The merged catalog is cached in
-`$ZUT_HOME/models-cache.json` for 24 hours; `--list-models` waits for a refresh
-when the cache is stale.
+`$ZUT_HOME/models-cache.json` for 24 hours; OpenCode Go entries are scoped to
+both the credential fingerprint and endpoint. `--list-models` waits for a
+refresh when the cache is stale, while SDK runtimes load matching cached
+metadata before resolving.
 
 Example:
 

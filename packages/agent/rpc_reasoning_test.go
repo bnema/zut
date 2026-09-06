@@ -17,12 +17,12 @@ func TestRPCSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 		agent:    &core.Agent{Model: "kimi-k2.6"},
 		out:      &out,
 	}
-	s.dispatch("set_model", "1", []byte(`{"model":"`+model+`"}`))
+	s.dispatch("set_model", "1", []byte(`{"model":"  `+model+`  "}`))
 
 	if s.agent.Model != model || s.model != model {
-		t.Fatalf("model = agent:%q server:%q, want %q", s.agent.Model, s.model, model)
+		t.Fatalf("model = agent:%q server:%q, want trimmed %q", s.agent.Model, s.model, model)
 	}
-	if !strings.Contains(out.String(), `"success":true`) {
+	if !strings.Contains(out.String(), `"success":true`) || !strings.Contains(out.String(), `"model":"`+model+`"`) {
 		t.Fatalf("response = %q", out.String())
 	}
 }

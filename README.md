@@ -310,7 +310,7 @@ Single-part names resolve only to a matching local directory or `.zut` archive. 
 
 Two ways to drive zut from another program:
 
-- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`. One `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. `sdk.Config.MaxSteps` is unlimited when zero; embedders preserving the former SDK default should set it to `50` explicitly. Small example in `examples/sdk/`.
+- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`. One `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. The SDK loads the credential- and endpoint-scoped model cache before resolving a runtime, including dynamic OpenCode Go metadata. `sdk.Config.MaxSteps` is unlimited when zero; embedders preserving the former SDK default should set it to `50` explicitly. Small example in `examples/sdk/`.
 - **Any language, out-of-process**: spawn `zut rpc` as a subprocess and exchange newline-delimited JSON over its stdin/stdout. Wire format and event schema in [docs/rpc.md](docs/rpc.md). Reference clients live under `examples/rpc/`.
 
 Both interfaces share the same event schema, so transcripts captured by one can be replayed through the other.
@@ -536,7 +536,7 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 `--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
 
 - **Catalog**: models baked into zut, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
-- **Live**: IDs discovered from provider model endpoints using your stored API key (cached for 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup). OpenCode Go joins its authoritative `https://opencode.ai/zen/go/v1/models` list with limits, prices, names, and reasoning metadata from `https://models.dev/api.json`; models.dev is the JSON source behind the linked provider page.
+- **Live**: IDs discovered from provider model endpoints using your stored API key (cached for 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup). OpenCode Go joins its authoritative `https://opencode.ai/zen/go/v1/models` list with limits, prices, names, and reasoning metadata from `https://models.dev/api.json`; its cache is scoped to the credential fingerprint and endpoint, and SDK runtimes load matching cached metadata before resolving. models.dev is the JSON source behind the linked provider page.
 - **Speculative**: IDs that appear in the upstream generator but aren't live on the public API yet. They'll 404 today and start working the moment the provider ships them.
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed. Tool output is still shown in full through the normal transcript rendering and retained in the session transcript. To keep long-running sessions usable, zut bounds the historical tool-result text included in provider-facing context; this projection affects what is sent to the model, not what is displayed or persisted, and it preserves the tool-call/result structure.

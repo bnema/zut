@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -75,7 +76,9 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"object":"list","data":[
 				{"id":"muse-spark-1.2-contributor","object":"model"},
-				{"id":"future-model","object":"model"}
+				{"id":"future-model","object":"model"},
+				{"id":"  padded-model  ","object":"model"},
+				{"id":" \t ","object":"model"}
 			]}`))
 		default:
 			http.NotFound(w, r)
@@ -87,8 +90,8 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("models = %+v, want two served models", models)
+	if len(models) != 3 {
+		t.Fatalf("models = %+v, want three nonblank served models", models)
 	}
 
 	if got := models[0]; got.Provider != "opencode-go" || got.ID != "muse-spark-1.2-contributor" || got.DisplayName != "Muse Spark 1.2 Contributor" || got.ContextWindow != 1048576 || got.MaxOutput != 131072 || !got.Reasoning || got.PriceInput != 0.1 || got.PriceOutput != 0.2 || got.PriceCacheRead != 0.002 || got.PriceCacheWrite != 0.003 || got.PriceTierInputTokens != 272000 || got.PriceInputAbove != 0.4 || got.PriceOutputAbove != 0.8 || got.PriceCacheReadAbove != 0.004 || got.PriceCacheWriteAbove != 0.005 || got.BaseURL != server.URL+"/v1" || got.Source != "live" {
@@ -101,8 +104,31 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 		t.Fatalf("reasoning effort map = %#v, want minimal/xhigh wire values", got)
 	}
 
+	if got := models[0].PriceTiers; len(got) != 2 || got[0].InputTokens != 272000 || got[0].PriceInput != 0.4 || got[1].InputTokens != 500000 || got[1].PriceInput != 0.9 {
+		t.Fatalf("price tiers = %+v, want sorted 272k/500k tiers", got)
+	}
+	for _, tc := range []struct {
+		name  string
+		input int
+		want  float64
+	}{
+		{"below_first", 271999, 271999 * 0.1 / 1_000_000},
+		{"at_272k", 272000, 272000 * 0.4 / 1_000_000},
+		{"at_500k", 500000, 500000 * 0.9 / 1_000_000},
+		{"above_500k", 600000, 600000 * 0.9 / 1_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ComputeCost(models[0], Usage{InputTokens: tc.input}); math.Abs(got-tc.want) > 1e-12 {
+				t.Fatalf("cost = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
 	if got := models[1]; got.Provider != "opencode-go" || got.ID != "future-model" || got.DisplayName != "future-model" || got.BaseURL != server.URL+"/v1" || got.Source != "live" || got.ContextWindow != 0 || got.MaxOutput != 0 || got.Reasoning {
 		t.Fatalf("unmapped live model = %+v", got)
+	}
+	if got := models[2]; got.ID != "padded-model" || got.DisplayName != "padded-model" {
+		t.Fatalf("padded live model = %+v, want trimmed id", got)
 	}
 }
 

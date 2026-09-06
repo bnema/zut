@@ -128,11 +128,23 @@ func NewOpenCode(apiKey, baseURL string) Client {
 // Model availability and metadata are synchronized by the agent package at
 // startup; this constructor keeps a bootstrap endpoint for early requests.
 func NewOpenCodeGo(apiKey, baseURL string) Client {
-	return NewModelRouter("opencode-go",
-		NewOpenAICompat("opencode-go", apiKey, baseURL, openCodeGoDefaultBaseURL),
-		map[string]Client{
-			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, openCodeGoDefaultBaseURL), "opencode-go"),
-		})
+	return NewOpenCodeGoWithModels(apiKey, baseURL, nil)
+}
+
+// NewOpenCodeGoWithModels creates an OpenCode Go client with a private
+// snapshot of model metadata. Runtime-owned clients use this to keep one
+// SDK runtime's credential and endpoint metadata isolated from another's
+// process-global catalog refresh.
+func NewOpenCodeGoWithModels(apiKey, baseURL string, models []Model) Client {
+	fallback := NewOpenAICompat(ProviderOpenCodeGo, apiKey, baseURL, OpenCodeGoDefaultBaseURL)
+	responses := NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, OpenCodeGoDefaultBaseURL), ProviderOpenCodeGo)
+	router := NewModelRouter(ProviderOpenCodeGo, fallback, map[string]Client{
+		APIResponses: responses,
+	}).(*modelRouter)
+	for _, model := range models {
+		router.SetModelMetadata(model)
+	}
+	return router
 }
 
 // NewMinimaxOpenAI is the OpenAI-completions flavor of MiniMax, in case

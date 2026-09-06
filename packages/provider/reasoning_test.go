@@ -132,6 +132,40 @@ func TestOpenAIRequestUsesExactReasoningEffortMap(t *testing.T) {
 	}
 }
 
+func TestModelsDevReasoningMapsRestrictResponsesDefaults(t *testing.T) {
+	levelMap, effortMap := modelsDevReasoningMaps(true, []modelsDevReasoningOption{{
+		Type:   "effort",
+		Values: []string{"low", "medium", "high"},
+	}})
+	model := Model{
+		Provider:           "opencode-go",
+		ID:                 "gpt-5.6-restricted",
+		API:                APIResponses,
+		Reasoning:          true,
+		ReasoningLevelMap:  levelMap,
+		ReasoningEffortMap: effortMap,
+	}
+	wantLevels := []string{"", "low", "medium", "high"}
+	if got := AvailableReasoningLevels(model); !slices.Equal(got, wantLevels) {
+		t.Fatalf("available levels = %q, want %q", got, wantLevels)
+	}
+	if got := ClampReasoningForModel(model, "max"); got != "high" {
+		t.Fatalf("clamped max = %q, want high", got)
+	}
+
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{model})
+	named := NewOpenAIResponsesNamed("token", "https://example.test/v1", "opencode-go").(*renamedClient)
+	client := named.inner.(*codexClient)
+	wire, err := client.buildRequest(Request{Model: model.ID, Reasoning: "max"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Reasoning == nil || wire.Reasoning.Effort != "high" {
+		t.Fatalf("wire reasoning = %+v, want high", wire.Reasoning)
+	}
+}
+
 func TestReasoningEffortMappings(t *testing.T) {
 	cases := []struct {
 		level      string

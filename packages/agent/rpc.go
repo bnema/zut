@@ -348,17 +348,18 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		if strings.TrimSpace(req.Model) == "" {
+		model := strings.TrimSpace(req.Model)
+		if model == "" {
 			s.writeError(id, cmd, "model must not be empty")
 			return
 		}
-		if _, err := provider.FindModel(s.provider, req.Model); err != nil && !provider.AcceptsUnlistedModels(s.provider) {
+		if _, err := provider.FindModel(s.provider, model); err != nil && !provider.AcceptsUnlistedModels(s.provider) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		s.agent.Model = req.Model
-		s.model = req.Model
-		s.writeResponse(id, cmd, map[string]any{"model": req.Model})
+		s.agent.Model = model
+		s.model = model
+		s.writeResponse(id, cmd, map[string]any{"model": model})
 
 	case "set_reasoning":
 		var req struct {

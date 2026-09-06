@@ -14,11 +14,11 @@ func TestRuntimeSetModelAllowsUnlistedOpenCodeGoModel(t *testing.T) {
 		model:    "kimi-k2.6",
 		agent:    &core.Agent{Model: "kimi-k2.6"},
 	}
-	if err := r.SetModel(model); err != nil {
+	if err := r.SetModel("  " + model + "  "); err != nil {
 		t.Fatal(err)
 	}
 	if r.model != model || r.agent.Model != model {
-		t.Fatalf("model = runtime:%q agent:%q, want %q", r.model, r.agent.Model, model)
+		t.Fatalf("model = runtime:%q agent:%q, want trimmed %q", r.model, r.agent.Model, model)
 	}
 }
 
@@ -35,6 +35,21 @@ func TestRuntimeSetModelRejectsBlankOpenCodeGoModel(t *testing.T) {
 		if r.model != "kimi-k2.6" || r.agent.Model != "kimi-k2.6" {
 			t.Fatalf("blank model %q changed active model: runtime=%q agent=%q", model, r.model, r.agent.Model)
 		}
+	}
+}
+
+func TestRuntimeSetModelRejectsChangesWhileBusy(t *testing.T) {
+	r := &Runtime{
+		provider:     "opencode-go",
+		model:        "old-model",
+		activeCancel: func() {},
+		agent:        &core.Agent{Model: "old-model"},
+	}
+	if err := r.SetModel("new-model"); err != ErrBusy {
+		t.Fatalf("SetModel while busy = %v, want ErrBusy", err)
+	}
+	if r.model != "old-model" || r.agent.Model != "old-model" {
+		t.Fatalf("busy SetModel changed model: runtime=%q agent=%q", r.model, r.agent.Model)
 	}
 }
 

@@ -41,8 +41,8 @@ import (
 // defaults are read from $ZUT_HOME/config.json, env vars, and the
 // resolver chain (the same one the cli uses).
 type Config struct {
-	// Provider is "anthropic" or "openai". Empty = use the user's
-	// default from config.json or env.
+	// Provider is a configured provider id such as "anthropic", "openai",
+	// or "opencode-go". Empty = use the user's default from config.json or env.
 	Provider string
 
 	// Model is the model id. Empty = use the provider's default.
@@ -99,6 +99,8 @@ type Runtime struct {
 	provider string
 	model    string
 	cwd      string
+	// modelCatalog is a private metadata snapshot for dynamic providers.
+	modelCatalog []provider.Model
 
 	// activeCancel is set while a Prompt or Compact is running.
 	activeCancel context.CancelFunc
@@ -135,7 +137,7 @@ func New(cfg Config) (*Runtime, error) {
 		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}
-	r, err := agent.Resolve(args, true)
+	r, err := agent.ResolveSDK(args)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +146,11 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	ag := r.NewAgent()
 	return &Runtime{
-		agent:    ag,
-		provider: r.Provider,
-		model:    r.Model,
-		cwd:      r.CWD,
+		agent:        ag,
+		provider:     r.Provider,
+		model:        r.Model,
+		cwd:          r.CWD,
+		modelCatalog: r.ModelCatalogSnapshot(),
 	}, nil
 }
 
@@ -310,11 +313,49 @@ func (r *Runtime) SetModel(model string) error {
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
 	}
-	if strings.TrimSpace(model) == "" {
+	if r.activeCancel != nil {
+		return ErrBusy
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
 		return fmt.Errorf("sdk: model must not be empty")
 	}
-	if _, err := provider.FindModel(r.provider, model); err != nil && !provider.AcceptsUnlistedModels(r.provider) {
-		return err
+
+	var metadata provider.Model
+	found := false
+	if provider.AcceptsUnlistedModels(r.provider) {
+		for _, candidate := range r.modelCatalog {
+			if candidate.ID == model {
+				metadata = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			metadata = provider.Model{
+				Provider:      r.provider,
+				ID:            model,
+				DisplayName:   model,
+				ContextWindow: 128000,
+				MaxOutput:     16384,
+				Reasoning:     true,
+				API:           provider.OpenCodeGoAPIForModel(model),
+				Source:        "dynamic",
+			}
+			r.modelCatalog = append(r.modelCatalog, metadata)
+		}
+	} else {
+		var err error
+		metadata, err = provider.FindModel(r.provider, model)
+		if err != nil {
+			return err
+		}
+		found = true
+	}
+	if found || provider.AcceptsUnlistedModels(r.provider) {
+		if setter, ok := r.agent.Client.(provider.ModelMetadataSetter); ok {
+			setter.SetModelMetadata(metadata)
+		}
 	}
 	r.agent.Model = model
 	r.model = model
@@ -383,7 +424,13 @@ func (r *Runtime) Close() error {
 // ListModels returns every model known to the runtime for the
 // current provider (catalog + live discovery if cached).
 func (r *Runtime) ListModels() []ModelInfo {
-	models := provider.ModelsForProvider(r.Provider())
+	r.mu.Lock()
+	providerName := r.provider
+	models := append([]provider.Model(nil), r.modelCatalog...)
+	r.mu.Unlock()
+	if !provider.AcceptsUnlistedModels(providerName) {
+		models = provider.ModelsForProvider(providerName)
+	}
 	out := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
 		out = append(out, ModelInfo{

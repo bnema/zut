@@ -19,7 +19,9 @@ import (
 )
 
 const (
-	LlamaCPPProviderID       = "llama.cpp"
+	// LlamaCPPProviderID is kept as a compatibility alias for callers that
+	// used the original provider-specific constant.
+	LlamaCPPProviderID       = ProviderLlamaCPP
 	defaultHuggingFaceURL    = "https://huggingface.co"
 	llamaCPPRequestTimeout   = 15 * time.Second
 	llamaCPPProgressPollTime = 250 * time.Millisecond

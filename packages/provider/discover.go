@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -115,7 +116,7 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 
 const (
 	modelsDevAPIURL          = "https://models.dev/api.json"
-	openCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"
+	OpenCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"
 )
 
 // DiscoverOpenCodeGo joins the account's currently served model ids with
@@ -129,7 +130,7 @@ func DiscoverOpenCodeGo(ctx context.Context, apiKey, baseURL string) ([]Model, e
 // discoverOpenCodeGo is split out so tests can use a local models.dev fixture.
 func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string) ([]Model, error) {
 	if baseURL == "" {
-		baseURL = openCodeGoDefaultBaseURL
+		baseURL = OpenCodeGoDefaultBaseURL
 	}
 	if metadataURL == "" {
 		metadataURL = modelsDevAPIURL
@@ -142,13 +143,13 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 	if metadataBody, err := fetchDiscoveryJSON(ctx, client, metadataURL, ""); err == nil {
 		var providers map[string]modelsDevProvider
 		if err := json.Unmarshal(metadataBody, &providers); err == nil {
-			metadata = providers["opencode-go"]
+			metadata = providers[ProviderOpenCodeGo]
 		}
 	}
 
 	modelsBody, err := fetchDiscoveryJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", "Bearer "+apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("opencode-go models: %w", err)
+		return nil, fmt.Errorf("%s models: %w", ProviderOpenCodeGo, err)
 	}
 	var page struct {
 		Data []struct {
@@ -156,23 +157,24 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(modelsBody, &page); err != nil {
-		return nil, fmt.Errorf("opencode-go models parse: %w", err)
+		return nil, fmt.Errorf("%s models parse: %w", ProviderOpenCodeGo, err)
 	}
 
 	out := make([]Model, 0, len(page.Data))
 	for _, live := range page.Data {
-		if live.ID == "" {
+		id := strings.TrimSpace(live.ID)
+		if id == "" {
 			continue
 		}
 		model := Model{
-			Provider:    "opencode-go",
-			ID:          live.ID,
-			DisplayName: live.ID,
+			Provider:    ProviderOpenCodeGo,
+			ID:          id,
+			DisplayName: id,
 			BaseURL:     strings.TrimRight(baseURL, "/"),
 			Source:      "live",
-			API:         openCodeGoAPIForModel(live.ID),
+			API:         openCodeGoAPIForModel(id),
 		}
-		if details, ok := metadata.Models[live.ID]; ok {
+		if details, ok := metadata.Models[id]; ok {
 			if details.Name != "" {
 				model.DisplayName = details.Name
 			}
@@ -184,22 +186,16 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 			model.PriceOutput = details.Cost.Output
 			model.PriceCacheRead = details.Cost.CacheRead
 			model.PriceCacheWrite = details.Cost.CacheWrite
-			var selectedTier *modelsDevCostTier
-			for i := range details.Cost.Tiers {
-				tier := &details.Cost.Tiers[i]
-				if tier.Tier.Type != "context" || tier.Tier.Size <= 0 {
-					continue
-				}
-				if selectedTier == nil || tier.Tier.Size < selectedTier.Tier.Size {
-					selectedTier = tier
-				}
-			}
-			if selectedTier != nil {
-				model.PriceTierInputTokens = selectedTier.Tier.Size
-				model.PriceInputAbove = selectedTier.Input
-				model.PriceOutputAbove = selectedTier.Output
-				model.PriceCacheReadAbove = selectedTier.CacheRead
-				model.PriceCacheWriteAbove = selectedTier.CacheWrite
+			model.PriceTiers = modelsDevPriceTiers(details.Cost.Tiers)
+			if len(model.PriceTiers) > 0 {
+				// Keep the legacy fields pointed at the first threshold for
+				// callers that do not yet understand PriceTiers.
+				first := model.PriceTiers[0]
+				model.PriceTierInputTokens = first.InputTokens
+				model.PriceInputAbove = first.PriceInput
+				model.PriceOutputAbove = first.PriceOutput
+				model.PriceCacheReadAbove = first.PriceCacheRead
+				model.PriceCacheWriteAbove = first.PriceCacheWrite
 			}
 		}
 		out = append(out, model)
@@ -253,9 +249,29 @@ type modelsDevCostLimit struct {
 	Size int    `json:"size"`
 }
 
+func modelsDevPriceTiers(tiers []modelsDevCostTier) []ModelPriceTier {
+	out := make([]ModelPriceTier, 0, len(tiers))
+	for _, tier := range tiers {
+		if tier.Tier.Type != "context" || tier.Tier.Size <= 0 {
+			continue
+		}
+		out = append(out, ModelPriceTier{
+			InputTokens:     tier.Tier.Size,
+			PriceInput:      tier.Input,
+			PriceOutput:     tier.Output,
+			PriceCacheRead:  tier.CacheRead,
+			PriceCacheWrite: tier.CacheWrite,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].InputTokens < out[j].InputTokens
+	})
+	return out
+}
+
 // modelsDevReasoningMaps translates the effort values used by models.dev
-// into zut's reasoning levels and exact provider wire values. Generic OpenAI
-// defaults include low/medium/high; remove unsupported defaults and add
+// into zut's reasoning levels and exact provider wire values. The explicit
+// metadata list is authoritative: remove every unsupported default and add
 // supported minimum/xhigh/max levels.
 func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) (map[string]string, map[string]string) {
 	if !reasoning {
@@ -278,26 +294,33 @@ func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) 
 	}
 
 	levels := []string{"minimum", "low", "medium", "high", "xhigh", "max"}
-	defaults := map[string]bool{"low": true, "medium": true, "high": true}
-	levelMap := make(map[string]string)
-	effortMap := make(map[string]string)
+	levelMap := make(map[string]string, len(levels))
+	effortMap := make(map[string]string, len(supported))
 	for _, level := range levels {
-		switch {
-		case supported[level] != "":
+		if wire, ok := supported[level]; ok {
 			levelMap[level] = level
-			effortMap[level] = supported[level]
-		case defaults[level]:
-			levelMap[level] = ""
+			effortMap[level] = wire
+			continue
 		}
+		// An explicit models.dev effort list is authoritative for every
+		// protocol default, including Responses-only xhigh and max.
+		levelMap[level] = ""
 	}
 	return levelMap, effortMap
 }
 
+// OpenCodeGoAPIForModel reports the wire API for an OpenCode Go model family.
 // OpenCode Go currently serves GPT-5.6 models on its Responses endpoint while
-// the rest of the Go catalog uses Chat Completions. Keep this rule based on the
-// model family rather than maintaining another list of model ids.
+// the rest of the Go catalog uses Chat Completions.
+func OpenCodeGoAPIForModel(id string) string {
+	return openCodeGoAPIForModel(id)
+}
+
+// Keep the family rule private so discovery and client fallbacks share one
+// implementation without another model-id list.
 func openCodeGoAPIForModel(id string) string {
-	if strings.HasPrefix(strings.ToLower(id), "gpt-5.6-") {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if strings.HasPrefix(id, "gpt-5.6-") {
 		return APIResponses
 	}
 	return ""

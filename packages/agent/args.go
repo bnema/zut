@@ -8,6 +8,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 	"github.com/google/uuid"
 	"golang.org/x/term"
@@ -35,7 +36,10 @@ type Args struct {
 	Model         string
 	APIKey        string
 
-	BaseURL            string // override provider base URL (for tests/self-hosted)
+	BaseURL string // override provider base URL (for tests/self-hosted)
+	// modelCatalog is set by ResolveSDK so dynamic model lookup uses the
+	// scope captured during preparation rather than the global live overlay.
+	modelCatalog       []provider.Model
 	SystemPrompt       string
 	AppendSystemPrompt []string
 	Reasoning          string

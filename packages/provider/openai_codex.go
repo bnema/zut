@@ -46,6 +46,7 @@ type codexClient struct {
 	cliRoutingAll     bool
 	capabilities      responsesCapabilities
 	http              *http.Client
+	modelOverrides    map[string]Model
 }
 
 // responsesCapabilities records extensions verified for the exact provider
@@ -93,7 +94,14 @@ func newOpenAICodexClient(token, accountID, baseURL string) *codexClient {
 	}
 }
 
-func (c *codexClient) Name() string { return "openai-codex" }
+func (c *codexClient) Name() string { return ProviderOpenAICodex }
+
+func (c *codexClient) SetModelMetadata(model Model) {
+	if c.modelOverrides == nil {
+		c.modelOverrides = make(map[string]Model)
+	}
+	c.modelOverrides[model.ID] = cloneModel(model)
+}
 
 // ---- Responses API wire types (subset needed for zut's surface) ----
 
@@ -203,22 +211,26 @@ type codexRequest struct {
 // ---- Request building ----
 
 func (c *codexClient) findModel(id string) (Model, error) {
-	if c.providerName != "" && c.providerName != "openai-codex" {
+	id = strings.TrimSpace(id)
+	if model, ok := c.modelOverrides[id]; ok {
+		return model, nil
+	}
+	if c.providerName != "" && c.providerName != ProviderOpenAICodex {
 		if m, err := FindModel(c.providerName, id); err == nil {
 			return m, nil
 		}
 	}
-	if m, err := FindModel("openai-codex", id); err == nil {
+	if m, err := FindModel(ProviderOpenAICodex, id); err == nil {
 		return m, nil
 	}
-	m, err := FindModel("openai", id)
+	m, err := FindModel(ProviderOpenAI, id)
 	if err == nil {
 		return m, nil
 	}
-	if c.providerName == "opencode-go" {
+	if c.providerName == ProviderOpenCodeGo {
 		if api := openCodeGoAPIForModel(id); api != "" {
 			return Model{
-				Provider:      "opencode-go",
+				Provider:      ProviderOpenCodeGo,
 				ID:            id,
 				API:           api,
 				ContextWindow: 128000,
@@ -236,9 +248,10 @@ func supportsOpenAIExplicitPromptCache(model string) bool {
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
-		providerName = "openai-codex"
+		providerName = ProviderOpenAICodex
 	}
 	if err := ValidateFastMode(providerName, req.FastMode); err != nil {
 		return nil, err
@@ -457,6 +470,7 @@ func usesCodexCLIRouting(model string) bool {
 // ---- Streaming ----
 
 func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	wire, err := c.buildRequest(req)
 	if err != nil {
 		return nil, err
@@ -565,7 +579,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 	model, _ := c.findModel(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
-		providerName = "openai-codex"
+		providerName = ProviderOpenAICodex
 	}
 	out <- EventStart{Model: req.Model, Provider: providerName}
 

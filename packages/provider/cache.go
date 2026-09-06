@@ -17,10 +17,10 @@ type ModelCache struct {
 	ProviderScopes         map[string]string `json:"provider_scopes,omitempty"`
 }
 
-// ModelCacheVersion invalidates caches created before the catalog merge
-// semantics changed. Older caches remain readable as a temporary fallback but
-// are refreshed before they are written again.
-const ModelCacheVersion = 2
+// ModelCacheVersion invalidates caches created before the catalog merge and
+// endpoint-scoped credential semantics changed. Older caches remain readable
+// as a temporary fallback but are refreshed before they are written again.
+const ModelCacheVersion = 3
 
 // CacheTTL is how long a discovered list is considered fresh. Model metadata
 // and availability change less often than a typical process starts, so keep

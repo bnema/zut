@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"sync"
 )
 
 // UserModelsFile is the JSON format for user-defined models.
@@ -48,12 +49,18 @@ type CustomProviderConfig struct {
 	API     string // "openai", "openai-responses", or "anthropic"
 }
 
-var customProviders = map[string]CustomProviderConfig{}
+var (
+	customProvidersMu sync.RWMutex
+	customProviders   = map[string]CustomProviderConfig{}
+)
 
-// CustomProviders returns the set of user-defined providers loaded from
-// models.json. Keys are provider names; values carry the base URL and
-// wire-format hint.
-func CustomProviders() map[string]CustomProviderConfig { return customProviders }
+// CustomProviders returns a snapshot of the user-defined providers loaded
+// from models.json. Callers cannot mutate provider-owned registry state.
+func CustomProviders() map[string]CustomProviderConfig {
+	customProvidersMu.RLock()
+	defer customProvidersMu.RUnlock()
+	return maps.Clone(customProviders)
+}
 
 // UserModel is a single model entry in the user's models.json.
 type UserModel struct {
@@ -127,6 +134,8 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 	}
 
 	var out []Model
+	customProvidersMu.Lock()
+	defer customProvidersMu.Unlock()
 	// Reset custom providers on each load so removed entries don't linger.
 	customProviders = map[string]CustomProviderConfig{}
 	for providerName, prov := range file.Providers {
@@ -236,74 +245,11 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 	return out, warnings
 }
 
-// SetUserModels merges user-defined models into the active catalog.
-// User models take precedence over both the baked-in catalog and
-// live-discovered models.
+// SetUserModels replaces the durable user-model overlay. User models take
+// precedence over the baked-in, live-discovered, and managed catalogs. Keeping
+// the overlay separate means a later live refresh cannot discard it.
 func SetUserModels(models []Model) {
-	if len(models) == 0 {
-		return
-	}
 	activeMu.Lock()
 	defer activeMu.Unlock()
-
-	// Ensure the active overlay starts from the full built-in catalog
-	// when no live/cache overlay has been applied. Otherwise a fresh
-	// install with only models.json would hide every built-in model.
-	if !activeSet || active == nil {
-		active = append([]Model(nil), Catalog...)
-		activeSet = true
-	}
-
-	// Build index of current active models.
-	byKey := func(p, id string) string { return p + "/" + id }
-	index := make(map[string]int, len(active))
-	for i, m := range active {
-		index[byKey(m.Provider, m.ID)] = i
-	}
-
-	for _, um := range models {
-		k := byKey(um.Provider, um.ID)
-		if idx, ok := index[k]; ok {
-			// Override existing entry but keep prices from user if
-			// they provided them, otherwise keep catalog prices.
-			existing := active[idx]
-			if um.PriceInput > 0 {
-				existing.PriceInput = um.PriceInput
-			}
-			if um.PriceOutput > 0 {
-				existing.PriceOutput = um.PriceOutput
-			}
-			if um.PriceCacheRead > 0 {
-				existing.PriceCacheRead = um.PriceCacheRead
-			}
-			if um.PriceCacheWrite > 0 {
-				existing.PriceCacheWrite = um.PriceCacheWrite
-			}
-			if um.DisplayName != "" {
-				existing.DisplayName = um.DisplayName
-			}
-			if um.ContextWindow > 0 {
-				existing.ContextWindow = um.ContextWindow
-			}
-			if um.MaxOutput > 0 {
-				existing.MaxOutput = um.MaxOutput
-			}
-			existing.Reasoning = um.Reasoning
-			if um.ReasoningLevelMap != nil {
-				existing.ReasoningLevelMap = maps.Clone(um.ReasoningLevelMap)
-			}
-			if um.API != "" {
-				existing.API = um.API
-			}
-			if um.BaseURL != "" {
-				existing.BaseURL = um.BaseURL
-			}
-			existing.Source = "user"
-			existing.Speculative = false
-			active[idx] = existing
-		} else {
-			// New model not in catalog.
-			active = append(active, um)
-		}
-	}
+	userModels = cloneModels(models)
 }

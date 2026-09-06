@@ -59,7 +59,7 @@ func ProviderLabel(id string) string {
 		return "Vercel AI Gateway"
 	case "opencode":
 		return "OpenCode"
-	case "opencode-go":
+	case ProviderOpenCodeGo:
 		return "OpenCode Go"
 	case "amazon-bedrock":
 		return "Amazon Bedrock"

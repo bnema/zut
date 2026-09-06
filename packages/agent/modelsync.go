@@ -6,10 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/provider"
+)
+
+var (
+	discoverOpenCodeGoFn = provider.DiscoverOpenCodeGo
+	modelCatalogMu       sync.Mutex
 )
 
 // ModelCachePath returns the on-disk location of the merged model cache.
@@ -29,7 +36,31 @@ func LoadCachedModels() {
 	loadCachedModels(currentModelProviderScopes())
 }
 
+// ResolveSDK prepares the credential-scoped catalog and resolves an SDK
+// runtime against a private model snapshot. Preparation and snapshot capture
+// are coordinated with background publication, while credential resolution
+// itself remains outside the process-wide catalog lock.
+func ResolveSDK(args Args) (Resolved, error) {
+	modelCatalogMu.Lock()
+	_, _ = prepareRuntimeCatalog(args.Provider, args.APIKey, args.BaseURL, args.Model)
+	// Keep an explicit empty snapshot as well: if Resolve later falls back
+	// to OpenCode Go because only that provider has credentials, it must not
+	// reread a concurrently changing global overlay.
+	args.modelCatalog = append([]provider.Model{}, provider.ModelsForProvider(provider.ProviderOpenCodeGo)...)
+	modelCatalogMu.Unlock()
+
+	resolved, err := Resolve(args, true)
+	if err == nil && resolved.Provider == provider.ProviderOpenCodeGo {
+		refreshModelsAsyncForProvider(resolved.Provider, args.APIKey, resolved.BaseURL, provider.ProviderOpenCodeGo)
+	}
+	return resolved, err
+}
+
 func loadCachedModels(scopes map[string]string) {
+	// A process can construct SDK runtimes for different credentials in
+	// sequence. Remove the previous OpenCode Go live overlay before applying
+	// the newly scoped cache, including cache-miss and read-error paths.
+	provider.ClearLiveModelsForProvider(provider.ProviderOpenCodeGo)
 	c, err := provider.LoadCache(ModelCachePath())
 	if err != nil {
 		return
@@ -44,12 +75,16 @@ func loadCachedModels(scopes map[string]string) {
 // discovered catalog account-specific. The cache remains provider-neutral:
 // each provider supplies an opaque scope value when it needs one.
 func currentModelProviderScopes() map[string]string {
+	return currentModelProviderScopesForBaseURL("")
+}
+
+func currentModelProviderScopesForBaseURL(openCodeGoBaseURL string) map[string]string {
 	scopes := make(map[string]string)
 	if token := loadOAuthToken("openai"); token != nil && token.AccountID != "" {
 		scopes["openai-codex"] = token.AccountID
 	}
-	if key, method, _, err := resolveCredentialFull(context.Background(), "opencode-go", "", apiKeyCommandSkip); err == nil && method == "apikey" && key != "" {
-		scopes["opencode-go"] = credentialScope(key)
+	if key, method, _, err := resolveCredentialFull(context.Background(), provider.ProviderOpenCodeGo, "", apiKeyCommandSkip); err == nil && method == "apikey" && key != "" {
+		scopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(key, openCodeGoBaseURL)
 	}
 	return scopes
 }
@@ -61,10 +96,22 @@ func credentialScope(credential string) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(credential)))
 }
 
-func modelProviderScopes(explicitProvider, explicitAPIKey string) map[string]string {
-	scopes := currentModelProviderScopes()
-	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
-		scopes["opencode-go"] = credentialScope(explicitAPIKey)
+func credentialScopeForEndpoint(credential, baseURL string) string {
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if endpoint == "" {
+		endpoint = provider.OpenCodeGoDefaultBaseURL
+	}
+	return credentialScope(credential + "\x00" + endpoint)
+}
+
+func modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL string) map[string]string {
+	openCodeGoBaseURL := ""
+	if explicitProvider == provider.ProviderOpenCodeGo {
+		openCodeGoBaseURL = explicitBaseURL
+	}
+	scopes := currentModelProviderScopesForBaseURL(openCodeGoBaseURL)
+	if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
+		scopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(explicitAPIKey, explicitBaseURL)
 	}
 	return scopes
 }
@@ -74,6 +121,10 @@ func modelProviderScopes(explicitProvider, explicitAPIKey string) map[string]str
 // marker so that a failed refresh falls back to the baked-in catalog instead
 // of treating another account's empty catalog as authoritative.
 func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string) provider.ModelCache {
+	return filterCacheByProviderScopesExcept(c, scopes, "")
+}
+
+func filterCacheByProviderScopesExcept(c provider.ModelCache, scopes map[string]string, keepProvider string) provider.ModelCache {
 	out := provider.ModelCache{
 		Version:                c.Version,
 		FetchedAt:              c.FetchedAt,
@@ -85,7 +136,10 @@ func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string
 		out.ProviderScopes[name] = scope
 	}
 
-	scopedProviders := map[string]struct{}{"openai-codex": {}}
+	scopedProviders := map[string]struct{}{
+		provider.ProviderOpenAICodex: {},
+		provider.ProviderOpenCodeGo:  {},
+	}
 	for name := range c.ProviderScopes {
 		scopedProviders[name] = struct{}{}
 	}
@@ -93,6 +147,9 @@ func filterCacheByProviderScopes(c provider.ModelCache, scopes map[string]string
 		scopedProviders[name] = struct{}{}
 	}
 	for name := range scopedProviders {
+		if name == keepProvider {
+			continue
+		}
 		if cachedScope := c.ProviderScopes[name]; cachedScope != "" && cachedScope == scopes[name] {
 			continue
 		}
@@ -140,12 +197,13 @@ func providerScopesEqual(a, b map[string]string) bool {
 // Any validation issues (bad provider id, empty model id, malformed
 // JSON, negative widths) are surfaced as one warning per line on stderr;
 // the well-formed entries from the rest of the file are still loaded.
-func LoadUserModels() {
+func LoadUserModels() []provider.Model {
 	models, warnings := provider.LoadUserModelsWithWarnings(UserModelsPath())
 	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, "zut:", w)
 	}
 	provider.SetUserModels(models)
+	return models
 }
 
 // isGatewayProvider returns true for providers whose OpenAI-compatible
@@ -203,19 +261,20 @@ func ValidateAndRepairConfig() {
 		changed = true
 	}
 
-	if cfg.Provider != "" && cfg.Model != "" {
-		if _, err := provider.FindModel(cfg.Provider, cfg.Model); err != nil {
+	modelID := strings.TrimSpace(cfg.Model)
+	if cfg.Provider != "" && modelID != "" {
+		if _, err := provider.FindModel(cfg.Provider, modelID); err != nil {
 			// OpenCode Go is authoritative at runtime and intentionally has no
 			// baked-in entries, so an uncached id must survive startup repair.
 			if provider.AcceptsUnlistedModels(cfg.Provider) {
 				// The live refresh will validate the id when it is available.
-			} else if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model) {
+			} else if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(modelID) {
 				// Provider is a router and the id is route-qualified; preserve it.
-			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
+			} else if m, err := provider.FindModel("", modelID); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
 					"zut: config.json: model %q belongs to provider %q (config has provider=%q); switched model to %q\n",
-					cfg.Model, m.Provider, cfg.Provider, fix)
+					modelID, m.Provider, cfg.Provider, fix)
 				cfg.Model = fix
 				changed = true
 			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID && !provider.AcceptsUnlistedModels(cfg.Provider) {
@@ -223,7 +282,7 @@ func ValidateAndRepairConfig() {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
 					"zut: config.json: model %q not found in the active catalog; switched to %q\n",
-					cfg.Model, fix)
+					modelID, fix)
 				cfg.Model = fix
 				changed = true
 			}
@@ -243,13 +302,21 @@ func ValidateAndRepairConfig() {
 //
 // Silent on error: discovery is a nice-to-have. Callers can still use
 // the baked-in catalog if this fails.
-func RefreshModelsAsync(explicitProvider, explicitAPIKey string) {
-	go refreshModels(explicitProvider, explicitAPIKey)
+func RefreshModelsAsync(explicitProvider, explicitAPIKey string, explicitBaseURL ...string) {
+	baseURL := ""
+	if len(explicitBaseURL) > 0 {
+		baseURL = explicitBaseURL[0]
+	}
+	go refreshModels(explicitProvider, explicitAPIKey, baseURL, "")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = refreshLlamaCPPModels(ctx, apiKeyCommandSkip)
 	}()
+}
+
+func refreshModelsAsyncForProvider(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider string) {
+	go refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider)
 }
 
 // RefreshLlamaCPPModels adds the router's currently loaded models to the
@@ -280,114 +347,189 @@ func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) e
 // written. Without this check, a cache created before the first OpenCode Go
 // login would hide the provider until the 24-hour TTL expired.
 func needsOpenCodeGoRefresh(c provider.ModelCache) bool {
-	if !CredentialAvailable("opencode-go") {
+	if !CredentialAvailable(provider.ProviderOpenCodeGo) {
 		return false
 	}
 	for _, model := range c.Models {
-		if model.Provider == "opencode-go" {
+		if model.Provider == provider.ProviderOpenCodeGo {
 			return false
 		}
 	}
 	for _, name := range c.AuthoritativeProviders {
-		if name == "opencode-go" {
+		if name == provider.ProviderOpenCodeGo {
 			return false
 		}
 	}
 	return true
 }
 
-func refreshModels(explicitProvider, explicitAPIKey string) {
-	cached, _ := provider.LoadCache(ModelCachePath())
-	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey)
+func cacheSnapshotsEqual(a provider.ModelCache, aErr error, b provider.ModelCache, bErr error) bool {
+	if (aErr != nil) != (bErr != nil) {
+		return false
+	}
+	if aErr != nil {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func refreshModels(explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider string) {
+	explicitProvider = effectiveCatalogProvider(explicitProvider)
+	cached, cachedErr := provider.LoadCache(ModelCachePath())
+	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL)
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
-		!needsOpenCodeGoRefresh(cached) {
+		(onlyProvider != provider.ProviderOpenCodeGo || !needsOpenCodeGoRefresh(cached)) {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	discovered := make(map[string][]provider.Model)
+	authoritativeDiscovered := make(map[string]bool)
+	discoveredScopes := make(map[string]string)
+	recordDiscovery := func(name string, models []provider.Model, authoritative bool, scope string) {
+		discovered[name] = append([]provider.Model(nil), models...)
+		if authoritative {
+			authoritativeDiscovered[name] = true
+		}
+		if scope != "" {
+			discoveredScopes[name] = scope
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderAnthropic {
+		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderAnthropic); err == nil && method == "apikey" {
+			// /v1/models on Anthropic is API-key only; OAuth tokens can
+			// also list models via the bearer header, but we skip OAuth
+			// here to avoid surprise rate-limit hits on subscription keys.
+			if live, err := provider.DiscoverAnthropic(ctx, cred, ""); err == nil {
+				recordDiscovery(provider.ProviderAnthropic, live, false, "")
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderOpenAI {
+		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderOpenAI); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
+				recordDiscovery(provider.ProviderOpenAI, live, false, "")
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderOpenAICodex {
+		if cred, method, accountID, err := resolveCredentialFull(ctx, provider.ProviderOpenAICodex, "", apiKeyCommandSkip); err == nil && method == "oauth" {
+			if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
+				recordDiscovery(provider.ProviderOpenAICodex, live, accountID != "", accountID)
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo {
+		openCodeGoCred, openCodeGoMethod, openCodeGoErr := resolveCredentialForBackground(ctx, provider.ProviderOpenCodeGo)
+		if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
+			openCodeGoCred, openCodeGoMethod, openCodeGoErr = explicitAPIKey, "apikey", nil
+		}
+		openCodeGoBaseURL := ""
+		if explicitProvider == provider.ProviderOpenCodeGo {
+			openCodeGoBaseURL = explicitBaseURL
+		}
+		if openCodeGoErr == nil && openCodeGoMethod == "apikey" {
+			if live, err := discoverOpenCodeGoFn(ctx, openCodeGoCred, openCodeGoBaseURL); err == nil {
+				recordDiscovery(provider.ProviderOpenCodeGo, live, true, credentialScopeForEndpoint(openCodeGoCred, openCodeGoBaseURL))
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderKimi {
+		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderKimi); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
+				for i := range live {
+					live[i].Provider = provider.ProviderKimi
+					live[i].Source = "live"
+				}
+				recordDiscovery(provider.ProviderKimi, live, false, "")
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderGoogle {
+		if cred, method, err := resolveCredentialForBackground(ctx, provider.ProviderGoogle); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
+				recordDiscovery(provider.ProviderGoogle, live, false, "")
+			}
+		}
+	}
+	if onlyProvider == "" || onlyProvider == provider.ProviderOpenRouter {
+		if _, _, err := resolveCredentialForBackground(ctx, provider.ProviderOpenRouter); err == nil {
+			// /models is public; gate on a credential so the picker only
+			// fills with OpenRouter's hundreds of routes for users who use it.
+			if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {
+				recordDiscovery(provider.ProviderOpenRouter, live, false, "")
+			}
+		}
+	}
+
+	if len(discovered) == 0 {
+		return
+	}
+
+	modelCatalogMu.Lock()
+	defer modelCatalogMu.Unlock()
+	latest, latestErr := provider.LoadCache(ModelCachePath())
 	var all []provider.Model
 	var authoritativeProviders []string
-	providerScopes := make(map[string]string)
-	if cached.IsFresh() && cached.Version == provider.ModelCacheVersion {
-		cached = filterCacheByProviderScopes(cached, currentScopes)
-		all = append(all, cached.Models...)
-		authoritativeProviders = append(authoritativeProviders, cached.AuthoritativeProviders...)
-		for name, scope := range cached.ProviderScopes {
+	var providerScopes map[string]string
+	keepOpenCodeGo := !cacheSnapshotsEqual(cached, cachedErr, latest, latestErr)
+	if keepOpenCodeGo {
+		// Another runtime replaced the cache while this discovery was in
+		// flight. Keep its newer OpenCode Go scope and still publish any
+		// unrelated providers that this refresh discovered.
+		delete(discovered, provider.ProviderOpenCodeGo)
+		delete(authoritativeDiscovered, provider.ProviderOpenCodeGo)
+		delete(discoveredScopes, provider.ProviderOpenCodeGo)
+	}
+	if len(discovered) == 0 {
+		return
+	}
+	if latest.Version == provider.ModelCacheVersion {
+		if keepOpenCodeGo {
+			latest = filterCacheByProviderScopesExcept(latest, currentScopes, provider.ProviderOpenCodeGo)
+		} else {
+			latest = filterCacheByProviderScopes(latest, currentScopes)
+		}
+	}
+	all = append([]provider.Model(nil), latest.Models...)
+	authoritativeProviders = append([]string(nil), latest.AuthoritativeProviders...)
+	providerScopes = make(map[string]string, len(latest.ProviderScopes))
+	for name, scope := range latest.ProviderScopes {
+		providerScopes[name] = scope
+	}
+	for name, live := range discovered {
+		all = filterModelsByProvider(all, name)
+		authoritativeProviders = filterProviderNames(authoritativeProviders, name)
+		delete(providerScopes, name)
+		all = append(all, live...)
+		if authoritativeDiscovered[name] {
+			authoritativeProviders = append(authoritativeProviders, name)
+		}
+		if scope := discoveredScopes[name]; scope != "" {
 			providerScopes[name] = scope
 		}
 	}
-
-	if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
-		// /v1/models on Anthropic is API-key only; OAuth tokens can
-		// also list models via the bearer header, but we skip OAuth
-		// here to avoid surprise rate-limit hits on subscription keys.
-		if live, err := provider.DiscoverAnthropic(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "openai"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if cred, method, accountID, err := resolveCredentialFull(ctx, "openai-codex", "", apiKeyCommandSkip); err == nil && method == "oauth" {
-		if live, err := provider.DiscoverOpenAICodex(ctx, cred, accountID, ""); err == nil {
-			all = filterModelsByProvider(all, "openai-codex")
-			authoritativeProviders = filterProviderNames(authoritativeProviders, "openai-codex")
-			delete(providerScopes, "openai-codex")
-			all = append(all, live...)
-			if accountID != "" {
-				authoritativeProviders = append(authoritativeProviders, "openai-codex")
-				providerScopes["openai-codex"] = accountID
-			}
-		}
-	}
-	openCodeGoCred, openCodeGoMethod, openCodeGoErr := resolveCredentialForBackground(ctx, "opencode-go")
-	if explicitProvider == "opencode-go" && explicitAPIKey != "" {
-		openCodeGoCred, openCodeGoMethod, openCodeGoErr = explicitAPIKey, "apikey", nil
-	}
-	if openCodeGoErr == nil && openCodeGoMethod == "apikey" {
-		if live, err := provider.DiscoverOpenCodeGo(ctx, openCodeGoCred, ""); err == nil {
-			all = filterModelsByProvider(all, "opencode-go")
-			authoritativeProviders = filterProviderNames(authoritativeProviders, "opencode-go")
-			all = append(all, live...)
-			authoritativeProviders = append(authoritativeProviders, "opencode-go")
-			providerScopes["opencode-go"] = credentialScope(openCodeGoCred)
-		}
-	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
-			for i := range live {
-				live[i].Provider = "kimi"
-				live[i].Source = "live"
-			}
-			all = append(all, live...)
-		}
-	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "google"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if _, _, err := resolveCredentialForBackground(ctx, "openrouter"); err == nil {
-		// /models is public; gate on a credential so the picker only
-		// fills with OpenRouter's hundreds of routes for users who use it.
-		if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-
 	if len(all) == 0 && len(authoritativeProviders) == 0 {
 		return
 	}
 	provider.SetLiveModelsForProviders(all, authoritativeProviders)
+	fetchedAt := time.Now().UTC()
+	if onlyProvider != "" {
+		if latest.Version == provider.ModelCacheVersion {
+			// A partial refresh must not make an otherwise stale full
+			// catalog look fresh to the next CLI refresh.
+			fetchedAt = latest.FetchedAt
+		} else {
+			fetchedAt = time.Time{}
+		}
+	}
 	_ = provider.SaveCache(ModelCachePath(), provider.ModelCache{
 		Version:                provider.ModelCacheVersion,
-		FetchedAt:              time.Now().UTC(),
+		FetchedAt:              fetchedAt,
 		Models:                 all,
 		AuthoritativeProviders: authoritativeProviders,
 		ProviderScopes:         providerScopes,

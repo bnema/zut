@@ -56,6 +56,9 @@ func newResponsesWebSocketClient(httpClient *codexClient) Client {
 }
 
 func (c *responsesWebSocketClient) Name() string { return c.http.Name() }
+func (c *responsesWebSocketClient) SetModelMetadata(model Model) {
+	c.http.SetModelMetadata(model)
+}
 
 // Close releases all persistent sockets held by this client. Callers that
 // create a client for a bounded runtime (such as a resident child) must call
@@ -186,6 +189,7 @@ func responsesWebSocketURL(endpoint string) (string, error) {
 }
 
 func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	// WebSocket continuation state is isolated per conversation thread. Cache
 	// affinity may be shared by root and resident children, but their server
 	// response chains must never be pooled.
