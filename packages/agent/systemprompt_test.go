@@ -30,6 +30,9 @@ func TestBuildSystemPromptAlwaysIncludesFinalWritingGuidance(t *testing.T) {
 			for _, want := range []string{
 				"medium, audience, and reader's immediate need",
 				"plain, precise language",
+				"Default to concise paragraphs",
+				"Use lists when items are genuinely parallel, sequential, or easier to compare",
+				"canned transitions",
 				"verified facts",
 				"descriptive links, and accessibility",
 				"Do not manufacture slang, errors, hesitation",
@@ -37,6 +40,39 @@ func TestBuildSystemPromptAlwaysIncludesFinalWritingGuidance(t *testing.T) {
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("writing guidance missing %q:\n%s", want, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildSystemPromptAlwaysIncludesTaskAndSkillGuidance(t *testing.T) {
+	for _, custom := range []string{"", "Custom identity"} {
+		t.Run(custom, func(t *testing.T) {
+			prompt := BuildSystemPrompt(SystemPromptOpts{
+				Custom: custom,
+				Append: []string{"Workspace context", "Available skills"},
+			})
+			previous := strings.Index(prompt, "Available skills")
+			for _, guidance := range []string{taskExecutionGuidance, skillPriorityGuidance, writingGuidance} {
+				index := strings.Index(prompt, guidance)
+				if index <= previous {
+					t.Fatalf("shared guidance must follow appended context in task/skill/writing order")
+				}
+				previous = index
+			}
+			for _, want := range []string{
+				"Treat requests such as \"can you\" as instructions to do the requested work",
+				"do not stop at a plan or an offer to continue",
+				"Respect requests for explanation, planning, or review without making unsolicited changes",
+				"Ask only when a missing decision blocks safe, correct progress",
+				"Preserve tool permissions, required confirmations, and explicit approval requirements",
+				"Explicit user instructions take precedence over skill guidelines",
+				"Skills do not grant permissions or override system or developer constraints",
+				"identify its source and the relevant instruction",
+			} {
+				if count := strings.Count(prompt, want); count != 1 {
+					t.Errorf("guidance %q count = %d, want 1", want, count)
 				}
 			}
 		})
