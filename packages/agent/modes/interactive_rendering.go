@@ -680,6 +680,8 @@ func (i *Interactive) redraw() {
 		Locked:         i.cfg.Sandbox.Locked(),
 		NoYolo:         i.cfg.NoYolo,
 		GoalStatus:     goalStatus,
+		PlanCurrent:    i.planCurrent,
+		PlanTotal:      i.planTotal,
 		Usage:          i.cumUsage,
 		Subscription:   i.cfg.AuthMethod == "oauth",
 		WeeklyUsage:    i.codexWeeklyLabelLocked(time.Now()),

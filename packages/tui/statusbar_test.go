@@ -93,11 +93,15 @@ func TestStatusBarVeryNarrowModel(t *testing.T) {
 	}
 }
 
-func TestStatusBarShowsActiveGoal(t *testing.T) {
+func TestStatusBarShowsActiveGoalAndPlan(t *testing.T) {
 	for _, cols := range []int{100, 20} {
-		lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-test", GoalStatus: "active", CWD: "/tmp/project", Cols: cols})
-		if !strings.Contains(stripANSI(strings.Join(lines, "\n")), "goal:active") {
-			t.Fatalf("status bar = %q, want active goal", lines)
+		lines := StatusBar(StatusBarParams{
+			Theme: Dark, Model: "gpt-test", GoalStatus: "active", PlanCurrent: 2, PlanTotal: 3,
+			CWD: "/tmp/project", Cols: cols,
+		})
+		plain := stripANSI(strings.Join(lines, "\n"))
+		if !strings.Contains(plain, "goal:active") || !strings.Contains(plain, "plan:2/3") {
+			t.Fatalf("status bar = %q, want active goal and plan", lines)
 		}
 	}
 }
@@ -121,9 +125,12 @@ func TestStatusBarNoCWD(t *testing.T) {
 }
 
 func TestStatusBarShowsFastMode(t *testing.T) {
-	lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-5.6-luna", FastMode: true, CWD: "/tmp/x", Cols: 200})
-	if len(lines) != 2 || !strings.Contains(stripANSI(lines[0]), "fast mode") {
-		t.Fatalf("fast mode should be visible: %q", lines)
+	for _, cols := range []int{200, 20} {
+		lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-5.6-luna", FastMode: true, CWD: "/tmp/x", Cols: cols})
+		status := strings.Join(lines, "\n")
+		if !strings.Contains(stripANSI(status), "fast mode") || !strings.Contains(status, Dark.FGColor(Dark.Muted, "fast mode")) {
+			t.Fatalf("fast mode should be visible and muted: %q", lines)
+		}
 	}
 }
 
@@ -136,6 +143,45 @@ func TestStatusBarReasoningSuffix(t *testing.T) {
 		if got := stripANSI(lines[0]); got != "  "+tc.want {
 			t.Fatalf("reasoning %q: got %q, want %q", tc.level, got, tc.want)
 		}
+	}
+}
+
+func TestStatusLabelValueOmitsEmptyStyledSegments(t *testing.T) {
+	want := Dark.FGColor(Dark.Muted, "goal:") + Dark.FGColor(Dark.FG, "paused")
+	if got := statusLabelValue(Dark, "goal:", "paused", Dark.FG); got != want {
+		t.Fatalf("status label/value = %q, want %q", got, want)
+	}
+}
+
+func TestStatusBarHighlightsValuesForDarkAndLightThemes(t *testing.T) {
+	for _, th := range []Theme{Dark, Light} {
+		lines := StatusBar(StatusBarParams{
+			Theme: th, Model: "gpt-5.6-sol", Reasoning: "low", WeeklyUsage: "weekly:16%",
+			GoalStatus: "paused", PlanCurrent: 2, PlanTotal: 3, ContextUsed: 33, ContextMax: 100, Cols: 200,
+		})
+		status := strings.Join(lines, "\n")
+		for _, want := range []string{
+			statusLabelValue(th, ":", "low", th.FG),
+			statusLabelValue(th, "weekly:", "16%", th.FG),
+			statusLabelValue(th, "goal:", "paused", th.FG),
+			statusLabelValue(th, "plan:", "2/3", th.FG),
+			statusLabelValueSuffix(th, "ctx", "33%", "/100", th.FG),
+		} {
+			if !strings.Contains(status, want) {
+				t.Fatalf("status bar omitted highlighted value %q: %q", want, status)
+			}
+		}
+	}
+}
+
+func TestStatusBarPreservesColonBearingModelWhenNarrow(t *testing.T) {
+	th := Dark
+	th.ThinkingMax = Color256(201)
+	lines := StatusBar(StatusBarParams{Theme: th, Model: "anthropic.claude:0", Reasoning: "max", WeeklyUsage: "weekly:16%", Cols: 25})
+	status := strings.Join(lines, "\n")
+	if !strings.Contains(status, th.FGColor(th.Muted, "anthropic.claude:0")) ||
+		!strings.Contains(status, statusLabelValue(th, ":", "max", th.ThinkingMax)) {
+		t.Fatalf("colon-bearing model or reasoning styling was lost: %q", lines)
 	}
 }
 
@@ -156,7 +202,7 @@ func TestStatusBarContextWarningsAndCompaction(t *testing.T) {
 		color TerminalColor
 	}{{75, Dark.Warning}, {95, Dark.Error}} {
 		lines := StatusBar(StatusBarParams{Theme: Dark, Model: "model", ContextUsed: tc.used, ContextMax: 100, AutoCompacting: true, Cols: 200})
-		want := Dark.FGColor(tc.color, fmt.Sprintf("ctx%d%%/100 (auto)", tc.used))
+		want := statusLabelValueSuffix(Dark, "ctx", fmt.Sprintf("%d%%", tc.used), "/100 (auto)", tc.color)
 		if !strings.Contains(lines[0], want) {
 			t.Fatalf("context warning missing: %q", lines)
 		}

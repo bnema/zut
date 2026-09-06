@@ -19,6 +19,17 @@ func eventAffectsPresentation(ev core.AgentEvent) bool {
 		return true
 	}
 }
+
+func planProgress(plan []core.PlanStep) (current, total int) {
+	total = len(plan)
+	for idx, step := range plan {
+		if step.Status == core.PlanInProgress {
+			return idx + 1, total
+		}
+	}
+	return 0, total
+}
+
 func (i *Interactive) bumpToolRevisionLocked(tc *tui.ToolCallView) {
 	i.toolRenderRevision++
 	if i.toolRenderRevision == 0 {
@@ -172,6 +183,8 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				i.goalStatus = update.Status
 			}
 		}
+	case core.EvPlanUpdate:
+		i.planCurrent, i.planTotal = planProgress(e.Update.Plan)
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative
 		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {

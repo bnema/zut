@@ -698,6 +698,8 @@ type Interactive struct {
 	statusErr         string
 	statusOK          string
 	goalStatus        core.GoalStatus
+	planCurrent       int
+	planTotal         int
 	goalRun           *goalContinuationRun
 	reloadStatusSeq   uint64
 	extStatuses       map[string]map[string]extensionStatus
