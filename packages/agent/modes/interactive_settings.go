@@ -487,7 +487,7 @@ func (i *Interactive) quickModelSettingItem(slot int) settingsItem {
 	return settingsItem{
 		key:    "quick_model_" + strconv.Itoa(slot),
 		label:  "profile " + strconv.Itoa(slot),
-		desc:   quickModelShortcutLabel(slot) + " recalls model + reasoning. Enter assigns, Left/Right in the picker sets reasoning, Backspace clears.",
+		desc:   quickModelShortcutLabel(slot) + " recalls model, reasoning, and fast mode. Enter assigns, Left/Right in the picker sets reasoning, Backspace clears.",
 		picker: true,
 		hint:   hint,
 	}
