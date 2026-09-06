@@ -2976,17 +2976,19 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 // StatusBarParams groups the many bits of state the status bar needs.
 // Grew from a flat argument list once we settled on the layout.
 type StatusBarParams struct {
-	Theme      Theme
-	Provider   string
-	Model      string
-	Reasoning  string // "" means thinking off
-	FastMode   bool   // show the provider's opt-in fast tier when enabled
-	Busy       bool
-	BusyPrefix string // spinner + funny line when busy
-	CWD        string
-	Locked     bool   // sandbox on?
-	NoYolo     bool   // confirmation mode enabled?
-	GoalStatus string // autonomous goal lifecycle, empty when none
+	Theme       Theme
+	Provider    string
+	Model       string
+	Reasoning   string // "" means thinking off
+	FastMode    bool   // show the provider's opt-in fast tier when enabled
+	Busy        bool
+	BusyPrefix  string // spinner + funny line when busy
+	CWD         string
+	Locked      bool   // sandbox on?
+	NoYolo      bool   // confirmation mode enabled?
+	GoalStatus  string // autonomous goal lifecycle, empty when none
+	PlanCurrent int    // one-based in-progress plan step; 0 hides plan progress
+	PlanTotal   int
 
 	// Cumulative session usage and cost.
 	Usage provider.Usage
@@ -3032,24 +3034,39 @@ func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
 
 	stats := UsageStatsParts(UsageStatsParams{Usage: p.Usage, Subscription: p.Subscription, Compact: true})
+	for idx, stat := range stats {
+		stats[idx] = th.FGColor(th.Muted, stat)
+	}
 	if p.WeeklyUsage != "" {
-		stats = append(stats, p.WeeklyUsage)
+		if label, value, ok := strings.Cut(p.WeeklyUsage, ":"); ok {
+			stats = append(stats, statusLabelValue(th, label+":", value, th.FG))
+		} else {
+			stats = append(stats, th.FGColor(th.Muted, p.WeeklyUsage))
+		}
 	}
 	if p.GoalStatus != "" {
-		stats = append(stats, "goal:"+p.GoalStatus)
+		stats = append(stats, statusLabelValue(th, "goal:", p.GoalStatus, th.FG))
+	}
+	if p.PlanCurrent > 0 && p.PlanTotal > 0 {
+		stats = append(stats, statusLabelValue(th, "plan:", fmt.Sprintf("%d/%d", p.PlanCurrent, p.PlanTotal), th.FG))
 	}
 
 	// Context %. Color-coded: yellow >70, red >90.
 	ctx, ctxColor := contextUsage(th, p.ContextUsed, p.ContextMax)
 	if ctx != "" {
+		if ctxColor == th.Muted {
+			ctxColor = th.FG
+		}
+		value := ctx
+		suffix := ""
 		if p.ContextMax > 0 {
-			ctx = fmt.Sprintf("%.0f%%/%s", float64(p.ContextUsed)/float64(p.ContextMax)*100, formatTokens(p.ContextMax))
+			value = fmt.Sprintf("%.0f%%", float64(p.ContextUsed)/float64(p.ContextMax)*100)
+			suffix = "/" + formatTokens(p.ContextMax)
 		}
-		ctx = "ctx" + ctx
 		if p.AutoCompacting {
-			ctx += " (auto)"
+			suffix += " (auto)"
 		}
-		stats = append(stats, th.FGColor(ctxColor, ctx))
+		stats = append(stats, statusLabelValueSuffix(th, "ctx", value, suffix, ctxColor))
 	}
 
 	// Layout uses exactly 2 spaces of horizontal padding everywhere:
@@ -3058,11 +3075,16 @@ func StatusBar(p StatusBarParams) []string {
 	// vertically with the conversation column.
 	const pad = "  " // 2 spaces
 
-	left := p.Model
+	left := th.FGColor(th.Muted, p.Model)
+	leftPlain := p.Model
 	if reasoning := reasoningLevelLabel(p.Reasoning); reasoning != "" {
-		left += ":" + reasoning
+		valueColor := th.FG
+		if reasoning == "max" {
+			valueColor = th.ThinkingMax
+		}
+		left += statusLabelValue(th, ":", reasoning, valueColor)
+		leftPlain += ":" + reasoning
 	}
-	modelColor := reasoningStatusColor(th, left)
 	fastText := ""
 	if p.FastMode {
 		fastText = "fast mode"
@@ -3095,10 +3117,10 @@ func StatusBar(p StatusBarParams) []string {
 		// prefix there's no trailing separator to double-pad.
 		leftBuilder.WriteString(pad)
 	}
-	leftBuilder.WriteString(th.FGColor(modelColor, left))
+	leftBuilder.WriteString(left)
 	if middle != "" {
 		leftBuilder.WriteString(pad)
-		leftBuilder.WriteString(th.FGColor(th.Muted, middle))
+		leftBuilder.WriteString(middle)
 	}
 
 	cwd := shortenHome(p.CWD)
@@ -3124,16 +3146,16 @@ func StatusBar(p StatusBarParams) []string {
 	// stats on their own rows. This mirrors the idle split below.
 	if p.Cols > 0 && p.BusyPrefix != "" && visibleWidth(primary) > p.Cols {
 		busyLine := pad + p.BusyPrefix
-		modelLine := pad + th.FGColor(modelColor, left)
+		modelLine := pad + left
 		lines := []string{busyLine}
 		if visibleWidth(modelLine+pad+middle) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, stats, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, leftPlain, fastText, stats, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
 			if middle != "" {
 				infoBuilder.WriteString(pad)
-				infoBuilder.WriteString(th.FGColor(th.Muted, middle))
+				infoBuilder.WriteString(middle)
 			}
 			lines = append(lines, infoBuilder.String())
 		}
@@ -3149,7 +3171,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, stats, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, leftPlain, fastText, stats, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
@@ -3166,8 +3188,24 @@ func StatusBar(p StatusBarParams) []string {
 	return []string{primary, cwdRendered}
 }
 
+func statusLabelValue(th Theme, label, value string, valueColor TerminalColor) string {
+	return statusLabelValueSuffix(th, label, value, "", valueColor)
+}
+
+func statusLabelValueSuffix(th Theme, label, value, suffix string, valueColor TerminalColor) string {
+	return th.FGColor(th.Muted, label) + th.FGColor(valueColor, value) + th.FGColor(th.Muted, suffix)
+}
+
 func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText string, stats []string, cols int) []string {
-	modelLine := pad + th.FGColor(reasoningStatusColor(th, modelText), modelText)
+	model := th.FGColor(th.Muted, modelText)
+	if name, reasoning, ok := strings.Cut(modelText, ":"); ok {
+		valueColor := th.FG
+		if reasoning == "max" {
+			valueColor = th.ThinkingMax
+		}
+		model = th.FGColor(th.Muted, name) + statusLabelValue(th, ":", reasoning, valueColor)
+	}
+	modelLine := pad + model
 	if fastText != "" && visibleWidth(modelLine+pad+fastText) <= cols {
 		modelLine += pad + th.FGColor(th.Muted, fastText)
 	} else if fastText != "" {
@@ -3183,14 +3221,14 @@ func appendWrappedUsageStats(lines []string, th Theme, pad string, stats []strin
 	}
 	available := cols - visibleWidth(pad)
 	if cols <= 0 || available <= 0 {
-		return append(lines, pad+th.FGColor(th.Muted, strings.Join(stats, " ")))
+		return append(lines, pad+strings.Join(stats, " "))
 	}
 	current := make([]string, 0, len(stats))
 	flush := func() {
 		if len(current) == 0 {
 			return
 		}
-		line := pad + th.FGColor(th.Muted, strings.Join(current, " "))
+		line := pad + strings.Join(current, " ")
 		lines = append(lines, truncateToWidth(line, cols))
 		current = current[:0]
 	}
