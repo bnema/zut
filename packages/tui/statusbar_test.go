@@ -125,9 +125,12 @@ func TestStatusBarNoCWD(t *testing.T) {
 }
 
 func TestStatusBarShowsFastMode(t *testing.T) {
-	lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-5.6-luna", FastMode: true, CWD: "/tmp/x", Cols: 200})
-	if len(lines) != 2 || !strings.Contains(stripANSI(lines[0]), "fast mode") {
-		t.Fatalf("fast mode should be visible: %q", lines)
+	for _, cols := range []int{200, 20} {
+		lines := StatusBar(StatusBarParams{Theme: Dark, Model: "gpt-5.6-luna", FastMode: true, CWD: "/tmp/x", Cols: cols})
+		status := strings.Join(lines, "\n")
+		if !strings.Contains(stripANSI(status), "fast mode") || !strings.Contains(status, Dark.FGColor(Dark.Muted, "fast mode")) {
+			t.Fatalf("fast mode should be visible and muted: %q", lines)
+		}
 	}
 }
 
@@ -161,6 +164,17 @@ func TestStatusBarHighlightsValuesForDarkAndLightThemes(t *testing.T) {
 				t.Fatalf("status bar omitted highlighted value %q: %q", want, status)
 			}
 		}
+	}
+}
+
+func TestStatusBarPreservesColonBearingModelWhenNarrow(t *testing.T) {
+	th := Dark
+	th.ThinkingMax = Color256(201)
+	lines := StatusBar(StatusBarParams{Theme: th, Model: "anthropic.claude:0", Reasoning: "max", WeeklyUsage: "weekly:16%", Cols: 25})
+	status := strings.Join(lines, "\n")
+	if !strings.Contains(status, th.FGColor(th.Muted, "anthropic.claude:0")) ||
+		!strings.Contains(status, statusLabelValue(th, ":", "max", th.ThinkingMax)) {
+		t.Fatalf("colon-bearing model or reasoning styling was lost: %q", lines)
 	}
 }
 

@@ -3075,19 +3075,11 @@ func StatusBar(p StatusBarParams) []string {
 	// vertically with the conversation column.
 	const pad = "  " // 2 spaces
 
-	left := th.FGColor(th.Muted, p.Model)
-	leftPlain := p.Model
-	if reasoning := reasoningLevelLabel(p.Reasoning); reasoning != "" {
-		valueColor := th.FG
-		if reasoning == "max" {
-			valueColor = th.ThinkingMax
-		}
-		left += statusLabelValue(th, ":", reasoning, valueColor)
-		leftPlain += ":" + reasoning
-	}
+	reasoning := reasoningLevelLabel(p.Reasoning)
+	left := renderStatusModel(th, p.Model, reasoning)
 	fastText := ""
 	if p.FastMode {
-		fastText = "fast mode"
+		fastText = th.FGColor(th.Muted, "fast mode")
 	}
 	statsText := strings.Join(stats, " ")
 	middleParts := make([]string, 0, 3)
@@ -3149,7 +3141,7 @@ func StatusBar(p StatusBarParams) []string {
 		modelLine := pad + left
 		lines := []string{busyLine}
 		if visibleWidth(modelLine+pad+middle) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, leftPlain, fastText, stats, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, p.Model, reasoning, fastText, stats, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
@@ -3171,7 +3163,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, leftPlain, fastText, stats, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, p.Model, reasoning, fastText, stats, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
@@ -3196,18 +3188,22 @@ func statusLabelValueSuffix(th Theme, label, value, suffix string, valueColor Te
 	return th.FGColor(th.Muted, label) + th.FGColor(valueColor, value) + th.FGColor(th.Muted, suffix)
 }
 
-func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText string, stats []string, cols int) []string {
-	model := th.FGColor(th.Muted, modelText)
-	if name, reasoning, ok := strings.Cut(modelText, ":"); ok {
-		valueColor := th.FG
-		if reasoning == "max" {
-			valueColor = th.ThinkingMax
-		}
-		model = th.FGColor(th.Muted, name) + statusLabelValue(th, ":", reasoning, valueColor)
+func renderStatusModel(th Theme, model, reasoning string) string {
+	rendered := th.FGColor(th.Muted, model)
+	if reasoning == "" {
+		return rendered
 	}
-	modelLine := pad + model
+	valueColor := th.FG
+	if reasoning == "max" {
+		valueColor = th.ThinkingMax
+	}
+	return rendered + statusLabelValue(th, ":", reasoning, valueColor)
+}
+
+func appendWrappedStatusLines(lines []string, th Theme, pad, model, reasoning, fastText string, stats []string, cols int) []string {
+	modelLine := pad + renderStatusModel(th, model, reasoning)
 	if fastText != "" && visibleWidth(modelLine+pad+fastText) <= cols {
-		modelLine += pad + th.FGColor(th.Muted, fastText)
+		modelLine += pad + fastText
 	} else if fastText != "" {
 		stats = append([]string{fastText}, stats...)
 	}
