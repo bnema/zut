@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -1088,5 +1089,82 @@ func TestValidateAndRepairConfig_HappyPath(t *testing.T) {
 	}
 	if out.Model != "claude-sonnet-4-5" {
 		t.Errorf("model mutated: %q", out.Model)
+	}
+}
+
+func TestScopedRefreshPreservesActiveOpenCodeGoScopeOnUnrelatedWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OPENCODE_API_KEY", "synthetic-scope-key")
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	origDiscover := discoverOpenCodeGoFn
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	discoverOpenCodeGoFn = func(ctx context.Context, apiKey, baseURL string) ([]provider.Model, error) {
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return []provider.Model{{
+			Provider: provider.ProviderOpenCodeGo,
+			ID:       "go-scoped-model",
+			Source:   "live",
+		}}, nil
+	}
+	t.Cleanup(func() { discoverOpenCodeGoFn = origDiscover })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshModelsWithContext(context.Background(), "", "", "", provider.ProviderOpenCodeGo, apiKeyCommandSkip)
+	}()
+	<-started
+	// A concurrent runtime with an unrelated credential scope replaces the
+	// cache while this refresh's OpenCode Go discovery is in flight. It
+	// carries no OpenCode Go scope of its own, so OpenCode Go is this
+	// refresh's only discovered provider.
+	if err := provider.SaveCache(ModelCachePath(), provider.ModelCache{
+		Version:   provider.ModelCacheVersion,
+		FetchedAt: time.Now().UTC(),
+		Models: []provider.Model{{
+			Provider: "kimi",
+			ID:       "kimi-unrelated",
+			Source:   "live",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("scoped refresh did not finish")
+	}
+
+	final, err := provider.LoadCache(ModelCachePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawGo, sawKimi bool
+	for _, m := range final.Models {
+		if m.Provider == provider.ProviderOpenCodeGo && m.ID == "go-scoped-model" {
+			sawGo = true
+		}
+		if m.Provider == "kimi" && m.ID == "kimi-unrelated" {
+			sawKimi = true
+		}
+	}
+	if !sawGo {
+		t.Fatalf("active OpenCode Go scope was discarded by an unrelated cache write: %+v", final.Models)
+	}
+	if !sawKimi {
+		t.Fatalf("unrelated scope was discarded by the OpenCode Go refresh: %+v", final.Models)
+	}
+	if got := final.ProviderScopes[provider.ProviderOpenCodeGo]; got != credentialScopeForEndpoint("synthetic-scope-key", "") {
+		t.Fatalf("OpenCode Go scope = %q, want active credential scope", got)
 	}
 }

@@ -56,6 +56,9 @@ func ResolveSDK(ctx context.Context, args Args) (Resolved, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return Resolved{}, err
+	}
 	if args.APIKey == "" && effectiveCatalogProvider(args.Provider) == provider.ProviderOpenCodeGo {
 		args.APIKey = synchronousOpenCodeGoAPIKey(ctx, args.Provider, args.APIKey)
 		if err := ctx.Err(); err != nil {
@@ -71,6 +74,9 @@ func ResolveSDK(ctx context.Context, args Args) (Resolved, error) {
 	args.modelCatalog = append([]provider.Model{}, provider.ModelsForProvider(provider.ProviderOpenCodeGo)...)
 	args.modelCatalogAuthoritative = provider.IsProviderCatalogAuthoritative(provider.ProviderOpenCodeGo)
 	modelCatalogMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Resolved{}, err
+	}
 
 	resolved, err := Resolve(args, true)
 	if err == nil && resolved.Provider == provider.ProviderOpenCodeGo {
@@ -560,11 +566,15 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	var all []provider.Model
 	var authoritativeProviders []string
 	var providerScopes map[string]string
-	keepOpenCodeGo := !cacheSnapshotsEqual(cached, cachedErr, latestSnapshot, latestErr)
+	_, latestHasOpenCodeGo := latestSnapshot.ProviderScopes[provider.ProviderOpenCodeGo]
+	keepOpenCodeGo := !cacheSnapshotsEqual(cached, cachedErr, latestSnapshot, latestErr) && latestHasOpenCodeGo
 	if keepOpenCodeGo {
 		// Another runtime replaced the cache while this discovery was in
-		// flight. Keep its newer OpenCode Go scope and still publish any
-		// unrelated providers that this refresh discovered.
+		// flight and owns newer OpenCode Go scope data. Keep its scope and
+		// still publish any unrelated providers that this refresh
+		// discovered. When the newer snapshot carries no OpenCode Go scope,
+		// this refresh's own discovery is the only such data and is
+		// published below instead of being discarded.
 		delete(discovered, provider.ProviderOpenCodeGo)
 		delete(authoritativeDiscovered, provider.ProviderOpenCodeGo)
 		delete(discoveredScopes, provider.ProviderOpenCodeGo)
