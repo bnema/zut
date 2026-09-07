@@ -541,6 +541,9 @@ func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
 		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "command-model"}}, nil
 	}
 
+	// CLI startup can prepare the catalog before a synchronous all-provider
+	// refresh materializes a command-backed OpenCode Go credential.
+	LoadCachedModels()
 	refreshModelsWithMode(provider.ProviderOpenCodeGo, "", "", provider.ProviderOpenCodeGo, apiKeyCommandExecute)
 	if gotKey != "resolved-secret" {
 		t.Fatalf("discovery key = %q, want command result", gotKey)
@@ -554,6 +557,23 @@ func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
 	}
 	if cache.ProviderScopes[provider.ProviderOpenCodeGo] != credentialScopeForEndpoint(gotKey, "") {
 		t.Fatalf("cache scope = %q, want command credential scope", cache.ProviderScopes[provider.ProviderOpenCodeGo])
+	}
+
+	cache.FetchedAt = time.Now()
+	if err := provider.SaveCache(ModelCachePath(), cache); err != nil {
+		t.Fatal(err)
+	}
+	LoadCachedModels() // background preparation still skips the command
+	discoverOpenCodeGoFn = func(context.Context, string, string) ([]provider.Model, error) {
+		t.Fatal("fresh command-scoped cache triggered discovery")
+		return nil, nil
+	}
+	refreshModelsWithMode(provider.ProviderOpenCodeGo, "", "", provider.ProviderOpenCodeGo, apiKeyCommandExecute)
+	if _, err := provider.FindModel(provider.ProviderOpenCodeGo, "command-model"); err != nil {
+		t.Fatalf("materialized credential did not load its fresh cache: %v", err)
+	}
+	if status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo); status.State != provider.CatalogCached {
+		t.Fatalf("fresh cache status = %+v", status)
 	}
 }
 

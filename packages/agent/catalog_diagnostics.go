@@ -31,9 +31,28 @@ func resetCatalogDiagnostic(scopes map[string]string) {
 	provider.SetProviderCatalogStatus(provider.ProviderOpenCodeGo, provider.CatalogStatus{State: state})
 }
 
-func beginCatalogDiscovery(scope string) uint64 {
+// A synchronous refresh can materialize a command-backed credential that
+// preparation deliberately skipped. Reload its matching cache before the TTL
+// check, but never adopt a scope after another runtime superseded preparation.
+func adoptResolvedCatalogScope(scopes map[string]string, revision uint64) uint64 {
 	modelCatalogMu.Lock()
 	defer modelCatalogMu.Unlock()
+	status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
+	if revision == catalogDiagnosticRevision && catalogDiagnosticScope == "" && scopes[provider.ProviderOpenCodeGo] != "" &&
+		(status.State == provider.CatalogCredentialsDeferred || status.State == provider.CatalogCredentialError) {
+		loadCachedModels(scopes)
+		return catalogDiagnosticRevision
+	}
+	return revision
+}
+
+func beginCatalogDiscovery(scope string, preparedRevision uint64) uint64 {
+	modelCatalogMu.Lock()
+	defer modelCatalogMu.Unlock()
+	if preparedRevision != catalogDiagnosticRevision {
+		return 0
+	}
+	status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
 	if catalogDiagnosticPath != ModelCachePath() {
 		// RefreshModelsAsync is also callable before loading a cache. Claim
 		// that state directory without borrowing another runtime's scope.
@@ -44,7 +63,6 @@ func beginCatalogDiscovery(scope string) uint64 {
 		return 0
 	}
 	catalogDiagnosticRevision++
-	status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
 	status.State = provider.CatalogRefreshing
 	status.Failure = provider.DiscoveryError{}
 	provider.SetProviderCatalogStatus(provider.ProviderOpenCodeGo, status)

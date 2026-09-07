@@ -469,7 +469,7 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 		openCodeGoCred, openCodeGoMethod, _, openCodeGoCredentialErr = resolveCredentialFull(ctx, provider.ProviderOpenCodeGo, "", commandMode)
 	}
 	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoCredentialErr != nil && !errors.Is(openCodeGoCredentialErr, errNoCredential) {
-		publicationRevision = beginCatalogDiscovery("")
+		publicationRevision = beginCatalogDiscovery("", publicationRevision)
 		finishCatalogDiscovery(publicationRevision, provider.CatalogStatus{State: provider.CatalogCredentialError})
 	}
 	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL)
@@ -479,6 +479,9 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	}
 	if openCodeGoMethod == "apikey" && openCodeGoCred != "" {
 		currentScopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(openCodeGoCred, openCodeGoBaseURL)
+		if onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo {
+			publicationRevision = adoptResolvedCatalogScope(currentScopes, publicationRevision)
+		}
 	}
 	if cached.IsFresh() &&
 		cached.Version == provider.ModelCacheVersion &&
@@ -490,7 +493,7 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	var diagnosticRevision uint64
 	diagnostic := provider.CatalogStatus{State: provider.CatalogUnavailable}
 	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoMethod == "apikey" {
-		diagnosticRevision = beginCatalogDiscovery(currentScopes[provider.ProviderOpenCodeGo])
+		diagnosticRevision = beginCatalogDiscovery(currentScopes[provider.ProviderOpenCodeGo], publicationRevision)
 		publicationRevision = diagnosticRevision
 		defer func() {
 			if diagnostic.State != provider.CatalogReady && diagnostic.State != provider.CatalogFailed && ctx.Err() != nil {

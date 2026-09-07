@@ -136,20 +136,23 @@ func TestCatalogDiagnosticOldRefreshCannotOverwriteNewScope(t *testing.T) {
 	isolateCatalogDiagnostics(t)
 	t.Setenv("OPENCODE_API_KEY", "synthetic-key")
 	LoadCachedModels()
-	old := beginCatalogDiscovery(credentialScopeForEndpoint("synthetic-key", ""))
+	old := beginCatalogDiscovery(credentialScopeForEndpoint("synthetic-key", ""), catalogDiagnosticRevision)
 	if old == 0 {
 		t.Fatal("refresh not registered")
 	}
 	t.Setenv("OPENCODE_API_KEY", "other-key")
 	LoadCachedModels()
-	current := beginCatalogDiscovery(credentialScopeForEndpoint("other-key", ""))
+	current := beginCatalogDiscovery(credentialScopeForEndpoint("other-key", ""), catalogDiagnosticRevision)
 	finishCatalogDiscovery(current, provider.CatalogStatus{State: provider.CatalogReady})
 	finishCatalogDiscovery(old, provider.CatalogStatus{State: provider.CatalogFailed})
 	if got := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo); got.State != provider.CatalogReady {
 		t.Fatalf("old refresh overwrote current state: %+v", got)
 	}
-	if revision := beginCatalogDiscovery(credentialScopeForEndpoint("synthetic-key", "")); revision != 0 {
+	if revision := beginCatalogDiscovery(credentialScopeForEndpoint("synthetic-key", ""), catalogDiagnosticRevision); revision != 0 {
 		t.Fatal("other scope changed active diagnostic")
+	}
+	if revision := beginCatalogDiscovery(credentialScopeForEndpoint("other-key", ""), old); revision != 0 {
+		t.Fatal("stale credential resolution claimed the newer preparation")
 	}
 }
 
