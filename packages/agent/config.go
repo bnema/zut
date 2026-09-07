@@ -478,6 +478,8 @@ func ResolveCredentialFullContext(ctx context.Context, provider, explicit string
 	return resolveCredentialFull(ctx, provider, explicit, apiKeyCommandExecute)
 }
 
+var errNoCredential = errors.New("no credential")
+
 type apiKeyCommandMode uint8
 
 const (
@@ -708,7 +710,7 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 			return c.GithubCopilot.OAuth.AccessToken, "oauth", "", nil
 		}
 	}
-	return "", "", "", fmt.Errorf("no credential for %s", provider)
+	return "", "", "", fmt.Errorf("%w for %s", errNoCredential, provider)
 }
 
 // CredentialAvailable reports whether a provider has a configured credential

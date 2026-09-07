@@ -166,6 +166,22 @@ load matching cached metadata before resolving. Synchronous refreshes resolve
 configured `api_key_command` credentials; unsolicited startup refreshes leave
 those commands untouched.
 
+OpenCode Go catalog diagnostics distinguish missing credentials, credential-loading
+failures, pending discovery, DNS/network failures, timeouts, HTTP refusals, and
+invalid responses. `/model` shows an explanation for unavailable providers found
+in the cache or saved model profiles; it does not create selectable placeholder
+models. An empty discovered catalog is not reported as missing credentials.
+`zut --list-models` writes catalog warnings to stderr, keeping the model list on
+stdout. Diagnostics omit credentials, request URLs, and response bodies.
+
+A failed refresh preserves usable models from a matching cache. Models missing
+from that cache are distinguished from models absent from a successfully fetched
+catalog. Login and logout reload credential-scoped metadata and schedule discovery;
+reopen `/model` to see the resulting list. Environment variables must be exported
+before starting zut: changing another shell's environment does not update a running
+process. Discovery failures do not trigger automatic retries; `zut --list-models`
+attempts discovery again when the cache is stale or does not match the credentials.
+
 ## Fast mode
 
 Use `/fast` or `/settings` to enable **fast mode** for subsequent model calls.

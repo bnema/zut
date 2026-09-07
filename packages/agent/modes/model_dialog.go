@@ -17,14 +17,16 @@ import (
 // Typing characters narrows the list via a fuzzy substring match that
 // ignores punctuation (e.g. "opus46" matches "claude-opus-4-6").
 type modelDialog struct {
-	active        bool
-	all           []provider.Model // full catalog, sorted
-	view          []provider.Model // filtered view shown to the user
-	cursor        int
-	current       string // currently selected model id (highlighted)
-	reasoning     string // current reasoning level, shown for discoverability
-	showReasoning bool   // whether this picker can route to /reasoning
-	query         string // live filter text typed by the user
+	active         bool
+	all            []provider.Model // full catalog, sorted
+	view           []provider.Model // filtered view shown to the user
+	cursor         int
+	current        string   // currently selected model id (highlighted)
+	reasoning      string   // current reasoning level, shown for discoverability
+	showReasoning  bool     // whether this picker can route to /reasoning
+	query          string   // live filter text typed by the user
+	knownProviders []string // credentials or saved profiles, for diagnostics
+	hasCredentials bool
 
 	// Column widths are computed once on Open() across the entire
 	// catalog so the layout stays stable while the user scrolls or
@@ -48,10 +50,19 @@ func newModelDialog() *modelDialog {
 	return &modelDialog{}
 }
 
+func (i *Interactive) addModelProfileDiagnostics() {
+	i.modelDialog.knownProviders = append(i.modelDialog.knownProviders, i.cfg.Provider)
+	for _, profile := range i.cfg.QuickModelShortcuts {
+		i.modelDialog.knownProviders = append(i.modelDialog.knownProviders, profile.Provider)
+	}
+}
+
 // Open shows the dialog. current is the currently active model id so
 // it can be pre-selected.
 func (d *modelDialog) Open(current string, loggedInProviders []string, reasoning ...string) {
 	d.active = true
+	d.knownProviders = append([]string(nil), loggedInProviders...)
+	d.hasCredentials = len(loggedInProviders) > 0
 	// Only surface models the user can actually reach: a provider is
 	// shown only when it has a resolvable credential (api key, oauth
 	// subscription, or the always-available ollama). An empty
@@ -170,10 +181,19 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 		)
 	}
 
+	for _, warning := range provider.CatalogWarnings(d.knownProviders...) {
+		for _, line := range tui.WrapANSILine(warning, max(1, width)) {
+			lines = append(lines, th.FGColor(th.Muted, line))
+		}
+	}
+
 	if len(d.view) == 0 {
 		msg := "  no models match " + fmt.Sprintf("%q", d.query)
 		if len(d.all) == 0 {
-			msg = "  no credentials found - run /login to add an api key or subscription"
+			msg = "  no selectable models in the loaded catalogs - run zut --list-models to refresh"
+			if !d.hasCredentials {
+				msg = "  no credentials found - run /login to add an api key or subscription"
+			}
 		}
 		lines = append(lines, th.FGColor(th.Muted, msg))
 		lines = append(lines, frameRule(th, width))

@@ -245,6 +245,10 @@ type InteractiveConfig struct {
 	// AuthManager to open a browser and wait for the callback.
 	AuthManager *auth.Manager
 
+	// ReloadModelCatalog reloads credential-scoped metadata and schedules
+	// discovery after login/logout. It must not wait for network requests.
+	ReloadModelCatalog func()
+
 	// LlamaCPPConfig resolves the router URL and optional API key from env or
 	// the credential saved by /login.
 	LlamaCPPConfig func() (baseURL, apiKey string, err error)

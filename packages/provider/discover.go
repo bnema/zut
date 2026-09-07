@@ -151,15 +151,15 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 
 	modelsBody, err := fetchDiscoveryJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", "Bearer "+apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("%s models: %w", ProviderOpenCodeGo, err)
+		return nil, fmt.Errorf("%s models: %w", ProviderOpenCodeGo, ClassifyDiscoveryError(err))
 	}
 	var page struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(modelsBody, &page); err != nil {
-		return nil, fmt.Errorf("%s models parse: %w", ProviderOpenCodeGo, err)
+	if err := json.Unmarshal(modelsBody, &page); err != nil || page.Data == nil {
+		return nil, fmt.Errorf("%s models parse: %w", ProviderOpenCodeGo, &DiscoveryError{Kind: DiscoveryInvalidResponse})
 	}
 
 	out := make([]Model, 0, len(page.Data))
@@ -391,25 +391,25 @@ func openCodeGoAPIForModel(id string) string {
 func fetchDiscoveryJSON(ctx context.Context, client *http.Client, url, authorization string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, &DiscoveryError{Kind: DiscoveryInvalidResponse}
 	}
 	if authorization != "" {
 		req.Header.Set("authorization", authorization)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyDiscoveryError(err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, &DiscoveryError{Kind: DiscoveryHTTP, StatusCode: resp.StatusCode}
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryResponseBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, ClassifyDiscoveryError(err)
 	}
 	if len(body) > maxDiscoveryResponseBytes {
-		return nil, fmt.Errorf("response exceeds %d bytes", maxDiscoveryResponseBytes)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, &DiscoveryError{Kind: DiscoveryInvalidResponse}
 	}
 	return body, nil
 }

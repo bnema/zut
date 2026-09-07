@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,10 @@ func UserModelsPath() string {
 // package so FindModel / ModelsForProvider see live ids immediately.
 // Safe to call before any credentials are known.
 func LoadCachedModels() {
-	loadCachedModels(currentModelProviderScopes())
+	scopes := currentModelProviderScopes()
+	modelCatalogMu.Lock()
+	defer modelCatalogMu.Unlock()
+	loadCachedModels(scopes)
 }
 
 func synchronousOpenCodeGoAPIKey(ctx context.Context, explicitProvider, explicitAPIKey string) string {
@@ -85,18 +89,33 @@ func ResolveSDK(ctx context.Context, args Args) (Resolved, error) {
 	return resolved, err
 }
 
+// loadCachedModels requires modelCatalogMu in production callers.
 func loadCachedModels(scopes map[string]string) {
+	resetCatalogDiagnostic(scopes)
 	// A process can construct SDK runtimes for different credentials in
 	// sequence. Remove the previous OpenCode Go live overlay before applying
 	// the newly scoped cache, including cache-miss and read-error paths.
 	provider.ClearLiveModelsForProvider(provider.ProviderOpenCodeGo)
 	c, err := provider.LoadCache(ModelCachePath())
+	status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
+	for _, model := range c.Models {
+		if model.Provider == provider.ProviderOpenCodeGo {
+			status.PreviouslyDiscovered = true
+			break
+		}
+	}
+	provider.SetProviderCatalogStatus(provider.ProviderOpenCodeGo, status)
 	if err != nil || c.Version != provider.ModelCacheVersion {
 		return
 	}
 	c = filterCacheByProviderScopes(c, scopes)
 	if len(c.Models) > 0 || len(c.AuthoritativeProviders) > 0 {
 		provider.SetLiveModelsForProviders(c.Models, c.AuthoritativeProviders)
+	}
+	if c.ProviderScopes[provider.ProviderOpenCodeGo] != "" {
+		status.State = provider.CatalogCached
+		status.PreviouslyDiscovered = true
+		provider.SetProviderCatalogStatus(provider.ProviderOpenCodeGo, status)
 	}
 }
 
@@ -440,10 +459,15 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	defer cancel()
 
 	openCodeGoCred, openCodeGoMethod := "", ""
+	var openCodeGoCredentialErr error
 	if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
 		openCodeGoCred, openCodeGoMethod = explicitAPIKey, "apikey"
 	} else {
-		openCodeGoCred, openCodeGoMethod, _, _ = resolveCredentialFull(ctx, provider.ProviderOpenCodeGo, "", commandMode)
+		openCodeGoCred, openCodeGoMethod, _, openCodeGoCredentialErr = resolveCredentialFull(ctx, provider.ProviderOpenCodeGo, "", commandMode)
+	}
+	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoCredentialErr != nil && !errors.Is(openCodeGoCredentialErr, errNoCredential) {
+		revision := beginCatalogDiscovery("")
+		finishCatalogDiscovery(revision, provider.CatalogStatus{State: provider.CatalogCredentialError})
 	}
 	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL)
 	openCodeGoBaseURL := ""
@@ -458,6 +482,18 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 		providerScopesEqual(cached.ProviderScopes, currentScopes) &&
 		((onlyProvider != "" && onlyProvider != provider.ProviderOpenCodeGo) || !needsOpenCodeGoRefresh(cached)) {
 		return
+	}
+
+	var diagnosticRevision uint64
+	diagnostic := provider.CatalogStatus{State: provider.CatalogUnavailable}
+	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoMethod == "apikey" {
+		diagnosticRevision = beginCatalogDiscovery(currentScopes[provider.ProviderOpenCodeGo])
+		defer func() {
+			if diagnostic.State != provider.CatalogReady && diagnostic.State != provider.CatalogFailed && ctx.Err() != nil {
+				diagnostic = provider.CatalogStatus{State: provider.CatalogFailed, Failure: *provider.ClassifyDiscoveryError(ctx.Err())}
+			}
+			finishCatalogDiscovery(diagnosticRevision, diagnostic)
+		}()
 	}
 
 	discovered := make(map[string][]provider.Model)
@@ -511,6 +547,8 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 			markEligible(provider.ProviderOpenCodeGo)
 			if live, err := discoverOpenCodeGoFn(ctx, openCodeGoCred, openCodeGoBaseURL); err == nil {
 				recordDiscovery(provider.ProviderOpenCodeGo, live, true, credentialScopeForEndpoint(openCodeGoCred, openCodeGoBaseURL))
+			} else {
+				diagnostic = provider.CatalogStatus{State: provider.CatalogFailed, Failure: *provider.ClassifyDiscoveryError(err)}
 			}
 		}
 	}
@@ -612,6 +650,9 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 		return
 	}
 	provider.SetLiveModelsForProviders(all, authoritativeProviders)
+	if _, ok := discovered[provider.ProviderOpenCodeGo]; ok {
+		diagnostic = provider.CatalogStatus{State: provider.CatalogReady}
+	}
 	fetchedAt := time.Now().UTC()
 	if onlyProvider != "" {
 		if latest.Version == provider.ModelCacheVersion {

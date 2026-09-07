@@ -540,6 +540,7 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
 	i.modelDialog.Open(current, loggedIn, reasoning)
+	i.addModelProfileDiagnostics()
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode

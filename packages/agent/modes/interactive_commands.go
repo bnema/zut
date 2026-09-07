@@ -496,6 +496,7 @@ func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
 	i.modelDialog.Open(i.cfg.Model, loggedIn, i.cfg.Reasoning)
+	i.addModelProfileDiagnostics()
 	i.mu.Lock()
 	if refreshErr != nil {
 		i.statusErr = "llama.cpp model refresh: " + refreshErr.Error()
@@ -635,6 +636,9 @@ func (i *Interactive) doLogout(target string) {
 		}
 	}
 
+	if i.cfg.ReloadModelCatalog != nil {
+		i.cfg.ReloadModelCatalog()
+	}
 	llamaConfigured := i.llamaConfigured
 	if i.cfg.LlamaCPPConfig != nil {
 		baseURL, _, err := i.cfg.LlamaCPPConfig()
@@ -1236,6 +1240,9 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		var buildErr error
 		var clearHandoff bool
 		buildAndCommitLogin := func() {
+			if i.cfg.ReloadModelCatalog != nil {
+				i.cfg.ReloadModelCatalog()
+			}
 			ag, prov, model, err := i.cfg.BuildAgent()
 			if err != nil {
 				buildErr = err

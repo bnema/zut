@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"fmt"
 	"maps"
 	"sync"
 )
@@ -450,6 +449,7 @@ var (
 	authoritativeProviderSet map[string]struct{}
 	managedModels            []Model // ephemeral models exposed by local model managers
 	userModels               []Model // highest-precedence models loaded from models.json
+	catalogStatuses          map[string]CatalogStatus
 )
 
 // CatalogSnapshot captures the mutable catalog overlays so a caller can
@@ -462,6 +462,7 @@ type CatalogSnapshot struct {
 	authoritativeProviderSet map[string]struct{}
 	managedModels            []Model
 	userModels               []Model
+	catalogStatuses          map[string]CatalogStatus
 }
 
 // SnapshotCatalog returns a deep copy of the mutable provider catalog state.
@@ -472,6 +473,7 @@ func SnapshotCatalog() CatalogSnapshot {
 	snapshot := CatalogSnapshot{
 		activeSet:                activeSet,
 		authoritativeProviderSet: maps.Clone(authoritativeProviderSet),
+		catalogStatuses:          maps.Clone(catalogStatuses),
 	}
 	if active != nil {
 		snapshot.active = cloneModels(active)
@@ -497,6 +499,7 @@ func RestoreCatalog(snapshot CatalogSnapshot) {
 	}
 	activeSet = snapshot.activeSet
 	authoritativeProviderSet = maps.Clone(snapshot.authoritativeProviderSet)
+	catalogStatuses = maps.Clone(snapshot.catalogStatuses)
 	if snapshot.managedModels != nil {
 		managedModels = cloneModels(snapshot.managedModels)
 	} else {
@@ -697,7 +700,7 @@ func FindModel(provider, id string) (Model, error) {
 			return m, nil
 		}
 	}
-	return Model{}, fmt.Errorf("unknown model %q (provider=%q)", id, provider)
+	return Model{}, &ModelLookupError{Provider: provider, Model: id, Catalog: ProviderCatalogStatus(provider)}
 }
 
 // IsProviderCatalogAuthoritative reports whether a successful live catalog

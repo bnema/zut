@@ -908,6 +908,16 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 	PrepareRuntimeCatalog(context.Background(), args.ListModels, args.Provider, args.APIKey, args.BaseURL, userModels, args.Model)
 
 	if args.ListModels {
+		knownProviders := []string{args.Provider}
+		if cfg, err := LoadConfig(); err == nil {
+			knownProviders = append(knownProviders, cfg.Provider)
+			for _, profile := range cfg.QuickModelShortcuts {
+				knownProviders = append(knownProviders, profile.Provider)
+			}
+		}
+		for _, warning := range provider.CatalogWarnings(knownProviders...) {
+			fmt.Fprintln(os.Stderr, "zut:", warning)
+		}
 		printModels()
 		return nil
 	}
@@ -2694,7 +2704,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
 			return nil
 		},
-		AuthManager:                mgr,
+		AuthManager: mgr,
+		ReloadModelCatalog: func() {
+			PrepareRuntimeCatalog(ctx, false, args.Provider, args.APIKey, args.BaseURL, LoadUserModels(), args.Model)
+		},
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,
 		RefreshLlamaCPPModels:      RefreshLlamaCPPModels,
 		BuildAgent:                 buildAgent,
