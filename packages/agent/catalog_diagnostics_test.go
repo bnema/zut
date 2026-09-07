@@ -20,13 +20,13 @@ func isolateCatalogDiagnostics(t *testing.T) {
 	t.Setenv("OPENCODE_GO_API_KEY", "")
 	snapshot := provider.SnapshotCatalog()
 	modelCatalogMu.Lock()
-	scope, revision := catalogDiagnosticScope, catalogDiagnosticRevision
+	path, scope, revision := catalogDiagnosticPath, catalogDiagnosticScope, catalogDiagnosticRevision
 	modelCatalogMu.Unlock()
 	discover := discoverOpenCodeGoFn
 	t.Cleanup(func() {
 		discoverOpenCodeGoFn = discover
 		modelCatalogMu.Lock()
-		catalogDiagnosticScope, catalogDiagnosticRevision = scope, revision
+		catalogDiagnosticPath, catalogDiagnosticScope, catalogDiagnosticRevision = path, scope, revision
 		provider.RestoreCatalog(snapshot)
 		modelCatalogMu.Unlock()
 	})
@@ -150,6 +150,66 @@ func TestCatalogDiagnosticOldRefreshCannotOverwriteNewScope(t *testing.T) {
 	}
 	if revision := beginCatalogDiscovery(credentialScopeForEndpoint("synthetic-key", "")); revision != 0 {
 		t.Fatal("other scope changed active diagnostic")
+	}
+}
+
+func TestCatalogReloadRejectsInFlightDiscoveryPublication(t *testing.T) {
+	for _, nextKey := range []string{"", "other-key"} {
+		t.Run("next-key-"+nextKey, func(t *testing.T) {
+			isolateCatalogDiagnostics(t)
+			t.Setenv("OPENCODE_API_KEY", "synthetic-key")
+			saveDiagnosticCache(t, "synthetic-key", provider.ModelCacheVersion)
+			LoadCachedModels()
+			before, err := os.ReadFile(ModelCachePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			discoverOpenCodeGoFn = func(ctx context.Context, _, _ string) ([]provider.Model, error) {
+				close(started)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "obsolete-in-flight-model", BaseURL: "https://old.example/v1"}}, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(func() { cancel(); <-done })
+			go func() {
+				defer close(done)
+				refreshModelsWithContext(ctx, "", "", "", provider.ProviderOpenCodeGo, apiKeyCommandSkip)
+			}()
+			<-started
+			t.Setenv("OPENCODE_API_KEY", nextKey)
+			LoadCachedModels()
+			close(release)
+			<-done
+			if models := provider.ModelsForProvider(provider.ProviderOpenCodeGo); len(models) != 0 {
+				t.Fatalf("old scope republished models after reload: %+v", models)
+			}
+			after, err := os.ReadFile(ModelCachePath())
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("old scope rewrote cache after reload: %v", err)
+			}
+		})
+	}
+}
+
+func TestCatalogRefreshForOldScopeCannotPublish(t *testing.T) {
+	isolateCatalogDiagnostics(t)
+	t.Setenv("OPENCODE_API_KEY", "current-key")
+	LoadCachedModels()
+	discoverOpenCodeGoFn = func(context.Context, string, string) ([]provider.Model, error) {
+		return []provider.Model{{Provider: provider.ProviderOpenCodeGo, ID: "obsolete-queued-model"}}, nil
+	}
+	// An SDK refresh can be queued before a reload and start afterwards.
+	refreshModels(provider.ProviderOpenCodeGo, "old-key", "", provider.ProviderOpenCodeGo)
+	if models := provider.ModelsForProvider(provider.ProviderOpenCodeGo); len(models) != 0 {
+		t.Fatalf("queued old scope published models: %+v", models)
+	}
+	if _, err := os.Stat(ModelCachePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("queued old scope wrote cache: %v", err)
 	}
 }
 

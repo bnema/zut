@@ -453,6 +453,9 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	if parent == nil {
 		parent = context.Background()
 	}
+	modelCatalogMu.Lock()
+	publicationRevision := catalogDiagnosticRevision
+	modelCatalogMu.Unlock()
 	explicitProvider = effectiveCatalogProvider(explicitProvider)
 	cached, cachedErr := provider.LoadCache(ModelCachePath())
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
@@ -466,8 +469,8 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 		openCodeGoCred, openCodeGoMethod, _, openCodeGoCredentialErr = resolveCredentialFull(ctx, provider.ProviderOpenCodeGo, "", commandMode)
 	}
 	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoCredentialErr != nil && !errors.Is(openCodeGoCredentialErr, errNoCredential) {
-		revision := beginCatalogDiscovery("")
-		finishCatalogDiscovery(revision, provider.CatalogStatus{State: provider.CatalogCredentialError})
+		publicationRevision = beginCatalogDiscovery("")
+		finishCatalogDiscovery(publicationRevision, provider.CatalogStatus{State: provider.CatalogCredentialError})
 	}
 	currentScopes := modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL)
 	openCodeGoBaseURL := ""
@@ -488,6 +491,7 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	diagnostic := provider.CatalogStatus{State: provider.CatalogUnavailable}
 	if (onlyProvider == "" || onlyProvider == provider.ProviderOpenCodeGo) && openCodeGoMethod == "apikey" {
 		diagnosticRevision = beginCatalogDiscovery(currentScopes[provider.ProviderOpenCodeGo])
+		publicationRevision = diagnosticRevision
 		defer func() {
 			if diagnostic.State != provider.CatalogReady && diagnostic.State != provider.CatalogFailed && ctx.Err() != nil {
 				diagnostic = provider.CatalogStatus{State: provider.CatalogFailed, Failure: *provider.ClassifyDiscoveryError(ctx.Err())}
@@ -589,7 +593,10 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 
 	modelCatalogMu.Lock()
 	defer modelCatalogMu.Unlock()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || publicationRevision != catalogDiagnosticRevision {
+		// Reloading credentials can leave the cache file unchanged. Its
+		// snapshot alone cannot authorize an older refresh to republish
+		// models or rewrite the cache after login/logout or an SDK reload.
 		return
 	}
 	latestSnapshot, latestErr := provider.LoadCache(ModelCachePath())

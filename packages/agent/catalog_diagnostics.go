@@ -9,11 +9,13 @@ import (
 
 // These fields share modelCatalogMu with catalog preparation/publication. A
 // result from an older refresh or another credential scope cannot overwrite
-// the diagnostic for the currently loaded runtime.
+// the active catalog, cache, or diagnostic for the currently loaded runtime.
+var catalogDiagnosticPath string
 var catalogDiagnosticScope string
 var catalogDiagnosticRevision uint64
 
 func resetCatalogDiagnostic(scopes map[string]string) {
+	catalogDiagnosticPath = ModelCachePath()
 	catalogDiagnosticScope = scopes[provider.ProviderOpenCodeGo]
 	catalogDiagnosticRevision++
 	state := provider.CatalogUnavailable
@@ -32,6 +34,12 @@ func resetCatalogDiagnostic(scopes map[string]string) {
 func beginCatalogDiscovery(scope string) uint64 {
 	modelCatalogMu.Lock()
 	defer modelCatalogMu.Unlock()
+	if catalogDiagnosticPath != ModelCachePath() {
+		// RefreshModelsAsync is also callable before loading a cache. Claim
+		// that state directory without borrowing another runtime's scope.
+		catalogDiagnosticPath = ModelCachePath()
+		catalogDiagnosticScope = scope
+	}
 	if scope != catalogDiagnosticScope {
 		return 0
 	}

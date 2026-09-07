@@ -177,7 +177,8 @@ stdout. Diagnostics omit credentials, request URLs, and response bodies.
 A failed refresh preserves usable models from a matching cache. Models missing
 from that cache are distinguished from models absent from a successfully fetched
 catalog. Login and logout reload credential-scoped metadata and schedule discovery;
-reopen `/model` to see the resulting list. Environment variables must be exported
+results superseded by a catalog reload cannot republish models or rewrite the cache.
+Reopen `/model` to see the resulting list. Environment variables must be exported
 before starting zut: changing another shell's environment does not update a running
 process. Discovery failures do not trigger automatic retries; `zut --list-models`
 attempts discovery again when the cache is stale or does not match the credentials.
