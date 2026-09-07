@@ -83,9 +83,9 @@ type Model struct {
 
 // Catalog is the hardcoded, read-only list of supported models.
 // Prices are USD per 1M tokens. The list is curated to what zut's
-// clients (Anthropic Messages + OpenAI Chat Completions) can actually
-// talk to; models that are only reachable through the OpenAI Responses
-// API (o1-pro, o3-pro, gpt-5-pro) are omitted. OpenCode Go is populated
+// clients (Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses)
+// can actually talk to; models that are only reachable through an unsupported
+// provider-specific protocol are omitted. OpenCode Go is populated
 // separately by runtime discovery from its provider API and models.dev.
 var Catalog = []Model{
 	// ---- Anthropic / Claude 4.x ----

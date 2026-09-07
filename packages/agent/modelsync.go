@@ -85,7 +85,7 @@ func loadCachedModels(scopes map[string]string) {
 	// the newly scoped cache, including cache-miss and read-error paths.
 	provider.ClearLiveModelsForProvider(provider.ProviderOpenCodeGo)
 	c, err := provider.LoadCache(ModelCachePath())
-	if err != nil {
+	if err != nil || c.Version != provider.ModelCacheVersion {
 		return
 	}
 	c = filterCacheByProviderScopes(c, scopes)
@@ -548,12 +548,19 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 	if ctx.Err() != nil {
 		return
 	}
-	latest, latestErr := provider.LoadCache(ModelCachePath())
+	latestSnapshot, latestErr := provider.LoadCache(ModelCachePath())
+	latest := latestSnapshot
+	if latest.Version != provider.ModelCacheVersion {
+		// Routing metadata from an older cache format is not safe to merge
+		// into a newly discovered catalog. Treat it as empty, but compare the
+		// raw snapshot below so a concurrent refresh is still detected.
+		latest = provider.ModelCache{}
+	}
 	preserveFullRefreshFreshness := onlyProvider == "" && eligibleProviderDiscoveryIncomplete(eligibleProviders, discovered)
 	var all []provider.Model
 	var authoritativeProviders []string
 	var providerScopes map[string]string
-	keepOpenCodeGo := !cacheSnapshotsEqual(cached, cachedErr, latest, latestErr)
+	keepOpenCodeGo := !cacheSnapshotsEqual(cached, cachedErr, latestSnapshot, latestErr)
 	if keepOpenCodeGo {
 		// Another runtime replaced the cache while this discovery was in
 		// flight. Keep its newer OpenCode Go scope and still publish any

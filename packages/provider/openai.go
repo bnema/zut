@@ -544,6 +544,7 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		for k, v := range c.headers {
 			httpReq.Header.Set(k, v)
 		}
+		setOpenCodeGoHeaders(httpReq.Header, c.Name(), req.Context)
 		return httpReq, nil
 	}
 

@@ -22,6 +22,7 @@ func TestAvailableReasoningLevels(t *testing.T) {
 		{name: "gemini 2.5 budget", model: Model{Provider: "google", ID: "gemini-2.5-flash", Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
 		{name: "gemini alias without control", model: Model{Provider: "google", ID: "gemini-flash-latest", Reasoning: true}, want: []string{""}},
 		{name: "anthropic budget", model: Model{Provider: "anthropic", Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
+		{name: "anthropic messages adapter", model: Model{API: APIAnthropicMessages, Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
 		{name: "bedrock without effort control", model: Model{Provider: "amazon-bedrock", Reasoning: true}, want: []string{""}},
 		{
 			name: "per-model overrides",
@@ -115,15 +116,15 @@ func TestOpenAIRequestUsesReasoningLevelMap(t *testing.T) {
 func TestOpenAIRequestUsesExactReasoningEffortMap(t *testing.T) {
 	preserveActiveCatalog(t)
 	SetLiveModels([]Model{{
-		Provider:           "opencode-go",
-		ID:                 "muse-spark-1.2-contributor",
+		Provider:           "custom-compatible",
+		ID:                 "compatible-reasoning-model",
 		Reasoning:          true,
 		ReasoningLevelMap:  map[string]string{"minimum": "minimum"},
 		ReasoningEffortMap: map[string]string{"minimum": "minimal"},
 	}})
 
-	client := NewOpenAICompat("opencode-go", "test", "", "").(*openaiClient)
-	request, err := client.buildRequest(Request{Model: "muse-spark-1.2-contributor", Reasoning: "minimum"})
+	client := NewOpenAICompat("custom-compatible", "test", "", "").(*openaiClient)
+	request, err := client.buildRequest(Request{Model: "compatible-reasoning-model", Reasoning: "minimum"})
 	if err != nil {
 		t.Fatal(err)
 	}

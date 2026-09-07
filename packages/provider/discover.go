@@ -119,10 +119,12 @@ const (
 	OpenCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"
 )
 
-// DiscoverOpenCodeGo joins the account's currently served model ids with
-// model metadata from models.dev. The OpenCode Go /models endpoint is the
-// authority for availability; models.dev supplies display names, limits,
-// reasoning capabilities, and pricing.
+// DiscoverOpenCodeGo joins the model ids published by OpenCode Go with
+// metadata from models.dev. The /models endpoint is authoritative for the
+// provider's published catalog, but it does not prove account entitlement;
+// consent, region, quota, and other access checks still happen at inference.
+// models.dev supplies display names, limits, reasoning capabilities, pricing,
+// and the adapter that selects the wire protocol.
 func DiscoverOpenCodeGo(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
 	return discoverOpenCodeGo(ctx, apiKey, baseURL, modelsDevAPIURL)
 }
@@ -175,7 +177,7 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 			API:         openCodeGoAPIForModel(id),
 		}
 		if details, ok := metadata.Models[id]; ok {
-			model.API = modelsDevAPIForModel(details, id)
+			model.API = modelsDevAPIForModel(metadata, details, id)
 			if details.Name != "" {
 				model.DisplayName = details.Name
 			}
@@ -210,6 +212,7 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 // subset needed by provider.Model. models.dev adds fields over time, and the
 // JSON decoder safely ignores those additions.
 type modelsDevProvider struct {
+	NPM    string                    `json:"npm"`
 	Models map[string]modelsDevModel `json:"models"`
 }
 
@@ -223,20 +226,36 @@ type modelsDevModel struct {
 }
 
 type modelsDevModelProviderOverride struct {
-	API   string `json:"api"`
-	Shape string `json:"shape"`
+	NPM string `json:"npm"`
 }
 
-func modelsDevAPIForModel(model modelsDevModel, id string) string {
+// modelsDevAPIForModel resolves the models.dev adapter without trusting its
+// endpoint URL. A model-level adapter overrides the provider default; when
+// neither is published, retain the narrow model-name bootstrap heuristic.
+// Unknown explicit adapters are returned unchanged so the router can fail
+// with an actionable unsupported-protocol error instead of silently selecting
+// Chat Completions.
+func modelsDevAPIForModel(provider modelsDevProvider, model modelsDevModel, id string) string {
+	npm := ""
 	if model.Provider != nil {
-		switch strings.ToLower(strings.TrimSpace(model.Provider.Shape)) {
-		case "responses":
-			return APIResponses
-		case "completions":
-			return APICompletions
-		}
+		npm = strings.TrimSpace(model.Provider.NPM)
 	}
-	return openCodeGoAPIForModel(id)
+	if npm == "" {
+		npm = strings.TrimSpace(provider.NPM)
+	}
+	if npm == "" {
+		return openCodeGoAPIForModel(id)
+	}
+	switch strings.ToLower(npm) {
+	case "@ai-sdk/openai":
+		return APIResponses
+	case "@ai-sdk/openai-compatible":
+		return APICompletions
+	case "@ai-sdk/anthropic":
+		return APIAnthropicMessages
+	default:
+		return npm
+	}
 }
 
 type modelsDevReasoningOption struct {
@@ -350,9 +369,11 @@ func DynamicOpenCodeGoModel(providerName, modelID, baseURL string) Model {
 	}
 }
 
-// OpenCodeGoAPIForModel reports the wire API for an OpenCode Go model family.
-// OpenCode Go currently serves GPT-5.6 models on its Responses endpoint while
-// the rest of the Go catalog uses Chat Completions.
+// OpenCodeGoAPIForModel reports the narrow bootstrap wire API for an
+// OpenCode Go model when adapter metadata is unavailable. Discovery metadata
+// is authoritative whenever it is present; this heuristic only recognizes the
+// GPT-5.6 Responses family and leaves other models on the Chat Completions
+// fallback.
 func OpenCodeGoAPIForModel(id string) string {
 	return openCodeGoAPIForModel(id)
 }

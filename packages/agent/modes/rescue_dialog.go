@@ -22,8 +22,10 @@ type rescueDialog struct {
 	current  string // currently active model id (excluded from view)
 	query    string
 	failedAt string // failed provider/model pair, e.g. "kimi/kimi-for-coding"
-	reason   string // short human-readable reason ("token expired", "rate limited", ...)
+	reason   string // complete diagnostic, including provider response
 	prompt   string // the user prompt that should be retried on Select
+	details  bool
+	scroll   int
 }
 
 type rescueDialogAction struct {
@@ -43,6 +45,8 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 	d.active = true
 	d.current = current
 	d.query = ""
+	d.details = false
+	d.scroll = 0
 	d.reason = reason
 	d.prompt = prompt
 	d.failedAt = strings.TrimSpace(failedProvider + "/" + failedModel)
@@ -95,7 +99,7 @@ func (d *rescueDialog) refilter() {
 
 // Render mirrors modelDialog so a rescue prompt feels identical to
 // every other picker in the TUI.
-func (d *rescueDialog) Render(th tui.Theme, width int) []string {
+func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 	if !d.Active() {
 		return nil
 	}
@@ -104,10 +108,34 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 	if d.failedAt != "" && d.failedAt != "/" {
 		header = "rescue turn — " + d.failedAt + " failed"
 	}
+	if d.details {
+		header = "provider error"
+	}
 	lines = append(lines, frameHeader(th, header, width))
 
+	// The picker keeps a bounded preview; the details view retains the entire
+	// diagnostic and owns its viewport rather than letting the pane clip it.
+	errorRows := wrapDialogTextRows(sanitizeSessionTreeText(d.reason), width)
+	if d.details {
+		hint := wrapDialogTextRows("↑/↓ or pgup/pgdn: scroll; tab/esc: back", width)
+		hint = hint[:min(len(hint), max(0, height-1))]
+		visible := max(1, height-len(hint))
+		d.scroll = min(max(0, d.scroll), max(0, len(errorRows)-visible))
+		for _, row := range hint {
+			lines = append(lines, th.FGColor(th.Muted, row))
+		}
+		for _, row := range errorRows[d.scroll:min(len(errorRows), d.scroll+visible)] {
+			lines = append(lines, th.FGColor(th.Warning, row))
+		}
+		return append(lines, frameRule(th, width))
+	}
 	if d.reason != "" {
-		lines = append(lines, th.FGColor(th.Warning, "  "+d.reason))
+		for _, row := range errorRows[:min(3, len(errorRows))] {
+			lines = append(lines, th.FGColor(th.Warning, row))
+		}
+		for _, row := range wrapDialogTextRows("tab: full error", width) {
+			lines = append(lines, th.FGColor(th.Muted, row))
+		}
 	}
 
 	hint := "retry this turn with another model (↑/↓, enter, esc to cancel)"
@@ -176,6 +204,28 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 }
 
 func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
+	if k.Kind == tui.KeyTab {
+		d.details = !d.details
+		d.scroll = 0
+		return rescueDialogAction{}
+	}
+	if d.details {
+		switch k.Kind {
+		case tui.KeyEsc:
+			d.details = false
+		case tui.KeyUp, tui.KeyMouseWheelUp:
+			d.scroll = max(0, d.scroll-1)
+		case tui.KeyDown, tui.KeyMouseWheelDown:
+			d.scroll++
+		case tui.KeyPageUp:
+			d.scroll = max(0, d.scroll-8)
+		case tui.KeyPageDown:
+			d.scroll += 8
+		case tui.KeyHome:
+			d.scroll = 0
+		}
+		return rescueDialogAction{}
+	}
 	switch k.Kind {
 	case tui.KeyUp:
 		if d.cursor > 0 {
@@ -220,7 +270,7 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 
 // classifyRescueError inspects an agent error and decides whether
 // it's a recoverable provider failure that the user should be offered
-// a rescue picker for, plus a short human-readable reason. Returns
+// a rescue picker for, plus a category and the complete diagnostic. Returns
 // (false, "") for errors we should NOT auto-rescue (bad request,
 // context length, transcript serialization issues, etc.) so the
 // regular red status banner still surfaces them.
@@ -245,18 +295,18 @@ func classifyRescueError(err error) (bool, string) {
 		strings.Contains(low, "no such host") ||
 		strings.Contains(low, "tls handshake") ||
 		strings.Contains(low, "eof") {
-		return true, "network failure: " + shortError(msg)
+		return true, "network failure: " + msg
 	}
 
 	switch {
 	case containsAny(low, "http 401", " 401:", "invalid_authentication", "token expired", "api key appears to be invalid"):
-		return true, "authentication failed: " + shortError(msg)
+		return true, "authentication failed: " + msg
 	case containsAny(low, "http 403", " 403:", "permission denied", "forbidden"):
-		return true, "permission denied: " + shortError(msg)
+		return true, "permission denied: " + msg
 	case containsAny(low, "http 429", " 429:", "rate limit", "rate_limit", "too many requests", "quota"):
-		return true, "rate limited: " + shortError(msg)
+		return true, "rate limited: " + msg
 	case containsAny(low, "http 500", "http 502", "http 503", "http 504", " 500:", " 502:", " 503:", " 504:", "upstream connect error", "service unavailable", "internal server error", "bad gateway", "gateway timeout"):
-		return true, "provider unavailable: " + shortError(msg)
+		return true, "provider unavailable: " + msg
 	}
 
 	// Anything else (400 bad request, validation errors, etc.) is
@@ -271,17 +321,6 @@ func containsAny(haystack string, needles ...string) bool {
 		}
 	}
 	return false
-}
-
-// shortError trims a long http-payload error to something readable in
-// the rescue dialog header without dropping the most useful prefix.
-func shortError(msg string) string {
-	msg = strings.TrimSpace(msg)
-	const max = 140
-	if len(msg) <= max {
-		return msg
-	}
-	return msg[:max] + "..."
 }
 
 // extractFailedProvider tries to pull the failing provider name out

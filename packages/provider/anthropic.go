@@ -10,11 +10,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 const anthropicDefaultBaseURL = "https://api.anthropic.com"
 const anthropicAPIVersion = "2023-06-01"
+
+// anthropicMessagesURL builds the Messages endpoint for an API root. A base
+// URL that already ends in a numeric version (for example /v1) gets
+// /messages appended directly; a bare or provider-specific root gets the
+// conventional /v1/messages suffix.
+func anthropicMessagesURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if versionSegmentSuffix.MatchString(baseURL) {
+		return baseURL + "/messages"
+	}
+	return baseURL + "/v1/messages"
+}
 
 // Stealth identity used when talking to Anthropic via subscription OAuth.
 // These values mimic the official Claude Code CLI so Anthropic's edge
@@ -69,6 +82,9 @@ type anthropicClient struct {
 
 	// headers carries extra request headers (e.g. Kimi Code's X-Msh-*).
 	headers map[string]string
+
+	modelOverridesMu sync.RWMutex
+	modelOverrides   map[string]Model
 }
 
 // NewAnthropic creates an Anthropic client using an API key. baseURL may be empty.
@@ -100,6 +116,34 @@ func (c *anthropicClient) Name() string {
 		return c.name
 	}
 	return "anthropic"
+}
+
+func (c *anthropicClient) SetModelMetadata(model Model) {
+	model = cloneModel(model)
+	c.modelOverridesMu.Lock()
+	if c.modelOverrides == nil {
+		c.modelOverrides = make(map[string]Model)
+	}
+	c.modelOverrides[model.ID] = model
+	c.modelOverridesMu.Unlock()
+}
+
+func (c *anthropicClient) modelForRequest(id string) (Model, error) {
+	id = strings.TrimSpace(id)
+	c.modelOverridesMu.RLock()
+	model, ok := c.modelOverrides[id]
+	if ok {
+		model = cloneModel(model)
+	}
+	c.modelOverridesMu.RUnlock()
+	if ok {
+		return model, nil
+	}
+	model, err := FindModel(c.Name(), id)
+	if err != nil {
+		model, err = FindModel("", id)
+	}
+	return model, err
 }
 
 // ---- wire types ----
@@ -210,18 +254,8 @@ func usesAdaptiveThinking(m Model) bool {
 // ---- request building ----
 
 func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
-	// Look up under the client's actual provider id, which may be "anthropic"
-	// (default) or a third party that speaks the Anthropic Messages API
-	// (kimi, fireworks, minimax, vercel-ai-gateway, ...). Falling back to a
-	// provider-agnostic lookup keeps things working for catalog-less
-	// configurations (e.g. user passes --model on an obscure third party).
-	m, err := FindModel(c.Name(), req.Model)
-	if err != nil {
-		if m2, err2 := FindModel("", req.Model); err2 == nil {
-			m = m2
-			err = nil
-		}
-	}
+	req.Model = strings.TrimSpace(req.Model)
+	m, err := c.modelForRequest(req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -552,8 +586,9 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		}
 	}
 
+	endpoint := anthropicMessagesURL(c.baseURL)
 	newReq := func() (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -580,6 +615,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		for k, v := range c.headers {
 			httpReq.Header.Set(k, v)
 		}
+		setOpenCodeGoHeaders(httpReq.Header, c.Name(), req.Context)
 		return httpReq, nil
 	}
 
@@ -602,12 +638,9 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 	defer close(out)
 	defer resp.Body.Close()
 
-	// Same lookup-by-actual-provider-id pattern as buildRequest, so cost
-	// calculation works for third-party Anthropic-Messages endpoints.
-	model, _ := FindModel(c.Name(), req.Model)
-	if model.ID == "" {
-		model, _ = FindModel("", req.Model)
-	}
+	// Use the same runtime-owned metadata as buildRequest so cost and
+	// capability handling stay isolated from other SDK runtimes.
+	model, _ := c.modelForRequest(req.Model)
 	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)

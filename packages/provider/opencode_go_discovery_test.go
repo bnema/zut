@@ -34,6 +34,7 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 				"opencode-go": {
 					"id": "opencode-go",
 					"api": "https://opencode.ai/zen/go/v1",
+					"npm": "@ai-sdk/openai-compatible",
 					"models": {
 						"muse-spark-1.2-contributor": {
 							"id": "muse-spark-1.2-contributor",
@@ -80,7 +81,7 @@ func TestDiscoverOpenCodeGoCombinesLiveIDsWithModelsDevMetadata(t *testing.T) {
 		t.Fatalf("models = %+v, want three nonblank served models", models)
 	}
 
-	if got := models[0]; got.Provider != "opencode-go" || got.ID != "muse-spark-1.2-contributor" || got.DisplayName != "Muse Spark 1.2 Contributor" || got.ContextWindow != 1048576 || got.MaxOutput != 131072 || !got.Reasoning || got.PriceInput != 0.1 || got.PriceOutput != 0.2 || got.PriceCacheRead != 0.002 || got.PriceCacheWrite != 0.003 || got.PriceTierInputTokens != 272000 || got.PriceInputAbove != 0.4 || got.PriceOutputAbove != 0.8 || got.PriceCacheReadAbove != 0.004 || got.PriceCacheWriteAbove != 0.005 || got.BaseURL != server.URL+"/v1" || got.Source != "live" {
+	if got := models[0]; got.Provider != "opencode-go" || got.ID != "muse-spark-1.2-contributor" || got.DisplayName != "Muse Spark 1.2 Contributor" || got.ContextWindow != 1048576 || got.MaxOutput != 131072 || !got.Reasoning || got.API != APICompletions || got.PriceInput != 0.1 || got.PriceOutput != 0.2 || got.PriceCacheRead != 0.002 || got.PriceCacheWrite != 0.003 || got.PriceTierInputTokens != 272000 || got.PriceInputAbove != 0.4 || got.PriceOutputAbove != 0.8 || got.PriceCacheReadAbove != 0.004 || got.PriceCacheWriteAbove != 0.005 || got.BaseURL != server.URL+"/v1" || got.Source != "live" {
 		t.Fatalf("metadata model = %+v", got)
 	}
 	if got := models[0].ReasoningLevelMap; got["minimum"] != "minimum" || got["xhigh"] != "xhigh" {
@@ -135,33 +136,78 @@ func TestDiscoverOpenCodeGoKeepsLiveIDsWithoutProviderMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].ID != "served" || models[0].DisplayName != "served" {
-		t.Fatalf("models = %+v, want the live id with fallback metadata", models)
+	if len(models) != 1 || models[0].ID != "served" || models[0].DisplayName != "served" || models[0].API != "" {
+		t.Fatalf("models = %+v, want the live id with fallback metadata and no explicit adapter", models)
 	}
 }
 
-func TestDiscoverOpenCodeGoUsesModelsDevRoutingAndEmptyReasoningMetadata(t *testing.T) {
+func TestDiscoverOpenCodeGoUsesModelsDevAdaptersAndEmptyReasoningMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api.json":
 			_, _ = w.Write([]byte(`{
-				"opencode-go": {"models": {
-					"shape-responses": {
-						"name": "Shape Responses",
-						"reasoning": true,
-						"reasoning_options": [{"type":"effort","values":["low","high"]}],
-						"provider": {"shape":"responses"}
-					},
-					"gpt-5.6-completions": {
-						"name": "Shape Completions",
-						"reasoning": true,
-						"reasoning_options": [],
-						"provider": {"shape":"completions"}
+				"opencode-go": {
+					"npm": "@ai-sdk/openai-compatible",
+					"api": "https://metadata.example/v1",
+					"models": {
+						"muse-spark-1.3-contributor": {
+							"name": "Muse Spark 1.3 Contributor",
+							"reasoning": true,
+							"reasoning_options": [{"type":"effort","values":["low","high"]}],
+							"provider": {"npm":"@ai-sdk/openai", "api":"https://untrusted.example/v1"}
+						},
+						"minimax-m2": {
+							"name": "MiniMax M2",
+							"reasoning": true,
+							"provider": {"npm":"@ai-sdk/anthropic"}
+						},
+						"gpt-5.6-completions": {
+							"name": "GPT Completions Override",
+							"reasoning": true,
+							"reasoning_options": []
+						}
 					}
-				}}
+				}
 			}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"muse-spark-1.3-contributor"},{"id":"minimax-m2"},{"id":"gpt-5.6-completions"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	models, err := discoverOpenCodeGo(context.Background(), "key", server.URL+"/v1", server.URL+"/api.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %+v, want three models", models)
+	}
+	if models[0].API != APIResponses {
+		t.Fatalf("Responses model API = %q, want %q", models[0].API, APIResponses)
+	}
+	if models[0].BaseURL != server.URL+"/v1" {
+		t.Fatalf("model-level metadata redirected base URL to %q", models[0].BaseURL)
+	}
+	if models[1].API != APIAnthropicMessages {
+		t.Fatalf("Anthropic model API = %q, want %q", models[1].API, APIAnthropicMessages)
+	}
+	if models[2].API != APICompletions {
+		t.Fatalf("provider-default model API = %q, want %q", models[2].API, APICompletions)
+	}
+	if got := AvailableReasoningLevels(models[2]); len(got) != 1 || got[0] != "" {
+		t.Fatalf("empty reasoning options produced levels %q, want only off", got)
+	}
+}
+
+func TestDiscoverOpenCodeGoRetainsUnsupportedExplicitAdapterForRoutingError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api.json":
+			_, _ = w.Write([]byte(`{"opencode-go":{"npm":"@ai-sdk/google","models":{"unknown-adapter":{"name":"Unknown Adapter"}}}}`))
 		case "/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"shape-responses"},{"id":"gpt-5.6-completions"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"unknown-adapter"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -172,16 +218,7 @@ func TestDiscoverOpenCodeGoUsesModelsDevRoutingAndEmptyReasoningMetadata(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("models = %+v, want two models", models)
-	}
-	if models[0].API != APIResponses {
-		t.Fatalf("Responses-shaped model API = %q, want %q", models[0].API, APIResponses)
-	}
-	if models[1].API != APICompletions {
-		t.Fatalf("Completions-shaped model API = %q, want %q", models[1].API, APICompletions)
-	}
-	if got := AvailableReasoningLevels(models[1]); len(got) != 1 || got[0] != "" {
-		t.Fatalf("empty reasoning options produced levels %q, want only off", got)
+	if len(models) != 1 || models[0].API != "@ai-sdk/google" {
+		t.Fatalf("unsupported adapter model = %+v, want preserved adapter", models)
 	}
 }

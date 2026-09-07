@@ -99,6 +99,33 @@ func TestLoadCachedModelsClearsMismatchedActiveOpenCodeGoOverlay(t *testing.T) {
 	}
 }
 
+func TestLoadCachedModelsRejectsOldRoutingMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	if err := provider.SaveCache(filepath.Join(home, "models-cache.json"), provider.ModelCache{
+		Version:   provider.ModelCacheVersion - 1,
+		FetchedAt: time.Now(),
+		Models: []provider.Model{{
+			Provider: provider.ProviderOpenCodeGo,
+			ID:       "old-routing-model",
+			API:      provider.APIResponses,
+		}},
+		AuthoritativeProviders: []string{provider.ProviderOpenCodeGo},
+		ProviderScopes: map[string]string{
+			provider.ProviderOpenCodeGo: credentialScopeForEndpoint("key", ""),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	loadCachedModels(map[string]string{provider.ProviderOpenCodeGo: credentialScopeForEndpoint("key", "")})
+	if _, err := provider.FindModel(provider.ProviderOpenCodeGo, "old-routing-model"); err == nil {
+		t.Fatal("old routing metadata remained active after cache load")
+	}
+}
+
 func TestFilterCacheByProviderScopesDropsLegacyAuthoritativeCodex(t *testing.T) {
 	cache := provider.ModelCache{
 		Models:                 []provider.Model{{Provider: "openai-codex", ID: "legacy"}},

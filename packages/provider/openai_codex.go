@@ -553,6 +553,7 @@ func (c *codexClient) responsesHeaders(req Request, useCodexCLIRouting, websocke
 			headers.Set("x-client-request-id", threadID)
 		}
 		headers.Set("user-agent", "codex_cli_rs/0.0.0")
+		setOpenCodeGoHeaders(headers, c.providerName, req.Context)
 		return headers
 	}
 
@@ -562,6 +563,7 @@ func (c *codexClient) responsesHeaders(req Request, useCodexCLIRouting, websocke
 		headers.Set("originator", "zot")
 		headers.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
 	}
+	setOpenCodeGoHeaders(headers, c.providerName, req.Context)
 	return headers
 }
 

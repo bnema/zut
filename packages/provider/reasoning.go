@@ -159,7 +159,7 @@ func usesReasoningBudget(model Model) bool {
 	case "anthropic", "fireworks", "kimi", "minimax", "minimax-cn", "vercel-ai-gateway":
 		return true
 	}
-	return model.API == "anthropic"
+	return model.API == APIAnthropicMessages || model.API == "anthropic" // "anthropic" is the legacy user-model API value
 }
 
 // NormalizeReasoning canonicalizes zut's user-facing reasoning levels.

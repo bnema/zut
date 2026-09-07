@@ -140,19 +140,31 @@ zut --provider openrouter
 
 OpenCode Go is synchronized instead of using a hand-maintained model list. When
 `OPENCODE_API_KEY` or a configured OpenCode Go credential is available, zut
-reads the account's served IDs from
+reads the model IDs published by
 [`https://opencode.ai/zen/go/v1/models`](https://opencode.ai/zen/go/v1/models)
-and enriches them with names, limits, prices, and reasoning options from the
-[Models.dev JSON API](https://models.dev/api.json), which powers the
-[OpenCode Go provider page](https://models.dev/providers/opencode-go/). The
-result is authoritative for OpenCode Go, so models removed from the provider
-are removed from the picker as well. The merged catalog is cached in
-`$ZUT_HOME/models-cache.json` for 24 hours; OpenCode Go entries are scoped to
-both the credential fingerprint and endpoint. `--list-models` waits for a
-refresh when the cache is stale, while SDK runtimes load matching cached
-metadata before resolving. Synchronous refreshes resolve configured
-`api_key_command` credentials; unsolicited startup refreshes leave those
-commands untouched.
+and enriches them with names, limits, prices, reasoning options, and adapter
+metadata from the [Models.dev JSON API](https://models.dev/api.json), which
+powers the [OpenCode Go provider page](https://models.dev/providers/opencode-go/).
+The published list is authoritative for the catalog and picker, but it is not
+an entitlement check: consent, regional eligibility, quota, and account policy
+can still reject an inference request.
+
+Models.dev adapter metadata selects the wire protocol for each model:
+`@ai-sdk/openai` uses OpenAI Responses, `@ai-sdk/openai-compatible` uses Chat
+Completions, and `@ai-sdk/anthropic` uses Anthropic Messages. If that metadata
+is unavailable, zut keeps the published model ID and uses only its narrow
+bootstrap fallback; protocol compatibility cannot be guaranteed until the
+metadata is available. An explicit unsupported adapter fails with an
+unsupported-protocol error instead of silently choosing Chat Completions.
+Explicit and discovered base URLs remain the credential-scoped gateway
+endpoint; public metadata does not redirect requests to another host.
+
+The merged catalog is cached in `$ZUT_HOME/models-cache.json` for 24 hours;
+OpenCode Go entries are scoped to both the credential fingerprint and endpoint.
+`--list-models` waits for a refresh when the cache is stale, while SDK runtimes
+load matching cached metadata before resolving. Synchronous refreshes resolve
+configured `api_key_command` credentials; unsolicited startup refreshes leave
+those commands untouched.
 
 ## Fast mode
 
@@ -193,10 +205,13 @@ correlations; adapters translate them only when their exact provider, model,
 and endpoint declaration supports it. Resident children share the root cache
 identity but retain distinct thread identities. The OpenAI/Codex Responses
 route uses the root identity as `prompt_cache_key`; declared Codex routes also
-receive their documented session and thread routing headers. A generic
-OpenAI-compatible endpoint never receives these extensions merely because it
-accepts an OpenAI-shaped request. JSON event mode also reports sanitized cache
-diagnostics (`eligible`, `mode`, `transport`, and `continuation`). `eligible`
+receive their documented session and thread routing headers. OpenCode Go
+requests identify zut with `x-opencode-client` and `User-Agent`, use the stable
+thread (or root cache) ID as `x-opencode-session`, and use the turn ID as
+`x-opencode-request`. A generic OpenAI-compatible endpoint never receives
+these extensions merely because it accepts an OpenAI-shaped request. JSON
+event mode also reports sanitized cache diagnostics (`eligible`, `mode`,
+`transport`, and `continuation`). `eligible`
 is a conservative local prompt-length estimate; OpenAI performs the authoritative
 tokenization and cache decision. These records never include prompts, durable
 IDs, request bodies, or credentials.

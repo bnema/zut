@@ -17,10 +17,10 @@ type ModelCache struct {
 	ProviderScopes         map[string]string `json:"provider_scopes,omitempty"`
 }
 
-// ModelCacheVersion invalidates caches created before the catalog merge and
-// endpoint-scoped credential semantics changed. Older caches remain readable
-// as a temporary fallback but are refreshed before they are written again.
-const ModelCacheVersion = 3
+// ModelCacheVersion invalidates caches created before OpenCode Go protocol
+// routing was based on models.dev adapters. Older caches must not be loaded as
+// routing metadata because they can silently select the wrong wire protocol.
+const ModelCacheVersion = 4
 
 // CacheTTL is how long a discovered list is considered fresh. Model metadata
 // and availability change less often than a typical process starts, so keep
@@ -68,9 +68,9 @@ func SaveCache(path string, c ModelCache) error {
 	return os.Rename(tmp, path)
 }
 
-// IsFresh reports whether the cache was fetched within CacheTTL.
+// IsFresh reports whether the current-format cache was fetched within CacheTTL.
 func (c ModelCache) IsFresh() bool {
-	if c.FetchedAt.IsZero() {
+	if c.Version != ModelCacheVersion || c.FetchedAt.IsZero() {
 		return false
 	}
 	return time.Since(c.FetchedAt) < CacheTTL

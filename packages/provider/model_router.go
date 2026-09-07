@@ -12,6 +12,8 @@ const (
 	APICompletions = "openai-completions"
 	// APIResponses identifies the OpenAI Responses wire API.
 	APIResponses = "openai-responses"
+	// APIAnthropicMessages identifies the Anthropic Messages wire API.
+	APIAnthropicMessages = "anthropic-messages"
 )
 
 // modelRouter dispatches each request according to the selected model's API.
@@ -34,7 +36,8 @@ type ModelMetadataSetter interface {
 }
 
 // NewModelRouter creates a client that dispatches requests using Model.API.
-// Models with no API override, and models absent from the catalog, use fallback.
+// Models with no API override, and models absent from the catalog, use fallback;
+// an explicit API without a registered client returns an error.
 func NewModelRouter(name string, fallback Client, byAPI map[string]Client) Client {
 	return &modelRouter{name: name, fallback: fallback, byAPI: byAPI}
 }
@@ -118,7 +121,7 @@ func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, er
 			routed = c.fallback
 		}
 		if routed == nil {
-			return nil, fmt.Errorf("provider %q has no client for model API %q", c.name, api)
+			return nil, fmt.Errorf("provider %q model %q requests unsupported wire API %q", c.name, req.Model, api)
 		}
 		client = routed
 	}

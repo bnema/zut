@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -66,7 +67,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	SetLiveModels([]Model{
 		{Provider: "opencode-go", ID: "gpt-5.6-luna", API: APIResponses},
 		{Provider: "opencode-go", ID: "kimi-k3"},
-		{Provider: "opencode-go", ID: "shape-completions", API: APICompletions},
+		{Provider: "opencode-go", ID: "explicit-completions", API: APICompletions},
 	})
 
 	router := NewOpenCodeGo("token", "https://example.com/go/v1").(*modelRouter)
@@ -82,7 +83,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	responsesCapture := &routeCaptureClient{name: "opencode-go"}
 	router.fallback = completionsCapture
 	router.byAPI[APIResponses] = responsesCapture
-	for _, model := range []string{"gpt-5.6-luna", "kimi-k3", "shape-completions"} {
+	for _, model := range []string{"gpt-5.6-luna", "kimi-k3", "explicit-completions"} {
 		stream, err := router.Stream(context.Background(), Request{Model: model})
 		if err != nil {
 			t.Fatal(err)
@@ -94,7 +95,7 @@ func TestOpenCodeGoRoutesLunaToResponses(t *testing.T) {
 	if len(responsesCapture.models) != 1 || responsesCapture.models[0] != "gpt-5.6-luna" {
 		t.Fatalf("Responses models = %v", responsesCapture.models)
 	}
-	if len(completionsCapture.models) != 2 || completionsCapture.models[0] != "kimi-k3" || completionsCapture.models[1] != "shape-completions" {
+	if len(completionsCapture.models) != 2 || completionsCapture.models[0] != "kimi-k3" || completionsCapture.models[1] != "explicit-completions" {
 		t.Fatalf("Completions models = %v", completionsCapture.models)
 	}
 }
@@ -116,6 +117,17 @@ func TestOpenCodeGoScopedEmptyRouterIgnoresGlobalCatalog(t *testing.T) {
 	}
 	if len(fallback.models) != 1 || len(responses.models) != 0 {
 		t.Fatalf("scoped empty router used global catalog: fallback=%v responses=%v", fallback.models, responses.models)
+	}
+}
+
+func TestModelRouterRejectsUnsupportedExplicitModelAPI(t *testing.T) {
+	router := NewOpenCodeGoWithModels("token", "https://example.com/go/v1", []Model{{
+		Provider: ProviderOpenCodeGo,
+		ID:       "unsupported-model",
+		API:      "@ai-sdk/google",
+	}})
+	if _, err := router.Stream(context.Background(), Request{Model: "unsupported-model"}); err == nil || !strings.Contains(err.Error(), "unsupported wire API") {
+		t.Fatalf("error = %v, want actionable unsupported wire API error", err)
 	}
 }
 

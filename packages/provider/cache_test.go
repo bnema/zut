@@ -33,10 +33,13 @@ func TestSaveCacheUsesRestrictivePermissions(t *testing.T) {
 }
 
 func TestModelCacheUsesTwentyFourHourTTL(t *testing.T) {
-	if !(ModelCache{FetchedAt: time.Now().Add(-23 * time.Hour)}).IsFresh() {
+	if !(ModelCache{Version: ModelCacheVersion, FetchedAt: time.Now().Add(-23 * time.Hour)}).IsFresh() {
 		t.Fatal("cache from 23 hours ago should be fresh")
 	}
-	if (ModelCache{FetchedAt: time.Now().Add(-25 * time.Hour)}).IsFresh() {
+	if (ModelCache{Version: ModelCacheVersion, FetchedAt: time.Now().Add(-25 * time.Hour)}).IsFresh() {
 		t.Fatal("cache from 25 hours ago should be stale")
+	}
+	if (ModelCache{Version: ModelCacheVersion - 1, FetchedAt: time.Now()}).IsFresh() {
+		t.Fatal("old-version cache should not be fresh")
 	}
 }
