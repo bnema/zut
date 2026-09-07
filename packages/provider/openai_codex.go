@@ -348,22 +348,19 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			body.Input = append(body.Input, codexInputMessage{Role: role, Content: content})
 		case RoleAssistant:
 			// Emit one output_message per text block, one function_call per
-			// tool call, and one reasoning item per ReasoningBlock,
+			// tool call, and one reasoning item per replayable ReasoningBlock,
 			// preserving the order so the model sees the same interleaving
-			// we captured. The reasoning replay is what keeps OpenAI
-			// Codex from rejecting follow-up tool calls with
-			// "thinking is enabled but reasoning_content is missing".
+			// we captured. The reasoning replay is what keeps Responses
+			// providers from rejecting follow-up tool calls when thinking
+			// is enabled. Blocks without encrypted content are omitted:
+			// an ID or summary alone is not a self-contained reasoning
+			// item while store is false. See reasoningForReplay.
 			for _, c := range msg.Content {
 				switch v := c.(type) {
 				case ReasoningBlock:
-					item := codexReasoningItem{
-						Type:             "reasoning",
-						ID:               v.ID,
-						EncryptedContent: v.Encrypted,
-						Summary:          []codexReasoningSummary{},
-					}
-					if v.Summary != "" {
-						item.Summary = []codexReasoningSummary{{Type: "summary_text", Text: v.Summary}}
+					item, ok := reasoningForReplay(v)
+					if !ok {
+						continue
 					}
 					body.Input = append(body.Input, item)
 				case TextBlock:
@@ -437,6 +434,28 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 
 	return body, nil
+}
+
+// reasoningForReplay decides whether a persisted ReasoningBlock carries a
+// self-contained Responses payload. Only blocks with encrypted content are
+// replayed; an ID or a readable summary alone cannot stand in for the
+// provider-issued payload when store is false. The boolean is false when
+// the block must be omitted from outgoing Responses input. Stored messages
+// are never mutated by this decision.
+func reasoningForReplay(block ReasoningBlock) (codexReasoningItem, bool) {
+	if block.Encrypted == "" {
+		return codexReasoningItem{}, false
+	}
+	item := codexReasoningItem{
+		Type:             "reasoning",
+		ID:               block.ID,
+		EncryptedContent: block.Encrypted,
+		Summary:          []codexReasoningSummary{},
+	}
+	if block.Summary != "" {
+		item.Summary = []codexReasoningSummary{{Type: "summary_text", Text: block.Summary}}
+	}
+	return item, true
 }
 
 func splitCallID(id string) (string, string) {
@@ -513,12 +532,20 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 
 	resp, err := doStreamWithRetry(ctx, c.http, newReq, req.Lifecycle)
 	if err != nil {
-		return nil, fmt.Errorf("openai-codex: %w", err)
+		label := c.providerName
+		if label == "" {
+			label = ProviderOpenAICodex
+		}
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openai-codex: http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		label := c.providerName
+		if label == "" {
+			label = ProviderOpenAICodex
+		}
+		return nil, fmt.Errorf("%s: http %d: %s", label, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	out := make(chan Event, 16)
@@ -803,9 +830,66 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 					} `json:"usage"`
 					Status  string `json:"status"`
 					EndTurn *bool  `json:"end_turn"`
+					Output  []struct {
+						Type             string `json:"type"`
+						ID               string `json:"id"`
+						EncryptedContent string `json:"encrypted_content"`
+						Summary          []struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"summary"`
+					} `json:"output"`
 				} `json:"response"`
 			}
 			_ = json.Unmarshal([]byte(ev.Data), &p)
+			// Backfill encrypted reasoning supplied only in the terminal
+			// response output. Match by nonempty provider-issued item ID,
+			// never by output-array position. Fill a missing payload from
+			// a matching terminal item without overwriting an earlier
+			// payload or duplicating streamed summaries.
+			if len(p.Response.Output) > 0 {
+				terminal := make(map[string]struct {
+					encrypted string
+					summary   string
+				}, len(p.Response.Output))
+				for _, out := range p.Response.Output {
+					if out.Type != "reasoning" || out.ID == "" {
+						continue
+					}
+					if _, seen := terminal[out.ID]; seen {
+						continue
+					}
+					var summary strings.Builder
+					for _, s := range out.Summary {
+						if s.Text == "" {
+							continue
+						}
+						if summary.Len() > 0 {
+							summary.WriteString("\n")
+						}
+						summary.WriteString(s.Text)
+					}
+					terminal[out.ID] = struct {
+						encrypted string
+						summary   string
+					}{encrypted: out.EncryptedContent, summary: summary.String()}
+				}
+				for _, it := range items {
+					if it == nil || it.kind != "reasoning" || it.rawID == "" {
+						continue
+					}
+					match, ok := terminal[it.rawID]
+					if !ok {
+						continue
+					}
+					if it.encrypted == "" && match.encrypted != "" {
+						it.encrypted = match.encrypted
+					}
+					if it.summary.Len() == 0 && match.summary != "" {
+						it.summary.WriteString(match.summary)
+					}
+				}
+			}
 			usage = normalizeOpenAIUsage(p.Response.Usage.InputTokens, p.Response.Usage.OutputTokens, p.Response.Usage.InputTokensDetails)
 			if details := p.Response.Usage.OutputTokensDetails; details != nil {
 				usage.ReasoningTokens = details.ReasoningTokens
