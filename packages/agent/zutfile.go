@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -127,7 +128,6 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 }
 
 func runLocalZutfile(ref string, args Args, version string) error {
-	prepareRuntimeCatalog()
 	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
@@ -157,6 +157,9 @@ func runLocalZutfile(ref string, args Args, version string) error {
 	if !allowed {
 		return nil
 	}
+	userModels := LoadUserModels()
+	catalogProvider, catalogModel := zutfileCatalogSelection(args, zf.Manifest, userModels)
+	PrepareRuntimeCatalog(context.Background(), true, catalogProvider, args.APIKey, args.BaseURL, userModels, catalogModel)
 	if err := applyZutfileModelRequirements(&args, zf.Manifest); err != nil {
 		return err
 	}
@@ -218,6 +221,56 @@ func zutInspect(ref string) error {
 		fmt.Println("  " + filepath.ToSlash(rel))
 		return nil
 	})
+}
+
+// zutfileCatalogSelection derives the provider/model scope needed to refresh
+// dynamic catalogs before manifest preferences are applied. Unknown preferred
+// IDs remain useful as a model scope when the configured provider is dynamic.
+func zutfileCatalogSelection(args Args, m ZutfileManifest, userModels []provider.Model) (string, string) {
+	providerName := canonicalProvider(args.Provider)
+	modelID := strings.TrimSpace(args.Model)
+	if cfg, err := LoadConfig(); err == nil {
+		cfg.applyActiveModelProfile()
+		if providerName == "" {
+			providerName = canonicalProvider(cfg.Provider)
+		}
+		if modelID == "" {
+			modelID = strings.TrimSpace(cfg.Model)
+		}
+	}
+	if providerName == "" {
+		if _, ok := provider.CustomProviders()[provider.ProviderOpenCodeGo]; ok {
+			providerName = provider.ProviderOpenCodeGo
+		}
+	}
+	findProvider := func(id string) string {
+		for _, model := range userModels {
+			if strings.TrimSpace(model.ID) == id {
+				return canonicalProvider(model.Provider)
+			}
+		}
+		if model, err := provider.FindModel("", id); err == nil {
+			return canonicalProvider(model.Provider)
+		}
+		return ""
+	}
+	if providerName == "" && modelID != "" {
+		providerName = findProvider(modelID)
+	}
+	if modelID == "" {
+		for _, preferred := range m.Model.Preferred {
+			preferred = strings.TrimSpace(preferred)
+			if preferred == "" {
+				continue
+			}
+			modelID = preferred
+			if providerName == "" {
+				providerName = findProvider(preferred)
+			}
+			break
+		}
+	}
+	return providerName, modelID
 }
 
 func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
@@ -286,9 +339,83 @@ func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
 	return fmt.Errorf("no catalog model satisfies the agent requirements")
 }
 
-func prepareRuntimeCatalog() {
-	LoadCachedModels()
-	LoadUserModels()
+// PrepareRuntimeCatalog loads cached and user model metadata before a runtime
+// is resolved, then refreshes every eligible provider in the foreground or
+// background. The explicit endpoint is forwarded to account-scoped discovery
+// so credentials for a private OpenCode Go proxy never reach the production
+// endpoint. Callers pass the already-loaded user model slice so packaged-agent
+// startup does not parse models.json twice.
+func PrepareRuntimeCatalog(ctx context.Context, waitForRefresh bool, explicitProvider, explicitAPIKey, explicitBaseURL string, userModels []provider.Model, explicitModel ...string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	modelID := ""
+	if len(explicitModel) > 0 {
+		modelID = explicitModel[0]
+	}
+	catalogAPIKey := explicitAPIKey
+	catalogProvider := explicitProvider
+	if waitForRefresh && catalogAPIKey == "" {
+		catalogAPIKey = synchronousOpenCodeGoAPIKey(ctx, explicitProvider, explicitAPIKey)
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		if catalogAPIKey != "" && effectiveCatalogProvider(explicitProvider) == "" {
+			catalogProvider = provider.ProviderOpenCodeGo
+		}
+	}
+	modelCatalogMu.Lock()
+	preparedProvider, preparedBaseURL := prepareRuntimeCatalog(catalogProvider, catalogAPIKey, explicitBaseURL, userModels, modelID)
+	modelCatalogMu.Unlock()
+	if waitForRefresh {
+		refreshModelsWithContext(ctx, preparedProvider, catalogAPIKey, preparedBaseURL, "", apiKeyCommandExecute)
+	} else {
+		RefreshModelsAsync(preparedProvider, explicitAPIKey, preparedBaseURL)
+	}
+}
+
+func effectiveCatalogProvider(explicitProvider string) string {
+	if providerName := canonicalProvider(explicitProvider); providerName != "" {
+		return providerName
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return ""
+	}
+	cfg.applyActiveModelProfile()
+	return canonicalProvider(cfg.Provider)
+}
+
+func effectiveCatalogBaseURL(explicitProvider, explicitModel, explicitBaseURL string, userModels []provider.Model) string {
+	baseURL := strings.TrimSpace(explicitBaseURL)
+	if baseURL != "" || explicitProvider != provider.ProviderOpenCodeGo {
+		return baseURL
+	}
+	modelID := strings.TrimSpace(explicitModel)
+	if modelID == "" {
+		if cfg, err := LoadConfig(); err == nil {
+			cfg.applyActiveModelProfile()
+			modelID = strings.TrimSpace(cfg.Model)
+		}
+	}
+	for _, model := range userModels {
+		if model.Provider != provider.ProviderOpenCodeGo {
+			continue
+		}
+		if modelID == "" || strings.TrimSpace(model.ID) == modelID {
+			return strings.TrimSpace(model.BaseURL)
+		}
+	}
+	if cfg, ok := provider.CustomProviders()[provider.ProviderOpenCodeGo]; ok {
+		return strings.TrimSpace(cfg.BaseURL)
+	}
+	return ""
+}
+
+func prepareRuntimeCatalog(explicitProvider, explicitAPIKey, explicitBaseURL string, userModels []provider.Model, explicitModel string) (string, string) {
+	explicitProvider = effectiveCatalogProvider(explicitProvider)
+	explicitBaseURL = effectiveCatalogBaseURL(explicitProvider, explicitModel, explicitBaseURL, userModels)
+	loadCachedModels(modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL))
 	if cps := provider.CustomProviders(); len(cps) > 0 {
 		var names []string
 		for name := range cps {
@@ -299,7 +426,7 @@ func prepareRuntimeCatalog() {
 		auth.SetExtraAPIKeyProviders(names)
 	}
 	ValidateAndRepairConfig()
-	RefreshModelsAsync()
+	return explicitProvider, explicitBaseURL
 }
 
 func zutPack(dir, out string) error {

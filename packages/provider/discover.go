@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -111,6 +112,306 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 		})
 	}
 	return out, nil
+}
+
+const (
+	modelsDevAPIURL          = "https://models.dev/api.json"
+	OpenCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"
+)
+
+// DiscoverOpenCodeGo joins the model ids published by OpenCode Go with
+// metadata from models.dev. The /models endpoint is authoritative for the
+// provider's published catalog, but it does not prove account entitlement;
+// consent, region, quota, and other access checks still happen at inference.
+// models.dev supplies display names, limits, reasoning capabilities, pricing,
+// and the adapter that selects the wire protocol.
+func DiscoverOpenCodeGo(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
+	return discoverOpenCodeGo(ctx, apiKey, baseURL, modelsDevAPIURL)
+}
+
+// discoverOpenCodeGo is split out so tests can use a local models.dev fixture.
+func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string) ([]Model, error) {
+	if baseURL == "" {
+		baseURL = OpenCodeGoDefaultBaseURL
+	}
+	if metadataURL == "" {
+		metadataURL = modelsDevAPIURL
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	// Models.dev is enrichment only. Keep serving IDs even when its public
+	// catalog is temporarily unavailable or has not published this provider.
+	var metadata modelsDevProvider
+	if metadataBody, err := fetchDiscoveryJSON(ctx, client, metadataURL, ""); err == nil {
+		var providers map[string]modelsDevProvider
+		if err := json.Unmarshal(metadataBody, &providers); err == nil {
+			metadata = providers[ProviderOpenCodeGo]
+		}
+	}
+
+	modelsBody, err := fetchDiscoveryJSON(ctx, client, strings.TrimRight(baseURL, "/")+"/models", "Bearer "+apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("%s models: %w", ProviderOpenCodeGo, err)
+	}
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(modelsBody, &page); err != nil {
+		return nil, fmt.Errorf("%s models parse: %w", ProviderOpenCodeGo, err)
+	}
+
+	out := make([]Model, 0, len(page.Data))
+	for _, live := range page.Data {
+		id := strings.TrimSpace(live.ID)
+		if id == "" {
+			continue
+		}
+		model := Model{
+			Provider:    ProviderOpenCodeGo,
+			ID:          id,
+			DisplayName: id,
+			BaseURL:     strings.TrimRight(baseURL, "/"),
+			Source:      "live",
+			API:         openCodeGoAPIForModel(id),
+		}
+		if details, ok := metadata.Models[id]; ok {
+			model.API = modelsDevAPIForModel(metadata, details, id)
+			if details.Name != "" {
+				model.DisplayName = details.Name
+			}
+			model.ContextWindow = details.Limit.Context
+			model.MaxOutput = details.Limit.Output
+			model.Reasoning = details.Reasoning
+			if details.ReasoningOptions != nil {
+				model.ReasoningLevelMap, model.ReasoningEffortMap = modelsDevReasoningMaps(details.Reasoning, *details.ReasoningOptions)
+			}
+			model.PriceInput = details.Cost.Input
+			model.PriceOutput = details.Cost.Output
+			model.PriceCacheRead = details.Cost.CacheRead
+			model.PriceCacheWrite = details.Cost.CacheWrite
+			model.PriceTiers = modelsDevPriceTiers(details.Cost.Tiers)
+			if len(model.PriceTiers) > 0 {
+				// Keep the legacy fields pointed at the first threshold for
+				// callers that do not yet understand PriceTiers.
+				first := model.PriceTiers[0]
+				model.PriceTierInputTokens = first.InputTokens
+				model.PriceInputAbove = first.PriceInput
+				model.PriceOutputAbove = first.PriceOutput
+				model.PriceCacheReadAbove = first.PriceCacheRead
+				model.PriceCacheWriteAbove = first.PriceCacheWrite
+			}
+		}
+		out = append(out, model)
+	}
+	return out, nil
+}
+
+// modelsDevProvider and its nested types intentionally cover only the stable
+// subset needed by provider.Model. models.dev adds fields over time, and the
+// JSON decoder safely ignores those additions.
+type modelsDevProvider struct {
+	NPM    string                    `json:"npm"`
+	Models map[string]modelsDevModel `json:"models"`
+}
+
+type modelsDevModel struct {
+	Name             string                          `json:"name"`
+	Reasoning        bool                            `json:"reasoning"`
+	ReasoningOptions *[]modelsDevReasoningOption     `json:"reasoning_options"`
+	Provider         *modelsDevModelProviderOverride `json:"provider"`
+	Limit            modelsDevLimit                  `json:"limit"`
+	Cost             modelsDevCost                   `json:"cost"`
+}
+
+type modelsDevModelProviderOverride struct {
+	NPM string `json:"npm"`
+}
+
+// modelsDevAPIForModel resolves the models.dev adapter without trusting its
+// endpoint URL. A model-level adapter overrides the provider default; when
+// neither is published, retain the narrow model-name bootstrap heuristic.
+// Unknown explicit adapters are returned unchanged so the router can fail
+// with an actionable unsupported-protocol error instead of silently selecting
+// Chat Completions.
+func modelsDevAPIForModel(provider modelsDevProvider, model modelsDevModel, id string) string {
+	npm := ""
+	if model.Provider != nil {
+		npm = strings.TrimSpace(model.Provider.NPM)
+	}
+	if npm == "" {
+		npm = strings.TrimSpace(provider.NPM)
+	}
+	if npm == "" {
+		return openCodeGoAPIForModel(id)
+	}
+	switch strings.ToLower(npm) {
+	case "@ai-sdk/openai":
+		return APIResponses
+	case "@ai-sdk/openai-compatible":
+		return APICompletions
+	case "@ai-sdk/anthropic":
+		return APIAnthropicMessages
+	default:
+		return npm
+	}
+}
+
+type modelsDevReasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+}
+
+type modelsDevLimit struct {
+	Context int `json:"context"`
+	Output  int `json:"output"`
+}
+
+type modelsDevCost struct {
+	Input      float64             `json:"input"`
+	Output     float64             `json:"output"`
+	CacheRead  float64             `json:"cache_read"`
+	CacheWrite float64             `json:"cache_write"`
+	Tiers      []modelsDevCostTier `json:"tiers"`
+}
+
+type modelsDevCostTier struct {
+	Input      float64            `json:"input"`
+	Output     float64            `json:"output"`
+	CacheRead  float64            `json:"cache_read"`
+	CacheWrite float64            `json:"cache_write"`
+	Tier       modelsDevCostLimit `json:"tier"`
+}
+
+type modelsDevCostLimit struct {
+	Type string `json:"type"`
+	Size int    `json:"size"`
+}
+
+func modelsDevPriceTiers(tiers []modelsDevCostTier) []ModelPriceTier {
+	out := make([]ModelPriceTier, 0, len(tiers))
+	for _, tier := range tiers {
+		if tier.Tier.Type != "context" || tier.Tier.Size <= 0 {
+			continue
+		}
+		out = append(out, ModelPriceTier{
+			InputTokens:     tier.Tier.Size,
+			PriceInput:      tier.Input,
+			PriceOutput:     tier.Output,
+			PriceCacheRead:  tier.CacheRead,
+			PriceCacheWrite: tier.CacheWrite,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].InputTokens < out[j].InputTokens
+	})
+	return out
+}
+
+// modelsDevReasoningMaps translates the effort values used by models.dev
+// into zut's reasoning levels and exact provider wire values. The explicit
+// metadata list is authoritative: remove every unsupported default and add
+// supported minimum/xhigh/max levels.
+func modelsDevReasoningMaps(reasoning bool, options []modelsDevReasoningOption) (map[string]string, map[string]string) {
+	if !reasoning {
+		return nil, nil
+	}
+	supported := make(map[string]string)
+	for _, option := range options {
+		if option.Type != "effort" {
+			continue
+		}
+		for _, value := range option.Values {
+			level := NormalizeReasoning(value)
+			if reasoningLevelRank(level) > 0 {
+				supported[level] = strings.ToLower(strings.TrimSpace(value))
+			}
+		}
+	}
+	levels := []string{"minimum", "low", "medium", "high", "xhigh", "max"}
+	if len(supported) == 0 {
+		levelMap := make(map[string]string, len(levels))
+		for _, level := range levels {
+			levelMap[level] = ""
+		}
+		return levelMap, nil
+	}
+
+	levelMap := make(map[string]string, len(levels))
+	effortMap := make(map[string]string, len(supported))
+	for _, level := range levels {
+		if wire, ok := supported[level]; ok {
+			levelMap[level] = level
+			effortMap[level] = wire
+			continue
+		}
+		// An explicit models.dev effort list is authoritative for every
+		// protocol default, including Responses-only xhigh and max.
+		levelMap[level] = ""
+	}
+	return levelMap, effortMap
+}
+
+// DynamicOpenCodeGoModel returns bootstrap metadata for an OpenCode Go model
+// that is not present in a discovered catalog yet.
+func DynamicOpenCodeGoModel(providerName, modelID, baseURL string) Model {
+	return Model{
+		Provider:      providerName,
+		ID:            modelID,
+		DisplayName:   modelID,
+		ContextWindow: 128000,
+		MaxOutput:     16384,
+		Reasoning:     true,
+		API:           OpenCodeGoAPIForModel(modelID),
+		BaseURL:       baseURL,
+		Source:        "dynamic",
+	}
+}
+
+// OpenCodeGoAPIForModel reports the narrow bootstrap wire API for an
+// OpenCode Go model when adapter metadata is unavailable. Discovery metadata
+// is authoritative whenever it is present; this heuristic only recognizes the
+// GPT-5.6 Responses family and leaves other models on the Chat Completions
+// fallback.
+func OpenCodeGoAPIForModel(id string) string {
+	return openCodeGoAPIForModel(id)
+}
+
+// Keep the family rule private so discovery and client fallbacks share one
+// implementation without another model-id list.
+func openCodeGoAPIForModel(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if strings.HasPrefix(id, "gpt-5.6-") {
+		return APIResponses
+	}
+	return ""
+}
+
+func fetchDiscoveryJSON(ctx context.Context, client *http.Client, url, authorization string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if authorization != "" {
+		req.Header.Set("authorization", authorization)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDiscoveryResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxDiscoveryResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxDiscoveryResponseBytes)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
 }
 
 // DiscoverGoogle lists Gemini model ids visible to key on

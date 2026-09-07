@@ -64,19 +64,23 @@ func TestSetLiveModelsForProvidersPrunesEmptyAuthoritativeCatalog(t *testing.T) 
 	if _, err := FindModel("openai-codex", "gpt-5.6-luna"); err != nil {
 		t.Fatalf("fixture drift: static Codex model missing: %v", err)
 	}
-	activeMu.RLock()
-	previousActive := active
-	previousSet := activeSet
-	activeMu.RUnlock()
-	t.Cleanup(func() {
-		activeMu.Lock()
-		active = previousActive
-		activeSet = previousSet
-		activeMu.Unlock()
-	})
+	preserveActiveCatalog(t)
 
 	SetLiveModelsForProviders(nil, []string{"openai-codex"})
 	if _, err := FindModel("openai-codex", "gpt-5.6-luna"); err == nil {
 		t.Fatal("empty authoritative catalog retained a static Codex model")
+	}
+}
+
+func TestAcceptsUnlistedModelsStopsAfterAuthoritativeDiscovery(t *testing.T) {
+	preserveActiveCatalog(t)
+
+	SetLiveModels([]Model{{Provider: ProviderOpenCodeGo, ID: "bootstrap"}})
+	if !AcceptsUnlistedModels(ProviderOpenCodeGo) {
+		t.Fatal("non-authoritative OpenCode Go overlay rejected unlisted models")
+	}
+	SetLiveModelsForProviders([]Model{{Provider: ProviderOpenCodeGo, ID: "served"}}, []string{ProviderOpenCodeGo})
+	if AcceptsUnlistedModels(ProviderOpenCodeGo) {
+		t.Fatal("authoritative OpenCode Go catalog accepted an unlisted model")
 	}
 }

@@ -9,7 +9,11 @@ import (
 
 func TestSetUserModelsPreservesCatalogWithoutLiveOverlay(t *testing.T) {
 	SetLiveModels(nil)
-	t.Cleanup(func() { SetLiveModels(nil) })
+	SetUserModels(nil)
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+	})
 
 	SetUserModels([]Model{{
 		Provider:    "custom-test",
@@ -23,6 +27,51 @@ func TestSetUserModelsPreservesCatalogWithoutLiveOverlay(t *testing.T) {
 	}
 	if _, err := FindModel("custom-test", "custom-model"); err != nil {
 		t.Fatalf("custom model missing after SetUserModels: %v", err)
+	}
+}
+
+func TestSetUserModelsSurvivesLiveCatalogRefresh(t *testing.T) {
+	SetLiveModels(nil)
+	SetUserModels(nil)
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+	})
+
+	SetUserModels([]Model{
+		{
+			Provider:      "opencode-go",
+			ID:            "served-model",
+			DisplayName:   "Pinned model",
+			ContextWindow: 123456,
+			MaxOutput:     7890,
+			Reasoning:     false,
+			API:           APIResponses,
+			BaseURL:       "https://proxy.example/v1",
+		},
+		{Provider: "opencode-go", ID: "user-only", DisplayName: "User only"},
+	})
+
+	SetLiveModelsForProviders([]Model{
+		{
+			Provider:      "opencode-go",
+			ID:            "served-model",
+			DisplayName:   "Live model",
+			ContextWindow: 999999,
+			MaxOutput:     99999,
+			Reasoning:     true,
+		},
+	}, []string{"opencode-go"})
+
+	got, err := FindModel("opencode-go", "served-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayName != "Pinned model" || got.ContextWindow != 123456 || got.MaxOutput != 7890 || got.Reasoning || got.API != APIResponses || got.BaseURL != "https://proxy.example/v1" || got.Source != "user" {
+		t.Fatalf("user override was lost after refresh: %+v", got)
+	}
+	if _, err := FindModel("opencode-go", "user-only"); err != nil {
+		t.Fatalf("user-only model was lost after refresh: %v", err)
 	}
 }
 
@@ -166,5 +215,42 @@ func TestLoadUserModelsWarnsOnUnknownAPI(t *testing.T) {
 	}
 	if cfg := CustomProviders()["bad-api"]; cfg.API != "openai" {
 		t.Fatalf("api = %q, want openai", cfg.API)
+	}
+}
+
+func TestUserPriceOverrideClearsCatalogTiers(t *testing.T) {
+	SetLiveModels([]Model{{
+		Provider:             ProviderOpenCodeGo,
+		ID:                   "tiered-model",
+		PriceInput:           1,
+		PriceOutput:          2,
+		PriceTiers:           []ModelPriceTier{{InputTokens: 100, PriceInput: 9, PriceOutput: 10}},
+		PriceTierInputTokens: 100,
+		PriceInputAbove:      9,
+		PriceOutputAbove:     10,
+		PriceCacheReadAbove:  11,
+		PriceCacheWriteAbove: 12,
+	}})
+	SetUserModels([]Model{{
+		Provider:    ProviderOpenCodeGo,
+		ID:          "tiered-model",
+		PriceInput:  3,
+		PriceOutput: 4,
+	}})
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+	})
+
+	model, err := FindModel(ProviderOpenCodeGo, "tiered-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.PriceTiers) != 0 || model.PriceTierInputTokens != 0 || model.PriceInputAbove != 0 || model.PriceOutputAbove != 0 || model.PriceCacheReadAbove != 0 || model.PriceCacheWriteAbove != 0 {
+		t.Fatalf("user price override retained catalog tiers: %+v", model)
+	}
+	want := 100 * 3 / 1_000_000.0
+	if got := ComputeCost(model, Usage{InputTokens: 100}); got != want {
+		t.Fatalf("cost = %v, want user base price %v", got, want)
 	}
 }

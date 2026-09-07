@@ -22,6 +22,7 @@ func TestAvailableReasoningLevels(t *testing.T) {
 		{name: "gemini 2.5 budget", model: Model{Provider: "google", ID: "gemini-2.5-flash", Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
 		{name: "gemini alias without control", model: Model{Provider: "google", ID: "gemini-flash-latest", Reasoning: true}, want: []string{""}},
 		{name: "anthropic budget", model: Model{Provider: "anthropic", Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
+		{name: "anthropic messages adapter", model: Model{API: APIAnthropicMessages, Reasoning: true}, want: []string{"", "minimum", "low", "medium", "high", "xhigh"}},
 		{name: "bedrock without effort control", model: Model{Provider: "amazon-bedrock", Reasoning: true}, want: []string{""}},
 		{
 			name: "per-model overrides",
@@ -109,6 +110,60 @@ func TestOpenAIRequestUsesReasoningLevelMap(t *testing.T) {
 		if request.ReasoningEffort != tt.want {
 			t.Errorf("reasoning effort for %q = %q, want %q", tt.requested, request.ReasoningEffort, tt.want)
 		}
+	}
+}
+
+func TestOpenAIRequestUsesExactReasoningEffortMap(t *testing.T) {
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{{
+		Provider:           "custom-compatible",
+		ID:                 "compatible-reasoning-model",
+		Reasoning:          true,
+		ReasoningLevelMap:  map[string]string{"minimum": "minimum"},
+		ReasoningEffortMap: map[string]string{"minimum": "minimal"},
+	}})
+
+	client := NewOpenAICompat("custom-compatible", "test", "", "").(*openaiClient)
+	request, err := client.buildRequest(Request{Model: "compatible-reasoning-model", Reasoning: "minimum"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ReasoningEffort != "minimal" {
+		t.Fatalf("reasoning effort = %q, want minimal", request.ReasoningEffort)
+	}
+}
+
+func TestModelsDevReasoningMapsRestrictResponsesDefaults(t *testing.T) {
+	levelMap, effortMap := modelsDevReasoningMaps(true, []modelsDevReasoningOption{{
+		Type:   "effort",
+		Values: []string{"low", "medium", "high"},
+	}})
+	model := Model{
+		Provider:           "opencode-go",
+		ID:                 "gpt-5.6-restricted",
+		API:                APIResponses,
+		Reasoning:          true,
+		ReasoningLevelMap:  levelMap,
+		ReasoningEffortMap: effortMap,
+	}
+	wantLevels := []string{"", "low", "medium", "high"}
+	if got := AvailableReasoningLevels(model); !slices.Equal(got, wantLevels) {
+		t.Fatalf("available levels = %q, want %q", got, wantLevels)
+	}
+	if got := ClampReasoningForModel(model, "max"); got != "high" {
+		t.Fatalf("clamped max = %q, want high", got)
+	}
+
+	preserveActiveCatalog(t)
+	SetLiveModels([]Model{model})
+	named := NewOpenAIResponsesNamed("token", "https://example.test/v1", "opencode-go").(*renamedClient)
+	client := named.inner.(*codexClient)
+	wire, err := client.buildRequest(Request{Model: model.ID, Reasoning: "max"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Reasoning == nil || wire.Reasoning.Effort != "high" {
+		t.Fatalf("wire reasoning = %+v, want high", wire.Reasoning)
 	}
 }
 

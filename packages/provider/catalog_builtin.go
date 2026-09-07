@@ -6,7 +6,9 @@ package provider
 //
 // This file is data; the values are tracked verbatim from each
 // vendor's own public pricing / model-list pages. They drift; users
-// override via $ZUT_HOME/models.json (user entries win).
+// override via $ZUT_HOME/models.json (user entries win). OpenCode Go is
+// intentionally omitted because its catalog is synchronized at runtime from
+// models.dev and the provider's /v1/models endpoint.
 //
 // Curated entries in models.go (anthropic / openai / openai-codex /
 // the small seed list for kimi / deepseek / google) are not duplicated
@@ -302,28 +304,8 @@ var builtinCatalog = []Model{
 	{Provider: "opencode", ID: "gpt-5-nano", DisplayName: "GPT-5 Nano", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.05, PriceOutput: 0.4, PriceCacheRead: 0.005, BaseURL: "https://opencode.ai/zen/v1"},
 	{Provider: "opencode", ID: "gpt-5.1", DisplayName: "GPT-5.1", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 1.07, PriceOutput: 8.5, PriceCacheRead: 0.107, BaseURL: "https://opencode.ai/zen/v1"},
 	{Provider: "opencode", ID: "gpt-5.1-codex", DisplayName: "GPT-5.1 Codex", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 1.07, PriceOutput: 8.5, PriceCacheRead: 0.107, BaseURL: "https://opencode.ai/zen/v1"},
-	// ----- opencode-go -----
-	{Provider: "opencode-go", ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ContextWindow: 1000000, MaxOutput: 384000, Reasoning: true, PriceInput: 0.14, PriceOutput: 0.28, PriceCacheRead: 0.0028, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ContextWindow: 1000000, MaxOutput: 384000, Reasoning: true, PriceInput: 1.74, PriceOutput: 3.48, PriceCacheRead: 0.0145, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "glm-5", DisplayName: "GLM-5", ContextWindow: 202752, MaxOutput: 32768, Reasoning: true, PriceInput: 1, PriceOutput: 3.2, PriceCacheRead: 0.2, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "glm-5.1", DisplayName: "GLM-5.1", ContextWindow: 202752, MaxOutput: 32768, Reasoning: true, PriceInput: 1.4, PriceOutput: 4.4, PriceCacheRead: 0.26, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "glm-5.2", DisplayName: "GLM-5.2", ContextWindow: 1024000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.91, PriceOutput: 2.86, PriceCacheRead: 0.169, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", API: APIResponses, ContextWindow: 1050000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25, PriceTierInputTokens: 272000, PriceInputAbove: 0.4, PriceOutputAbove: 1.8, PriceCacheReadAbove: 0.04, PriceCacheWriteAbove: 0.5, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "grok-4.5", DisplayName: "Grok 4.5", ContextWindow: 500000, MaxOutput: 500000, Reasoning: true, PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.3, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "kimi-k2.5", DisplayName: "Kimi K2.5", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.6, PriceOutput: 3, PriceCacheRead: 0.1, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "kimi-k2.6", DisplayName: "Kimi K2.6", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.95, PriceOutput: 4, PriceCacheRead: 0.16, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code", ContextWindow: 262144, MaxOutput: 16384, Reasoning: true, PriceInput: 0.74, PriceOutput: 3.5, PriceCacheRead: 0.15, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "kimi-k3", DisplayName: "Kimi K3", ContextWindow: 1048576, MaxOutput: 131072, Reasoning: true, PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "mimo-v2.5", DisplayName: "MiMo V2.5", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.4, PriceOutput: 2, PriceCacheRead: 0.08, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "mimo-v2.5-pro", DisplayName: "MiMo V2.5 Pro", ContextWindow: 1048576, MaxOutput: 128000, Reasoning: true, PriceInput: 1, PriceOutput: 3, PriceCacheRead: 0.2, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "minimax-m2.5", DisplayName: "MiniMax M2.5", ContextWindow: 204800, MaxOutput: 65536, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.03, BaseURL: "https://opencode.ai/zen/go"},
-	{Provider: "opencode-go", ID: "minimax-m2.7", DisplayName: "MiniMax M2.7", ContextWindow: 204800, MaxOutput: 131072, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "minimax-m3", DisplayName: "MiniMax M3", ContextWindow: 524288, MaxOutput: 512000, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "qwen3.5-plus", DisplayName: "Qwen3.5 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "qwen3.6-plus", DisplayName: "Qwen3.6 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.5, PriceOutput: 3, PriceCacheRead: 0.05, PriceCacheWrite: 0.625, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "qwen3.7-plus", DisplayName: "Qwen3.7 Plus", ContextWindow: 1000000, MaxOutput: 65536, Reasoning: true, PriceInput: 0.32, PriceOutput: 1.28, PriceCacheRead: 0.064, PriceCacheWrite: 0.4, BaseURL: "https://opencode.ai/zen/go/v1"},
-	{Provider: "opencode-go", ID: "qwen3.7-max", DisplayName: "Qwen3.7 Max", ContextWindow: 1000000, MaxOutput: 65536, Reasoning: true, PriceInput: 1.25, PriceOutput: 3.75, PriceCacheRead: 0.25, PriceCacheWrite: 1.5625, BaseURL: "https://opencode.ai/zen/go/v1"},
 	// openrouter: discovered live via DiscoverOpenRouter, none baked in.
+	// opencode-go: discovered live from models.dev and the provider API.
 	// ----- together -----
 	{Provider: "together", ID: "MiniMaxAI/MiniMax-M2.5", DisplayName: "MiniMax-M2.5", ContextWindow: 204800, MaxOutput: 131072, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://api.together.ai/v1"},
 	{Provider: "together", ID: "MiniMaxAI/MiniMax-M2.7", DisplayName: "MiniMax-M2.7", ContextWindow: 202752, MaxOutput: 131072, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://api.together.ai/v1"},

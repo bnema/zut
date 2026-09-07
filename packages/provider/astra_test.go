@@ -30,7 +30,7 @@ func TestAstraReleasedMetadata(t *testing.T) {
 				usage Usage
 				want  float64
 			}{
-				{"at_threshold", Usage{InputTokens: 100000, CacheReadTokens: 100000, CacheWriteTokens: 72000, OutputTokens: 1000}, 2.05},
+				{"at_threshold", Usage{InputTokens: 100000, CacheReadTokens: 100000, CacheWriteTokens: 72000, OutputTokens: 1000}, 4.075},
 				{"above_threshold", Usage{InputTokens: 100000, CacheReadTokens: 100001, CacheWriteTokens: 72000, OutputTokens: 1000}, 4.075002},
 			} {
 				t.Run(tc.name, func(t *testing.T) {

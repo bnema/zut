@@ -124,14 +124,33 @@ func NewOpenCode(apiKey, baseURL string) Client {
 	return NewOpenAICompat("opencode", apiKey, baseURL, "https://opencode.ai/zen/v1")
 }
 
-// NewOpenCodeGo routes each model through the wire API exposed by OpenCode Go.
+// NewOpenCodeGo routes each model through the Responses, Anthropic Messages,
+// or Chat Completions wire API exposed by OpenCode Go. Model availability and
+// metadata are synchronized by the agent package at startup; this constructor
+// keeps a bootstrap endpoint for early requests.
 func NewOpenCodeGo(apiKey, baseURL string) Client {
-	const defaultBaseURL = "https://opencode.ai/zen/go/v1"
-	return NewModelRouter("opencode-go",
-		NewOpenAICompat("opencode-go", apiKey, baseURL, defaultBaseURL),
-		map[string]Client{
-			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode-go"),
-		})
+	return NewOpenCodeGoWithModels(apiKey, baseURL, nil)
+}
+
+// NewOpenCodeGoWithModels creates an OpenCode Go client with a private
+// snapshot of model metadata. Runtime-owned clients use this to keep one
+// SDK runtime's credential and endpoint metadata isolated from another's
+// process-global catalog refresh.
+func NewOpenCodeGoWithModels(apiKey, baseURL string, models []Model) Client {
+	endpoint := firstNonEmptyString(baseURL, OpenCodeGoDefaultBaseURL)
+	fallback := NewOpenAICompat(ProviderOpenCodeGo, apiKey, endpoint, OpenCodeGoDefaultBaseURL)
+	responses := NewOpenAIResponsesNamed(apiKey, endpoint, ProviderOpenCodeGo)
+	messages := NewAnthropicCompat(ProviderOpenCodeGo, apiKey, endpoint)
+	router := NewModelRouter(ProviderOpenCodeGo, fallback, map[string]Client{
+		APIResponses:         responses,
+		APIAnthropicMessages: messages,
+	}).(*modelRouter)
+	router.dynamicCatalog = models == nil
+	router.scopedCatalog = models != nil
+	for _, model := range models {
+		router.SetModelMetadata(model)
+	}
+	return router
 }
 
 // NewMinimaxOpenAI is the OpenAI-completions flavor of MiniMax, in case

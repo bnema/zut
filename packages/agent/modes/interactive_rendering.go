@@ -492,7 +492,10 @@ func (i *Interactive) redraw() {
 		dialog = i.llamaDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.rescueDialog.Active():
 		dialogID = "rescue"
-		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth)
+		if i.rescueDialog.details {
+			dialogID = "rescue-error"
+		}
+		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.sessionDialog.Active():
 		dialogID = "sessions"
 		i.sessionDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
@@ -548,7 +551,10 @@ func (i *Interactive) redraw() {
 	dialogTitle := floatingOverlayTitle(dialogID)
 	dialogRemovedTopRows := 0
 	if len(dialog) > 0 {
-		dialog = padDialogFrame(dialog)
+		// The error viewer budgets every content row for its scroll viewport.
+		if dialogID != "rescue-error" {
+			dialog = padDialogFrame(dialog)
+		}
 		frameTitle, body, removedTopRows := floatingDialogBody(dialog)
 		if frameTitle != "" {
 			dialogTitle = frameTitle

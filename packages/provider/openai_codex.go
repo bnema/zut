@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,8 @@ type codexClient struct {
 	cliRoutingAll     bool
 	capabilities      responsesCapabilities
 	http              *http.Client
+	modelOverridesMu  sync.RWMutex
+	modelOverrides    map[string]Model
 }
 
 // responsesCapabilities records extensions verified for the exact provider
@@ -93,7 +96,17 @@ func newOpenAICodexClient(token, accountID, baseURL string) *codexClient {
 	}
 }
 
-func (c *codexClient) Name() string { return "openai-codex" }
+func (c *codexClient) Name() string { return ProviderOpenAICodex }
+
+func (c *codexClient) SetModelMetadata(model Model) {
+	model = cloneModel(model)
+	c.modelOverridesMu.Lock()
+	if c.modelOverrides == nil {
+		c.modelOverrides = make(map[string]Model)
+	}
+	c.modelOverrides[model.ID] = model
+	c.modelOverridesMu.Unlock()
+}
 
 // ---- Responses API wire types (subset needed for zut's surface) ----
 
@@ -203,15 +216,41 @@ type codexRequest struct {
 // ---- Request building ----
 
 func (c *codexClient) findModel(id string) (Model, error) {
-	if c.providerName != "" && c.providerName != "openai-codex" {
+	id = strings.TrimSpace(id)
+	c.modelOverridesMu.RLock()
+	model, ok := c.modelOverrides[id]
+	if ok {
+		model = cloneModel(model)
+	}
+	c.modelOverridesMu.RUnlock()
+	if ok {
+		return model, nil
+	}
+	if c.providerName != "" && c.providerName != ProviderOpenAICodex {
 		if m, err := FindModel(c.providerName, id); err == nil {
 			return m, nil
 		}
 	}
-	if m, err := FindModel("openai-codex", id); err == nil {
+	if m, err := FindModel(ProviderOpenAICodex, id); err == nil {
 		return m, nil
 	}
-	return FindModel("openai", id)
+	m, err := FindModel(ProviderOpenAI, id)
+	if err == nil {
+		return m, nil
+	}
+	if c.providerName == ProviderOpenCodeGo {
+		if api := openCodeGoAPIForModel(id); api != "" {
+			return Model{
+				Provider:      ProviderOpenCodeGo,
+				ID:            id,
+				API:           api,
+				ContextWindow: 128000,
+				MaxOutput:     16384,
+				Reasoning:     true,
+			}, nil
+		}
+	}
+	return m, err
 }
 
 func supportsOpenAIExplicitPromptCache(model string) bool {
@@ -220,9 +259,10 @@ func supportsOpenAIExplicitPromptCache(model string) bool {
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
-		providerName = "openai-codex"
+		providerName = ProviderOpenAICodex
 	}
 	if err := ValidateFastMode(providerName, req.FastMode); err != nil {
 		return nil, err
@@ -259,9 +299,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 	if m.Reasoning {
 		effort := OpenAICodexReasoningEffort(reasoning, req.Model)
-		if hasReasoningLevelOverride(m, req.Reasoning) {
-			effort = reasoning
-		}
+		effort = reasoningEffortForModel(m, req.Reasoning, reasoning, effort)
 		if effort != "" {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
 		}
@@ -443,6 +481,7 @@ func usesCodexCLIRouting(model string) bool {
 // ---- Streaming ----
 
 func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	req.Model = strings.TrimSpace(req.Model)
 	wire, err := c.buildRequest(req)
 	if err != nil {
 		return nil, err
@@ -514,6 +553,7 @@ func (c *codexClient) responsesHeaders(req Request, useCodexCLIRouting, websocke
 			headers.Set("x-client-request-id", threadID)
 		}
 		headers.Set("user-agent", "codex_cli_rs/0.0.0")
+		setOpenCodeGoHeaders(headers, c.providerName, req.Context)
 		return headers
 	}
 
@@ -523,6 +563,7 @@ func (c *codexClient) responsesHeaders(req Request, useCodexCLIRouting, websocke
 		headers.Set("originator", "zot")
 		headers.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
 	}
+	setOpenCodeGoHeaders(headers, c.providerName, req.Context)
 	return headers
 }
 
@@ -551,7 +592,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 	model, _ := c.findModel(req.Model)
 	providerName := c.providerName
 	if providerName == "" {
-		providerName = "openai-codex"
+		providerName = ProviderOpenAICodex
 	}
 	out <- EventStart{Model: req.Model, Provider: providerName}
 

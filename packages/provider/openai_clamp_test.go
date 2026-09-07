@@ -8,19 +8,8 @@ import "testing"
 // the real catalog.
 func withLiveModels(t *testing.T, models []Model) {
 	t.Helper()
-	activeMu.Lock()
-	prevActive := active
-	prevSet := activeSet
-	activeMu.Unlock()
-
+	preserveActiveCatalog(t)
 	SetLiveModels(models)
-
-	t.Cleanup(func() {
-		activeMu.Lock()
-		active = prevActive
-		activeSet = prevSet
-		activeMu.Unlock()
-	})
 }
 
 // outputBudget pulls whichever max-output field buildRequest populated

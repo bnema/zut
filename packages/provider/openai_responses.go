@@ -5,7 +5,8 @@ package provider
 // Strategy: reuse codexClient, which already speaks the Responses wire
 // format, via a header-rewriting RoundTripper. The public Responses API on
 // api.openai.com does not need ChatGPT subscription identity headers, so the
-// transport strips them if a shared request path supplied any.
+// transport strips them if a shared request path supplied any while retaining
+// the intentional OpenCode Go client identity.
 //
 // This is a separate provider from `openai` (which is Chat Completions);
 // users opt in by passing `--provider openai-responses` or by picking a
@@ -49,7 +50,9 @@ func (t *openaiResponsesTransport) RoundTrip(req *http.Request) (*http.Response,
 	clone.Header.Del("chatgpt-account-id")
 	clone.Header.Del("openai-beta")
 	clone.Header.Del("originator")
-	clone.Header.Del("user-agent")
+	if clone.Header.Get("x-opencode-client") != openCodeGoClient {
+		clone.Header.Del("user-agent")
+	}
 	// Keep Authorization: Bearer <key> as set by the codex client.
 	return t.inner.RoundTrip(clone)
 }

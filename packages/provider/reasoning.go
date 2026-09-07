@@ -92,6 +92,19 @@ func hasReasoningLevelOverride(model Model, level string) bool {
 	return ok
 }
 
+// reasoningEffortForModel applies a model-specific wire effort mapping after
+// the requested level has been clamped to one the model exposes. The fallback
+// is the conservative protocol mapping for providers without exact metadata.
+func reasoningEffortForModel(model Model, requested, clamped, fallback string) string {
+	if wire, ok := model.ReasoningEffortMap[NormalizeReasoning(clamped)]; ok {
+		return wire
+	}
+	if hasReasoningLevelOverride(model, requested) {
+		return clamped
+	}
+	return fallback
+}
+
 // ClampReasoningForModel maps a configured level to the nearest level exposed
 // for the active model. Ties prefer the higher level.
 func ClampReasoningForModel(model Model, level string) string {
@@ -146,7 +159,7 @@ func usesReasoningBudget(model Model) bool {
 	case "anthropic", "fireworks", "kimi", "minimax", "minimax-cn", "vercel-ai-gateway":
 		return true
 	}
-	return model.API == "anthropic"
+	return model.API == APIAnthropicMessages || model.API == "anthropic" // "anthropic" is the legacy user-model API value
 }
 
 // NormalizeReasoning canonicalizes zut's user-facing reasoning levels.

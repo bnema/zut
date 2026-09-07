@@ -205,16 +205,45 @@ func TestComputeCostInputTier(t *testing.T) {
 		PriceTierInputTokens: 100,
 		PriceInputAbove:      3, PriceOutputAbove: 4, PriceCacheReadAbove: 0.2,
 	}
-	below := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 50})
-	wantBelow := (50.0*1 + 10*2 + 50*0.1) / 1_000_000
+	below := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 49})
+	wantBelow := (50.0*1 + 10*2 + 49*0.1) / 1_000_000
 	if math.Abs(below-wantBelow) > 1e-12 {
 		t.Fatalf("below-tier cost=%v want=%v", below, wantBelow)
 	}
 
-	above := ComputeCost(m, Usage{InputTokens: 51, OutputTokens: 10, CacheReadTokens: 50})
-	wantAbove := (51.0*3 + 10*4 + 50*0.2) / 1_000_000
-	if math.Abs(above-wantAbove) > 1e-12 {
-		t.Fatalf("above-tier cost=%v want=%v", above, wantAbove)
+	atThreshold := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 50})
+	wantAtThreshold := (50.0*3 + 10*4 + 50*0.2) / 1_000_000
+	if math.Abs(atThreshold-wantAtThreshold) > 1e-12 {
+		t.Fatalf("at-tier cost=%v want=%v", atThreshold, wantAtThreshold)
+	}
+}
+
+func TestComputeCostMultipleInputTiers(t *testing.T) {
+	m := Model{
+		PriceInput: 1,
+		PriceTiers: []ModelPriceTier{
+			{InputTokens: 500000, PriceInput: 5},
+			{InputTokens: 272000, PriceInput: 3},
+		},
+	}
+	for _, tc := range []struct {
+		name  string
+		input int
+		price float64
+	}{
+		{"below_first", 271999, 1},
+		{"at_first", 272000, 3},
+		{"between", 499999, 3},
+		{"at_second", 500000, 5},
+		{"above_second", 600000, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ComputeCost(m, Usage{InputTokens: tc.input})
+			want := float64(tc.input) * tc.price / 1_000_000
+			if math.Abs(got-want) > 1e-12 {
+				t.Fatalf("cost = %.12f, want %.12f", got, want)
+			}
+		})
 	}
 }
 
@@ -684,49 +713,6 @@ func TestGPT56AndGPT6CatalogEntries(t *testing.T) {
 		if tc.provider == "openai-codex" && m.Speculative {
 			t.Fatalf("%s/%s is speculative", tc.provider, tc.id)
 		}
-	}
-}
-
-// TestOpenCodeGoCatalog pins entries added from the vendor's current Go
-// model lineup (https://opencode.ai/docs/go).
-func TestOpenCodeGoCatalog(t *testing.T) {
-	cases := []struct {
-		id        string
-		context   int
-		maxOut    int
-		priceIn   float64
-		priceOut  float64
-		cacheRead float64
-	}{
-		{"gpt-5.6-luna", 1050000, 128000, 0.2, 1.2, 0.02},
-		{"grok-4.5", 500000, 500000, 2, 6, 0.3},
-		{"kimi-k3", 1048576, 131072, 3, 15, 0.3},
-	}
-	for _, tc := range cases {
-		m, err := FindModel("opencode-go", tc.id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if m.ContextWindow != tc.context || m.MaxOutput != tc.maxOut || !m.Reasoning {
-			t.Fatalf("opencode-go/%s limits: %+v", tc.id, m)
-		}
-		if m.PriceInput != tc.priceIn || m.PriceOutput != tc.priceOut || m.PriceCacheRead != tc.cacheRead {
-			t.Fatalf("opencode-go/%s prices: %+v", tc.id, m)
-		}
-		if m.BaseURL != "https://opencode.ai/zen/go/v1" {
-			t.Fatalf("opencode-go/%s baseURL: %s", tc.id, m.BaseURL)
-		}
-	}
-
-	luna, err := FindModel("opencode-go", "gpt-5.6-luna")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if luna.API != APIResponses || luna.PriceCacheWrite != 0.25 {
-		t.Fatalf("opencode-go/gpt-5.6-luna API or cache-write price: %+v", luna)
-	}
-	if luna.PriceTierInputTokens != 272000 || luna.PriceInputAbove != 0.4 || luna.PriceOutputAbove != 1.8 || luna.PriceCacheReadAbove != 0.04 || luna.PriceCacheWriteAbove != 0.5 {
-		t.Fatalf("opencode-go/gpt-5.6-luna long-context prices: %+v", luna)
 	}
 }
 

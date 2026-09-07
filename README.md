@@ -148,7 +148,7 @@ $ZUT_HOME/
 ├── config.json         # last-used provider/model/theme and persistent settings
 ├── auth.json           # api keys and oauth tokens (mode 0600)
 ├── sessions/           # jsonl transcripts, one dir per cwd
-├── models-cache.json   # live /v1/models discovery cache (6h ttl)
+├── models-cache.json   # live model discovery cache (24h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the built-in identity; addenda remain
 ├── skills/             # optional: user SKILL.md files
@@ -310,7 +310,7 @@ Single-part names resolve only to a matching local directory or `.zut` archive. 
 
 Two ways to drive zut from another program:
 
-- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`. One `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. `sdk.Config.MaxSteps` is unlimited when zero; embedders preserving the former SDK default should set it to `50` explicitly. Small example in `examples/sdk/`.
+- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`. One `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. The SDK loads the credential- and endpoint-scoped model cache before resolving a runtime, including dynamic OpenCode Go metadata. `sdk.Config.MaxSteps` is unlimited when zero; embedders preserving the former SDK default should set it to `50` explicitly. Small example in `examples/sdk/`.
 - **Any language, out-of-process**: spawn `zut rpc` as a subprocess and exchange newline-delimited JSON over its stdin/stdout. Wire format and event schema in [docs/rpc.md](docs/rpc.md). Reference clients live under `examples/rpc/`.
 
 Both interfaces share the same event schema, so transcripts captured by one can be replayed through the other.
@@ -536,7 +536,7 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 `--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
 
 - **Catalog**: models baked into zut, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
-- **Live**: IDs discovered from `GET /v1/models` using your stored API key (cached for 6h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup).
+- **Live**: IDs discovered from provider model endpoints using your stored API key (cached for 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup). OpenCode Go joins the published `https://opencode.ai/zen/go/v1/models` list with limits, prices, names, reasoning, and wire-adapter metadata from `https://models.dev/api.json`; its cache is scoped to the credential fingerprint and endpoint, and SDK runtimes load matching cached metadata before resolving. The published list is a catalog, not proof of consent, regional eligibility, quota, or account access; models.dev is the JSON source behind the linked provider page.
 - **Speculative**: IDs that appear in the upstream generator but aren't live on the public API yet. They'll 404 today and start working the moment the provider ships them.
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed. Tool output is still shown in full through the normal transcript rendering and retained in the session transcript. To keep long-running sessions usable, zut bounds the historical tool-result text included in provider-facing context; this projection affects what is sent to the model, not what is displayed or persisted, and it preserves the tool-call/result structure.
@@ -545,7 +545,7 @@ The context meter in the status line uses the model's advertised context window 
 
 When a turn fails because of a recoverable provider error — expired token (`401`), permission denied (`403`), rate limit (`429`), provider outage (`502`/`503`/`504`), or a transient network failure — zut opens a **rescue** picker over the chat instead of just painting a red banner.
 
-The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss.
+The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss. Press `tab` to read the full provider error, wrapped to the pane width; use `↑`/`↓` or `PageUp`/`PageDown` to scroll, and `tab` or `esc` to return to the picker.
 
 Before the actual provider request fires, the shared HTTP streaming clients used by OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex also do up to four silent retries with short backoff (250ms, then 750ms, 750ms, and 750ms) on transient HTTP failures and connection-reset / EOF-before-headers errors. Once a stream is open, up to five reconnect attempts guard interrupted streams. Independently, five minutes without a provider event fails the turn instead of restarting the idle deadline on each retry. Most edge-proxy blips disappear without you ever seeing the rescue picker.
 

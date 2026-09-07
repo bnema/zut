@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/bnema/zut/packages/agent"
@@ -40,8 +41,8 @@ import (
 // defaults are read from $ZUT_HOME/config.json, env vars, and the
 // resolver chain (the same one the cli uses).
 type Config struct {
-	// Provider is "anthropic" or "openai". Empty = use the user's
-	// default from config.json or env.
+	// Provider is a configured provider id such as "anthropic", "openai",
+	// or "opencode-go". Empty = use the user's default from config.json or env.
 	Provider string
 
 	// Model is the model id. Empty = use the provider's default.
@@ -98,6 +99,9 @@ type Runtime struct {
 	provider string
 	model    string
 	cwd      string
+	// modelCatalog is a private metadata snapshot for dynamic providers.
+	modelCatalog              []provider.Model
+	modelCatalogAuthoritative bool
 
 	// activeCancel is set while a Prompt or Compact is running.
 	activeCancel context.CancelFunc
@@ -110,6 +114,16 @@ type Runtime struct {
 // New constructs a Runtime from cfg. Returns an error if no
 // credential is available for the requested provider.
 func New(cfg Config) (*Runtime, error) {
+	return NewContext(context.Background(), cfg)
+}
+
+// NewContext constructs a Runtime from cfg and uses ctx for credential
+// resolution and initial model catalog discovery. Canceling ctx stops setup
+// and any refresh started for this runtime.
+func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	webSearchPolicy := subagents.WebSearchDeny
 	for _, name := range cfg.Tools {
 		if name == "web_search" {
@@ -134,7 +148,7 @@ func New(cfg Config) (*Runtime, error) {
 		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}
-	r, err := agent.Resolve(args, true)
+	r, err := agent.ResolveSDK(ctx, args)
 	if err != nil {
 		return nil, err
 	}
@@ -143,10 +157,12 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	ag := r.NewAgent()
 	return &Runtime{
-		agent:    ag,
-		provider: r.Provider,
-		model:    r.Model,
-		cwd:      r.CWD,
+		agent:                     ag,
+		provider:                  r.Provider,
+		model:                     r.Model,
+		cwd:                       r.CWD,
+		modelCatalog:              r.ModelCatalogSnapshot(),
+		modelCatalogAuthoritative: r.ModelCatalogIsAuthoritative(),
 	}, nil
 }
 
@@ -309,8 +325,48 @@ func (r *Runtime) SetModel(model string) error {
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
 	}
-	if _, err := provider.FindModel(r.provider, model); err != nil {
-		return err
+	if r.activeCancel != nil {
+		return ErrBusy
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("sdk: model must not be empty")
+	}
+
+	var metadata provider.Model
+	found := false
+	if r.provider == provider.ProviderOpenCodeGo {
+		for _, candidate := range r.modelCatalog {
+			if candidate.ID == model {
+				metadata = candidate
+				found = true
+				break
+			}
+		}
+		if !found && r.modelCatalogAuthoritative {
+			return fmt.Errorf("unknown model %q (provider=%q)", model, r.provider)
+		}
+		if !found {
+			metadata = provider.DynamicOpenCodeGoModel(r.provider, model, "")
+		}
+	} else {
+		var err error
+		metadata, err = provider.FindModel(r.provider, model)
+		if err != nil {
+			return err
+		}
+		found = true
+	}
+	if found || r.provider == provider.ProviderOpenCodeGo {
+		if setter, ok := r.agent.Client.(provider.ModelMetadataSetter); ok {
+			setter.SetModelMetadata(metadata)
+		}
+		if metadata.ContextWindow > 0 {
+			r.agent.ContextWindow = metadata.ContextWindow
+		}
+		if metadata.MaxOutput > 0 {
+			r.agent.MaxTokens = metadata.MaxOutput
+		}
 	}
 	r.agent.Model = model
 	r.model = model
@@ -379,7 +435,13 @@ func (r *Runtime) Close() error {
 // ListModels returns every model known to the runtime for the
 // current provider (catalog + live discovery if cached).
 func (r *Runtime) ListModels() []ModelInfo {
-	models := provider.ModelsForProvider(r.Provider())
+	r.mu.Lock()
+	providerName := r.provider
+	models := append([]provider.Model(nil), r.modelCatalog...)
+	r.mu.Unlock()
+	if providerName != provider.ProviderOpenCodeGo {
+		models = provider.ModelsForProvider(providerName)
+	}
 	out := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
 		out = append(out, ModelInfo{

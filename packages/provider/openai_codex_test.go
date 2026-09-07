@@ -137,9 +137,12 @@ func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {
 
 func TestGPT56UsesNativeMaxReasoningEffort(t *testing.T) {
 	c := newOpenAICodexClient("token", "acct", "")
-	wire, err := c.buildRequest(Request{Model: "gpt-5.6-sol", Reasoning: "max"})
+	wire, err := c.buildRequest(Request{Model: " gpt-5.6-sol ", Reasoning: "max"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if wire.Model != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want trimmed id", wire.Model)
 	}
 	if wire.Reasoning == nil || wire.Reasoning.Effort != "max" {
 		t.Fatalf("reasoning = %+v", wire.Reasoning)

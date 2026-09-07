@@ -9,6 +9,17 @@ import (
 // Deliberate working budget, not the models' advertised maximum context.
 const openAIContextWindowTarget = 500_000
 
+// ModelPriceTier describes the pricing that applies once the prompt reaches
+// InputTokens. Tiers are retained in model metadata so cost calculation can
+// select the highest applicable threshold.
+type ModelPriceTier struct {
+	InputTokens     int
+	PriceInput      float64
+	PriceOutput     float64
+	PriceCacheRead  float64
+	PriceCacheWrite float64
+}
+
 // Model describes a single LLM we know about.
 type Model struct {
 	Provider          string // "anthropic" | "openai"
@@ -19,6 +30,10 @@ type Model struct {
 	MaxOutput         int
 	Reasoning         bool              // supports reasoning
 	ReasoningLevelMap map[string]string // optional level overrides; empty values remove a level
+	// ReasoningEffortMap translates normalized zut reasoning levels to the
+	// provider's exact effort values when a model-specific catalog supplies
+	// them (for example, minimum -> minimal).
+	ReasoningEffortMap map[string]string
 
 	// AdaptiveThinking marks Anthropic models that only support the
 	// adaptive thinking mode (Opus 4.7+). These reject explicit
@@ -34,11 +49,15 @@ type Model struct {
 	AdaptiveThinkingCompat bool
 
 	// Prices are USD per 1M tokens. Price*Above fields apply to all token
-	// classes when the total prompt size exceeds PriceTierInputTokens.
-	PriceInput           float64
-	PriceOutput          float64
-	PriceCacheRead       float64
-	PriceCacheWrite      float64
+	// classes when the total prompt size reaches PriceTierInputTokens.
+	PriceInput      float64
+	PriceOutput     float64
+	PriceCacheRead  float64
+	PriceCacheWrite float64
+	// PriceTiers contains all context-pricing thresholds, ordered by
+	// InputTokens. The legacy Price*Above fields retain the first tier for
+	// compatibility with callers that only understand one threshold.
+	PriceTiers           []ModelPriceTier
 	PriceTierInputTokens int
 	PriceInputAbove      float64
 	PriceOutputAbove     float64
@@ -64,9 +83,10 @@ type Model struct {
 
 // Catalog is the hardcoded, read-only list of supported models.
 // Prices are USD per 1M tokens. The list is curated to what zut's
-// clients (Anthropic Messages + OpenAI Chat Completions) can actually
-// talk to; models that are only reachable through the OpenAI Responses
-// API (o1-pro, o3-pro, gpt-5-pro) are omitted.
+// clients (Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses)
+// can actually talk to; models that are only reachable through an unsupported
+// provider-specific protocol are omitted. OpenCode Go is populated
+// separately by runtime discovery from its provider API and models.dev.
 var Catalog = []Model{
 	// ---- Anthropic / Claude 4.x ----
 	{
@@ -424,11 +444,156 @@ var DefaultModel = Catalog[0] // claude-sonnet-4-5
 // models loaded via SetLiveModels.
 
 var (
-	activeMu      sync.RWMutex
-	active        []Model // live overlay merged in via SetLiveModels; nil = none yet
-	activeSet     bool    // true once SetLiveModels has run (even with empty live)
-	managedModels []Model // ephemeral models exposed by local model managers
+	activeMu                 sync.RWMutex
+	active                   []Model // live overlay merged in via SetLiveModels; nil = none yet
+	activeSet                bool    // true once SetLiveModels has run (even with empty live)
+	authoritativeProviderSet map[string]struct{}
+	managedModels            []Model // ephemeral models exposed by local model managers
+	userModels               []Model // highest-precedence models loaded from models.json
 )
+
+// CatalogSnapshot captures the mutable catalog overlays so a caller can
+// restore provider state after temporarily installing test or runtime data.
+// Use SnapshotCatalog and RestoreCatalog instead of replacing the live
+// overlay with nil, which can discard another caller's active catalog.
+type CatalogSnapshot struct {
+	active                   []Model
+	activeSet                bool
+	authoritativeProviderSet map[string]struct{}
+	managedModels            []Model
+	userModels               []Model
+}
+
+// SnapshotCatalog returns a deep copy of the mutable provider catalog state.
+func SnapshotCatalog() CatalogSnapshot {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+
+	snapshot := CatalogSnapshot{
+		activeSet:                activeSet,
+		authoritativeProviderSet: maps.Clone(authoritativeProviderSet),
+	}
+	if active != nil {
+		snapshot.active = cloneModels(active)
+	}
+	if managedModels != nil {
+		snapshot.managedModels = cloneModels(managedModels)
+	}
+	if userModels != nil {
+		snapshot.userModels = cloneModels(userModels)
+	}
+	return snapshot
+}
+
+// RestoreCatalog restores a snapshot returned by SnapshotCatalog.
+func RestoreCatalog(snapshot CatalogSnapshot) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+
+	if snapshot.active != nil {
+		active = cloneModels(snapshot.active)
+	} else {
+		active = nil
+	}
+	activeSet = snapshot.activeSet
+	authoritativeProviderSet = maps.Clone(snapshot.authoritativeProviderSet)
+	if snapshot.managedModels != nil {
+		managedModels = cloneModels(snapshot.managedModels)
+	} else {
+		managedModels = nil
+	}
+	if snapshot.userModels != nil {
+		userModels = cloneModels(snapshot.userModels)
+	} else {
+		userModels = nil
+	}
+}
+
+func cloneModel(model Model) Model {
+	model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
+	model.ReasoningEffortMap = maps.Clone(model.ReasoningEffortMap)
+	if model.PriceTiers != nil {
+		model.PriceTiers = append([]ModelPriceTier(nil), model.PriceTiers...)
+	}
+	return model
+}
+
+func cloneModels(models []Model) []Model {
+	out := make([]Model, len(models))
+	for i, model := range models {
+		out[i] = cloneModel(model)
+	}
+	return out
+}
+
+func mergeUserModels(active, users []Model) []Model {
+	if len(users) == 0 {
+		return active
+	}
+	byKey := func(provider, id string) string { return provider + "\x00" + id }
+	index := make(map[string]int, len(active))
+	for i, model := range active {
+		index[byKey(model.Provider, model.ID)] = i
+	}
+	for _, user := range users {
+		user = cloneModel(user)
+		key := byKey(user.Provider, user.ID)
+		if idx, ok := index[key]; ok {
+			existing := active[idx]
+			// Preserve catalog values when an override leaves an optional
+			// field at its zero value, matching models.json semantics.
+			// A positive price override replaces tiered pricing too;
+			// otherwise ComputeCost would retain discovered tier rates.
+			if user.PriceInput > 0 || user.PriceOutput > 0 || user.PriceCacheRead > 0 || user.PriceCacheWrite > 0 {
+				existing.PriceTiers = nil
+				existing.PriceTierInputTokens = 0
+				existing.PriceInputAbove, existing.PriceOutputAbove = 0, 0
+				existing.PriceCacheReadAbove, existing.PriceCacheWriteAbove = 0, 0
+			}
+			if user.PriceInput > 0 {
+				existing.PriceInput = user.PriceInput
+			}
+			if user.PriceOutput > 0 {
+				existing.PriceOutput = user.PriceOutput
+			}
+			if user.PriceCacheRead > 0 {
+				existing.PriceCacheRead = user.PriceCacheRead
+			}
+			if user.PriceCacheWrite > 0 {
+				existing.PriceCacheWrite = user.PriceCacheWrite
+			}
+			if user.DisplayName != "" {
+				existing.DisplayName = user.DisplayName
+			}
+			if user.ContextWindow > 0 {
+				existing.ContextWindow = user.ContextWindow
+			}
+			if user.MaxOutput > 0 {
+				existing.MaxOutput = user.MaxOutput
+			}
+			existing.Reasoning = user.Reasoning
+			if user.ReasoningLevelMap != nil {
+				existing.ReasoningLevelMap = user.ReasoningLevelMap
+			}
+			if user.ReasoningEffortMap != nil {
+				existing.ReasoningEffortMap = user.ReasoningEffortMap
+			}
+			if user.API != "" {
+				existing.API = user.API
+			}
+			if user.BaseURL != "" {
+				existing.BaseURL = user.BaseURL
+			}
+			existing.Source = "user"
+			existing.Speculative = false
+			active[idx] = existing
+			continue
+		}
+		index[key] = len(active)
+		active = append(active, user)
+	}
+	return active
+}
 
 // SetLiveModels replaces the "live" overlay used by the active catalog.
 // Typically called after a successful /v1/models discovery or on load
@@ -444,11 +609,34 @@ func SetLiveModelsForProviders(live []Model, authoritativeProviders []string) {
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	activeSet = true
+	authoritativeProviderSet = make(map[string]struct{}, len(authoritativeProviders))
+	for _, name := range authoritativeProviders {
+		authoritativeProviderSet[name] = struct{}{}
+	}
 	if len(live) == 0 && len(authoritativeProviders) == 0 {
 		active = nil
 		return
 	}
 	active = MergeCatalogForProviders(live, authoritativeProviders)
+}
+
+// ClearLiveModelsForProvider removes a provider's live overlay without
+// disturbing other providers. User models remain separate and continue to
+// be applied by Active.
+func ClearLiveModelsForProvider(name string) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	delete(authoritativeProviderSet, name)
+	if !activeSet || len(active) == 0 {
+		return
+	}
+	out := active[:0]
+	for _, model := range active {
+		if model.Provider != name {
+			out = append(out, model)
+		}
+	}
+	active = out
 }
 
 // Active returns the current merged catalog.
@@ -468,29 +656,27 @@ func Active() []Model {
 	if !activeSet || src == nil {
 		src = Catalog
 	}
-	out := make([]Model, len(src))
-	copy(out, src)
-	for i := range out {
-		out[i].ReasoningLevelMap = maps.Clone(out[i].ReasoningLevelMap)
-	}
-	if len(managedModels) == 0 {
-		return out
-	}
-	index := make(map[string]int, len(out))
-	for i, model := range out {
-		index[model.Provider+"\x00"+model.ID] = i
-	}
-	for _, model := range managedModels {
-		model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
-		key := model.Provider + "\x00" + model.ID
-		if i, ok := index[key]; ok {
-			out[i] = model
-			continue
+	out := cloneModels(src)
+	if len(managedModels) > 0 {
+		index := make(map[string]int, len(out))
+		for i, model := range out {
+			index[model.Provider+"\x00"+model.ID] = i
 		}
-		index[key] = len(out)
-		out = append(out, model)
+		for _, model := range managedModels {
+			model = cloneModel(model)
+			key := model.Provider + "\x00" + model.ID
+			if i, ok := index[key]; ok {
+				out[i] = model
+				continue
+			}
+			index[key] = len(out)
+			out = append(out, model)
+		}
 	}
-	return out
+	// User models are a durable, highest-precedence overlay. Apply them
+	// after the live and managed overlays so a catalog refresh cannot
+	// discard overrides or user-only entries.
+	return mergeUserModels(out, userModels)
 }
 
 // SetManagedModels replaces the ephemeral catalog entries supplied by local
@@ -514,6 +700,22 @@ func FindModel(provider, id string) (Model, error) {
 	return Model{}, fmt.Errorf("unknown model %q (provider=%q)", id, provider)
 }
 
+// IsProviderCatalogAuthoritative reports whether a successful live catalog
+// has declared the provider's available model IDs authoritative.
+func IsProviderCatalogAuthoritative(provider string) bool {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	_, ok := authoritativeProviderSet[provider]
+	return ok
+}
+
+// AcceptsUnlistedModels reports whether a provider may be queried with an
+// ID that is not in the local catalog. OpenCode Go permits this only before
+// a successful authoritative live catalog has been loaded.
+func AcceptsUnlistedModels(provider string) bool {
+	return provider == ProviderOpenCodeGo && !IsProviderCatalogAuthoritative(provider)
+}
+
 // ModelsForProvider returns all models for the given provider, from the
 // merged active catalog.
 func ModelsForProvider(provider string) []Model {
@@ -533,7 +735,22 @@ func ComputeCost(m Model, u Usage) float64 {
 	cacheReadPrice := m.PriceCacheRead
 	cacheWritePrice := m.PriceCacheWrite
 	promptTokens := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
-	if m.PriceTierInputTokens > 0 && promptTokens > m.PriceTierInputTokens {
+	if len(m.PriceTiers) > 0 {
+		selected := -1
+		for i, tier := range m.PriceTiers {
+			if tier.InputTokens <= promptTokens && (selected < 0 || tier.InputTokens > m.PriceTiers[selected].InputTokens) {
+				selected = i
+			}
+		}
+		if selected >= 0 {
+			tier := m.PriceTiers[selected]
+			inputPrice = tier.PriceInput
+			outputPrice = tier.PriceOutput
+			cacheReadPrice = tier.PriceCacheRead
+			cacheWritePrice = tier.PriceCacheWrite
+		}
+	} else if m.PriceTierInputTokens > 0 && promptTokens >= m.PriceTierInputTokens {
+		// Keep the legacy single-tier fields inclusive at the threshold.
 		inputPrice = m.PriceInputAbove
 		outputPrice = m.PriceOutputAbove
 		cacheReadPrice = m.PriceCacheReadAbove

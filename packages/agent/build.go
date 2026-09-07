@@ -57,6 +57,16 @@ type Resolved struct {
 	// long writes/edits with stopReason=length).
 	MaxOutput int
 
+	// modelCatalog is a runtime-owned snapshot for providers whose model
+	// metadata is account- or endpoint-scoped. It prevents a later SDK
+	// runtime from changing request shaping for an already-created runtime.
+	modelCatalog              []provider.Model
+	modelCatalogAuthoritative bool
+
+	// customProviderConfig snapshots user-provider transport settings so
+	// client construction does not reread a mutable global registry.
+	customProviderConfig *provider.CustomProviderConfig
+
 	// SkillTool is the on-demand skill loader registered with the
 	// agent's tool registry, or nil if no SKILL.md files were
 	// discovered. Exposed so the tui can list / preview skills.
@@ -83,6 +93,19 @@ type Resolved struct {
 
 // HasCredential reports whether a credential was resolved.
 func (r Resolved) HasCredential() bool { return r.Credential != "" }
+
+// ModelCatalogSnapshot returns the runtime-owned model metadata captured while
+// resolving. It is used by SDK clients whose provider catalog is scoped to a
+// credential or endpoint.
+func (r Resolved) ModelCatalogSnapshot() []provider.Model {
+	return append([]provider.Model(nil), r.modelCatalog...)
+}
+
+// ModelCatalogIsAuthoritative reports whether the runtime snapshot came from
+// a successful provider catalog that is authoritative for model IDs.
+func (r Resolved) ModelCatalogIsAuthoritative() bool {
+	return r.modelCatalogAuthoritative
+}
 
 // MergeExtensionTools folds every tool registered by an extension
 // into r's ToolRegistry and re-renders the system prompt's tool
@@ -249,6 +272,8 @@ func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []To
 	return out
 }
 
+const openCodeGoBootstrapModel = "kimi-k2.6"
+
 // defaultModelForProvider returns the model id zut prefers when the
 // caller didn't pick one. Mirrors the per-provider switch used at
 // multiple points in Resolve; centralised so the unknown-model
@@ -259,57 +284,63 @@ func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []To
 // error or use whatever the user passed.
 func defaultModelForProvider(prov string) string {
 	switch prov {
-	case "openai":
+	case provider.ProviderOpenAI:
 		return "gpt-5"
-	case "openai-codex":
+	case provider.ProviderOpenAICodex:
 		return "gpt-5.5"
-	case "openai-responses":
+	case provider.ProviderOpenAIResponses:
 		return "gpt-5"
-	case "kimi":
+	case provider.ProviderKimi:
 		return "kimi-for-coding"
-	case "deepseek":
+	case provider.ProviderDeepSeek:
 		return "deepseek-v4-pro"
-	case "google":
+	case provider.ProviderGoogle:
 		return "gemini-2.5-pro"
-	case "ollama", provider.LlamaCPPProviderID:
+	case provider.ProviderOllama, provider.ProviderLlamaCPP:
 		return ""
-	case "moonshotai", "moonshotai-cn":
+	case provider.ProviderMoonshot, provider.ProviderMoonshotCN:
 		return "kimi-k2.6"
-	case "cerebras":
+	case provider.ProviderCerebras:
 		return "qwen-3-235b-a22b-instruct-2507"
-	case "groq":
+	case provider.ProviderGroq:
 		return "llama-3.3-70b-versatile"
-	case "xai":
+	case provider.ProviderXAI:
 		return "grok-4.5"
-	case "together":
+	case provider.ProviderTogether:
 		return "Qwen/Qwen3-Coder-480B-A35B-Instruct"
-	case "huggingface":
+	case provider.ProviderHuggingFace:
 		return "moonshotai/Kimi-K2-Instruct"
-	case "openrouter":
+	case provider.ProviderOpenRouter:
 		return "anthropic/claude-sonnet-4.5"
-	case "mistral":
+	case provider.ProviderMistral:
 		return "mistral-large-latest"
-	case "zai":
+	case provider.ProviderZAI:
 		return "glm-4.7"
-	case "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp":
+	case provider.ProviderXiaomi, provider.ProviderXiaomiTokenPlanAMS, provider.ProviderXiaomiTokenPlanCN, provider.ProviderXiaomiTokenPlanSGP:
 		return "mimo-v2.5"
-	case "minimax", "minimax-cn":
+	case provider.ProviderMiniMax, provider.ProviderMiniMaxCN:
 		return "MiniMax-M2.7"
-	case "fireworks":
+	case provider.ProviderFireworks:
 		return "accounts/fireworks/models/kimi-k2p6"
-	case "vercel-ai-gateway":
+	case provider.ProviderVercelAIGateway:
 		return "anthropic/claude-sonnet-4.5"
-	case "opencode":
+	case provider.ProviderOpenCode:
 		return "claude-sonnet-4-5"
-	case "opencode-go":
-		return "kimi-k2.6"
-	case "amazon-bedrock":
+	case provider.ProviderOpenCodeGo:
+		// OpenCode Go is synchronized at runtime, so prefer the first
+		// currently served model and keep the former default only as a
+		// bootstrap while the first refresh is still in flight.
+		if models := provider.ModelsForProvider(prov); len(models) > 0 {
+			return models[0].ID
+		}
+		return openCodeGoBootstrapModel
+	case provider.ProviderAmazonBedrock:
 		return "anthropic.claude-sonnet-4-5-20250929-v1:0"
-	case "google-vertex":
+	case provider.ProviderGoogleVertex:
 		return "gemini-2.5-pro"
-	case "azure-openai-responses":
+	case provider.ProviderAzureOpenAIResponses:
 		return "gpt-5"
-	case "github-copilot":
+	case provider.ProviderGitHubCopilot:
 		return "claude-sonnet-4.5"
 	default:
 		// Custom providers: pick the first model from the catalog for
@@ -325,18 +356,7 @@ func defaultModelForProvider(prov string) string {
 // Resolve to validate args.Provider, by extension-callers, and by the
 // auto-fallback logic that picks any logged-in provider when the user's
 // preferred one has no credentials.
-var knownProviders = []string{
-	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID,
-	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter",
-	"mistral", "zai",
-	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
-	"minimax", "minimax-cn",
-	"fireworks", "vercel-ai-gateway",
-	"opencode", "opencode-go",
-	"amazon-bedrock", "google-vertex", "azure-openai-responses",
-	"github-copilot", "cloudflare-workers-ai", "cloudflare-ai-gateway",
-}
+var knownProviders = provider.BuiltinProviderIDs()
 
 func isKnownProvider(name string) bool {
 	for _, p := range knownProviders {
@@ -486,6 +506,35 @@ func webSearchAllowedForRegistry(args Args) bool {
 	}
 }
 
+func findModelForResolve(providerName, modelID string, scopedCatalog []provider.Model) (provider.Model, error) {
+	if providerName == provider.ProviderOpenCodeGo && scopedCatalog != nil {
+		for _, model := range scopedCatalog {
+			if model.ID == modelID {
+				return model, nil
+			}
+		}
+		return provider.Model{}, fmt.Errorf("unknown model %q (provider=%q)", modelID, providerName)
+	}
+	return provider.FindModel(providerName, modelID)
+}
+
+func acceptsUnlistedModel(providerName string, args Args) bool {
+	if providerName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		return !args.modelCatalogAuthoritative
+	}
+	return provider.AcceptsUnlistedModels(providerName)
+}
+
+func defaultModelForResolve(providerName string, args Args) string {
+	if providerName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		if len(args.modelCatalog) > 0 {
+			return args.modelCatalog[0].ID
+		}
+		return openCodeGoBootstrapModel
+	}
+	return defaultModelForProvider(providerName)
+}
+
 // Resolve merges args, config, and env into a Resolved set.
 //
 // Unlike the earlier version, Resolve NEVER returns an error for
@@ -606,12 +655,29 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 	}
 
-	model := firstNonEmpty(args.Model, cfg.Model)
+	var customProviderConfig *provider.CustomProviderConfig
+	if custom, ok := provider.CustomProviders()[provName]; ok {
+		customProviderConfig = &custom
+	}
+
+	// Normalize model ids at the resolver boundary without mutating the
+	// caller's Args value. Treat whitespace-only values as missing so a
+	// configured fallback can still be selected.
+	model := strings.TrimSpace(args.Model)
+	if model == "" {
+		model = strings.TrimSpace(cfg.Model)
+	}
 	if model == "" {
 		if provName == "ollama" || provName == provider.LlamaCPPProviderID {
 			return Resolved{}, fmt.Errorf("%s requires --model or a model selected from its manager", provName)
 		}
-		model = defaultModelForProvider(provName)
+		if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+			// Keep model selection inside the runtime snapshot instead of
+			// consulting another runtime's mutable catalog.
+			model = defaultModelForResolve(provName, args)
+		} else {
+			model = defaultModelForProvider(provName)
+		}
 	}
 	// If the resolved model belongs to a different provider (e.g. config
 	// says gpt-5 but we auto-fell back to anthropic), pick that provider's
@@ -620,11 +686,15 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// router providers (openrouter, vercel-ai-gateway, etc.) can serve
 	// models from any provider in the catalog.
 	if autoFellBack && provName != "ollama" {
-		if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
+		if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+			if _, err := findModelForResolve(provName, model, args.modelCatalog); err != nil {
+				model = defaultModelForResolve(provName, args)
+			}
+		} else if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
 			model = defaultModelForProvider(provName)
 		}
 	}
-	resolvedModel, err := provider.FindModel(provName, model)
+	resolvedModel, err := findModelForResolve(provName, model, args.modelCatalog)
 	if err != nil && (provName == "ollama" || provName == provider.LlamaCPPProviderID) {
 		// Local providers are intentionally open-catalogue: any model id the
 		// configured server understands is valid, even if it is not cached.
@@ -639,26 +709,32 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 		err = nil
 	}
+	// OpenCode Go publishes its authoritative model list at runtime. Keep
+	// explicit model ids usable during the first refresh or while offline;
+	// the provider request will be the final authority if no catalog data is
+	// available yet.
+	if err != nil && acceptsUnlistedModel(provName, args) {
+		resolvedModel = provider.DynamicOpenCodeGoModel(provName, model, args.BaseURL)
+		err = nil
+	}
 	// Custom providers are open-catalogue like ollama: any model id the
 	// endpoint understands is valid. Use the provider-level base URL.
-	if err != nil {
-		if cfg, ok := provider.CustomProviders()[provName]; ok {
-			resolvedModel = provider.Model{
-				Provider:      provName,
-				ID:            model,
-				DisplayName:   model,
-				ContextWindow: 128000,
-				MaxOutput:     16384,
-				BaseURL:       cfg.BaseURL,
-				Source:        "user",
-			}
-			err = nil
+	if err != nil && customProviderConfig != nil {
+		resolvedModel = provider.Model{
+			Provider:      provName,
+			ID:            model,
+			DisplayName:   model,
+			ContextWindow: 128000,
+			MaxOutput:     16384,
+			BaseURL:       customProviderConfig.BaseURL,
+			Source:        "user",
 		}
+		err = nil
 	}
-	if cfg, ok := provider.CustomProviders()[provName]; ok && err == nil && resolvedModel.BaseURL == "" && cfg.BaseURL != "" {
+	if customProviderConfig != nil && err == nil && resolvedModel.BaseURL == "" && customProviderConfig.BaseURL != "" {
 		// Fall back to the provider-level base URL when the model does
 		// not define its own endpoint.
-		resolvedModel.BaseURL = cfg.BaseURL
+		resolvedModel.BaseURL = customProviderConfig.BaseURL
 	}
 	if err != nil {
 		// The model the user (or persisted config) asked for is no
@@ -687,13 +763,18 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			}
 			// Don't repair config — the routed model id may be valid upstream.
 		} else {
-			fallback := defaultModelForProvider(provName)
-			fm, ferr := provider.FindModel(provName, fallback)
+			fallback := defaultModelForResolve(provName, args)
+			fm, ferr := findModelForResolve(provName, fallback, args.modelCatalog)
 			if ferr != nil {
 				// Even the provider default is gone (catastrophic
 				// catalogue trim). Last resort: any model on this
-				// provider, then the global DefaultModel.
-				if candidates := provider.ModelsForProvider(provName); len(candidates) > 0 {
+				// provider, then the global DefaultModel. A scoped
+				// OpenCode Go runtime must stay inside its snapshot.
+				candidates := provider.ModelsForProvider(provName)
+				if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+					candidates = args.modelCatalog
+				}
+				if len(candidates) > 0 {
 					fm = candidates[0]
 				} else {
 					fm = provider.DefaultModel
@@ -702,7 +783,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			fmt.Fprintf(os.Stderr,
 				"zut: model %q is not in the active catalogue; using %q instead. Pick a different model with --model or /model.\n",
 				model, fm.ID)
-			if args.Model == "" && cfg.Model == model {
+			if strings.TrimSpace(args.Model) == "" && strings.TrimSpace(cfg.Model) == model {
 				cfg.Model = fm.ID
 				repairConfig = true
 			}
@@ -880,33 +961,51 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	max := args.MaxSteps // 0 = unlimited
 
+	var modelCatalog []provider.Model
+	if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
+		modelCatalog = append([]provider.Model{}, args.modelCatalog...)
+		found := false
+		for _, catalogModel := range modelCatalog {
+			if catalogModel.ID == model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			modelCatalog = append(modelCatalog, resolvedModel)
+		}
+	}
+
 	return Resolved{
-		Provider:         provName,
-		Model:            model,
-		Credential:       cred,
-		AuthMethod:       method,
-		AccountID:        accountID,
-		BaseURL:          args.BaseURL,
-		InsecureTLS:      insecureTLS,
-		CWD:              args.CWD,
-		Reasoning:        reasoning,
-		Temperature:      temperature,
-		FastMode:         fastMode,
-		WebSearchPolicy:  webSearchPolicy,
-		ToolRegistry:     reg,
-		ToolSummary:      summaries,
-		SystemPrompt:     sys,
-		MaxSteps:         max,
-		ContextWindow:    resolvedModel.ContextWindow,
-		MaxOutput:        resolvedModel.MaxOutput,
-		Sandbox:          sandbox,
-		SkillTool:        skillTool,
-		skillsEnabled:    skillsEnabled,
-		ContextFiles:     contextFiles,
-		systemAppend:     append_,
-		systemCustom:     custom,
-		skillAddendum:    skillAddendum,
-		toolDescriptions: descMapFromSummaries(summaries),
+		Provider:                  provName,
+		Model:                     model,
+		Credential:                cred,
+		AuthMethod:                method,
+		AccountID:                 accountID,
+		BaseURL:                   args.BaseURL,
+		InsecureTLS:               insecureTLS,
+		CWD:                       args.CWD,
+		Reasoning:                 reasoning,
+		Temperature:               temperature,
+		FastMode:                  fastMode,
+		WebSearchPolicy:           webSearchPolicy,
+		ToolRegistry:              reg,
+		ToolSummary:               summaries,
+		SystemPrompt:              sys,
+		MaxSteps:                  max,
+		ContextWindow:             resolvedModel.ContextWindow,
+		MaxOutput:                 resolvedModel.MaxOutput,
+		modelCatalog:              modelCatalog,
+		modelCatalogAuthoritative: args.modelCatalogAuthoritative,
+		customProviderConfig:      customProviderConfig,
+		Sandbox:                   sandbox,
+		SkillTool:                 skillTool,
+		skillsEnabled:             skillsEnabled,
+		ContextFiles:              contextFiles,
+		systemAppend:              append_,
+		systemCustom:              custom,
+		skillAddendum:             skillAddendum,
+		toolDescriptions:          descMapFromSummaries(summaries),
 	}, nil
 }
 
@@ -1089,8 +1188,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewXiaomiTokenPlan("sgp", r.Credential, r.BaseURL))
 	case "opencode":
 		return wrap(provider.NewOpenCode(r.Credential, r.BaseURL))
-	case "opencode-go":
-		return wrap(provider.NewOpenCodeGo(r.Credential, r.BaseURL))
+	case provider.ProviderOpenCodeGo:
+		return wrap(provider.NewOpenCodeGoWithModels(r.Credential, r.BaseURL, r.modelCatalog))
 	case "minimax":
 		return wrap(provider.NewMinimaxAnthropic(r.Credential, r.BaseURL))
 	case "minimax-cn":
@@ -1115,8 +1214,12 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewCloudflareAIGateway(r.Credential, r.BaseURL))
 	default:
 		// Custom providers: choose wire format from the models.json api field.
-		if cfg, ok := provider.CustomProviders()[r.Provider]; ok {
-			switch cfg.API {
+		customConfig, ok := provider.CustomProviders()[r.Provider]
+		if r.customProviderConfig != nil {
+			customConfig, ok = *r.customProviderConfig, true
+		}
+		if ok {
+			switch customConfig.API {
 			case provider.APIResponses:
 				return wrap(provider.NewOpenAIResponsesNamed(r.Credential, r.BaseURL, r.Provider))
 			case "anthropic":

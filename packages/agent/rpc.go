@@ -286,6 +286,17 @@ func (s *rpcServer) run(in io.Reader) error {
 	return err
 }
 
+func resolveRPCModel(providerName, modelID string) (provider.Model, error) {
+	model, err := provider.FindModel(providerName, modelID)
+	if err == nil {
+		return model, nil
+	}
+	if providerName == provider.ProviderOpenCodeGo && provider.AcceptsUnlistedModels(providerName) {
+		return provider.DynamicOpenCodeGoModel(providerName, modelID, ""), nil
+	}
+	return provider.Model{}, err
+}
+
 // dispatch routes a command. Long-running commands (prompt, compact)
 // run on their own goroutine so the read loop stays responsive.
 func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
@@ -341,6 +352,12 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 		s.writeResponse(id, cmd, nil)
 
 	case "set_model":
+		if !s.turnMu.TryLock() {
+			s.writeError(id, cmd, "runtime is busy")
+			return
+		}
+		defer s.turnMu.Unlock()
+
 		var req struct {
 			Model string `json:"model"`
 		}
@@ -348,13 +365,28 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		if _, err := provider.FindModel(s.provider, req.Model); err != nil {
+		model := strings.TrimSpace(req.Model)
+		if model == "" {
+			s.writeError(id, cmd, "model must not be empty")
+			return
+		}
+		metadata, err := resolveRPCModel(s.provider, model)
+		if err != nil {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		s.agent.Model = req.Model
-		s.model = req.Model
-		s.writeResponse(id, cmd, map[string]any{"model": req.Model})
+		if setter, ok := s.agent.Client.(provider.ModelMetadataSetter); ok {
+			setter.SetModelMetadata(metadata)
+		}
+		if metadata.ContextWindow > 0 {
+			s.agent.ContextWindow = metadata.ContextWindow
+		}
+		if metadata.MaxOutput > 0 {
+			s.agent.MaxTokens = metadata.MaxOutput
+		}
+		s.agent.Model = model
+		s.model = model
+		s.writeResponse(id, cmd, map[string]any{"model": model})
 
 	case "set_reasoning":
 		var req struct {
