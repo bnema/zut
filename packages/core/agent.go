@@ -725,6 +725,13 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 			return err
 		}
 
+		if stop == provider.StopContinue {
+			if err := ctx.Err(); err != nil {
+				sink(EvDone{})
+				return err
+			}
+			continue
+		}
 		if stop == provider.StopToolUse {
 			// Execute each tool call, append a single tool-results message, continue.
 			toolMsg, hadError := a.executeTools(ctx, assistantMsg, sink)

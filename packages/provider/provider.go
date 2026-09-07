@@ -225,11 +225,12 @@ func (u Usage) Add(v Usage) Usage {
 type StopReason string
 
 const (
-	StopEnd     StopReason = "end"
-	StopLength  StopReason = "length"
-	StopToolUse StopReason = "tool_use"
-	StopError   StopReason = "error"
-	StopAborted StopReason = "aborted"
+	StopEnd      StopReason = "end"
+	StopContinue StopReason = "continue"
+	StopLength   StopReason = "length"
+	StopToolUse  StopReason = "tool_use"
+	StopError    StopReason = "error"
+	StopAborted  StopReason = "aborted"
 )
 
 // Event is one item from a provider stream.

@@ -801,7 +801,8 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 							ReasoningTokens int `json:"reasoning_tokens"`
 						} `json:"output_tokens_details"`
 					} `json:"usage"`
-					Status string `json:"status"`
+					Status  string `json:"status"`
+					EndTurn *bool  `json:"end_turn"`
 				} `json:"response"`
 			}
 			_ = json.Unmarshal([]byte(ev.Data), &p)
@@ -822,6 +823,9 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				stop = StopToolUse
 			} else {
 				stop = StopEnd
+				if p.Response.EndTurn != nil && !*p.Response.EndTurn {
+					stop = StopContinue
+				}
 			}
 			if completed != nil && p.Response.ID != "" {
 				completed(p.Response.ID, assemble())

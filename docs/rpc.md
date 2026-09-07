@@ -208,7 +208,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
 | `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. |
-| `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end_turn`, `tool_use`, `length`, `error`, or `aborted` |
+| `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end`, `continue`, `tool_use`, `length`, `error`, or `aborted`. `continue` ends one inference, not the logical task: the agent issues another model call in the same turn |
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |

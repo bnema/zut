@@ -252,6 +252,9 @@ HTTP/SSE with the same logical session/cache identity. Cancellation closes
 only the active session socket; a normally completed turn keeps it warm for
 the next continuation.
 
+### Responses explicit continuation
+
+When a Responses completion carries an explicit `end_turn:false`, zut treats the finished inference as a continuation (`turn_end` with `stop:"continue"`) and issues another model call in the same turn, reusing its request context, guards, usage accounting, and queued-input boundary. Tool calls still take precedence over the signal, and errors or cancellation never become continuations. A missing, null, or true `end_turn` keeps the existing behavior and ends the turn.
 
 ## Local llama.cpp router
 
