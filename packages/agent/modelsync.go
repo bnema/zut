@@ -96,7 +96,8 @@ func loadCachedModels(scopes map[string]string) {
 	// the newly scoped cache, including cache-miss and read-error paths.
 	provider.ClearLiveModelsForProvider(provider.ProviderOpenCodeGo)
 	c, err := provider.LoadCache(ModelCachePath())
-	status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
+status := provider.ProviderCatalogStatus(provider.ProviderOpenCodeGo)
+	status.PreviouslyDiscovered = c.ProviderScopes[provider.ProviderOpenCodeGo] != ""
 	for _, model := range c.Models {
 		if model.Provider == provider.ProviderOpenCodeGo {
 			status.PreviouslyDiscovered = true
