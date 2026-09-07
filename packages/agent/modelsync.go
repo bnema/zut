@@ -34,10 +34,9 @@ func UserModelsPath() string {
 // package so FindModel / ModelsForProvider see live ids immediately.
 // Safe to call before any credentials are known.
 func LoadCachedModels() {
-	scopes := currentModelProviderScopes()
 	modelCatalogMu.Lock()
 	defer modelCatalogMu.Unlock()
-	loadCachedModels(scopes)
+	loadCachedModels(currentModelProviderScopes())
 }
 
 func synchronousOpenCodeGoAPIKey(ctx context.Context, explicitProvider, explicitAPIKey string) string {
