@@ -133,3 +133,90 @@ func TestResponsesContinuationWebSocket(t *testing.T) {
 		t.Fatalf("incremental input = %s", encoded)
 	}
 }
+
+// TestResponsesReasoningWebSocketTerminalBackfill pins terminal-only
+// encrypted reasoning over the shared WebSocket path: the streamed item
+// carries only an ID, the terminal response output supplies the payload,
+// and the final assistant message keeps it for full-history replay.
+func TestResponsesReasoningWebSocketTerminalBackfill(t *testing.T) {
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		var payload map[string]any
+		if err := websocket.JSON.Receive(conn, &payload); err != nil {
+			return
+		}
+		response := map[string]any{
+			"id":    "resp-ws-1",
+			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+			"output": []any{
+				map[string]any{"type": "reasoning", "id": "rs-ws-a", "encrypted_content": "blob-ws", "summary": []any{}},
+				map[string]any{"type": "message", "id": "msg-ws-1", "status": "completed", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "hello", "annotations": []any{}}}},
+			},
+		}
+		for _, event := range []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "resp-ws-1"}},
+			{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "reasoning", "id": "rs-ws-a"}},
+			{"type": "response.output_item.added", "output_index": 1, "item": map[string]any{"type": "message"}},
+			{"type": "response.output_text.delta", "output_index": 1, "delta": "hello"},
+			{"type": "response.completed", "response": response},
+		} {
+			_ = websocket.JSON.Send(conn, event)
+		}
+	}))
+	defer server.Close()
+
+	inner := &codexClient{
+		token:        "test-token",
+		baseURL:      server.URL + "/v1/responses",
+		providerName: "openai",
+		capabilities: responsesCapabilities{StablePromptCacheKey: true},
+	}
+	client := newResponsesWebSocketClient(inner)
+
+	stream, err := client.Stream(context.Background(), Request{
+		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{CacheSessionID: "cache-ws", ThreadID: "thread-ws-reasoning", TurnID: "turn-1"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done EventDone
+	for event := range stream {
+		if e, ok := event.(EventDone); ok {
+			done = e
+		}
+	}
+	if done.Err != nil {
+		t.Fatalf("stream error: %v", done.Err)
+	}
+	var sawReasoning bool
+	for _, c := range done.Message.Content {
+		if rb, ok := c.(ReasoningBlock); ok && rb.ID == "rs-ws-a" && rb.Encrypted == "blob-ws" {
+			sawReasoning = true
+		}
+	}
+	if !sawReasoning {
+		t.Fatalf("websocket reasoning not backfilled: %#v", done.Message.Content)
+	}
+
+	wire, err := inner.buildRequest(Request{
+		Model: "gpt-5.6-sol",
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}},
+			done.Message,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed bool
+	for _, item := range wire.Input {
+		if reasoning, ok := item.(codexReasoningItem); ok && reasoning.ID == "rs-ws-a" && reasoning.EncryptedContent == "blob-ws" {
+			replayed = true
+		}
+	}
+	if !replayed {
+		t.Fatalf("terminal websocket payload did not reach full-history request: %#v", wire.Input)
+	}
+}

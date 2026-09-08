@@ -256,6 +256,10 @@ the next continuation.
 
 When a Responses completion carries an explicit `end_turn:false`, zut treats the finished inference as a continuation (`turn_end` with `stop:"continue"`) and issues another model call in the same turn, reusing its request context, guards, usage accounting, and queued-input boundary. Tool calls still take precedence over the signal, and errors or cancellation never become continuations. A missing, null, or true `end_turn` keeps the existing behavior and ends the turn.
 
+### Responses reasoning replay
+
+Responses requests run with `store:false`, so follow-up requests replay reasoning explicitly. Only reasoning blocks that carry a replayable encrypted payload are sent; reasoning metadata without that payload is omitted from outgoing requests without editing session history. Opaque reasoning payloads are not guaranteed portable across providers or models.
+
 ## Local llama.cpp router
 
 The `llama.cpp` provider connects to a multi-model router and is separate from the `ollama` provider. Ollama normally uses `http://localhost:11434`; entering that URL for llama.cpp management produces a 404 because Ollama does not implement the router endpoints.
