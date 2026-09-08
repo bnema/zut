@@ -498,7 +498,10 @@ func (s *responsesWebSocketSession) incrementalRequest(req Request, cacheSession
 	fullRequest := req
 	req.Messages = append([]Message(nil), req.Messages[len(previous.Messages):]...)
 	if len(req.Messages) > 0 && req.Messages[0].Role == RoleAssistant {
-		if !sameResponsesOutput(req.Messages[0], s.lastOutput) {
+		// The host adds route provenance after receiving EventDone.
+		// Fill only missing origin fields before strict output comparison.
+		output := WithMessageOrigin(s.lastOutput, req.Messages[0].Meta["provider"], req.Messages[0].Meta["model"])
+		if !sameResponsesOutput(req.Messages[0], output) {
 			return fullRequest, ""
 		}
 		req.Messages = req.Messages[1:]

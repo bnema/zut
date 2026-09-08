@@ -425,7 +425,10 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 				snapshot.Title = row.meta.Title
 			}
 		case "message":
-			snapshot.Messages = append(snapshot.Messages, *row.message)
+			// Metadata rows record the route active when each turn was written,
+			// not just the route selected at the end of the session.
+			msg := provider.WithMessageOrigin(*row.message, snapshot.Meta.Provider, snapshot.Meta.Model)
+			snapshot.Messages = append(snapshot.Messages, msg)
 		case "compaction":
 			snapshot.Messages = row.messages
 			generation++
@@ -549,7 +552,8 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 		case "meta":
 			history.Meta = *row.meta
 		case "message":
-			current.messages = append(current.messages, *row.message)
+			msg := provider.WithMessageOrigin(*row.message, history.Meta.Provider, history.Meta.Model)
+			current.messages = append(current.messages, msg)
 		case "compaction":
 			appendCurrent()
 			current = rawSegment{compacted: true, messages: row.messages}
