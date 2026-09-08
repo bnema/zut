@@ -331,36 +331,6 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		// selected provider: Resolve must use that provider's own settings.
 		baseURL, insecureTLS = "", false
 	}
-	allTools := make([]string, 0, len(catalogue))
-	for name := range catalogue {
-		switch name {
-		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal":
-			continue
-		}
-		allTools = append(allTools, name)
-	}
-	sort.Strings(allTools)
-	permitted := func(name string) bool {
-		if tools.IsWebCapabilityName(name) {
-			return policy.AllowsTool("web_search")
-		}
-		return policy.AllowsTool(name)
-	}
-	var childTools []string
-	var err error
-	if request.Profile == nil || !request.Profile.ToolsDeclared {
-		for _, name := range allTools {
-			if permitted(name) {
-				childTools = append(childTools, name)
-			}
-		}
-	} else {
-		childTools, err = subagents.ResolveProfileTools(request.Profile, allTools, permitted)
-		if err != nil {
-			return subagents.ResidentChildSpec{}, err
-		}
-	}
-	childTools = expandWebCapabilityTools(childTools, allTools, permitted)
 	workspaceMode := request.WorkspaceMode
 	if workspaceMode == "" {
 		workspaceMode = subagents.WorkspaceShared
@@ -368,7 +338,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	spec := subagents.ResidentChildSpec{
 		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: parentSession, ParentSessionID: parentSession,
 		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
-		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode, Tools: childTools,
+		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode,
 		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,
 	}
 	if request.Profile != nil {
@@ -382,6 +352,42 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	if err != nil {
 		return subagents.ResidentChildSpec{}, fmt.Errorf("resolve resident child model: %w", err)
 	}
+	// The child-safe catalogue is the intersection of parent-offered tools
+	// and tools available in the resolved child runtime. Parent-only
+	// scheduling/extension tools are never inherited.
+	allTools := make([]string, 0, len(catalogue))
+	for name := range catalogue {
+		switch name {
+		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal":
+			continue
+		}
+		if _, ok := resolved.ToolRegistry[name]; !ok {
+			continue
+		}
+		allTools = append(allTools, name)
+	}
+	sort.Strings(allTools)
+	permitted := func(name string) bool {
+		if tools.IsWebCapabilityName(name) {
+			return policy.AllowsTool("web_search")
+		}
+		return policy.AllowsTool(name)
+	}
+	var childTools []string
+	if request.Profile == nil || !request.Profile.ToolsDeclared {
+		for _, name := range allTools {
+			if permitted(name) {
+				childTools = append(childTools, name)
+			}
+		}
+	} else {
+		childTools, err = subagents.ResolveProfileTools(request.Profile, allTools, permitted)
+		if err != nil {
+			return subagents.ResidentChildSpec{}, err
+		}
+	}
+	childTools = expandWebCapabilityTools(childTools, allTools, permitted)
+	spec.Tools = childTools
 	budgetLimit, err := subagents.ContextBudgetLimit(resolved.ContextWindow)
 	if err != nil {
 		return subagents.ResidentChildSpec{}, err
