@@ -3,12 +3,15 @@ package tools
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -126,12 +129,22 @@ func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress 
 	outcome.LinesTrunc = truncLines
 	text := formatPythonResult(interp, outcome, trimmed, int64(timeout/time.Second))
 	isErr := outcome.ExitCode != 0 || outcome.TimedOut || outcome.Cancelled
+	// Like bash, persist the byte-capped buffer for truncated results so
+	// the model can read beyond the line-trimmed projection.
+	fullPath := ""
+	if outcome.BytesTrunc || outcome.LinesTrunc {
+		fullPath = writePythonFullOutput(outcome.Captured)
+		if fullPath != "" {
+			text += fmt.Sprintf(" (full output: %s)", fullPath)
+		}
+	}
 	details := map[string]any{
-		"exit_code":       outcome.ExitCode,
-		"interpreter":     interp.Path,
-		"python_version":  interp.Version.String(),
-		"bytes_truncated": outcome.BytesTrunc,
-		"lines_truncated": outcome.LinesTrunc,
+		"exit_code":        outcome.ExitCode,
+		"interpreter":      interp.Path,
+		"python_version":   interp.Version.String(),
+		"bytes_truncated":  outcome.BytesTrunc,
+		"lines_truncated":  outcome.LinesTrunc,
+		"full_output_path": fullPath,
 	}
 	if outcome.CleanupErr != nil {
 		details["cleanup_error"] = outcome.CleanupErr.Error()
@@ -241,6 +254,20 @@ func appendPythonChunk(captured *bytes.Buffer, chunk []byte) (discarded bool) {
 	}
 	captured.Write(chunk)
 	return false
+}
+
+// writePythonFullOutput persists the byte-capped buffer for truncated
+// results, mirroring the bash full-output artifact (zut-python prefix).
+func writePythonFullOutput(s string) string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	name := filepath.Join(os.TempDir(), "zut-python-"+hex.EncodeToString(b)+".log")
+	if err := os.WriteFile(name, []byte(s), 0o600); err != nil {
+		return ""
+	}
+	return name
 }
 
 // truncatePythonLines bounds the line count of captured output.

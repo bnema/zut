@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,9 @@ func TestPythonSuccessResult(t *testing.T) {
 	if details["exit_code"] != 0 || details["interpreter"] != "/usr/bin/python3" || details["python_version"] != "3.12.1" || details["bytes_truncated"] != false || details["lines_truncated"] != false {
 		t.Fatalf("details = %#v", details)
 	}
+	if path, _ := details["full_output_path"].(string); path != "" || strings.Contains(text, "full output") {
+		t.Fatalf("untruncated result must not persist a full-output file: %q", path)
+	}
 }
 
 func TestPythonFailureStatuses(t *testing.T) {
@@ -188,7 +192,7 @@ func TestPythonFailureStatuses(t *testing.T) {
 	}
 }
 
-func TestPythonTruncationMarkedNoArtifact(t *testing.T) {
+func TestPythonTruncationMarkedWithFullOutput(t *testing.T) {
 	interp := resolvedPython{Path: "/py", Version: pythonVersion{Major: 3, Minor: 1, Micro: 0}}
 	long := strings.Repeat("x\n", maxPythonLines+10)
 	tool := stubPythonTool(interp, nil, pythonExecOutcome{Captured: long, ExitCode: 0}, nil)
@@ -200,14 +204,27 @@ func TestPythonTruncationMarkedNoArtifact(t *testing.T) {
 	if !strings.Contains(text, "truncated at 2000 lines") {
 		t.Fatalf("lines truncation not marked:\n%s", text[len(text)-500:])
 	}
-	if strings.Contains(text, "full output") {
-		t.Fatalf("v1 must not produce a full-output artifact:\n%s", text)
-	}
-	if res.Details.(map[string]any)["lines_truncated"] != true {
+	details := res.Details.(map[string]any)
+	if details["lines_truncated"] != true {
 		t.Fatalf("details = %#v", res.Details)
+	}
+	fullPath, _ := details["full_output_path"].(string)
+	if fullPath == "" || !strings.Contains(text, "full output: "+fullPath) {
+		t.Fatalf("truncated result must reference a full-output file: %q\n%s", fullPath, text)
+	}
+	t.Cleanup(func() { _ = os.Remove(fullPath) })
+	persisted, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != long {
+		t.Fatal("full-output file must hold the byte-capped buffer beyond line trimming")
 	}
 
 	big := strings.Repeat("y", maxPythonBytes+100)
+	// The stub bypasses capture, so trim the fixture the way the real
+	// runner would: byte-capped, then line-trimmed for display.
+	big = big[:maxPythonBytes]
 	tool = stubPythonTool(interp, nil, pythonExecOutcome{Captured: big, ExitCode: 0, BytesTrunc: true}, nil)
 	res, err = tool.Execute(context.Background(), pythonArgsJSON(t, "x", 5), nil)
 	if err != nil {
@@ -215,6 +232,11 @@ func TestPythonTruncationMarkedNoArtifact(t *testing.T) {
 	}
 	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "truncated at 51200 bytes") {
 		t.Fatalf("bytes truncation not marked")
+	}
+	if path, _ := res.Details.(map[string]any)["full_output_path"].(string); path == "" {
+		t.Fatal("byte-truncated result must persist a full-output file")
+	} else {
+		t.Cleanup(func() { _ = os.Remove(path) })
 	}
 }
 
