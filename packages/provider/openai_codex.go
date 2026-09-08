@@ -799,20 +799,24 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				case "function_call":
 					out <- EventToolEnd{ID: it.callID}
 				case "reasoning":
-					if p.Item.EncryptedContent != "" {
+					// Fill-only: earlier streamed payloads and summaries win
+					// over later duplicates from output_item.done.
+					if it.encrypted == "" && p.Item.EncryptedContent != "" {
 						it.encrypted = p.Item.EncryptedContent
 					}
 					if it.rawID == "" && p.Item.ID != "" {
 						it.rawID = p.Item.ID
 					}
-					for _, s := range p.Item.Summary {
-						if s.Text == "" {
-							continue
+					if it.summary.Len() == 0 {
+						for _, s := range p.Item.Summary {
+							if s.Text == "" {
+								continue
+							}
+							if it.summary.Len() > 0 {
+								it.summary.WriteString("\n")
+							}
+							it.summary.WriteString(s.Text)
 						}
-						if it.summary.Len() > 0 {
-							it.summary.WriteString("\n")
-						}
-						it.summary.WriteString(s.Text)
 					}
 				}
 			}

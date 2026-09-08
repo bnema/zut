@@ -83,12 +83,34 @@ func TestResponsesReasoningTerminalBackfillDone(t *testing.T) {
 func TestResponsesReasoningEarlierPayloadWins(t *testing.T) {
 	done, _ := runResponsesCompletionFixture(t,
 		`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_test_a","encrypted_content":"early"}}`,
-		`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_test_a","encrypted_content":"early"}}`,
-		terminalPayload("response.completed", "resp-1", `"usage":{"input_tokens":1,"output_tokens":1}`, `[`+reasoningTerminalItem("rs_test_a", "late", "")+`]`),
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_test_a","encrypted_content":"done-late","summary":[{"type":"summary_text","text":"done summary"}]}}`,
+		terminalPayload("response.completed", "resp-1", `"usage":{"input_tokens":1,"output_tokens":1}`, `[`+reasoningTerminalItem("rs_test_a", "late", "terminal summary")+`]`),
 	)
 	blocks := findReasoningBlocks(done.Message)
 	if len(blocks) != 1 || blocks[0].Encrypted != "early" {
 		t.Fatalf("reasoning = %+v, want early payload to win", done.Message.Content)
+	}
+	if blocks[0].Summary != "done summary" {
+		t.Fatalf("summary = %q, want done summary to fill missing added summary", blocks[0].Summary)
+	}
+}
+
+func TestResponsesReasoningDoneDoesNotDuplicateStreamedSummary(t *testing.T) {
+	done, _ := runResponsesCompletionFixture(t,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_test_a"}}`,
+		`{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"hello"}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_test_a","encrypted_content":"blob-done","summary":[{"type":"summary_text","text":"hello"}]}}`,
+		terminalPayload("response.completed", "resp-1", `"usage":{"input_tokens":1,"output_tokens":1}`, `[`+reasoningTerminalItem("rs_test_a", "blob-terminal", "hello")+`]`),
+	)
+	blocks := findReasoningBlocks(done.Message)
+	if len(blocks) != 1 {
+		t.Fatalf("reasoning blocks = %#v, want 1", done.Message.Content)
+	}
+	if blocks[0].Summary != "hello" {
+		t.Fatalf("summary = %q, want single hello without duplication", blocks[0].Summary)
+	}
+	if blocks[0].Encrypted != "blob-done" {
+		t.Fatalf("encrypted = %q, want done payload to fill missing added payload", blocks[0].Encrypted)
 	}
 }
 
