@@ -179,6 +179,7 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 	}
 
 	captured := &bytes.Buffer{}
+	discarded := false
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -187,13 +188,8 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 			n, err := pr.Read(buf)
 			if n > 0 {
 				chunk := buf[:n]
-				if captured.Len() < maxPythonBytes {
-					room := maxPythonBytes - captured.Len()
-					if n > room {
-						captured.Write(chunk[:room])
-					} else {
-						captured.Write(chunk)
-					}
+				if appendPythonChunk(captured, chunk) {
+					discarded = true
 				}
 				if progress != nil {
 					progress(string(chunk))
@@ -210,7 +206,7 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 	<-readerDone
 
 	outcome.Captured = captured.String()
-	outcome.BytesTrunc = captured.Len() >= maxPythonBytes
+	outcome.BytesTrunc = discarded
 
 	exitCode := 0
 	if waitErr != nil {
@@ -227,6 +223,24 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 		outcome.Cancelled = true
 	}
 	return outcome, nil
+}
+
+// appendPythonChunk appends chunk to captured up to maxPythonBytes. It
+// reports whether any bytes were discarded, so output exactly filling the
+// budget is not misreported as truncated.
+func appendPythonChunk(captured *bytes.Buffer, chunk []byte) (discarded bool) {
+	if len(chunk) == 0 {
+		return false
+	}
+	if captured.Len() >= maxPythonBytes {
+		return true
+	}
+	if room := maxPythonBytes - captured.Len(); len(chunk) > room {
+		captured.Write(chunk[:room])
+		return true
+	}
+	captured.Write(chunk)
+	return false
 }
 
 // truncatePythonLines bounds the line count of captured output.

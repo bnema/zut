@@ -361,6 +361,41 @@ func TestWindowsNeverUsesPyLauncherFallback(t *testing.T) {
 	}
 }
 
+func TestResolvePathResultAbsolutized(t *testing.T) {
+	// A relative PATH entry can yield a relative interpreter path. The
+	// probe runs in the process directory while execution runs in the
+	// session CWD, so resolution must anchor it: probing, classification,
+	// and execution must address the same executable.
+	rel := filepath.Join("rel", "bin", "python3")
+	wantAbs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := testPythonDeps()
+	deps.LookPath = func(name string) (string, error) {
+		if name == "python3" {
+			return rel, nil
+		}
+		return "", errors.New("not found")
+	}
+	deps.IsFile = func(s string) bool { return s == wantAbs }
+	var probed string
+	deps.Probe = func(_ context.Context, exe string) (pythonVersion, error) {
+		probed = exe
+		return pythonVersion{Major: 3, Minor: 1, Micro: 0}, nil
+	}
+	got, err := resolvePythonInterpreter(context.Background(), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got.Path) || got.Path != wantAbs {
+		t.Fatalf("resolved path = %q, want absolutized %q", got.Path, wantAbs)
+	}
+	if probed != got.Path {
+		t.Fatalf("probed %q but returned %q", probed, got.Path)
+	}
+}
+
 func TestPythonChildEnvKeepsHostOnUnix(t *testing.T) {
 	t.Setenv("ZUT_PYTHON_TEST_SENTINEL", "kept")
 	found := false

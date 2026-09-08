@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -242,6 +243,38 @@ func TestPythonProgressStreamsMergedOutput(t *testing.T) {
 	}
 	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "out") || !strings.Contains(got, "err") {
 		t.Fatalf("merged output missing:\n%s", got)
+	}
+}
+
+func TestAppendPythonChunkBoundaries(t *testing.T) {
+	var buf bytes.Buffer
+	if appendPythonChunk(&buf, bytes.Repeat([]byte("y"), maxPythonBytes)) {
+		t.Fatal("output exactly filling the budget must not report truncation")
+	}
+	if buf.Len() != maxPythonBytes {
+		t.Fatalf("buffer len = %d, want %d", buf.Len(), maxPythonBytes)
+	}
+	// One byte over discards exactly that byte.
+	if !appendPythonChunk(&buf, []byte("!")) {
+		t.Fatal("overflow byte must report truncation")
+	}
+	if buf.Len() != maxPythonBytes || buf.Bytes()[buf.Len()-1] == '!' {
+		t.Fatal("overflow byte must not be retained")
+	}
+	// A chunk straddling the boundary keeps its fitting prefix and
+	// reports the discarded remainder.
+	buf.Reset()
+	if appendPythonChunk(&buf, bytes.Repeat([]byte("a"), maxPythonBytes-1)) {
+		t.Fatal("sub-budget write must not report truncation")
+	}
+	if !appendPythonChunk(&buf, []byte("bc")) {
+		t.Fatal("straddling write must report its discarded remainder")
+	}
+	if buf.Len() != maxPythonBytes || buf.Bytes()[buf.Len()-1] != 'b' {
+		t.Fatal("straddling write must retain only its fitting prefix")
+	}
+	if appendPythonChunk(&buf, nil) {
+		t.Fatal("empty chunk must not report truncation")
 	}
 }
 

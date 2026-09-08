@@ -206,6 +206,13 @@ func resolvePythonInterpreter(ctx context.Context, deps pythonResolveDeps) (reso
 		if err != nil || strings.TrimSpace(path) == "" {
 			continue
 		}
+		// A relative PATH entry can yield a relative interpreter path.
+		// The probe runs in the process directory while execution runs
+		// in the session CWD, so anchor it: probe, classification, and
+		// execution must all address the same validated executable.
+		if abs, absErr := filepath.Abs(path); absErr == nil {
+			path = abs
+		}
 		if goos == "windows" {
 			if err := classifyWindowsCandidate(path, &deps); err != nil {
 				continue
