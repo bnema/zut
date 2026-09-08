@@ -11,6 +11,25 @@ import (
 	"time"
 )
 
+// pythonTestAbs builds a platform-native absolute fixture path: on
+// Windows it is anchored to the TempDir volume so filepath.IsAbs holds
+// and Abs/Clean/Join behave like production paths.
+func pythonTestAbs(t *testing.T, elems ...string) string {
+	t.Helper()
+	base := t.TempDir()
+	if len(elems) == 0 {
+		return base
+	}
+	return filepath.Join(base, filepath.Join(elems...))
+}
+
+// volName returns the volume anchor of the test TempDir ("" on Unix,
+// e.g. "C:" on Windows) for fixtures that build rooted relatives.
+func volName(t *testing.T) string {
+	t.Helper()
+	return filepath.VolumeName(t.TempDir()) + string(os.PathSeparator)
+}
+
 func testPythonDeps() pythonResolveDeps {
 	return pythonResolveDeps{
 		GOOS: "linux",
@@ -64,27 +83,31 @@ func TestPythonProbeArgvIsolated(t *testing.T) {
 }
 
 func TestResolveConfiguredPathHandling(t *testing.T) {
-	absWant := filepath.FromSlash("/opt/py/bin/python")
-	if got := resolveConfiguredPythonPath("/session", "/opt/py/bin/python"); got != absWant {
+	// Fixture roots below use the platform-native absolute form so the
+	// expectations hold on both Unix and Windows runners.
+	session := pythonTestAbs(t, "session")
+	absConfigured := pythonTestAbs(t, "opt", "py", "bin", "python")
+	if got := resolveConfiguredPythonPath(session, absConfigured); got != absConfigured {
 		t.Fatalf("absolute = %q", got)
 	}
-	if got := resolveConfiguredPythonPath("/session", "envs/py/bin/python"); got != filepath.Join(filepath.FromSlash("/session"), filepath.FromSlash("envs/py/bin/python")) {
+	if got := resolveConfiguredPythonPath(session, filepath.Join("envs", "py", "bin", "python")); got != filepath.Join(session, "envs", "py", "bin", "python") {
 		t.Fatalf("relative = %q", got)
 	}
 	// No shell expansion: ~ and $VAR stay literal path segments.
-	if got := resolveConfiguredPythonPath("/session", "~/bin/python"); strings.Contains(got, string(os.PathSeparator)+"root") || !strings.Contains(got, "~") {
+	if got := resolveConfiguredPythonPath(session, filepath.Join("~", "bin", "python")); strings.Contains(got, string(os.PathSeparator)+"root") || !strings.Contains(got, "~") {
 		t.Fatalf("must not expand ~: %q", got)
 	}
-	if got := resolveConfiguredPythonPath("/session", "$HOME/bin/python"); !strings.Contains(got, "$HOME") {
+	if got := resolveConfiguredPythonPath(session, "$HOME"+string(os.PathSeparator)+filepath.Join("bin", "python")); !strings.Contains(got, "$HOME") {
 		t.Fatalf("must not expand env vars: %q", got)
 	}
 	// Paths with spaces survive.
-	if got := resolveConfiguredPythonPath("/my dir", "env dir/py"); got != filepath.Join(filepath.FromSlash("/my dir"), filepath.FromSlash("env dir/py")) {
+	spacedSession := pythonTestAbs(t, "my dir")
+	if got := resolveConfiguredPythonPath(spacedSession, filepath.Join("env dir", "py")); got != filepath.Join(spacedSession, "env dir", "py") {
 		t.Fatalf("spaces = %q", got)
 	}
 	// A relative session CWD is anchored to absolute once, so relative
 	// configured paths join the intended directory instead of stacking.
-	if got := resolveConfiguredPythonPath("project", "envs/py/bin/python"); !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.FromSlash("project/envs/py/bin/python")) {
+	if got := resolveConfiguredPythonPath("project", filepath.Join("envs", "py", "bin", "python")); !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.Join("project", "envs", "py", "bin", "python")) {
 		t.Fatalf("relative cwd must absolutize: %q", got)
 	}
 }
@@ -113,7 +136,7 @@ func TestResolveConfiguredMissingNoFallback(t *testing.T) {
 
 func TestResolveConfiguredPython2NoFallback(t *testing.T) {
 	deps := testPythonDeps()
-	configured := filepath.FromSlash("/opt/python2/bin/python")
+	configured := pythonTestAbs(t, "opt", "python2", "bin", "python")
 	deps.Configured = configured
 	deps.IsFile = func(s string) bool { return s == configured }
 	probes := 0
@@ -138,13 +161,14 @@ func TestResolveConfiguredPython2NoFallback(t *testing.T) {
 }
 
 func TestResolveVirtualEnvCandidateConstruction(t *testing.T) {
-	if got := pythonVenvCandidate("/s", "/opt/venv", "linux"); got != filepath.FromSlash("/opt/venv/bin/python") {
+	venvRoot := pythonTestAbs(t, "opt", "venv")
+	if got := pythonVenvCandidate(pythonTestAbs(t, "s"), venvRoot, "linux"); got != filepath.Join(venvRoot, "bin", "python") {
 		t.Fatalf("unix = %q", got)
 	}
-	if got := pythonVenvCandidate("/s", "/opt/venv", "windows"); got != filepath.Join(filepath.FromSlash("/opt/venv"), "Scripts", "python.exe") {
+	if got := pythonVenvCandidate(pythonTestAbs(t, "s"), venvRoot, "windows"); got != filepath.Join(venvRoot, "Scripts", "python.exe") {
 		t.Fatalf("windows = %q", got)
 	}
-	if got := pythonVenvCandidate("/s cwd", "rel env", "linux"); got != filepath.Join(filepath.FromSlash("/s cwd"), filepath.FromSlash("rel env/bin/python")) {
+	if got := pythonVenvCandidate(filepath.Join(volName(t), "s cwd"), "rel env", "linux"); got != filepath.Join(volName(t), "s cwd", "rel env", "bin", "python") {
 		t.Fatalf("relative root with spaces = %q", got)
 	}
 }
@@ -183,8 +207,11 @@ func TestResolveLocalVenvInvalidReported(t *testing.T) {
 
 func TestResolvePathFallbackPython2ThenPython3(t *testing.T) {
 	deps := testPythonDeps()
-	py3 := filepath.FromSlash("/usr/bin/python3")
-	py := filepath.FromSlash("/usr/bin/python")
+	// Absolute LookPath fixtures: a rooted Unix-style path is not
+	// absolute on Windows, where Abs would prepend the drive's CWD.
+	dir := t.TempDir()
+	py3 := filepath.Join(dir, "python3")
+	py := filepath.Join(dir, "python")
 	deps.LookPath = func(name string) (string, error) {
 		if name == "python3" {
 			return py3, nil
