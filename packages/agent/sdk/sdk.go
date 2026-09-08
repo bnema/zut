@@ -78,8 +78,8 @@ type Config struct {
 	BaseURL string
 
 	// Tools is the list of tools to enable. Nil/empty enables the ordinary
-	// built-ins: read, write, edit, bash, create_worktree, grep, lsp, update_goal,
-	// and update_plan. The public-web capability is excluded unless this list
+	// built-ins: read, write, edit, bash, python, create_worktree, grep, lsp,
+	// update_goal, and update_plan. The public-web capability is excluded unless this list
 	// explicitly contains "web_search"; that selector enables web_search,
 	// web_open, web_find, and web_click. Pass NoTools=true to disable everything.
 	Tools []string

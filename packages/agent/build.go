@@ -123,7 +123,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.UpdatePlanToolName {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "python" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.UpdatePlanToolName {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -858,6 +858,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(false)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
+	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
 
@@ -1309,6 +1310,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.PythonTool:
+			v.Sandbox = s
 		case *tools.CreateWorktreeTool:
 			v.Sandbox = s
 		case *tools.LSPTool:
@@ -1396,6 +1399,35 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	return reg
 }
 
+// pythonToolAllowed reports whether the python tool belongs in a registry
+// built for args. Python requires the absence of a packaged-agent
+// PermissionSet and either no explicit tool selection (the omitted --tools
+// default) or explicit inclusion of "python" in a nonempty list. An
+// explicitly empty selection enables no Python even though other built-in
+// tools retain their historical empty-list behavior.
+func pythonToolAllowed(args Args) bool {
+	if args.NoTools || args.PermissionSet != nil {
+		return false
+	}
+	if len(args.Tools) == 0 {
+		return !args.ToolsSet
+	}
+	return toolListContains(args.Tools, "python")
+}
+
+// maybeAddPythonTool registers the python tool with its configured
+// interpreter. Kept outside buildToolRegistry so that helper's signature
+// stays unchanged; the interpreter stays available across rebuilds because
+// Resolve threads the persisted config value on every call. An unavailable
+// interpreter never blocks startup: resolution is lazy and failures surface
+// as actionable tool errors on invocation.
+func maybeAddPythonTool(reg core.Registry, args Args, cwd string, sandbox *tools.Sandbox, interpreter string) {
+	if reg == nil || !pythonToolAllowed(args) {
+		return
+	}
+	reg["python"] = &tools.PythonTool{CWD: cwd, Sandbox: sandbox, Interpreter: interpreter}
+}
+
 func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) bool {
 	if len(args.Tools) == 0 {
 		return true
@@ -1464,7 +1496,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "python", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

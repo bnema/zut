@@ -176,6 +176,13 @@ type Config struct {
 	// (default) and "below_input".
 	TUIWorkingPosition string `json:"tui_working_position,omitempty"`
 
+	// PythonInterpreter selects the Python 3 executable for the python tool.
+	// It is one executable path, not a command line: absolute paths are used
+	// directly, relative paths resolve against the session working directory.
+	// Empty means automatic discovery (VIRTUAL_ENV, ./.venv, then PATH).
+	// Zut never installs Python or packages; the environment must exist.
+	PythonInterpreter string `json:"python_interpreter,omitempty"`
+
 	// Insecure skips TLS verification for custom inference endpoints.
 	Insecure bool `json:"insecure,omitempty"`
 
