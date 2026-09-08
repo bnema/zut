@@ -1155,7 +1155,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		case provider.EventDone:
 			stop = e.Stop
 			finalErr = e.Err
-			finalMsg = e.Message
+			finalMsg = provider.WithMessageOrigin(e.Message, a.Client.Name(), req.Model)
 			return true
 		}
 		return false

@@ -205,7 +205,7 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 			}
 			out.Contents = append(out.Contents, gemContent{Role: "user", Parts: parts})
 		case RoleAssistant:
-			parts := convertGemAssistantParts(msg.Content, functionsEnabled)
+			parts := convertGemAssistantParts(replayContent(msg, c.Name(), req.Model), functionsEnabled)
 			if len(parts) == 0 {
 				continue
 			}

@@ -355,7 +355,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			// is enabled. Blocks without encrypted content are omitted:
 			// an ID or summary alone is not a self-contained reasoning
 			// item while store is false. See reasoningForReplay.
-			for _, c := range msg.Content {
+			for _, c := range replayContent(msg, providerName, req.Model) {
 				switch v := c.(type) {
 				case ReasoningBlock:
 					item, ok := reasoningForReplay(v)
@@ -445,6 +445,14 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 func reasoningForReplay(block ReasoningBlock) (codexReasoningItem, bool) {
 	if block.Encrypted == "" {
 		return codexReasoningItem{}, false
+	}
+	// Gateway composite IDs and other providers' signatures are not native
+	// Responses items. Never rewrite an opaque ID to make it look valid.
+	for _, ch := range block.ID {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
+			return codexReasoningItem{}, false
+		}
 	}
 	item := codexReasoningItem{
 		Type:             "reasoning",

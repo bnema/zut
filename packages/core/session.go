@@ -425,7 +425,10 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 				snapshot.Title = row.meta.Title
 			}
 		case "message":
-			snapshot.Messages = append(snapshot.Messages, *row.message)
+			// Metadata rows record the route active when each turn was written,
+			// not just the route selected at the end of the session.
+			msg := provider.WithMessageOrigin(*row.message, snapshot.Meta.Provider, snapshot.Meta.Model)
+			snapshot.Messages = append(snapshot.Messages, msg)
 		case "compaction":
 			snapshot.Messages = row.messages
 			generation++

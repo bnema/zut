@@ -258,7 +258,9 @@ When a Responses completion carries an explicit `end_turn:false`, zut treats the
 
 ### Responses reasoning replay
 
-Responses requests run with `store:false`, so follow-up requests replay reasoning explicitly. Only reasoning blocks that carry a replayable encrypted payload are sent; reasoning metadata without that payload is omitted from outgoing requests without editing session history. Opaque reasoning payloads are not guaranteed portable across providers or models.
+You can switch models or providers within the same session. Assistant text and tool exchanges remain available; encrypted reasoning and thought signatures from a different provider or model are omitted from outgoing requests without editing session history. Switching back allows the matching model to replay its own metadata.
+
+Responses requests run with `store:false`, so only reasoning blocks with an encrypted payload and a valid Responses item ID (when present) are replayed. Session loading recovers message provenance from the provider/model metadata recorded alongside turns. Older compacted messages without provenance retain best-effort replay; malformed reasoning IDs are omitted.
 
 ## Local llama.cpp router
 
