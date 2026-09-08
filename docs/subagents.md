@@ -32,9 +32,12 @@ Inspect the requested scope and report evidence-backed findings.
 
 `tools` is a capability boundary. An omitted value inherits the child-safe
 catalogue, `tools: []` grants no tools, and an explicit list replaces the
-default. Names unavailable to the child (including host-only extensions) and
-tools denied by `subagents.allowed_tools` are omitted from an explicit list;
-they never grant the child additional access. `model`, `provider`, `thinking`,
+default. The child-safe catalogue contains only tools offered by the parent
+that are also available in the resolved child runtime; parent-only scheduling
+and extension tools are never inherited. Names unavailable to the child
+(including host-only extensions) and tools denied by `subagents.allowed_tools`
+are omitted from an explicit list; they never grant the child additional
+access. `model`, `provider`, `thinking`,
 the prompt mode, project/skill inheritance, and `fastMode` are resolved before
 the child is accepted. Spawn-level model, provider, reasoning, and fast-mode
 values take precedence where supplied.
