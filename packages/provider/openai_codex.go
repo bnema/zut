@@ -449,8 +449,11 @@ func reasoningForReplay(block ReasoningBlock) (codexReasoningItem, bool) {
 	// Gateway composite IDs and other providers' signatures are not native
 	// Responses items. Never rewrite an opaque ID to make it look valid.
 	for _, ch := range block.ID {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z',
+			ch >= '0' && ch <= '9', ch == '_', ch == '-':
+			// Responses item IDs use ASCII letters, digits, underscores, or dashes.
+		default:
 			return codexReasoningItem{}, false
 		}
 	}

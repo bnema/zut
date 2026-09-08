@@ -31,9 +31,10 @@ const geminiDefaultBaseURL = "https://generativelanguage.googleapis.com"
 
 // geminiClient implements Client against the Gemini Generative Language API.
 type geminiClient struct {
-	apiKey  string
-	baseURL string
-	http    *http.Client
+	providerName string
+	apiKey       string
+	baseURL      string
+	http         *http.Client
 }
 
 // NewGemini creates a Gemini client using an AI Studio API key.
@@ -49,7 +50,12 @@ func NewGemini(apiKey, baseURL string) Client {
 	}
 }
 
-func (c *geminiClient) Name() string { return "google" }
+func (c *geminiClient) Name() string {
+	if c.providerName != "" {
+		return c.providerName
+	}
+	return "google"
+}
 
 // ---- wire types ----
 //
@@ -523,7 +529,7 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer resp.Body.Close()
 
 	model, _ := FindModel("google", req.Model)
-	out <- EventStart{Model: req.Model, Provider: "google"}
+	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)
 	go readSSE(resp.Body, raw)

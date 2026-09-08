@@ -8,7 +8,8 @@ import (
 )
 
 func TestSessionMessageOriginsAcrossSwitch(t *testing.T) {
-	session, err := NewSession(t.TempDir(), t.TempDir(), "opencode", "model-a", "test")
+	root, cwd := t.TempDir(), t.TempDir()
+	session, err := NewSession(root, cwd, "opencode", "model-a", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +45,21 @@ func TestSessionMessageOriginsAcrossSwitch(t *testing.T) {
 	}
 	if snapshot.Messages[0].Meta["provider"] != "opencode" || snapshot.Messages[1].Meta["model"] != "model-b" {
 		t.Fatalf("compaction lost origins: %+v", snapshot.Messages)
+	}
+	history, err := ReadSessionHistory(session.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchPath, err := BranchSessionHiddenFromHistory(session.Path, root, cwd, "test", history.Segments[0], len(history.Segments[0].Messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := ReadSessionSnapshot(branchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branch.Messages) != 2 || branch.Messages[0].Meta["provider"] != "opencode" || branch.Messages[0].Meta["model"] != "model-a" || branch.Messages[1].Meta["provider"] != "openai-codex" || branch.Messages[1].Meta["model"] != "model-b" {
+		t.Fatalf("historical branch lost origins: %+v", branch.Messages)
 	}
 }
 

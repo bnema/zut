@@ -919,7 +919,17 @@ func compactionTailIndices(segments []core.SessionHistorySegment, segmentIdx int
 		maxTail = len(previous)
 	}
 	for tailLen := maxTail; tailLen > 0; tailLen-- {
-		if !reflect.DeepEqual(previous[len(previous)-tailLen:], current[1:1+tailLen]) {
+		matched := true
+		for idx, prior := range previous[len(previous)-tailLen:] {
+			// Historical rows can recover provenance that an older compaction
+			// tail did not persist. Compare with only missing origin filled.
+			next := provider.WithMessageOrigin(current[1+idx], prior.Meta["provider"], prior.Meta["model"])
+			if !reflect.DeepEqual(prior, next) {
+				matched = false
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		skip := make(map[int]bool, tailLen)

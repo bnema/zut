@@ -346,14 +346,15 @@ func NewVertex(_ string, _ string) Client {
 		baseHost = cfg.location + "-aiplatform.googleapis.com"
 	}
 	inner := &geminiClient{
-		apiKey:  "vertex-placeholder", // overwritten by transport
-		baseURL: "https://" + baseHost,
+		providerName: "google-vertex",
+		apiKey:       "vertex-placeholder", // overwritten by transport
+		baseURL:      "https://" + baseHost,
 		http: &http.Client{
 			Transport: &vertexTransport{inner: http.DefaultTransport, cfg: cfg},
 			Timeout:   0,
 		},
 	}
-	// Wrap so Name() reports "google-vertex" instead of "google".
+	// Keep the public wrapper and wire client on the same provider identity.
 	return &renamedClient{inner: inner, name: "google-vertex"}
 }
 

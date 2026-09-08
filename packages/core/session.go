@@ -552,7 +552,8 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 		case "meta":
 			history.Meta = *row.meta
 		case "message":
-			current.messages = append(current.messages, *row.message)
+			msg := provider.WithMessageOrigin(*row.message, history.Meta.Provider, history.Meta.Model)
+			current.messages = append(current.messages, msg)
 		case "compaction":
 			appendCurrent()
 			current = rawSegment{compacted: true, messages: row.messages}
