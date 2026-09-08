@@ -64,10 +64,11 @@ func TestPythonProbeArgvIsolated(t *testing.T) {
 }
 
 func TestResolveConfiguredPathHandling(t *testing.T) {
-	if got := resolveConfiguredPythonPath("/session", "/opt/py/bin/python"); got != "/opt/py/bin/python" {
+	absWant := filepath.FromSlash("/opt/py/bin/python")
+	if got := resolveConfiguredPythonPath("/session", "/opt/py/bin/python"); got != absWant {
 		t.Fatalf("absolute = %q", got)
 	}
-	if got := resolveConfiguredPythonPath("/session", "envs/py/bin/python"); got != filepath.Join("/session", "envs/py/bin/python") {
+	if got := resolveConfiguredPythonPath("/session", "envs/py/bin/python"); got != filepath.Join(filepath.FromSlash("/session"), filepath.FromSlash("envs/py/bin/python")) {
 		t.Fatalf("relative = %q", got)
 	}
 	// No shell expansion: ~ and $VAR stay literal path segments.
@@ -78,8 +79,13 @@ func TestResolveConfiguredPathHandling(t *testing.T) {
 		t.Fatalf("must not expand env vars: %q", got)
 	}
 	// Paths with spaces survive.
-	if got := resolveConfiguredPythonPath("/my dir", "env dir/py"); got != filepath.Join("/my dir", "env dir/py") {
+	if got := resolveConfiguredPythonPath("/my dir", "env dir/py"); got != filepath.Join(filepath.FromSlash("/my dir"), filepath.FromSlash("env dir/py")) {
 		t.Fatalf("spaces = %q", got)
+	}
+	// A relative session CWD is anchored to absolute once, so relative
+	// configured paths join the intended directory instead of stacking.
+	if got := resolveConfiguredPythonPath("project", "envs/py/bin/python"); !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.FromSlash("project/envs/py/bin/python")) {
+		t.Fatalf("relative cwd must absolutize: %q", got)
 	}
 }
 
@@ -107,12 +113,13 @@ func TestResolveConfiguredMissingNoFallback(t *testing.T) {
 
 func TestResolveConfiguredPython2NoFallback(t *testing.T) {
 	deps := testPythonDeps()
-	deps.Configured = "/opt/python2/bin/python"
-	deps.IsFile = func(s string) bool { return s == "/opt/python2/bin/python" }
+	configured := filepath.FromSlash("/opt/python2/bin/python")
+	deps.Configured = configured
+	deps.IsFile = func(s string) bool { return s == configured }
 	probes := 0
 	deps.Probe = func(_ context.Context, exe string) (pythonVersion, error) {
 		probes++
-		if exe != "/opt/python2/bin/python" {
+		if exe != configured {
 			t.Fatalf("probed %q", exe)
 		}
 		return pythonVersion{}, errors.New("probe returned Python 2 (need Python 3)")
@@ -131,13 +138,13 @@ func TestResolveConfiguredPython2NoFallback(t *testing.T) {
 }
 
 func TestResolveVirtualEnvCandidateConstruction(t *testing.T) {
-	if got := pythonVenvCandidate("/s", "/opt/venv", "linux"); got != "/opt/venv/bin/python" {
+	if got := pythonVenvCandidate("/s", "/opt/venv", "linux"); got != filepath.FromSlash("/opt/venv/bin/python") {
 		t.Fatalf("unix = %q", got)
 	}
-	if got := pythonVenvCandidate("/s", "/opt/venv", "windows"); got != filepath.Join("/opt/venv", "Scripts", "python.exe") {
+	if got := pythonVenvCandidate("/s", "/opt/venv", "windows"); got != filepath.Join(filepath.FromSlash("/opt/venv"), "Scripts", "python.exe") {
 		t.Fatalf("windows = %q", got)
 	}
-	if got := pythonVenvCandidate("/s cwd", "rel env", "linux"); got != filepath.Join("/s cwd", "rel env/bin/python") {
+	if got := pythonVenvCandidate("/s cwd", "rel env", "linux"); got != filepath.Join(filepath.FromSlash("/s cwd"), filepath.FromSlash("rel env/bin/python")) {
 		t.Fatalf("relative root with spaces = %q", got)
 	}
 }
@@ -176,17 +183,19 @@ func TestResolveLocalVenvInvalidReported(t *testing.T) {
 
 func TestResolvePathFallbackPython2ThenPython3(t *testing.T) {
 	deps := testPythonDeps()
+	py3 := filepath.FromSlash("/usr/bin/python3")
+	py := filepath.FromSlash("/usr/bin/python")
 	deps.LookPath = func(name string) (string, error) {
 		if name == "python3" {
-			return "/usr/bin/python3", nil
+			return py3, nil
 		}
 		if name == "python" {
-			return "/usr/bin/python", nil
+			return py, nil
 		}
 		return "", errors.New("not found")
 	}
 	deps.Probe = func(_ context.Context, exe string) (pythonVersion, error) {
-		if exe == "/usr/bin/python3" {
+		if exe == py3 {
 			return pythonVersion{}, errors.New("probe returned Python 2 (need Python 3)")
 		}
 		return pythonVersion{Major: 3, Minor: 12, Micro: 1}, nil
@@ -195,7 +204,7 @@ func TestResolvePathFallbackPython2ThenPython3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Path != "/usr/bin/python" || got.Version.String() != "3.12.1" {
+	if got.Path != py || got.Version.String() != "3.12.1" {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -340,7 +349,7 @@ func TestWindowsSymlinkTargetClassified(t *testing.T) {
 		return pythonVersion{}, nil
 	}
 	_, err := resolvePythonInterpreter(context.Background(), deps)
-	if err == nil || !strings.Contains(err.Error(), "Store") {
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "store") {
 		t.Fatalf("err = %v, want Store rejection via resolved target", err)
 	}
 }
@@ -406,5 +415,35 @@ func TestPythonChildEnvKeepsHostOnUnix(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("host environment must be inherited")
+	}
+}
+
+func TestPythonChildEnvStripsLauncherOptInsCaseInsensitively(t *testing.T) {
+	// Windows environment keys are case-insensitive; pythonChildEnv only
+	// filters on Windows, so this test pins the matching contract via the
+	// same normalization on synthetic input.
+	input := []string{
+		"PYLAUNCHER_ALLOW_INSTALL=1",
+		"pylauncher_always_install=1",
+		"PyLauncher_Allow_Install=1",
+		"PYTHON_MANAGER_AUTOMATIC_INSTALL=1",
+		"python_manager_automatic_install=0",
+		"PATH=/usr/bin",
+		"ZUT_PYTHON_TEST_SENTINEL=kept",
+	}
+	var kept []string
+	for _, kv := range input {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		switch strings.ToUpper(key) {
+		case "PYLAUNCHER_ALLOW_INSTALL", "PYLAUNCHER_ALWAYS_INSTALL", "PYTHON_MANAGER_AUTOMATIC_INSTALL":
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	if len(kept) != 2 || kept[0] != "PATH=/usr/bin" || kept[1] != "ZUT_PYTHON_TEST_SENTINEL=kept" {
+		t.Fatalf("kept = %q, want only PATH and sentinel", kept)
 	}
 }

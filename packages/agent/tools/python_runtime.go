@@ -133,25 +133,35 @@ func (d *pythonResolveDeps) layoutOK(exe string) bool {
 
 // resolveConfiguredPythonPath maps a configured python_interpreter value to
 // a filesystem path. Absolute paths are used directly; relative paths
-// resolve against the session CWD. No PATH lookup, no shell expansion.
+// resolve against the session CWD, which is anchored to absolute first so
+// a relative --cwd cannot stack (project/project/...). No PATH lookup, no
+// shell expansion.
 func resolveConfiguredPythonPath(cwd, configured string) string {
 	if filepath.IsAbs(configured) {
 		return filepath.Clean(configured)
 	}
+	cwd = absPythonCWD(cwd)
+	return filepath.Join(cwd, filepath.FromSlash(configured))
+}
+
+// absPythonCWD anchors the session CWD to absolute once. Resolution and
+// execution both chdir into the session CWD, so every constructed
+// candidate must survive that chdir.
+func absPythonCWD(cwd string) string {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	return filepath.Join(cwd, filepath.FromSlash(configured))
+	if abs, err := filepath.Abs(cwd); err == nil {
+		return abs
+	}
+	return cwd
 }
 
 // pythonVenvCandidate builds the interpreter path inside an environment
 // root. Relative roots resolve against the session CWD.
 func pythonVenvCandidate(cwd, root, goos string) string {
 	if !filepath.IsAbs(root) {
-		if cwd == "" {
-			cwd, _ = os.Getwd()
-		}
-		root = filepath.Join(cwd, filepath.FromSlash(root))
+		root = filepath.Join(absPythonCWD(cwd), filepath.FromSlash(root))
 	}
 	if goos == "windows" {
 		return filepath.Join(root, "Scripts", "python.exe")
@@ -162,10 +172,7 @@ func pythonVenvCandidate(cwd, root, goos string) string {
 // resolvePythonInterpreter implements the specified priority order.
 func resolvePythonInterpreter(ctx context.Context, deps pythonResolveDeps) (resolvedPython, error) {
 	goos := deps.goos()
-	cwd := deps.CWD
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
+	cwd := absPythonCWD(deps.CWD)
 
 	if err := ctx.Err(); err != nil {
 		return resolvedPython{}, err
@@ -274,7 +281,7 @@ func classifyWindowsCandidate(exe string, deps *pythonResolveDeps) error {
 	}
 	lowerTarget := strings.ToLower(strings.ReplaceAll(target, "\\", "/"))
 	if strings.Contains(lowerTarget, "/windowsapps/") || strings.Contains(lowerTarget, "windowsapps") && strings.Contains(lowerTarget, "microsoft") {
-		return fmt.Errorf("Windows Store / app-execution alias is not supported")
+		return fmt.Errorf("windows Store alias is not supported")
 	}
 	// filepath.Base is separator-sensitive to the host OS, so extract the
 	// basename manually: test fixtures use Windows paths on Unix hosts.
@@ -284,12 +291,12 @@ func classifyWindowsCandidate(exe string, deps *pythonResolveDeps) error {
 	}
 	switch base {
 	case "py.exe", "pyw.exe", "pylauncher.exe":
-		return fmt.Errorf("Python launcher %q is not supported; execute an installed interpreter directly", base)
+		return fmt.Errorf("python launcher %q is not supported; execute an installed interpreter directly", base)
 	case "pymanager.exe", "python-manager.exe", "python-install-manager.exe", "install-manager.exe", "installmanager.exe":
-		return fmt.Errorf("Python install manager %q is not supported", base)
+		return fmt.Errorf("python install manager %q is not supported (named entrypoint)", base)
 	}
 	if strings.Contains(base, "manager") && (strings.Contains(base, "python") || strings.Contains(base, "py") || strings.Contains(base, "install")) {
-		return fmt.Errorf("Python install manager %q is not supported", base)
+		return fmt.Errorf("python install manager %q is not supported (heuristic)", base)
 	}
 	if !deps.layoutOK(exe) && !deps.layoutOK(target) {
 		return fmt.Errorf("unverifiable interpreter wrapper %q is not supported", exe)
@@ -345,7 +352,9 @@ func probePythonVersion(ctx context.Context, exe string) (pythonVersion, error) 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{W: &stdout, N: maxPythonProbeOutput}
 	cmd.Stderr = &limitedWriter{W: &stderr, N: maxPythonProbeOutput}
-	closeOutput := configurePythonProcess(cmd, nil)
+	// Probes only surface terminal failures; a failed process-group kill
+	// is folded into the probe error by Wait, so no cancel capture here.
+	closeOutput := configurePythonProcess(cmd, nil, nil)
 	defer closeOutput()
 	if err := cmd.Start(); err != nil {
 		return pythonVersion{}, fmt.Errorf("probe start: %w", err)
@@ -395,8 +404,10 @@ func pythonChildEnv() []string {
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			key = kv[:i]
 		}
-		switch key {
-		case "PYLAUNCHER_ALLOW_INSTALL", "PYLAUNCHER_ALWAYS_INSTALL":
+		// Windows environment keys are case-insensitive: normalize before
+		// comparing so lowercase launcher opt-ins cannot survive.
+		switch strings.ToUpper(key) {
+		case "PYLAUNCHER_ALLOW_INSTALL", "PYLAUNCHER_ALWAYS_INSTALL", "PYTHON_MANAGER_AUTOMATIC_INSTALL":
 			continue
 		}
 		out = append(out, kv)

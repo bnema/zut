@@ -85,15 +85,24 @@ func TestPythonTimeoutBoundsReturn(t *testing.T) {
 
 func TestPythonDescendantCannotRetainPipe(t *testing.T) {
 	// A background grandchild inherits the output pipe. Process-group kill
-	// plus pipe closing must still bound the return.
+	// plus pipe closing must still bound the return, and the successful
+	// interpreter exit must not be misreported as an execution failure.
 	exe := writeFakeInterpreter(t, "(sleep 30 &)\ncat >/dev/null\necho quick")
 	start := time.Now()
-	text, _, _ := execPythonWith(t, exe, "x", 5, nil)
+	// Generous timeout: the interpreter exits immediately, so WaitDelay
+	// expiry (not the invocation deadline) bounds the return.
+	text, isErr, _ := execPythonWith(t, exe, "x", 30, nil)
 	elapsed := time.Since(start)
 	if !strings.Contains(text, "quick") {
 		t.Fatalf("got:\n%s", text)
 	}
-	if elapsed > 15*time.Second {
+	if isErr {
+		t.Fatalf("detached descendant must not turn exit 0 into an error:\n%s", text)
+	}
+	if !strings.Contains(text, "[exit 0]") {
+		t.Fatalf("want successful interpreter exit, got:\n%s", text)
+	}
+	if elapsed > 25*time.Second {
 		t.Fatalf("return took %s; descendant retained the pipe", elapsed)
 	}
 }

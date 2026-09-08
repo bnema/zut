@@ -83,9 +83,15 @@ func TestPythonRejectsInvalidArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := tool.Execute(context.Background(), tc.raw, nil)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want %q", err, tc.want)
+			res, err := tool.Execute(context.Background(), tc.raw, nil)
+			if err != nil {
+				t.Fatalf("err = %v, want model-visible IsError result", err)
+			}
+			if !res.IsError {
+				t.Fatal("want IsError for invalid args")
+			}
+			if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, tc.want) {
+				t.Fatalf("got %q want %q", got, tc.want)
 			}
 		})
 	}
@@ -110,13 +116,27 @@ func TestPythonDeniedNeverResolves(t *testing.T) {
 	}
 	jailed := NewSandbox("/session")
 	jailed.Lock()
-	if _, err := mk(jailed).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil); err == nil || !strings.Contains(err.Error(), "cannot be confined") {
-		t.Fatalf("jail err = %v", err)
+	res, err := mk(jailed).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
+	if err != nil {
+		t.Fatalf("jail err = %v, want model-visible IsError result", err)
+	}
+	if !res.IsError {
+		t.Fatal("want IsError for jailed execution")
+	}
+	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "cannot be confined") {
+		t.Fatalf("jail result = %q", got)
 	}
 	restricted := NewSandbox("/session")
 	restricted.SetPermissions(&PermissionSet{})
-	if _, err := mk(restricted).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil); err == nil || !strings.Contains(err.Error(), "permission denied") {
-		t.Fatalf("permission err = %v", err)
+	res, err = mk(restricted).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
+	if err != nil {
+		t.Fatalf("permission err = %v, want model-visible IsError result", err)
+	}
+	if !res.IsError {
+		t.Fatal("want IsError for permission-denied execution")
+	}
+	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "permission denied") {
+		t.Fatalf("permission result = %q", got)
 	}
 	if resolveCalls != 0 || execCalls != 0 {
 		t.Fatalf("denied calls must never resolve or execute (resolve=%d exec=%d)", resolveCalls, execCalls)
@@ -134,9 +154,16 @@ func TestPythonMissingInterpreterActionable(t *testing.T) {
 			return pythonExecOutcome{}, nil
 		},
 	}
-	_, err := tool.Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
-	if err == nil || !strings.Contains(err.Error(), "existing Python 3") || !strings.Contains(err.Error(), "never installs") {
-		t.Fatalf("err = %v, want actionable guidance", err)
+	res, err := tool.Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
+	if err != nil {
+		t.Fatalf("err = %v, want model-visible IsError result", err)
+	}
+	if !res.IsError {
+		t.Fatal("want IsError for missing interpreter")
+	}
+	got := res.Content[0].(provider.TextBlock).Text
+	if !strings.Contains(got, "existing Python 3") || !strings.Contains(got, "never installs") {
+		t.Fatalf("result = %q, want actionable guidance", got)
 	}
 }
 
@@ -192,11 +219,46 @@ func TestPythonFailureStatuses(t *testing.T) {
 	}
 }
 
+func TestPythonCancelErrorCapture(t *testing.T) {
+	var ce pythonCancelError
+	if err := ce.get(); err != nil {
+		t.Fatalf("empty capture = %v, want nil", err)
+	}
+	ce.set(errors.New("kill group: boom"))
+	if err := ce.get(); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("captured = %v, want kill error", err)
+	}
+	// A nil receiver must not panic: probes pass nil explicitly.
+	var nilCE *pythonCancelError
+	nilCE.set(errors.New("ignored"))
+	if err := nilCE.get(); err != nil {
+		t.Fatalf("nil capture = %v, want nil", err)
+	}
+}
+
 func TestPythonTruncationMarkedWithFullOutput(t *testing.T) {
 	interp := resolvedPython{Path: "/py", Version: pythonVersion{Major: 3, Minor: 1, Micro: 0}}
-	long := strings.Repeat("x\n", maxPythonLines+10)
-	tool := stubPythonTool(interp, nil, pythonExecOutcome{Captured: long, ExitCode: 0}, nil)
+	// Exactly maxPythonLines newline-terminated lines must not count as
+	// truncated: the trailing newline terminates the last line.
+	exact := strings.Repeat("x\n", maxPythonLines)
+	tool := stubPythonTool(interp, nil, pythonExecOutcome{Captured: exact, ExitCode: 0}, nil)
 	res, err := tool.Execute(context.Background(), pythonArgsJSON(t, "x", 5), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Content[0].(provider.TextBlock).Text; strings.Contains(got, "truncated at") {
+		t.Fatalf("exact line budget must not truncate:\n%s", got)
+	}
+	if res.Details.(map[string]any)["lines_truncated"] != false {
+		t.Fatalf("details = %#v", res.Details)
+	}
+	if path, _ := res.Details.(map[string]any)["full_output_path"].(string); path != "" {
+		t.Fatalf("untruncated result must not persist an artifact: %q", path)
+	}
+
+	long := strings.Repeat("x\n", maxPythonLines+10)
+	tool = stubPythonTool(interp, nil, pythonExecOutcome{Captured: long, ExitCode: 0}, nil)
+	res, err = tool.Execute(context.Background(), pythonArgsJSON(t, "x", 5), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

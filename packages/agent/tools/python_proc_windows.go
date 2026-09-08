@@ -28,8 +28,12 @@ const maxPythonKillOutput = 4 * 1024
 // configurePythonProcess makes context cancellation terminate the Python
 // process tree on Windows and closes the output pipe exactly once. Unlike
 // Bash's unbounded taskkill path, tree termination is bounded with a
-// direct-kill fallback.
-func configurePythonProcess(cmd *exec.Cmd, output io.Closer) func() {
+// direct-kill fallback. When cancelErr is non-nil, the termination error
+// from the Cancel callback is recorded there (guarded by its mutex):
+// Wait folds that error into its own process error, so without this
+// capture the cleanup detail is unreachable and a partial kill cannot
+// report surviving descendants.
+func configurePythonProcess(cmd *exec.Cmd, output io.Closer, cancelErr *pythonCancelError) func() {
 	if cmd != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
@@ -47,7 +51,11 @@ func configurePythonProcess(cmd *exec.Cmd, output io.Closer) func() {
 	if cmd != nil {
 		cmd.Cancel = func() error {
 			closePipe()
-			return killPythonProcessTree(cmd)
+			err := killPythonProcessTree(cmd)
+			if cancelErr != nil {
+				cancelErr.set(err)
+			}
+			return err
 		}
 	}
 	return closePipe

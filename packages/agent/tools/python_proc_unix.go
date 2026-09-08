@@ -17,8 +17,12 @@ const pythonProcessWaitDelay = 5 * time.Second
 
 // configurePythonProcess makes context cancellation terminate the Python
 // process group and closes the output pipe exactly once. It mirrors the
-// Bash Unix mechanics without touching Bash behavior.
-func configurePythonProcess(cmd *exec.Cmd, output io.Closer) func() {
+// Bash Unix mechanics without touching Bash behavior. When cancelErr is
+// non-nil, the termination error from the Cancel callback is recorded
+// there (guarded by its mutex): Wait folds that error into its own
+// process error, so without this capture the cleanup detail is
+// unreachable and a partial kill cannot report surviving descendants.
+func configurePythonProcess(cmd *exec.Cmd, output io.Closer, cancelErr *pythonCancelError) func() {
 	if cmd != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.WaitDelay = pythonProcessWaitDelay
@@ -34,7 +38,11 @@ func configurePythonProcess(cmd *exec.Cmd, output io.Closer) func() {
 	if cmd != nil {
 		cmd.Cancel = func() error {
 			closePipe()
-			return killPythonProcessGroup(cmd)
+			err := killPythonProcessGroup(cmd)
+			if cancelErr != nil {
+				cancelErr.set(err)
+			}
+			return err
 		}
 	}
 	return closePipe

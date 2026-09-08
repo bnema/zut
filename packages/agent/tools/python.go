@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
@@ -42,6 +43,32 @@ type PythonTool struct {
 	// execHook substitutes process execution in tests. Nil runs a real
 	// subprocess directly (no shell, no temp file).
 	execHook func(ctx context.Context, exe, code, cwd string, progress func(string)) (pythonExecOutcome, error)
+}
+
+// pythonCancelError carries the process-termination error from the
+// platform Cancel callback to the Wait site. Cancel runs on exec's
+// internal goroutine while Wait blocks, hence the mutex.
+type pythonCancelError struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (e *pythonCancelError) set(err error) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.err = err
+}
+
+func (e *pythonCancelError) get() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
 }
 
 // pythonExecOutcome is the raw result of one Python subprocess run.
@@ -86,25 +113,25 @@ func pythonExecArgv(exe string) []string {
 func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	var a pythonArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
-		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
+		return protocolToolError(fmt.Sprintf("invalid args: %v", err))
 	}
 	if strings.TrimSpace(a.Code) == "" {
-		return core.ToolResult{}, fmt.Errorf("code is required")
+		return protocolToolError("code is required")
 	}
 	if a.Timeout == nil {
-		return core.ToolResult{}, fmt.Errorf("timeout is required")
+		return protocolToolError("timeout is required")
 	}
 	timeout, err := pythonTimeoutDuration(*a.Timeout)
 	if err != nil {
-		return core.ToolResult{}, err
+		return protocolToolError(err.Error())
 	}
 	// Admission checks run before any interpreter discovery, so a denied
 	// call never probes the filesystem or spawns a process.
 	if t.Sandbox != nil && t.Sandbox.Permissions != nil {
-		return core.ToolResult{}, fmt.Errorf("permission denied: this agent cannot run python")
+		return protocolToolError("permission denied: this agent cannot run python")
 	}
 	if t.Sandbox.Locked() {
-		return core.ToolResult{}, fmt.Errorf("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
+		return protocolToolError("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
 	}
 	cwd := t.CWD
 	if cwd == "" {
@@ -117,7 +144,7 @@ func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress 
 
 	interp, err := t.resolve(runCtx, cwd)
 	if err != nil {
-		return core.ToolResult{}, err
+		return toolErr(err.Error()), nil
 	}
 
 	outcome, err := t.run(runCtx, ctx, interp.Path, a.Code, cwd, progress)
@@ -183,7 +210,12 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
-	closeOutput := configurePythonProcess(cmd, pw)
+	// The Cancel callback runs on exec's internal goroutine while Wait
+	// blocks here: capture its termination error under a mutex so a
+	// failed group/tree kill is reported as cleanup metadata instead of
+	// being folded into Wait's process error and lost.
+	var cancelErr pythonCancelError
+	closeOutput := configurePythonProcess(cmd, pw, &cancelErr)
 	defer closeOutput()
 
 	if err := cmd.Start(); err != nil {
@@ -225,11 +257,24 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 	if waitErr != nil {
 		if ee, ok := waitErr.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
+		} else if errors.Is(waitErr, exec.ErrWaitDelay) {
+			// The interpreter exited successfully but a detached
+			// descendant holds the output pipe: keep exit 0 and report
+			// the late cleanup as metadata instead of a failure.
+			outcome.CleanupErr = waitErr
 		} else {
 			exitCode = -1
 		}
 	}
 	outcome.ExitCode = exitCode
+	if err := cancelErr.get(); err != nil {
+		// Termination itself failed: descendants may still be running.
+		// Report it as cleanup metadata, never as an execution error
+		// when the interpreter already exited successfully.
+		if outcome.CleanupErr == nil {
+			outcome.CleanupErr = err
+		}
+	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
 		outcome.TimedOut = true
 	} else if parentCtx.Err() != nil || errors.Is(runCtx.Err(), context.Canceled) {
@@ -270,9 +315,13 @@ func writePythonFullOutput(s string) string {
 	return name
 }
 
-// truncatePythonLines bounds the line count of captured output.
+// truncatePythonLines bounds the logical line count of captured output.
+// A trailing newline does not create an extra line, matching grepOutput.
 func truncatePythonLines(output string) (trimmed string, truncLines bool) {
 	lines := strings.Split(output, "\n")
+	if strings.HasSuffix(output, "\n") && len(lines) > 0 {
+		lines = lines[:len(lines)-1]
+	}
 	if len(lines) > maxPythonLines {
 		return strings.Join(lines[:maxPythonLines], "\n"), true
 	}
@@ -280,8 +329,8 @@ func truncatePythonLines(output string) (trimmed string, truncLines bool) {
 }
 
 // formatPythonResult renders interpreter/version, captured output, and
-// exit/timeout/cancellation status. Truncation is marked explicitly; v1
-// provides no full-output artifact file. The caller supplies the
+// exit/timeout/cancellation status. Truncation is marked explicitly and
+// the caller persists the full output artifact. The caller supplies the
 // line-trimmed output so Details and text agree on lines_truncated.
 func formatPythonResult(interp resolvedPython, outcome pythonExecOutcome, trimmed string, timeoutSeconds int64) string {
 	var sb strings.Builder
