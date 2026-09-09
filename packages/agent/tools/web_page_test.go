@@ -254,6 +254,45 @@ func TestBrowsingStoreConcurrentAccess(t *testing.T) {
 	wait.Wait()
 }
 
+func TestWebOpenDirectURLUsesSameFetcherPolicy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>Direct</title></head><body><main><p>Direct page</p></main></body></html>`))
+	}))
+	defer server.Close()
+
+	store := NewBrowsingStore()
+	open := &WebOpenTool{store: store, fetcher: testWebFetcher(t, server)}
+
+	result, err := open.Execute(context.Background(), json.RawMessage(`{"url":"http://public.test/direct"}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("direct open result = %#v, err = %v", result, err)
+	}
+	text := result.Content[0].(provider.TextBlock).Text
+	if !strings.Contains(text, "Direct page") || !strings.Contains(text, "Page reference: web-") {
+		t.Fatalf("unexpected direct open output:\n%s", text)
+	}
+
+	preview, err := open.Preview(context.Background(), json.RawMessage(`{"url":"http://public.test/direct"}`))
+	if err != nil || preview.IsError || !strings.Contains(preview.Content[0].(provider.TextBlock).Text, "No request has been made.") {
+		t.Fatalf("direct preview = %#v, err = %v", preview, err)
+	}
+
+	for _, raw := range []string{
+		`{}`,
+		`{"ref_id":"web-1","url":"http://public.test/"}`,
+		`{"url":"ftp://public.test/"}`,
+		`{"url":"http://public.test/#frag"}`,
+		`{"url":"not-a-url"}`,
+		`{"url":"http://public.test/","line":0}`,
+	} {
+		result, err := open.Execute(context.Background(), json.RawMessage(raw), nil)
+		if err != nil || !result.IsError || result.Content[0].(provider.TextBlock).Text != webPageInvalid {
+			t.Fatalf("direct open %s = %#v, err = %v", raw, result, err)
+		}
+	}
+}
+
 func TestWebPageStoreGenerationAndSchemaFailures(t *testing.T) {
 	store := NewBrowsingStore()
 	retained := store.addSource("http://public.test/")
