@@ -194,6 +194,12 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {
 			i.lastCtxInput = contextUsed
 		}
+	case core.EvTurnRecovery:
+		// One bounded core continuation fired because the turn ended
+		// without a final answer. Surface it once so the extended work
+		// does not read as a stall. The inner continuation is owned by
+		// core, so no goal or scheduler follow-up is started here.
+		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Tool, "Continuing: no final answer received."))
 	case core.EvTurnEnd:
 		if e.Stop == provider.StopAborted {
 			i.resetStreamingStateLocked()

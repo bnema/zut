@@ -1735,6 +1735,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			Summary          string `json:"summary"`
 			Encrypted        string `json:"encrypted_content"`
 			ThoughtSignature string `json:"thought_signature"`
+			Phase            string `json:"phase"`
 			// ToolCallBlock also has Arguments, ToolResultBlock has Content + IsError
 		}
 		if err := json.Unmarshal(raw, &head); err != nil {
@@ -1827,6 +1828,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			msg.Content = append(msg.Content, provider.TextBlock{
 				Text:             head.Text,
 				ThoughtSignature: head.ThoughtSignature,
+				Phase:            head.Phase,
 			})
 		}
 	}

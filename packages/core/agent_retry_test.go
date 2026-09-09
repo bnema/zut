@@ -69,7 +69,10 @@ func (activeStreamClient) Name() string { return "active-stream" }
 func (activeStreamClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
 	out := make(chan provider.Event, 2)
 	out <- provider.EventStart{}
-	out <- provider.EventDone{Stop: provider.StopEnd}
+	out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: "streaming"}},
+	}}
 	close(out)
 	return out, nil
 }

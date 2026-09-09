@@ -35,9 +35,27 @@ type Content interface {
 type TextBlock struct {
 	Text             string `json:"text"`
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+	// Phase is the Responses output phase of assistant text, when the
+	// provider marks it. Recognized values are "commentary" (intermediate
+	// progress) and "final_answer". Empty and unrecognized values retain
+	// compatibility behavior; unrecognized values are preserved in storage
+	// but never interpreted or replayed as Responses phase values.
+	Phase string `json:"phase,omitempty"`
 }
 
 func (TextBlock) isContent() {}
+
+// Recognized TextBlock phase values from the Responses API.
+const (
+	TextPhaseCommentary = "commentary"
+	TextPhaseFinal      = "final_answer"
+)
+
+// IsRecognizedTextPhase reports whether phase is a Responses phase value
+// safe to interpret and replay on the wire.
+func IsRecognizedTextPhase(phase string) bool {
+	return phase == TextPhaseCommentary || phase == TextPhaseFinal
+}
 
 // ImageBlock is an inline image (PNG/JPEG/GIF/WebP).
 type ImageBlock struct {

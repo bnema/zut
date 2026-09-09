@@ -100,7 +100,10 @@ func (c *goalLengthClient) Stream(_ context.Context, req provider.Request) (<-ch
 			}
 		case 2:
 			out <- provider.EventTextDelta{Delta: "durable summary"}
-			out <- provider.EventDone{Stop: provider.StopEnd}
+			out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "durable summary"}},
+			}}
 		default:
 			if c.onThird != nil {
 				c.onThird()
@@ -532,7 +535,10 @@ func (c *thresholdAutoCompactClient) Stream(ctx context.Context, req provider.Re
 				out <- provider.EventDone{Stop: provider.StopAborted, Err: ctx.Err()}
 			case <-c.releaseCompaction:
 				out <- provider.EventTextDelta{Delta: "summary"}
-				out <- provider.EventDone{Stop: provider.StopEnd}
+				out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: "summary"}},
+				}}
 			}
 		default:
 			c.mu.Lock()
@@ -903,6 +909,9 @@ func TestThresholdAutoCompactionContinuesMostRecentIntent(t *testing.T) {
 		compactionStarted: make(chan struct{}),
 		releaseCompaction: make(chan struct{}),
 		followUpRequest:   make(chan provider.Request, 1),
+		firstContent: []provider.Content{
+			provider.TextBlock{Text: "Next I will inspect the remaining call sites."},
+		},
 	}
 	agent := core.NewAgent(client, "test-model", "", nil)
 	threshold := 70

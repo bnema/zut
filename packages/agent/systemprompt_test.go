@@ -64,8 +64,10 @@ func TestBuildSystemPromptAlwaysIncludesTaskAndSkillGuidance(t *testing.T) {
 			for _, want := range []string{
 				"Treat requests such as \"can you\" as instructions to do the requested work",
 				"do not stop at a plan or an offer to continue",
+				"Follow each progress statement with the action it describes",
+				"Final answers contain the result of the work or a concrete blocker",
 				"Respect requests for explanation, planning, or review without making unsolicited changes",
-				"Ask only when a missing decision blocks safe, correct progress",
+				"Ask only when a necessary decision blocks safe, correct progress",
 				"Preserve tool permissions, required confirmations, and explicit approval requirements",
 				"Explicit user instructions take precedence over skill guidelines",
 				"Skills do not grant permissions or override system or developer constraints",

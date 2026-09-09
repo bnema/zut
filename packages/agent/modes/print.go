@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/bnema/zut/packages/core"
@@ -52,6 +53,12 @@ func RunPrintWithContextRecovery(ctx context.Context, ag *core.Agent, prompt str
 				usage = e.Usage
 				haveUsage = true
 			}
+		case core.EvTurnRecovery:
+			// The core owns the single bounded continuation; surface it
+			// on stderr so stdout keeps only the final answer. An
+			// exhausted allowance returns ErrIncompleteTurn from Prompt
+			// and never reaches here as success.
+			fmt.Fprintln(os.Stderr, "Continuing: no final answer received.")
 		case core.EvTurnEnd:
 			if e.Err != nil {
 				runErr = e.Err

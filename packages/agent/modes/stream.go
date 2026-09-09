@@ -99,6 +99,10 @@ func RunStreamWithContextRecovery(ctx context.Context, ag *core.Agent, prompt st
 			if e.Result.IsError {
 				fmt.Fprintln(diag, "[tool error]")
 			}
+		case core.EvTurnRecovery:
+			// Assistant text stays on stdout; the recovery notice is a
+			// host diagnostic and belongs on the diag channel.
+			fmt.Fprintln(diag, "Continuing: no final answer received.")
 		case core.EvTurnEnd:
 			if e.Err != nil {
 				runErr = e.Err

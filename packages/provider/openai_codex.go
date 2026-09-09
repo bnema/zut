@@ -126,6 +126,7 @@ type codexOutputText struct {
 	Type        string `json:"type"` // "output_text"
 	Text        string `json:"text"`
 	Annotations []any  `json:"annotations"`
+	Phase       string `json:"phase,omitempty"`
 }
 
 type codexPromptCacheOptions struct {
@@ -368,14 +369,16 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 						continue
 					}
 					msgIdx++
+					out := codexOutputText{Type: "output_text", Text: v.Text, Annotations: []any{}}
+					if IsRecognizedTextPhase(v.Phase) {
+						out.Phase = v.Phase
+					}
 					body.Input = append(body.Input, codexOutputMessage{
-						Type:   "message",
-						Role:   "assistant",
-						Status: "completed",
-						ID:     fmt.Sprintf("msg_%d", msgIdx),
-						Content: []codexOutputText{
-							{Type: "output_text", Text: v.Text, Annotations: []any{}},
-						},
+						Type:    "message",
+						Role:    "assistant",
+						Status:  "completed",
+						ID:      fmt.Sprintf("msg_%d", msgIdx),
+						Content: []codexOutputText{out},
 					})
 				case ToolCallBlock:
 					args := string(v.Arguments)
@@ -474,6 +477,28 @@ func splitCallID(id string) (string, string) {
 		return id[:i], id[i+1:]
 	}
 	return id, ""
+}
+
+// messageItemPhase extracts the Responses message phase from either the
+// item-level phase field or the first nonempty phase on its output_text
+// content parts. The return is fill-only input for itemState.phase: empty
+// means absent, never a reason to erase an observed value. Unrecognized
+// values are preserved so storage stays faithful; IsRecognizedTextPhase
+// gates interpretation and replay.
+func messageItemPhase(itemPhase string, content []struct {
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+	Phase string `json:"phase"`
+}) string {
+	if itemPhase != "" {
+		return itemPhase
+	}
+	for _, part := range content {
+		if part.Phase != "" {
+			return part.Phase
+		}
+	}
+	return ""
 }
 
 const minOpenAIPromptCacheTokens = 1024
@@ -646,6 +671,11 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 		summary   strings.Builder
 		rawID     string
 		encrypted string
+		// phase is the Responses output phase observed for a message item.
+		// It is fill-only: an absent later field must never erase an
+		// observed value. Any observed value (including unrecognized ones)
+		// is retained in storage; only recognized values are replayed.
+		phase     string
 		announced bool
 	}
 	var (
@@ -663,7 +693,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 			switch it.kind {
 			case "message":
 				if it.textBuf.Len() > 0 {
-					content = append(content, TextBlock{Text: it.textBuf.String()})
+					content = append(content, TextBlock{Text: it.textBuf.String(), Phase: it.phase})
 				}
 			case "function_call":
 				args := it.argsBuf.String()
@@ -736,6 +766,12 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 					CallID           string `json:"call_id"`
 					Name             string `json:"name"`
 					EncryptedContent string `json:"encrypted_content"`
+					Phase            string `json:"phase"`
+					Content          []struct {
+						Type  string `json:"type"`
+						Text  string `json:"text"`
+						Phase string `json:"phase"`
+					} `json:"content"`
 				} `json:"item"`
 			}
 			_ = json.Unmarshal([]byte(ev.Data), &p)
@@ -743,6 +779,7 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 			switch p.Item.Type {
 			case "message":
 				it.kind = "message"
+				it.phase = messageItemPhase(p.Item.Phase, p.Item.Content)
 			case "function_call":
 				it.kind = "function_call"
 				it.callID = p.Item.CallID
@@ -798,7 +835,13 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 					Type             string `json:"type"`
 					ID               string `json:"id"`
 					EncryptedContent string `json:"encrypted_content"`
-					Summary          []struct {
+					Phase            string `json:"phase"`
+					Content          []struct {
+						Type  string `json:"type"`
+						Text  string `json:"text"`
+						Phase string `json:"phase"`
+					} `json:"content"`
+					Summary []struct {
 						Type string `json:"type"`
 						Text string `json:"text"`
 					} `json:"summary"`
@@ -809,6 +852,12 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 				switch it.kind {
 				case "function_call":
 					out <- EventToolEnd{ID: it.callID}
+				case "message":
+					// Fill-only: an absent phase on item-done must not
+					// erase a phase already observed on item-added.
+					if it.phase == "" {
+						it.phase = messageItemPhase(p.Item.Phase, p.Item.Content)
+					}
 				case "reasoning":
 					// Fill-only: earlier streamed payloads and summaries win
 					// over later duplicates from output_item.done.
@@ -849,7 +898,13 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 						Type             string `json:"type"`
 						ID               string `json:"id"`
 						EncryptedContent string `json:"encrypted_content"`
-						Summary          []struct {
+						Phase            string `json:"phase"`
+						Content          []struct {
+							Type  string `json:"type"`
+							Text  string `json:"text"`
+							Phase string `json:"phase"`
+						} `json:"content"`
+						Summary []struct {
 							Type string `json:"type"`
 							Text string `json:"text"`
 						} `json:"summary"`
@@ -861,13 +916,20 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 			// response output. Match by nonempty provider-issued item ID,
 			// never by output-array position. Fill a missing payload from
 			// a matching terminal item without overwriting an earlier
-			// payload or duplicating streamed summaries.
+			// payload or duplicating streamed summaries. Message phase is
+			// reconciled the same fill-only way, but by output-array
+			// position: terminal text content without a phase must not
+			// erase a phase observed during streaming.
 			if len(p.Response.Output) > 0 {
 				terminal := make(map[string]struct {
 					encrypted string
 					summary   string
 				}, len(p.Response.Output))
+				terminalPhases := make([]string, 0, len(p.Response.Output))
 				for _, out := range p.Response.Output {
+					if out.Type == "message" {
+						terminalPhases = append(terminalPhases, messageItemPhase(out.Phase, out.Content))
+					}
 					if out.Type != "reasoning" || out.ID == "" {
 						continue
 					}
@@ -903,6 +965,23 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 					if it.summary.Len() == 0 && match.summary != "" {
 						it.summary.WriteString(match.summary)
 					}
+				}
+				// Reconcile message phases by output-array position: the
+				// n-th terminal message corresponds to the n-th streamed
+				// message item. Fill only; never erase streamed phases.
+				pos := 0
+				for _, idx := range order {
+					it := items[idx]
+					if it == nil || it.kind != "message" {
+						continue
+					}
+					if pos >= len(terminalPhases) {
+						break
+					}
+					if it.phase == "" {
+						it.phase = terminalPhases[pos]
+					}
+					pos++
 				}
 			}
 			usage = normalizeOpenAIUsage(p.Response.Usage.InputTokens, p.Response.Usage.OutputTokens, p.Response.Usage.InputTokensDetails)

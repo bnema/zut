@@ -294,6 +294,8 @@ The resident manager enforces global fair concurrency (six turns by default), op
 
 When an initial print, stream, or JSON request exceeds the provider context window, zut compacts the existing transcript and continues the already-appended prompt once. Print still writes only the recovered final text, stream keeps assistant text on stdout and tool diagnostics on stderr, and JSON suppresses the recoverable first terminal error so stdout remains JSONL for the successful turn. A compaction failure or a second context-window error remains terminal; this is not a general autonomous-follow-up policy. The same one-shot recovery applies to resident child turns. It does not apply to RPC, SDK, bot, or Telegram requests.
 
+When a normal turn ends without a final answer (empty output, or commentary with no result), zut appends one bounded continuation and keeps working in the same turn. Interactive shows `Continuing: no final answer received.`; print writes only the recovered answer to stdout; stream keeps assistant text on stdout and the notice on stderr; JSON and RPC emit a `turn_recovery` event with `reason` (`missing_answer` or `commentary_only`) and `attempt` (always 1). If the continuation still produces no final answer, the turn ends with a visible incomplete-turn error instead of silent success. This does not guarantee task completion and does not override permissions, confirmations, or denials.
+
 ## zutfile agents
 
 A zutfile packages an agent's instructions, skills, requirements, and enforced tool permissions as a shareable agent. Run one from a local directory, a packed `.zut` artifact, a short name, or directly from a public GitHub repository:

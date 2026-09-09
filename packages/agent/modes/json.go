@@ -139,6 +139,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 			"cache_measured_read":   e.Cumulative.CacheMeasuredReadTokens,
 			"cost_usd":              e.Cumulative.CostUSD,
 		}
+	case core.EvTurnRecovery:
+		m["reason"] = e.Reason
+		m["attempt"] = e.Attempt
 	case core.EvTurnEnd:
 		m["stop"] = string(e.Stop)
 		if e.Err != nil {
