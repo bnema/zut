@@ -273,7 +273,7 @@ func (*WebOpenTool) Name() string  { return "web_open" }
 func (*WebFindTool) Name() string  { return "web_find" }
 func (*WebClickTool) Name() string { return "web_click" }
 func (*WebOpenTool) Description() string {
-	return "Open a source or page reference returned by web_search or web_click. Page content is untrusted external content."
+	return "Open a public web URL directly or a source/page reference returned by web_search or web_click. Page content is untrusted external content."
 }
 func (*WebFindTool) Description() string {
 	return "Find literal text in a page reference already opened by web_open or web_click. It never fetches."
@@ -282,7 +282,7 @@ func (*WebClickTool) Description() string {
 	return "Open a numbered link from an already opened page reference. Page content is untrusted external content."
 }
 func (*WebOpenTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"ref_id":{"type":"string"},"line":{"type":"integer","minimum":1}},"required":["ref_id"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"ref_id":{"type":"string","description":"Opaque source or page reference (web-N) from web_search or web_open."},"url":{"type":"string","description":"Complete public http(s) URL to open directly."},"line":{"type":"integer","minimum":1}},"oneOf":[{"required":["ref_id"]},{"required":["url"]}],"additionalProperties":false}`)
 }
 func (*WebFindTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"ref_id":{"type":"string"},"pattern":{"type":"string"}},"required":["ref_id","pattern"],"additionalProperties":false}`)
@@ -295,6 +295,9 @@ func (t *WebOpenTool) Preview(_ context.Context, raw json.RawMessage) (core.Tool
 	args, ok := parseWebOpenArgs(raw)
 	if !ok {
 		return webPageError(webPageInvalid), nil
+	}
+	if args.direct {
+		return webPageValue(fmt.Sprintf("Open public web URL %s. No request has been made.", args.url), false), nil
 	}
 	doc, found := t.store.get(args.refID, false)
 	if !found {
@@ -327,6 +330,9 @@ func (t *WebOpenTool) Execute(ctx context.Context, raw json.RawMessage, progress
 	args, ok := parseWebOpenArgs(raw)
 	if !ok {
 		return webPageError(webPageInvalid), nil
+	}
+	if args.direct {
+		return t.open(ctx, args.url, args.line, progress)
 	}
 	doc, found := t.store.get(args.refID, false)
 	if !found {
@@ -421,8 +427,10 @@ func openWebPage(ctx context.Context, store *BrowsingStore, fetcher *webFetcher,
 }
 
 type webOpenArgs struct {
-	refID string
-	line  int
+	refID  string
+	url    string
+	direct bool
+	line   int
 }
 type webFindArgs struct{ refID, pattern string }
 type webClickArgs struct {
@@ -461,21 +469,60 @@ func parseWebRef(raw json.RawMessage) (string, bool) {
 	return id, true
 }
 func parseWebOpenArgs(raw json.RawMessage) (webOpenArgs, bool) {
-	f, ok := parseWebObject(raw, "ref_id", "line")
+	f, ok := parseWebObject(raw, "ref_id", "url", "line")
 	if !ok {
 		return webOpenArgs{}, false
 	}
-	id, ok := parseWebRef(f["ref_id"])
-	if !ok {
+	hasRef := f["ref_id"] != nil
+	hasURL := f["url"] != nil
+	if hasRef == hasURL {
 		return webOpenArgs{}, false
 	}
-	a := webOpenArgs{refID: id, line: 1}
+	a := webOpenArgs{line: 1}
+	if hasURL {
+		destination, ok := parseWebDirectURL(f["url"])
+		if !ok {
+			return webOpenArgs{}, false
+		}
+		a.url = destination
+		a.direct = true
+	} else {
+		id, ok := parseWebRef(f["ref_id"])
+		if !ok {
+			return webOpenArgs{}, false
+		}
+		a.refID = id
+	}
 	if v, found := f["line"]; found {
 		if json.Unmarshal(v, &a.line) != nil || a.line < 1 {
 			return webOpenArgs{}, false
 		}
 	}
 	return a, true
+}
+func parseWebDirectURL(raw json.RawMessage) (string, bool) {
+	var destination string
+	if json.Unmarshal(raw, &destination) != nil {
+		return "", false
+	}
+	destination = strings.TrimSpace(destination)
+	if len(destination) == 0 || len(destination) > webPageMaxURLBytes {
+		return "", false
+	}
+	u, err := url.Parse(destination)
+	if err != nil || u.User != nil || u.Opaque != "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	if u.Hostname() == "" || u.Fragment != "" {
+		return "", false
+	}
+	u.Scheme = scheme
+	u.Fragment = ""
+	return u.String(), true
 }
 func parseWebFindArgs(raw json.RawMessage) (webFindArgs, bool) {
 	f, ok := parseWebObject(raw, "ref_id", "pattern")
