@@ -149,32 +149,60 @@ func TestGPT56UsesNativeMaxReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestResponsesToolsExplicitlyDisableStrictSchemaNormalization(t *testing.T) {
+func TestResponsesToolsSelectStrictModeFromSchema(t *testing.T) {
 	c := newOpenAICodexClient("token", "acct", "")
 	wire, err := c.buildRequest(Request{
 		Model: "gpt-5.6-sol",
+		Tools: []Tool{
+			{
+				Name: "grep",
+				Schema: json.RawMessage(`{
+					"type":"object",
+					"properties":{"pattern":{"type":"string"},"path":{"type":"string"}},
+					"required":["pattern","path"],
+					"additionalProperties":false
+				}`),
+			},
+			{
+				Name: "subagent_spawn",
+				Schema: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"task":{"type":"string"},
+						"budget_ratio":{"type":"number"},
+						"budget_tokens":{"type":"integer"}
+					},
+					"required":["task"]
+				}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Tools) != 2 {
+		t.Fatalf("tools = %d, want 2", len(wire.Tools))
+	}
+	if !wire.Tools[0].Strict {
+		t.Fatal("closed, fully-required grep schema should use strict mode")
+	}
+	if wire.Tools[1].Strict {
+		t.Fatal("schema with optional properties should opt out of strict normalization")
+	}
+
+	c.providerName = ProviderOpenCodeGo
+	wire, err = c.buildRequest(Request{
+		Model: "gpt-5.6-sol",
 		Tools: []Tool{{
-			Name: "subagent_spawn",
-			Schema: json.RawMessage(`{
-				"type":"object",
-				"properties":{
-					"task":{"type":"string"},
-					"budget_ratio":{"type":"number"},
-					"budget_tokens":{"type":"integer"}
-				},
-				"required":["task"]
-			}`),
+			Name:   "grep",
+			Schema: wire.Tools[0].Parameters,
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := json.Marshal(wire.Tools)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(encoded, []byte(`"strict":false`)) {
-		t.Fatalf("responses tool omitted strict opt-out: %s", encoded)
+	if wire.Tools[0].Strict {
+		t.Fatal("non-OpenAI Responses provider should opt out of strict mode")
 	}
 }
 

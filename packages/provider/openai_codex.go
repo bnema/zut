@@ -197,6 +197,46 @@ type codexReasoningConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
 
+// supportsStrictToolSchema reports whether the top-level object already meets
+// Responses strict-mode requirements. Keep this deliberately narrow: schemas
+// with nested containers or composition remain non-strict rather than risking
+// provider rejection or changing optional fields into required ones.
+func supportsStrictToolSchema(raw json.RawMessage) bool {
+	var schema struct {
+		Type                 string                     `json:"type"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+	}
+	if json.Unmarshal(raw, &schema) != nil || schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+		return false
+	}
+	required := make(map[string]struct{}, len(schema.Required))
+	for _, name := range schema.Required {
+		required[name] = struct{}{}
+	}
+	if len(required) != len(schema.Properties) {
+		return false
+	}
+	for name, rawProperty := range schema.Properties {
+		if _, ok := required[name]; !ok {
+			return false
+		}
+		var property struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawProperty, &property) != nil {
+			return false
+		}
+		switch property.Type {
+		case "string", "number", "integer", "boolean":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type codexRequest struct {
 	Model              string                   `json:"model"`
 	Store              bool                     `json:"store"`
@@ -318,6 +358,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  params,
+				Strict:      providerName == ProviderOpenAICodex && supportsStrictToolSchema(params),
 			})
 		}
 	}
