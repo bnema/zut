@@ -17,7 +17,6 @@ import (
 // one per Stream call. A nil-content entry emits an assistant message with
 // no content blocks; unknownStop entries exercise non-end stops.
 type turnRecoveryScriptClient struct {
-	mu    sync.Mutex
 	calls int32
 	turns []turnRecoveryTurn
 }
