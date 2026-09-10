@@ -328,7 +328,11 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		switch msg.Role {
 		case RoleDeveloper:
 			content := buildOAIUserContent(msg.Content, textOnly)
-			out.Messages = append(out.Messages, oaiMessage{Role: "developer", Content: content})
+			role := "developer"
+			if c.name == ProviderDeepSeek || (c.name == ProviderOpenCodeGo && isDeepSeekModel(req.Model)) {
+				role = "system"
+			}
+			out.Messages = append(out.Messages, oaiMessage{Role: role, Content: content})
 		case RoleUser:
 			content := buildOAIUserContent(msg.Content, textOnly)
 			out.Messages = append(out.Messages, oaiMessage{Role: "user", Content: content})
@@ -427,6 +431,11 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 func isKimiDeferredModel(model string) bool {
 	model = strings.ToLower(model)
 	return model == "kimi-k3" || strings.HasSuffix(model, "/kimi-k3")
+}
+
+func isDeepSeekModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "deepseek-") || strings.Contains(model, "/deepseek-")
 }
 
 func makeOAITool(t Tool) oaiTool {
