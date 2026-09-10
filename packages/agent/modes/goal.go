@@ -12,6 +12,23 @@ import (
 
 const goalContinueMetaKey = "zut_goal_continue"
 
+// goalInterruptReassessMetaKey marks the hidden post-interruption
+// instruction appended before the next ordinary user prompt. It is filtered
+// from the rendered transcript like goalContinueMetaKey.
+const goalInterruptReassessMetaKey = "zut_goal_interrupt_reassess"
+
+// interruptedGoalState is transient controller state recording that Esc
+// cancelled the running turn of an active goal. nextPromptArmed means the
+// immediately following ordinary user prompt must carry the hidden
+// reassessment instruction; returnAfterTurn means that prompt completed
+// cleanly and the same goal may resume once via requestGoalContinuationIfIdle.
+type interruptedGoalState struct {
+	goalID          string
+	missionID       string
+	nextPromptArmed bool
+	returnAfterTurn bool
+}
+
 func (i *Interactive) goalUpdatesAvailable() bool {
 	ag := i.Agent()
 	if ag == nil {
@@ -47,13 +64,157 @@ func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
 	}, true
 }
 
+// armInterruptedGoalReturn records a transient return intent when Esc cancels
+// the running turn of an active goal. The persisted goal stays active; only
+// the next ordinary user prompt carries the hidden reassessment instruction
+// and may resume the same goal afterwards.
+func (i *Interactive) armInterruptedGoalReturn() {
+	if i.cfg.CurrentGoal == nil {
+		return
+	}
+	goal := i.cfg.CurrentGoal()
+	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
+		return
+	}
+	i.mu.Lock()
+	i.interruptedGoalReturn = &interruptedGoalState{
+		goalID:          goal.ID,
+		missionID:       goal.MissionID,
+		nextPromptArmed: true,
+	}
+	i.mu.Unlock()
+}
+
+// interruptedGoalMatchesLocked reports whether transient interruption state
+// still targets the currently persisted active goal. Callers must hold i.mu.
+func (i *Interactive) interruptedGoalMatchesLocked() bool {
+	state := i.interruptedGoalReturn
+	if state == nil || i.cfg.CurrentGoal == nil {
+		return false
+	}
+	goal := i.cfg.CurrentGoal()
+	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
+		return false
+	}
+	if state.goalID != "" && goal.ID != "" && state.goalID != goal.ID {
+		return false
+	}
+	if state.missionID != "" && goal.MissionID != "" && state.missionID != goal.MissionID {
+		return false
+	}
+	return true
+}
+
+// clearInterruptedGoalReturn drops transient interruption state without
+// touching the persisted goal.
+func (i *Interactive) clearInterruptedGoalReturn() {
+	i.mu.Lock()
+	i.interruptedGoalReturn = nil
+	i.mu.Unlock()
+}
+
+// consumeInterruptedGoalPrompt binds pending interruption state to the
+// ordinary user turn that is actually starting. It appends the hidden
+// reassessment instruction before that prompt and records that a clean
+// completion of this turn owns one automatic return to the same goal.
+func (i *Interactive) consumeInterruptedGoalPrompt() {
+	i.mu.Lock()
+	state := i.interruptedGoalReturn
+	matches := i.interruptedGoalMatchesLocked()
+	if state == nil || !state.nextPromptArmed || !matches {
+		// Stale or mismatched state must never leak into an unrelated turn.
+		if state != nil && (!state.nextPromptArmed && !state.returnAfterTurn || !matches) {
+			i.interruptedGoalReturn = nil
+		}
+		i.mu.Unlock()
+		return
+	}
+	state.nextPromptArmed = false
+	state.returnAfterTurn = true
+	i.mu.Unlock()
+
+	message, ok := i.goalInterruptReassessmentMessage()
+	if !ok {
+		i.mu.Lock()
+		if i.interruptedGoalReturn == state {
+			i.interruptedGoalReturn = nil
+		}
+		i.mu.Unlock()
+		return
+	}
+	ag := i.Agent()
+	if ag == nil {
+		i.mu.Lock()
+		if i.interruptedGoalReturn == state {
+			i.interruptedGoalReturn = nil
+		}
+		i.mu.Unlock()
+		return
+	}
+	ag.AppendUserContext(userMessageText(message), message.Meta)
+}
+
+// discardInterruptedGoalReturn drops a pending return when the owning turn
+// was cancelled or errored. A fresh interruption re-arms explicitly.
+func (i *Interactive) discardInterruptedGoalReturn() {
+	i.mu.Lock()
+	i.interruptedGoalReturn = nil
+	i.mu.Unlock()
+}
+
+// goalInterruptReassessmentMessage builds the hidden instruction appended
+// immediately before the next ordinary user prompt after Esc. It requires
+// handling the latest user message first and resuming incidental work
+// autonomously; update_goal is reserved for genuine lifecycle transitions.
+func (i *Interactive) goalInterruptReassessmentMessage() (provider.Message, bool) {
+	if i.cfg.CurrentGoal == nil {
+		return provider.Message{}, false
+	}
+	goal := i.cfg.CurrentGoal()
+	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
+		return provider.Message{}, false
+	}
+	text := "The previous turn was interrupted by the user; the autonomous goal below remains active. " +
+		"Handle the latest user message first. Classify it as changing, settling, blocking, or incidental to that goal. " +
+		"If it is incidental, answer it briefly and then continue the goal autonomously without waiting for the user to say continue. " +
+		"Call update_goal only for a genuine complete, blocked, or superseded transition.\n\nActive goal: " + goal.Objective
+	if goal.ID != "" {
+		text += " When superseding this goal, use goal_id " + goal.ID + "."
+	}
+	if goal.MissionID != "" {
+		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
+	}
+	return provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: text}},
+		Meta:    map[string]string{goalInterruptReassessMetaKey: "true"},
+	}, true
+}
+
 func (i *Interactive) goalIdleLocked() bool {
 	return !i.busy && i.agent != nil && len(i.queued) == 0 && i.agent.QueuedMessageCount() == 0
 }
 
+// interruptedPromptPendingLocked reports whether Esc armed a reassessment
+// prompt that has not yet started. While set, autonomous goal wakes must
+// yield so the next ordinary user message is handled first. Callers must
+// hold i.mu.
+func (i *Interactive) interruptedPromptPendingLocked() bool {
+	state := i.interruptedGoalReturn
+	return state != nil && state.nextPromptArmed
+}
+
+// interruptedPromptPending reports whether Esc armed a reassessment prompt
+// that has not yet started.
+func (i *Interactive) interruptedPromptPending() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.interruptedPromptPendingLocked()
+}
+
 func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool {
 	message, ok := i.goalContinuationMessage()
-	if !ok || i.coordinatorHasPendingWorkers() || i.cfg.CurrentGoal == nil {
+	if !ok || i.coordinatorHasPendingWorkers() || i.cfg.CurrentGoal == nil || i.interruptedPromptPending() {
 		return false
 	}
 	goal := copySessionGoal(i.cfg.CurrentGoal())
@@ -91,7 +252,7 @@ func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool
 // accounting, and no-progress policy as an ordinary idle goal turn.
 func (i *Interactive) startReservedGoalContinuation(parent context.Context) {
 	message, ok := i.goalContinuationMessage()
-	if !ok || i.cfg.CurrentGoal == nil {
+	if !ok || i.cfg.CurrentGoal == nil || i.interruptedPromptPending() {
 		i.mu.Lock()
 		i.busy = false
 		i.mu.Unlock()
@@ -274,6 +435,9 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 		}
 		current.Status = core.GoalPaused
 		current.Reason = ""
+		// An explicit pause is durable: drop any armed Esc return so the
+		// next prompt cannot resume the goal. /goal resume restarts it.
+		i.clearInterruptedGoalReturn()
 	case "resume":
 		if current == nil {
 			i.setGoalCommandError("goal: no goal to resume")
@@ -287,6 +451,7 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 			i.setGoalCommandError("goal: " + err.Error())
 			return
 		}
+		i.clearInterruptedGoalReturn()
 		i.setGoalStatus(nil)
 		i.setGoalCommandStatus("autonomous goal cleared")
 		return
@@ -315,6 +480,11 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 		i.setGoalCommandError("goal: " + err.Error())
 		return
 	}
+	// An explicit resume or replacement supersedes Esc-armed reassessment:
+	// the command owns the next wake, not the pending ordinary prompt.
+	if startIfIdle {
+		i.clearInterruptedGoalReturn()
+	}
 	i.setGoalStatus(current)
 	i.setGoalCommandStatus(fmt.Sprintf("autonomous goal %s: %s", current.Status, current.Objective))
 	if startTitle {
@@ -327,6 +497,9 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 
 // RefreshGoal reloads the status badge after the CLI commits a session switch.
 func (i *Interactive) RefreshGoal() {
+	// A session replacement invalidates transient interruption state: the next
+	// prompt in the new session must not inherit the prior goal's return.
+	i.clearInterruptedGoalReturn()
 	if i.cfg.CurrentGoal == nil {
 		i.setGoalStatus(nil)
 		return

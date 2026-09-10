@@ -126,9 +126,18 @@ func (i *Interactive) observeGoalRun(ev core.AgentEvent) {
 // finishGoalRun records accounting exactly once and returns whether the
 // controller should attempt another autonomous continuation. Context-limited
 // turns retain their prior progress classification because output truncation
-// is not evidence that the agent stopped acting. A stale run is discarded
+// is not evidence that the agent stopped acting. Cancelled runs keep lease
+// cleanup and token accounting but never consume the no-progress allowance:
+// the user interrupted before the model could act. A stale run is discarded
 // without changing a newer goal.
 func (i *Interactive) finishGoalRun(contextLimited bool) bool {
+	return i.finishGoalRunCancelled(contextLimited, false)
+}
+
+// finishGoalRunCancelled is finishGoalRun with an explicit cancellation
+// signal from the turn owner. Esc-armed reassessment relies on this so an
+// interrupted corrective continuation cannot stall the still-active goal.
+func (i *Interactive) finishGoalRunCancelled(contextLimited, cancelled bool) bool {
 	i.mu.Lock()
 	run := i.goalRun
 	i.goalRun = nil
@@ -172,7 +181,10 @@ func (i *Interactive) finishGoalRun(contextLimited bool) bool {
 		i.setGoalStatus(goal)
 		return false
 	}
-	if contextLimited {
+	if cancelled {
+		// Esc arrived before the model could act; preserve the prior
+		// progress classification exactly like the capacity boundary below.
+	} else if contextLimited {
 		// The compact handoff provisions a fresh turn below. Do not let an
 		// execution-capacity boundary consume the no-progress allowance.
 	} else if run.hadTool {

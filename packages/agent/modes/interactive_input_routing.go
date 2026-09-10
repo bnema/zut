@@ -627,7 +627,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if hasRestoreQueued {
 				i.restoreQueuedMessageToEditor(restoreQueued)
 			}
-			i.updateActiveGoal(core.GoalPaused, "interrupted by user")
+			// Esc cancels only the running turn. An active goal stays
+			// active; record a transient return so the next ordinary user
+			// turn reassesses the interruption and then resumes it.
+			// Explicit /goal pause remains the only pause path here.
+			i.armInterruptedGoalReturn()
 			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
 			// goroutine unblocks and the context cancellation can
