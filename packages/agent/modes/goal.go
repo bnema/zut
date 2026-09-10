@@ -154,14 +154,6 @@ func (i *Interactive) consumeInterruptedGoalPrompt() {
 	ag.AppendUserContext(userMessageText(message), message.Meta)
 }
 
-// discardInterruptedGoalReturn drops a pending return when the owning turn
-// was cancelled or errored. A fresh interruption re-arms explicitly.
-func (i *Interactive) discardInterruptedGoalReturn() {
-	i.mu.Lock()
-	i.interruptedGoalReturn = nil
-	i.mu.Unlock()
-}
-
 // goalInterruptReassessmentMessage builds the hidden instruction appended
 // immediately before the next ordinary user prompt after Esc. It requires
 // handling the latest user message first and resuming incidental work
