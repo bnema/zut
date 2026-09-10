@@ -1257,7 +1257,7 @@ func (s *Session) UpdateCompactHandoff(state json.RawMessage) error {
 }
 
 // UpdateGoal records or clears the current autonomous session goal.
-const maxMissionGoalTransitions = 16
+const maxMissionGoalTransitions = 32
 
 // EnsureMission creates the durable user-intent boundary when this session has
 // none. It never replaces an existing mission; explicit user controls own
