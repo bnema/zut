@@ -21,7 +21,10 @@ func (c *fastModeTestClient) Stream(_ context.Context, req provider.Request) (<-
 	c.lastReq = req
 	out := make(chan provider.Event, 2)
 	out <- provider.EventTextDelta{Delta: "ok"}
-	out <- provider.EventDone{Stop: provider.StopEnd}
+	out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: "ok"}},
+	}}
 	close(out)
 	return out, nil
 }

@@ -126,12 +126,14 @@ func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress 
 		return protocolToolError(err.Error())
 	}
 	// Admission checks run before any interpreter discovery, so a denied
-	// call never probes the filesystem or spawns a process.
+	// call never probes the filesystem or spawns a process. The denial
+	// is typed (not a plain tool-error result) so core records the
+	// refusal and does not append a recovery prompt urging more actions.
 	if t.Sandbox != nil && t.Sandbox.Permissions != nil {
-		return protocolToolError("permission denied: this agent cannot run python")
+		return core.ToolResult{}, denied("permission denied: this agent cannot run python")
 	}
 	if t.Sandbox.Locked() {
-		return protocolToolError("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
+		return core.ToolResult{}, denied("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
 	}
 	cwd := t.CWD
 	if cwd == "" {

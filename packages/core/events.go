@@ -226,6 +226,15 @@ type EvTurnEnd struct {
 
 func (EvTurnEnd) Type() string { return "turn_end" }
 
+type EvTurnRecovery struct {
+	// Reason is missing_answer or commentary_only.
+	Reason string
+	// Attempt is always 1: one recovery allowance per top-level invocation.
+	Attempt int
+}
+
+func (EvTurnRecovery) Type() string { return "turn_recovery" }
+
 type EvDone struct{}
 
 func (EvDone) Type() string { return "done" }

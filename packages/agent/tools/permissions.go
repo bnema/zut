@@ -4,7 +4,16 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/bnema/zut/packages/core"
 )
+
+// denied marks a policy refusal (permission scope, allowlist, jail
+// confinement, or admission gate) so core can distinguish it from an
+// ordinary tool failure. The message text shown to the model is unchanged.
+func denied(format string, args ...any) error {
+	return &core.ToolDeniedError{Reason: fmt.Sprintf(format, args...)}
+}
 
 // PermissionSet is the local-runtime permission contract for a packaged .zut agent.
 type PermissionSet struct {
@@ -63,7 +72,7 @@ func (s *Sandbox) CheckReadPath(path string) error {
 		return nil
 	}
 	if len(s.Permissions.FS.Read) == 0 {
-		return fmt.Errorf("permission denied: this agent has no filesystem read permission")
+		return denied("permission denied: this agent has no filesystem read permission")
 	}
 	return checkScopedPath("read", path, s.Permissions.FS.Read)
 }
@@ -76,7 +85,7 @@ func (s *Sandbox) CheckWritePath(path string) error {
 		return nil
 	}
 	if len(s.Permissions.FS.Write) == 0 {
-		return fmt.Errorf("permission denied: this agent has no filesystem write permission")
+		return denied("permission denied: this agent has no filesystem write permission")
 	}
 	return checkScopedPath("write", path, s.Permissions.FS.Write)
 }
@@ -95,7 +104,7 @@ func checkScopedPath(op, path string, scopes []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("permission denied: %s %q is outside declared scopes", op, path)
+	return denied("permission denied: %s %q is outside declared scopes", op, path)
 }
 
 func (s *Sandbox) CheckBashPermission(cmd string) error {
@@ -108,18 +117,18 @@ func (s *Sandbox) CheckBashPermission(cmd string) error {
 	}
 	switch mode {
 	case "none":
-		return fmt.Errorf("permission denied: this agent has no bash permission")
+		return denied("permission denied: this agent has no bash permission")
 	case "ask":
 		// The local runtime obtains explicit consent for this capability at
 		// every launch. Unlike durable consent, ask mode is never cached.
 		return nil
 	case "allowlist":
 		if strings.ContainsAny(cmd, "`\n\r<>") || strings.Contains(cmd, "$(") {
-			return fmt.Errorf("permission denied: bash allowlist does not permit substitution or redirection")
+			return denied("permission denied: bash allowlist does not permit substitution or redirection")
 		}
 		names := commandNames(cmd)
 		if len(names) == 0 {
-			return fmt.Errorf("permission denied: empty command")
+			return denied("permission denied: empty command")
 		}
 		allowed := map[string]bool{}
 		for _, name := range s.Permissions.Bash.Allow {
@@ -127,12 +136,12 @@ func (s *Sandbox) CheckBashPermission(cmd string) error {
 		}
 		for _, name := range names {
 			if !allowed[name] {
-				return fmt.Errorf("permission denied: bash command %q is not in allowlist", name)
+				return denied("permission denied: bash command %q is not in allowlist", name)
 			}
 		}
 		return nil
 	default:
-		return fmt.Errorf("permission denied: unsupported bash mode %q", mode)
+		return denied("permission denied: unsupported bash mode %q", mode)
 	}
 }
 

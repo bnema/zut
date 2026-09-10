@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -116,27 +117,23 @@ func TestPythonDeniedNeverResolves(t *testing.T) {
 	}
 	jailed := NewSandbox("/session")
 	jailed.Lock()
-	res, err := mk(jailed).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
-	if err != nil {
-		t.Fatalf("jail err = %v, want model-visible IsError result", err)
+	_, err := mk(jailed).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot be confined") {
+		t.Fatalf("jail err = %v, want typed confinement refusal", err)
 	}
-	if !res.IsError {
-		t.Fatal("want IsError for jailed execution")
-	}
-	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "cannot be confined") {
-		t.Fatalf("jail result = %q", got)
+	var jailDenied *core.ToolDeniedError
+	if !errors.As(err, &jailDenied) {
+		t.Fatalf("jail err type = %T, want *core.ToolDeniedError", err)
 	}
 	restricted := NewSandbox("/session")
 	restricted.SetPermissions(&PermissionSet{})
-	res, err = mk(restricted).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
-	if err != nil {
-		t.Fatalf("permission err = %v, want model-visible IsError result", err)
+	_, err = mk(restricted).Execute(context.Background(), pythonArgsJSON(t, "print(1)", 5), nil)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("permission err = %v, want typed permission refusal", err)
 	}
-	if !res.IsError {
-		t.Fatal("want IsError for permission-denied execution")
-	}
-	if got := res.Content[0].(provider.TextBlock).Text; !strings.Contains(got, "permission denied") {
-		t.Fatalf("permission result = %q", got)
+	var permDenied *core.ToolDeniedError
+	if !errors.As(err, &permDenied) {
+		t.Fatalf("permission err type = %T, want *core.ToolDeniedError", err)
 	}
 	if resolveCalls != 0 || execCalls != 0 {
 		t.Fatalf("denied calls must never resolve or execute (resolve=%d exec=%d)", resolveCalls, execCalls)

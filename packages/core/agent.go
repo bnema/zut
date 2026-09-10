@@ -174,7 +174,12 @@ type Agent struct {
 	// boundaries: before the next model call after a tool batch, or
 	// after a text-only assistant turn finishes. It never interrupts
 	// a running tool or cancels an in-flight provider request.
-	queued                []queuedMessage
+	queued []queuedMessage
+	// deniedToolCall tracks whether any tool invocation was refused at the
+	// execution boundary (guard or confirmation denial) during the current
+	// top-level runLoop invocation. A denied invocation must not gain a
+	// recovery prompt urging more actions.
+	deniedToolCall        bool
 	timeContext           agentTimeContext
 	hasSessionTimeContext bool
 	// sessionID identifies this conversation thread. cacheSessionID identifies
@@ -624,6 +629,8 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 }
 
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestContext provider.RequestContext) error {
+	a.resetDeniedToolCalls()
+	recoveryUsed := false
 	for step := 1; a.MaxSteps <= 0 || step <= a.MaxSteps; step++ {
 		// Messages queued while the agent was busy are delivered
 		// before the next model call. This is the safe boundary:
@@ -779,6 +786,28 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		// top-level prompt.
 		if ctx.Err() == nil && a.QueuedMessageCount() > 0 {
 			continue
+		}
+
+		// Bounded normal-turn recovery: a successful normal stop whose
+		// current terminal assistant message carries no final answer gets
+		// one continuation per top-level invocation. Never on errors
+		// (err != nil returns above), cancellation, output/context
+		// limits, or a permission/confirmation refusal.
+		if stop == provider.StopEnd && !a.sawDeniedToolCall() {
+			if reason, incomplete := classifyTerminalAssistant(assistantMsg); incomplete {
+				if !recoveryUsed {
+					if err := ctx.Err(); err != nil {
+						sink(EvDone{})
+						return err
+					}
+					recoveryUsed = true
+					a.AppendUserContext(turnRecoveryPrompt, map[string]string{turnRecoveryMetaKey: "true"})
+					sink(EvTurnRecovery{Reason: reason, Attempt: 1})
+					continue
+				}
+				sink(EvDone{})
+				return ErrIncompleteTurn
+			}
 		}
 
 		// Terminal stop (end, length, error, aborted).
@@ -1369,6 +1398,10 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 	if a.BeforeToolExecute != nil {
 		allowed, reason, modified := a.BeforeToolExecute(tc)
 		if !allowed {
+			// A guard or confirmation denial is tracked separately from an
+			// ordinary tool error: a denied invocation must not gain a
+			// recovery prompt urging more actions.
+			a.markDeniedToolCall()
 			if reason == "" {
 				reason = "tool call refused by extension guard"
 			}
@@ -1399,6 +1432,13 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 		sink(EvToolProgress{ID: tc.ID, Text: text})
 	})
 	if err != nil {
+		// A refused execution (permission scope, allowlist, jail, or
+		// admission gate) is tracked separately from an ordinary tool
+		// error: like a guard or confirmation denial, it must not gain
+		// a recovery prompt urging more actions.
+		if asToolDeniedError(err) {
+			a.markDeniedToolCall()
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return ToolResult{
 				Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
