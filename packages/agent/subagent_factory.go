@@ -2,11 +2,9 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -38,12 +36,14 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			system = strings.TrimSpace(system) + "\n\n" + extra
 		}
 	}
-	if err := subagents.ValidateResidentBudget(spec); err != nil {
-		return nil, fmt.Errorf("resident child %q: %w", spec.ID, err)
-	}
-	budgetLimit := spec.BudgetLimit
 	agent := core.NewAgent(resolved.NewClient(), resolved.Model, system, registry)
 	agent.MaxSteps = resolved.MaxSteps
+	if agent.MaxSteps <= 0 {
+		// Resident execution must stay bounded once the cumulative rollout
+		// budget is gone. An unlimited parent default must not propagate to
+		// children; explicit parent limits are preserved above.
+		agent.MaxSteps = 50
+	}
 	agent.ContextWindow = resolved.ContextWindow
 	agent.MaxTokens = resolved.MaxOutput
 	agent.Reasoning = resolved.Reasoning
@@ -54,8 +54,9 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		baseline = journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
 		agent.SeedCost(baseline.Usage)
 	}
-	budget := subagents.NewRolloutBudget(budgetLimit, baseline.Usage)
-	configureResidentBudget(agent, budget)
+	// The nudge reads the agent's own per-turn usage gauge. No cumulative
+	// budget remains: execution stays bounded through the MaxSteps default.
+	configureResidentContextNudge(agent, resolved.ContextWindow)
 	rootCacheID := strings.TrimSpace(spec.RootCacheID)
 	if rootCacheID == "" {
 		// Journals written before root cache identity was persisted can still
@@ -83,18 +84,9 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		budget.SetBaseline(journal.BudgetBaseline())
-		startedExhausted := budget.Snapshot().State == subagents.BudgetExceeded
-		var budgetStopped atomic.Bool
 		var journalErr error
 		var journalMu sync.Mutex
 		err := agent.Prompt(turnCtx, prompt, nil, func(event core.AgentEvent) {
-			if end, ok := event.(core.EvTurnEnd); ok && end.Err != nil && budget.Snapshot().State == subagents.BudgetExceeded {
-				budgetStopped.Store(true)
-			}
-			if usage, ok := event.(core.EvUsage); ok {
-				budget.Observe(usage.Cumulative)
-			}
 			if err := journal.RecordAgentEvent(event); err != nil {
 				journalMu.Lock()
 				if journalErr == nil {
@@ -109,25 +101,35 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		if journalErr != nil {
 			return fmt.Errorf("persist resident child transcript: %w", journalErr)
 		}
-		if budget.Snapshot().State == subagents.BudgetExceeded {
-			if !startedExhausted && !budgetStopped.Load() && err == nil {
-				return nil
-			}
-			return errors.Join(err, subagents.ErrBudgetExceeded)
-		}
 		return err
 	}, nil
 }
 
-func configureResidentBudget(agent *core.Agent, budget *subagents.RolloutBudget) {
-	if agent == nil || budget == nil {
+// residentContextNudgePercent is the single context-usage threshold for the
+// resident reminder. It is a completion aid, not a cost guard: execution
+// stays bounded through the finite MaxSteps default.
+const residentContextNudgePercent = 85
+
+func configureResidentContextNudge(agent *core.Agent, contextMax int) {
+	if agent == nil {
 		return
 	}
+	// notified is owned by the runner closure and never reset from Resume
+	// or journal paths. The injected developer-context message persists via
+	// appendDynamicContext and is not replayed verbatim from the child
+	// journal after restart; re-nudging after restart is acceptable.
+	var notified bool
 	agent.BeforeTurnContext = func(_ context.Context, _ int) (bool, string, string) {
-		if budget.Snapshot().State == subagents.BudgetExceeded {
-			return false, subagents.ErrBudgetExceeded.Error(), ""
+		if notified || contextMax <= 0 {
+			return true, "", ""
 		}
-		return true, "", ""
+		usage := agent.LastTurnUsage()
+		used := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
+		if used*100 < contextMax*residentContextNudgePercent {
+			return true, "", ""
+		}
+		notified = true
+		return true, "", fmt.Sprintf("Context usage is at %d%% of the model window. Finish the current task, report results, limits, and remaining verifications, and do not start broad new work.", used*100/contextMax)
 	}
 }
 

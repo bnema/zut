@@ -8,7 +8,7 @@ import (
 )
 
 func TestResidentCancellationPreservesInterruptedState(t *testing.T) {
-	for _, turnErr := range []error{context.Canceled, errors.Join(context.Canceled, ErrBudgetExceeded)} {
+	for _, turnErr := range []error{context.Canceled, errors.Join(context.Canceled, errors.New("worker failed"))} {
 		t.Run(turnErr.Error(), func(t *testing.T) {
 			root := t.TempDir()
 			manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
@@ -24,13 +24,13 @@ func TestResidentCancellationPreservesInterruptedState(t *testing.T) {
 				t.Fatal(err)
 			}
 			cancel() // Accepted children outlive the caller's spawn context.
-			completion := awaitBudgetCompletion(t, completions)
+			completion := awaitResidentCompletion(t, completions)
 			snapshot, ok := manager.SnapshotFor(spec.ID)
 			if !ok || snapshot.State != ResidentInterrupted || completion.Completion().Status != string(ResidentInterrupted) {
 				t.Fatalf("snapshot = %#v, completion = %#v", snapshot, completion)
 			}
 			result, err := manager.Result(spec.ID)
-			if err != nil || result.State != ResidentInterrupted || result.Handoff != "" || result.ErrorCode == residentErrorBudgetExhausted {
+			if err != nil || result.State != ResidentInterrupted || result.Handoff != "" || result.ErrorCode == residentV2ErrorBudgetExhausted {
 				t.Fatalf("result = %#v, error = %v", result, err)
 			}
 			if len(manager.UnmetRequired()) != 1 {

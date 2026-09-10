@@ -15,8 +15,8 @@ func TestResidentCompletionProjection(t *testing.T) {
 		{nil, "completed"},
 		{errors.New("failure"), "failed"},
 		{context.Canceled, "interrupted"},
-		{errors.Join(ErrBudgetExceeded, errors.New("capture failed")), "budget_exhausted"},
-		{errors.Join(context.Canceled, ErrBudgetExceeded), "interrupted"},
+		{errors.New("capture failed"), "failed"},
+		{errors.Join(context.Canceled, errors.New("capture failed")), "interrupted"},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			got := (ResidentCompletion{ChildID: "child", TurnID: "turn", Task: "task", Summary: "saved progress", Err: tc.err}).Completion()

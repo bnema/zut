@@ -1,6 +1,7 @@
 package subagents
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,7 +35,7 @@ func TestReconcileResidentJournalRestoresCapturedArtifacts(t *testing.T) {
 				} else if err := writeResidentPatch(journal.Dir(), []byte("stale patch from an earlier turn\n")); err != nil {
 					t.Fatal(err)
 				}
-				if err := journal.RecordTurnFinishedWithCapture(spec, spec.InitialTurnID, ErrBudgetExceeded, capture); err != nil {
+				if err := journal.RecordTurnFinishedWithCapture(spec, spec.InitialTurnID, errors.New("turn failed"), capture); err != nil {
 					t.Fatal(err)
 				}
 				original, err := journal.Result()
@@ -70,7 +71,7 @@ func TestReconcileResidentJournalRestoresCapturedArtifacts(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if result.State != ResidentBudgetExhausted || result.TurnID != spec.InitialTurnID || result.ErrorCode != residentErrorBudgetExhausted || result.Handoff == "" || result.PatchRef != original.PatchRef || !reflect.DeepEqual(result.ChangedFiles, original.ChangedFiles) {
+					if result.State != ResidentFailed || result.TurnID != spec.InitialTurnID || result.ErrorCode != residentErrorTurnFailed || result.Handoff != "" || result.PatchRef != original.PatchRef || !reflect.DeepEqual(result.ChangedFiles, original.ChangedFiles) {
 						t.Fatalf("reconstructed result = %#v, original = %#v", result, original)
 					}
 				}

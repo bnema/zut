@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,168 @@ import (
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestResidentChildRunnerDefaultsToFiniteMaxSteps(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		maxSteps int
+		want     int
+	}{
+		{name: "unlimited parent defaults to bounded child", maxSteps: 0, want: 50},
+		{name: "explicit parent limit preserved", maxSteps: 30, want: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("content-type", "text/event-stream")
+				writeOpenAIChunk(t, w, map[string]any{
+					"choices": []any{map[string]any{
+						"index": 0,
+						"delta": map[string]any{"tool_calls": []any{map[string]any{
+							"index": 0, "id": "call-loop", "type": "function",
+							"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
+						}}},
+						"finish_reason": "tool_calls",
+					}},
+					"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
+				})
+			}))
+			defer server.Close()
+
+			spec := subagents.ResidentChildSpec{
+				ID: "maxsteps-child", SessionID: "maxsteps-session", Provider: "openai", Model: "gpt-4o",
+				Tools: []string{"read"},
+			}
+			journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = journal.Close() })
+			if err := journal.Accept(spec, "review"); err != nil {
+				t.Fatal(err)
+			}
+			runner, err := newResidentChildRunner(Args{
+				Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
+				MaxSteps: tc.maxSteps, CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
+			}, spec, journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = runner(t.Context(), "review")
+			if !errors.Is(err, core.ErrMaxSteps) {
+				t.Fatalf("runner error = %v, want step-limit stop", err)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.want)) {
+				t.Fatalf("runner error = %v, want limit %d", err, tc.want)
+			}
+			if got := requests.Load(); got != int32(tc.want) {
+				t.Fatalf("provider requests = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResidentChildRunnerInjectsContextReminderIntoNextRequest(t *testing.T) {
+	var firstUsage atomic.Int64
+	var captured []string
+	var mu sync.Mutex
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		number := requests.Add(1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		encoded, _ := json.Marshal(body["messages"])
+		mu.Lock()
+		captured = append(captured, string(encoded))
+		mu.Unlock()
+		w.Header().Set("content-type", "text/event-stream")
+		usage := map[string]int{"prompt_tokens": 10, "completion_tokens": 1}
+		text := "second result"
+		if number == 1 {
+			text = "first result"
+			usage = map[string]int{"prompt_tokens": int(firstUsage.Load()), "completion_tokens": 1}
+		}
+		writeOpenAIChunk(t, w, map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": text}, "finish_reason": "stop"}},
+			"usage":   usage,
+		})
+	}))
+	defer server.Close()
+
+	args := Args{Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL, CWD: t.TempDir(), NoContextFiles: true, NoSkill: true}
+	resolved, err := Resolve(args, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ContextWindow <= 0 {
+		t.Fatalf("resolved context window = %d, want positive", resolved.ContextWindow)
+	}
+	// Cross the 85% threshold on the first turn.
+	firstUsage.Store(int64(resolved.ContextWindow * 86 / 100))
+	spec := subagents.ResidentChildSpec{
+		ID: "nudge-child", SessionID: "nudge-session", Provider: "openai", Model: "gpt-4o",
+		Tools: []string{"read"},
+	}
+	journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	if err := journal.Accept(spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := newResidentChildRunner(args, spec, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner(t.Context(), "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner(t.Context(), "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider requests = %d, want 2", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 2 {
+		t.Fatalf("captured requests = %d, want 2", len(captured))
+	}
+	if strings.Contains(captured[0], "Context usage is at") {
+		t.Fatalf("first request carries a reminder before any usage: %s", captured[0])
+	}
+	want := fmt.Sprintf("Context usage is at %d%%", firstUsage.Load()*100/int64(resolved.ContextWindow))
+	if !strings.Contains(captured[1], want) {
+		t.Fatalf("second request missing %q: %s", want, captured[1])
+	}
+	// The reminder travels as developer context in the live request; the
+	// durable transcript keeps only finalized history.
+	messages, err := subagents.ReadResidentTranscriptMessages(journal.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if block, ok := content.(provider.TextBlock); ok {
+				texts = append(texts, block.Text)
+			}
+		}
+	}
+	joined := strings.Join(texts, "\n")
+	for _, want := range []string{"first result", "second result"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("journal history missing %q: %q", want, joined)
+		}
+	}
+	if strings.Contains(joined, "Context usage is at") {
+		t.Fatalf("journal transcript carries the reminder: %q", joined)
+	}
+}
 
 func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T) {
 	catalogue := core.Registry{
@@ -39,28 +202,56 @@ func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T
 	}
 }
 
-func TestConfigureResidentBudgetOnlyStopsAtExhaustion(t *testing.T) {
+func TestConfigureResidentContextNudgeRemindsOnceAtThreshold(t *testing.T) {
 	agent := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
-	budget := subagents.NewRolloutBudget(1_000, provider.Usage{})
-	configureResidentBudget(agent, budget)
+	configureResidentContextNudge(agent, 1_000)
 
-	budget.Observe(provider.Usage{InputTokens: 900})
-	allowed, reason, contextText := agent.BeforeTurnContext(t.Context(), 1)
-	if !allowed || reason != "" || contextText != "" {
-		t.Fatalf("near-limit context = allowed=%t reason=%q context=%q", allowed, reason, contextText)
-	}
-	if len(agent.ToolsSnapshot()) != 1 || agent.MaxTokens != 0 {
-		t.Fatalf("near-limit agent = tools=%#v max_tokens=%d", agent.ToolsSnapshot(), agent.MaxTokens)
+	check := func(usage provider.Usage, wantReminder bool) string {
+		t.Helper()
+		agent.SeedLastTurnUsage(usage)
+		allowed, reason, contextText := agent.BeforeTurnContext(t.Context(), 1)
+		if !allowed || reason != "" {
+			t.Fatalf("nudge blocked turn: allowed=%t reason=%q", allowed, reason)
+		}
+		if wantReminder && !strings.Contains(contextText, "Context usage is at ") {
+			t.Fatalf("missing reminder for usage %#v: %q", usage, contextText)
+		}
+		if !wantReminder && contextText != "" {
+			t.Fatalf("unexpected reminder for usage %#v: %q", usage, contextText)
+		}
+		return contextText
 	}
 
-	budget.Observe(provider.Usage{InputTokens: 1_000})
-	allowed, reason, _ = agent.BeforeTurnContext(t.Context(), 2)
-	if allowed || reason != subagents.ErrBudgetExceeded.Error() {
-		t.Fatalf("exhausted context = allowed=%t reason=%q", allowed, reason)
+	// Below the threshold: silent, including cache-heavy usage.
+	check(provider.Usage{InputTokens: 849}, false)
+	check(provider.Usage{InputTokens: 400, CacheReadTokens: 400, CacheWriteTokens: 49}, false)
+	// First crossing: exactly one reminder carrying the computed percent.
+	first := check(provider.Usage{InputTokens: 850}, true)
+	if !strings.Contains(first, "85%") {
+		t.Fatalf("reminder percent = %q, want 85%%", first)
+	}
+	// Later turns stay silent even as usage grows.
+	check(provider.Usage{InputTokens: 970}, false)
+}
+
+func TestConfigureResidentContextNudgeHandlesDirectJumpAndUnknownWindow(t *testing.T) {
+	agent := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
+	configureResidentContextNudge(agent, 1_000)
+	agent.SeedLastTurnUsage(provider.Usage{InputTokens: 970})
+	allowed, _, contextText := agent.BeforeTurnContext(t.Context(), 1)
+	if !allowed || !strings.Contains(contextText, "97%") {
+		t.Fatalf("jump reminder = allowed=%t context=%q, want one 97%% reminder", allowed, contextText)
+	}
+
+	unknown := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
+	configureResidentContextNudge(unknown, 0)
+	unknown.SeedLastTurnUsage(provider.Usage{InputTokens: 970})
+	if allowed, reason, contextText := unknown.BeforeTurnContext(t.Context(), 1); !allowed || reason != "" || contextText != "" {
+		t.Fatalf("unknown window context = allowed=%t reason=%q context=%q, want silent", allowed, reason, contextText)
 	}
 }
 
-func TestResidentChildRunnerKeepsToolsAtNinetyPercent(t *testing.T) {
+func TestResidentChildRunnerKeepsToolsAcrossTurns(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestNumber := requests.Add(1)
@@ -99,7 +290,7 @@ func TestResidentChildRunnerKeepsToolsAtNinetyPercent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runner, journal := newBudgetedResidentTestRunner(t, server.URL, 1_000)
+	runner, journal := newResidentTestRunner(t, server.URL)
 	if err := runner(t.Context(), "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +302,7 @@ func TestResidentChildRunnerKeepsToolsAtNinetyPercent(t *testing.T) {
 	}
 }
 
-func TestResidentChildRunnerTerminatesAtBudgetLimit(t *testing.T) {
+func TestResidentChildRunnerRunsHighUsageFollowUpWithoutBudget(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -130,7 +321,7 @@ func TestResidentChildRunnerTerminatesAtBudgetLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runner, journal := newBudgetedResidentTestRunner(t, server.URL, 1_000)
+	runner, journal := newResidentTestRunner(t, server.URL)
 	if err := runner(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want terminal result", err)
 	}
@@ -140,42 +331,16 @@ func TestResidentChildRunnerTerminatesAtBudgetLimit(t *testing.T) {
 	if summary := latestResidentAssistantText(t, journal); summary != "best available result" {
 		t.Fatalf("latest summary = %q", summary)
 	}
-	if err := runner(t.Context(), "continue"); !errors.Is(err, subagents.ErrBudgetExceeded) {
-		t.Fatalf("exhausted follow-up error = %v", err)
+	// Without a cumulative budget, a high-usage follow-up runs normally.
+	if err := runner(t.Context(), "continue"); err != nil {
+		t.Fatalf("follow-up error = %v, want success", err)
 	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("exhausted follow-up made %d provider requests, want 1 total", got)
-	}
-}
-
-func TestResidentChildRunnerReportsBudgetStopAfterToolWork(t *testing.T) {
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		w.Header().Set("content-type", "text/event-stream")
-		writeOpenAIChunk(t, w, map[string]any{
-			"choices": []any{map[string]any{
-				"index": 0,
-				"delta": map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "call-budget", "type": "function",
-					"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
-				}}},
-				"finish_reason": "tool_calls",
-			}},
-			"usage": map[string]int{"prompt_tokens": 1200, "completion_tokens": 0},
-		})
-	}))
-	defer server.Close()
-	runner, _ := newBudgetedResidentTestRunner(t, server.URL, 1000)
-	if err := runner(t.Context(), "review"); !errors.Is(err, subagents.ErrBudgetExceeded) {
-		t.Fatalf("budget-stopped tool turn = %v, want ErrBudgetExceeded", err)
-	}
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("requests = %d, want 1", got)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider requests = %d, want 2", got)
 	}
 }
 
-func TestResidentChildRunnerResumesWithSameSizeAllowance(t *testing.T) {
+func TestResidentChildRunnerResumesWithRetainedHistory(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := requests.Add(1)
@@ -208,7 +373,7 @@ func TestResidentChildRunnerResumesWithSameSizeAllowance(t *testing.T) {
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	completed := make(chan subagents.ResidentCompletion, 2)
 	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) { completed <- c })
-	spec := subagents.ResidentChildSpec{ID: "resume-budget", SessionID: "session", Provider: "openai", Model: "gpt-4o", BudgetLimit: 1000, BudgetSource: "model_context"}
+	spec := subagents.ResidentChildSpec{ID: "resume-child", SessionID: "session", Provider: "openai", Model: "gpt-4o"}
 	if _, err := manager.Spawn(t.Context(), spec, "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -228,16 +393,16 @@ func TestResidentChildRunnerResumesWithSameSizeAllowance(t *testing.T) {
 		}
 	}
 	snapshot, _ := manager.SnapshotFor(spec.ID)
-	if requests.Load() != 2 || snapshot.Budget.Used != 30 || snapshot.Budget.Limit != 1000 || snapshot.Usage.InputTokens != 1220 {
+	if requests.Load() != 2 || snapshot.Usage.InputTokens != 1220 {
 		t.Fatalf("requests=%d, snapshot=%#v", requests.Load(), snapshot)
 	}
 }
 
-func newBudgetedResidentTestRunner(t *testing.T, baseURL string, limit int64) (subagents.ResidentTurnRunner, *subagents.ResidentJournal) {
+func newResidentTestRunner(t *testing.T, baseURL string) (subagents.ResidentTurnRunner, *subagents.ResidentJournal) {
 	t.Helper()
 	spec := subagents.ResidentChildSpec{
-		ID: "budget-child", SessionID: "budget-session", Provider: "openai", Model: "gpt-4o",
-		Tools: []string{"read"}, BudgetLimit: limit, BudgetSource: "model_context",
+		ID: "resident-child", SessionID: "resident-session", Provider: "openai", Model: "gpt-4o",
+		Tools: []string{"read"},
 	}
 	journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
 	if err != nil {

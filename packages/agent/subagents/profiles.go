@@ -161,7 +161,7 @@ func SystemPromptAddendum(profiles []*Profile) string {
 	}
 	var sb strings.Builder
 	sb.WriteString("[subagents_list]\n")
-	sb.WriteString("Named subagents available to subagent_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, tool limits, fast-mode preference, and budget override are applied to the child.\n")
+	sb.WriteString("Named subagents available to subagent_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, tool limits, and fast-mode preference are applied to the child.\n")
 	for _, profile := range profiles {
 		if profile == nil {
 			continue

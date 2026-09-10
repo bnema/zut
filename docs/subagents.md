@@ -56,7 +56,7 @@ subagents/<child-id>/
   owner.lock        # host-ownership coordination; do not modify or remove
   .transcript-backup-* # retained private pre-repair transcript, when repaired
   metadata.json     # rebuildable bounded state
-  result.json       # latest outcome, final summary or partial handoff, artifacts
+  result.json       # latest outcome, final summary, artifacts
   patch.diff        # optional worktree capture
 ```
 
@@ -89,34 +89,41 @@ one turn for each child, and defaults to six concurrent turns. Set
 unlimited by default; a positive `subagents.queue_timeout` cancels an accepted
 prompt that has not received a slot and records its terminal failure durably.
 `subagents.allowed_tools` is an allowlist for child-visible tools and
-`subagents.allowed_roots` limits eligible child workspaces. Each child receives
-a cumulative weighted-token budget equal to its resolved model's context window.
-Removed legacy settings, including `tui_subagent_position` and
-`subagents.budget_ratio`, are ignored. Resident journals created before this
-budget policy are incompatible: zut leaves them untouched on disk and excludes
-them from automatic discovery without reporting an error at every startup.
-They cannot be resumed; start a new child instead. Other journal recovery
-errors are still reported.
+`subagents.allowed_roots` limits eligible child workspaces. Resident children
+have no cumulative token budget. Execution stays bounded through a finite
+per-turn step default: a child whose parent resolution is unlimited runs with
+`MaxSteps=50`; an explicit parent limit is preserved. Removed legacy
+settings, including `tui_subagent_position` and `subagents.budget_ratio`, are
+ignored. Resident journals written by older versions are read with explicit
+translation (an old `budget_exhausted` outcome reconciles as failure) or, for
+unknown versions, left untouched on disk and excluded from automatic
+discovery. Incompatible journals cannot be resumed; start a new child
+instead. Other journal recovery errors are still reported.
 
-Budget accounting charges uncached input, cache writes, and output fully; cache
-reads count at 25%. It is separate from active context-window usage and survives
-follow-up turns and compaction. The TUI shows the child's current budget usage,
-but does not alter its instructions, tools, or output cap before exhaustion.
-Providers report exact input usage only after a response, so the terminal
-response can make displayed usage exceed 100%; no later request is sent in that
-turn. If the worker still needs another model step, it reports
-`budget_exhausted`, not successful idle work. A final answer that completes on
-the response crossing the limit remains successful and reports `completed`.
+Compatibility notes: new journals write version 3 and carry no budget
+fields, baselines, or exhaustion states. Version 2 archives are read with
+explicit translation and their transcripts are never rewritten by
+translation. `result.json` keeps a deprecated `handoff` field that stays
+empty for new results and remains readable for archives. `subagent_status`
+no longer exposes `budget` or `budget_source` fields.
 
-Budget exhaustion publishes a terminal completion with a host-generated partial
-handoff, capped at 16 KiB. It includes recent visible progress messages, tool
-names and error flags, workspace and history references, and recovery guidance.
-Raw tool arguments and output are omitted from this automatic handoff because
-they may contain secrets; they remain retrievable in the child's durable history.
-These are observations, not a claim that the task or verification finished;
-older or truncated details also remain in the durable transcript. Worktree
-changes are captured even on budget exhaustion, and the worktree is retained
-for recovery. Shared-workspace changes are not rolled back.
+### Context reminders
+
+When a child's last-turn prompt reaches 85% of its model context window, the
+runner injects one non-blocking reminder into the next provider request:
+
+```text
+Context usage is at NN% of the model window. Finish the current task, report
+results, limits, and remaining verifications, and do not start broad new work.
+```
+
+The reminder fires at most once per child runner and never blocks a turn.
+It travels as developer context in the live request; the durable transcript
+keeps only finalized history. Usage is the last-turn prompt size (input plus
+cache read/write tokens) against the resolved context window; an unknown
+window never triggers a reminder. The per-turn gauge resets when the host
+restarts, so a restarted child is reminded again only once fresh usage past
+the threshold arrives.
 
 Retrieve the saved result without executing a model:
 
@@ -125,16 +132,14 @@ Retrieve the saved result without executing a model:
 ```
 
 Pass this to `subagent_status`, then reconcile the history and artifacts before
-repeating any side effects. Explicit `subagent_resume` after terminal exhaustion
-opens a fresh allowance of the **same size**, retaining the session, workspace,
-and cumulative cost. This permits additional spending; it does not enlarge the
-configured limit or automatically retry the task. The allowance baseline is
-journaled and survives restart. Ordinary non-exhausted follow-ups continue using
-the existing allowance.
+repeating any side effects. Explicit `subagent_resume` after a terminal failure
+continues the retained session, workspace, and cumulative cost. It does not
+automatically retry the task. Ordinary follow-ups continue the existing
+session.
 
 `required: true` makes a delegated result an obligation of the parent turn.
-Failed, cancelled, interrupted, and budget-exhausted required work remains
-unresolved until an explicit successful follow-up. Reading a partial handoff or
+Failed, cancelled, and interrupted required work remains
+unresolved until an explicit successful follow-up. Reading a saved result or
 accepting a recovery prompt does not satisfy the obligation. A host restart never
 retries it automatically.
 
@@ -175,14 +180,14 @@ The model-facing tools retain their logical names:
   returns a logical `subagent://<id>` reference.
 - `subagent_status` returns bounded current state for one child or the current
   set immediately. With `agent_id` and `include_result: true`, it also reads the
-  saved terminal result or partial handoff without model execution. Without this
+  saved terminal result without model execution. Without this
   option it remains metadata-only; foreign-owned results cannot be read.
   Result-read errors distinguish foreign ownership, a missing saved result,
   and permission denial without exposing filesystem paths or saved content.
 - `subagent_stop` stops one live child.
 - `subagent_resume` accepts an explicit follow-up prompt for an existing child.
-  After terminal budget exhaustion, this grants a fresh same-size allowance
-  while preserving progress. Inspect the saved handoff before resuming.
+  After a terminal failure, inspect the saved result before resuming; resume
+  continues the retained session.
 
 Child execution started by `subagent_spawn` is asynchronous unless it receives
 an explicit `wait` value. For an unwaited spawn, completion arrives through the
@@ -224,14 +229,14 @@ private local session data.
 
 Shared children use the host working directory. With `isolation: "worktree"`,
 zut prepares a detached Git worktree and captures a patch and changed-file list
-on successful completion or budget exhaustion. Budget-exhausted turns retain
+on successful completion or non-cancelled failure. Failed turns retain
 partial work in the worktree, along with any captured patch and changed-file
 list. zut never applies a captured patch automatically. Failed or interrupted
 worktrees are retained for inspection; an idle successful worktree is cleaned
 when its child is explicitly stopped.
 
 Use `subagent_status` with `agent_id` and `include_result: true` to retrieve the
-saved handoff, `changed_files`, and `patch_ref` when a patch was captured. The
+saved result, `changed_files`, and `patch_ref` when a patch was captured. The
 patch bytes are stored in `subagents/<child-id>/patch.diff` under the managed
 state root shown above; logical references are identifiers, not filesystem
 paths. Inspect the retained worktree and patch before resuming or applying
