@@ -39,6 +39,36 @@ func TestAnthropicDeveloperContextFollowsStableCacheBoundary(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatUsesSystemRoleForDeepSeekDeveloperContext(t *testing.T) {
+	tests := []struct {
+		name   string
+		client *openaiClient
+		model  string
+		want   string
+	}{
+		{name: "direct DeepSeek", client: NewDeepSeek("key", "").(*openaiClient), model: "deepseek-v4-flash", want: "system"},
+		{name: "OpenCode Go DeepSeek", client: NewOpenAICompat(ProviderOpenCodeGo, "key", "https://example.test/v1", "").(*openaiClient), model: "deepseek/deepseek-v4.1-flash", want: "system"},
+		{name: "OpenCode Go other model", client: NewOpenAICompat(ProviderOpenCodeGo, "key", "https://example.test/v1", "").(*openaiClient), model: "other/model", want: "developer"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := test.client.buildRequest(Request{
+				Model: test.model,
+				Messages: []Message{
+					{Role: RoleDeveloper, Content: []Content{TextBlock{Text: "dynamic host context"}}},
+					{Role: RoleUser, Content: []Content{TextBlock{Text: "user task"}}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(req.Messages) != 2 || req.Messages[0].Role != test.want || req.Messages[0].Content != "dynamic host context" {
+				t.Fatalf("messages = %#v, want developer context as %q", req.Messages, test.want)
+			}
+		})
+	}
+}
+
 func TestBedrockDeveloperContextFollowsStableCacheBoundary(t *testing.T) {
 	req, err := (&bedrockClient{region: "us-east-1"}).buildRequest(Request{
 		Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
