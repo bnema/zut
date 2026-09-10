@@ -166,8 +166,12 @@ func TestTurnRecoveryGoalDoesNotScheduleDuplicateWork(t *testing.T) {
 		PersistGoalRuntime: persist,
 	})
 	i.runCtx = context.Background()
-	if _, err := i.startGoalRun(current()); err != nil {
+	run, err := i.startGoalRun(current())
+	if err != nil {
 		t.Fatalf("startGoalRun error = %v", err)
+	}
+	if run == nil {
+		t.Fatal("startGoalRun did not start a run")
 	}
 	var events []core.AgentEvent
 	if err := ag.Prompt(context.Background(), "work", nil, func(ev core.AgentEvent) {
@@ -186,13 +190,18 @@ func TestTurnRecoveryGoalDoesNotScheduleDuplicateWork(t *testing.T) {
 	if recoveries != 1 {
 		t.Fatalf("recovery events = %d, want exactly one inner continuation", recoveries)
 	}
-	i.mu.Lock()
-	duplicate := i.goalRun != nil && i.goalRun.id != ""
-	i.mu.Unlock()
-	_ = duplicate
 	// The inner continuation must not start a second goal run: the run
 	// started above is still the single owner, and finishing it once must
 	// record accounting without scheduling another continuation here.
+	i.mu.Lock()
+	owner := i.goalRun
+	i.mu.Unlock()
+	if owner != run {
+		t.Fatal("inner continuation replaced the goal run: want the single owner started above")
+	}
+	if owner.goalID != "goal-1" {
+		t.Fatalf("goal run goalID = %q, want %q", owner.goalID, "goal-1")
+	}
 	if !i.finishGoalRun(false) {
 		t.Fatalf("finishGoalRun = false, want accounting for the single owner run")
 	}

@@ -68,9 +68,33 @@ func classifyTerminalAssistant(msg provider.Message) (reason string, incomplete 
 	return TurnRecoveryReasonMissingAnswer, true
 }
 
+// ToolDeniedError marks a tool execution refusal (permission scope,
+// allowlist, jail confinement, or admission gate) as distinct from an
+// ordinary tool failure. Tools return it through Execute; runOneTool
+// records the refusal so a later incomplete normal stop does not gain a
+// recovery prompt urging more actions. The Reason text is shown to the
+// model as the tool result, unchanged from the untyped errors it replaces.
+type ToolDeniedError struct {
+	Reason string
+}
+
+func (e *ToolDeniedError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "tool call denied"
+	}
+	return e.Reason
+}
+
+// asToolDeniedError reports whether err chains to a ToolDeniedError.
+func asToolDeniedError(err error) bool {
+	var denied *ToolDeniedError
+	return errors.As(err, &denied)
+}
+
 // markDeniedToolCall records that a tool invocation was refused at the
-// execution boundary (guard or confirmation denial). A denied invocation
-// must not gain a recovery prompt urging more actions.
+// execution boundary (guard or confirmation denial, or a denied tool
+// execution). A denied invocation must not gain a recovery prompt urging
+// more actions.
 func (a *Agent) markDeniedToolCall() {
 	a.mu.Lock()
 	a.deniedToolCall = true

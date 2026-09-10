@@ -53,7 +53,7 @@ func (s *Sandbox) CheckPath(path string) error {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
 	if !isUnder(rootAbs, target) {
-		return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
+		return denied("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func (s *Sandbox) CheckCommand(cmd string) error {
 	lower := strings.ToLower(cmd)
 	for _, b := range banned {
 		if strings.Contains(lower, strings.ToLower(b)) {
-			return fmt.Errorf("jailed: command contains banned pattern %q (use /unjail to disable)", b)
+			return denied("jailed: command contains banned pattern %q (use /unjail to disable)", b)
 		}
 	}
 	// Heuristic: reject a leading `cd` that tries to move the shell out
@@ -261,7 +261,7 @@ func (s *Sandbox) checkCommandPath(path string) error {
 	}
 	expanded := expandHome(path)
 	if strings.HasPrefix(expanded, "/") && !filepath.IsAbs(expanded) {
-		return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
+		return denied("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
 	}
 	if !filepath.IsAbs(expanded) {
 		expanded = filepath.Join(s.Root, filepath.FromSlash(expanded))
@@ -271,7 +271,7 @@ func (s *Sandbox) checkCommandPath(path string) error {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
 	if !isUnder(rootAbs, target) {
-		return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
+		return denied("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
 	}
 	return nil
 }
@@ -291,7 +291,7 @@ func (s *Sandbox) checkCDTarget(dir string) error {
 	// back inside root, so a `cd /etc` escape would slip through. Treat
 	// it as an unconditional escape attempt: outside any project root.
 	if strings.HasPrefix(expanded, "/") && !filepath.IsAbs(expanded) {
-		return fmt.Errorf("jailed: cd outside sandbox root is not allowed (use /unjail to disable)")
+		return denied("jailed: cd outside sandbox root is not allowed (use /unjail to disable)")
 	}
 	if !filepath.IsAbs(expanded) {
 		// Relative targets (including `..`) resolve against the sandbox
@@ -303,7 +303,7 @@ func (s *Sandbox) checkCDTarget(dir string) error {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
 	if !isUnder(rootAbs, target) {
-		return fmt.Errorf("jailed: cd outside sandbox root is not allowed (use /unjail to disable)")
+		return denied("jailed: cd outside sandbox root is not allowed (use /unjail to disable)")
 	}
 	return nil
 }

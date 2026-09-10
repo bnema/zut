@@ -423,6 +423,86 @@ func TestAgentTurnRecoveryDeniedToolNoRecovery(t *testing.T) {
 	}
 }
 
+// TestAgentTurnRecoveryDeniedExecuteNoRecovery: a permission refusal
+// returned from tool Execute (not the BeforeToolExecute hook) is also a
+// denial. The model sees the refusal text as the tool result, and a later
+// incomplete normal stop must not gain a recovery prompt urging more work.
+func TestAgentTurnRecoveryDeniedExecuteNoRecovery(t *testing.T) {
+	client := &turnRecoveryScriptClient{turns: []turnRecoveryTurn{
+		{content: []provider.Content{provider.ToolCallBlock{ID: "c1", Name: "result", Arguments: json.RawMessage(`{}`)}}, stop: provider.StopToolUse},
+		{content: nil, stop: provider.StopEnd},
+	}}
+	agent := NewAgent(client, "test-model", "system", Registry{
+		"result": &resultTool{err: &ToolDeniedError{Reason: "permission denied: bash command \"rm\" is not in allowlist"}},
+	})
+	var events []AgentEvent
+	if err := runPrompt(t, agent, &events); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := client.Calls(); got != 2 {
+		t.Fatalf("provider calls = %d, want 2", got)
+	}
+	if got := countEvents(events, func(ev AgentEvent) bool {
+		_, ok := ev.(EvTurnRecovery)
+		return ok
+	}); got != 0 {
+		t.Fatalf("EvTurnRecovery count = %d, want 0 after Execute refusal", got)
+	}
+	for _, m := range agent.Messages() {
+		if m.Meta[turnRecoveryMetaKey] == "true" {
+			t.Fatal("recovery synthetic message appended after Execute refusal")
+		}
+	}
+	// The refusal text itself must still reach the model as the tool
+	// result so it can propose a different action.
+	found := false
+	for _, m := range agent.Messages() {
+		if m.Role != provider.RoleTool {
+			continue
+		}
+		for _, c := range m.Content {
+			if tr, ok := c.(provider.ToolResultBlock); ok && tr.IsError {
+				for _, inner := range tr.Content {
+					if tb, ok := inner.(provider.TextBlock); ok && strings.Contains(tb.Text, "permission denied") {
+						found = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("refusal text missing from tool result")
+	}
+}
+
+// TestAgentTurnRecoveryDenialLatchIsSticky: the denial latch is
+// intentionally fail-closed for the whole top-level invocation. An early
+// unrelated denial suppresses later recovery too, so a silent ending
+// after a denial succeeds without urging more actions rather than
+// recovering or erroring. This pins the conservative semantic.
+func TestAgentTurnRecoveryDenialLatchIsSticky(t *testing.T) {
+	client := &turnRecoveryScriptClient{turns: []turnRecoveryTurn{
+		{content: []provider.Content{provider.ToolCallBlock{ID: "c1", Name: "result", Arguments: json.RawMessage(`{}`)}}, stop: provider.StopToolUse},
+		{content: nil, stop: provider.StopEnd},
+	}}
+	agent := NewAgent(client, "test-model", "system", Registry{
+		"result": &resultTool{result: ToolResult{Content: []provider.Content{provider.TextBlock{Text: "ok"}}}},
+	})
+	agent.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		return false, "tool call refused by user", nil
+	}
+	var events []AgentEvent
+	if err := runPrompt(t, agent, &events); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if got := countEvents(events, func(ev AgentEvent) bool {
+		_, ok := ev.(EvTurnRecovery)
+		return ok
+	}); got != 0 {
+		t.Fatalf("EvTurnRecovery count = %d, want 0: early denial suppresses later recovery", got)
+	}
+}
+
 // TestAgentTurnRecoveryGuardDenial likewise covers the BeforeTurn guard:
 // a guard-blocked turn is not a missing answer.
 func TestAgentTurnRecoveryGuardDenial(t *testing.T) {

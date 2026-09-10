@@ -1432,6 +1432,13 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 		sink(EvToolProgress{ID: tc.ID, Text: text})
 	})
 	if err != nil {
+		// A refused execution (permission scope, allowlist, jail, or
+		// admission gate) is tracked separately from an ordinary tool
+		// error: like a guard or confirmation denial, it must not gain
+		// a recovery prompt urging more actions.
+		if asToolDeniedError(err) {
+			a.markDeniedToolCall()
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return ToolResult{
 				Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
