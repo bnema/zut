@@ -176,6 +176,9 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				if current := i.cfg.CurrentGoal(); current != nil {
 					i.goalStatus = current.Status
 				}
+				// A superseding replacement owns its own lifecycle; a pending
+				// Esc return for the replaced goal must not fire.
+				i.interruptedGoalReturn = nil
 			} else if update.Status == core.GoalActive {
 				// A manager may advance a terminal goal to the next persisted
 				// goal in the same mission. Do not let a late tool result resume
@@ -185,6 +188,11 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				}
 			} else if i.goalStatus == core.GoalActive {
 				i.goalStatus = update.Status
+				// Terminal update_goal transitions settle the mission; an Esc
+				// return for the settled goal is inert by identity, drop it.
+				if update.Status == core.GoalDone || update.Status == core.GoalBlocked {
+					i.interruptedGoalReturn = nil
+				}
 			}
 		}
 	case core.EvPlanUpdate:

@@ -188,6 +188,10 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 		if prompt != "" || len(action.Images) != 0 {
 			i.submitOrQueueMessage(core.QueuedMessage{Text: prompt, Images: action.Images, HostEvent: len(action.Completions) != 0}, false)
 		} else if action.Reason == orchestration.WakeGoal {
+			// Esc-armed reassessment keeps the next turn for user input.
+			if i.interruptedPromptPending() {
+				continue
+			}
 			parent := i.runCtx
 			if parent == nil {
 				parent = context.Background()
@@ -235,7 +239,12 @@ func (i *Interactive) releaseCompletionDeliveryHold() {
 	if i.completionDeliveryHolds == 0 {
 		// The coordinator must observe the goal before sealing the wave, so a
 		// pending worker wins the wake decision instead of a direct continuation.
+		// An Esc-armed reassessment prompt suppresses the wake: the next
+		// ordinary user message owns the turn, not autonomous work.
 		_, goalActive := i.goalContinuationMessage()
+		if i.interruptedPromptPending() {
+			goalActive = false
+		}
 		coordinator := i.ensureCoordinatorLocked()
 		coordinator.Apply(orchestration.Event{Kind: orchestration.EventGoalChanged, GoalActive: goalActive})
 		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions

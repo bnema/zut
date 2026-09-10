@@ -194,6 +194,13 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	if persistResetHandoff {
 		i.persistCompactHandoff(resetHandoff)
 	}
+	// Bind a pending Esc interruption to the ordinary user turn that is
+	// actually starting. Queued-while-busy prompts do not consume it; only
+	// this start path does, so the hidden instruction precedes the prompt
+	// that owns the single automatic goal return.
+	if !continueExisting {
+		i.consumeInterruptedGoalPrompt()
+	}
 
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
@@ -336,8 +343,20 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if terminalGoalError {
 			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
 		}
+		// A cancelled or failed turn unwinds without scheduling autonomous
+		// work below. Preserve a freshly armed Esc return for the next
+		// ordinary prompt; drop only a return already bound to this turn.
+		if ctx.Err() != nil || err != nil {
+			i.mu.Lock()
+			if state := i.interruptedGoalReturn; state != nil && state.returnAfterTurn {
+				i.interruptedGoalReturn = nil
+			}
+			i.mu.Unlock()
+		}
 		goalContextLimited := lastStop == provider.StopLength
-		continueGoal := i.finishGoalRun(goalContextLimited)
+		// Cancellation is user action, not model inaction: unwind the lease
+		// without consuming the no-progress allowance or stalling the goal.
+		continueGoal := i.finishGoalRunCancelled(goalContextLimited, ctx.Err() != nil)
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
@@ -411,10 +430,34 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if recoverContextOverflow || shouldAutoCompact {
 			i.resetStreamingStateLocked()
 		}
-		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || hasScheduled || agentQueued > 0 || continueGoal, offer, recoverContextOverflow, shouldAutoCompact)
+		// A clean ordinary turn that owns a pending Esc return resumes the
+		// same still-active goal exactly once through the existing scheduler.
+		// It yields to every existing priority above; terminal, paused, or
+		// replaced goals never resume because the match check fails.
+		interruptedReturn := false
+		if err == nil && ctx.Err() == nil && !awaitingPre && !hasNext && !hasScheduled && !continueQueued && !offer && !recoverContextOverflow && !shouldAutoCompact && !continueStatusRescue && !continueGoal {
+			state := i.interruptedGoalReturn
+			if state != nil && state.returnAfterTurn && i.interruptedGoalMatchesLocked() {
+				// Consume only after matching: the match helper reads the
+				// state being consumed.
+				i.interruptedGoalReturn = nil
+				interruptedReturn = true
+			}
+		} else if ctx.Err() == nil && err == nil {
+			// Another follow-up won this turn: keep an armed-but-unbound
+			// interruption pending without consuming the one-shot return.
+			// A bound return that lost priority is inert until replaced.
+			if state := i.interruptedGoalReturn; state != nil && state.returnAfterTurn {
+				i.interruptedGoalReturn = nil
+			}
+		}
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || hasScheduled || agentQueued > 0 || continueGoal || interruptedReturn, offer, recoverContextOverflow, shouldAutoCompact)
 		i.planCurrent = 0
 		i.planTotal = 0
-		i.busy = hasNext || hasScheduled || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
+		// interruptedReturn already reserves the turn slot (like the
+		// compact handoff path below): the reserved continuation owns
+		// busy and must not re-enter the idle gate.
+		i.busy = hasNext || hasScheduled || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact || interruptedReturn
 		i.mu.Unlock()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
@@ -457,6 +500,11 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			})
 		case continueGoal:
 			i.requestGoalContinuationIfIdle(parent)
+		case interruptedReturn:
+			// busy is already reserved above; use the reserved entry point
+			// so the one-shot return cannot fail the idle gate and leak
+			// the reservation.
+			i.startReservedGoalContinuation(parent)
 		}
 	}()
 }

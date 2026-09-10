@@ -3,10 +3,26 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
 )
+
+func TestUpdateGoalToolDescriptionRequiresGoalsForSubstantialWork(t *testing.T) {
+	description := (&UpdateGoalTool{}).Description()
+	for _, clause := range []string{
+		"requires substantial multi-step work",
+		"before substantial execution",
+		"Do not start a mission for brief questions, casual conversation",
+		"requests completed immediately",
+		"Incidental messages and interrupted turns do not end an active mission",
+	} {
+		if !strings.Contains(description, clause) {
+			t.Fatalf("update_goal description missing %q: %q", clause, description)
+		}
+	}
+}
 
 func TestUpdateGoalToolReturnsPersistableStatus(t *testing.T) {
 	tool := &UpdateGoalTool{}

@@ -42,7 +42,7 @@ type GoalUpdate struct {
 func (t *UpdateGoalTool) Name() string { return UpdateGoalToolName }
 
 func (t *UpdateGoalTool) Description() string {
-	return "Start your own mission when none is active, set the next concrete goal within an active mission, mark the active goal complete or blocked, or supersede it with a necessary replacement inside the same mission. Never broaden the mission or use superseded to avoid difficult work."
+	return "When no mission is active and the user's objective is clear, bounded, settled, and requires substantial multi-step work, call update_goal with status active before substantial execution. Do not start a mission for brief questions, casual conversation, or requests completed immediately. Inside a mission, set the next concrete goal, mark the active goal complete or blocked, or supersede it with a necessary replacement inside the same mission. Never broaden the mission or use superseded to avoid difficult work. Incidental messages and interrupted turns do not end an active mission."
 }
 
 func (t *UpdateGoalTool) Schema() json.RawMessage { return json.RawMessage(updateGoalSchema) }

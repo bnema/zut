@@ -824,6 +824,12 @@ type Interactive struct {
 	// inferred from rendered transcript rows.
 	compactContinuation compactContinuationState
 
+	// interruptedGoalReturn records an active goal whose running turn was
+	// cancelled by Esc. It is transient controller state, never persisted:
+	// the goal itself stays active and the next ordinary user turn owns a
+	// single automatic return to the same goal after it completes cleanly.
+	interruptedGoalReturn *interruptedGoalState
+
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
