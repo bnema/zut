@@ -26,8 +26,6 @@ func (c ResidentCompletion) Completion() Completion {
 		result.Status, result.Error = string(ResidentFailed), c.Err.Error()
 		if errors.Is(c.Err, context.Canceled) {
 			result.Status = string(ResidentInterrupted)
-		} else if errors.Is(c.Err, ErrBudgetExceeded) {
-			result.Status = string(ResidentBudgetExhausted)
 		}
 	}
 	return result

@@ -19,7 +19,7 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-var ErrIncompatibleResidentBudget = errors.New("resident journal: incompatible rollout budget; start a new subagent")
+var ErrIncompatibleResidentJournal = errors.New("resident journal: incompatible version; start a new subagent")
 
 const (
 	residentMetadataName       = "metadata.json"
@@ -37,7 +37,8 @@ const (
 	residentRecordToolCall     = "tool.call"
 	residentRecordToolResult   = "tool.result"
 	residentRecordUsage        = "usage"
-	residentJournalVersion     = 2
+	residentJournalVersion     = 3
+	residentJournalVersionV2   = 2
 	residentInterruptedText    = "tool interrupted by resident host restart"
 	residentMaxRecordBytes     = 2 << 20
 	residentResultSummaryBytes = 256 << 10
@@ -54,25 +55,26 @@ func PatchRef(id string) string   { return AgentRef(id) + "/patch" }
 type ResidentState string
 
 const (
-	ResidentQueued          ResidentState = "queued"
-	ResidentRunning         ResidentState = "running"
-	ResidentIdle            ResidentState = "idle"
-	ResidentCompleted       ResidentState = "completed"
-	ResidentFailed          ResidentState = "failed"
-	ResidentStopped         ResidentState = "stopped"
-	ResidentInterrupted     ResidentState = "interrupted"
-	ResidentBudgetExhausted ResidentState = "budget_exhausted"
+	ResidentQueued      ResidentState = "queued"
+	ResidentRunning     ResidentState = "running"
+	ResidentIdle        ResidentState = "idle"
+	ResidentCompleted   ResidentState = "completed"
+	ResidentFailed      ResidentState = "failed"
+	ResidentStopped     ResidentState = "stopped"
+	ResidentInterrupted ResidentState = "interrupted"
 )
 
 // Journal outcomes and result error codes are persisted compatibility values.
+// The residentV2 constants describe the removed rollout-budget stop; they
+// are read-only translation keys for v2 archives, never written.
 const (
-	residentOutcomeCompleted                = string(ResidentCompleted)
-	residentOutcomeFailed                   = string(ResidentFailed)
-	residentOutcomeInterrupted              = string(ResidentInterrupted)
-	residentOutcomeBudgetExhausted          = string(ResidentBudgetExhausted)
-	residentOutcomeCompletedBudgetExhausted = "completed_budget_exhausted"
-	residentErrorTurnFailed                 = "turn_failed"
-	residentErrorBudgetExhausted            = string(ResidentBudgetExhausted)
+	residentOutcomeCompleted                  = string(ResidentCompleted)
+	residentOutcomeFailed                     = string(ResidentFailed)
+	residentOutcomeInterrupted                = string(ResidentInterrupted)
+	residentV2OutcomeBudgetExhausted          = "budget_exhausted"
+	residentV2OutcomeCompletedBudgetExhausted = "completed_budget_exhausted"
+	residentErrorTurnFailed                   = "turn_failed"
+	residentV2ErrorBudgetExhausted            = "budget_exhausted"
 )
 
 // ResidentChildSpec is the non-secret configuration required to reconstruct
@@ -106,32 +108,28 @@ type ResidentChildSpec struct {
 	InheritSkills         *bool         `json:"inherit_skills,omitempty"`
 	Permissions           []string      `json:"permissions,omitempty"`
 	Required              bool          `json:"required,omitempty"`
-	BudgetLimit           int64         `json:"budget_limit,omitempty"`
-	BudgetRatio           float64       `json:"budget_ratio,omitempty"`
-	BudgetSource          string        `json:"budget_source,omitempty"`
 }
 
 type residentRecord struct {
-	Version        int                `json:"version"`
-	Type           string             `json:"type"`
-	Time           time.Time          `json:"time"`
-	Spec           *ResidentChildSpec `json:"spec,omitempty"`
-	TurnID         string             `json:"turn_id,omitempty"`
-	Prompt         string             `json:"prompt,omitempty"`
-	Outcome        string             `json:"outcome,omitempty"`
-	PatchRef       string             `json:"patch_ref,omitempty"`
-	ChangedFiles   []string           `json:"changed_files,omitempty"`
-	BudgetBaseline int64              `json:"budget_baseline,omitempty"`
-	Message        json.RawMessage    `json:"message,omitempty"`
-	ToolID         string             `json:"tool_id,omitempty"`
-	ToolName       string             `json:"tool_name,omitempty"`
-	ToolArgs       json.RawMessage    `json:"tool_args,omitempty"`
-	ToolResult     json.RawMessage    `json:"tool_result,omitempty"`
-	Usage          *provider.Usage    `json:"usage,omitempty"`
-	ContextUsed    int                `json:"context_used,omitempty"`
-	ContextMax     int                `json:"context_max,omitempty"`
-	Subscription   bool               `json:"subscription,omitempty"`
-	raw            json.RawMessage    `json:"-"`
+	Version      int                `json:"version"`
+	Type         string             `json:"type"`
+	Time         time.Time          `json:"time"`
+	Spec         *ResidentChildSpec `json:"spec,omitempty"`
+	TurnID       string             `json:"turn_id,omitempty"`
+	Prompt       string             `json:"prompt,omitempty"`
+	Outcome      string             `json:"outcome,omitempty"`
+	PatchRef     string             `json:"patch_ref,omitempty"`
+	ChangedFiles []string           `json:"changed_files,omitempty"`
+	Message      json.RawMessage    `json:"message,omitempty"`
+	ToolID       string             `json:"tool_id,omitempty"`
+	ToolName     string             `json:"tool_name,omitempty"`
+	ToolArgs     json.RawMessage    `json:"tool_args,omitempty"`
+	ToolResult   json.RawMessage    `json:"tool_result,omitempty"`
+	Usage        *provider.Usage    `json:"usage,omitempty"`
+	ContextUsed  int                `json:"context_used,omitempty"`
+	ContextMax   int                `json:"context_max,omitempty"`
+	Subscription bool               `json:"subscription,omitempty"`
+	raw          json.RawMessage    `json:"-"`
 }
 
 // RecordAgentEvent persists finalized provider-neutral transcript events. It
@@ -245,7 +243,6 @@ type ResidentMetadata struct {
 	State           ResidentState  `json:"state"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	Usage           provider.Usage `json:"usage,omitempty"`
-	BudgetBaseline  int64          `json:"budget_baseline,omitempty"`
 	ContextUsed     int            `json:"context_used,omitempty"`
 	ContextMax      int            `json:"context_max,omitempty"`
 	Subscription    bool           `json:"subscription,omitempty"`
@@ -255,16 +252,19 @@ type ResidentMetadata struct {
 // remains authoritative for detailed content; this file allows status and
 // resource readers to locate a terminal outcome without reading it all.
 type ResidentResult struct {
-	Version      int           `json:"version"`
-	ID           string        `json:"id"`
-	TurnID       string        `json:"turn_id"`
-	State        ResidentState `json:"state"`
-	Summary      string        `json:"summary,omitempty"`
-	Handoff      string        `json:"handoff,omitempty"`
-	ErrorCode    string        `json:"error_code,omitempty"`
-	PatchRef     string        `json:"patch_ref,omitempty"`
-	ChangedFiles []string      `json:"changed_files,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
+	Version int           `json:"version"`
+	ID      string        `json:"id"`
+	TurnID  string        `json:"turn_id"`
+	State   ResidentState `json:"state"`
+	Summary string        `json:"summary,omitempty"`
+	// Handoff is deprecated: it carried the auto-generated partial handoff
+	// of the removed rollout-budget stop. It stays empty for new results
+	// and remains readable only for archived v2 results.
+	Handoff      string    `json:"handoff,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	PatchRef     string    `json:"patch_ref,omitempty"`
+	ChangedFiles []string  `json:"changed_files,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // ResidentJournal serializes durable child records. It is intentionally a
@@ -277,7 +277,6 @@ type ResidentJournal struct {
 	latestSummary          string
 	usageMu                sync.RWMutex
 	usage                  provider.Usage
-	budgetBaseline         int64
 	usageRecordPersisted   bool
 	usageMetadataPersisted bool
 	contextUsed            int
@@ -291,11 +290,10 @@ type ResidentJournal struct {
 // ResidentUsageSnapshot is the bounded usage projection shared by durable and
 // live resident state.
 type ResidentUsageSnapshot struct {
-	Usage          provider.Usage
-	ContextUsed    int
-	ContextMax     int
-	Subscription   bool
-	BudgetBaseline int64
+	Usage        provider.Usage
+	ContextUsed  int
+	ContextMax   int
+	Subscription bool
 }
 
 // ConfigureUsage records resolved model metadata and restores the latest
@@ -307,12 +305,11 @@ func (j *ResidentJournal) ConfigureUsage(contextMax int, subscription bool) Resi
 	j.usageMu.Lock()
 	if metadata, err := ReadResidentMetadata(filepath.Join(j.dir, residentMetadataName)); err == nil {
 		j.usage = metadata.Usage
-		j.budgetBaseline = metadata.BudgetBaseline
 		j.contextUsed = metadata.ContextUsed
 	}
 	j.contextMax = contextMax
 	j.subscription = subscription
-	snapshot := ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription, BudgetBaseline: j.budgetBaseline}
+	snapshot := ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription}
 	j.usageMu.Unlock()
 	return snapshot
 }
@@ -323,12 +320,7 @@ func (j *ResidentJournal) usageSnapshot() ResidentUsageSnapshot {
 	}
 	j.usageMu.RLock()
 	defer j.usageMu.RUnlock()
-	return ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription, BudgetBaseline: j.budgetBaseline}
-}
-
-// BudgetBaseline is the durable weighted usage at the latest explicit recovery.
-func (j *ResidentJournal) BudgetBaseline() int64 {
-	return j.usageSnapshot().BudgetBaseline
+	return ResidentUsageSnapshot{Usage: j.usage, ContextUsed: j.contextUsed, ContextMax: j.contextMax, Subscription: j.subscription}
 }
 
 func (j *ResidentJournal) usageRecordPersistence(record residentRecord) (durable, metadataPersisted bool) {
@@ -412,14 +404,6 @@ func (j *ResidentJournal) Dir() string {
 	return j.dir
 }
 
-// ValidateResidentBudget ensures a new child has a model-context budget.
-func ValidateResidentBudget(spec ResidentChildSpec) error {
-	if spec.BudgetLimit <= 0 || spec.BudgetSource != "model_context" {
-		return ErrIncompatibleResidentBudget
-	}
-	return nil
-}
-
 // Accept establishes the authoritative spawn commit point. The transcript is
 // synced before metadata is projected so a crash cannot fabricate acceptance.
 func (j *ResidentJournal) Accept(spec ResidentChildSpec, prompt string) error {
@@ -465,21 +449,9 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 		return errors.New("resident journal: closed")
 	}
 	now := time.Now().UTC()
-	usage := j.usageSnapshot()
-	baseline := usage.BudgetBaseline
-	metadata, err := ReadResidentMetadata(filepath.Join(j.dir, residentMetadataName))
-	if err != nil {
+	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordTurnAccepted, Time: now, TurnID: turnID, Prompt: prompt}); err != nil {
 		return err
 	}
-	if metadata.State != ResidentRunning && metadata.State != ResidentQueued && budgetSnapshotSince(usage.Usage, spec.BudgetLimit, baseline).State == BudgetExceeded {
-		baseline = WeightedBudgetUsage(usage.Usage)
-	}
-	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordTurnAccepted, Time: now, TurnID: turnID, Prompt: prompt, BudgetBaseline: baseline}); err != nil {
-		return err
-	}
-	j.usageMu.Lock()
-	j.budgetBaseline = baseline
-	j.usageMu.Unlock()
 	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentQueued, now))
 }
 
@@ -515,18 +487,10 @@ func (j *ResidentJournal) finishTurn(spec ResidentChildSpec, turnID string, turn
 	if errors.Is(turnErr, context.Canceled) {
 		state, outcome = ResidentInterrupted, residentOutcomeInterrupted
 		recordType = residentRecordInterrupted
-	} else if errors.Is(turnErr, ErrBudgetExceeded) {
-		state, outcome = ResidentBudgetExhausted, residentOutcomeBudgetExhausted
-	} else if turnErr == nil && budgetSnapshotSince(j.usageSnapshot().Usage, spec.BudgetLimit, j.BudgetBaseline()).State == BudgetExceeded {
-		state, outcome = ResidentCompleted, residentOutcomeCompletedBudgetExhausted
 	}
 	result := ResidentResult{Version: residentJournalVersion, ID: spec.ID, TurnID: turnID, State: state, Summary: j.latestAssistantSummary(), CreatedAt: time.Now().UTC()}
 	if turnErr != nil {
 		result.ErrorCode = residentErrorTurnFailed
-	}
-	if state == ResidentBudgetExhausted {
-		result.ErrorCode = residentErrorBudgetExhausted
-		result.Handoff = residentBudgetHandoff(j.dir, spec)
 	}
 	if capture != nil {
 		result.ChangedFiles = append([]string(nil), capture.ChangedFiles...)
@@ -625,7 +589,7 @@ func (j *ResidentJournal) metadata(spec ResidentChildSpec, state ResidentState, 
 	return ResidentMetadata{
 		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
 		RootCacheID: spec.RootCacheID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: updatedAt,
-		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription, BudgetBaseline: usage.BudgetBaseline,
+		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
 	}
 }
 
@@ -737,8 +701,17 @@ func ReadResidentResult(path string) (ResidentResult, error) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return ResidentResult{}, err
 	}
-	if result.Version != residentJournalVersion || result.ID == "" || result.TurnID == "" {
+	if result.Version != residentJournalVersion && result.Version != residentJournalVersionV2 {
 		return ResidentResult{}, errors.New("resident result: invalid projection")
+	}
+	if result.ID == "" || result.TurnID == "" {
+		return ResidentResult{}, errors.New("resident result: invalid projection")
+	}
+	if result.Version == residentJournalVersionV2 && result.State == ResidentState(residentV2OutcomeBudgetExhausted) {
+		// v2 translation: a budget stop was a failure to finish the accepted
+		// turn, never a success. The archived handoff and error code stay
+		// readable as historical provenance.
+		result.State = ResidentFailed
 	}
 	return result, nil
 }
@@ -807,8 +780,8 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	if len(records) == 0 || records[0].Type != residentRecordAccepted || records[0].Spec == nil {
 		return ResidentMetadata{}, errors.New("resident journal: missing accepted child record")
 	}
-	if records[0].Version != residentJournalVersion {
-		return ResidentMetadata{}, ErrIncompatibleResidentBudget
+	if records[0].Version != residentJournalVersion && records[0].Version != residentJournalVersionV2 {
+		return ResidentMetadata{}, ErrIncompatibleResidentJournal
 	}
 	if repaired, ok := repairLegacyFalseRecovery(records); ok {
 		if err := journal.rewriteTranscript(repaired); err != nil {
@@ -820,6 +793,13 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	if spec.ID == "" || spec.SessionID == "" {
 		return ResidentMetadata{}, errors.New("resident journal: invalid accepted child record")
 	}
+	// v2 journals carry the removed rollout-budget outcomes and baselines;
+	// they are read with explicit translation below. Translation rebuilds
+	// the metadata/result projections; the transcript itself is never
+	// rewritten by translation (only the legacy false-recovery repair
+	// rewrites it, with a backup). Unknown versions are rejected above so
+	// no archive becomes false success.
+	translateV2BudgetOutcome := records[0].Version == residentJournalVersionV2
 	state := ResidentQueued
 	lastStateAt := records[0].Time
 	var lastFinished residentRecord
@@ -838,13 +818,18 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 		if index > 0 && record.Type == residentRecordAccepted {
 			return ResidentMetadata{}, errors.New("resident journal: duplicate accepted child record")
 		}
+		// Resumed v2 journals legitimately mix versions: the v2 prefix
+		// stays on disk while new records stamp v3. Any other version is
+		// corruption, never a silent success.
+		if record.Version != residentJournalVersion && record.Version != residentJournalVersionV2 {
+			return ResidentMetadata{}, ErrIncompatibleResidentJournal
+		}
 		switch record.Type {
 		case residentRecordTurnAccepted:
 			if record.TurnID == "" || seenTurns[record.TurnID] != "" {
 				return ResidentMetadata{}, errors.New("resident journal: invalid accepted turn record")
 			}
 			seenTurns[record.TurnID] = residentRecordTurnAccepted
-			usage.BudgetBaseline = record.BudgetBaseline
 			lastStateAt = record.Time
 		case residentRecordTurnStarted:
 			if record.TurnID == "" || (seenTurns[record.TurnID] != residentRecordTurnAccepted && record.TurnID != spec.InitialTurnID) {
@@ -863,11 +848,28 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			switch record.Outcome {
 			case residentOutcomeFailed:
 				state = ResidentFailed
-			case residentOutcomeBudgetExhausted:
-				state = ResidentBudgetExhausted
-			case residentOutcomeCompletedBudgetExhausted:
+			case residentV2OutcomeBudgetExhausted:
+				if translateV2BudgetOutcome {
+					// v2 outcome: the cumulative rollout budget no longer
+					// exists. A budget stop was a failure to finish the
+					// accepted turn, so reconcile it as failed — never
+					// silently as success. Required work stays unmet until
+					// an explicit successful follow-up.
+					state = ResidentFailed
+				} else {
+					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+				}
+			case residentV2OutcomeCompletedBudgetExhausted:
+				if !translateV2BudgetOutcome {
+					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+				}
+				// The turn completed before the budget check fired. It is
+				// a genuine success.
 				state = ResidentCompleted
 			default:
+				if record.Outcome != residentOutcomeCompleted {
+					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+				}
 				state = ResidentIdle
 			}
 			lastStateAt = record.Time
@@ -914,7 +916,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			if record.Usage == nil {
 				return ResidentMetadata{}, errors.New("resident journal: invalid usage record")
 			}
-			usage = ResidentUsageSnapshot{Usage: *record.Usage, ContextUsed: record.ContextUsed, ContextMax: record.ContextMax, Subscription: record.Subscription, BudgetBaseline: usage.BudgetBaseline}
+			usage = ResidentUsageSnapshot{Usage: *record.Usage, ContextUsed: record.ContextUsed, ContextMax: record.ContextMax, Subscription: record.Subscription}
 		}
 	}
 	if lastStateAt.IsZero() {
@@ -923,7 +925,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	metadata := ResidentMetadata{
 		Version: residentJournalVersion, ID: spec.ID, SessionID: spec.SessionID,
 		RootCacheID: spec.RootCacheID, ParentSessionID: spec.ParentSessionID, State: state, UpdatedAt: lastStateAt,
-		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription, BudgetBaseline: usage.BudgetBaseline,
+		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
 	}
 	needsInterruption := state == ResidentQueued || state == ResidentRunning
 	needsToolRepair := len(toolCalls) != len(toolResults)
@@ -1170,9 +1172,10 @@ func rebuildResidentResult(dir string, spec ResidentChildSpec, metadata Resident
 	switch finished.Outcome {
 	case residentOutcomeFailed:
 		result.ErrorCode = residentErrorTurnFailed
-	case residentOutcomeBudgetExhausted:
-		result.ErrorCode = residentErrorBudgetExhausted
-		result.Handoff = residentBudgetHandoff(dir, spec)
+	case residentV2OutcomeBudgetExhausted, residentV2OutcomeCompletedBudgetExhausted:
+		// Historical v2 outcome. The error code stays for provenance; no
+		// handoff is generated (deprecated, empty for new results).
+		result.ErrorCode = residentV2ErrorBudgetExhausted
 	}
 	return writeResidentResult(dir, result)
 }

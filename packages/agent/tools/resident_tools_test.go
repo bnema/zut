@@ -14,17 +14,18 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestResidentStatusRetrievesBudgetHandoffWithoutExecution(t *testing.T) {
+func TestResidentStatusRetrievesFailedResultWithoutExecution(t *testing.T) {
+	failure := errors.New("worker failed")
 	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
 		return func(context.Context, string) error {
 			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "partial finding"}}}}); err != nil {
 				return err
 			}
-			return subagents.ErrBudgetExceeded
+			return failure
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spec := subagents.ResidentChildSpec{ID: "budget-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
+	spec := subagents.ResidentChildSpec{ID: "failed-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
 	completed, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
 	defer cancel()
 	if _, err := manager.Spawn(t.Context(), spec, "investigate"); err != nil {
@@ -37,19 +38,19 @@ func TestResidentStatusRetrievesBudgetHandoffWithoutExecution(t *testing.T) {
 	}
 	status := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
 	for _, include := range []bool{false, true} {
-		raw := json.RawMessage(`{"agent_id":"budget-status"}`)
+		raw := json.RawMessage(`{"agent_id":"failed-status"}`)
 		if include {
-			raw = json.RawMessage(`{"agent_id":"budget-status","include_result":true}`)
+			raw = json.RawMessage(`{"agent_id":"failed-status","include_result":true}`)
 		}
 		result, err := status.Execute(t.Context(), raw, nil)
 		if err != nil || result.IsError {
 			t.Fatalf("status: %#v, %v", result, err)
 		}
 		response := result.Details.(subagentStatusResponse)
-		if response.Agent.State != subagents.ResidentBudgetExhausted || (response.Result != nil) != include {
+		if response.Agent.State != subagents.ResidentFailed || (response.Result != nil) != include {
 			t.Fatalf("response = %#v", response)
 		}
-		if include && (!strings.Contains(response.Result.Handoff, "partial finding") || response.Result.ErrorCode != "budget_exhausted") {
+		if include && (response.Result.Handoff != "" || response.Result.ErrorCode != "turn_failed" || response.Result.Summary != "partial finding") {
 			t.Fatalf("result = %#v", response.Result)
 		}
 	}
@@ -58,7 +59,7 @@ func TestResidentStatusRetrievesBudgetHandoffWithoutExecution(t *testing.T) {
 		t.Fatalf("missing child ID must fail: %#v, %v", result, err)
 	}
 	if len(manager.UnmetRequired()) != 1 {
-		t.Fatal("reading a handoff satisfied required work")
+		t.Fatal("reading a result satisfied required work")
 	}
 }
 
@@ -135,9 +136,8 @@ func TestResidentSpawnWaitReturnsInitialCompletion(t *testing.T) {
 	}{
 		{"success", nil, "completed"},
 		{"failure", errors.New("worker failed"), "failed"},
-		{"budget", subagents.ErrBudgetExceeded, "budget_exhausted"},
 		{"cancellation", context.Canceled, "interrupted"},
-		{"cancellation and budget", errors.Join(context.Canceled, subagents.ErrBudgetExceeded), "interrupted"},
+		{"cancellation with failure", errors.Join(context.Canceled, errors.New("worker failed")), "interrupted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
@@ -326,12 +326,16 @@ func toolResultText(t *testing.T, result core.ToolResult) string {
 	return block.Text
 }
 
-func TestPublicResidentStatusIncludesRolloutBudget(t *testing.T) {
+func TestPublicResidentStatusOmitsBudget(t *testing.T) {
 	entry := publicResidentStatus(subagents.ResidentSnapshot{
-		ID: "budgeted", Budget: subagents.BudgetSnapshot{Used: 70, Limit: 100, Percent: 70, State: subagents.BudgetNormal}, BudgetSource: "model_context",
+		ID: "resident", State: subagents.ResidentIdle, Provider: "openai", Model: "test",
 	})
-	if entry.Budget == nil || entry.Budget.State != subagents.BudgetNormal || entry.BudgetSource != "model_context" {
-		t.Fatalf("status budget = %#v", entry)
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "budget") {
+		t.Fatalf("status entry carries budget = %s", encoded)
 	}
 }
 

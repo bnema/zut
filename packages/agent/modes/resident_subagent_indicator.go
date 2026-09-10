@@ -101,9 +101,6 @@ func residentUsageMetadata(snapshot subagents.ResidentSnapshot) string {
 	if context := tui.ContextUsageText(snapshot.ContextUsed, snapshot.ContextMax); context != "" {
 		parts = append(parts, context)
 	}
-	if snapshot.Budget.Limit > 0 {
-		parts = append(parts, fmt.Sprintf("budget:%s %d%%/%s", snapshot.Budget.State, snapshot.Budget.Percent, compactResidentTokens(snapshot.Budget.Limit)))
-	}
 	return strings.Join(parts, " ")
 }
 

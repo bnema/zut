@@ -55,14 +55,14 @@ func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 	}
 }
 
-func TestResidentManagerCompletedAnswerAtBudgetLimitCanResume(t *testing.T) {
+func TestResidentManagerCompletedAnswerCanResume(t *testing.T) {
 	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
 		return func(context.Context, string) error {
 			return journal.RecordAgentEvent(core.EvUsage{Cumulative: provider.Usage{InputTokens: 100}})
 		}, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spec := ResidentChildSpec{ID: "budget-exhausted", SessionID: "budget-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5", BudgetLimit: 100}
+	spec := ResidentChildSpec{ID: "completed-child", SessionID: "completed-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
 	completion, cancelWait := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
 	defer cancelWait()
 	if _, err := manager.Spawn(context.Background(), spec, "review"); err != nil {
@@ -73,7 +73,7 @@ func TestResidentManagerCompletedAnswerAtBudgetLimitCanResume(t *testing.T) {
 		t.Fatalf("initial completion error = %v", result.Err)
 	}
 	snapshot, ok := manager.SnapshotFor(spec.ID)
-	if !ok || snapshot.State != ResidentCompleted || snapshot.Budget.State != BudgetExceeded {
+	if !ok || snapshot.State != ResidentIdle {
 		t.Fatalf("terminal snapshot = %#v, found=%t", snapshot, ok)
 	}
 	if err := manager.Resume(context.Background(), spec.ID, "continue"); err != nil {
@@ -472,6 +472,46 @@ func TestResidentManagerCapturesSuccessfulWorktreeBeforeCleanup(t *testing.T) {
 	}
 }
 
+func TestResidentManagerCapturesFailedWorktreePatch(t *testing.T) {
+	root := t.TempDir()
+	workspace := &testResidentWorkspace{dir: "/isolated", mode: WorkspaceWorktree, capture: WorkspaceCapture{Patch: []byte("partial patch"), ChangedFiles: []string{"changed.go"}}}
+	manager := NewResidentManagerWithWorkspace(root, 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) {
+		return workspace, nil
+	}, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return errors.New("turn failed") }, nil
+	})
+	defer manager.Close(context.Background())
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "failed-capture", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo", WorkspaceMode: WorkspaceWorktree}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for manager.Snapshot()[0].State == ResidentRunning || manager.Snapshot()[0].State == ResidentQueued {
+		if time.Now().After(deadline) {
+			t.Fatal("turn did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// A non-canceled failure still captures partial work, but the turn
+	// stays failed: capture never converts failure to success.
+	if !workspace.captured {
+		t.Fatal("failed worktree was not captured")
+	}
+	snapshot := manager.Snapshot()[0]
+	if snapshot.State != ResidentFailed {
+		t.Fatalf("snapshot state = %q, want failed", snapshot.State)
+	}
+	result, err := manager.Result("failed-capture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PatchRef != PatchRef("failed-capture") || len(result.ChangedFiles) != 1 || result.ChangedFiles[0] != "changed.go" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Handoff != "" {
+		t.Fatalf("new failure result carries handoff %q, want empty", result.Handoff)
+	}
+}
+
 func TestResidentManagerRetainsFailedWorktree(t *testing.T) {
 	workspace := &testResidentWorkspace{dir: "/isolated", mode: WorkspaceWorktree}
 	manager := NewResidentManagerWithWorkspace(t.TempDir(), 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) { return workspace, nil }, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
@@ -488,7 +528,9 @@ func TestResidentManagerRetainsFailedWorktree(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if workspace.captured || workspace.cleaned {
+	// Non-canceled failures capture partial work for recovery, but the
+	// worktree is retained (never cleaned) until an explicit stop or close.
+	if !workspace.captured || workspace.cleaned {
 		t.Fatalf("failed worktree captured=%t cleaned=%t", workspace.captured, workspace.cleaned)
 	}
 }
@@ -584,13 +626,13 @@ func TestResidentManagerRejectsDuplicateBeforeSecondJournalAcceptance(t *testing
 	}
 }
 
-func TestResidentManagerReconcileSkipsIncompatibleBudgetJournal(t *testing.T) {
+func TestResidentManagerReconcileSkipsIncompatibleJournal(t *testing.T) {
 	root := t.TempDir()
-	journal, err := OpenResidentJournal(root, "legacy-budget")
+	journal, err := OpenResidentJournal(root, "legacy-version")
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := ResidentChildSpec{ID: "legacy-budget", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}
+	spec := ResidentChildSpec{ID: "legacy-version", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}
 	if err := journal.Accept(spec, "review"); err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +644,7 @@ func TestResidentManagerReconcileSkipsIncompatibleBudgetJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := strings.Replace(string(data), `"version":2`, `"version":1`, 1)
+	legacy := strings.Replace(string(data), `"version":3`, `"version":1`, 1)
 	if legacy == string(data) {
 		t.Fatal("accepted record has no journal version")
 	}
@@ -616,8 +658,8 @@ func TestResidentManagerReconcileSkipsIncompatibleBudgetJournal(t *testing.T) {
 			t.Fatalf("Reconcile errors = %v", errs)
 		}
 	}
-	if _, err := ReconcileResidentJournal(filepath.Dir(transcript)); !errors.Is(err, ErrIncompatibleResidentBudget) {
-		t.Fatalf("explicit reconciliation error = %v, want incompatible budget", err)
+	if _, err := ReconcileResidentJournal(filepath.Dir(transcript)); !errors.Is(err, ErrIncompatibleResidentJournal) {
+		t.Fatalf("explicit reconciliation error = %v, want incompatible version", err)
 	}
 	if snapshots := manager.Snapshot(); len(snapshots) != 0 {
 		t.Fatalf("snapshots = %#v", snapshots)

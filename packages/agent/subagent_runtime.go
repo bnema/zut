@@ -388,12 +388,6 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	}
 	childTools = expandWebCapabilityTools(childTools, allTools, permitted)
 	spec.Tools = childTools
-	budgetLimit, err := subagents.ContextBudgetLimit(resolved.ContextWindow)
-	if err != nil {
-		return subagents.ResidentChildSpec{}, err
-	}
-	spec.BudgetLimit = budgetLimit
-	spec.BudgetSource = "model_context"
 	return spec, nil
 }
 

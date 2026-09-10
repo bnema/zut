@@ -412,7 +412,7 @@ func (c *ResidentChild) run() {
 			}
 			terminalErr := result.err
 			var capture *WorkspaceCapture
-			if (terminalErr == nil || errors.Is(terminalErr, ErrBudgetExceeded)) && c.workspace != nil && c.workspace.Mode() == WorkspaceWorktree {
+			if (terminalErr == nil || !errors.Is(terminalErr, context.Canceled)) && c.workspace != nil && c.workspace.Mode() == WorkspaceWorktree {
 				captured, err := c.workspace.Capture(c.ctx)
 				if err != nil {
 					terminalErr = errors.Join(terminalErr, fmt.Errorf("capture resident worktree: %w", err))
@@ -423,9 +423,6 @@ func (c *ResidentChild) run() {
 			state := ResidentIdle
 			if terminalErr != nil {
 				state = ResidentFailed
-				if errors.Is(terminalErr, ErrBudgetExceeded) {
-					state = ResidentBudgetExhausted
-				}
 			}
 			summary := ""
 			persistenceFailed := false

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -93,7 +95,7 @@ func TestResidentChildSpecTracksFastMode(t *testing.T) {
 	}
 }
 
-func TestResidentChildSpecUsesSelectedModelContextForBudget(t *testing.T) {
+func TestResidentChildSpecCarriesNoCumulativeBudget(t *testing.T) {
 	runtime := newSubagentRuntime(subagentRuntimeConfig{
 		Args: Args{}, Root: t.TempDir(), RepoRoot: t.TempDir(),
 		Provider: "openai", Model: "gpt-5.6-sol", ContextWindow: 42_000,
@@ -104,8 +106,17 @@ func TestResidentChildSpecUsesSelectedModelContextForBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.BudgetLimit != 500_000 || spec.BudgetSource != "model_context" {
-		t.Fatalf("child model budget = %#v", spec)
+	if len(spec.Tools) != 1 || spec.Tools[0] != "read" {
+		t.Fatalf("child spec tools = %#v, want resolved tool list", spec)
+	}
+	// The budget fields are gone from the spec struct; the serialized
+	// form must carry no budget bytes either.
+	encoded, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "budget") {
+		t.Fatalf("child spec carries budget = %s", encoded)
 	}
 }
 

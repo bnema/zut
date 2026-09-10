@@ -233,12 +233,16 @@ func TestRenderResidentSubagentActivityLinesRightAlignsUsageMetadataWhenItFits(t
 	}
 }
 
-func TestResidentUsageMetadataShowsRolloutBudget(t *testing.T) {
+func TestResidentUsageMetadataShowsContextOnly(t *testing.T) {
 	metadata := residentUsageMetadata(subagents.ResidentSnapshot{
-		Budget: subagents.BudgetSnapshot{Used: 337_500, Limit: 500_000, Percent: 67, State: subagents.BudgetNormal},
+		Usage:       provider.Usage{InputTokens: 84_000, OutputTokens: 1_500},
+		ContextUsed: 45_152, ContextMax: 272_000,
 	})
-	if metadata != "budget:normal 67%/500k" {
-		t.Fatalf("budget metadata = %q", metadata)
+	if strings.Contains(metadata, "budget:") {
+		t.Fatalf("usage metadata carries budget = %q", metadata)
+	}
+	if !strings.Contains(metadata, "16.6%/272k") {
+		t.Fatalf("usage metadata missing context gauge = %q", metadata)
 	}
 }
 

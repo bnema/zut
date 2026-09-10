@@ -15,7 +15,7 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
+func TestResidentFailureRecoveryKeepsRequiredUnmetUntilResume(t *testing.T) {
 	for _, mode := range []string{"read-only", "shared", "worktree"} {
 		for _, restart := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/restart=%t", mode, restart), func(t *testing.T) {
@@ -23,16 +23,14 @@ func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
 				if mode == "worktree" {
 					workspace = initTestRepo(t)
 				}
-				spec := ResidentChildSpec{ID: "budget-recovery", SessionID: "session", InitialTurnID: "initial", Provider: "openai", Model: "test", Required: true, BudgetLimit: 100, BudgetSource: "model_context", RepositoryRoot: workspace, WorkspaceMode: WorkspaceShared}
+				spec := ResidentChildSpec{ID: "failure-recovery", SessionID: "session", InitialTurnID: "initial", Provider: "openai", Model: "test", Required: true, RepositoryRoot: workspace, WorkspaceMode: WorkspaceShared}
 				if mode == "worktree" {
 					spec.WorkspaceMode, spec.WorkspaceCapture = WorkspaceWorktree, CapturePatch
 				}
+				turnErr := errors.New("turn failed")
 				factory := func(spec ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
 					return func(_ context.Context, prompt string) error {
 						if prompt == "continue remaining work" {
-							if journal.BudgetBaseline() != 100 {
-								return fmt.Errorf("recovery baseline = %d", journal.BudgetBaseline())
-							}
 							messages, err := ReadResidentTranscriptMessages(journal.Dir())
 							if err != nil || len(messages) < 3 {
 								return fmt.Errorf("missing restored progress: %d messages, %v", len(messages), err)
@@ -67,7 +65,7 @@ func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
 								return err
 							}
 						}
-						return ErrBudgetExceeded
+						return turnErr
 					}, nil
 				}
 				manager := NewResidentManager(root, factory)
@@ -77,23 +75,23 @@ func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
 				if _, err := manager.Spawn(t.Context(), spec, "inspect and verify README"); err != nil {
 					t.Fatal(err)
 				}
-				completion := awaitBudgetCompletion(t, completions)
-				if !errors.Is(completion.Err, ErrBudgetExceeded) || !strings.Contains(completion.Summary, "verification unfinished") {
+				completion := awaitResidentCompletion(t, completions)
+				if !errors.Is(completion.Err, turnErr) {
 					t.Fatalf("terminal notification = %#v", completion)
 				}
-				assertBudgetPartial := func() ResidentResult {
+				assertFailedPartial := func() ResidentResult {
 					t.Helper()
 					snapshot, ok := manager.SnapshotFor(spec.ID)
-					if !ok || snapshot.State != ResidentBudgetExhausted || snapshot.Budget.State != BudgetExceeded || len(manager.UnmetRequired()) != 1 {
+					if !ok || snapshot.State != ResidentFailed || len(manager.UnmetRequired()) != 1 {
 						t.Fatalf("partial status = %#v; unmet = %#v", snapshot, manager.UnmetRequired())
 					}
 					result, err := manager.Result(spec.ID)
-					if err != nil || result.ErrorCode != "budget_exhausted" || !strings.Contains(result.Handoff, "README.md") || len(result.Handoff) > residentHandoffBytes {
+					if err != nil || result.ErrorCode != "turn_failed" || result.Handoff != "" {
 						t.Fatalf("saved partial result = %#v, %v", result, err)
 					}
 					return result
 				}
-				result := assertBudgetPartial()
+				result := assertFailedPartial()
 				if mode == "worktree" {
 					if result.PatchRef != PatchRef(spec.ID) || len(result.ChangedFiles) != 1 {
 						t.Fatalf("missing partial patch: %#v", result)
@@ -112,40 +110,40 @@ func TestResidentBudgetExhaustionHandoffAndRecovery(t *testing.T) {
 					if errs := manager.Reconcile(); len(errs) != 0 {
 						t.Fatal(errs)
 					}
-					assertBudgetPartial()
+					assertFailedPartial()
 				}
 				if err := manager.Resume(t.Context(), spec.ID, "continue remaining work"); err != nil {
 					t.Fatal(err)
 				}
-				if completion := awaitBudgetCompletion(t, completions); completion.Err != nil {
+				if completion := awaitResidentCompletion(t, completions); completion.Err != nil {
 					t.Fatal(completion.Err)
 				}
 				if unmet := manager.UnmetRequired(); len(unmet) != 0 {
 					t.Fatalf("successful recovery remains unmet: %#v", unmet)
 				}
 				snapshot, _ := manager.SnapshotFor(spec.ID)
-				if snapshot.Budget.Used != 5 || snapshot.Budget.Limit != 100 || snapshot.Usage.InputTokens != 105 {
+				if snapshot.Usage.InputTokens != 105 {
 					t.Fatalf("recovery lost cumulative accounting: %#v", snapshot)
 				}
 				if err := manager.Close(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 				metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
-				if err != nil || metadata.BudgetBaseline != 100 || metadata.Usage.InputTokens != 105 {
-					t.Fatalf("recovery baseline did not survive reconciliation: %#v, %v", metadata, err)
+				if err != nil || metadata.Usage.InputTokens != 105 {
+					t.Fatalf("recovery usage did not survive reconciliation: %#v, %v", metadata, err)
 				}
 			})
 		}
 	}
 }
 
-func awaitBudgetCompletion(t *testing.T, completions <-chan ResidentCompletion) ResidentCompletion {
+func awaitResidentCompletion(t *testing.T, completions <-chan ResidentCompletion) ResidentCompletion {
 	t.Helper()
 	select {
 	case completion := <-completions:
 		return completion
 	case <-time.After(5 * time.Second):
-		t.Fatal("no terminal budget notification")
+		t.Fatal("no terminal notification")
 		return ResidentCompletion{}
 	}
 }

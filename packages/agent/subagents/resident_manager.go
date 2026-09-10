@@ -221,8 +221,6 @@ type ResidentSnapshot struct {
 	ContextUsed       int
 	ContextMax        int
 	Subscription      bool
-	Budget            BudgetSnapshot
-	BudgetSource      string
 }
 
 func residentSnapshot(child *ResidentChild) ResidentSnapshot {
@@ -230,18 +228,12 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		return ResidentSnapshot{}
 	}
 	live := child.Live()
-	budget, budgetSource := residentBudgetSnapshot(live.Usage, child.spec.BudgetLimit, child.spec.BudgetSource, child.journal.BudgetBaseline())
 	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
 		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
 		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel,
-		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription,
-		Budget: budget, BudgetSource: budgetSource}
-}
-
-func residentBudgetSnapshot(usage provider.Usage, limit int64, source string, baseline int64) (BudgetSnapshot, string) {
-	return budgetSnapshotSince(usage, limit, baseline), source
+		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription}
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {
@@ -478,9 +470,6 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 		m.pending[childID] = struct{}{}
 	}
 	m.mu.Unlock()
-	if child != nil && residentSnapshot(child).Budget.State == BudgetExceeded && (child.State() == ResidentRunning || child.State() == ResidentQueued) {
-		return errors.New("resident manager: wait for the budget-exhausted turn's terminal notification before resuming")
-	}
 	if child == nil && recovered {
 		defer func() { m.mu.Lock(); delete(m.pending, childID); m.mu.Unlock() }()
 		journal, err := OpenResidentJournal(m.root, childID)
@@ -809,7 +798,7 @@ func (m *ResidentManager) SnapshotFor(childID string) (ResidentSnapshot, bool) {
 
 // Reconcile discovers journals left by an earlier host, repairs their bounded
 // projections, and marks queued/running work interrupted. It never creates a
-// live child or replays a prompt. Incompatible budget journals are left untouched
+// live child or replays a prompt. Incompatible journals are left untouched
 // and excluded from discovery. Other per-child errors are returned for callers
 // to surface without hiding valid sibling journals.
 func (m *ResidentManager) Reconcile() []error {
@@ -851,10 +840,11 @@ func (m *ResidentManager) Reconcile() []error {
 		}
 		childDir := filepath.Join(m.root, childID)
 		metadata, spec, reconcileErr := reconcileResidentJournalWithSpec(childDir)
-		// Old budget journals cannot be resumed. Leave them on disk without
-		// reporting the same incompatibility at every host startup. Match the
-		// exact sentinel so a joined journal-close error is still reported.
-		if reconcileErr == ErrIncompatibleResidentBudget {
+		// Unknown journal versions cannot be resumed. Leave them on disk
+		// without reporting the same incompatibility at every host startup.
+		// Match the exact sentinel so a joined journal-close error is still
+		// reported.
+		if reconcileErr == ErrIncompatibleResidentJournal {
 			continue
 		}
 		if errors.Is(reconcileErr, ErrResidentLeaseBusy) {
@@ -863,11 +853,29 @@ func (m *ResidentManager) Reconcile() []error {
 				errs = append(errs, fmt.Errorf("resident child %s: read foreign metadata: %w", childID, readErr))
 				continue
 			}
+			if readErr == nil {
+				if foreign.Version != residentJournalVersion && foreign.Version != residentJournalVersionV2 {
+					errs = append(errs, fmt.Errorf("resident child %s: %w", childID, ErrIncompatibleResidentJournal))
+					continue
+				}
+				// A v3 projection can never carry the removed budget
+				// state: the writer only persists live states. Treat it
+				// as corruption rather than resurfacing the zombie state.
+				if foreign.Version != residentJournalVersionV2 && foreign.State == ResidentState(residentV2OutcomeBudgetExhausted) {
+					errs = append(errs, fmt.Errorf("resident child %s: invalid terminal state", childID))
+					continue
+				}
+			}
 			state, updatedAt := foreign.State, foreign.UpdatedAt
 			if readErr != nil || state == "" {
 				// Ownership begins before child.accepted is durable. Do not read
 				// that live transcript merely to improve this transient snapshot.
 				state, updatedAt = ResidentQueued, time.Now().UTC()
+			}
+			if foreign.Version == residentJournalVersionV2 && state == ResidentState(residentV2OutcomeBudgetExhausted) {
+				// Historical budget stop from an older host: display it as
+				// failed, never as a distinct terminal state.
+				state = ResidentFailed
 			}
 			m.mu.Lock()
 			m.recovered[childID] = ResidentSnapshot{
@@ -881,14 +889,12 @@ func (m *ResidentManager) Reconcile() []error {
 			errs = append(errs, fmt.Errorf("resident child %s: %w", childID, reconcileErr))
 			continue
 		}
-		budget, budgetSource := residentBudgetSnapshot(metadata.Usage, spec.BudgetLimit, spec.BudgetSource, metadata.BudgetBaseline)
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
 			m.recovered[childID] = ResidentSnapshot{
 				ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model,
 				WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt,
 				Usage: metadata.Usage, ContextUsed: metadata.ContextUsed, ContextMax: metadata.ContextMax, Subscription: metadata.Subscription,
-				Budget: budget, BudgetSource: budgetSource,
 			}
 			m.recoveredSpec[childID] = spec
 		}

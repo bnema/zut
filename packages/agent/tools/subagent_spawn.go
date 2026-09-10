@@ -285,9 +285,6 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 	if spec.Reasoning != "" {
 		fmt.Fprintf(&sb, "reasoning: %s\n", spec.Reasoning)
 	}
-	if spec.BudgetLimit > 0 {
-		fmt.Fprintf(&sb, "budget: %d weighted tokens (%s)\n", spec.BudgetLimit, spec.BudgetSource)
-	}
 	if spec.Required {
 		fmt.Fprintf(&sb, "required: %s\n", state)
 	}
