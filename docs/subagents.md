@@ -129,8 +129,9 @@ the live request; the durable transcript keeps only finalized history. Usage is
 the last-turn prompt size (input plus cache read/write tokens) against the
 resolved context window; an unknown window never triggers a reminder. The
 per-turn gauge resets when the host restarts and when a recovery compacts the
-context, so restarting or compacting a child rests the ladder until fresh usage
-past a band arrives.
+context, so neither event reports a stale percentage. The band ladder itself
+advances at most once per child runner: a restart starts a fresh ladder, while a
+compacted child is reminded again only when usage reaches a higher band.
 
 ### Context-overflow recovery
 

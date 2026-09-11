@@ -546,6 +546,9 @@ type residentOverflowScript struct {
 	// summaryUsageTokens, when positive, is the prompt size reported by the
 	// compaction summary response.
 	summaryUsageTokens int
+	// continuationUsageTokens is the prompt size reported by tool turns after a
+	// successful compaction; zero reuses toolUsageTokens.
+	continuationUsageTokens int
 
 	requests atomic.Int32
 	mu       sync.Mutex
@@ -584,7 +587,11 @@ func (s *residentOverflowScript) start(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds the context window","code":"context_length_exceeded"}}`))
 		case number < overflowAt+2+s.continuationToolCalls:
 			w.Header().Set("content-type", "text/event-stream")
-			writeOpenAIChunk(t, w, residentToolCallChunk(number, s.toolUsageTokens))
+			continuationUsage := s.continuationUsageTokens
+			if continuationUsage <= 0 {
+				continuationUsage = s.toolUsageTokens
+			}
+			writeOpenAIChunk(t, w, residentToolCallChunk(number, continuationUsage))
 		default:
 			w.Header().Set("content-type", "text/event-stream")
 			writeOpenAIChunk(t, w, residentFinalChunk(s.finalText))
@@ -871,12 +878,15 @@ func residentMessageText(message provider.Message) string {
 
 func TestResidentChildRunnerIgnoresCompactionUsageInReminder(t *testing.T) {
 	// The summarization request reports the pre-compaction prompt size. If that
-	// gauge armed the next reminder, the continuation would claim the compacted
-	// transcript sits at the top of the window.
+	// gauge armed the next reminder, the first continuation step would claim the
+	// compacted transcript sits at the top of the window. The continuation's own
+	// usage must still be able to arm a truthful reminder.
 	script := &residentOverflowScript{
-		toolCallRequests:   2,
-		finalText:          "overflow recovered result",
-		summaryUsageTokens: 1 << 20,
+		toolCallRequests:        2,
+		continuationToolCalls:   1,
+		finalText:               "overflow recovered result",
+		summaryUsageTokens:      1 << 20,
+		continuationUsageTokens: 1 << 20,
 	}
 	server := script.start(t)
 	runner, _, _ := newResidentChildTestRunner(t, "usage-child", residentArguments(t, server.URL))
@@ -884,11 +894,34 @@ func TestResidentChildRunnerIgnoresCompactionUsageInReminder(t *testing.T) {
 		t.Fatalf("runner error = %v, want one recovered turn", err)
 	}
 	bodies := script.capturedBodies()
-	if len(bodies) != 5 {
-		t.Fatalf("provider requests = %d, want 5", len(bodies))
+	if len(bodies) != 6 {
+		t.Fatalf("provider requests = %d, want 3 prompt, 1 compaction, and 2 continued steps", len(bodies))
 	}
 	if strings.Contains(bodies[4], "Context usage is at") {
-		t.Fatalf("continuation carries a reminder from the compaction request: %q", bodies[4])
+		t.Fatalf("first continuation step carries a reminder from the compaction request: %q", bodies[4])
+	}
+	if !strings.Contains(bodies[5], "Context usage is at") {
+		t.Fatalf("second continuation step lost the reminder: %q", bodies[5])
+	}
+}
+
+func TestResidentCheckpointMessagesDropsOnlyHostContext(t *testing.T) {
+	internal := provider.Message{
+		Role:    provider.RoleDeveloper,
+		Meta:    map[string]string{"internal_context": "true"},
+		Content: []provider.Content{provider.TextBlock{Text: "Context usage is at 96% of the model window."}},
+	}
+	importedNote := provider.Message{
+		Role:    provider.RoleDeveloper,
+		Content: []provider.Content{provider.TextBlock{Text: "imported developer note"}},
+	}
+	task := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "task"}}}
+	kept := residentCheckpointMessages([]provider.Message{internal, importedNote, task})
+	if len(kept) != 2 || kept[0].Role != provider.RoleDeveloper || kept[1].Role != provider.RoleUser {
+		t.Fatalf("checkpoint messages = %#v, want host context dropped and other messages kept", kept)
+	}
+	if !core.IsInternalContextMessage(internal) || core.IsInternalContextMessage(importedNote) {
+		t.Fatal("IsInternalContextMessage misclassified a developer message")
 	}
 }
 

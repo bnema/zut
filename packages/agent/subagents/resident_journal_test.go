@@ -1247,3 +1247,145 @@ func TestReconcileResidentJournalIsIdempotentForCheckpointResults(t *testing.T) 
 		t.Fatalf("reconciled state = %q, want idle", second.State)
 	}
 }
+
+func TestAppendSyncEnforcesTheReaderRecordBound(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "record-bound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "record-bound", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	_, base := residentAssistantRecordSize(t, "")
+	if base >= residentMaxRecordBytes-1 {
+		t.Fatalf("empty assistant record = %d bytes, too large for a boundary check", base)
+	}
+	// A JSON record of max-1 bytes produces a max-byte line with its newline,
+	// which is exactly what the readers accept.
+	padding := residentMaxRecordBytes - 1 - base
+	borderline, borderlineSize := residentAssistantRecordSize(t, strings.Repeat("x", padding))
+	if borderlineSize != residentMaxRecordBytes-1 {
+		t.Fatalf("borderline record = %d bytes, want %d", borderlineSize, residentMaxRecordBytes-1)
+	}
+	if err := journal.appendSync(borderline); err != nil {
+		t.Fatalf("appendSync rejected a reader-legal record: %v", err)
+	}
+	oversized, oversizedSize := residentAssistantRecordSize(t, strings.Repeat("x", padding+1))
+	if oversizedSize != residentMaxRecordBytes {
+		t.Fatalf("oversized record = %d bytes, want %d", oversizedSize, residentMaxRecordBytes)
+	}
+	if err := journal.appendSync(oversized); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("appendSync error = %v, want the reader record bound", err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatalf("journal unreadable after a boundary record: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want the accepted child and the borderline message", len(records))
+	}
+}
+
+func residentAssistantRecordSize(t *testing.T, text string) (residentRecord, int) {
+	t.Helper()
+	message, err := json.Marshal(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: text}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := residentRecord{Version: residentJournalVersion, Type: residentRecordAssistant, Message: message}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record, len(data)
+}
+
+func TestReconcileResidentJournalRepairsDanglingCheckpointCall(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "checkpoint-dangling")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "checkpoint-dangling", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AcceptFollowUp(spec, "turn-1", "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint kept a call whose result never arrived.
+	if err := journal.RecordCompacted([]provider.Message{{
+		Role: provider.RoleAssistant,
+		Content: []provider.Content{provider.ToolCallBlock{
+			ID:        "compacted-call",
+			Name:      "bash",
+			Arguments: json.RawMessage(`{"command":"pwd"}`),
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, spec.ID)
+	if _, err := ReconcileResidentJournal(dir); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired := 0
+	for _, record := range records {
+		if record.Type != residentRecordToolResult || record.ToolID != "compacted-call" {
+			continue
+		}
+		if !isSyntheticInterruption(record.ToolResult) {
+			t.Fatalf("repaired result = %s, want the interruption result", record.ToolResult)
+		}
+		repaired++
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired results = %d, want exactly one synthetic result", repaired)
+	}
+	// Once the repair is durable, later reconciliations must be stable no-ops.
+	second, err := ReconcileResidentJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := ReconcileResidentJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.UpdatedAt.Equal(third.UpdatedAt) {
+		t.Fatalf("reconciliation kept rewriting the lifecycle time: %v then %v", second.UpdatedAt, third.UpdatedAt)
+	}
+	if records, err = ReadResidentJournal(transcript); err != nil {
+		t.Fatal(err)
+	}
+	results := 0
+	for _, record := range records {
+		if record.Type == residentRecordToolResult && record.ToolID == "compacted-call" {
+			results++
+		}
+	}
+	if results != 1 {
+		t.Fatalf("tool results = %d, want the single repaired result", results)
+	}
+}
