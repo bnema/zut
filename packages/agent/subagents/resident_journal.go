@@ -267,16 +267,6 @@ func (j *ResidentJournal) RecordCompacted(messages []provider.Message) error {
 		TurnID:   j.activeTurnID,
 		Messages: encoded,
 	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("resident journal encode: %w", err)
-	}
-	// ReadResidentJournal rejects any line above residentMaxRecordBytes,
-	// including the trailing newline that appendSync adds. Reject an oversized
-	// checkpoint before the append so the transcript stays readable.
-	if len(data)+1 > residentMaxRecordBytes {
-		return errors.New("resident journal: compaction checkpoint too large")
-	}
 	return j.appendSync(record)
 }
 
@@ -334,9 +324,11 @@ type ResidentJournal struct {
 	dir                    string
 	file                   *os.File
 	lease                  *residentLease
-	// activeTurnID is the accepted resident turn currently executing. It
-	// attributes records that the runner writes without a turn parameter,
-	// such as a compaction checkpoint. It is guarded by mu.
+	// activeTurnID is the resident turn currently executing. It attributes
+	// records that the runner writes without a turn parameter, such as a
+	// compaction checkpoint, and is diagnostics only: no reader consumes a
+	// checkpoint's turn ID. RecordTurnStarted owns the value and a terminal
+	// boundary clears it. It is guarded by mu.
 	activeTurnID string
 }
 
@@ -505,7 +497,6 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordTurnAccepted, Time: now, TurnID: turnID, Prompt: prompt}); err != nil {
 		return err
 	}
-	j.activeTurnID = turnID
 	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentQueued, now))
 }
 
@@ -683,7 +674,9 @@ func (j *ResidentJournal) appendSync(record residentRecord) error {
 	if err != nil {
 		return fmt.Errorf("resident journal encode: %w", err)
 	}
-	if len(data) > residentMaxRecordBytes {
+	if len(data)+1 > residentMaxRecordBytes {
+		// Readers reject the whole record line, newline included, so the writer
+		// applies the same bound instead of emitting a line it cannot read back.
 		return errors.New("resident journal: record too large")
 	}
 	data = append(data, '\n')
@@ -1020,18 +1013,19 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 		Usage: usage.Usage, ContextUsed: usage.ContextUsed, ContextMax: usage.ContextMax, Subscription: usage.Subscription,
 	}
 	needsInterruption := state == ResidentQueued || state == ResidentRunning
-	needsToolRepair := len(toolCalls) != len(toolResults)
-	if needsInterruption || needsToolRepair {
+	// Dangling calls, not a tool-count mismatch, are the repair trigger: a
+	// checkpoint may legitimately carry a result without repeating its call.
+	dangling := make([]string, 0, len(toolCalls))
+	for toolID := range toolCalls {
+		if _, finished := toolResults[toolID]; !finished {
+			dangling = append(dangling, toolID)
+		}
+	}
+	sort.Strings(dangling)
+	if needsInterruption || len(dangling) > 0 {
 		// A recorded repair is new observable work. A no-op reconciliation,
 		// however, must retain the last durable lifecycle time.
 		metadata.UpdatedAt = time.Now().UTC()
-		dangling := make([]string, 0, len(toolCalls))
-		for toolID := range toolCalls {
-			if _, finished := toolResults[toolID]; !finished {
-				dangling = append(dangling, toolID)
-			}
-		}
-		sort.Strings(dangling)
 		for _, toolID := range dangling {
 			result, marshalErr := json.Marshal(core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: residentInterruptedText}}})
 			if marshalErr != nil {

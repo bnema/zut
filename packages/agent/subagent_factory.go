@@ -154,12 +154,16 @@ func recoverResidentContextOverflow(ctx context.Context, agent *core.Agent, jour
 		agent.SetMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("compact resident child transcript: %w", err))
 	}
-	if err := journal.RecordCompacted(agent.Messages()); err != nil {
+	if err := journal.RecordCompacted(residentCheckpointMessages(agent.Messages())); err != nil {
 		// Memory must not run ahead of durable history: a later resume would
 		// otherwise replay the pre-compaction transcript.
 		agent.SetMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("persist resident child compaction: %w", err))
 	}
+	// The summarization request's usage describes the pre-compaction
+	// transcript. It must not arm the next reminder, which would report a
+	// false percentage for the compacted transcript the continuation sends.
+	agent.SeedLastTurnUsage(provider.Usage{})
 	if limit > 0 {
 		remaining := limit - usedSteps
 		if remaining <= 0 {
@@ -174,11 +178,26 @@ func recoverResidentContextOverflow(ctx context.Context, agent *core.Agent, jour
 	return agent.Continue(ctx, sink)
 }
 
+// residentCheckpointMessages builds the durable replacement transcript of a
+// compaction. Host-authored internal context is dropped: it belongs to the
+// live request, and a replayed reminder would survive as a stale instruction
+// that the resumed child would still obey.
+func residentCheckpointMessages(messages []provider.Message) []provider.Message {
+	checkpoint := make([]provider.Message, 0, len(messages))
+	for _, message := range messages {
+		if core.IsInternalContextMessage(message) {
+			continue
+		}
+		checkpoint = append(checkpoint, message)
+	}
+	return checkpoint
+}
+
 // residentContextReminderBands are the context-usage percentages that arm the
 // resident reminder. Each band fires at most once per child runner, so a child
 // whose prompt keeps growing toward the window is told to wrap up again
 // without turning the reminder into a budget.
-var residentContextReminderBands = []int{85, 90, 95}
+var residentContextReminderBands = [...]int{85, 90, 95}
 
 func configureResidentContextNudge(agent *core.Agent, contextMax int) {
 	if agent == nil {

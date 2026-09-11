@@ -52,7 +52,7 @@ The manager records each accepted child under its managed state root:
 
 ```text
 subagents/<child-id>/
-  transcript.jsonl  # authoritative accepted turns and finalized messages
+  transcript.jsonl  # accepted turns, finalized messages, and compaction checkpoints
   owner.lock        # host-ownership coordination; do not modify or remove
   .transcript-backup-* # retained private pre-repair transcript, when repaired
   metadata.json     # rebuildable bounded state
@@ -63,7 +63,10 @@ subagents/<child-id>/
 Acceptance is durable before `subagent_spawn` reports success. Finalized user,
 assistant, tool-call, and tool-result messages are journaled; streamed deltas
 and hidden reasoning are not exposed as ordinary history. A tool call is stored
-before execution and reconciliation repairs incomplete call/result pairs.
+before execution and reconciliation repairs incomplete call/result pairs. A
+context-overflow recovery appends one `child.compacted` checkpoint carrying the
+replacement transcript; resume starts from the newest checkpoint, while the
+paged history view still shows everything appended before it.
 
 All children stop when the host exits. On the next start, queued or running
 turns are marked `interrupted`; zut never replays their task. Resume only with
@@ -125,8 +128,9 @@ that falls does not re-deliver a band. Reminders travel as developer context in
 the live request; the durable transcript keeps only finalized history. Usage is
 the last-turn prompt size (input plus cache read/write tokens) against the
 resolved context window; an unknown window never triggers a reminder. The
-per-turn gauge resets when the host restarts, so restarting a child rests the
-ladder.
+per-turn gauge resets when the host restarts and when a recovery compacts the
+context, so restarting or compacting a child rests the ladder until fresh usage
+past a band arrives.
 
 ### Context-overflow recovery
 
@@ -145,6 +149,12 @@ log. The history views (`/subagents logs`, `HistoryPage`, `subagent://` refs)
 still show the append-only log, including pre-compaction records. A build that
 predates checkpoint support cannot resume such a child correctly; downgrading
 is unsupported.
+
+The summarization request itself can be rejected when a single oversized
+message leaves nothing to summarize away. The turn then fails with the original
+provider error and no checkpoint is written, so the child keeps failing on
+resume until its transcript shrinks. Recovery is a best effort, not a
+guarantee.
 
 Retrieve the saved result without executing a model:
 

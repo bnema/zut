@@ -1155,3 +1155,95 @@ func TestReconcileResidentJournalKeepsToolBookkeepingAcrossCheckpoint(t *testing
 		t.Fatalf("resumed messages = %#v, want only the checkpoint summary", messages)
 	}
 }
+
+func TestRecordCompactedAttributesTheStartedTurn(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "turn-attribution")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "turn-attribution", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	// A follow-up accepted while turn-1 is still running must not steal the
+	// checkpoint's turn attribution.
+	if err := journal.AcceptFollowUp(spec, "turn-2", "queued follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordCompacted([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)\n\ndigest"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Type != residentRecordCompacted {
+			continue
+		}
+		if record.TurnID != "turn-1" {
+			t.Fatalf("checkpoint turn ID = %q, want the executing turn", record.TurnID)
+		}
+		return
+	}
+	t.Fatal("journal has no compaction checkpoint")
+}
+
+func TestReconcileResidentJournalIsIdempotentForCheckpointResults(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "idempotent-checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "idempotent-checkpoint", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AcceptFollowUp(spec, "turn-1", "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	// A checkpoint can carry a result whose call was compacted away. That is
+	// not repairable work, so reconciliation must stay a no-op.
+	if err := journal.RecordCompacted([]provider.Message{{
+		Role: provider.RoleTool,
+		Content: []provider.Content{provider.ToolResultBlock{
+			CallID:  "compacted-call",
+			Content: []provider.Content{provider.TextBlock{Text: "kept result"}},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.UpdatedAt.Equal(second.UpdatedAt) {
+		t.Fatalf("reconciliation rewrote the lifecycle time: %v then %v", first.UpdatedAt, second.UpdatedAt)
+	}
+	if second.State != ResidentIdle {
+		t.Fatalf("reconciled state = %q, want idle", second.State)
+	}
+}

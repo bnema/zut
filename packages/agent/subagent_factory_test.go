@@ -533,12 +533,19 @@ func TestResidentChildArgsDoNotForwardCLIKeyAcrossProviders(t *testing.T) {
 
 // residentOverflowScript scripts the provider responses of a child that hits
 // the context window: leading tool-call turns, one overflow, one compaction
-// summary, then the final text or a second overflow.
+// summary, then continued tool turns or the final text.
 type residentOverflowScript struct {
-	toolCallRequests int
-	secondOverflow   bool
-	finalText        string
-	onOverflow       func()
+	toolCallRequests      int
+	continuationToolCalls int
+	secondOverflow        bool
+	finalText             string
+	onOverflow            func()
+	// toolUsageTokens is the prompt size reported by tool-call responses; zero
+	// reports a small prompt.
+	toolUsageTokens int
+	// summaryUsageTokens, when positive, is the prompt size reported by the
+	// compaction summary response.
+	summaryUsageTokens int
 
 	requests atomic.Int32
 	mu       sync.Mutex
@@ -562,17 +569,7 @@ func (s *residentOverflowScript) start(t *testing.T) *httptest.Server {
 		switch {
 		case number <= s.toolCallRequests:
 			w.Header().Set("content-type", "text/event-stream")
-			writeOpenAIChunk(t, w, map[string]any{
-				"choices": []any{map[string]any{
-					"index": 0,
-					"delta": map[string]any{"tool_calls": []any{map[string]any{
-						"index": 0, "id": fmt.Sprintf("call-%d", number), "type": "function",
-						"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
-					}}},
-					"finish_reason": "tool_calls",
-				}},
-				"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
-			})
+			writeOpenAIChunk(t, w, residentToolCallChunk(number, s.toolUsageTokens))
 		case number == overflowAt:
 			if s.onOverflow != nil {
 				s.onOverflow()
@@ -581,22 +578,54 @@ func (s *residentOverflowScript) start(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds the context window","code":"context_length_exceeded"}}`))
 		case number == overflowAt+1:
 			w.Header().Set("content-type", "text/event-stream")
-			writeOpenAIChunk(t, w, map[string]any{
-				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "compacted digest"}, "finish_reason": "stop"}},
-			})
+			writeOpenAIChunk(t, w, residentSummaryChunk(s.summaryUsageTokens))
 		case s.secondOverflow:
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds the context window","code":"context_length_exceeded"}}`))
+		case number < overflowAt+2+s.continuationToolCalls:
+			w.Header().Set("content-type", "text/event-stream")
+			writeOpenAIChunk(t, w, residentToolCallChunk(number, s.toolUsageTokens))
 		default:
 			w.Header().Set("content-type", "text/event-stream")
-			writeOpenAIChunk(t, w, map[string]any{
-				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": s.finalText}, "finish_reason": "stop"}},
-				"usage":   map[string]int{"prompt_tokens": 12, "completion_tokens": 5},
-			})
+			writeOpenAIChunk(t, w, residentFinalChunk(s.finalText))
 		}
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func residentToolCallChunk(number, usageTokens int) map[string]any {
+	if usageTokens <= 0 {
+		usageTokens = 10
+	}
+	return map[string]any{
+		"choices": []any{map[string]any{
+			"index": 0,
+			"delta": map[string]any{"tool_calls": []any{map[string]any{
+				"index": 0, "id": fmt.Sprintf("call-%d", number), "type": "function",
+				"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
+			}}},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]int{"prompt_tokens": usageTokens, "completion_tokens": 1},
+	}
+}
+
+func residentSummaryChunk(usageTokens int) map[string]any {
+	chunk := map[string]any{
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "compacted digest"}, "finish_reason": "stop"}},
+	}
+	if usageTokens > 0 {
+		chunk["usage"] = map[string]int{"prompt_tokens": usageTokens, "completion_tokens": 2}
+	}
+	return chunk
+}
+
+func residentFinalChunk(text string) map[string]any {
+	return map[string]any{
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": text}, "finish_reason": "stop"}},
+		"usage":   map[string]int{"prompt_tokens": 12, "completion_tokens": 5},
+	}
 }
 
 func (s *residentOverflowScript) capturedBodies() []string {
@@ -836,6 +865,106 @@ func residentMessageText(message provider.Message) string {
 		if block, ok := content.(provider.TextBlock); ok {
 			text.WriteString(block.Text)
 		}
+	}
+	return text.String()
+}
+
+func TestResidentChildRunnerIgnoresCompactionUsageInReminder(t *testing.T) {
+	// The summarization request reports the pre-compaction prompt size. If that
+	// gauge armed the next reminder, the continuation would claim the compacted
+	// transcript sits at the top of the window.
+	script := &residentOverflowScript{
+		toolCallRequests:   2,
+		finalText:          "overflow recovered result",
+		summaryUsageTokens: 1 << 20,
+	}
+	server := script.start(t)
+	runner, _, _ := newResidentChildTestRunner(t, "usage-child", residentArguments(t, server.URL))
+	if err := runner(t.Context(), "review"); err != nil {
+		t.Fatalf("runner error = %v, want one recovered turn", err)
+	}
+	bodies := script.capturedBodies()
+	if len(bodies) != 5 {
+		t.Fatalf("provider requests = %d, want 5", len(bodies))
+	}
+	if strings.Contains(bodies[4], "Context usage is at") {
+		t.Fatalf("continuation carries a reminder from the compaction request: %q", bodies[4])
+	}
+}
+
+func TestResidentChildRunnerKeepsHostContextOutOfCheckpoint(t *testing.T) {
+	// Tool turns report a prompt size past the top band, so the child holds a
+	// host reminder when the overflow arrives.
+	script := &residentOverflowScript{
+		toolCallRequests: 2,
+		finalText:        "overflow recovered result",
+		toolUsageTokens:  1 << 20,
+	}
+	server := script.start(t)
+	runner, journal, _ := newResidentChildTestRunner(t, "checkpoint-context", residentArguments(t, server.URL))
+	if err := runner(t.Context(), "review"); err != nil {
+		t.Fatalf("runner error = %v, want one recovered turn", err)
+	}
+	messages, err := subagents.ReadResidentTranscriptMessages(journal.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := joinedResidentText(messages)
+	if !strings.Contains(joined, "compacted digest") {
+		t.Fatalf("resumed transcript = %q, want the checkpoint digest", joined)
+	}
+	if strings.Contains(joined, "Context usage is at") {
+		t.Fatalf("checkpoint replayed a stale host reminder: %q", joined)
+	}
+}
+
+func TestResidentChildRunnerKeepsRemainingStepAllowanceAcrossRecovery(t *testing.T) {
+	// Two tool turns and the overflow leave two of the five allowed steps. The
+	// continuation must receive exactly those, not a fresh limit.
+	script := &residentOverflowScript{
+		toolCallRequests:      2,
+		continuationToolCalls: 10,
+		finalText:             "unreached",
+	}
+	server := script.start(t)
+	args := residentArguments(t, server.URL)
+	args.MaxSteps = 5
+	runner, journal, _ := newResidentChildTestRunner(t, "partial-allowance", args)
+	err := runner(t.Context(), "review")
+	if !errors.Is(err, core.ErrMaxSteps) {
+		t.Fatalf("runner error = %v, want the continuation to exhaust the remaining allowance", err)
+	}
+	if got := script.requests.Load(); got != 6 {
+		t.Fatalf("provider requests = %d, want 2 tool turns, the overflow, the compaction, and 2 more steps", got)
+	}
+	if checkpoints := countResidentCheckpoints(t, journal); checkpoints != 1 {
+		t.Fatalf("compaction checkpoints = %d, want 1", checkpoints)
+	}
+}
+
+func TestResidentChildRunnerDoesNotCompactWithoutHistory(t *testing.T) {
+	// The overflow arrives on the first request, so the transcript is too short
+	// to summarize without replacing the task itself.
+	script := &residentOverflowScript{toolCallRequests: 0, finalText: "unreached"}
+	server := script.start(t)
+	runner, journal, _ := newResidentChildTestRunner(t, "short-overflow", residentArguments(t, server.URL))
+	err := runner(t.Context(), "review")
+	if err == nil || !provider.IsContextOverflowError(err) || !strings.Contains(err.Error(), "context_length_exceeded") {
+		t.Fatalf("runner error = %v, want the original overflow", err)
+	}
+	if got := script.requests.Load(); got != 1 {
+		t.Fatalf("provider requests = %d, want no compaction attempt", got)
+	}
+	if checkpoints := countResidentCheckpoints(t, journal); checkpoints != 0 {
+		t.Fatalf("compaction checkpoints = %d, want none without history", checkpoints)
+	}
+}
+
+func joinedResidentText(messages []provider.Message) string {
+	var text strings.Builder
+	for _, message := range messages {
+		text.WriteString(residentMessageText(message))
+		text.WriteString("\n")
 	}
 	return text.String()
 }

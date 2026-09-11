@@ -277,12 +277,10 @@ func residentHistoryItem(record residentRecord) (ResidentHistoryItem, bool, erro
 			return ResidentHistoryItem{}, false, errors.New("resident history: malformed tool result record")
 		}
 		item.ToolID, item.ToolResult = record.ToolID, append(json.RawMessage(nil), record.ToolResult...)
-	case residentRecordCompacted:
-		// A checkpoint replaces earlier transcript content but is not history
-		// itself: the pager keeps showing the append-only log. The resume
-		// reader carries the checkpoint through explicitly.
-		return ResidentHistoryItem{}, false, nil
 	default:
+		// Lifecycle records and compaction checkpoints are not history items:
+		// the pager keeps showing the append-only log, while resume replay
+		// starts from the newest checkpoint (see ReadResidentTranscriptMessages).
 		return ResidentHistoryItem{}, false, nil
 	}
 	return item, true, nil
@@ -346,6 +344,10 @@ func decodeResidentCompactedMessages(encoded []json.RawMessage) ([]provider.Mess
 // provider-neutral message structures used by tui.View. Tool-call records
 // duplicate calls already embedded in an assistant message, so they are only
 // synthesized when the assistant record is absent (for recovery resilience).
+//
+// Items are one ordered log, not independent groups: a checkpoint item
+// replaces every message accumulated before it. A bounded history page never
+// contains one, because the pager excludes checkpoints.
 func ResidentHistoryMessages(items []ResidentHistoryItem) ([]provider.Message, error) {
 	messages := make([]provider.Message, 0, len(items))
 	calls := make(map[string]struct{})
