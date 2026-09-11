@@ -80,6 +80,15 @@ func isInternalContextMessage(message provider.Message) bool {
 	return message.Role == provider.RoleDeveloper && message.Meta[internalContextMarker] == "true"
 }
 
+// IsInternalContextMessage reports whether message is host-authored context
+// injected by the agent loop, such as a time snapshot or an extension
+// reminder, rather than finalized conversation history. Hosts that persist a
+// replacement transcript must exclude these messages: their value belongs to
+// the live request and replaying a stale copy would contradict it.
+func IsInternalContextMessage(message provider.Message) bool {
+	return isInternalContextMessage(message)
+}
+
 func latestInternalContext(messages []provider.Message) (*provider.Message, []provider.Message) {
 	filtered := make([]provider.Message, 0, len(messages))
 	var latest *provider.Message
