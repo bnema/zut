@@ -7,27 +7,31 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestCoordinatorSealsWorkerWaveAndWakesOnce(t *testing.T) {
+func TestCoordinatorReportsEachSealedWorkerCompletionImmediately(t *testing.T) {
 	c := New()
 	c.Apply(Event{Kind: EventManagerStarted})
-	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a"})
-	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "b"})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a#1", AgentID: "a"})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "b#2", AgentID: "b"})
 	assertActions(t, c.Apply(Event{Kind: EventManagerFinished}), []Action{{Kind: ActionWait}})
-	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "b", Completion: subagents.Completion{AgentID: "b"}}), nil)
-	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a", Completion: subagents.Completion{AgentID: "a"}}), []Action{{
+	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "b#2", Completion: subagents.Completion{AgentID: "b"}}), []Action{{
 		Kind: ActionRunManager, Reason: WakeWorkers,
-		Completions: []subagents.Completion{{AgentID: "a"}, {AgentID: "b"}},
+		Completions: []subagents.Completion{{AgentID: "b"}}, ActiveAgentIDs: []string{"a"},
+	}})
+	c.Apply(Event{Kind: EventManagerStarted})
+	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a#1", Completion: subagents.Completion{AgentID: "a"}}), []Action{{
+		Kind: ActionQueueManager, Reason: WakeWorkers,
+		Completions: []subagents.Completion{{AgentID: "a"}},
 	}})
 }
 
 func TestCoordinatorSlidesCompletionIntoActiveManagerOnce(t *testing.T) {
 	c := New()
 	c.Apply(Event{Kind: EventManagerStarted})
-	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a"})
-	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "b"})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "a", AgentID: "a"})
+	c.Apply(Event{Kind: EventWorkerRegistered, WorkerID: "b", AgentID: "b"})
 	completion := subagents.Completion{AgentID: "a", Status: "completed"}
 	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a", Completion: completion}), []Action{{
-		Kind: ActionQueueManager, Reason: WakeWorkers, Completions: []subagents.Completion{completion},
+		Kind: ActionQueueManager, Reason: WakeWorkers, Completions: []subagents.Completion{completion}, ActiveAgentIDs: []string{"b"},
 	}})
 	assertActions(t, c.Apply(Event{Kind: EventWorkerFinished, WorkerID: "a", Completion: completion}), nil)
 	assertActions(t, c.Apply(Event{Kind: EventManagerFinished}), []Action{{Kind: ActionWait}})
@@ -95,6 +99,14 @@ func assertActions(t *testing.T, got Result, want []Action) {
 		for j := range want[i].Completions {
 			if got.Actions[i].Completions[j].AgentID != want[i].Completions[j].AgentID || got.Actions[i].Completions[j].Status != want[i].Completions[j].Status {
 				t.Fatalf("action %d completion %d = %#v, want %#v", i, j, got.Actions[i].Completions[j], want[i].Completions[j])
+			}
+		}
+		if len(got.Actions[i].ActiveAgentIDs) != len(want[i].ActiveAgentIDs) {
+			t.Fatalf("action %d active agents = %#v, want %#v", i, got.Actions[i].ActiveAgentIDs, want[i].ActiveAgentIDs)
+		}
+		for j := range want[i].ActiveAgentIDs {
+			if got.Actions[i].ActiveAgentIDs[j] != want[i].ActiveAgentIDs[j] {
+				t.Fatalf("action %d active agent %d = %q, want %q", i, j, got.Actions[i].ActiveAgentIDs[j], want[i].ActiveAgentIDs[j])
 			}
 		}
 	}

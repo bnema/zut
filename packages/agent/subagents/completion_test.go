@@ -45,6 +45,19 @@ func TestFormatCompletionUpdateIncludesFinalSummary(t *testing.T) {
 	}
 }
 
+func TestFormatCompletionUpdateIdentifiesActiveSiblings(t *testing.T) {
+	got := FormatCompletionUpdateWithActive(
+		[]Completion{{AgentID: "finished", Status: "completed"}},
+		[]string{"worker-a", "worker-b"},
+		"continue",
+	)
+	for _, want := range []string{"finished: completed", "Still running: worker-a worker-b", "continue"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("completion update %q missing %q", got, want)
+		}
+	}
+}
+
 func TestCompletionTrackerDropsReportsAfterCancellationReset(t *testing.T) {
 	tracker := NewCompletionTracker()
 	if !tracker.TrackResident("child", "turn-1") {

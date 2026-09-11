@@ -29,6 +29,7 @@ type queuedUserInput struct {
 }
 
 type worker struct {
+	agentID    string
 	delivered  bool
 	terminal   bool
 	completion subagents.Completion
@@ -50,6 +51,7 @@ const (
 type Event struct {
 	Kind       EventKind
 	WorkerID   string
+	AgentID    string
 	Completion subagents.Completion
 	Text       string
 	Images     []provider.ImageBlock
@@ -74,11 +76,12 @@ const (
 )
 
 type Action struct {
-	Kind        ActionKind
-	Reason      WakeReason
-	Text        string
-	Images      []provider.ImageBlock
-	Completions []subagents.Completion
+	Kind           ActionKind
+	Reason         WakeReason
+	Text           string
+	Images         []provider.ImageBlock
+	Completions    []subagents.Completion
+	ActiveAgentIDs []string
 }
 
 type Result struct{ Actions []Action }
@@ -108,8 +111,7 @@ func (c *Coordinator) Apply(event Event) Result {
 	case EventManagerStarted:
 		c.managerActive = true
 		c.waveSealed = false
-		c.workers = make(map[string]*worker)
-		c.workerOrder = nil
+		c.dropDeliveredWorkers()
 	case EventManagerFinished:
 		c.managerActive = false
 		c.waveSealed = true
@@ -122,7 +124,7 @@ func (c *Coordinator) Apply(event Event) Result {
 			return Result{}
 		}
 		if _, exists := c.workers[event.WorkerID]; !exists {
-			c.workers[event.WorkerID] = &worker{}
+			c.workers[event.WorkerID] = &worker{agentID: event.AgentID}
 			c.workerOrder = append(c.workerOrder, event.WorkerID)
 		}
 	case EventWorkerFinished:
@@ -134,10 +136,30 @@ func (c *Coordinator) Apply(event Event) Result {
 		w.completion = event.Completion
 		if c.managerActive {
 			w.delivered = true
-			return Result{Actions: []Action{{Kind: ActionQueueManager, Reason: WakeWorkers, Completions: []subagents.Completion{event.Completion}}}}
+			return Result{Actions: []Action{{
+				Kind:           ActionQueueManager,
+				Reason:         WakeWorkers,
+				Completions:    []subagents.Completion{event.Completion},
+				ActiveAgentIDs: c.activeAgentIDs(),
+			}}}
 		}
-		if !c.managerActive && c.waveSealed && !c.hasPendingWorkers() {
-			return c.wakeIfIdle()
+		if c.waveSealed {
+			w.delivered = true
+			action := Action{
+				Kind:           ActionRunManager,
+				Reason:         WakeWorkers,
+				Completions:    []subagents.Completion{event.Completion},
+				ActiveAgentIDs: c.activeAgentIDs(),
+			}
+			if len(c.queuedUser) != 0 {
+				input := c.queuedUser[0]
+				c.queuedUser = c.queuedUser[1:]
+				action.Reason = WakeUser
+				action.Text = input.text
+				action.Images = input.images
+			}
+			c.managerActive = true
+			return Result{Actions: []Action{action}}
 		}
 	case EventUserInput:
 		if event.Text == "" && len(event.Images) == 0 {
@@ -198,6 +220,36 @@ func (c *Coordinator) hasPendingWorkers() bool {
 		}
 	}
 	return false
+}
+
+func (c *Coordinator) activeAgentIDs() []string {
+	ids := make([]string, 0, len(c.workerOrder))
+	seen := make(map[string]struct{})
+	for _, workerID := range c.workerOrder {
+		worker := c.workers[workerID]
+		if worker == nil || worker.terminal || worker.agentID == "" {
+			continue
+		}
+		if _, exists := seen[worker.agentID]; exists {
+			continue
+		}
+		seen[worker.agentID] = struct{}{}
+		ids = append(ids, worker.agentID)
+	}
+	return ids
+}
+
+func (c *Coordinator) dropDeliveredWorkers() {
+	order := c.workerOrder[:0]
+	for _, workerID := range c.workerOrder {
+		worker := c.workers[workerID]
+		if worker == nil || worker.delivered {
+			delete(c.workers, workerID)
+			continue
+		}
+		order = append(order, workerID)
+	}
+	c.workerOrder = order
 }
 
 func (c *Coordinator) completedWorkers() []subagents.Completion {

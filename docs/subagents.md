@@ -234,9 +234,11 @@ Undelivered results remain queued after a provider or compaction error for the
 next turn; they do not automatically retry the failed request. Explicit
 cancellation clears pending queue entries. The queue is in memory, while the
 child’s saved result remains available through `subagent_status`.
-When the primary is idle, remaining children are collected into one completion
-wave. Headless orchestration still waits for every accepted child before its
-next parent turn.
+When the primary is idle, each child completion immediately starts the next
+parent turn instead of waiting for its siblings. The host update names the
+finished child and lists sibling agent IDs that are still running. A completion
+that arrives while that parent turn is active slides into its queue. Headless
+orchestration still waits for every accepted child before its next parent turn.
 Successful completions include the final visible assistant summary, capped at
 256 KiB; open the child session for the complete durable transcript.
 
