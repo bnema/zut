@@ -82,6 +82,9 @@ func TestResidentCompletionSlidesIntoBusyParent(t *testing.T) {
 					if len(queued) != 1 || !queued[0].HostEvent || !strings.Contains(queued[0].Text, "saved result") || !strings.Contains(queued[0].Text, "[auto-subagents update]") {
 						t.Fatalf("queued completions = %#v", queued)
 					}
+					if !strings.Contains(queued[0].Text, "Still running: still-running") {
+						t.Fatalf("completion update missing active sibling: %q", queued[0].Text)
+					}
 					if tc.err != nil && !strings.Contains(queued[0].Text, tc.err.Error()) {
 						t.Fatalf("missing failure: %q", queued[0].Text)
 					}
