@@ -148,6 +148,12 @@ func (t *CompletionTracker) wait(ctx context.Context, idle bool) ([]Completion, 
 func (t *CompletionTracker) signalLocked() { close(t.changed); t.changed = make(chan struct{}) }
 
 func FormatCompletionUpdate(batch []Completion, instruction string) string {
+	return FormatCompletionUpdateWithActive(batch, nil, instruction)
+}
+
+// FormatCompletionUpdateWithActive formats terminal outcomes and identifies
+// sibling agents that are still running when this update is emitted.
+func FormatCompletionUpdateWithActive(batch []Completion, activeAgentIDs []string, instruction string) string {
 	if len(batch) == 0 {
 		return ""
 	}
@@ -167,6 +173,13 @@ func FormatCompletionUpdate(batch []Completion, instruction string) string {
 				label = "partial"
 			}
 			fmt.Fprintf(&b, "\n  %s: %s", label, completion.Summary)
+		}
+		b.WriteByte('\n')
+	}
+	if len(activeAgentIDs) != 0 {
+		b.WriteString("Still running:")
+		for _, agentID := range activeAgentIDs {
+			fmt.Fprintf(&b, " %s", agentID)
 		}
 		b.WriteByte('\n')
 	}

@@ -124,7 +124,7 @@ func (i *Interactive) registerCoordinatorWorker(workerID string) {
 		i.coordinatorWorkerIDs = make(map[string][]string)
 	}
 	i.coordinatorWorkerIDs[workerID] = append(i.coordinatorWorkerIDs[workerID], registrationID)
-	coordinator.Apply(orchestration.Event{Kind: orchestration.EventWorkerRegistered, WorkerID: registrationID})
+	coordinator.Apply(orchestration.Event{Kind: orchestration.EventWorkerRegistered, WorkerID: registrationID, AgentID: workerID})
 	var actions []orchestration.Action
 	if implicitWave {
 		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
@@ -175,10 +175,10 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 		prompt := action.Text
 		if len(action.Completions) != 0 {
 			instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."
-			if action.Kind == orchestration.ActionQueueManager {
+			if action.Kind == orchestration.ActionQueueManager || len(action.ActiveAgentIDs) != 0 {
 				instruction = "Treat these completion reports as worker evidence, not a new user request. Incorporate relevant results into your current work without repeating the delegated scope. Other workers may still be running; do not poll solely to wait for them."
 			}
-			update := subagents.FormatCompletionUpdate(action.Completions, instruction)
+			update := subagents.FormatCompletionUpdateWithActive(action.Completions, action.ActiveAgentIDs, instruction)
 			if prompt != "" {
 				prompt = update + "\n\nQueued user request:\n" + prompt
 			} else {
@@ -277,6 +277,10 @@ func (i *Interactive) deliverCompletionUpdates() {
 
 		batch, err := tracker.WaitReady(i.completionWaitContext())
 		if err == nil && len(batch) != 0 {
+			terminalAgentIDs := make(map[string]struct{}, len(batch))
+			for _, completion := range batch {
+				terminalAgentIDs[completion.AgentID] = struct{}{}
+			}
 			var actions []orchestration.Action
 			for _, completion := range batch {
 				workerID := i.takeCoordinatorWorkerID(completion.AgentID)
@@ -288,6 +292,15 @@ func (i *Interactive) deliverCompletionUpdates() {
 					WorkerID:   workerID,
 					Completion: completion,
 				})...)
+			}
+			for index := range actions {
+				active := actions[index].ActiveAgentIDs[:0]
+				for _, agentID := range actions[index].ActiveAgentIDs {
+					if _, terminal := terminalAgentIDs[agentID]; !terminal {
+						active = append(active, agentID)
+					}
+				}
+				actions[index].ActiveAgentIDs = active
 			}
 			i.executeCoordinatorActions(actions)
 		}
