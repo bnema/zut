@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -243,4 +244,157 @@ func TestResidentManagerHistoryRejectsPathTraversal(t *testing.T) {
 			t.Fatalf("HistoryPage(%q) accepted traversal", childID)
 		}
 	}
+}
+
+func TestReadResidentTranscriptMessagesReplaysCompactionCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "compacted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "compacted", SessionID: "compacted-session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "old question"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvToolCall{ID: "dropped-call", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvToolResult{ID: "dropped-call", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "/repo"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordCompacted([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)\n\ndigest"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "after checkpoint"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoints []residentRecord
+	for _, record := range records {
+		if record.Type == residentRecordCompacted {
+			checkpoints = append(checkpoints, record)
+		}
+	}
+	if len(checkpoints) != 1 || checkpoints[0].TurnID != "turn-1" || len(checkpoints[0].Messages) != 1 {
+		t.Fatalf("checkpoints = %#v, want one attributed to the active turn", checkpoints)
+	}
+
+	dir := filepath.Join(root, spec.ID)
+	messages, err := ReadResidentTranscriptMessages(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].Role != provider.RoleUser || messages[1].Role != provider.RoleAssistant {
+		t.Fatalf("resumed messages = %#v, want the checkpoint followed by the later reply", messages)
+	}
+	if text := joinedResidentMessageText(messages); strings.Contains(text, "old question") {
+		t.Fatalf("resume replayed pre-checkpoint content: %q", text)
+	}
+	if !strings.Contains(joinedResidentMessageText(messages[:1]), "Context Summary (compacted)") {
+		t.Fatalf("resume lost the checkpoint summary: %#v", messages[0])
+	}
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if call, ok := content.(provider.ToolCallBlock); ok {
+				t.Fatalf("resume re-synthesized compacted tool call %q", call.ID)
+			}
+		}
+	}
+
+	// The UI pager keeps the append-only view: a checkpoint is not a history
+	// item, so paging still reaches the pre-checkpoint log.
+	page, err := ReadResidentHistoryPage(dir, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.OlderCursor == "" {
+		t.Fatal("page has no cursor for the pre-checkpoint log")
+	}
+	older, err := ReadResidentHistoryPage(dir, page.OlderCursor, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older.Items) != 3 || older.Items[0].Type != residentRecordUser || !strings.Contains(string(older.Items[0].Message), "old question") {
+		t.Fatalf("older page = %#v, want the append-only log before the checkpoint", older.Items)
+	}
+	for _, item := range append(append([]ResidentHistoryItem(nil), page.Items...), older.Items...) {
+		if item.Type == residentRecordCompacted {
+			t.Fatalf("pager exposed a compaction checkpoint: %#v", item)
+		}
+	}
+}
+
+func TestReadResidentTranscriptMessagesRejectsInvalidCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{name: "empty", line: `{"version":3,"type":"child.compacted","time":"2026-01-01T00:00:00Z"}`},
+		{name: "undecodable", line: `{"version":3,"type":"child.compacted","time":"2026-01-01T00:00:00Z","messages":["not a message"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			journal, err := OpenResidentJournal(root, "bad-checkpoint")
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := ResidentChildSpec{ID: "bad-checkpoint", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+			if err := journal.Accept(spec, "task"); err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.RecordAgentEvent(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "question"}}}}); err != nil {
+				t.Fatal(err)
+			}
+			dir := journal.Dir()
+			if err := journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, residentTranscriptName)
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(tc.line + "\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadResidentTranscriptMessages(dir); err == nil {
+				t.Fatal("invalid checkpoint was accepted")
+			}
+			if _, err := ReconcileResidentJournal(dir); err == nil {
+				t.Fatal("reconciliation accepted an invalid checkpoint")
+			}
+		})
+	}
+}
+
+func joinedResidentMessageText(messages []provider.Message) string {
+	var text strings.Builder
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if block, ok := content.(provider.TextBlock); ok {
+				text.WriteString(block.Text)
+				text.WriteString("\n")
+			}
+		}
+	}
+	return text.String()
 }

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,65 +21,87 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestResidentChildRunnerDefaultsToFiniteMaxSteps(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		maxSteps int
-		want     int
-	}{
-		{name: "unlimited parent defaults to bounded child", maxSteps: 0, want: 50},
-		{name: "explicit parent limit preserved", maxSteps: 30, want: 30},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var requests atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				w.Header().Set("content-type", "text/event-stream")
-				writeOpenAIChunk(t, w, map[string]any{
-					"choices": []any{map[string]any{
-						"index": 0,
-						"delta": map[string]any{"tool_calls": []any{map[string]any{
-							"index": 0, "id": "call-loop", "type": "function",
-							"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
-						}}},
-						"finish_reason": "tool_calls",
-					}},
-					"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
-				})
-			}))
-			defer server.Close()
-
-			spec := subagents.ResidentChildSpec{
-				ID: "maxsteps-child", SessionID: "maxsteps-session", Provider: "openai", Model: "gpt-4o",
-				Tools: []string{"read"},
-			}
-			journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = journal.Close() })
-			if err := journal.Accept(spec, "review"); err != nil {
-				t.Fatal(err)
-			}
-			runner, err := newResidentChildRunner(Args{
-				Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
-				MaxSteps: tc.maxSteps, CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
-			}, spec, journal)
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = runner(t.Context(), "review")
-			if !errors.Is(err, core.ErrMaxSteps) {
-				t.Fatalf("runner error = %v, want step-limit stop", err)
-			}
-			if !strings.Contains(err.Error(), fmt.Sprintf("%d", tc.want)) {
-				t.Fatalf("runner error = %v, want limit %d", err, tc.want)
-			}
-			if got := requests.Load(); got != int32(tc.want) {
-				t.Fatalf("provider requests = %d, want %d", got, tc.want)
-			}
-		})
+func TestResidentChildRunnerWithoutStepLimitRunsPastFormerCap(t *testing.T) {
+	server, requests := residentToolLoopServer(t, 51)
+	runner, _, _ := newResidentChildTestRunner(t, "unlimited-child", Args{
+		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
+		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
+	})
+	if err := runner(t.Context(), "review"); err != nil {
+		t.Fatalf("runner error = %v, want success past the former 50-step cap", err)
 	}
+	if got := requests.Load(); got != 52 {
+		t.Fatalf("provider requests = %d, want 51 tool turns and one answer", got)
+	}
+}
+
+func TestResidentChildRunnerEnforcesExplicitParentStepLimit(t *testing.T) {
+	server, requests := residentToolLoopServer(t, 200)
+	runner, _, _ := newResidentChildTestRunner(t, "limited-child", Args{
+		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
+		MaxSteps: 3, CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
+	})
+	err := runner(t.Context(), "review")
+	if !errors.Is(err, core.ErrMaxSteps) || !strings.Contains(err.Error(), "3") {
+		t.Fatalf("runner error = %v, want step limit 3", err)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("provider requests = %d, want 3", got)
+	}
+}
+
+// residentToolLoopServer answers the first toolCalls requests with a distinct
+// read call and then returns a substantive final answer.
+func residentToolLoopServer(t *testing.T, toolCalls int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		number := requests.Add(1)
+		w.Header().Set("content-type", "text/event-stream")
+		if int(number) <= toolCalls {
+			writeOpenAIChunk(t, w, map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{"tool_calls": []any{map[string]any{
+						"index": 0, "id": fmt.Sprintf("call-%d", number), "type": "function",
+						"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
+					}}},
+					"finish_reason": "tool_calls",
+				}},
+				"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
+			})
+			return
+		}
+		writeOpenAIChunk(t, w, map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "final result"}, "finish_reason": "stop"}},
+			"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server, &requests
+}
+
+// newResidentChildTestRunner builds one journaled resident child runner with
+// its own accepted spec.
+func newResidentChildTestRunner(t *testing.T, childID string, args Args) (subagents.ResidentTurnRunner, *subagents.ResidentJournal, subagents.ResidentChildSpec) {
+	t.Helper()
+	spec := subagents.ResidentChildSpec{
+		ID: childID, SessionID: childID + "-session", Provider: "openai", Model: "gpt-4o",
+		Tools: []string{"read"},
+	}
+	journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	if err := journal.Accept(spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := newResidentChildRunner(args, spec, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner, journal, spec
 }
 
 func TestResidentChildRunnerInjectsContextReminderIntoNextRequest(t *testing.T) {
@@ -202,7 +227,7 @@ func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T
 	}
 }
 
-func TestConfigureResidentContextNudgeRemindsOnceAtThreshold(t *testing.T) {
+func TestConfigureResidentContextNudgeRemindsOncePerBand(t *testing.T) {
 	agent := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
 	configureResidentContextNudge(agent, 1_000)
 
@@ -222,16 +247,52 @@ func TestConfigureResidentContextNudgeRemindsOnceAtThreshold(t *testing.T) {
 		return contextText
 	}
 
-	// Below the threshold: silent, including cache-heavy usage.
+	// Below the first band: silent, including cache-heavy usage.
 	check(provider.Usage{InputTokens: 849}, false)
 	check(provider.Usage{InputTokens: 400, CacheReadTokens: 400, CacheWriteTokens: 49}, false)
-	// First crossing: exactly one reminder carrying the computed percent.
+	// Each band fires once, carrying the computed percent of the crossing turn.
 	first := check(provider.Usage{InputTokens: 850}, true)
 	if !strings.Contains(first, "85%") {
 		t.Fatalf("reminder percent = %q, want 85%%", first)
 	}
-	// Later turns stay silent even as usage grows.
-	check(provider.Usage{InputTokens: 970}, false)
+	check(provider.Usage{InputTokens: 860}, false)
+	second := check(provider.Usage{InputTokens: 900}, true)
+	if !strings.Contains(second, "90%") {
+		t.Fatalf("reminder percent = %q, want 90%%", second)
+	}
+	check(provider.Usage{InputTokens: 920}, false)
+	third := check(provider.Usage{InputTokens: 950}, true)
+	if !strings.Contains(third, "95%") {
+		t.Fatalf("reminder percent = %q, want 95%%", third)
+	}
+	// Past the last band the ladder is spent.
+	check(provider.Usage{InputTokens: 999}, false)
+}
+
+func TestConfigureResidentContextNudgeIgnoresShrinkingUsage(t *testing.T) {
+	agent := core.NewAgent(nil, "model", "system", core.Registry{"read": nil})
+	configureResidentContextNudge(agent, 1_000)
+
+	check := func(usage provider.Usage, wantReminder bool) string {
+		t.Helper()
+		agent.SeedLastTurnUsage(usage)
+		allowed, reason, contextText := agent.BeforeTurnContext(t.Context(), 1)
+		if !allowed || reason != "" {
+			t.Fatalf("nudge blocked turn: allowed=%t reason=%q", allowed, reason)
+		}
+		if wantReminder != (contextText != "") {
+			t.Fatalf("reminder for usage %#v = %q, want reminder=%t", usage, contextText, wantReminder)
+		}
+		return contextText
+	}
+
+	// A shrinking prompt never delivers a band it did not cross.
+	check(provider.Usage{InputTokens: 700}, false)
+	check(provider.Usage{InputTokens: 500}, false)
+	jumped := check(provider.Usage{InputTokens: 910}, true)
+	if !strings.Contains(jumped, "91%") {
+		t.Fatalf("reminder percent = %q, want 91%%", jumped)
+	}
 }
 
 func TestConfigureResidentContextNudgeHandlesDirectJumpAndUnknownWindow(t *testing.T) {
@@ -400,25 +461,10 @@ func TestResidentChildRunnerResumesWithRetainedHistory(t *testing.T) {
 
 func newResidentTestRunner(t *testing.T, baseURL string) (subagents.ResidentTurnRunner, *subagents.ResidentJournal) {
 	t.Helper()
-	spec := subagents.ResidentChildSpec{
-		ID: "resident-child", SessionID: "resident-session", Provider: "openai", Model: "gpt-4o",
-		Tools: []string{"read"},
-	}
-	journal, err := subagents.OpenResidentJournal(t.TempDir(), spec.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = journal.Close() })
-	if err := journal.Accept(spec, "review"); err != nil {
-		t.Fatal(err)
-	}
-	runner, err := newResidentChildRunner(Args{
+	runner, journal, _ := newResidentChildTestRunner(t, "resident-child", Args{
 		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: baseURL,
 		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
-	}, spec, journal)
-	if err != nil {
-		t.Fatal(err)
-	}
+	})
 	return runner, journal
 }
 
@@ -483,4 +529,313 @@ func TestResidentChildArgsDoNotForwardCLIKeyAcrossProviders(t *testing.T) {
 	if next := residentChildArgs(parent, "openai", child); next.APIKey != "parent-key" {
 		t.Fatalf("same-provider child API key = %q, want parent key", next.APIKey)
 	}
+}
+
+// residentOverflowScript scripts the provider responses of a child that hits
+// the context window: leading tool-call turns, one overflow, one compaction
+// summary, then the final text or a second overflow.
+type residentOverflowScript struct {
+	toolCallRequests int
+	secondOverflow   bool
+	finalText        string
+	onOverflow       func()
+
+	requests atomic.Int32
+	mu       sync.Mutex
+	bodies   []string
+}
+
+func (s *residentOverflowScript) start(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		number := int(s.requests.Add(1))
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		encoded, _ := json.Marshal(body["messages"])
+		s.mu.Lock()
+		s.bodies = append(s.bodies, string(encoded))
+		s.mu.Unlock()
+
+		overflowAt := s.toolCallRequests + 1
+		switch {
+		case number <= s.toolCallRequests:
+			w.Header().Set("content-type", "text/event-stream")
+			writeOpenAIChunk(t, w, map[string]any{
+				"choices": []any{map[string]any{
+					"index": 0,
+					"delta": map[string]any{"tool_calls": []any{map[string]any{
+						"index": 0, "id": fmt.Sprintf("call-%d", number), "type": "function",
+						"function": map[string]string{"name": "read", "arguments": `{"path":"x"}`},
+					}}},
+					"finish_reason": "tool_calls",
+				}},
+				"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 1},
+			})
+		case number == overflowAt:
+			if s.onOverflow != nil {
+				s.onOverflow()
+			}
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds the context window","code":"context_length_exceeded"}}`))
+		case number == overflowAt+1:
+			w.Header().Set("content-type", "text/event-stream")
+			writeOpenAIChunk(t, w, map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "compacted digest"}, "finish_reason": "stop"}},
+			})
+		case s.secondOverflow:
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(`{"error":{"message":"input exceeds the context window","code":"context_length_exceeded"}}`))
+		default:
+			w.Header().Set("content-type", "text/event-stream")
+			writeOpenAIChunk(t, w, map[string]any{
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": s.finalText}, "finish_reason": "stop"}},
+				"usage":   map[string]int{"prompt_tokens": 12, "completion_tokens": 5},
+			})
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func (s *residentOverflowScript) capturedBodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.bodies...)
+}
+
+func residentArguments(t *testing.T, baseURL string) Args {
+	t.Helper()
+	return Args{
+		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: baseURL,
+		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
+	}
+}
+
+func countResidentCheckpoints(t *testing.T, journal *subagents.ResidentJournal) int {
+	t.Helper()
+	records, err := subagents.ReadResidentJournal(filepath.Join(journal.Dir(), "transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints := 0
+	for _, record := range records {
+		if record.Type == "child.compacted" {
+			checkpoints++
+		}
+	}
+	return checkpoints
+}
+
+func TestResidentChildRunnerRecoversFromContextOverflowOnce(t *testing.T) {
+	script := &residentOverflowScript{toolCallRequests: 2, finalText: "overflow recovered result"}
+	server := script.start(t)
+	runner, journal, spec := newResidentChildTestRunner(t, "overflow-child", residentArguments(t, server.URL))
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	runErr := runner(t.Context(), "review")
+	if err := journal.RecordTurnFinished(spec, "turn-1", runErr); err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("runner error = %v, want one recovered turn", runErr)
+	}
+	if got := script.requests.Load(); got != 5 {
+		t.Fatalf("provider requests = %d, want 3 prompt, 1 compaction, and 1 continuation", got)
+	}
+	result, err := journal.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != subagents.ResidentIdle || result.Summary != "overflow recovered result" {
+		t.Fatalf("result = %#v, want the recovered final text", result)
+	}
+	records, err := subagents.ReadResidentJournal(filepath.Join(journal.Dir(), "transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints := 0
+	for _, record := range records {
+		if record.Type != "child.compacted" {
+			continue
+		}
+		checkpoints++
+		if record.TurnID != "turn-1" {
+			t.Fatalf("checkpoint turn ID = %q, want the active accepted turn", record.TurnID)
+		}
+	}
+	if checkpoints != 1 {
+		t.Fatalf("compaction checkpoints = %d, want 1", checkpoints)
+	}
+	// Resume replay starts from the checkpoint: the digest replaces the
+	// pre-overflow tool exchange and the continuation request carried it.
+	messages, err := subagents.ReadResidentTranscriptMessages(journal.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || !strings.HasPrefix(residentMessageText(messages[0]), "## Context Summary (compacted)") {
+		t.Fatalf("resumed transcript = %#v, want the checkpoint plus the kept tail", messages)
+	}
+	bodies := script.capturedBodies()
+	if len(bodies) != 5 || !strings.Contains(bodies[4], "compacted digest") {
+		t.Fatalf("continuation request = %q, want the compacted transcript", bodies[len(bodies)-1])
+	}
+	if strings.Contains(bodies[4], "call-1") {
+		t.Fatalf("continuation request kept the dropped tool exchange: %q", bodies[4])
+	}
+}
+
+func TestResidentChildRunnerDoesNotRecoverTwicePerTurn(t *testing.T) {
+	script := &residentOverflowScript{toolCallRequests: 2, secondOverflow: true, finalText: "unreached"}
+	server := script.start(t)
+	runner, journal, _ := newResidentChildTestRunner(t, "double-overflow", residentArguments(t, server.URL))
+	err := runner(t.Context(), "review")
+	if err == nil || !provider.IsContextOverflowError(err) {
+		t.Fatalf("runner error = %v, want the second overflow to stay terminal", err)
+	}
+	if got := script.requests.Load(); got != 5 {
+		t.Fatalf("provider requests = %d, want no second compaction", got)
+	}
+	if checkpoints := countResidentCheckpoints(t, journal); checkpoints != 1 {
+		t.Fatalf("compaction checkpoints = %d, want 1", checkpoints)
+	}
+}
+
+func TestResidentChildRunnerDoesNotReplenishExplicitStepLimit(t *testing.T) {
+	script := &residentOverflowScript{toolCallRequests: 3, finalText: "unreached"}
+	server := script.start(t)
+	args := residentArguments(t, server.URL)
+	args.MaxSteps = 4
+	runner, journal, _ := newResidentChildTestRunner(t, "limited-overflow", args)
+	err := runner(t.Context(), "review")
+	if err == nil || !provider.IsContextOverflowError(err) {
+		t.Fatalf("runner error = %v, want the overflow", err)
+	}
+	if got := script.requests.Load(); got != 5 {
+		t.Fatalf("provider requests = %d, want the compaction attempt only", got)
+	}
+	// The checkpoint is still journaled so an explicit resume starts small,
+	// but the spent allowance forbids continuing this turn.
+	if checkpoints := countResidentCheckpoints(t, journal); checkpoints != 1 {
+		t.Fatalf("compaction checkpoints = %d, want 1", checkpoints)
+	}
+	for _, body := range script.capturedBodies() {
+		if strings.Contains(body, "compacted digest") {
+			t.Fatalf("recovery continued after the step allowance was spent: %q", body)
+		}
+	}
+}
+
+func TestResidentChildRunnerFailsTurnWhenCheckpointCannotPersist(t *testing.T) {
+	root := t.TempDir()
+	spec := subagents.ResidentChildSpec{
+		ID: "persist-failure", SessionID: "persist-failure-session", Provider: "openai", Model: "gpt-4o",
+		Tools: []string{"read"},
+	}
+	journal, err := subagents.OpenResidentJournal(root, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	if err := journal.Accept(spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	// The journal is closed at the exact overflow boundary, so the recovery
+	// cannot persist its checkpoint.
+	script := &residentOverflowScript{
+		toolCallRequests: 2,
+		finalText:        "unreached",
+		onOverflow:       func() { _ = journal.Close() },
+	}
+	server := script.start(t)
+	runner, err := newResidentChildRunner(residentArguments(t, server.URL), spec, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner(t.Context(), "review"); err == nil {
+		t.Fatal("runner recovered without persisting its checkpoint")
+	}
+	if got := script.requests.Load(); got != 4 {
+		t.Fatalf("provider requests = %d, want the compaction attempt only", got)
+	}
+	data, readErr := os.ReadFile(filepath.Join(journal.Dir(), "transcript.jsonl"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(data), `"type":"child.compacted"`) {
+		t.Fatal("a failed recovery recorded a checkpoint")
+	}
+
+	// A later reconstructed child resumes the pre-compaction transcript.
+	reopened, err := subagents.OpenResidentJournal(root, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	runner, err = newResidentChildRunner(residentArguments(t, server.URL), spec, reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner(t.Context(), "verify"); err != nil {
+		t.Fatalf("follow-up error = %v", err)
+	}
+	bodies := script.capturedBodies()
+	if last := bodies[len(bodies)-1]; !strings.Contains(last, "call-1") {
+		t.Fatalf("follow-up request = %q, want the pre-compaction transcript", last)
+	}
+}
+
+func TestRecoverResidentContextOverflowRestoresTranscript(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		writeOpenAIChunk(t, w, map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "compacted digest"}, "finish_reason": "stop"}},
+			"usage":   map[string]int{"prompt_tokens": 5, "completion_tokens": 2},
+		})
+	}))
+	defer server.Close()
+	resolved, err := Resolve(residentArguments(t, server.URL), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := core.NewAgent(resolved.NewClient(), resolved.Model, "", resolved.ToolRegistry)
+	before := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "task"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"x"}`)}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: "missing"}}}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "keep working"}}},
+	}
+	agent.SetMessages(before)
+
+	journal, err := subagents.OpenResidentJournal(t.TempDir(), "restore-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Accept(subagents.ResidentChildSpec{ID: "restore-child", SessionID: "restore-session", Provider: "openai", Model: "gpt-4o"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	overflow := errors.New("openai: http 413: context_length_exceeded")
+	err = recoverResidentContextOverflow(t.Context(), agent, journal, func(core.AgentEvent) {}, 0, 4, overflow)
+	if !errors.Is(err, overflow) || !strings.Contains(err.Error(), "persist resident child compaction") {
+		t.Fatalf("recovery error = %v, want a checkpoint persistence failure", err)
+	}
+	if !reflect.DeepEqual(agent.Messages(), before) {
+		t.Fatalf("transcript = %#v, want the pre-compaction transcript restored", agent.Messages())
+	}
+}
+
+func residentMessageText(message provider.Message) string {
+	var text strings.Builder
+	for _, content := range message.Content {
+		if block, ok := content.(provider.TextBlock); ok {
+			text.WriteString(block.Text)
+		}
+	}
+	return text.String()
 }

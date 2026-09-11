@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // newResidentChildRunner is the host-owned construction boundary for one
@@ -37,13 +39,11 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 	}
 	agent := core.NewAgent(resolved.NewClient(), resolved.Model, system, registry)
+	// A resident child inherits the parent's resolved step limit, including the
+	// unlimited default. Its ceiling is the provider context window, with one
+	// compaction recovery per accepted turn, plus any explicit parent
+	// --max-steps. There is no child-only step budget.
 	agent.MaxSteps = resolved.MaxSteps
-	if agent.MaxSteps <= 0 {
-		// Resident execution must stay bounded once the cumulative rollout
-		// budget is gone. An unlimited parent default must not propagate to
-		// children; explicit parent limits are preserved above.
-		agent.MaxSteps = 50
-	}
 	agent.ContextWindow = resolved.ContextWindow
 	agent.MaxTokens = resolved.MaxOutput
 	agent.Reasoning = resolved.Reasoning
@@ -54,8 +54,8 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		baseline = journal.ConfigureUsage(resolved.ContextWindow, resolved.AuthMethod == "oauth")
 		agent.SeedCost(baseline.Usage)
 	}
-	// The nudge reads the agent's own per-turn usage gauge. No cumulative
-	// budget remains: execution stays bounded through the MaxSteps default.
+	// The nudge reads the agent's own per-turn usage gauge. It stays advisory:
+	// the provider context window is the hard ceiling on a child turn.
 	configureResidentContextNudge(agent, resolved.ContextWindow)
 	rootCacheID := strings.TrimSpace(spec.RootCacheID)
 	if rootCacheID == "" {
@@ -78,6 +78,7 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			agent.SetMessages(messages)
 		}
 	}
+	limit := agent.MaxSteps
 	return func(ctx context.Context, prompt string) error {
 		if ctx == nil {
 			ctx = context.Background()
@@ -86,7 +87,23 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		defer cancel()
 		var journalErr error
 		var journalMu sync.Mutex
-		err := agent.Prompt(turnCtx, prompt, nil, func(event core.AgentEvent) {
+		checkJournal := func() error {
+			journalMu.Lock()
+			defer journalMu.Unlock()
+			if journalErr == nil {
+				return nil
+			}
+			return fmt.Errorf("persist resident child transcript: %w", journalErr)
+		}
+		// usedSteps is the step high-water mark of this accepted turn. The sink
+		// runs on the runner goroutine, so it needs no lock; the mark bounds the
+		// continuation after a compaction recovery so an explicit parent limit
+		// is never replenished.
+		usedSteps := 0
+		sink := func(event core.AgentEvent) {
+			if turnStart, ok := event.(core.EvTurnStart); ok && turnStart.Step > usedSteps {
+				usedSteps = turnStart.Step
+			}
 			if err := journal.RecordAgentEvent(event); err != nil {
 				journalMu.Lock()
 				if journalErr == nil {
@@ -95,42 +112,112 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 				}
 				journalMu.Unlock()
 			}
-		})
-		journalMu.Lock()
-		defer journalMu.Unlock()
-		if journalErr != nil {
-			return fmt.Errorf("persist resident child transcript: %w", journalErr)
+		}
+		err := agent.Prompt(turnCtx, prompt, nil, sink)
+		if journalFailure := checkJournal(); journalFailure != nil {
+			return journalFailure
+		}
+		if err != nil && turnCtx.Err() == nil && provider.IsContextOverflowError(err) {
+			err = recoverResidentContextOverflow(turnCtx, agent, journal, sink, limit, usedSteps, err)
+			if journalFailure := checkJournal(); journalFailure != nil {
+				return journalFailure
+			}
 		}
 		return err
 	}, nil
 }
 
-// residentContextNudgePercent is the single context-usage threshold for the
-// resident reminder. It is a completion aid, not a cost guard: execution
-// stays bounded through the finite MaxSteps default.
-const residentContextNudgePercent = 85
+// A compaction recovery never rewrites a transcript with nothing worth
+// summarizing: the child task and the current exchange must survive verbatim.
+const (
+	residentContextRecoveryMinimumMessages = 4
+	residentContextRecoveryKeepTail        = 2
+)
+
+// recoverResidentContextOverflow gives one accepted resident turn a second
+// chance after the provider rejected it for exceeding the model context
+// window. It compacts the transcript, journals the replacement transcript, and
+// continues the same turn. Recovery happens at most once per call, and any
+// compaction or persistence failure restores the exact pre-compaction
+// transcript before returning the original error.
+func recoverResidentContextOverflow(ctx context.Context, agent *core.Agent, journal *subagents.ResidentJournal, sink func(core.AgentEvent), limit, usedSteps int, overflowErr error) error {
+	if agent == nil || journal == nil {
+		return overflowErr
+	}
+	before := agent.Messages()
+	if len(before) < residentContextRecoveryMinimumMessages {
+		// Summarizing a transcript this short would replace the instruction
+		// rather than shrink prior work.
+		return overflowErr
+	}
+	if _, err := agent.CompactWithEvents(ctx, residentContextRecoveryKeepTail, sink); err != nil {
+		agent.SetMessages(before)
+		return errors.Join(overflowErr, fmt.Errorf("compact resident child transcript: %w", err))
+	}
+	if err := journal.RecordCompacted(agent.Messages()); err != nil {
+		// Memory must not run ahead of durable history: a later resume would
+		// otherwise replay the pre-compaction transcript.
+		agent.SetMessages(before)
+		return errors.Join(overflowErr, fmt.Errorf("persist resident child compaction: %w", err))
+	}
+	if limit > 0 {
+		remaining := limit - usedSteps
+		if remaining <= 0 {
+			// An explicit parent limit is already spent. The checkpoint stays
+			// durable so an explicit resume starts from the compacted
+			// transcript, but this turn is not continued.
+			return overflowErr
+		}
+		agent.MaxSteps = remaining
+		defer func() { agent.MaxSteps = limit }()
+	}
+	return agent.Continue(ctx, sink)
+}
+
+// residentContextReminderBands are the context-usage percentages that arm the
+// resident reminder. Each band fires at most once per child runner, so a child
+// whose prompt keeps growing toward the window is told to wrap up again
+// without turning the reminder into a budget.
+var residentContextReminderBands = []int{85, 90, 95}
 
 func configureResidentContextNudge(agent *core.Agent, contextMax int) {
 	if agent == nil {
 		return
 	}
-	// notified is owned by the runner closure and never reset from Resume
-	// or journal paths. The injected developer-context message persists via
-	// appendDynamicContext and is not replayed verbatim from the child
-	// journal after restart; re-nudging after restart is acceptable.
-	var notified bool
+	// deliveredBand is owned by the runner closure and never reset from
+	// Resume or journal paths. The injected developer-context message persists
+	// via appendDynamicContext and is not replayed verbatim from the child
+	// journal after restart; restarting a child rests the ladder.
+	deliveredBand := -1
 	agent.BeforeTurnContext = func(_ context.Context, _ int) (bool, string, string) {
-		if notified || contextMax <= 0 {
+		if contextMax <= 0 {
 			return true, "", ""
 		}
 		usage := agent.LastTurnUsage()
 		used := usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
-		if used*100 < contextMax*residentContextNudgePercent {
+		band := residentContextReminderBand(used, contextMax)
+		if band <= deliveredBand {
 			return true, "", ""
 		}
-		notified = true
+		deliveredBand = band
 		return true, "", fmt.Sprintf("Context usage is at %d%% of the model window. Finish the current task, report results, limits, and remaining verifications, and do not start broad new work.", used*100/contextMax)
 	}
+}
+
+// residentContextReminderBand returns the highest armed band crossed by the
+// current prompt size, or -1 while usage stays below the first band. A direct
+// jump to a higher band delivers one reminder for that band.
+func residentContextReminderBand(used, contextMax int) int {
+	if contextMax <= 0 {
+		return -1
+	}
+	band := -1
+	for _, candidate := range residentContextReminderBands {
+		if used*100 >= contextMax*candidate {
+			band = candidate
+		}
+	}
+	return band
 }
 
 // residentChildArgs applies the complete durable child specification without

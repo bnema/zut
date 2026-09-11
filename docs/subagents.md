@@ -90,9 +90,10 @@ unlimited by default; a positive `subagents.queue_timeout` cancels an accepted
 prompt that has not received a slot and records its terminal failure durably.
 `subagents.allowed_tools` is an allowlist for child-visible tools and
 `subagents.allowed_roots` limits eligible child workspaces. Resident children
-have no cumulative token budget. Execution stays bounded through a finite
-per-turn step default: a child whose parent resolution is unlimited runs with
-`MaxSteps=50`; an explicit parent limit is preserved. Removed legacy
+have no cumulative token budget and no child-only step cap: a child inherits
+the parent's resolved limit, including the unlimited default. A turn is bounded
+by the provider context window, with one compaction recovery, and by an
+explicit parent `--max-steps`. Removed legacy
 settings, including `tui_subagent_position` and `subagents.budget_ratio`, are
 ignored. Resident journals written by older versions are read with explicit
 translation (an old `budget_exhausted` outcome reconciles as failure) or, for
@@ -109,21 +110,41 @@ no longer exposes `budget` or `budget_source` fields.
 
 ### Context reminders
 
-When a child's last-turn prompt reaches 85% of its model context window, the
-runner injects one non-blocking reminder into the next provider request:
+When a child's last-turn prompt reaches 85%, 90%, or 95% of its model context
+window, the runner injects a non-blocking reminder into the next provider
+request:
 
 ```text
 Context usage is at NN% of the model window. Finish the current task, report
 results, limits, and remaining verifications, and do not start broad new work.
 ```
 
-The reminder fires at most once per child runner and never blocks a turn.
-It travels as developer context in the live request; the durable transcript
-keeps only finalized history. Usage is the last-turn prompt size (input plus
-cache read/write tokens) against the resolved context window; an unknown
-window never triggers a reminder. The per-turn gauge resets when the host
-restarts, so a restarted child is reminded again only once fresh usage past
-the threshold arrives.
+Each band fires at most once per child runner and reminders never block a turn.
+A jump straight to a higher band delivers one reminder for that band, and usage
+that falls does not re-deliver a band. Reminders travel as developer context in
+the live request; the durable transcript keeps only finalized history. Usage is
+the last-turn prompt size (input plus cache read/write tokens) against the
+resolved context window; an unknown window never triggers a reminder. The
+per-turn gauge resets when the host restarts, so restarting a child rests the
+ladder.
+
+### Context-overflow recovery
+
+A provider request that exceeds the model context window ends the turn. When
+the transcript holds at least four messages, the child recovers once per turn:
+it compacts the transcript, keeps the two most recent messages verbatim,
+journals the replacement as a `child.compacted` record, and continues the same
+turn. A compaction or persistence failure restores the pre-compaction
+transcript and fails the turn, and a second overflow stays terminal. Recovery
+never replenishes an explicit parent `--max-steps`: when the allowance is
+already spent, the checkpoint is still written for a later resume, but the turn
+is not continued.
+
+Explicit resume replays the newest checkpoint instead of the full append-only
+log. The history views (`/subagents logs`, `HistoryPage`, `subagent://` refs)
+still show the append-only log, including pre-compaction records. A build that
+predates checkpoint support cannot resume such a child correctly; downgrading
+is unsupported.
 
 Retrieve the saved result without executing a model:
 

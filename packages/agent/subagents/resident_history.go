@@ -29,13 +29,18 @@ const (
 // raw message and tool payloads are preserved so callers can render complete
 // arguments/results without relying on a lossy text projection.
 type ResidentHistoryItem struct {
-	Type       string          `json:"type"`
-	Time       time.Time       `json:"time"`
-	Message    json.RawMessage `json:"message,omitempty"`
-	ToolID     string          `json:"tool_id,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	ToolArgs   json.RawMessage `json:"tool_args,omitempty"`
-	ToolResult json.RawMessage `json:"tool_result,omitempty"`
+	Type    string          `json:"type"`
+	Time    time.Time       `json:"time"`
+	Message json.RawMessage `json:"message,omitempty"`
+	// Messages carries a compaction checkpoint: the complete replacement
+	// transcript of a child that recovered from a context overflow. It is
+	// produced only for residentRecordCompacted items, which the UI pager does
+	// not expose.
+	Messages   []json.RawMessage `json:"messages,omitempty"`
+	ToolID     string            `json:"tool_id,omitempty"`
+	ToolName   string            `json:"tool_name,omitempty"`
+	ToolArgs   json.RawMessage   `json:"tool_args,omitempty"`
+	ToolResult json.RawMessage   `json:"tool_result,omitempty"`
 }
 
 // ResidentHistoryPage is a recent-first, bounded page of finalized history.
@@ -272,6 +277,11 @@ func residentHistoryItem(record residentRecord) (ResidentHistoryItem, bool, erro
 			return ResidentHistoryItem{}, false, errors.New("resident history: malformed tool result record")
 		}
 		item.ToolID, item.ToolResult = record.ToolID, append(json.RawMessage(nil), record.ToolResult...)
+	case residentRecordCompacted:
+		// A checkpoint replaces earlier transcript content but is not history
+		// itself: the pager keeps showing the append-only log. The resume
+		// reader carries the checkpoint through explicitly.
+		return ResidentHistoryItem{}, false, nil
 	default:
 		return ResidentHistoryItem{}, false, nil
 	}
@@ -297,9 +307,39 @@ func residentHistoryPageStart(entries []residentHistoryEntry, limit int) int {
 
 func cloneResidentHistoryItem(item ResidentHistoryItem) ResidentHistoryItem {
 	item.Message = append(json.RawMessage(nil), item.Message...)
+	item.Messages = cloneRawMessages(item.Messages)
 	item.ToolArgs = append(json.RawMessage(nil), item.ToolArgs...)
 	item.ToolResult = append(json.RawMessage(nil), item.ToolResult...)
 	return item
+}
+
+func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {
+	if messages == nil {
+		return nil
+	}
+	cloned := make([]json.RawMessage, len(messages))
+	for index, message := range messages {
+		cloned[index] = append(json.RawMessage(nil), message...)
+	}
+	return cloned
+}
+
+// decodeResidentCompactedMessages decodes one compaction checkpoint. The
+// checkpoint is the complete replacement transcript, so an empty or malformed
+// payload is corruption rather than an empty transcript.
+func decodeResidentCompactedMessages(encoded []json.RawMessage) ([]provider.Message, error) {
+	if len(encoded) == 0 {
+		return nil, errors.New("empty compaction checkpoint")
+	}
+	messages := make([]provider.Message, 0, len(encoded))
+	for _, raw := range encoded {
+		message, err := core.DecodeMessageJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode compaction checkpoint message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	return messages, nil
 }
 
 // ResidentHistoryMessages converts finalized journal items into the same
@@ -322,6 +362,24 @@ func ResidentHistoryMessages(items []ResidentHistoryItem) ([]provider.Message, e
 				}
 			}
 			messages = append(messages, message)
+		case residentRecordCompacted:
+			// A checkpoint replaces the transcript accumulated so far: the
+			// resumed model must see the compacted view, not the full
+			// append-only log. Tool-call bookkeeping starts over from it so a
+			// call dropped by compaction is not re-synthesized below.
+			checkpoint, err := decodeResidentCompactedMessages(item.Messages)
+			if err != nil {
+				return nil, fmt.Errorf("resident history: %w", err)
+			}
+			messages = checkpoint
+			calls = make(map[string]struct{})
+			for _, message := range checkpoint {
+				for _, content := range message.Content {
+					if call, ok := content.(provider.ToolCallBlock); ok {
+						calls[call.ID] = struct{}{}
+					}
+				}
+			}
 		case residentRecordToolCall:
 			if _, exists := calls[item.ToolID]; exists {
 				continue
@@ -378,6 +436,11 @@ func ReadResidentTranscriptMessages(dir string) ([]provider.Message, error) {
 	}
 	items := make([]ResidentHistoryItem, 0, len(records))
 	for _, record := range records {
+		if record.Type == residentRecordCompacted {
+			// The pager hides checkpoints, but resume replay starts from one.
+			items = append(items, ResidentHistoryItem{Type: record.Type, Time: record.Time, Messages: cloneRawMessages(record.Messages)})
+			continue
+		}
 		item, include, err := residentHistoryItem(record)
 		if err != nil {
 			return nil, err

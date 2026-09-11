@@ -1055,3 +1055,103 @@ func TestReconcileResidentJournalRejectsConflictingToolPairs(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordCompactedRejectsOversizedCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "oversized")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "oversized", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "question"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	oversized := []provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("x", residentMaxRecordBytes)}},
+	}}
+	if err := journal.RecordCompacted(oversized); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("RecordCompacted error = %v, want oversize rejection", err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatalf("journal unreadable after an oversized checkpoint: %v", err)
+	}
+	for _, record := range records {
+		if record.Type == residentRecordCompacted {
+			t.Fatal("oversized checkpoint was appended")
+		}
+	}
+	if _, err := ReadResidentTranscriptMessages(filepath.Join(root, spec.ID)); err != nil {
+		t.Fatalf("transcript unreadable after an oversized checkpoint: %v", err)
+	}
+}
+
+func TestReconcileResidentJournalKeepsToolBookkeepingAcrossCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "checkpoint-repair")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "checkpoint-repair", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "question"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The call never produced a result and compaction dropped it from the
+	// replacement transcript.
+	if err := journal.RecordAgentEvent(core.EvToolCall{ID: "dropped-call", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.AcceptFollowUp(spec, "turn-1", "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordCompacted([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)\n\ndigest"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordTurnFinished(spec, "turn-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(journal.Dir(), residentTranscriptName)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := ReconcileResidentJournal(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.State != ResidentIdle {
+		t.Fatalf("reconciled state = %q, want idle", metadata.State)
+	}
+	records, err := ReadResidentJournal(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Type == residentRecordToolResult {
+			t.Fatalf("reconciliation repaired a call dropped by compaction: %#v", record)
+		}
+	}
+	messages, err := ReadResidentTranscriptMessages(filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Role != provider.RoleUser {
+		t.Fatalf("resumed messages = %#v, want only the checkpoint summary", messages)
+	}
+}

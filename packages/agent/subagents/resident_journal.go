@@ -36,6 +36,7 @@ const (
 	residentRecordAssistant    = "message.assistant"
 	residentRecordToolCall     = "tool.call"
 	residentRecordToolResult   = "tool.result"
+	residentRecordCompacted    = "child.compacted"
 	residentRecordUsage        = "usage"
 	residentJournalVersion     = 3
 	residentJournalVersionV2   = 2
@@ -121,15 +122,19 @@ type residentRecord struct {
 	PatchRef     string             `json:"patch_ref,omitempty"`
 	ChangedFiles []string           `json:"changed_files,omitempty"`
 	Message      json.RawMessage    `json:"message,omitempty"`
-	ToolID       string             `json:"tool_id,omitempty"`
-	ToolName     string             `json:"tool_name,omitempty"`
-	ToolArgs     json.RawMessage    `json:"tool_args,omitempty"`
-	ToolResult   json.RawMessage    `json:"tool_result,omitempty"`
-	Usage        *provider.Usage    `json:"usage,omitempty"`
-	ContextUsed  int                `json:"context_used,omitempty"`
-	ContextMax   int                `json:"context_max,omitempty"`
-	Subscription bool               `json:"subscription,omitempty"`
-	raw          json.RawMessage    `json:"-"`
+	// Messages carries a full replacement transcript. It is used only by
+	// child.compacted, the durable checkpoint written after an overflow
+	// recovery compacts the child transcript.
+	Messages     []json.RawMessage `json:"messages,omitempty"`
+	ToolID       string            `json:"tool_id,omitempty"`
+	ToolName     string            `json:"tool_name,omitempty"`
+	ToolArgs     json.RawMessage   `json:"tool_args,omitempty"`
+	ToolResult   json.RawMessage   `json:"tool_result,omitempty"`
+	Usage        *provider.Usage   `json:"usage,omitempty"`
+	ContextUsed  int               `json:"context_used,omitempty"`
+	ContextMax   int               `json:"context_max,omitempty"`
+	Subscription bool              `json:"subscription,omitempty"`
+	raw          json.RawMessage   `json:"-"`
 }
 
 // RecordAgentEvent persists finalized provider-neutral transcript events. It
@@ -231,6 +236,50 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 	return err
 }
 
+// RecordCompacted persists the replacement transcript produced by a
+// context-overflow recovery. The checkpoint is additive: journals without one
+// replay exactly as before, and resume replay starts from the newest
+// checkpoint instead of the full append-only log.
+func (j *ResidentJournal) RecordCompacted(messages []provider.Message) error {
+	if j == nil {
+		return errors.New("resident journal: unavailable")
+	}
+	if len(messages) == 0 {
+		return errors.New("resident journal: empty compaction checkpoint")
+	}
+	encoded := make([]json.RawMessage, 0, len(messages))
+	for _, message := range messages {
+		data, err := json.Marshal(message)
+		if err != nil {
+			return fmt.Errorf("resident journal encode compacted message: %w", err)
+		}
+		encoded = append(encoded, data)
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.file == nil {
+		return errors.New("resident journal: closed")
+	}
+	record := residentRecord{
+		Version:  residentJournalVersion,
+		Type:     residentRecordCompacted,
+		Time:     time.Now().UTC(),
+		TurnID:   j.activeTurnID,
+		Messages: encoded,
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("resident journal encode: %w", err)
+	}
+	// ReadResidentJournal rejects any line above residentMaxRecordBytes,
+	// including the trailing newline that appendSync adds. Reject an oversized
+	// checkpoint before the append so the transcript stays readable.
+	if len(data)+1 > residentMaxRecordBytes {
+		return errors.New("resident journal: compaction checkpoint too large")
+	}
+	return j.appendSync(record)
+}
+
 // ResidentMetadata is a bounded, rebuildable projection. The transcript is
 // the authority for acceptance; callers must never infer acceptance solely
 // from this file.
@@ -285,6 +334,10 @@ type ResidentJournal struct {
 	dir                    string
 	file                   *os.File
 	lease                  *residentLease
+	// activeTurnID is the accepted resident turn currently executing. It
+	// attributes records that the runner writes without a turn parameter,
+	// such as a compaction checkpoint. It is guarded by mu.
+	activeTurnID string
 }
 
 // ResidentUsageSnapshot is the bounded usage projection shared by durable and
@@ -452,6 +505,7 @@ func (j *ResidentJournal) AcceptFollowUp(spec ResidentChildSpec, turnID, prompt 
 	if err := j.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordTurnAccepted, Time: now, TurnID: turnID, Prompt: prompt}); err != nil {
 		return err
 	}
+	j.activeTurnID = turnID
 	return writeResidentMetadata(j.dir, j.metadata(spec, ResidentQueued, now))
 }
 
@@ -580,6 +634,18 @@ func (j *ResidentJournal) recordTurnBoundary(spec ResidentChildSpec, state Resid
 	record.Version, record.Time = residentJournalVersion, time.Now().UTC()
 	if err := j.appendSync(record); err != nil {
 		return err
+	}
+	// Track the accepted turn that is currently executing so records written
+	// without an explicit turn parameter, such as a compaction checkpoint, stay
+	// attributable. A terminal boundary clears it; a late checkpoint from a
+	// finished turn can therefore not be attributed to the next one.
+	switch record.Type {
+	case residentRecordTurnStarted:
+		j.activeTurnID = record.TurnID
+	case residentRecordTurnFinished, residentRecordInterrupted:
+		if j.activeTurnID == record.TurnID {
+			j.activeTurnID = ""
+		}
 	}
 	return writeResidentMetadata(j.dir, j.metadata(spec, state, record.Time))
 }
@@ -912,6 +978,32 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 				return ResidentMetadata{}, errors.New("resident journal: duplicate tool result")
 			}
 			toolResults[record.ToolID] = struct{}{}
+		case residentRecordCompacted:
+			checkpoint, err := decodeResidentCompactedMessages(record.Messages)
+			if err != nil {
+				return ResidentMetadata{}, fmt.Errorf("resident journal: invalid compaction checkpoint: %w", err)
+			}
+			// The checkpoint replaces everything before it, so tool bookkeeping
+			// restarts from the compacted transcript. Without this, a call that
+			// compaction dropped would look dangling and gain a synthetic
+			// interrupted result appended after the checkpoint, which resume
+			// replay would then surface as an orphan.
+			toolCalls = make(map[string]struct{})
+			toolResults = make(map[string]struct{})
+			for _, message := range checkpoint {
+				for _, content := range message.Content {
+					switch block := content.(type) {
+					case provider.ToolCallBlock:
+						if block.ID != "" {
+							toolCalls[block.ID] = struct{}{}
+						}
+					case provider.ToolResultBlock:
+						if block.CallID != "" {
+							toolResults[block.CallID] = struct{}{}
+						}
+					}
+				}
+			}
 		case residentRecordUsage:
 			if record.Usage == nil {
 				return ResidentMetadata{}, errors.New("resident journal: invalid usage record")
