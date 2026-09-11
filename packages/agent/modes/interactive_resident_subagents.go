@@ -277,6 +277,10 @@ func (i *Interactive) deliverCompletionUpdates() {
 
 		batch, err := tracker.WaitReady(i.completionWaitContext())
 		if err == nil && len(batch) != 0 {
+			terminalAgentIDs := make(map[string]struct{}, len(batch))
+			for _, completion := range batch {
+				terminalAgentIDs[completion.AgentID] = struct{}{}
+			}
 			var actions []orchestration.Action
 			for _, completion := range batch {
 				workerID := i.takeCoordinatorWorkerID(completion.AgentID)
@@ -288,6 +292,15 @@ func (i *Interactive) deliverCompletionUpdates() {
 					WorkerID:   workerID,
 					Completion: completion,
 				})...)
+			}
+			for index := range actions {
+				active := actions[index].ActiveAgentIDs[:0]
+				for _, agentID := range actions[index].ActiveAgentIDs {
+					if _, terminal := terminalAgentIDs[agentID]; !terminal {
+						active = append(active, agentID)
+					}
+				}
+				actions[index].ActiveAgentIDs = active
 			}
 			i.executeCoordinatorActions(actions)
 		}

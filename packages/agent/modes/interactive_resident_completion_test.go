@@ -11,6 +11,41 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
+func TestResidentCompletionBatchDoesNotReportTerminalSiblingAsRunning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ag := core.NewAgent(nil, "model", "", nil)
+	i := &Interactive{agent: ag, busy: true, runCtx: ctx}
+	release := i.beginCompletionDeliveryHold()
+	defer release()
+	i.TrackResidentSubagent("first", "turn-1")
+	i.TrackResidentSubagent("second", "turn-2")
+
+	tracker := i.ensureCompletionTracker()
+	tracker.Report(subagents.Completion{AgentID: "first", TurnID: "turn-1", Status: "completed"})
+	tracker.Report(subagents.Completion{AgentID: "second", TurnID: "turn-2", Status: "completed"})
+	i.requestCompletionDelivery()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		queued := ag.PendingQueuedMessages()
+		if len(queued) == 2 {
+			for _, message := range queued {
+				if strings.Contains(message.Text, "Still running:") {
+					t.Fatalf("terminal sibling reported as running: %q", message.Text)
+				}
+			}
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("queued completions = %#v, want 2", queued)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func TestResidentCompletionSlidesIntoBusyParent(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
