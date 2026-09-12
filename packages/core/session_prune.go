@@ -32,6 +32,11 @@ func ScanStoredSessionGroups(sessionsRoot string) ([]StoredSessionGroup, []Sessi
 	byCWD := make(map[string]*StoredSessionGroup)
 	var issues []SessionScanIssue
 
+	// A symlinked sessions root would otherwise scan as an empty store
+	// with no hint; report it instead of silently finding nothing.
+	if info, err := os.Lstat(sessionsRoot); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, []SessionScanIssue{{Path: sessionsRoot, Err: fmt.Errorf("sessions root is a symbolic link")}}
+	}
 	err := filepath.WalkDir(sessionsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if path == sessionsRoot && errors.Is(walkErr, fs.ErrNotExist) {
@@ -50,6 +55,13 @@ func ScanStoredSessionGroups(sessionsRoot string) ([]StoredSessionGroup, []Sessi
 			issues = append(issues, SessionScanIssue{Path: path, Err: fmt.Errorf("symbolic link is not a stored session")})
 			return nil
 		}
+		// Never block on or stream non-regular entries: a FIFO named
+		// *.jsonl would hang open(2) forever and a device node would
+		// return data without end. Report and preserve them instead.
+		if !entry.Type().IsRegular() {
+			issues = append(issues, SessionScanIssue{Path: path, Err: fmt.Errorf("not a regular file")})
+			return nil
+		}
 
 		meta, err := readSessionMeta(path)
 		if err != nil {
@@ -59,6 +71,12 @@ func ScanStoredSessionGroups(sessionsRoot string) ([]StoredSessionGroup, []Sessi
 		cwd := strings.TrimSpace(meta.CWD)
 		if cwd == "" {
 			issues = append(issues, SessionScanIssue{Path: path, Err: fmt.Errorf("session metadata has an empty cwd")})
+			return nil
+		}
+		// Tree-navigation branches stay visible through /session tree;
+		// pruning them here would silently remove sessions the picker
+		// deliberately hides from the flat list.
+		if meta.HideFromSessions {
 			return nil
 		}
 		info, err := entry.Info()
