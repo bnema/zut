@@ -524,3 +524,18 @@ func TestGlobSymlinkedRootKeepsRequestedName(t *testing.T) {
 		t.Fatalf("output = %q, want link-inside/a.go", got)
 	}
 }
+
+func TestGlobReportsDiscoveredPaths(t *testing.T) {
+	root := t.TempDir()
+	writeGlobFile(t, filepath.Join(root, "sub", "a.go"), "")
+	tool := &GlobTool{CWD: root}
+	result, err := tool.Execute(context.Background(), globArgsJSON("**/*.go", "", false), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovers := result.Context
+	want := canonicalResourcePath(filepath.Join(root, "sub", "a.go"))
+	if len(discovers.Discovers) != 1 || discovers.Discovers[0] != want {
+		t.Fatalf("discovers = %v, want [%s]", discovers.Discovers, want)
+	}
+}

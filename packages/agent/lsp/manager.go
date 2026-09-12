@@ -179,6 +179,12 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 				m.mu.Unlock()
 				return nil, errManagerClosed
 			}
+			if ctx.Err() != nil {
+				ws.statuses[spec.ID] = "stopped"
+				delete(ws.errors, spec.ID)
+				m.mu.Unlock()
+				return nil, err
+			}
 			ws.statuses[spec.ID] = "missing"
 			ws.errors[spec.ID] = err.Error()
 			m.mu.Unlock()
@@ -573,7 +579,12 @@ func (m *Manager) Status(cwd, path string) ([]ServerStatus, error) {
 	return out, nil
 }
 
-func (m *Manager) Capabilities(cwd, path, server string) (map[string]json.RawMessage, error) {
+// Capabilities starts matching servers when needed. The context bounds server
+// startup and initialization.
+func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (map[string]json.RawMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ws, err := m.workspace(cwd)
 	if err != nil {
 		return nil, err
@@ -588,7 +599,7 @@ func (m *Manager) Capabilities(cwd, path, server string) (map[string]json.RawMes
 		if client != nil {
 			return client, nil
 		}
-		return m.ensureClient(context.Background(), ws, spec)
+		return m.ensureClient(ctx, ws, spec)
 	}
 	if server != "" {
 		spec, ok := ws.config.Servers[server]
@@ -608,6 +619,12 @@ func (m *Manager) Capabilities(cwd, path, server string) (map[string]json.RawMes
 	out := make(map[string]json.RawMessage)
 	var firstErr error
 	for _, status := range statuses {
+		if err := ctx.Err(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
 		spec := ws.config.Servers[status.ID]
 		if spec.Kind != "lsp" || spec.IsLinter {
 			continue
@@ -745,6 +762,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		}
 		commandCtx, cancel := context.WithTimeout(ctx, m.options.LinterTimeout)
 		cmd := exec.CommandContext(commandCtx, command, args...)
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Dir = ws.cwd
 		cmd.Env = mergedEnvironment(spec.Env)
 		var stdout, stderr limitedBuffer

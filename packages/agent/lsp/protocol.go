@@ -135,6 +135,11 @@ func pathToURI(path string) (string, error) {
 	return u.String(), nil
 }
 
+// URIToPath converts an LSP document URI to a platform-native path.
+func URIToPath(uri string) (string, error) {
+	return uriToPath(uri)
+}
+
 func uriToPath(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {

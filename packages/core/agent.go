@@ -1340,6 +1340,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			Content: res.Content,
 			IsError: res.IsError,
 			Timing:  res.Timing,
+			Context: res.Context,
 		})
 		for _, name := range res.ActivateTools {
 			if _, err := tools.Get(name); err == nil && !containsString(addedTools, name) {

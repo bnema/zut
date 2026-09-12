@@ -179,6 +179,47 @@ func TestLiveEditOverlayKeepsStableHeightWhileStreaming(t *testing.T) {
 	}
 }
 
+func TestCompletedASTRewriteRendersPersistentDiff(t *testing.T) {
+	args := json.RawMessage(`{"pattern":"old($A)","language":"go","path":"sample.go","rewrite":"new($A)"}`)
+	v := View{
+		Theme: Dark,
+		Messages: []provider.Message{
+			{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "toolu_ast", Name: "ast", Arguments: args}}},
+			{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+				CallID:  "toolu_ast",
+				Content: []provider.Content{provider.TextBlock{Text: " old(value)\n-old(value)\n+new(value)\n"}},
+			}}},
+		},
+	}
+
+	rendered := strings.Join(v.Build(80), "\n")
+	plain := stripANSI(rendered)
+	for _, want := range []string{"ast sample.go", "-  2 old(value)", "+  2 new(value)"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("completed AST rewrite missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestASTSearchResultIsNotForcedIntoDiffRendering(t *testing.T) {
+	args := json.RawMessage(`{"pattern":"old($A)","language":"go","path":"sample.go"}`)
+	v := View{
+		Theme: Dark,
+		Messages: []provider.Message{
+			{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "toolu_ast", Name: "ast", Arguments: args}}},
+			{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+				CallID:  "toolu_ast",
+				Content: []provider.Content{provider.TextBlock{Text: "sample.go:1: old(value)"}},
+			}}},
+		},
+	}
+
+	plain := stripANSI(strings.Join(v.Build(80), "\n"))
+	if !strings.Contains(plain, "sample.go:1: old(value)") {
+		t.Fatalf("AST search result was hidden or rewritten:\n%s", plain)
+	}
+}
+
 func TestEditConfirmationPreviewRendersDiffInsteadOfNewText(t *testing.T) {
 	args := json.RawMessage(`{"path":"sample.go","edits":[{"oldText":"old value","newText":"new value"}]}`)
 	v := View{

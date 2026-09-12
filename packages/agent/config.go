@@ -125,7 +125,7 @@ type Config struct {
 	LSPDiagnosticsOnWrite *bool `json:"lsp_diagnostics_on_write,omitempty"`
 
 	// LSPDiagnosticsOnEdit enables bounded diagnostics after a successful
-	// edit. nil/missing means disabled to keep multi-edit sequences quiet.
+	// edit. nil/missing means enabled when LSP itself is enabled.
 	LSPDiagnosticsOnEdit *bool `json:"lsp_diagnostics_on_edit,omitempty"`
 
 	// AutoCompactThreshold is the percentage of the model context window
@@ -292,10 +292,10 @@ func (c Config) LSPDiagnosticsOnWriteEnabled(subagent bool) bool {
 	return c.LSPEnabledFor(subagent) && (c.LSPDiagnosticsOnWrite == nil || *c.LSPDiagnosticsOnWrite)
 }
 
-// LSPDiagnosticsOnEditEnabled reports the default-off edit diagnostics
+// LSPDiagnosticsOnEditEnabled reports the default-on edit diagnostics
 // preference without requiring a generated config entry.
 func (c Config) LSPDiagnosticsOnEditEnabled(subagent bool) bool {
-	return c.LSPEnabledFor(subagent) && c.LSPDiagnosticsOnEdit != nil && *c.LSPDiagnosticsOnEdit
+	return c.LSPEnabledFor(subagent) && (c.LSPDiagnosticsOnEdit == nil || *c.LSPDiagnosticsOnEdit)
 }
 
 // AuthPath returns the path to auth.json.

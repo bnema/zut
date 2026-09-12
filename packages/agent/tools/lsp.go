@@ -15,15 +15,21 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-const maxLSPToolOutput = 60 * 1024
+const (
+	maxLSPToolOutput    = 60 * 1024
+	defaultLSPTimeout   = 30 * time.Second
+	maxLSPTimeout       = 2 * time.Minute
+	maxLSPTimeoutMillis = int(maxLSPTimeout / time.Millisecond)
+)
 
 // LSPTool exposes diagnostics, language navigation, and server management to
 // the model. Manager owns processes and is normally shared by all tool calls
 // in one agent session.
 type LSPTool struct {
-	CWD     string
-	Manager *lsp.Manager
-	Sandbox *Sandbox
+	CWD            string
+	Manager        *lsp.Manager
+	Sandbox        *Sandbox
+	LSPDiagnostics bool
 }
 
 // NewLSPTool constructs the model-facing LSP tool.
@@ -50,7 +56,7 @@ type lspArgs struct {
 	RunCLI  *bool           `json:"run_cli,omitempty"`
 }
 
-const lspSchema = `{"type":"object","properties":{"action":{"type":"string","enum":["diagnostics","definition","references","hover","symbols","rename","code_actions","type_definition","implementation","status","reload","capabilities","request"]},"path":{"type":"string","description":"File path relative to the workspace, required for document actions."},"line":{"type":"integer","minimum":1,"description":"1-based line for a document action."},"column":{"type":"integer","minimum":1,"description":"1-based column for a document action."},"query":{"type":"string","description":"Workspace symbol query; symbols uses document symbols when omitted."},"new_name":{"type":"string","description":"New identifier for rename."},"server":{"type":"string","description":"Optional server id for request or capabilities."},"method":{"type":"string","description":"Raw LSP method for request."},"params":{"type":"object","description":"Raw JSON-RPC params for request."},"apply":{"type":"boolean","description":"Apply a returned rename/code-action WorkspaceEdit. Only files inside the workspace are accepted."},"timeout_ms":{"type":"integer","minimum":1},"max":{"type":"integer","minimum":1,"maximum":50},"run_cli":{"type":"boolean","description":"Run configured CLI linters for diagnostics (default true)."}},"required":["action"]}`
+const lspSchema = `{"type":"object","properties":{"action":{"type":"string","enum":["diagnostics","definition","references","hover","symbols","rename","code_actions","type_definition","implementation","status","reload","capabilities","request"]},"path":{"type":"string","description":"File path relative to the workspace, required for document actions."},"line":{"type":"integer","minimum":1,"description":"1-based line for a document action."},"column":{"type":"integer","minimum":1,"description":"1-based column for a document action."},"query":{"type":"string","description":"Workspace symbol query; symbols uses document symbols when omitted."},"new_name":{"type":"string","description":"New identifier for rename."},"server":{"type":"string","description":"Optional server id for request or capabilities."},"method":{"type":"string","description":"Raw LSP method for request."},"params":{"type":"object","description":"Raw JSON-RPC params for request."},"apply":{"type":"boolean","description":"Apply a returned rename/code-action WorkspaceEdit. Only files inside the workspace are accepted."},"timeout_ms":{"type":"integer","minimum":1,"maximum":120000,"description":"Request timeout in milliseconds (default 30000, maximum 120000)."},"max":{"type":"integer","minimum":1,"maximum":50},"run_cli":{"type":"boolean","description":"Run configured CLI linters for diagnostics (default true)."}},"required":["action"]}`
 
 func (t *LSPTool) Name() string { return "lsp" }
 func (t *LSPTool) Description() string {
@@ -90,12 +96,8 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 			}
 		}
 	}
-	runCtx := ctx
-	if args.Timeout > 0 {
-		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(args.Timeout)*time.Millisecond)
-		defer cancel()
-	}
+	runCtx, cancel := context.WithTimeout(ctx, lspToolTimeout(args.Timeout))
+	defer cancel()
 	var text string
 	var details any
 	var actionErr error
@@ -147,7 +149,7 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 		text = "Reloaded LSP and linter processes and configuration."
 	case "capabilities":
 		var capabilities map[string]json.RawMessage
-		capabilities, actionErr = t.Manager.Capabilities(absCWD, path, args.Server)
+		capabilities, actionErr = t.Manager.Capabilities(runCtx, absCWD, path, args.Server)
 		text = prettyJSON(capabilities)
 		details = capabilities
 	case "request":
@@ -161,7 +163,13 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 		return core.ToolResult{}, actionErr
 	}
 	text = boundLSPText(text)
-	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details}, nil
+	result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details}
+	if values, ok := details.(map[string]any); ok {
+		if paths, ok := values["modified_paths"].([]string); ok {
+			result.Context.Mutates = paths
+		}
+	}
+	return result, nil
 }
 
 func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, args lspArgs) (string, any, error) {
@@ -200,11 +208,17 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	if args.Action == "rename" && args.Apply == nil {
 		apply = true
 	}
-	text, applyCount, applyErr := formatResponses(cwd, responses, args.Action, apply, t.Manager)
+	text, applyCount, modifiedPaths, applyErr := formatResponses(cwd, responses, args.Action, apply, t.Manager)
 	if applyCount > 0 {
 		text += fmt.Sprintf("\nApplied %d workspace edit(s).", applyCount)
 	}
-	return text, map[string]any{"action": args.Action, "responses": responses, "applied": applyCount}, applyErr
+	details := map[string]any{"action": args.Action, "responses": responses, "applied": applyCount, "modified_paths": modifiedPaths}
+	if applyCount > 0 && t.LSPDiagnostics {
+		result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, Details: details}
+		attachMutationDiagnostics(ctx, cwd, modifiedPaths, t.Manager, &result)
+		text = result.Content[0].(provider.TextBlock).Text
+	}
+	return text, details, applyErr
 }
 
 func (t *LSPTool) executeRawRequest(ctx context.Context, cwd, path string, args lspArgs) (string, any, error) {
@@ -230,9 +244,10 @@ func (t *LSPTool) executeRawRequest(ctx context.Context, cwd, path string, args 
 	return formatRawResponses(responses), map[string]any{"method": args.Method, "responses": responses}, firstResponseError(responses)
 }
 
-func formatResponses(cwd string, responses []lsp.Response, action string, apply bool, manager *lsp.Manager) (string, int, error) {
+func formatResponses(cwd string, responses []lsp.Response, action string, apply bool, manager *lsp.Manager) (string, int, []string, error) {
 	var b strings.Builder
 	applied := 0
+	var modifiedPaths []string
 	var firstErr error
 	pendingEdits := make([]lsp.WorkspaceEdit, 0)
 	for _, response := range responses {
@@ -249,6 +264,7 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 		}
 	}
 	if len(pendingEdits) > 0 {
+		modifiedPaths = workspaceEditPaths(cwd, pendingEdits)
 		if err := manager.ApplyEdits(cwd, pendingEdits); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -259,9 +275,44 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 		}
 	}
 	if b.Len() == 0 {
-		return "No results.", applied, firstErr
+		return "No results.", applied, modifiedPaths, firstErr
 	}
-	return b.String(), applied, firstErr
+	return b.String(), applied, modifiedPaths, firstErr
+}
+
+func workspaceEditPaths(cwd string, edits []lsp.WorkspaceEdit) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(uri string) {
+		path, err := lsp.URIToPath(uri)
+		if err != nil {
+			return
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	for _, edit := range edits {
+		for uri := range edit.Changes {
+			add(uri)
+		}
+		for _, raw := range edit.DocumentChanges {
+			var change struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+			}
+			if json.Unmarshal(raw, &change) == nil {
+				add(change.TextDocument.URI)
+			}
+		}
+	}
+	return paths
 }
 
 func workspaceEdits(raw json.RawMessage, action string) []lsp.WorkspaceEdit {
@@ -329,6 +380,16 @@ func prettyJSON(raw any) string {
 }
 func hasGlobMeta(value string) bool {
 	return strings.ContainsAny(value, "*?[")
+}
+
+func lspToolTimeout(milliseconds int) time.Duration {
+	if milliseconds <= 0 {
+		return defaultLSPTimeout
+	}
+	if milliseconds > maxLSPTimeoutMillis {
+		return maxLSPTimeout
+	}
+	return time.Duration(milliseconds) * time.Millisecond
 }
 
 func boundedMax(value int) int {

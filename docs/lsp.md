@@ -74,8 +74,9 @@ before parsing.
 
 ## Tool actions
 
-The model calls `lsp` with an `action` and an optional `path`, `line`, `column`,
-`server`, or `query`:
+The model calls `lsp` with an `action` and optional arguments such as `path`,
+`line`, `column`, `server`, or `query`. Every action has an overall time budget:
+`timeout_ms` defaults to 30,000 milliseconds and is capped at 120,000 milliseconds.
 
 - `diagnostics` — merge LSP and CLI diagnostics for a file, glob, or the whole workspace. `run_cli:false` skips command-line linters.
 - `definition`, `type_definition`, `implementation`, `references`, `hover` — query a language server at a 1-based line and column.
@@ -106,10 +107,11 @@ whitespace-compacted and clipped before formatting. Slow write-time checks are
 bounded to a short two-second budget; a successful file write or edit is never
 turned into a failed mutation because an LSP or linter is unavailable.
 
-Write diagnostics are enabled by default when LSP is enabled. Edit diagnostics
-are disabled by default to keep multi-edit sequences compact. The persisted
-configuration keys are `lsp_diagnostics_on_write` and
-`lsp_diagnostics_on_edit` when an embedding needs to override those defaults.
+Write and edit diagnostics are enabled by default when LSP is enabled. Applied
+LSP rename, code-action, and AST rewrite edits also run the same bounded checks
+for up to three modified files within one shared two-second budget. The persisted configuration keys are
+`lsp_diagnostics_on_write` and `lsp_diagnostics_on_edit` when an embedding
+needs to override the native file-tool defaults.
 Repeated post-write diagnostics are tracked per file by severity/code/message
 identity, so a line shift does not replay the same error. Clearing a file's
 diagnostics allows a later recurrence to be surfaced again.

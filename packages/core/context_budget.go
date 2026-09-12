@@ -11,20 +11,28 @@ import (
 const (
 	maxToolResultTextBytes   = 32 * 1024
 	toolResultOmissionMarker = "[tool result content omitted]"
+	staleToolResultMarker    = "[stale tool result omitted; a newer workspace view supersedes it]"
 )
 
 // projectToolResultMessages returns a copied provider-input view of msgs.
-// Each tool result is bounded independently. Its projection must depend only
-// on that result: retroactively shrinking older results when a new one arrives
-// mutates the prompt prefix and defeats provider prompt caching. Compaction
-// owns the aggregate transcript budget.
+// The byte cap is independent per result. Provenance pruning is the deliberate
+// exception: a newer workspace view can replace an older result, trading the
+// provider cache prefix from that point for removal of context known to be
+// stale. The durable transcript is never rewritten. Compaction owns the
+// aggregate transcript budget.
 func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 	projected := copyToolResultMessages(msgs)
+	stale := staleToolResultIDs(projected)
 
 	for i := range projected {
 		for j, content := range projected[i].Content {
 			result, ok := content.(provider.ToolResultBlock)
 			if !ok {
+				continue
+			}
+			if stale[result.CallID] {
+				result.Content = []provider.Content{provider.TextBlock{Text: staleToolResultMarker}}
+				projected[i].Content[j] = result
 				continue
 			}
 
@@ -39,6 +47,65 @@ func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 	}
 
 	return projected
+}
+
+// staleToolResultIDs computes a causal projection over successful tool
+// results. Re-reading an equivalent resource view supersedes the old read;
+// reading a discovered file supersedes the search result that found it; and a
+// mutation supersedes every earlier view of the affected resource.
+func staleToolResultIDs(msgs []provider.Message) map[string]bool {
+	stale := make(map[string]bool)
+	reads := make(map[provider.ResourceRef]string)
+	discoveries := make(map[string]map[string]bool)
+	remainingDiscoveries := make(map[string]int)
+	for _, message := range msgs {
+		for _, content := range message.Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if !ok || result.IsError || result.CallID == "" {
+				continue
+			}
+			for _, resource := range result.Context.Reads {
+				if previous := reads[resource]; previous != "" {
+					stale[previous] = true
+				}
+				reads[resource] = result.CallID
+				for discovery := range discoveries[resource.Key] {
+					remainingDiscoveries[discovery]--
+					if remainingDiscoveries[discovery] == 0 {
+						stale[discovery] = true
+					}
+				}
+				delete(discoveries, resource.Key)
+			}
+			for _, resource := range result.Context.Mutates {
+				for view, previous := range reads {
+					if view.Key == resource {
+						if previous != result.CallID {
+							stale[previous] = true
+						}
+						delete(reads, view)
+					}
+				}
+				for discovery := range discoveries[resource] {
+					remainingDiscoveries[discovery]--
+					if remainingDiscoveries[discovery] == 0 {
+						stale[discovery] = true
+					}
+				}
+				delete(discoveries, resource)
+			}
+			for _, resource := range result.Context.Discovers {
+				if discoveries[resource] == nil {
+					discoveries[resource] = make(map[string]bool)
+				}
+				if !discoveries[resource][result.CallID] {
+					discoveries[resource][result.CallID] = true
+					remainingDiscoveries[result.CallID]++
+				}
+			}
+		}
+	}
+	return stale
 }
 
 // projectProviderMessages creates the provider-only transcript view. The

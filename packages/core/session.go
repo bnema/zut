@@ -1779,6 +1779,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				Content []json.RawMessage    `json:"content"`
 				IsError bool                 `json:"is_error"`
 				Timing  *provider.ToolTiming `json:"timing,omitempty"`
+				Context provider.ToolContext `json:"context,omitempty"`
 			}
 			if err := json.Unmarshal(raw, &tr); err != nil || tr.Content == nil {
 				if err == nil {
@@ -1786,7 +1787,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				}
 				return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
 			}
-			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError, Timing: tr.Timing}
+			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError, Timing: tr.Timing, Context: tr.Context}
 			for innerIdx, c := range tr.Content {
 				var inner struct {
 					Text     string `json:"text"`

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,6 +32,9 @@ func TestFakeLSPProcess(t *testing.T) {
 		}
 		switch message.Method {
 		case "initialize":
+			if os.Getenv("ZUT_FAKE_LSP_HANG_INITIALIZE") == "1" {
+				continue
+			}
 			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"capabilities":{"definitionProvider":true}}}`)
 			_ = WriteMessage(os.Stdout, response)
 		case "test/echo":
@@ -50,6 +54,26 @@ func TestFakeLSPProcess(t *testing.T) {
 			data, _ := json.Marshal(response)
 			_ = WriteMessage(os.Stdout, data)
 		}
+	}
+}
+
+func TestManagerCapabilitiesHonorsContextDuringInitialize(t *testing.T) {
+	root := t.TempDir()
+	config := `{"autoDetect":false,"servers":{"fake":{"kind":"lsp","command":` + strconv.Quote(os.Args[0]) + `,"args":["-test.run=TestFakeLSPProcess"],"env":{"ZUT_FAKE_LSP":"1","ZUT_FAKE_LSP_HANG_INITIALIZE":"1"}}}}`
+	if err := os.WriteFile(filepath.Join(root, "lsp.json"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager()
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := manager.Capabilities(ctx, root, "", "fake")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Capabilities error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Capabilities returned after %s, want prompt context cancellation", elapsed)
 	}
 }
 
