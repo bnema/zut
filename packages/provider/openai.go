@@ -310,7 +310,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: system})
 	}
 
-	deferredMode := isKimiDeferredModel(req.Model)
+	deferredMode := supportsDeferredTools(c.Name()) && isKimiDeferredModel(req.Model)
 	toolByName := make(map[string]Tool, len(req.Tools))
 	for _, t := range req.Tools {
 		toolByName[t.Name] = t
@@ -324,7 +324,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 	textOnly := c.name == "deepseek"
 
 	req.Messages = RepairOrphanedToolResults(req.Messages)
-	for _, msg := range req.Messages {
+	for msgIndex := 0; msgIndex < len(req.Messages); msgIndex++ {
+		msg := req.Messages[msgIndex]
+		addedToolNames := append([]string(nil), msg.AddedToolNames...)
 		switch msg.Role {
 		case RoleDeveloper:
 			content := buildOAIUserContent(msg.Content, textOnly)
@@ -388,23 +390,53 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 			}
 			out.Messages = append(out.Messages, am)
 		case RoleTool:
-			// Each ToolResultBlock becomes its own tool message. Preserve
-			// image blocks for vision-capable OpenAI models instead of
-			// flattening the tool output to plain text.
-			for _, b := range msg.Content {
-				if tr, ok := b.(ToolResultBlock); ok {
-					content := buildOAIToolContent(tr.Content, tr.IsError, textOnly)
-					out.Messages = append(out.Messages, oaiMessage{
-						Role:       "tool",
-						ToolCallID: tr.CallID,
-						Content:    content,
-					})
+			// Chat Completions tool messages only carry text. Keep every
+			// tool result paired with its call, then deliver any images in
+			// one user message after the complete batch of tool results.
+			// Strict OpenAI-compatible APIs reject image_url blocks on a
+			// role=tool message.
+			var images []Content
+			groupEnd := msgIndex
+			for groupEnd < len(req.Messages) && req.Messages[groupEnd].Role == RoleTool {
+				toolMessage := req.Messages[groupEnd]
+				if groupEnd > msgIndex {
+					addedToolNames = append(addedToolNames, toolMessage.AddedToolNames...)
 				}
+				for _, b := range toolMessage.Content {
+					if tr, ok := b.(ToolResultBlock); ok {
+						content := buildOAIToolContent(tr.Content, tr.IsError, textOnly)
+						out.Messages = append(out.Messages, oaiMessage{
+							Role:       "tool",
+							ToolCallID: tr.CallID,
+							Content:    content,
+						})
+						if !textOnly {
+							for _, inner := range tr.Content {
+								if image, ok := inner.(ImageBlock); ok {
+									images = append(images, image)
+								}
+							}
+						}
+					}
+				}
+				groupEnd++
 			}
+			// The agent loop persists an image mirror as the next user
+			// message so Responses-routed models can consume it. Reuse
+			// that message instead of sending the image twice.
+			hasPersistedMirror := groupEnd < len(req.Messages) && isOpenAIToolImageMirror(req.Messages[groupEnd])
+			if len(images) > 0 && !hasPersistedMirror {
+				content := append([]Content{TextBlock{Text: "Tool output included the following image content:"}}, images...)
+				out.Messages = append(out.Messages, oaiMessage{
+					Role:    "user",
+					Content: buildOAIContentBlocks(content, false),
+				})
+			}
+			msgIndex = groupEnd - 1
 		}
 		if deferredMode {
 			var loaded []oaiTool
-			for _, name := range msg.AddedToolNames {
+			for _, name := range addedToolNames {
 				if t, ok := toolByName[name]; ok && t.Deferred {
 					loaded = append(loaded, makeOAITool(t))
 				}
@@ -431,6 +463,17 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 func isKimiDeferredModel(model string) bool {
 	model = strings.ToLower(model)
 	return model == "kimi-k3" || strings.HasSuffix(model, "/kimi-k3")
+}
+
+// supportsDeferredTools reports whether a provider speaks Moonshot's
+// deferred-tools handshake, where a tool that becomes available
+// mid-conversation is delivered on a system message carrying a `tools`
+// array. That message is a Moonshot API extension, not OpenAI wire format:
+// it has no content, which a strict chat-completions schema rejects
+// outright. Other providers take the standard path instead, where an
+// activated deferred tool joins the top-level tools array.
+func supportsDeferredTools(provider string) bool {
+	return provider == "moonshotai" || provider == "moonshotai-cn"
 }
 
 func isDeepSeekModel(model string) bool {
@@ -477,30 +520,47 @@ func buildOAIUserContent(blocks []Content, textOnly bool) interface{} {
 	return buildOAIContentBlocks(blocks, false)
 }
 
-func buildOAIToolContent(blocks []Content, isError, textOnly bool) interface{} {
+func buildOAIToolContent(blocks []Content, isError, textOnly bool) string {
+	var sb strings.Builder
 	hasImage := false
 	for _, b := range blocks {
-		if _, ok := b.(ImageBlock); ok {
-			hasImage = true
-			break
-		}
-	}
-	if textOnly || !hasImage {
-		var sb strings.Builder
-		for _, b := range blocks {
-			if tb, ok := b.(TextBlock); ok {
-				if sb.Len() > 0 {
-					sb.WriteString("\n")
-				}
-				sb.WriteString(tb.Text)
+		switch v := b.(type) {
+		case TextBlock:
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
 			}
+			sb.WriteString(v.Text)
+		case ImageBlock:
+			hasImage = true
 		}
-		if isError && sb.Len() > 0 {
-			sb.WriteString(" [error]")
-		}
-		return sb.String()
 	}
-	return buildOAIContentBlocks(blocks, isError)
+	if sb.Len() == 0 && hasImage && !textOnly {
+		sb.WriteString("(see attached image)")
+	}
+	if isError && sb.Len() > 0 {
+		sb.WriteString(" [error]")
+	}
+	return sb.String()
+}
+
+// isOpenAIToolImageMirror reports whether msg is the synthetic user message
+// the agent loop persists after a tool result carrying images (see
+// mirrorToolImagesAsUser). The image bytes are already available once
+// through that message, so buildRequest must not emit a second copy.
+func isOpenAIToolImageMirror(msg Message) bool {
+	if msg.Role != RoleUser || len(msg.Content) < 2 {
+		return false
+	}
+	text, ok := msg.Content[0].(TextBlock)
+	if !ok || text.Text != "Tool output included the following image content:" {
+		return false
+	}
+	for _, content := range msg.Content[1:] {
+		if _, ok := content.(ImageBlock); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func buildOAIContentBlocks(blocks []Content, isError bool) []interface{} {
