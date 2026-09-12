@@ -297,22 +297,32 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 		updated := append([]byte(nil), original...)
 		fileMatches := byFile[path]
 		sort.Slice(fileMatches, func(i, j int) bool {
-			return fileMatches[i].Range.ByteOffset.Start > fileMatches[j].Range.ByteOffset.Start
+			left, right := fileMatches[i].Range.ByteOffset, fileMatches[j].Range.ByteOffset
+			if left.Start == right.Start {
+				return left.End > right.End
+			}
+			return left.Start < right.Start
 		})
-		lastStart := len(updated)
+		selected := make([]astMatch, 0, len(fileMatches))
+		lastEnd := -1
 		for _, match := range fileMatches {
 			start, end := match.Range.ByteOffset.Start, match.Range.ByteOffset.End
 			if start < 0 || end < start || end > len(original) {
 				return astPlan{}, fmt.Errorf("ast: invalid rewrite range in %s", path)
 			}
-			if end > lastStart {
+			if start < lastEnd {
 				continue // ast-grep applies the outermost non-overlapping match.
 			}
 			if !bytes.Equal(original[start:end], []byte(match.Text)) {
 				return astPlan{}, fmt.Errorf("ast: %s changed while planning rewrite", path)
 			}
+			selected = append(selected, match)
+			lastEnd = end
+		}
+		for index := len(selected) - 1; index >= 0; index-- {
+			match := selected[index]
+			start, end := match.Range.ByteOffset.Start, match.Range.ByteOffset.End
 			updated = append(updated[:start], append([]byte(match.Replacement), updated[end:]...)...)
-			lastStart = start
 		}
 		if bytes.Equal(original, updated) {
 			continue

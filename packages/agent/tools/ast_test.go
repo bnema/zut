@@ -95,6 +95,33 @@ func TestASTToolRewritePreviewAndExecute(t *testing.T) {
 	}
 }
 
+func TestASTRewriteUsesOutermostNestedMatch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := []byte("package main\nfunc main() { f(g(x)) }\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	matches := []astMatch{
+		astTestMatch(path, "f(g(x))", "WRAP(f)", 27, 34),
+		astTestMatch(path, "g(x)", "WRAP(g)", 29, 33),
+	}
+	plan, err := (&ASTTool{CWD: root}).planRewrite(root, astArgs{Rewrite: "WRAP($A)"}, matches)
+	if err != nil {
+		t.Fatalf("planRewrite: %v", err)
+	}
+	if got := string(plan.changes[0].content); !strings.Contains(got, "WRAP(f)") || strings.Contains(got, "WRAP(g)") {
+		t.Fatalf("rewrite = %q", got)
+	}
+}
+
+func astTestMatch(path, text, replacement string, start, end int) astMatch {
+	match := astMatch{File: path, Text: text, Replacement: replacement}
+	match.Range.ByteOffset.Start = start
+	match.Range.ByteOffset.End = end
+	return match
+}
+
 func TestBoundASTTextPreservesUTF8(t *testing.T) {
 	got := boundASTText(strings.Repeat("界", maxASTOutputBytes))
 	if !strings.Contains(got, "truncated") || !utf8.ValidString(got) {
