@@ -1356,7 +1356,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
 		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
 		"grep":            &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
-		"ast":             &tools.ASTTool{CWD: cwd, Sandbox: sandbox},
+		"ast":             &tools.ASTTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"update_goal":     &tools.UpdateGoalTool{},
 		"update_plan":     &tools.UpdatePlanTool{},
 	}
@@ -1368,6 +1368,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
 		lspTool.Sandbox = sandbox
+		lspTool.LSPDiagnostics = diagnosticsOnEdit
 		all["lsp"] = lspTool
 	}
 	reg := core.Registry{}

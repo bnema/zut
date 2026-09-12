@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +21,10 @@ const maxLSPToolOutput = 60 * 1024
 // the model. Manager owns processes and is normally shared by all tool calls
 // in one agent session.
 type LSPTool struct {
-	CWD     string
-	Manager *lsp.Manager
-	Sandbox *Sandbox
+	CWD            string
+	Manager        *lsp.Manager
+	Sandbox        *Sandbox
+	LSPDiagnostics bool
 }
 
 // NewLSPTool constructs the model-facing LSP tool.
@@ -210,30 +210,14 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	text, applyCount, modifiedPaths, applyErr := formatResponses(cwd, responses, args.Action, apply, t.Manager)
 	if applyCount > 0 {
 		text += fmt.Sprintf("\nApplied %d workspace edit(s).", applyCount)
-		text += t.postMutationDiagnostics(ctx, cwd, modifiedPaths)
 	}
-	return text, map[string]any{"action": args.Action, "responses": responses, "applied": applyCount, "modified_paths": modifiedPaths}, applyErr
-}
-
-func (t *LSPTool) postMutationDiagnostics(ctx context.Context, cwd string, paths []string) string {
-	var summaries []string
-	for _, path := range paths {
-		diagnosticsCtx, cancel := context.WithTimeout(ctx, writeDiagnosticsTimeout)
-		diagnostics, err := t.Manager.Diagnostics(diagnosticsCtx, cwd, path)
-		cancel()
-		if err != nil {
-			continue
-		}
-		diagnostics = t.Manager.ReduceDiagnostics(cwd, path, diagnostics)
-		if len(diagnostics) == 0 {
-			continue
-		}
-		summaries = append(summaries, lsp.SummarizeDiagnostics(diagnostics, cwd, 8))
+	details := map[string]any{"action": args.Action, "responses": responses, "applied": applyCount, "modified_paths": modifiedPaths}
+	if applyCount > 0 && t.LSPDiagnostics {
+		result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, Details: details}
+		attachMutationDiagnostics(ctx, cwd, modifiedPaths, t.Manager, &result)
+		text = result.Content[0].(provider.TextBlock).Text
 	}
-	if len(summaries) == 0 {
-		return ""
-	}
-	return "\n\nPost-edit diagnostics:\n" + strings.Join(summaries, "\n")
+	return text, details, applyErr
 }
 
 func (t *LSPTool) executeRawRequest(ctx context.Context, cwd, path string, args lspArgs) (string, any, error) {
@@ -299,12 +283,8 @@ func workspaceEditPaths(cwd string, edits []lsp.WorkspaceEdit) []string {
 	seen := make(map[string]bool)
 	var paths []string
 	add := func(uri string) {
-		parsed, err := url.Parse(uri)
-		if err != nil || parsed.Scheme != "file" {
-			return
-		}
-		path := filepath.FromSlash(parsed.Path)
-		if path == "" {
+		path, err := lsp.URIToPath(uri)
+		if err != nil {
 			return
 		}
 		if !filepath.IsAbs(path) {

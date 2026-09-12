@@ -120,6 +120,31 @@ func TestProjectToolResultMessagesOmitsSupersededWorkspaceViews(t *testing.T) {
 	}
 }
 
+func TestProjectToolResultMessagesKeepsDiscoveryUntilAllFilesConsumed(t *testing.T) {
+	first, second := "/workspace/a.go", "/workspace/b.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "search", Content: []provider.Content{provider.TextBlock{Text: "a.go\nb.go"}}, Context: provider.ToolContext{Discovers: []string{first, second}}},
+		provider.ToolResultBlock{CallID: "read-a", Content: []provider.Content{provider.TextBlock{Text: "a"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: first}}}},
+	}}}
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "search"); got != "a.go\nb.go" {
+		t.Fatalf("partially consumed search = %q", got)
+	}
+	messages[0].Content = append(messages[0].Content, provider.ToolResultBlock{CallID: "read-b", Content: []provider.Content{provider.TextBlock{Text: "b"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: second}}}})
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "search"); got != staleToolResultMarker {
+		t.Fatalf("fully consumed search = %q", got)
+	}
+}
+
+func TestProjectToolResultMessagesDoesNotStaleCurrentReadMutation(t *testing.T) {
+	path := "/workspace/a.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "current", Content: []provider.Content{provider.TextBlock{Text: "updated"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path}}, Mutates: []string{path}}},
+	}}}
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "current"); got != "updated" {
+		t.Fatalf("current result = %q", got)
+	}
+}
+
 func TestProjectToolResultMessagesPreservesDistinctReadVariants(t *testing.T) {
 	path := "/workspace/main.go"
 	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{

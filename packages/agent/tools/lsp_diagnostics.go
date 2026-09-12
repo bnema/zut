@@ -49,7 +49,13 @@ func CloseLSPManagers(reg core.Registry) error {
 // mutation into a failed tool call, so callers only attach diagnostics that
 // were actually returned before the short budget expired.
 func attachWriteDiagnostics(ctx context.Context, cwd, path string, manager *lsp.Manager, result *core.ToolResult) {
-	if manager == nil || result == nil {
+	attachMutationDiagnostics(ctx, cwd, []string{path}, manager, result)
+}
+
+const maxMutationDiagnosticFiles = 3
+
+func attachMutationDiagnostics(ctx context.Context, cwd string, paths []string, manager *lsp.Manager, result *core.ToolResult) {
+	if manager == nil || result == nil || len(paths) == 0 {
 		return
 	}
 	if ctx == nil {
@@ -57,22 +63,22 @@ func attachWriteDiagnostics(ctx context.Context, cwd, path string, manager *lsp.
 	}
 	diagnosticsCtx, cancel := context.WithTimeout(ctx, writeDiagnosticsTimeout)
 	defer cancel()
-	diagnostics, err := manager.Diagnostics(diagnosticsCtx, cwd, path)
-	if err != nil {
+	if len(paths) > maxMutationDiagnosticFiles {
+		paths = paths[:maxMutationDiagnosticFiles]
 		if details, ok := result.Details.(map[string]any); ok {
-			status := "unavailable"
-			switch {
-			case errors.Is(err, context.DeadlineExceeded):
-				status = "timeout"
-			case errors.Is(err, context.Canceled):
-				status = "canceled"
-			}
-			details["diagnostics_status"] = status
-			details["diagnostics_error"] = err.Error()
+			details["diagnostics_files_truncated"] = true
 		}
-		return
 	}
-	diagnostics = manager.ReduceDiagnostics(cwd, path, diagnostics)
+	var diagnostics []lsp.Diagnostic
+	for _, path := range paths {
+		found, err := manager.Diagnostics(diagnosticsCtx, cwd, path)
+		if err != nil {
+			setDiagnosticsError(result, err)
+			continue
+		}
+		diagnostics = append(diagnostics, found...)
+	}
+	diagnostics = manager.ReduceDiagnostics(cwd, "", diagnostics)
 	if len(diagnostics) == 0 {
 		return
 	}
@@ -92,5 +98,19 @@ func attachWriteDiagnostics(ctx context.Context, cwd, path string, manager *lsp.
 	if details, ok := result.Details.(map[string]any); ok {
 		details["diagnostics"] = diagnostics
 		details["diagnostics_summary"] = summary
+	}
+}
+
+func setDiagnosticsError(result *core.ToolResult, err error) {
+	if details, ok := result.Details.(map[string]any); ok {
+		status := "unavailable"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			status = "timeout"
+		case errors.Is(err, context.Canceled):
+			status = "canceled"
+		}
+		details["diagnostics_status"] = status
+		details["diagnostics_error"] = err.Error()
 	}
 }

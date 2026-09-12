@@ -107,8 +107,8 @@ bounded to a short two-second budget; a successful file write or edit is never
 turned into a failed mutation because an LSP or linter is unavailable.
 
 Write and edit diagnostics are enabled by default when LSP is enabled. Applied
-LSP rename and code-action edits also run the same bounded checks for each
-modified file. The persisted configuration keys are
+LSP rename, code-action, and AST rewrite edits also run the same bounded checks
+for up to three modified files within one shared two-second budget. The persisted configuration keys are
 `lsp_diagnostics_on_write` and `lsp_diagnostics_on_edit` when an embedding
 needs to override the native file-tool defaults.
 Repeated post-write diagnostics are tracked per file by severity/code/message

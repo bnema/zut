@@ -225,10 +225,10 @@ describing the tool's args (the same shape Anthropic and OpenAI accept).
 ```
 
 Tool names live in the same namespace as built-in tools (`read`,
-`write`, `edit`, `bash`, `python`, `create_worktree`, `grep`, `lsp`, `web_search`,
+`write`, `edit`, `bash`, `python`, `create_worktree`, `grep`, `ast`, `lsp`, `web_search`,
 `web_open`, `web_find`, `web_click`, `schedule`, `update_goal`, `update_plan`,
 `skill`). Conflicts with active built-ins are silently shadowed by the built-in.
-Every native public-web capability name, plus `grep`, `python`, `schedule`,
+Every native public-web capability name, plus `grep`, `ast`, `python`, `schedule`,
 `update_goal`, and `update_plan`, is reserved even when it is unavailable, so an
 extension cannot claim or replace it.
 

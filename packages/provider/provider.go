@@ -97,7 +97,7 @@ type ToolResultBlock struct {
 	Timing  *ToolTiming `json:"timing,omitempty"`
 	// Context records resource provenance used to remove stale tool output
 	// from later provider requests without rewriting the durable transcript.
-	Context ToolContext `json:"context,omitempty"`
+	Context ToolContext `json:"context,omitzero"`
 }
 
 // ToolContext describes how a tool result relates to workspace resources.

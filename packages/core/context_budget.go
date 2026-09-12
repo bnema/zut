@@ -15,10 +15,11 @@ const (
 )
 
 // projectToolResultMessages returns a copied provider-input view of msgs.
-// Each tool result is bounded independently. Its projection must depend only
-// on that result: retroactively shrinking older results when a new one arrives
-// mutates the prompt prefix and defeats provider prompt caching. Compaction
-// owns the aggregate transcript budget.
+// The byte cap is independent per result. Provenance pruning is the deliberate
+// exception: a newer workspace view can replace an older result, trading the
+// provider cache prefix from that point for removal of context known to be
+// stale. The durable transcript is never rewritten. Compaction owns the
+// aggregate transcript budget.
 func projectToolResultMessages(msgs []provider.Message) []provider.Message {
 	projected := copyToolResultMessages(msgs)
 	stale := staleToolResultIDs(projected)
@@ -56,6 +57,7 @@ func staleToolResultIDs(msgs []provider.Message) map[string]bool {
 	stale := make(map[string]bool)
 	reads := make(map[provider.ResourceRef]string)
 	discoveries := make(map[string]map[string]bool)
+	remainingDiscoveries := make(map[string]int)
 	for _, message := range msgs {
 		for _, content := range message.Content {
 			result, ok := content.(provider.ToolResultBlock)
@@ -68,19 +70,27 @@ func staleToolResultIDs(msgs []provider.Message) map[string]bool {
 				}
 				reads[resource] = result.CallID
 				for discovery := range discoveries[resource.Key] {
-					stale[discovery] = true
+					remainingDiscoveries[discovery]--
+					if remainingDiscoveries[discovery] == 0 {
+						stale[discovery] = true
+					}
 				}
 				delete(discoveries, resource.Key)
 			}
 			for _, resource := range result.Context.Mutates {
 				for view, previous := range reads {
 					if view.Key == resource {
-						stale[previous] = true
+						if previous != result.CallID {
+							stale[previous] = true
+						}
 						delete(reads, view)
 					}
 				}
 				for discovery := range discoveries[resource] {
-					stale[discovery] = true
+					remainingDiscoveries[discovery]--
+					if remainingDiscoveries[discovery] == 0 {
+						stale[discovery] = true
+					}
 				}
 				delete(discoveries, resource)
 			}
@@ -88,7 +98,10 @@ func staleToolResultIDs(msgs []provider.Message) map[string]bool {
 				if discoveries[resource] == nil {
 					discoveries[resource] = make(map[string]bool)
 				}
-				discoveries[resource][result.CallID] = true
+				if !discoveries[resource][result.CallID] {
+					discoveries[resource][result.CallID] = true
+					remainingDiscoveries[result.CallID]++
+				}
 			}
 		}
 	}

@@ -83,7 +83,7 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 		return core.ToolResult{
 			Content: []provider.Content{provider.ImageBlock{MimeType: mime, Data: data}},
-			Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: filepath.Clean(path)}}},
+			Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: canonicalResourcePath(path)}}},
 		}, nil
 	}
 
@@ -160,7 +160,7 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	variant := fmt.Sprintf("%d:%d", a.Offset, a.Limit)
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
-		Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: filepath.Clean(path), Variant: variant}}},
+		Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: canonicalResourcePath(path), Variant: variant}}},
 		Details: map[string]any{
 			"path":            path,
 			"start_line":      start + 1, // 1-indexed; TUI draws the gutter
@@ -169,6 +169,14 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 			"total_lines":     len(lines),
 		},
 	}, nil
+}
+
+func canonicalResourcePath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err == nil {
+		return filepath.Clean(absolute)
+	}
+	return filepath.Clean(path)
 }
 
 func resolvePath(cwd, p string) string {

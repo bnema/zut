@@ -421,9 +421,9 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // into the agent's registry once the extension's ready frame fires.
 //
 // Conflicts with active built-in tool names (read, write, edit, bash,
-// python, create_worktree, grep, lsp, web_search, web_open, web_find, web_click,
-// schedule, update_goal, update_plan, and skill) are silently shadowed by the
-// built-in. Every native public-web name, plus grep, python, schedule,
+// python, create_worktree, grep, ast, lsp, web_search, web_open, web_find,
+// web_click, schedule, update_goal, update_plan, and skill) are silently
+// shadowed by the built-in. Every native public-web name, plus grep, ast, python, schedule,
 // update_goal, and update_plan, is reserved even when unavailable, so an
 // extension cannot claim or replace it.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
