@@ -1575,3 +1575,144 @@ func requestImageCount(req provider.Request, want provider.ImageBlock) int {
 	}
 	return count
 }
+
+func TestCompactionRetainsContextEstimate(t *testing.T) {
+	client := &compactQueueClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "three"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "five"}}},
+	})
+	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+
+	interactive.runCompact(context.Background(), compactContinuationRequest{origin: compactOriginManual})
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("compaction did not start")
+	}
+	close(client.releaseCompaction)
+
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
+		interactive.mu.Lock()
+		busy := interactive.busy
+		got := interactive.lastCtxInput
+		interactive.mu.Unlock()
+		if !busy {
+			want := estimateCompactedContextInput(agent.Messages())
+			if got != want || got == 0 {
+				t.Fatalf("context estimate after compaction = %d, want %d", got, want)
+			}
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("compaction did not finish")
+		case <-poll.C:
+		}
+	}
+}
+
+func TestCompactionEstimateBypassesImmediateContinuation(t *testing.T) {
+	client := &compactQueueClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "three"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "five"}}},
+	})
+	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+	interactive.runCtx = context.Background()
+
+	interactive.runCompact(context.Background(), compactContinuationRequest{origin: compactOriginManual})
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("compaction did not start")
+	}
+
+	interactive.ed.SetValue("follow up")
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+	close(client.releaseCompaction)
+
+	select {
+	case req := <-client.followUpRequest:
+		if !requestContainsUserText(req, "follow up") {
+			t.Fatalf("follow-up request does not contain queued prompt: %#v", req.Messages)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued prompt did not start a turn after compaction")
+	}
+
+	// The immediate continuation runs against the just-compacted transcript,
+	// so the pre-turn guard must see a zero estimate until fresh provider
+	// usage arrives. The follow-up sends no usage, so the bypass must hold
+	// through the turn with no second compaction (exactly two provider calls).
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
+		interactive.mu.Lock()
+		busy := interactive.busy
+		estimate := interactive.lastCtxInput
+		interactive.mu.Unlock()
+		client.mu.Lock()
+		calls := client.calls
+		client.mu.Unlock()
+		if !busy {
+			if estimate != 0 {
+				t.Fatalf("context estimate during immediate continuation = %d, want bypass 0", estimate)
+			}
+			if calls != 2 {
+				t.Fatalf("provider called %d times, want compaction plus one follow-up (no second compaction)", calls)
+			}
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("follow-up turn did not finish")
+		case <-poll.C:
+		}
+	}
+}
+
+func TestEstimateCompactedContextInput(t *testing.T) {
+	if got := estimateCompactedContextInput(nil); got != 0 {
+		t.Fatalf("empty transcript estimate = %d, want 0", got)
+	}
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "1234"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{
+			provider.TextBlock{Text: "5678"},
+			provider.ToolCallBlock{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{}`)},
+		}},
+		{Role: provider.RoleTool, Content: []provider.Content{
+			provider.ToolResultBlock{CallID: "call-1", Content: []provider.Content{
+				provider.TextBlock{Text: "01234567"},
+				provider.ImageBlock{MimeType: "image/png", Data: []byte("ignored-bytes")},
+			}},
+		}},
+	}
+	// 4 + 4 + len("read")+2 + 8 = 22 chars → 5 tokens; image bytes excluded.
+	if got, want := estimateCompactedContextInput(msgs), 5; got != want {
+		t.Fatalf("estimate = %d, want %d", got, want)
+	}
+}
