@@ -321,7 +321,8 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 	// schema (parts arrays containing image_url). Force every user/tool
 	// message to a plain string and silently drop image blocks for
 	// this provider so historical sessions with screenshots still replay.
-	textOnly := c.name == "deepseek"
+	// The same quirk applies to DeepSeek models routed through opencode-go.
+	textOnly := c.name == ProviderDeepSeek || (c.name == ProviderOpenCodeGo && isDeepSeekModel(req.Model))
 
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for msgIndex := 0; msgIndex < len(req.Messages); msgIndex++ {

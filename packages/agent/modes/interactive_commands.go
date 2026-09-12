@@ -1034,8 +1034,10 @@ func (i *Interactive) applySessionDeletion(path string) {
 		i.mu.Unlock()
 		return
 	}
-	i.sessionDialog.Remove(path)
+	// Remove runs under the mutex: the render-scheduler goroutine assembles
+	// state and renders the dialog concurrently while it stays active.
 	i.mu.Lock()
+	i.sessionDialog.Remove(path)
 	i.statusOK = "deleted session: " + friendlyPath(path)
 	i.statusErr = ""
 	i.mu.Unlock()

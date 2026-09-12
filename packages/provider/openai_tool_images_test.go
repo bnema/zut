@@ -153,6 +153,34 @@ func TestOpenAICompatDeepSeekDropsToolImages(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatOpenCodeGoDeepSeekDropsToolImages(t *testing.T) {
+	c := NewOpenAICompat(ProviderOpenCodeGo, "token", "https://example.test/v1", "").(*openaiClient)
+
+	wire, err := c.buildRequest(Request{
+		Model: "deepseek/deepseek-chat",
+		Messages: []Message{
+			{Role: RoleAssistant, Content: []Content{
+				ToolCallBlock{ID: "call-1", Name: "read"},
+			}},
+			{Role: RoleTool, Content: []Content{
+				ToolResultBlock{CallID: "call-1", Content: []Content{
+					TextBlock{Text: "caption"},
+					ImageBlock{MimeType: "image/png", Data: []byte("image")},
+				}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Messages) != 2 {
+		t.Fatalf("message count = %d, want 2 (no image mirror): %+v", len(wire.Messages), len(wire.Messages))
+	}
+	if got, ok := wire.Messages[1].Content.(string); !ok || got != "caption" {
+		t.Fatalf("tool content = %#v, want text only", wire.Messages[1].Content)
+	}
+}
+
 func TestOpenAICompatUserImagesPassThrough(t *testing.T) {
 	c := NewOpenAICompat("custom", "token", "https://example.test/v1", "").(*openaiClient)
 	image := ImageBlock{MimeType: "image/png", Data: []byte("image")}

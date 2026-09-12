@@ -233,3 +233,35 @@ func TestKimiK3AndGrok45CatalogMetadata(t *testing.T) {
 		t.Fatalf("xai/grok-4.5 metadata = %+v", m)
 	}
 }
+
+func TestMoonshotDeferredMarkerSurvivesDedupOnRetainedMessage(t *testing.T) {
+	client := NewMoonshot("token", "").(*openaiClient)
+	tools := []Tool{
+		{Name: "search_tools", Schema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "lookup_weather", Schema: json.RawMessage(`{"type":"object"}`), Deferred: true},
+	}
+	wire, err := client.buildRequest(Request{
+		Model: "kimi-k3",
+		Tools: tools,
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{TextBlock{Text: "weather"}}},
+			{Role: RoleAssistant, Content: []Content{ToolCallBlock{ID: "call-1", Name: "search_tools", Arguments: json.RawMessage(`{}`)}}},
+			// Duplicate results: repair keeps the first and its marker, so
+			// the deferred tool still loads on the handshake message.
+			{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call-1", Content: []Content{TextBlock{Text: "found"}}}}, AddedToolNames: []string{"lookup_weather"}},
+			{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call-1", Content: []Content{TextBlock{Text: "stale duplicate"}}}}, AddedToolNames: []string{"lookup_weather"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded []oaiTool
+	for _, message := range wire.Messages {
+		if message.Role == "system" && len(message.Tools) > 0 {
+			loaded = message.Tools
+		}
+	}
+	if len(loaded) != 1 || loaded[0].Function.Name != "lookup_weather" {
+		t.Fatalf("loaded tools = %+v, want lookup_weather from the retained marker", loaded)
+	}
+}
