@@ -19,7 +19,10 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-const maxASTOutputBytes = 60 * 1024
+const (
+	maxASTOutputBytes  = 60 * 1024
+	maxASTCaptureBytes = 4 * 1024 * 1024
+)
 
 // ASTTool performs structural searches and rewrites through ast-grep.
 type ASTTool struct {
@@ -27,6 +30,7 @@ type ASTTool struct {
 	Sandbox        *Sandbox
 	LSP            *lsp.Manager
 	LSPDiagnostics bool
+	ReadOnly       bool
 	LookPath       func(string) (string, error)
 }
 
@@ -54,9 +58,6 @@ func (t *ASTTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolRe
 	args, err := parseASTArgs(raw)
 	if err != nil {
 		return core.ToolResult{}, err
-	}
-	if args.Rewrite == "" {
-		return core.ToolResult{}, fmt.Errorf("ast: preview requires rewrite")
 	}
 	plan, err := t.plan(ctx, args)
 	if err != nil {
@@ -129,6 +130,9 @@ func parseASTArgs(raw json.RawMessage) (astArgs, error) {
 }
 
 func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
+	if t.ReadOnly && args.Rewrite != "" {
+		return astPlan{}, fmt.Errorf("ast: rewrites are unavailable in read-only orchestration")
+	}
 	root, err := canonicalPath(t.CWD, args.Path)
 	if err != nil {
 		return astPlan{}, fmt.Errorf("ast: resolve path: %w", err)
@@ -151,9 +155,9 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	if err != nil {
 		return astPlan{}, err
 	}
-	commandArgs := []string{"run", "--pattern", args.Pattern, "--lang", args.Language}
+	commandArgs := []string{"run", "--pattern=" + args.Pattern, "--lang=" + args.Language}
 	if args.Rewrite != "" {
-		commandArgs = append(commandArgs, "--rewrite", args.Rewrite)
+		commandArgs = append(commandArgs, "--rewrite="+args.Rewrite)
 	}
 	commandArgs = append(commandArgs, "--json=stream", root)
 	cmd := exec.CommandContext(ctx, binary, commandArgs...)
@@ -163,7 +167,8 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	}
 	configureBashProcess(cmd, nil)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.Stdout = &limitedASTBuffer{buffer: &stdout, limit: maxASTCaptureBytes}
+	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
 		return astPlan{}, ctx.Err()
@@ -210,6 +215,18 @@ func (t *ASTTool) executable() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("ast: ast-grep executable ('ast-grep' or 'sg') not found in PATH")
+}
+
+type limitedASTBuffer struct {
+	buffer *bytes.Buffer
+	limit  int
+}
+
+func (w *limitedASTBuffer) Write(p []byte) (int, error) {
+	if w.buffer.Len()+len(p) > w.limit {
+		return 0, fmt.Errorf("ast output exceeds %d bytes; use a narrower path or pattern", w.limit)
+	}
+	return w.buffer.Write(p)
 }
 
 func decodeASTMatches(output []byte) ([]astMatch, error) {
@@ -285,8 +302,14 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 		lastStart := len(updated)
 		for _, match := range fileMatches {
 			start, end := match.Range.ByteOffset.Start, match.Range.ByteOffset.End
-			if start < 0 || end < start || end > len(updated) || end > lastStart {
-				return astPlan{}, fmt.Errorf("ast: invalid or overlapping rewrite range in %s", path)
+			if start < 0 || end < start || end > len(original) {
+				return astPlan{}, fmt.Errorf("ast: invalid rewrite range in %s", path)
+			}
+			if end > lastStart {
+				continue // ast-grep applies the outermost non-overlapping match.
+			}
+			if !bytes.Equal(original[start:end], []byte(match.Text)) {
+				return astPlan{}, fmt.Errorf("ast: %s changed while planning rewrite", path)
 			}
 			updated = append(updated[:start], append([]byte(match.Replacement), updated[end:]...)...)
 			lastStart = start
@@ -299,7 +322,11 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 	}
 	text := boundASTText(diffs.String())
 	if len(changes) == 0 {
-		text = "No structural matches."
+		if len(matches) == 0 {
+			text = "No structural matches."
+		} else {
+			text = "Structural matches found, but the rewrite produced no changes."
+		}
 	}
 	mutates := make([]string, 0, len(changes))
 	for _, change := range changes {

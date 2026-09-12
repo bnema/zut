@@ -76,9 +76,9 @@ func attachMutationDiagnostics(ctx context.Context, cwd string, paths []string, 
 			setDiagnosticsError(result, err)
 			continue
 		}
+		found = manager.ReduceDiagnostics(cwd, path, found)
 		diagnostics = append(diagnostics, found...)
 	}
-	diagnostics = manager.ReduceDiagnostics(cwd, "", diagnostics)
 	if len(diagnostics) == 0 {
 		return
 	}

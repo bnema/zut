@@ -1394,7 +1394,10 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	if orchestratorExplorationToolsAllowed(args) {
 		reg["read"] = all["read"]
 		reg["grep"] = all["grep"]
-		reg["ast"] = all["ast"]
+		if astTool, ok := all["ast"].(*tools.ASTTool); ok {
+			astTool.ReadOnly = true
+			reg["ast"] = astTool
+		}
 		if args.PermissionSet == nil {
 			for name, tool := range tools.NewWebTools() {
 				reg[name] = tool
@@ -1445,7 +1448,7 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 			if diagnosticsOnWrite {
 				return true
 			}
-		case "edit":
+		case "edit", "ast":
 			if diagnosticsOnEdit {
 				return true
 			}
