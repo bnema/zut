@@ -1007,6 +1007,40 @@ func (i *Interactive) canResumeSessionSelection() bool {
 	return !busy && !queued && ag != nil && ag.QueuedMessageCount() == 0
 }
 
+// applySessionDeletion permanently removes a session selected in the
+// picker. The active session is protected because unlinking its open file
+// would lose subsequent transcript writes on Unix and behaves differently
+// on Windows.
+func (i *Interactive) applySessionDeletion(path string) {
+	if i.cfg.CurrentSessionPath == nil {
+		i.mu.Lock()
+		i.statusErr = "session deletion is not wired in this build"
+		i.statusOK = ""
+		i.mu.Unlock()
+		return
+	}
+	current := i.cfg.CurrentSessionPath()
+	if current != "" && filepath.Clean(current) == filepath.Clean(path) {
+		i.mu.Lock()
+		i.statusErr = "cannot delete the active session; resume another session first"
+		i.statusOK = ""
+		i.mu.Unlock()
+		return
+	}
+	if err := core.DeleteSession(path); err != nil {
+		i.mu.Lock()
+		i.statusErr = "delete session: " + err.Error()
+		i.statusOK = ""
+		i.mu.Unlock()
+		return
+	}
+	i.sessionDialog.Remove(path)
+	i.mu.Lock()
+	i.statusOK = "deleted session: " + friendlyPath(path)
+	i.statusErr = ""
+	i.mu.Unlock()
+}
+
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()

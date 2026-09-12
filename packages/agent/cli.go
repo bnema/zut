@@ -867,6 +867,9 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runUpdateCommand(rawArgs, version); handled {
 		return err
 	}
+	if handled, err := runSessionsCommand(rawArgs); handled {
+		return err
+	}
 	if handled, err := runZutfileCommand(rawArgs, version); handled {
 		return err
 	}
