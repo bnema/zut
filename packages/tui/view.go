@@ -465,17 +465,17 @@ func (v *View) renderErr(width int) []string {
 	if wrapWidth < 8 {
 		wrapWidth = 8
 	}
-	wrapped := wrapLine(v.Err, wrapWidth, "")
-	if len(wrapped) == 0 {
-		wrapped = []string{""}
-	}
-	out := make([]string, 0, len(wrapped))
-	for idx, line := range wrapped {
-		prefix := marker
-		if idx > 0 {
-			prefix = indent
+	var out []string
+	// Each returned row must represent one terminal line, including when
+	// the error contains explicit newlines or blank separator lines.
+	for _, paragraph := range strings.Split(v.Err, "\n") {
+		for _, line := range wrapLine(paragraph, wrapWidth, "") {
+			prefix := indent
+			if len(out) == 0 {
+				prefix = marker
+			}
+			out = append(out, v.Theme.FGColor(v.Theme.Error, prefix+line))
 		}
-		out = append(out, v.Theme.FGColor(v.Theme.Error, prefix+line))
 	}
 	return out
 }
@@ -2867,7 +2867,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 		return s
 	}
 	var primary string
-	for _, k := range []string{"path", "file_path", "command"} {
+	for _, k := range []string{"pattern", "path", "file_path", "command"} {
 		if s, ok := x[k].(string); ok {
 			primary = s
 			break
@@ -2883,8 +2883,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	}
 	primary = oneLineToolLabel(primary)
 
-	// Tool-specific decoration. Only the read tool gets a range
-	// suffix for now; other tools just truncate the primary arg.
+	// Tool-specific decoration.
 	suffix := ""
 	switch strings.ToLower(tool) {
 	case "read":
@@ -2897,6 +2896,10 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 			suffix = fmt.Sprintf(":%d-%d", start, end)
 		} else if start > 1 {
 			suffix = fmt.Sprintf(":%d-", start)
+		}
+	case "glob":
+		if dir, ok := x["path"].(string); ok && dir != "" && dir != "." {
+			suffix = " in " + dir
 		}
 	}
 

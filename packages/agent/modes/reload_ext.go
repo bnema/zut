@@ -55,16 +55,21 @@ func renderReloadErrors(theme tui.Theme, errors []string, width int) []string {
 	}
 	var out []string
 	for _, msg := range errors {
-		wrapped := tui.WrapANSILine(msg, wrapWidth)
-		if len(wrapped) == 0 {
-			wrapped = []string{""}
-		}
-		for idx, line := range wrapped {
-			prefix := marker
-			if idx > 0 {
-				prefix = indent
+		// Split explicit newlines before wrapping. Passing a multiline string
+		// to WrapANSILine would leave the terminal to interpret the embedded
+		// newline, which can misalign the continuation text.
+		for lineIndex, paragraph := range strings.Split(msg, "\n") {
+			wrapped := tui.WrapANSILine(paragraph, wrapWidth)
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
 			}
-			out = append(out, theme.FGColor(theme.Error, prefix+line))
+			for wrapIndex, line := range wrapped {
+				prefix := indent
+				if lineIndex == 0 && wrapIndex == 0 {
+					prefix = marker
+				}
+				out = append(out, theme.FGColor(theme.Error, prefix+line))
+			}
 		}
 	}
 	return out
