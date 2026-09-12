@@ -179,6 +179,12 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 				m.mu.Unlock()
 				return nil, errManagerClosed
 			}
+			if ctx.Err() != nil {
+				ws.statuses[spec.ID] = "stopped"
+				delete(ws.errors, spec.ID)
+				m.mu.Unlock()
+				return nil, err
+			}
 			ws.statuses[spec.ID] = "missing"
 			ws.errors[spec.ID] = err.Error()
 			m.mu.Unlock()
@@ -573,6 +579,8 @@ func (m *Manager) Status(cwd, path string) ([]ServerStatus, error) {
 	return out, nil
 }
 
+// Capabilities starts matching servers when needed. The context bounds server
+// startup and initialization.
 func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (map[string]json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -611,6 +619,12 @@ func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (m
 	out := make(map[string]json.RawMessage)
 	var firstErr error
 	for _, status := range statuses {
+		if err := ctx.Err(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
 		spec := ws.config.Servers[status.ID]
 		if spec.Kind != "lsp" || spec.IsLinter {
 			continue
@@ -748,6 +762,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		}
 		commandCtx, cancel := context.WithTimeout(ctx, m.options.LinterTimeout)
 		cmd := exec.CommandContext(commandCtx, command, args...)
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Dir = ws.cwd
 		cmd.Env = mergedEnvironment(spec.Env)
 		var stdout, stderr limitedBuffer

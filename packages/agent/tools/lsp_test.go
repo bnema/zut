@@ -71,7 +71,9 @@ func TestLSPToolTimeoutIsAlwaysBounded(t *testing.T) {
 		{milliseconds: 0, want: defaultLSPTimeout},
 		{milliseconds: -1, want: defaultLSPTimeout},
 		{milliseconds: 25, want: 25 * time.Millisecond},
-		{milliseconds: 300_000, want: maxLSPTimeout},
+		{milliseconds: maxLSPTimeoutMillis, want: maxLSPTimeout},
+		{milliseconds: maxLSPTimeoutMillis + 1, want: maxLSPTimeout},
+		{milliseconds: 1 << 62, want: maxLSPTimeout},
 	}
 	for _, tc := range cases {
 		if got := lspToolTimeout(tc.milliseconds); got != tc.want {

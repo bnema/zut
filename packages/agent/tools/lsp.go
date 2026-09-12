@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	maxLSPToolOutput  = 60 * 1024
-	defaultLSPTimeout = 30 * time.Second
-	maxLSPTimeout     = 2 * time.Minute
+	maxLSPToolOutput    = 60 * 1024
+	defaultLSPTimeout   = 30 * time.Second
+	maxLSPTimeout       = 2 * time.Minute
+	maxLSPTimeoutMillis = int(maxLSPTimeout / time.Millisecond)
 )
 
 // LSPTool exposes diagnostics, language navigation, and server management to
@@ -335,11 +336,10 @@ func lspToolTimeout(milliseconds int) time.Duration {
 	if milliseconds <= 0 {
 		return defaultLSPTimeout
 	}
-	timeout := time.Duration(milliseconds) * time.Millisecond
-	if timeout > maxLSPTimeout {
+	if milliseconds > maxLSPTimeoutMillis {
 		return maxLSPTimeout
 	}
-	return timeout
+	return time.Duration(milliseconds) * time.Millisecond
 }
 
 func boundedMax(value int) int {
