@@ -763,7 +763,18 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	// real previous bg-colored row.
 
 	wasInitialized := r.logInit
-	full := !wasInitialized || len(r.logLines) == 0
+	bottomShrunkAboveViewport := false
+	if len(bottomFrame) < len(r.logBottom) {
+		newViewportTop := len(lines) - r.rows
+		if newViewportTop < 0 {
+			newViewportTop = 0
+		}
+		// If the shorter bottom frame starts above the currently addressable
+		// viewport, relative cursor movement cannot repaint its prefix. This
+		// happens when returning from a moderately long dialog to a short one.
+		bottomShrunkAboveViewport = newViewportTop < r.logViewportTop
+	}
+	full := !wasInitialized || len(r.logLines) == 0 || bottomShrunkAboveViewport
 	if full {
 		// A cache invalidation may require a full viewport repaint after flow
 		// has started, but only the initial paint may discard old scrollback.
@@ -989,10 +1000,12 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				w.WriteString(lines[idx])
 			}
 			finalRow := renderEnd
+			fullRepaint := false
 			if len(r.logLines) > len(lines) {
 				extra := len(r.logLines) - len(lines)
-				if extra > r.rows {
+				if extra >= r.rows {
 					writeFull(true, false)
+					fullRepaint = true
 				} else {
 					for e := 0; e < extra; e++ {
 						w.WriteString("\x1b[1B")
@@ -1007,13 +1020,18 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 					}
 				}
 			}
-			r.logHardwareRow = finalRow
-			r.logViewportTop = viewportTop
-			if minTop := r.logHardwareRow - r.rows + 1; minTop > r.logViewportTop {
-				r.logViewportTop = minTop
-			}
-			if r.logViewportTop < 0 {
-				r.logViewportTop = 0
+			// When writeFull ran above it already recomputed logHardwareRow
+			// and logViewportTop; overwriting them with stale incremental
+			// values here would desync the next relative move.
+			if !fullRepaint {
+				r.logHardwareRow = finalRow
+				r.logViewportTop = viewportTop
+				if minTop := r.logHardwareRow - r.rows + 1; minTop > r.logViewportTop {
+					r.logViewportTop = minTop
+				}
+				if r.logViewportTop < 0 {
+					r.logViewportTop = 0
+				}
 			}
 		}
 	}
