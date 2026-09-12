@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/format"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,11 +168,15 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	}
 	configureBashProcess(cmd, nil)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitedASTBuffer{buffer: &stdout, limit: maxASTCaptureBytes}
+	capture := &limitedASTBuffer{buffer: &stdout, limit: maxASTCaptureBytes}
+	cmd.Stdout = capture
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
 		return astPlan{}, ctx.Err()
+	}
+	if capture.overflow {
+		return astPlan{}, fmt.Errorf("ast: output exceeds %d bytes; use a narrower path or pattern", capture.limit)
 	}
 	if runErr != nil {
 		var exit *exec.ExitError
@@ -218,15 +223,25 @@ func (t *ASTTool) executable() (string, error) {
 }
 
 type limitedASTBuffer struct {
-	buffer *bytes.Buffer
-	limit  int
+	buffer   *bytes.Buffer
+	limit    int
+	overflow bool
 }
 
 func (w *limitedASTBuffer) Write(p []byte) (int, error) {
-	if w.buffer.Len()+len(p) > w.limit {
-		return 0, fmt.Errorf("ast output exceeds %d bytes; use a narrower path or pattern", w.limit)
+	remaining := w.limit - w.buffer.Len()
+	if remaining > len(p) {
+		remaining = len(p)
 	}
-	return w.buffer.Write(p)
+	if remaining > 0 {
+		_, _ = w.buffer.Write(p[:remaining])
+	}
+	if remaining < len(p) {
+		w.overflow = true
+	}
+	// Always consume the complete write so the child can exit normally. Returning
+	// an error here closes its stdout pipe and masks this limit as "broken pipe".
+	return len(p), nil
 }
 
 func decodeASTMatches(output []byte) ([]astMatch, error) {
@@ -323,6 +338,18 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 			match := selected[index]
 			start, end := match.Range.ByteOffset.Start, match.Range.ByteOffset.End
 			updated = append(updated[:start], append([]byte(match.Replacement), updated[end:]...)...)
+		}
+		if bytes.Equal(original, updated) {
+			continue
+		}
+		if strings.EqualFold(args.Language, "go") {
+			formatted, formatErr := format.Source(updated)
+			if formatErr == nil {
+				if bytes.Contains(original, []byte("\r\n")) {
+					formatted = bytes.ReplaceAll(formatted, []byte("\n"), []byte("\r\n"))
+				}
+				updated = formatted
+			}
 		}
 		if bytes.Equal(original, updated) {
 			continue
