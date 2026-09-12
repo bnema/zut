@@ -573,7 +573,10 @@ func (m *Manager) Status(cwd, path string) ([]ServerStatus, error) {
 	return out, nil
 }
 
-func (m *Manager) Capabilities(cwd, path, server string) (map[string]json.RawMessage, error) {
+func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (map[string]json.RawMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ws, err := m.workspace(cwd)
 	if err != nil {
 		return nil, err
@@ -588,7 +591,7 @@ func (m *Manager) Capabilities(cwd, path, server string) (map[string]json.RawMes
 		if client != nil {
 			return client, nil
 		}
-		return m.ensureClient(context.Background(), ws, spec)
+		return m.ensureClient(ctx, ws, spec)
 	}
 	if server != "" {
 		spec, ok := ws.config.Servers[server]
