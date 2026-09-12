@@ -144,7 +144,7 @@ func TestSessionsPruneDryRunPreservesSessions(t *testing.T) {
 	existingPath := createPruneTestSession(t, root, existing)
 
 	var out, errOut bytes.Buffer
-	if err := runSessionsPrune(root, sessionsPruneOptions{dryRun: true}, strings.NewReader(""), &out, &errOut, os.Stat); err != nil {
+	if err := runSessionsPrune(root, sessionsPruneOptions{dryRun: true, all: true}, strings.NewReader(""), &out, &errOut, os.Stat); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), missing) || strings.Contains(out.String(), existing) {
@@ -278,7 +278,7 @@ func TestSessionsPruneOlderThanFiltersByLastActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	opts := sessionsPruneOptions{dryRun: true, olderThan: &age}
+	opts := sessionsPruneOptions{dryRun: true, all: true, olderThan: &age}
 	if err := runSessionsPrune(root, opts, strings.NewReader(""), &out, &errOut, os.Stat); err != nil {
 		t.Fatal(err)
 	}

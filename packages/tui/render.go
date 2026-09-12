@@ -771,7 +771,12 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		}
 		// If the shorter bottom frame starts above the currently addressable
 		// viewport, relative cursor movement cannot repaint its prefix. This
-		// happens when returning from a moderately long dialog to a short one.
+		// happens when returning from a moderately long dialog to a short
+		// one, and more generally on any bottom-band shrink while the
+		// transcript is taller than the viewport (queue chips draining,
+		// extension chrome lines, activity pages). The full repaint rewrites
+		// the whole frame without purging scrollback, matching the
+		// recovery path below.
 		bottomShrunkAboveViewport = newViewportTop < r.logViewportTop
 	}
 	full := !wasInitialized || len(r.logLines) == 0 || bottomShrunkAboveViewport

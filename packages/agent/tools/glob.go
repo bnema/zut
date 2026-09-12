@@ -95,105 +95,118 @@ func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 
 	stack, ignoreRoot, searchIgnored := t.globIgnoreStack(searchDir)
+	if searchIgnored {
+		// An explicitly requested root is always walked, even when an
+		// ignore rule matches it: like ripgrep with an explicit path, the
+		// user's narrowing wins over inherited rules. Nested ignore files
+		// still apply inside the walk.
+		stack, ignoreRoot = ignore.NewStack(searchDir), searchDir
+	}
 	rootSep := strings.Count(searchDir, string(os.PathSeparator))
 	var pushed []string
 	var matches []string
 	truncated := false
 
 	var walkErr error
-	if !searchIgnored {
-		walkErr = filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			if err != nil {
-				if d != nil && d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if path == searchDir {
-				return nil
-			}
-
-			rel, relErr := filepath.Rel(searchDir, path)
-			if relErr != nil {
-				return nil
-			}
-			relSlash := filepath.ToSlash(rel)
-
-			// Hidden entries are skipped unless explicitly requested.
-			// .git is always skipped. Nested directory symlinks are
-			// never followed: WalkDir reports them as non-directories,
-			// so they fall through to file matching below.
-			if !args.Hidden {
-				if strings.HasPrefix(d.Name(), ".") {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			} else if d.IsDir() && d.Name() == ".git" {
+	walkErr = filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err != nil {
+			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if path == searchDir {
+			return nil
+		}
 
-			ignoreRel, ignoreRelErr := filepath.Rel(ignoreRoot, path)
-			if ignoreRelErr != nil {
-				return nil
-			}
-			ignoreRelSlash := filepath.ToSlash(ignoreRel)
+		rel, relErr := filepath.Rel(searchDir, path)
+		if relErr != nil {
+			return nil
+		}
+		relSlash := filepath.ToSlash(rel)
 
-			// Ignore filtering: pop stack frames for directories no
-			// longer in scope.
-			dirSlash := relSlash
-			if !d.IsDir() {
-				if idx := strings.LastIndex(relSlash, "/"); idx >= 0 {
-					dirSlash = relSlash[:idx]
-				} else {
-					dirSlash = ""
+		// Hidden entries are skipped unless explicitly requested.
+		// .git is always skipped. Nested symlinks are never followed: a
+		// symlink to a directory is reported by WalkDir as a non-directory,
+		// so resolve it explicitly and skip directory targets instead of
+		// listing them as file matches.
+		if d.Type()&os.ModeSymlink != 0 {
+			if target, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+				if targetInfo, statErr := os.Stat(target); statErr == nil && targetInfo.IsDir() {
+					return nil
 				}
 			}
-			for len(pushed) > 0 {
-				top := pushed[len(pushed)-1]
-				if top == dirSlash || strings.HasPrefix(dirSlash, top+"/") {
-					break
-				}
-				pushed = pushed[:len(pushed)-1]
-				stack.Pop()
-			}
-
-			if stack.Match(ignoreRelSlash, d.IsDir()) {
+		}
+		if !args.Hidden {
+			if strings.HasPrefix(d.Name(), ".") {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
 			}
+		} else if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
 
-			if d.IsDir() {
-				if strings.Count(path, string(os.PathSeparator))-rootSep >= maxGlobDepth {
-					return filepath.SkipDir
-				}
-				stack.Push(path, ignoreRel)
-				pushed = append(pushed, relSlash)
-				return nil
-			}
+		ignoreRel, ignoreRelErr := filepath.Rel(ignoreRoot, path)
+		if ignoreRelErr != nil {
+			return nil
+		}
+		ignoreRelSlash := filepath.ToSlash(ignoreRel)
 
-			var matched bool
-			if hasSlash {
-				matched = re.MatchString(relSlash)
+		// Ignore filtering: pop stack frames for directories no
+		// longer in scope.
+		dirSlash := relSlash
+		if !d.IsDir() {
+			if idx := strings.LastIndex(relSlash, "/"); idx >= 0 {
+				dirSlash = relSlash[:idx]
 			} else {
-				matched = re.MatchString(d.Name())
+				dirSlash = ""
 			}
-			if matched {
-				matches = append(matches, t.globDisplayPath(root, args.Path, relSlash))
-				if len(matches) >= maxGlobMatches {
-					truncated = true
-					return filepath.SkipAll
-				}
+		}
+		for len(pushed) > 0 {
+			top := pushed[len(pushed)-1]
+			if top == dirSlash || strings.HasPrefix(dirSlash, top+"/") {
+				break
+			}
+			pushed = pushed[:len(pushed)-1]
+			stack.Pop()
+		}
+
+		if stack.Match(ignoreRelSlash, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-	}
+		}
+
+		if d.IsDir() {
+			if strings.Count(path, string(os.PathSeparator))-rootSep >= maxGlobDepth {
+				return filepath.SkipDir
+			}
+			stack.Push(path, ignoreRel)
+			pushed = append(pushed, relSlash)
+			return nil
+		}
+
+		var matched bool
+		if hasSlash {
+			matched = re.MatchString(relSlash)
+		} else {
+			matched = re.MatchString(d.Name())
+		}
+		if matched {
+			matches = append(matches, t.globDisplayPath(root, args.Path, relSlash))
+			if len(matches) >= maxGlobMatches {
+				truncated = true
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
 
 	if walkErr != nil && walkErr != filepath.SkipAll {
 		return core.ToolResult{}, walkErr
@@ -286,6 +299,15 @@ func (t *GlobTool) globDisplayPath(searchDir, given, relSlash string) string {
 	if given == "" || given == "." {
 		return relSlash
 	}
+	// Prefer the path exactly as requested so a symlinked search root
+	// keeps its name in results instead of the resolved target.
+	if !filepath.IsAbs(given) {
+		cleaned := filepath.ToSlash(filepath.Clean(given))
+		if cleaned != "" && cleaned != "." {
+			return strings.TrimSuffix(cleaned, "/") + "/" + relSlash
+		}
+		return relSlash
+	}
 	prefix := filepath.ToSlash(t.Sandbox.DisplayPath(searchDir, given))
 	if prefix == "" || prefix == "." {
 		return relSlash
@@ -337,6 +359,11 @@ func compileGlob(pattern string) (*regexp.Regexp, bool, error) {
 			}
 		case '[':
 			j := i + 1
+			negated := false
+			if j < len(pattern) && (pattern[j] == '^' || pattern[j] == '!') {
+				negated = pattern[j] == '!'
+				j++
+			}
 			if j < len(pattern) && pattern[j] == ']' {
 				j++
 			}
@@ -344,7 +371,11 @@ func compileGlob(pattern string) (*regexp.Regexp, bool, error) {
 				j++
 			}
 			if j < len(pattern) {
-				sb.WriteString(pattern[i : j+1])
+				class := pattern[i+1 : j+1]
+				if negated {
+					class = "^" + class[1:]
+				}
+				sb.WriteString("[" + class)
 				i = j + 1
 			} else {
 				return nil, false, fmt.Errorf("glob: invalid pattern %q: unterminated character class", pattern)

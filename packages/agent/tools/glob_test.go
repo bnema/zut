@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -231,7 +232,7 @@ func TestGlobNegationUnignores(t *testing.T) {
 	}
 }
 
-func TestGlobIgnoredSearchRootYieldsNoMatches(t *testing.T) {
+func TestGlobWalksExplicitlyRequestedIgnoredRoot(t *testing.T) {
 	root := t.TempDir()
 	writeGlobFile(t, filepath.Join(root, ".gitignore"), "build/\n")
 	writeGlobFile(t, filepath.Join(root, "build", "out.txt"), "")
@@ -241,8 +242,8 @@ func TestGlobIgnoredSearchRootYieldsNoMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := globResultText(t, result); got != "No files matched the pattern." {
-		t.Fatalf("ignored root output = %q", got)
+	if !strings.Contains(globResultText(t, result), "build/out.txt") {
+		t.Fatalf("explicit ignored root not walked: %q", globResultText(t, result))
 	}
 }
 
@@ -454,5 +455,72 @@ func TestGlobUnreadableEntriesAreSkipped(t *testing.T) {
 	}
 	if !strings.Contains(globResultText(t, result), "a.go") {
 		t.Fatalf("readable match missing: %q", globResultText(t, result))
+	}
+}
+
+func TestGlobNegatedCharacterClass(t *testing.T) {
+	root := t.TempDir()
+	writeGlobFile(t, filepath.Join(root, "a.go"), "")
+	writeGlobFile(t, filepath.Join(root, "b.go"), "")
+	writeGlobFile(t, filepath.Join(root, "c.go"), "")
+
+	tool := &GlobTool{CWD: root}
+	result, err := tool.Execute(context.Background(), globArgsJSON("[!ab].go", "", false), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := globResultText(t, result)
+	if !strings.Contains(text, "c.go") || strings.Contains(text, "a.go") || strings.Contains(text, "b.go") {
+		t.Fatalf("negated class matched wrong set: %q", text)
+	}
+}
+
+func TestGlobSkipsSymlinkedDirectoryTargets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests need privileges on windows")
+	}
+	root := t.TempDir()
+	inner := filepath.Join(root, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGlobFile(t, filepath.Join(inner, "a.go"), "")
+	link := filepath.Join(root, "dirlink")
+	if err := os.Symlink(inner, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	tool := &GlobTool{CWD: root}
+	result, err := tool.Execute(context.Background(), globArgsJSON("*.go", "", false), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(globResultText(t, result), "dirlink") {
+		t.Fatalf("symlinked directory listed as a file: %q", globResultText(t, result))
+	}
+}
+
+func TestGlobSymlinkedRootKeepsRequestedName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests need privileges on windows")
+	}
+	base := t.TempDir()
+	inner := filepath.Join(base, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGlobFile(t, filepath.Join(inner, "a.go"), "")
+	link := filepath.Join(base, "link-inside")
+	if err := os.Symlink(inner, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	tool := &GlobTool{CWD: base}
+	result, err := tool.Execute(context.Background(), globArgsJSON("*.go", "link-inside", false), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := globResultText(t, result); got != "link-inside/a.go" {
+		t.Fatalf("output = %q, want link-inside/a.go", got)
 	}
 }

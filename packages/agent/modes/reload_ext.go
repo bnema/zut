@@ -57,8 +57,9 @@ func renderReloadErrors(theme tui.Theme, errors []string, width int) []string {
 	for _, msg := range errors {
 		// Split explicit newlines before wrapping. Passing a multiline string
 		// to WrapANSILine would leave the terminal to interpret the embedded
-		// newline, which can misalign the continuation text.
-		for lineIndex, paragraph := range strings.Split(msg, "\n") {
+		// newline, which can misalign the continuation text. Normalize CRLF
+		// first so no raw CR survives inside a row.
+		for lineIndex, paragraph := range strings.Split(strings.ReplaceAll(msg, "\r\n", "\n"), "\n") {
 			wrapped := tui.WrapANSILine(paragraph, wrapWidth)
 			if len(wrapped) == 0 {
 				wrapped = []string{""}

@@ -270,7 +270,11 @@ func runSessionsPrune(sessionsRoot string, opts sessionsPruneOptions, in io.Read
 		fmt.Fprintf(out, "  %d. %s (%s, %d bytes)\n", idx+1, group.CWD, sessionCount(len(group.Paths)), group.SizeBytes)
 	}
 	if opts.dryRun {
-		fmt.Fprintf(out, "dry run: %s in %s would be deleted\n", sessionCount(totalSessions(candidates)), directoryCount(len(candidates)))
+		if opts.all {
+			fmt.Fprintf(out, "dry run: %s in %s would be deleted\n", sessionCount(totalSessions(candidates)), directoryCount(len(candidates)))
+		} else {
+			fmt.Fprintln(out, "dry run: nothing selected; add --all to preview deletion of every match")
+		}
 		return nil
 	}
 

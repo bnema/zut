@@ -195,7 +195,10 @@ func extDoctor(version string) error {
 	if len(errs) > 0 {
 		fmt.Fprintln(os.Stdout, "load errors:")
 		for _, err := range errs {
-			fmt.Fprintf(os.Stdout, "  ! %v\n", err)
+			// Multiline diagnostics keep their line breaks; indent
+			// continuations so they read as one entry.
+			indented := strings.ReplaceAll(err.Error(), "\n", "\n    ")
+			fmt.Fprintf(os.Stdout, "  ! %s\n", indented)
 		}
 	}
 	return nil
