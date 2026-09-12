@@ -565,6 +565,28 @@ func estimatedOpenAIPromptTokens(wire *codexRequest) int {
 	return len(encoded) / 4
 }
 
+// unsupportedPromptCacheRetention reports whether a 400 response is the
+// backend rejecting the prompt_cache_key retention the Codex CLI identity
+// selects. Only that structured error retries with the native identity;
+// every other status, param, or code is returned as-is.
+func unsupportedPromptCacheRetention(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Param   string `json:"param"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.Error.Param != "prompt_cache_retention" {
+		return false
+	}
+	message := strings.ToLower(payload.Error.Message)
+	return payload.Error.Code == "invalid_parameter" || strings.Contains(message, "not supported")
+}
+
 func usesCodexCLIRouting(model string) bool {
 	switch model {
 	case "gpt-5.6-luna", "gpt-5.6-luna-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro":
@@ -596,18 +618,32 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		return nil, err
 	}
 
-	newReq := func() (*http.Request, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(body))
-		if err != nil {
-			return nil, err
+	newReq := func(useCodexIdentity bool) func() (*http.Request, error) {
+		return func() (*http.Request, error) {
+			httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			httpReq.Header = c.responsesHeaders(req, useCodexIdentity, false)
+			if !useCodexIdentity {
+				// The native identity shape carries no session/request
+				// correlation headers; keep the values selected under the
+				// CLI identity so the retry stays on the same session and
+				// request correlation.
+				cliHeaders := c.responsesHeaders(req, true, false)
+				for _, key := range []string{"session-id", "thread-id", "x-client-request-id"} {
+					if value := cliHeaders.Get(key); value != "" {
+						httpReq.Header.Set(key, value)
+					}
+				}
+			}
+			httpReq.Header.Set("content-type", "application/json")
+			httpReq.Header.Set("accept", "text/event-stream")
+			return httpReq, nil
 		}
-		httpReq.Header = c.responsesHeaders(req, useCodexCLIRouting, false)
-		httpReq.Header.Set("content-type", "application/json")
-		httpReq.Header.Set("accept", "text/event-stream")
-		return httpReq, nil
 	}
 
-	resp, err := doStreamWithRetry(ctx, c.http, newReq, req.Lifecycle)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq(useCodexCLIRouting), req.Lifecycle)
 	if err != nil {
 		label := c.providerName
 		if label == "" {
@@ -616,13 +652,37 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		status := resp.StatusCode
+		responseBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		label := c.providerName
-		if label == "" {
-			label = ProviderOpenAICodex
+		if !useCodexCLIRouting || !unsupportedPromptCacheRetention(status, responseBody) {
+			label := c.providerName
+			if label == "" {
+				label = ProviderOpenAICodex
+			}
+			return nil, fmt.Errorf("%s: http %d: %s", label, status, strings.TrimSpace(string(responseBody)))
 		}
-		return nil, fmt.Errorf("%s: http %d: %s", label, resp.StatusCode, strings.TrimSpace(string(b)))
+		// The Codex CLI identity selects cached-prompt retention the model
+		// does not support. Retry once with the native identity on the same
+		// session/request correlation and body; anything else is returned.
+		resp, err = doStreamWithRetry(ctx, c.http, newReq(false), req.Lifecycle)
+		if err != nil {
+			label := c.providerName
+			if label == "" {
+				label = ProviderOpenAICodex
+			}
+			return nil, fmt.Errorf("%s: cache compatibility retry: %w", label, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			status = resp.StatusCode
+			responseBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			label := c.providerName
+			if label == "" {
+				label = ProviderOpenAICodex
+			}
+			return nil, fmt.Errorf("%s: http %d: %s", label, status, strings.TrimSpace(string(responseBody)))
+		}
 	}
 
 	out := make(chan Event, 16)

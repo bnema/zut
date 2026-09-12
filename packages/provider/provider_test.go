@@ -472,6 +472,45 @@ func TestAnthropicBuildRequestStripsAssistantImages(t *testing.T) {
 	}
 }
 
+func TestRepairOrphanedToolResultsDeduplicates(t *testing.T) {
+	text := func(s string) TextBlock { return TextBlock{Text: s} }
+	result := func(id, s string) ToolResultBlock {
+		return ToolResultBlock{CallID: id, Content: []Content{text(s)}}
+	}
+	msgs := []Message{
+		{Role: RoleAssistant, Content: []Content{
+			ToolCallBlock{ID: "tool-1", Name: "read"},
+			ToolCallBlock{ID: "tool-2", Name: "read"},
+		}},
+		{Role: RoleTool, Content: []Content{result("tool-1", "first"), text("note"), result("tool-1", "dup-same-msg")}},
+		{Role: RoleTool, Content: []Content{result("tool-1", "dup-across-msg")}},
+		{Role: RoleTool, Content: []Content{result("tool-2", "second")}},
+		{Role: RoleTool, Content: []Content{result("orphan", "orphan")}},
+	}
+	got := RepairOrphanedToolResults(msgs)
+	if len(got) != 3 {
+		t.Fatalf("messages=%d, want 3 after dropping duplicates and orphans", len(got))
+	}
+	first := got[1].Content
+	if len(first) != 2 {
+		t.Fatalf("first result message blocks=%d, want result+note", len(first))
+	}
+	tr, ok := first[0].(ToolResultBlock)
+	if !ok || tr.CallID != "tool-1" {
+		t.Fatalf("first block=%T %+v, want tool-1 result", first[0], first[0])
+	}
+	if txt, ok := tr.Content[0].(TextBlock); !ok || txt.Text != "first" {
+		t.Fatalf("first result content=%+v, want first", tr.Content)
+	}
+	if txt, ok := first[1].(TextBlock); !ok || txt.Text != "note" {
+		t.Fatalf("mixed content=%+v, want preserved note", first[1])
+	}
+	last, ok := got[2].Content[0].(ToolResultBlock)
+	if !ok || last.CallID != "tool-2" {
+		t.Fatalf("last block=%T %+v, want tool-2 result", got[2].Content[0], got[2].Content[0])
+	}
+}
+
 func TestAnthropicStreamHappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

@@ -35,6 +35,21 @@ func TestFormatReloadStatusIncludesErrorDetails(t *testing.T) {
 	}
 }
 
+func TestRenderReloadErrorsPreservesMultilineAlignment(t *testing.T) {
+	lines := renderReloadErrors(tui.Theme{Error: tui.Color256(1)}, []string{"failed to start\nextension directory: /tmp/ext\nstderr log: /tmp/ext.log"}, 80)
+	if len(lines) != 3 {
+		t.Fatalf("rendered %d lines, want 3: %q", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "✖ failed to start") {
+		t.Fatalf("first line = %q, want error marker", lines[0])
+	}
+	for _, line := range lines[1:] {
+		if !strings.Contains(line, "  ") {
+			t.Fatalf("continuation line = %q, want indentation", line)
+		}
+	}
+}
+
 func TestFormatReloadStatusSuccess(t *testing.T) {
 	msg, failed := formatReloadStatus(extensions.ReloadStats{Stopped: 2, Loaded: 3, Ready: 3})
 	if failed {

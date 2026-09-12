@@ -308,7 +308,7 @@ func (m *Manager) Discover(ctx context.Context) []error {
 		go func(extDir string) {
 			defer wg.Done()
 			if err := m.loadOne(ctx, extDir); err != nil {
-				errCh <- fmt.Errorf("%s: %w", extDir, err)
+				errCh <- err
 			}
 		}(j.dir)
 	}
@@ -342,18 +342,18 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	manifestPath := filepath.Join(dir, "extension.json")
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return fmt.Errorf("%s: read manifest: %w", dir, err)
 	}
 	var mf Manifest
 	if err := json.Unmarshal(raw, &mf); err != nil {
-		return fmt.Errorf("parse manifest: %w", err)
+		return fmt.Errorf("%s: parse manifest: %w", dir, err)
 	}
 	if mf.Name == "" {
-		return errors.New("manifest: name is required")
+		return fmt.Errorf("%s: manifest: name is required", dir)
 	}
 	hasTheme := HasExtensionTheme(dir)
 	if mf.Exec == "" && !hasTheme {
-		return errors.New("manifest: exec is required")
+		return fmt.Errorf("%s: manifest: exec is required", dir)
 	}
 	if !mf.IsEnabled() {
 		// Quietly skip disabled extensions; zut ext list will show them.
@@ -387,7 +387,15 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	}
 	if mf.Exec != "" {
 		if err := m.spawn(ctx, ext); err != nil {
-			return err
+			language := ""
+			if mf.Language != "" {
+				language = fmt.Sprintf(" (declared language: %q)", mf.Language)
+			}
+			logDetail := ""
+			if ext.LogPath != "" {
+				logDetail = "\n  stderr log: " + ext.LogPath
+			}
+			return fmt.Errorf("Extension %s failed to start.\n\n  exec: %q%s\n  error: %w\n  extension directory: %s%s", mf.Name, mf.Exec, language, err, dir, logDetail)
 		}
 	} else {
 		ext.readyOnce.Do(func() { close(ext.readyCh) })
@@ -462,7 +470,7 @@ func (m *Manager) LoadExplicit(ctx context.Context, paths []string) []error {
 		go func(extDir string) {
 			defer wg.Done()
 			if err := m.loadOne(ctx, extDir); err != nil {
-				errCh <- fmt.Errorf("%s: %w", extDir, err)
+				errCh <- err
 			}
 		}(abs)
 	}
@@ -681,7 +689,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		return fmt.Errorf("stdout pipe (stderr log: %s): %w", logPath, err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn (stderr log: %s): %w", logPath, err)
+		return err
 	}
 	started = true
 	ext.cmd = cmd

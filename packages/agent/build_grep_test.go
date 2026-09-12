@@ -46,6 +46,40 @@ func TestBuildToolRegistryIncludesUpdatePlanByDefaultAndExplicitSelection(t *tes
 	}
 }
 
+func TestBuildToolRegistryGlobSelectionAndDefaults(t *testing.T) {
+	cwd := t.TempDir()
+
+	defaultRegistry := buildToolRegistry(Args{}, cwd, nil, false, false, false)
+	if _, ok := defaultRegistry["glob"].(*tools.GlobTool); !ok {
+		t.Fatalf("default glob has type %T", defaultRegistry["glob"])
+	}
+	defaultSummaries := toolSummaries(defaultRegistry, Args{})
+	globIndex := -1
+	for i, summary := range defaultSummaries {
+		if summary.Name == "glob" {
+			globIndex = i
+			break
+		}
+	}
+	if globIndex < 0 {
+		t.Fatal("default tool summaries do not contain glob")
+	}
+	if globIndex == 0 || defaultSummaries[globIndex-1].Name != "grep" {
+		t.Fatalf("glob summary order has predecessor %q, want grep", defaultSummaries[globIndex-1].Name)
+	}
+
+	selected := buildToolRegistry(Args{Tools: []string{"glob"}}, cwd, nil, false, false, false)
+	if len(selected) != 1 {
+		t.Fatalf("selected registry has %d tools, want one", len(selected))
+	}
+	if _, ok := selected["glob"].(*tools.GlobTool); !ok {
+		t.Fatalf("selected glob has type %T", selected["glob"])
+	}
+	if summaries := toolSummaries(selected, Args{Tools: []string{"glob"}}); len(summaries) != 1 || summaries[0].Name != "glob" {
+		t.Fatalf("selected summaries = %#v, want only glob", summaries)
+	}
+}
+
 func TestBuildToolRegistryGrepSelectionAndDefaults(t *testing.T) {
 	cwd := t.TempDir()
 

@@ -427,6 +427,11 @@ func PrintHelp(version string) {
 		row{"zut --ext ./path/to/ext", "load an extension for this run only"},
 		row{"zut ext help", "show all extension subcommands"},
 	)
+	section("session management",
+		row{"zut sessions prune", "select and delete sessions for directories that no longer exist"},
+		row{"zut sessions prune --dry-run", "list stale session groups without deleting them"},
+		row{"zut sessions prune --older-than 30d", "select sessions inactive for 30 days"},
+	)
 	section("self-update",
 		row{"zut update", "download and install the latest release"},
 		row{"zut update --check", "show whether a new release is available"},

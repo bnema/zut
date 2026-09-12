@@ -250,6 +250,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Select {
 			i.applySessionSelection(act.Path)
 		}
+		if act.Delete {
+			i.applySessionDeletion(act.Path)
+		}
 		if act.Err != nil {
 			if manualRenameCurrent {
 				i.restoreFailedSessionTitle()

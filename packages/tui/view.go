@@ -465,17 +465,17 @@ func (v *View) renderErr(width int) []string {
 	if wrapWidth < 8 {
 		wrapWidth = 8
 	}
-	wrapped := wrapLine(v.Err, wrapWidth, "")
-	if len(wrapped) == 0 {
-		wrapped = []string{""}
-	}
-	out := make([]string, 0, len(wrapped))
-	for idx, line := range wrapped {
-		prefix := marker
-		if idx > 0 {
-			prefix = indent
+	var out []string
+	// Each returned row must represent one terminal line, including when
+	// the error contains explicit newlines or blank separator lines.
+	for _, paragraph := range strings.Split(v.Err, "\n") {
+		for _, line := range wrapLine(paragraph, wrapWidth, "") {
+			prefix := indent
+			if len(out) == 0 {
+				prefix = marker
+			}
+			out = append(out, v.Theme.FGColor(v.Theme.Error, prefix+line))
 		}
-		out = append(out, v.Theme.FGColor(v.Theme.Error, prefix+line))
 	}
 	return out
 }
@@ -2859,9 +2859,9 @@ func toolArgWidth() int {
 // suffix for the "tool name <args>" header. tool is the tool
 // name so we can add shape-specific decorations: for read we
 // append the requested line range (e.g. "path:1-200") pulled
-// from the offset/limit args, which is useful context at a
-// glance without expanding the result body. Other tools keep
-// the legacy "path or command, truncated" shape.
+// from the offset/limit args, and for glob we prefer the pattern
+// with an " in <dir>" suffix. Other tools keep the legacy
+// "path, file_path, or command, truncated" shape.
 //
 // The truncation width defaults to 60 cells but can be tuned via
 // the ZUT_TOOL_ARG_WIDTH environment variable (see toolArgWidth).
@@ -2886,7 +2886,14 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 		return s
 	}
 	var primary string
-	for _, k := range []string{"path", "file_path", "command"} {
+	// Glob leads with its pattern; every other tool keeps the legacy
+	// path-first shape so tools carrying both (e.g. ast's pattern+path)
+	// still label with the file path.
+	keys := []string{"path", "file_path", "command"}
+	if strings.EqualFold(tool, "glob") {
+		keys = []string{"pattern", "path", "file_path", "command"}
+	}
+	for _, k := range keys {
 		if s, ok := x[k].(string); ok {
 			primary = s
 			break
@@ -2902,8 +2909,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	}
 	primary = oneLineToolLabel(primary)
 
-	// Tool-specific decoration. Only the read tool gets a range
-	// suffix for now; other tools just truncate the primary arg.
+	// Tool-specific decoration.
 	suffix := ""
 	switch strings.ToLower(tool) {
 	case "read":
@@ -2916,6 +2922,10 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 			suffix = fmt.Sprintf(":%d-%d", start, end)
 		} else if start > 1 {
 			suffix = fmt.Sprintf(":%d-", start)
+		}
+	case "glob":
+		if dir, ok := x["path"].(string); ok && dir != "" && dir != "." {
+			suffix = " in " + dir
 		}
 	}
 

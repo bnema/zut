@@ -776,7 +776,11 @@ error in red, including its message, and dismisses itself after five
 seconds. Extension failures from startup and `/reload-ext` remain in the
 scrolling chat until a successful reload or `/clear`, without being sent to
 the model or saved in the session transcript. Subprocess startup and
-handshake errors include the exact stderr log path for the failed extension.
+handshake errors identify the extension and its directory, configured executable,
+and declared language (if present), along with the original error and stderr log
+path when the log was opened. Manifest errors also identify the extension
+directory. Multiline diagnostics preserve their line breaks in the `/reload-ext`
+status and scrolling chat, and in `zut ext doctor` output.
 If a subprocess exits before sending `hello`, the error also reports its exit
 status or terminating signal.
 

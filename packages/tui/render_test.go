@@ -292,3 +292,130 @@ func TestDrawLogInvalidationPreservesScrollbackSelection(t *testing.T) {
 		t.Fatalf("invalidation repaint erased scrollback and native selection: %q", got)
 	}
 }
+
+// TestDrawLogPartialBottomShrinkRepaintsInaccessibleRows covers returning
+// from a moderately long dialog to a short one: the shorter bottom frame
+// starts above the currently addressable viewport, so relative cursor
+// movement cannot repaint its prefix and a full repaint is required.
+// Without the forced repaint, stale dialog rows stay on screen.
+func TestDrawLogPartialBottomShrinkRepaintsInaccessibleRows(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 4)
+
+	r.DrawLog(nil, []string{"transcript 1", "transcript 2", "transcript 3", "transcript 4", "transcript 5"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog(nil, []string{"dashboard", "selected agent 1"}, -1, 0)
+	got := buf.String()
+	if !strings.Contains(got, SeqClearScreenNoHome) {
+		t.Fatalf("partial bottom shrink did not repaint the screen: %q", got)
+	}
+	for _, want := range []string{"dashboard", "selected agent 1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("partial bottom repaint missing %q: %q", want, got)
+		}
+	}
+}
+
+// TestDrawLogChatShrinkDoesNotForceBottomRepaint pins the scope of the
+// forced repaint: chat reflow has its own coordinate-rebasing path which
+// preserves native terminal selections. Only a shrinking bottom frame
+// forces the full repaint used when returning to a short dialog.
+func TestDrawLogChatShrinkDoesNotForceBottomRepaint(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 4)
+
+	r.DrawLog([]string{"chat 1", "chat 2", "chat 3", "chat 4", "chat 5", "chat 6"}, []string{"input"}, 0, 0)
+	buf.Reset()
+
+	r.DrawLog([]string{"chat 1", "chat 2", "chat 3", "chat 4", "chat 5"}, []string{"input"}, 0, 0)
+	if got := buf.String(); strings.Contains(got, SeqClearScreenNoHome) {
+		t.Fatalf("chat shrink unnecessarily repainted the screen: %q", got)
+	}
+}
+
+// TestDrawLogFullHeightShrinkRepaintsAndTracksViewport covers a dialog
+// shrink that removes a full viewport of logical rows: the incremental
+// clear-below path cannot address them, so the draw must repaint fully
+// and the recomputed viewport state must survive for the next draw.
+// A cursor move right after must update the visible selection instead of
+// being discarded as inaccessible.
+func TestDrawLogFullHeightShrinkRepaintsAndTracksViewport(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 4)
+
+	r.DrawLog(nil, []string{"transcript 1", "transcript 2", "transcript 3", "transcript 4", "transcript 5", "transcript 6"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog(nil, []string{"dashboard", "selected agent 1"}, -1, 0)
+	if got := buf.String(); !strings.Contains(got, SeqClearScreenNoHome) {
+		t.Fatalf("full-height shrink did not repaint the screen: %q", got)
+	}
+	buf.Reset()
+
+	r.DrawLog(nil, []string{"dashboard", "selected agent 2"}, -1, 0)
+	if got := buf.String(); !strings.Contains(got, "selected agent 2") {
+		t.Fatalf("visible update after full-height shrink was suppressed: %q", got)
+	}
+}
+
+// TestDrawLogShrinkRecoveryMatrix pins the Zut-specific renderer state
+// across a forced full repaint: themed backgrounds still tint the frame,
+// keepScrollback terminals never purge scrollback, Kitty images are
+// cleaned, and a narrow follow-up draw stays coherent with no stale rows.
+func TestDrawLogShrinkRecoveryMatrix(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vscode")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	background := Color256(237)
+	th := Dark
+	th.Background = &background
+	r.SetTheme(th)
+	r.Resize(80, 4)
+	if !r.keepScrollback {
+		t.Fatal("vscode TERM_PROGRAM did not enable keepScrollback")
+	}
+
+	image := "\x1b_Ga=T;payload\x1b\\"
+	r.DrawLog(nil, []string{image, "transcript 1", "transcript 2", "transcript 3", "transcript 4", "transcript 5"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog(nil, []string{"dashboard", "selected agent 1"}, -1, 0)
+	got := buf.String()
+	if !strings.Contains(got, SeqClearToEnd) {
+		t.Fatalf("themed shrink recovery did not repaint in place: %q", got)
+	}
+	if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
+		t.Fatalf("keepScrollback repaint purged scrollback: %q", got)
+	}
+	if !strings.Contains(got, SeqDeleteKittyImages) {
+		t.Fatalf("shrink recovery did not clean Kitty images: %q", got)
+	}
+	if !strings.Contains(got, th.BackgroundStyle()) {
+		t.Fatalf("themed repaint lost the background tint: %q", got)
+	}
+	buf.Reset()
+
+	// A narrow follow-up draw must stay coherent: no stale rows, no extra
+	// full repaint, and the hardware cursor tracks the new viewport.
+	r.Resize(20, 4)
+	r.DrawLog(nil, []string{"dashboard", "selected agent 2"}, -1, 0)
+	got = buf.String()
+	if !strings.Contains(got, "selected agent 2") {
+		t.Fatalf("narrow follow-up draw lost the selection: %q", got)
+	}
+	if strings.Contains(got, "transcript") {
+		t.Fatalf("narrow follow-up draw left stale rows: %q", got)
+	}
+	for _, row := range strings.Split(got, "\r\n") {
+		if strings.ContainsAny(row, "\r\n") {
+			t.Fatalf("row embeds a newline: %q", row)
+		}
+	}
+}

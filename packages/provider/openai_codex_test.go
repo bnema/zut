@@ -393,3 +393,157 @@ func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 		t.Fatalf("request missing prompt_cache_key: %s", body.String())
 	}
 }
+
+func TestCodexRetriesUnsupportedPromptCacheRetentionWithNativeIdentity(t *testing.T) {
+	c := newOpenAICodexClient("token", "acct", "https://example.test/backend-api/codex/responses")
+	var headers []http.Header
+	var bodies []string
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		headers = append(headers, r.Header.Clone())
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, string(body))
+		if len(headers) == 1 {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"error": {
+						"message": "prompt_cache_retention is not supported on this model",
+						"type": "invalid_request_error",
+						"param": "prompt_cache_retention",
+						"code": "invalid_parameter"
+					}
+				}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	events, err := c.Stream(context.Background(), Request{
+		Model:    "gpt-5.6-sol",
+		Context:  RequestContext{CacheSessionID: "cache-root-3", ThreadID: "thread-3", TurnID: "turn-3"},
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for event := range events {
+		if done, ok := event.(EventDone); ok && done.Err != nil {
+			t.Fatalf("retry stream failed: %v", done.Err)
+		}
+	}
+
+	if len(headers) != 2 {
+		t.Fatalf("requests = %d, want exactly one retry", len(headers))
+	}
+	if got := headers[0].Get("originator"); got != "codex_cli_rs" {
+		t.Fatalf("initial originator = %q, want codex_cli_rs", got)
+	}
+	// The retry drops the Codex CLI identity and uses the native one on the
+	// same session/request correlation and body.
+	if got := headers[1].Get("originator"); got != "zot" {
+		t.Fatalf("retry originator = %q, want zot", got)
+	}
+	if headers[1].Get("session-id") != "cache-root-3" || headers[1].Get("thread-id") != "thread-3" || headers[1].Get("x-client-request-id") != "thread-3" {
+		t.Fatalf("retry correlation headers = session=%q thread=%q request=%q",
+			headers[1].Get("session-id"), headers[1].Get("thread-id"), headers[1].Get("x-client-request-id"))
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[1], `"prompt_cache_key":"cache-root-3"`) {
+		t.Fatalf("retry body did not preserve prompt cache key: %v", bodies)
+	}
+}
+
+func TestCodexDoesNotRetryUnrelatedBadRequest(t *testing.T) {
+	c := newOpenAICodexClient("token", "acct", "https://example.test/backend-api/codex/responses")
+	requests := 0
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"error": {"message": "bad input", "param": "input", "code": "invalid_parameter"}
+			}`)),
+		}, nil
+	})
+
+	_, err := c.Stream(context.Background(), Request{
+		Model:    "gpt-5.6-sol",
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 (no retry)", requests)
+	}
+	if !strings.Contains(err.Error(), "http 400") {
+		t.Fatalf("error = %v, want http 400", err)
+	}
+}
+
+func TestCodexUnsupportedRetentionSecondFailureReturns(t *testing.T) {
+	c := newOpenAICodexClient("token", "acct", "https://example.test/backend-api/codex/responses")
+	requests := 0
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"error": {
+					"message": "prompt_cache_retention is not supported",
+					"param": "prompt_cache_retention",
+					"code": "unsupported_parameter"
+				}
+			}`)),
+		}, nil
+	})
+
+	_, err := c.Stream(context.Background(), Request{
+		Model:    "gpt-5.6-sol",
+		Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want exactly one retry", requests)
+	}
+	if !strings.Contains(err.Error(), "http 400") {
+		t.Fatalf("error = %v, want second http 400", err)
+	}
+}
+
+func TestUnsupportedPromptCacheRetentionPredicate(t *testing.T) {
+	retention := func(code string) string {
+		return `{"error":{"message":"` + code + `","param":"prompt_cache_retention","code":"invalid_parameter"}}`
+	}
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"code match", http.StatusBadRequest, retention("anything"), true},
+		{"message match", http.StatusBadRequest, `{"error":{"message":"retention not supported here","param":"prompt_cache_retention","code":"other"}}`, true},
+		{"wrong status", http.StatusForbidden, retention("anything"), false},
+		{"wrong param", http.StatusBadRequest, `{"error":{"message":"x","param":"input","code":"invalid_parameter"}}`, false},
+		{"no signal", http.StatusBadRequest, `{"error":{"message":"x","param":"prompt_cache_retention","code":"other"}}`, false},
+		{"malformed", http.StatusBadRequest, "not json", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unsupportedPromptCacheRetention(tc.status, []byte(tc.body)); got != tc.want {
+				t.Fatalf("predicate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

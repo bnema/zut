@@ -75,6 +75,11 @@ type sessionDialog struct {
 	cursor       int
 	renaming     bool
 	rename       string
+	deleting     bool
+	// removedPaths remembers picker deletions for the dialog lifetime so
+	// in-flight load/search generations cannot resurrect a deleted row
+	// when they rebuild the visible list.
+	removedPaths map[string]bool
 
 	allScope         bool
 	root             string
@@ -132,6 +137,7 @@ type sessionDialog struct {
 // sessionDialogAction is returned by HandleKey.
 type sessionDialogAction struct {
 	Select      bool
+	Delete      bool
 	Path        string
 	Close       bool
 	Renamed     bool
@@ -174,6 +180,8 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.viewTop = 0
 	d.renaming = false
 	d.rename = ""
+	d.deleting = false
+	d.removedPaths = nil
 	d.root = root
 	d.cwd = cwd
 	d.allScope = len(allScope) > 0 && allScope[0]
@@ -377,7 +385,7 @@ func (d *sessionDialog) appendLoadedSessions(start, end int) {
 		return
 	}
 	for _, slot := range d.loadSlots[start:end] {
-		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 {
+		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 || d.removedPaths[slot.summary.Path] {
 			continue
 		}
 		d.baseSessions = append(d.baseSessions, slot.summary)
@@ -393,7 +401,7 @@ func (d *sessionDialog) rebuildLoadedSessions(limit int) {
 	}
 	filtered := make([]core.SessionSummary, 0, limit)
 	for _, slot := range d.loadSlots[:limit] {
-		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 {
+		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 || d.removedPaths[slot.summary.Path] {
 			continue
 		}
 		filtered = append(filtered, slot.summary)
@@ -423,7 +431,8 @@ func (d *sessionDialog) CursorPos() (row, col int) {
 	return 3, 4 + len([]rune(d.rename))
 }
 
-// Close hides the dialog and cancels any in-flight session reads.
+// Close hides the dialog, cancels any in-flight session reads, and abandons
+// any pending edit or deletion.
 func (d *sessionDialog) Close() {
 	if d.loadCancel != nil {
 		d.loadCancel()
@@ -447,6 +456,7 @@ func (d *sessionDialog) Close() {
 	d.searchEvents = nil
 	d.searchSegments = nil
 	d.searchMatches = nil
+	d.deleting = false
 	d.active = false
 }
 
@@ -632,6 +642,17 @@ func (d *sessionDialog) applySearchFilter() {
 		}
 		d.sessions = filtered
 	}
+	// Belt and suspenders: a deletion confirmed while a search match or
+	// load event is being applied must not reappear in the visible rows.
+	if len(d.removedPaths) > 0 && len(d.sessions) > 0 {
+		kept := d.sessions[:0]
+		for _, summary := range d.sessions {
+			if !d.removedPaths[summary.Path] {
+				kept = append(kept, summary)
+			}
+		}
+		d.sessions = kept
+	}
 	if d.cursor >= len(d.sessions) {
 		d.cursor = max(0, len(d.sessions)-1)
 	}
@@ -682,6 +703,14 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
+	if d.deleting && d.cursor >= 0 && d.cursor < len(d.sessions) {
+		s := d.sessions[d.cursor]
+		lines = append(lines, th.FGColor(th.Muted, "permanently delete this session?"))
+		lines = append(lines, "  "+formatSessionRowPlain(s, width-2))
+		lines = append(lines, th.FGColor(th.Muted, "press y to delete, enter/esc to cancel"))
+		lines = append(lines, frameRule(th, width))
+		return lines
+	}
 	if d.renaming {
 		lines = append(lines, th.FGColor(th.Muted, "rename session (enter save, esc cancel):"))
 		text := d.rename
@@ -694,7 +723,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
-	hint := "↑/↓ pick · enter resume · / search · tab scope · r rename · esc cancel"
+	hint := "↑/↓ pick · enter resume · / search · tab scope · r rename · d delete · esc cancel"
 	if d.searchRequested {
 		hint = "search: " + d.query + "  (esc clear · tab scope)"
 		if !sessionSearchQuery(d.query) {
@@ -979,6 +1008,23 @@ func formatRelative(t time.Time) string {
 
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
+	// Deletion confirmation: y deletes, anything else (including enter and
+	// esc) cancels without closing the picker.
+	if d.deleting {
+		switch k.Kind {
+		case tui.KeyRune:
+			if (k.Rune == 'y' || k.Rune == 'Y') && d.cursor >= 0 && d.cursor < len(d.sessions) {
+				path := d.sessions[d.cursor].Path
+				d.deleting = false
+				return sessionDialogAction{Delete: true, Path: path}
+			}
+			d.deleting = false
+		case tui.KeyEnter, tui.KeyEsc:
+			d.deleting = false
+		}
+		return sessionDialogAction{}
+	}
+
 	// Rename mode: type the new name.
 	if d.renaming {
 		switch k.Kind {
@@ -1151,6 +1197,39 @@ navigate:
 			}
 			return sessionDialogAction{}
 		}
+		if k.Rune == 'd' && !d.loading && !d.searchRequested && len(d.sessions) > 0 {
+			d.deleting = true
+		}
 	}
 	return sessionDialogAction{}
+}
+
+// Remove deletes path from every picker projection after the host has
+// removed the corresponding file. The next row stays selected when
+// possible and the dialog stays open. The path is remembered so an
+// in-flight load or search generation cannot resurrect the row.
+func (d *sessionDialog) Remove(path string) {
+	if d.removedPaths == nil {
+		d.removedPaths = map[string]bool{}
+	}
+	d.removedPaths[path] = true
+	d.sessions = removeSessionSummary(d.sessions, path)
+	d.baseSessions = removeSessionSummary(d.baseSessions, path)
+	if d.cursor >= len(d.sessions) {
+		d.cursor = len(d.sessions) - 1
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
+	d.viewTop = clampViewTop(d.viewTop, d.cursor, d.MaxRows, len(d.sessions))
+}
+
+func removeSessionSummary(summaries []core.SessionSummary, path string) []core.SessionSummary {
+	for idx := range summaries {
+		if summaries[idx].Path != path {
+			continue
+		}
+		return append(summaries[:idx], summaries[idx+1:]...)
+	}
+	return summaries
 }

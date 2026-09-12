@@ -17,6 +17,35 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 	i.continueAfterCompact = false
 	i.pendingPostCompactNote = ""
 }
+
+// estimateCompactedContextInput approximates the input tokens of the
+// just-compacted transcript for the status display. It uses the same rough
+// 1-token-per-4-chars rule as compaction's own estimate, summed over the
+// textual timeline content. Empty transcripts yield zero; image bytes are
+// not counted. This is display-only: the next provider usage replaces it,
+// and immediate continuations bypass the pre-turn guard until then.
+func estimateCompactedContextInput(msgs []provider.Message) int {
+	total := 0
+	for _, msg := range msgs {
+		for _, c := range msg.Content {
+			switch v := c.(type) {
+			case provider.TextBlock:
+				total += len(v.Text)
+			case provider.ToolCallBlock:
+				total += len(v.Name) + len(v.Arguments)
+			case provider.ToolResultBlock:
+				for _, inner := range v.Content {
+					if text, ok := inner.(provider.TextBlock); ok {
+						total += len(text.Text)
+					}
+				}
+			case provider.ReasoningBlock:
+				total += len(v.Summary)
+			}
+		}
+	}
+	return total / 4
+}
 func (i *Interactive) compactHandoffLocked() json.RawMessage {
 	return encodeCompactHandoff(i.compactContinuation)
 }
@@ -322,7 +351,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			}
 			i.pendingPostCompactNote = ""
 			i.extNotes = stripAutoCompactNotes(i.extNotes)
-			i.lastCtxInput = 0
+			i.lastCtxInput = estimateCompactedContextInput(msgs)
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
 			i.toolGate = map[string]int{}
@@ -380,6 +409,13 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		// the mutex. A completion update arriving after the compaction result
 		// but before this assignment is then queued for the selected follow-up
 		// instead of starting a competing turn.
+		if hasNext || continueExisting || continueAutomatically || continueGoal {
+			// The estimate above keeps the status display honest, but the
+			// follow-up turn must not trip the pre-turn compaction guard
+			// before fresh provider usage arrives: it runs against the
+			// just-compacted transcript by construction.
+			i.lastCtxInput = 0
+		}
 		i.busy = hasNext || continueExisting || continueAutomatically || continueGoal
 		i.compacting = false
 		i.autoCompacting = false
