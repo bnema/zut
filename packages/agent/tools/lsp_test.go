@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/lsp"
@@ -59,6 +60,25 @@ func TestLSPToolGlobRespectsJailForSymlinkMatches(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatalf("jailed symlink glob was accepted: %#v", result)
+	}
+}
+
+func TestLSPToolTimeoutIsAlwaysBounded(t *testing.T) {
+	cases := []struct {
+		milliseconds int
+		want         time.Duration
+	}{
+		{milliseconds: 0, want: defaultLSPTimeout},
+		{milliseconds: -1, want: defaultLSPTimeout},
+		{milliseconds: 25, want: 25 * time.Millisecond},
+		{milliseconds: maxLSPTimeoutMillis, want: maxLSPTimeout},
+		{milliseconds: maxLSPTimeoutMillis + 1, want: maxLSPTimeout},
+		{milliseconds: 1 << 62, want: maxLSPTimeout},
+	}
+	for _, tc := range cases {
+		if got := lspToolTimeout(tc.milliseconds); got != tc.want {
+			t.Errorf("lspToolTimeout(%d) = %s, want %s", tc.milliseconds, got, tc.want)
+		}
 	}
 }
 

@@ -15,7 +15,12 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-const maxLSPToolOutput = 60 * 1024
+const (
+	maxLSPToolOutput    = 60 * 1024
+	defaultLSPTimeout   = 30 * time.Second
+	maxLSPTimeout       = 2 * time.Minute
+	maxLSPTimeoutMillis = int(maxLSPTimeout / time.Millisecond)
+)
 
 // LSPTool exposes diagnostics, language navigation, and server management to
 // the model. Manager owns processes and is normally shared by all tool calls
@@ -51,7 +56,7 @@ type lspArgs struct {
 	RunCLI  *bool           `json:"run_cli,omitempty"`
 }
 
-const lspSchema = `{"type":"object","properties":{"action":{"type":"string","enum":["diagnostics","definition","references","hover","symbols","rename","code_actions","type_definition","implementation","status","reload","capabilities","request"]},"path":{"type":"string","description":"File path relative to the workspace, required for document actions."},"line":{"type":"integer","minimum":1,"description":"1-based line for a document action."},"column":{"type":"integer","minimum":1,"description":"1-based column for a document action."},"query":{"type":"string","description":"Workspace symbol query; symbols uses document symbols when omitted."},"new_name":{"type":"string","description":"New identifier for rename."},"server":{"type":"string","description":"Optional server id for request or capabilities."},"method":{"type":"string","description":"Raw LSP method for request."},"params":{"type":"object","description":"Raw JSON-RPC params for request."},"apply":{"type":"boolean","description":"Apply a returned rename/code-action WorkspaceEdit. Only files inside the workspace are accepted."},"timeout_ms":{"type":"integer","minimum":1},"max":{"type":"integer","minimum":1,"maximum":50},"run_cli":{"type":"boolean","description":"Run configured CLI linters for diagnostics (default true)."}},"required":["action"]}`
+const lspSchema = `{"type":"object","properties":{"action":{"type":"string","enum":["diagnostics","definition","references","hover","symbols","rename","code_actions","type_definition","implementation","status","reload","capabilities","request"]},"path":{"type":"string","description":"File path relative to the workspace, required for document actions."},"line":{"type":"integer","minimum":1,"description":"1-based line for a document action."},"column":{"type":"integer","minimum":1,"description":"1-based column for a document action."},"query":{"type":"string","description":"Workspace symbol query; symbols uses document symbols when omitted."},"new_name":{"type":"string","description":"New identifier for rename."},"server":{"type":"string","description":"Optional server id for request or capabilities."},"method":{"type":"string","description":"Raw LSP method for request."},"params":{"type":"object","description":"Raw JSON-RPC params for request."},"apply":{"type":"boolean","description":"Apply a returned rename/code-action WorkspaceEdit. Only files inside the workspace are accepted."},"timeout_ms":{"type":"integer","minimum":1,"maximum":120000,"description":"Request timeout in milliseconds (default 30000, maximum 120000)."},"max":{"type":"integer","minimum":1,"maximum":50},"run_cli":{"type":"boolean","description":"Run configured CLI linters for diagnostics (default true)."}},"required":["action"]}`
 
 func (t *LSPTool) Name() string { return "lsp" }
 func (t *LSPTool) Description() string {
@@ -91,12 +96,8 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 			}
 		}
 	}
-	runCtx := ctx
-	if args.Timeout > 0 {
-		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(args.Timeout)*time.Millisecond)
-		defer cancel()
-	}
+	runCtx, cancel := context.WithTimeout(ctx, lspToolTimeout(args.Timeout))
+	defer cancel()
 	var text string
 	var details any
 	var actionErr error
@@ -148,7 +149,7 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 		text = "Reloaded LSP and linter processes and configuration."
 	case "capabilities":
 		var capabilities map[string]json.RawMessage
-		capabilities, actionErr = t.Manager.Capabilities(absCWD, path, args.Server)
+		capabilities, actionErr = t.Manager.Capabilities(runCtx, absCWD, path, args.Server)
 		text = prettyJSON(capabilities)
 		details = capabilities
 	case "request":
@@ -379,6 +380,16 @@ func prettyJSON(raw any) string {
 }
 func hasGlobMeta(value string) bool {
 	return strings.ContainsAny(value, "*?[")
+}
+
+func lspToolTimeout(milliseconds int) time.Duration {
+	if milliseconds <= 0 {
+		return defaultLSPTimeout
+	}
+	if milliseconds > maxLSPTimeoutMillis {
+		return maxLSPTimeout
+	}
+	return time.Duration(milliseconds) * time.Millisecond
 }
 
 func boundedMax(value int) int {

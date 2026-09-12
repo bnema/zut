@@ -74,8 +74,9 @@ before parsing.
 
 ## Tool actions
 
-The model calls `lsp` with an `action` and an optional `path`, `line`, `column`,
-`server`, or `query`:
+The model calls `lsp` with an `action` and optional arguments such as `path`,
+`line`, `column`, `server`, or `query`. Every action has an overall time budget:
+`timeout_ms` defaults to 30,000 milliseconds and is capped at 120,000 milliseconds.
 
 - `diagnostics` — merge LSP and CLI diagnostics for a file, glob, or the whole workspace. `run_cli:false` skips command-line linters.
 - `definition`, `type_definition`, `implementation`, `references`, `hover` — query a language server at a 1-based line and column.
