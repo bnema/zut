@@ -2673,8 +2673,7 @@ func skipStringEscape(s string, i int) int {
 	return len(s)
 }
 
-// looksLikeUnifiedDiff reports whether text is a context diff as
-// emitted by the edit tool: rows start with '+', '-', ' ', or
+// astRewriteArgs reports whether a completed AST call requested mutation.
 func astRewriteArgs(name string, raw json.RawMessage) bool {
 	if !strings.EqualFold(name, "ast") {
 		return false
