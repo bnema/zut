@@ -179,6 +179,7 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: text}},
 		IsError: isError,
+		Context: provider.ToolContext{Discovers: grepResultPaths(text, root, info.IsDir())},
 		Details: map[string]any{
 			"engine":            engine,
 			"path":              t.Sandbox.DisplayPath(root, args.Path),
@@ -190,6 +191,31 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 			"output_cancelled":  outputCancelled,
 		},
 	}, nil
+}
+
+func grepResultPaths(output, root string, rootIsDir bool) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		candidate, _, ok := strings.Cut(line, ":")
+		if !ok || candidate == "" {
+			continue
+		}
+		path := candidate
+		if !filepath.IsAbs(path) {
+			base := root
+			if !rootIsDir {
+				base = filepath.Dir(root)
+			}
+			path = filepath.Join(base, path)
+		}
+		path = canonicalResourcePath(path)
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func parseGrepArgs(raw json.RawMessage) (grepArgs, error) {

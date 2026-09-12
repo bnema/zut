@@ -393,6 +393,7 @@ func ResidentHistoryMessages(items []ResidentHistoryItem) ([]provider.Message, e
 				Content []json.RawMessage    `json:"Content"`
 				IsError bool                 `json:"IsError"`
 				Timing  *provider.ToolTiming `json:"Timing"`
+				Context provider.ToolContext `json:"Context"`
 			}
 			if err := json.Unmarshal(item.ToolResult, &result); err != nil || len(result.Content) == 0 {
 				if err == nil {
@@ -408,13 +409,15 @@ func ResidentHistoryMessages(items []ResidentHistoryItem) ([]provider.Message, e
 					Content []json.RawMessage    `json:"content"`
 					IsError bool                 `json:"is_error"`
 					Timing  *provider.ToolTiming `json:"timing,omitempty"`
+					Context provider.ToolContext `json:"context,omitempty"`
 				} `json:"content"`
 			}{Role: provider.RoleTool, Time: item.Time, Content: []struct {
 				CallID  string               `json:"call_id"`
 				Content []json.RawMessage    `json:"content"`
 				IsError bool                 `json:"is_error"`
 				Timing  *provider.ToolTiming `json:"timing,omitempty"`
-			}{{CallID: item.ToolID, Content: result.Content, IsError: result.IsError, Timing: result.Timing}}})
+				Context provider.ToolContext `json:"context,omitempty"`
+			}{{CallID: item.ToolID, Content: result.Content, IsError: result.IsError, Timing: result.Timing, Context: result.Context}}})
 			if err != nil {
 				return nil, err
 			}

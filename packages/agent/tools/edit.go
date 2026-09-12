@@ -170,6 +170,7 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 	// programmatic consumers and confirmation previews.
 	result := core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: diff}},
+		Context: provider.ToolContext{Mutates: []string{canonicalResourcePath(path)}},
 		Details: map[string]any{"path": path, "edits": len(a.Edits), "diff": diff},
 	}
 	return editPlan{path: path, final: final, result: result}, nil

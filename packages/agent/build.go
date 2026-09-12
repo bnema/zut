@@ -123,7 +123,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "python" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.UpdatePlanToolName {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "ast" || info.Name == "python" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.UpdatePlanToolName {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -1318,6 +1318,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.GrepTool:
 			v.Sandbox = s
+		case *tools.ASTTool:
+			v.Sandbox = s
 		}
 		_ = name
 	}
@@ -1354,6 +1356,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
 		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
 		"grep":            &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
+		"ast":             &tools.ASTTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"update_goal":     &tools.UpdateGoalTool{},
 		"update_plan":     &tools.UpdatePlanTool{},
 	}
@@ -1365,6 +1368,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
 		lspTool.Sandbox = sandbox
+		lspTool.LSPDiagnostics = diagnosticsOnEdit
 		all["lsp"] = lspTool
 	}
 	reg := core.Registry{}
@@ -1390,6 +1394,10 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	if orchestratorExplorationToolsAllowed(args) {
 		reg["read"] = all["read"]
 		reg["grep"] = all["grep"]
+		if astTool, ok := all["ast"].(*tools.ASTTool); ok {
+			astTool.ReadOnly = true
+			reg["ast"] = astTool
+		}
 		if args.PermissionSet == nil {
 			for name, tool := range tools.NewWebTools() {
 				reg[name] = tool
@@ -1440,7 +1448,7 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 			if diagnosticsOnWrite {
 				return true
 			}
-		case "edit":
+		case "edit", "ast":
 			if diagnosticsOnEdit {
 				return true
 			}
@@ -1496,7 +1504,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "bash", "python", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "ast", "bash", "python", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

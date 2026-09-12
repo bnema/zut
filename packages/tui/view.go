@@ -1190,7 +1190,8 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					if tr.IsError {
 						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error"), width, v.CompactMode))
 					}
-					for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+					forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
+					for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff) {
 						_, stripped := parseImageFootprint(line)
 						lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
 					}
@@ -1204,7 +1205,8 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if tr.IsError {
 					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FGColor(color, "  error"), width))
 				}
-				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+				forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
+				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff) {
 					// Image-footprint rows (the escape row, the blank
 					// reservation rows beneath it, and the gap row
 					// before the metadata caption) are tagged with the
@@ -2003,7 +2005,7 @@ func trimLeadingSpaces(s string, n int) string {
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
-func (v *View) renderToolResultContent(blocks []provider.Content, width int, color TerminalColor, sourcePath string, startLine int) []string {
+func (v *View) renderToolResultContent(blocks []provider.Content, width int, color TerminalColor, sourcePath string, startLine int, forceDiff bool) []string {
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
@@ -2021,6 +2023,9 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 				bodyWidth = flatToolBodyRenderWidth(width)
 			}
 			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
+			if forceDiff {
+				estimateWidth = max(1, bodyWidth-5)
+			}
 			estimated := estimateToolTextLines(bb.Text, estimateWidth)
 			total += estimated
 			text := bb.Text
@@ -2030,7 +2035,11 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 			if !v.ExpandAll && !hasImage && estimated > ToolCollapseLines {
 				text = previewToolText(text, estimateWidth)
 			}
-			body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
+			if forceDiff {
+				body = append(body, v.renderUnifiedDiff(text, bodyWidth, sourcePath)...)
+			} else {
+				body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
+			}
 		case provider.ImageBlock:
 			body = append(body, v.renderImageBlock(bb, width)...)
 		}
@@ -2664,11 +2673,21 @@ func skipStringEscape(s string, i int) int {
 	return len(s)
 }
 
+// astRewriteArgs reports whether a completed AST call requested mutation.
+func astRewriteArgs(name string, raw json.RawMessage) bool {
+	if !strings.EqualFold(name, "ast") {
+		return false
+	}
+	var args struct {
+		Rewrite string `json:"rewrite"`
+	}
+	return json.Unmarshal(raw, &args) == nil && args.Rewrite != ""
+}
+
 // looksLikeUnifiedDiff reports whether text is a context diff as
-// emitted by the edit tool: rows start with '+', '-', ' ', or
-// literal "..." (context-break marker). The presence of at least
-// one '+' or '-' row distinguishes a real diff from an ordinary
-// file whose lines happen to begin with a space.
+// emitted by edit and ast. Every non-empty row must start with a diff
+// marker, except for the bounded-output truncation notice. The presence
+// of at least one '+' or '-' row distinguishes a diff from ordinary text.
 func looksLikeUnifiedDiff(text string) bool {
 	lines := strings.Split(text, "\n")
 	if len(lines) < 2 {

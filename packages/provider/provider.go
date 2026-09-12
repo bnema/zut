@@ -95,6 +95,24 @@ type ToolResultBlock struct {
 	Content []Content   `json:"content"`
 	IsError bool        `json:"is_error"`
 	Timing  *ToolTiming `json:"timing,omitempty"`
+	// Context records resource provenance used to remove stale tool output
+	// from later provider requests without rewriting the durable transcript.
+	Context ToolContext `json:"context,omitzero"`
+}
+
+// ToolContext describes how a tool result relates to workspace resources.
+// Keys are opaque to core; tool owners normalize them consistently.
+type ToolContext struct {
+	Reads     []ResourceRef `json:"reads,omitempty"`
+	Discovers []string      `json:"discovers,omitempty"`
+	Mutates   []string      `json:"mutates,omitempty"`
+}
+
+// ResourceRef identifies one view of a resource. Variant distinguishes
+// bounded ranges or query forms whose results remain independently useful.
+type ResourceRef struct {
+	Key     string `json:"key"`
+	Variant string `json:"variant,omitempty"`
 }
 
 func (ToolResultBlock) isContent() {}

@@ -94,6 +94,69 @@ func TestProjectToolTimingIsModelOnly(t *testing.T) {
 	}
 }
 
+func TestProjectToolResultMessagesOmitsSupersededWorkspaceViews(t *testing.T) {
+	path := "/workspace/main.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "search", Content: []provider.Content{provider.TextBlock{Text: "main.go:10"}}, Context: provider.ToolContext{Discovers: []string{path}}},
+		provider.ToolResultBlock{CallID: "read-old", Content: []provider.Content{provider.TextBlock{Text: "old"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path}}}},
+		provider.ToolResultBlock{CallID: "write", Content: []provider.Content{provider.TextBlock{Text: "changed"}}, Context: provider.ToolContext{Mutates: []string{path}}},
+		provider.ToolResultBlock{CallID: "read-new", Content: []provider.Content{provider.TextBlock{Text: "new"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path}}}},
+	}}}
+
+	projected := projectToolResultMessages(messages)
+	for _, id := range []string{"search", "read-old"} {
+		if got := toolResultTextForCall(projected, id); got != staleToolResultMarker {
+			t.Fatalf("projected %s = %q, want stale marker", id, got)
+		}
+	}
+	if got := toolResultTextForCall(projected, "write"); got != "changed" {
+		t.Fatalf("mutation result = %q", got)
+	}
+	if got := toolResultTextForCall(projected, "read-new"); got != "new" {
+		t.Fatalf("latest read = %q", got)
+	}
+	if got := toolResultTextForCall(messages, "read-old"); got != "old" {
+		t.Fatalf("durable transcript was mutated: %q", got)
+	}
+}
+
+func TestProjectToolResultMessagesKeepsDiscoveryUntilAllFilesConsumed(t *testing.T) {
+	first, second := "/workspace/a.go", "/workspace/b.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "search", Content: []provider.Content{provider.TextBlock{Text: "a.go\nb.go"}}, Context: provider.ToolContext{Discovers: []string{first, second}}},
+		provider.ToolResultBlock{CallID: "read-a", Content: []provider.Content{provider.TextBlock{Text: "a"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: first}}}},
+	}}}
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "search"); got != "a.go\nb.go" {
+		t.Fatalf("partially consumed search = %q", got)
+	}
+	messages[0].Content = append(messages[0].Content, provider.ToolResultBlock{CallID: "read-b", Content: []provider.Content{provider.TextBlock{Text: "b"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: second}}}})
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "search"); got != staleToolResultMarker {
+		t.Fatalf("fully consumed search = %q", got)
+	}
+}
+
+func TestProjectToolResultMessagesDoesNotStaleCurrentReadMutation(t *testing.T) {
+	path := "/workspace/a.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "current", Content: []provider.Content{provider.TextBlock{Text: "updated"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path}}, Mutates: []string{path}}},
+	}}}
+	if got := toolResultTextForCall(projectToolResultMessages(messages), "current"); got != "updated" {
+		t.Fatalf("current result = %q", got)
+	}
+}
+
+func TestProjectToolResultMessagesPreservesDistinctReadVariants(t *testing.T) {
+	path := "/workspace/main.go"
+	messages := []provider.Message{{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "first", Content: []provider.Content{provider.TextBlock{Text: "lines 1-10"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path, Variant: "1:10"}}}},
+		provider.ToolResultBlock{CallID: "second", Content: []provider.Content{provider.TextBlock{Text: "lines 20-30"}}, Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: path, Variant: "20:10"}}}},
+	}}}
+	projected := projectToolResultMessages(messages)
+	if got := toolResultTextForCall(projected, "first"); got != "lines 1-10" {
+		t.Fatalf("distinct range was omitted: %q", got)
+	}
+}
+
 func TestProjectToolResultMessagesKeepsHistoricalPrefixStable(t *testing.T) {
 	messages := make([]provider.Message, 0, 4)
 	for i := 0; i < 4; i++ {
