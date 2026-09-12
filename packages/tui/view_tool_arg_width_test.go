@@ -61,3 +61,16 @@ func TestShortArgsNoTruncationWhenShort(t *testing.T) {
 		t.Fatalf("ShortArgs = %q, want %q", got, "short query")
 	}
 }
+
+func TestShortArgsGlobShowsPatternAndDir(t *testing.T) {
+	t.Setenv("ZUT_TOOL_ARG_WIDTH", "")
+	if got := ShortArgs("glob", json.RawMessage(`{"pattern":"**/*.go"}`)); got != "**/*.go" {
+		t.Fatalf("ShortArgs glob = %q, want pattern", got)
+	}
+	if got := ShortArgs("glob", json.RawMessage(`{"pattern":"*.json","path":"configs"}`)); got != "*.json in configs" {
+		t.Fatalf("ShortArgs glob with dir = %q, want pattern plus dir", got)
+	}
+	if got := ShortArgs("glob", json.RawMessage(`{"pattern":"*.json","path":"."}`)); got != "*.json" {
+		t.Fatalf("ShortArgs glob with dot dir = %q, want bare pattern", got)
+	}
+}

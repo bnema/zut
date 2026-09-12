@@ -126,6 +126,9 @@ func TestOrchestratorAlwaysReceivesResearchTools(t *testing.T) {
 			if _, ok := registry["grep"].(*tools.GrepTool); ok != tc.wantResearch {
 				t.Fatalf("grep = %T, want research tool present = %v", registry["grep"], tc.wantResearch)
 			}
+			if _, ok := registry["glob"].(*tools.GlobTool); ok != tc.wantResearch {
+				t.Fatalf("glob = %T, want research tool present = %v", registry["glob"], tc.wantResearch)
+			}
 			for _, name := range tools.WebCapabilityNames {
 				_, gotWebTool := registry[name]
 				if gotWebTool != tc.wantWeb {
