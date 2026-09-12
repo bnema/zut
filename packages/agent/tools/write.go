@@ -67,6 +67,7 @@ func (t *WriteTool) Execute(ctx context.Context, raw json.RawMessage, progress f
 	}
 	result := core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: a.Content}},
+		Context: provider.ToolContext{Mutates: []string{filepath.Clean(path)}},
 		Details: map[string]any{
 			"path":        path,
 			"bytes":       len(a.Content),

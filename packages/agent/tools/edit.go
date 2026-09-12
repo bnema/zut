@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/lsp"
@@ -170,6 +171,7 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 	// programmatic consumers and confirmation previews.
 	result := core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: diff}},
+		Context: provider.ToolContext{Mutates: []string{filepath.Clean(path)}},
 		Details: map[string]any{"path": path, "edits": len(a.Edits), "diff": diff},
 	}
 	return editPlan{path: path, final: final, result: result}, nil

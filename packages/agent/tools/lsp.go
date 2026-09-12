@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,7 +162,13 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 		return core.ToolResult{}, actionErr
 	}
 	text = boundLSPText(text)
-	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details}, nil
+	result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details}
+	if values, ok := details.(map[string]any); ok {
+		if paths, ok := values["modified_paths"].([]string); ok {
+			result.Context.Mutates = paths
+		}
+	}
+	return result, nil
 }
 
 func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, args lspArgs) (string, any, error) {
@@ -200,11 +207,33 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	if args.Action == "rename" && args.Apply == nil {
 		apply = true
 	}
-	text, applyCount, applyErr := formatResponses(cwd, responses, args.Action, apply, t.Manager)
+	text, applyCount, modifiedPaths, applyErr := formatResponses(cwd, responses, args.Action, apply, t.Manager)
 	if applyCount > 0 {
 		text += fmt.Sprintf("\nApplied %d workspace edit(s).", applyCount)
+		text += t.postMutationDiagnostics(ctx, cwd, modifiedPaths)
 	}
-	return text, map[string]any{"action": args.Action, "responses": responses, "applied": applyCount}, applyErr
+	return text, map[string]any{"action": args.Action, "responses": responses, "applied": applyCount, "modified_paths": modifiedPaths}, applyErr
+}
+
+func (t *LSPTool) postMutationDiagnostics(ctx context.Context, cwd string, paths []string) string {
+	var summaries []string
+	for _, path := range paths {
+		diagnosticsCtx, cancel := context.WithTimeout(ctx, writeDiagnosticsTimeout)
+		diagnostics, err := t.Manager.Diagnostics(diagnosticsCtx, cwd, path)
+		cancel()
+		if err != nil {
+			continue
+		}
+		diagnostics = t.Manager.ReduceDiagnostics(cwd, path, diagnostics)
+		if len(diagnostics) == 0 {
+			continue
+		}
+		summaries = append(summaries, lsp.SummarizeDiagnostics(diagnostics, cwd, 8))
+	}
+	if len(summaries) == 0 {
+		return ""
+	}
+	return "\n\nPost-edit diagnostics:\n" + strings.Join(summaries, "\n")
 }
 
 func (t *LSPTool) executeRawRequest(ctx context.Context, cwd, path string, args lspArgs) (string, any, error) {
@@ -230,9 +259,10 @@ func (t *LSPTool) executeRawRequest(ctx context.Context, cwd, path string, args 
 	return formatRawResponses(responses), map[string]any{"method": args.Method, "responses": responses}, firstResponseError(responses)
 }
 
-func formatResponses(cwd string, responses []lsp.Response, action string, apply bool, manager *lsp.Manager) (string, int, error) {
+func formatResponses(cwd string, responses []lsp.Response, action string, apply bool, manager *lsp.Manager) (string, int, []string, error) {
 	var b strings.Builder
 	applied := 0
+	var modifiedPaths []string
 	var firstErr error
 	pendingEdits := make([]lsp.WorkspaceEdit, 0)
 	for _, response := range responses {
@@ -249,6 +279,7 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 		}
 	}
 	if len(pendingEdits) > 0 {
+		modifiedPaths = workspaceEditPaths(cwd, pendingEdits)
 		if err := manager.ApplyEdits(cwd, pendingEdits); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -259,9 +290,48 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 		}
 	}
 	if b.Len() == 0 {
-		return "No results.", applied, firstErr
+		return "No results.", applied, modifiedPaths, firstErr
 	}
-	return b.String(), applied, firstErr
+	return b.String(), applied, modifiedPaths, firstErr
+}
+
+func workspaceEditPaths(cwd string, edits []lsp.WorkspaceEdit) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(uri string) {
+		parsed, err := url.Parse(uri)
+		if err != nil || parsed.Scheme != "file" {
+			return
+		}
+		path := filepath.FromSlash(parsed.Path)
+		if path == "" {
+			return
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	for _, edit := range edits {
+		for uri := range edit.Changes {
+			add(uri)
+		}
+		for _, raw := range edit.DocumentChanges {
+			var change struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+			}
+			if json.Unmarshal(raw, &change) == nil {
+				add(change.TextDocument.URI)
+			}
+		}
+	}
+	return paths
 }
 
 func workspaceEdits(raw json.RawMessage, action string) []lsp.WorkspaceEdit {

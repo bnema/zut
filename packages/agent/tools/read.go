@@ -83,6 +83,7 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 		return core.ToolResult{
 			Content: []provider.Content{provider.ImageBlock{MimeType: mime, Data: data}},
+			Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: filepath.Clean(path)}}},
 		}, nil
 	}
 
@@ -156,8 +157,10 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		fmt.Fprintf(&sb, "... [truncated at %d bytes]\n", maxReadBytes)
 	}
 
+	variant := fmt.Sprintf("%d:%d", a.Offset, a.Limit)
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
+		Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: filepath.Clean(path), Variant: variant}}},
 		Details: map[string]any{
 			"path":            path,
 			"start_line":      start + 1, // 1-indexed; TUI draws the gutter

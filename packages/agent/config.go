@@ -292,10 +292,10 @@ func (c Config) LSPDiagnosticsOnWriteEnabled(subagent bool) bool {
 	return c.LSPEnabledFor(subagent) && (c.LSPDiagnosticsOnWrite == nil || *c.LSPDiagnosticsOnWrite)
 }
 
-// LSPDiagnosticsOnEditEnabled reports the default-off edit diagnostics
+// LSPDiagnosticsOnEditEnabled reports the default-on edit diagnostics
 // preference without requiring a generated config entry.
 func (c Config) LSPDiagnosticsOnEditEnabled(subagent bool) bool {
-	return c.LSPEnabledFor(subagent) && c.LSPDiagnosticsOnEdit != nil && *c.LSPDiagnosticsOnEdit
+	return c.LSPEnabledFor(subagent) && (c.LSPDiagnosticsOnEdit == nil || *c.LSPDiagnosticsOnEdit)
 }
 
 // AuthPath returns the path to auth.json.

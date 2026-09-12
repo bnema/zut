@@ -53,6 +53,9 @@ type ToolResult struct {
 	// to the persisted/provider-facing tool-result block, where it remains
 	// optional for compatibility with older sessions.
 	Timing *provider.ToolTiming
+	// Context describes workspace resources read, discovered, or mutated by
+	// this result. Core uses it only for provider-visible stale-result pruning.
+	Context provider.ToolContext
 }
 
 // Registry is a name->Tool map.
