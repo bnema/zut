@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+func TestBuildSystemPromptAlwaysPrefersDedicatedTools(t *testing.T) {
+	for _, custom := range []string{"", "Custom identity"} {
+		prompt := BuildSystemPrompt(SystemPromptOpts{Custom: custom})
+		if count := strings.Count(prompt, toolSelectionGuidance); count != 1 {
+			t.Fatalf("dedicated tool guidance count = %d, want 1:\n%s", count, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptAlwaysIncludesFinalWritingGuidance(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

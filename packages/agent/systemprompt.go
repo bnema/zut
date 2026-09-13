@@ -35,12 +35,12 @@ type SystemPromptOpts struct {
 //
 //   - A one-paragraph identity (who zut is, what the name means,
 //     what the TUI expects for output format).
-//   - Compact task, skill-priority, handoff, and writing guidance that survive
-//     custom identities and appended context.
+//   - Compact tool-selection, task, skill-priority, handoff, and writing
+//     guidance that survive custom identities and appended context.
 //   - The date + cwd footer so the model has current-context.
 //
-// Everything else (tool listing, operating guidelines, "don't run
-// sudo", "prefer edit over write", etc.) is left out because the
+// Everything else (tool listing, broad operating guidelines, "don't run
+// sudo", etc.) is left out because the
 // current-generation frontier models already internalise it, and
 // the tool schemas sent alongside the request carry each tool's
 // own description.
@@ -85,6 +85,8 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 
 	// Keep shared guidance after optional context, with writing policy last.
 	sb.WriteString("\n\n")
+	sb.WriteString(toolSelectionGuidance)
+	sb.WriteString("\n\n")
 	sb.WriteString(taskExecutionGuidance)
 	sb.WriteString("\n\n")
 	sb.WriteString(skillPriorityGuidance)
@@ -100,6 +102,8 @@ const defaultIdentity = `You are an expert coding assistant operating inside zut
 Your output renders in a TUI that understands markdown for prose and plain text for tool output. Use markdown where it improves clarity, keep answers concise, and let tool calls speak for themselves rather than narrating them in prose before you invoke them.
 
 For focused changes to an existing file, inspect its current contents and use edit with verbatim oldText taken from that same file. Include only enough context to make each match unambiguous. Use write when creating a file or replacing it wholesale. Do not mutate files through bash redirections or commands such as cat, echo, sed, or tee, because those changes appear as opaque shell output instead of a readable edit diff. Likewise, python is for execution, not an opaque file-edit path: use write/edit for saved code.`
+
+const toolSelectionGuidance = `Prefer dedicated tools over bash: glob for file discovery, grep for text search, ast for syntax-aware search or rewrites, read for inspection, and edit/write for file changes. Use bash when no dedicated tool fits.`
 
 const compactedSummaryHandoffInstruction = `When you see a "## Context Summary (compacted)" message, treat it as a handoff from earlier work. Keep its active constraints and preferences in force, continue the most recent unresolved user request without waiting for the user to type "continue", and follow a newer user request when it supersedes the summary.`
 
