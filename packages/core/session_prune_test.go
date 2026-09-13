@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 func writePruneTestSession(t *testing.T, path, cwd string) {
@@ -34,10 +32,6 @@ func markHiddenFromSessions(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func makeFifo(path string) error {
-	return unix.Mkfifo(path, 0o600)
 }
 
 func strconvQuote(s string) string {
@@ -104,9 +98,6 @@ func TestScanStoredSessionGroupsPreservesProblemEntries(t *testing.T) {
 }
 
 func TestScanStoredSessionGroupsSkipsNonRegularEntries(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fifo tests need unix privileges")
-	}
 	root := t.TempDir()
 	writePruneTestSession(t, filepath.Join(root, "ok.jsonl"), "/work/a")
 	fifo := filepath.Join(root, "pipe.jsonl")
