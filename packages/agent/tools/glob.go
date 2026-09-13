@@ -108,8 +108,7 @@ func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	var discovered []string
 	truncated := false
 
-	var walkErr error
-	walkErr = filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -201,7 +200,7 @@ func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 		if matched {
 			matches = append(matches, t.globDisplayPath(root, args.Path, relSlash))
-			discovered = append(discovered, canonicalResourcePath(filepath.Join(searchDir, filepath.FromSlash(relSlash))))
+			discovered = append(discovered, canonicalResourcePath(filepath.Join(root, filepath.FromSlash(relSlash))))
 			if len(matches) >= maxGlobMatches {
 				truncated = true
 				return filepath.SkipAll

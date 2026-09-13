@@ -366,6 +366,10 @@ func createPruneTestSession(t *testing.T, root, cwd string) string {
 		Role:    provider.RoleUser,
 		Content: []provider.Content{provider.TextBlock{Text: "hello"}},
 	}); err != nil {
+		_ = session.Close()
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return session.Path
