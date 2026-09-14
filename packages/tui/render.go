@@ -683,7 +683,39 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				w.WriteString(MoveTo(1, 1))
 			}
 		}
-		for idx, line := range lines {
+		// The initial paint emits the whole logical buffer so the terminal's
+		// retained scrollback receives the full transcript. Recovery repaints
+		// (cache invalidation, structural shrink) happen while an agent is
+		// streaming, after earlier rows have already scrolled above the
+		// viewport. Replaying that prefix pushes retained history back into
+		// scrollback and duplicates it, so start from the new viewport top.
+		// Never skip a row that was visible (or never emitted) in the previous
+		// frame: if the tail starts below the old viewport top, emit from the
+		// old top instead so no visible content is lost.
+		//
+		// The clear above deletes Kitty images, so an inline image can only be
+		// kept by re-emitting its escape. When the skipped prefix carries an
+		// image escape, fall back to the full replay rather than delete a
+		// retained offscreen image without replacement. Image frames keep the
+		// older duplicate-history tradeoff in exchange for a safe repaint.
+		emit := lines
+		if clear && !purgeScrollback && len(lines) > r.rows {
+			start := len(lines) - r.rows
+			if start > r.logViewportTop {
+				start = r.logViewportTop
+			}
+			skippedHasImage := false
+			for _, line := range lines[:start] {
+				if containsImageEscape(line) {
+					skippedHasImage = true
+					break
+				}
+			}
+			if !skippedHasImage {
+				emit = lines[start:]
+			}
+		}
+		for idx, line := range emit {
 			if idx > 0 {
 				w.WriteString("\r\n")
 			}
@@ -936,9 +968,18 @@ func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				}
 				// A newly appended blank row compares equal to the implicit empty
 				// row past the old slice, but it still has to advance the terminal.
-				if firstChanged == -1 && len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
-					firstChanged = len(r.logLines)
-					lastChanged = len(lines) - 1
+				// Mirror the growth rule applied before this rescan: extend
+				// lastChanged whenever the logical buffer grew, regardless of
+				// whether the rescan already found a visible change. Otherwise an
+				// appended blank bottom-margin row is never emitted and the
+				// viewport fails to scroll, shifting the whole frame up by a row.
+				if len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
+					if firstChanged == -1 {
+						firstChanged = len(r.logLines)
+					}
+					if lastChanged < len(lines)-1 {
+						lastChanged = len(lines) - 1
+					}
 				}
 			}
 		}

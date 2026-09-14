@@ -275,6 +275,161 @@ func TestDrawLogInaccessibleChangeStillAppendsNewOutput(t *testing.T) {
 	}
 }
 
+// TestDrawLogInaccessibleMutationAppendedBlankAdvancesViewport is a
+// regression for the streaming-render corruption where an offscreen
+// (already scrolled above the viewport) chat row changes while a new
+// chat row is appended. The renderer must not replay the inaccessible
+// row, but it must still emit the appended row and let the trailing
+// bottom-margin blank scroll the viewport so the new tail is visible.
+//
+// Previously the rescan triggered by the inaccessible change reset
+// firstChanged/lastChanged, and the appended-blank extension was only
+// re-applied when the rescan found no visible change at all. Because the
+// rescan did find the visible shift, lastChanged stayed short, the
+// implicit blank bottom margin was never emitted, and the viewport failed
+// to advance, leaving the frame shifted by one row.
+func TestDrawLogInaccessibleMutationAppendedBlankAdvancesViewport(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(50, 7)
+
+	bottom := []string{"STATUS", "editor"}
+	chat := []string{"row-00", "row-01", "row-02", "row-03", "row-04", "row-05"}
+	r.DrawLog(chat, bottom, 1, 2)
+	if want := 2; r.logViewportTop != want {
+		t.Fatalf("setup viewport top = %d, want %d", r.logViewportTop, want)
+	}
+
+	// Repeated growth exercises the fix more than once: each round mutates
+	// a row that has already scrolled above the viewport and appends one
+	// new chat row, which grows the logical buffer by exactly one row.
+	appended := []string{"new-00", "new-01"}
+	for round := 0; round < len(appended); round++ {
+		buf.Reset()
+		mutated := append([]string(nil), chat...)
+		mutated[round] = mutated[round] + "-mutated"
+		chat = append(mutated, appended[round])
+		r.DrawLog(chat, bottom, 1, 2)
+		got := buf.String()
+
+		if strings.Contains(got, "-mutated") {
+			t.Fatalf("round %d replayed an inaccessible mutated row: %q", round, got)
+		}
+		if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
+			t.Fatalf("round %d cleared retained scrollback: %q", round, got)
+		}
+		if !strings.Contains(got, appended[round]) {
+			t.Fatalf("round %d did not emit appended row %q: %q", round, appended[round], got)
+		}
+		if want := len(chat) + len(bottom) + 1 - r.rows; r.logViewportTop != want {
+			t.Fatalf("round %d viewport top = %d, want %d (blank tail did not scroll)", round, r.logViewportTop, want)
+		}
+		if want := len(chat) + len(bottom) - 1; r.logHardwareRow != want {
+			t.Fatalf("round %d hardware row = %d, want cursor row %d", round, r.logHardwareRow, want)
+		}
+	}
+}
+
+// TestDrawLogBottomShrinkRepaintsViewportWithoutDuplicatingScrollback is a
+// regression for a bottom-band shrink while the transcript is taller than
+// the viewport. The recovery path must repaint the cleared visible screen
+// with only the new visible tail; replaying the full logical buffer pushes
+// transcript rows that are already retained in scrollback back into it,
+// duplicating history.
+func TestDrawLogBottomShrinkRepaintsViewportWithoutDuplicatingScrollback(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(50, 4)
+
+	chat := []string{"T1", "T2", "T3", "T4", "T5"}
+	r.DrawLog(chat, []string{"b1", "b2", "b3", "b4", "b5"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog(chat, []string{"d1", "d2"}, -1, 0)
+	got := buf.String()
+
+	if strings.Contains(got, SeqClearScrollback) {
+		t.Fatalf("bottom shrink purged retained scrollback: %q", got)
+	}
+	if !strings.Contains(got, SeqClearScreenNoHome) {
+		t.Fatalf("bottom shrink did not repaint the visible viewport: %q", got)
+	}
+	for _, dup := range []string{"T1", "T2", "T3", "T4"} {
+		if strings.Contains(got, dup) {
+			t.Fatalf("bottom shrink replayed retained transcript row %q: %q", dup, got)
+		}
+	}
+	for _, want := range []string{"T5", "d1", "d2"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("bottom shrink repaint missing visible row %q: %q", want, got)
+		}
+	}
+	if want := 4; r.logViewportTop != want {
+		t.Fatalf("viewport top = %d, want %d", r.logViewportTop, want)
+	}
+	if want := 7; r.logHardwareRow != want {
+		t.Fatalf("hardware row = %d, want %d", r.logHardwareRow, want)
+	}
+}
+
+// TestDrawLogInvalidationGrowthKeepsHistory guards the scrollback-safe
+// recovery trim. When the previous frame fit the viewport, nothing has
+// scrolled into retained scrollback yet, so a following recovery repaint
+// with a taller buffer must still emit the leading rows (letting them
+// scroll into history) instead of dropping them.
+func TestDrawLogInvalidationGrowthKeepsHistory(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(50, 4)
+
+	r.DrawLog([]string{"T1", "T2"}, []string{"editor"}, -1, 0)
+	if want := 0; r.logViewportTop != want {
+		t.Fatalf("setup viewport top = %d, want %d", r.logViewportTop, want)
+	}
+	buf.Reset()
+
+	r.Invalidate()
+	r.DrawLog([]string{"T1", "T2", "T3", "T4", "T5", "T6"}, []string{"editor"}, -1, 0)
+	got := buf.String()
+	for _, want := range []string{"T1", "T2", "T3", "T4", "T5", "T6"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("recovery growth dropped history row %q: %q", want, got)
+		}
+	}
+}
+
+// TestDrawLogBottomShrinkKeepsRetainedOffscreenImage is a regression for the
+// scrollback-safe recovery trim deleting a retained offscreen image. The
+// clear step deletes Kitty images, so the repaint must not skip an image
+// escape in the prefix without re-emitting it; image frames fall back to the
+// full replay instead.
+func TestDrawLogBottomShrinkKeepsRetainedOffscreenImage(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(50, 4)
+
+	image := "\x1b_Ga=T;payload\x1b\\"
+	r.DrawLog([]string{image, "a", "b", "c"}, []string{"d", "e"}, -1, 0)
+	buf.Reset()
+
+	r.DrawLog([]string{image, "a", "b", "c"}, []string{"d"}, -1, 0)
+	got := buf.String()
+
+	if !strings.Contains(got, SeqDeleteKittyImages) {
+		t.Fatalf("bottom shrink did not repaint the visible viewport: %q", got)
+	}
+	if !strings.Contains(got, image) {
+		t.Fatalf("bottom shrink deleted a retained offscreen image without re-emitting it: %q", got)
+	}
+	if !strings.Contains(got, "d") {
+		t.Fatalf("bottom shrink repaint missing bottom row: %q", got)
+	}
+}
+
 // TestDrawLogInvalidationPreservesScrollbackSelection pins the same rule for
 // cache invalidations, which can happen during an active turn independently
 // of an inaccessible changed row.
