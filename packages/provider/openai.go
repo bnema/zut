@@ -322,7 +322,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 	// message to a plain string and silently drop image blocks for
 	// this provider so historical sessions with screenshots still replay.
 	// The same quirk applies to DeepSeek models routed through opencode-go.
-	textOnly := c.name == ProviderDeepSeek || (c.name == ProviderOpenCodeGo && isDeepSeekModel(req.Model))
+	textOnly := c.isDeepSeekRoute(req.Model)
 
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for msgIndex := 0; msgIndex < len(req.Messages); msgIndex++ {
@@ -332,7 +332,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		case RoleDeveloper:
 			content := buildOAIUserContent(msg.Content, textOnly)
 			role := "developer"
-			if c.name == ProviderDeepSeek || (c.name == ProviderOpenCodeGo && isDeepSeekModel(req.Model)) {
+			if c.isDeepSeekRoute(req.Model) {
 				role = "system"
 			}
 			out.Messages = append(out.Messages, oaiMessage{Role: role, Content: content})
@@ -475,6 +475,10 @@ func isKimiDeferredModel(model string) bool {
 // activated deferred tool joins the top-level tools array.
 func supportsDeferredTools(provider string) bool {
 	return provider == "moonshotai" || provider == "moonshotai-cn"
+}
+
+func (c *openaiClient) isDeepSeekRoute(model string) bool {
+	return c.name == ProviderDeepSeek || (c.name == ProviderOpenCodeGo && isDeepSeekModel(model))
 }
 
 func isDeepSeekModel(model string) bool {
@@ -759,6 +763,8 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				} `json:"choices"`
 				Usage *struct {
 					PromptTokens            int                       `json:"prompt_tokens"`
+					PromptCacheHitTokens    *int                      `json:"prompt_cache_hit_tokens"`
+					PromptCacheMissTokens   *int                      `json:"prompt_cache_miss_tokens"`
 					CompletionTokens        int                       `json:"completion_tokens"`
 					PromptTokensDetails     *openAIInputTokensDetails `json:"prompt_tokens_details"`
 					CompletionTokensDetails *struct {
@@ -780,7 +786,11 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				return
 			}
 			if chunk.Usage != nil {
-				usage = normalizeOpenAIUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptTokensDetails)
+				if c.isDeepSeekRoute(req.Model) && (chunk.Usage.PromptCacheHitTokens != nil || chunk.Usage.PromptCacheMissTokens != nil) {
+					usage = normalizeDeepSeekUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptCacheHitTokens, chunk.Usage.PromptCacheMissTokens)
+				} else {
+					usage = normalizeOpenAIUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.PromptTokensDetails)
+				}
 				if details := chunk.Usage.CompletionTokensDetails; details != nil {
 					usage.ReasoningTokens = details.ReasoningTokens
 					usage.ReasoningTokensKnown = true

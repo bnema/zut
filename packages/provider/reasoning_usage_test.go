@@ -28,6 +28,34 @@ func TestOpenAIReportsReasoningTokens(t *testing.T) {
 	}
 }
 
+func TestDeepSeekNormalizesNativeCacheUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30,"completion_tokens":9}}`)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "data: [DONE]")
+		fmt.Fprintln(w)
+	}))
+	defer srv.Close()
+
+	events, err := NewDeepSeek("test", srv.URL).Stream(context.Background(), Request{Model: "deepseek-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := usageFromEvents(events)
+	if usage.InputTokens != 30 || usage.CacheReadTokens != 70 || usage.CacheWriteTokens != 0 || usage.CacheMeasuredPromptTokens != 100 || usage.CacheMeasuredReadTokens != 70 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestDeepSeekRejectsIncompleteCacheUsage(t *testing.T) {
+	hits := 70
+	usage := normalizeDeepSeekUsage(100, 9, &hits, nil)
+	if usage.InputTokens != 100 || usage.CacheReadTokens != 0 || usage.CacheMeasuredPromptTokens != 0 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
 func TestOpenAINormalizesMeasuredCacheUsage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

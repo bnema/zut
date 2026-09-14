@@ -8,6 +8,28 @@ type openAIInputTokensDetails struct {
 	CacheWriteTokens int `json:"cache_write_tokens"`
 }
 
+// normalizeDeepSeekUsage converts DeepSeek's explicit hit/miss counts into
+// disjoint usage buckets. Cache accounting is accepted only when both fields
+// are present and add up to the reported prompt total.
+func normalizeDeepSeekUsage(inputTokens, outputTokens int, cacheHits, cacheMisses *int) Usage {
+	usage := Usage{InputTokens: inputTokens, OutputTokens: outputTokens}
+	if inputTokens < 0 || outputTokens < 0 || cacheHits == nil || cacheMisses == nil || *cacheHits < 0 || *cacheMisses < 0 || *cacheHits+*cacheMisses != inputTokens {
+		if usage.InputTokens < 0 {
+			usage.InputTokens = 0
+		}
+		if usage.OutputTokens < 0 {
+			usage.OutputTokens = 0
+		}
+		return usage
+	}
+
+	usage.InputTokens = *cacheMisses
+	usage.CacheReadTokens = *cacheHits
+	usage.CacheMeasuredPromptTokens = inputTokens
+	usage.CacheMeasuredReadTokens = *cacheHits
+	return usage
+}
+
 // normalizeOpenAIUsage converts OpenAI's total input count and optional cache
 // detail into disjoint usage buckets. Malformed detail must not create a
 // negative ordinary-input count or an unsupported cache metric, so it falls
