@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,30 +21,31 @@ import (
 )
 
 const (
-	worktreesIgnoreEntry           = "/.worktrees/"
-	worktreesUnanchoredIgnoreEntry = ".worktrees/"
-	defaultWorktreeRoot            = ".worktrees"
-	worktreeConfigKey              = "zut.worktrees.path"
-	maxCreateWorktreeGitOutput     = 64 * 1024
-	maxCreateWorktreeIgnoreBytes   = 1 << 20
+	worktreeConfigKey          = "zut.worktrees.path"
+	maxCreateWorktreeGitOutput = 64 * 1024
+	// worktreeRepoIDHashLength keeps the hash short enough to read but wide
+	// enough that distinct repositories do not collide in practice.
+	worktreeRepoIDHashLength = 12
+	worktreeRepoSlugMaxLen   = 40
 )
 
 var createWorktreeOperationMu sync.Mutex
 
-// CreateWorktreeTool creates a persistent branch checkout. A repository that
-// has neither a local worktree configuration nor an existing .worktrees
-// directory returns a bootstrap request without changing any files.
+// CreateWorktreeTool creates a persistent branch checkout. An unconfigured
+// repository checks out under a stable per-repository directory beneath
+// DefaultRoot. A local zut.worktrees.path Git configuration entry overrides
+// that root for the repository.
 type CreateWorktreeTool struct {
-	CWD     string
-	Sandbox *Sandbox
+	CWD         string
+	Sandbox     *Sandbox
+	DefaultRoot string
 
 	previewMu sync.Mutex
 	preview   *createWorktreePreview
 }
 
 type createWorktreeArgs struct {
-	Branch        string `json:"branch"`
-	BootstrapRoot string `json:"bootstrap_root,omitempty"`
+	Branch string `json:"branch"`
 }
 
 const createWorktreeSchema = `{
@@ -51,10 +54,6 @@ const createWorktreeSchema = `{
     "branch":{
       "type":"string",
       "description":"Name of the new Git branch."
-    },
-    "bootstrap_root":{
-      "type":"string",
-      "description":"Only for an unconfigured repository: use .worktrees to initialize the repository-root default, or provide an absolute external worktree root. The choice is stored in local Git config. Omit it on the first call to request user guidance instead of changing files."
     }
   },
   "required":["branch"]
@@ -62,12 +61,12 @@ const createWorktreeSchema = `{
 
 func (t *CreateWorktreeTool) Name() string { return "create_worktree" }
 func (t *CreateWorktreeTool) Description() string {
-	return "Create a persistent Git branch worktree. An unconfigured repository returns bootstrap guidance; ask the user for .worktrees or an absolute external root, then call again with bootstrap_root."
+	return "Create a persistent Git branch worktree under the repository's configured worktree root or zut's global worktrees root."
 }
 func (t *CreateWorktreeTool) Schema() json.RawMessage { return json.RawMessage(createWorktreeSchema) }
 
-// Preview reports the exact bootstrap request or checkout that Execute will
-// produce without modifying the repository.
+// Preview reports the checkout that Execute will produce without modifying the
+// repository or filesystem.
 func (t *CreateWorktreeTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
 	plan, err := t.plan(ctx, raw)
 	if err != nil {
@@ -87,20 +86,13 @@ func (t *CreateWorktreeTool) Execute(ctx context.Context, raw json.RawMessage, p
 	if err != nil {
 		return core.ToolResult{}, err
 	}
-	if plan.bootstrapRequired {
-		return plan.preview, nil
-	}
 	return executeCreateWorktreePlan(ctx, plan, progress)
 }
 
 func executeCreateWorktreePlan(ctx context.Context, plan createWorktreePlan, progress func(string)) (core.ToolResult, error) {
-	configSaved := false
-	var createdWorktreeParents []string
-	if plan.setConfig {
-		if _, err := createWorktreeGitOutput(ctx, plan.repoRoot, "config", "--local", "--replace-all", worktreeConfigKey, plan.configValue); err != nil {
-			return core.ToolResult{}, fmt.Errorf("create_worktree: save worktree root: %w", err)
-		}
-		configSaved = true
+	createdWorktreeParents, err := missingWorktreeParents(plan.worktreePath)
+	if err != nil {
+		return core.ToolResult{}, fmt.Errorf("create_worktree: inspect worktree directories: %w", err)
 	}
 	rollback := func(cause error) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -111,24 +103,9 @@ func executeCreateWorktreePlan(ctx context.Context, plan createWorktreePlan, pro
 		if err := removeCreatedWorktreeParents(createdWorktreeParents); err != nil {
 			cause = fmt.Errorf("%w; remove created worktree directories: %v", cause, err)
 		}
-		if err := plan.ignore.restore(); err != nil {
-			cause = fmt.Errorf("%w; restore .gitignore: %v", cause, err)
-		}
-		if configSaved {
-			if err := plan.removeBootstrapConfig(cleanupCtx); err != nil {
-				cause = fmt.Errorf("%w; remove local worktree configuration: %v", cause, err)
-			}
-		}
 		return cause
 	}
-	if err := plan.ignore.apply(); err != nil {
-		return core.ToolResult{}, rollback(fmt.Errorf("create_worktree: update .gitignore: %w", err))
-	}
 
-	createdWorktreeParents, err := missingWorktreeParents(plan.worktreePath)
-	if err != nil {
-		return core.ToolResult{}, rollback(fmt.Errorf("create_worktree: inspect worktree directories: %w", err))
-	}
 	if err := os.MkdirAll(filepath.Dir(plan.worktreePath), 0o755); err != nil {
 		return core.ToolResult{}, rollback(fmt.Errorf("create_worktree: make worktree directory: %w", err))
 	}
@@ -173,18 +150,15 @@ func (t *CreateWorktreeTool) planForExecute(ctx context.Context, raw json.RawMes
 }
 
 type createWorktreePlan struct {
-	repoRoot          string
-	branch            string
-	base              string
-	worktreeRoot      string
-	worktreePath      string
-	rootSource        string
-	configValue       string
-	setConfig         bool
-	bootstrapRequired bool
-	previewText       string
-	preview           core.ToolResult
-	ignore            worktreesIgnoreUpdate
+	repoRoot     string
+	branch       string
+	base         string
+	worktreeRoot string
+	worktreePath string
+	rootSource   string
+	repoID       string
+	previewText  string
+	preview      core.ToolResult
 }
 
 func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (createWorktreePlan, error) {
@@ -251,67 +225,28 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		return createWorktreePlan{}, err
 	}
 
+	repoID := worktreeRepoID(commonDir)
 	configuredRoot, configured, err := createWorktreeGitConfigValue(ctx, repoRoot, worktreeConfigKey)
 	if err != nil {
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: read local worktree configuration: %w", err)
 	}
-	bootstrapRoot := strings.TrimSpace(args.BootstrapRoot)
-
-	rootSource := "existing .worktrees directory"
-	configValue := ""
-	setConfig := false
-	defaultRoot := false
 	var worktreeRoot string
+	rootSource := "global default root"
 	if configured {
-		worktreeRoot, defaultRoot, err = resolveConfiguredWorktreeRoot(repoRoot, configuredRoot)
+		worktreeRoot, err = resolveConfiguredWorktreeRoot(configuredRoot)
 		if err != nil {
 			return createWorktreePlan{}, err
-		}
-		if bootstrapRoot != "" {
-			requestedRoot, requestedDefault, _, err := resolveBootstrapWorktreeRoot(repoRoot, bootstrapRoot)
-			if err != nil {
-				return createWorktreePlan{}, err
-			}
-			configuredCanonical, err := canonicalOrParent(worktreeRoot)
-			if err != nil {
-				return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve configured worktree root: %w", err)
-			}
-			requestedCanonical, err := canonicalOrParent(requestedRoot)
-			if err != nil {
-				return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve bootstrap_root: %w", err)
-			}
-			if defaultRoot != requestedDefault || configuredCanonical != requestedCanonical {
-				return createWorktreePlan{}, errors.New("create_worktree: worktree root is already configured; change the local Git configuration explicitly before bootstrapping again")
-			}
 		}
 		rootSource = "local Git config"
 	} else {
-		defaultPath := filepath.Join(repoRoot, defaultWorktreeRoot)
-		exists, err := inspectWorktreeRoot(defaultPath)
+		defaultRoot, err := t.defaultRoot()
 		if err != nil {
 			return createWorktreePlan{}, err
 		}
-		if !exists && bootstrapRoot == "" {
-			return bootstrapRequiredPlan(branch, repoRoot), nil
-		}
-		if exists {
-			if bootstrapRoot != "" && bootstrapRoot != defaultWorktreeRoot {
-				return createWorktreePlan{}, errors.New("create_worktree: worktree root is already established; omit bootstrap_root")
-			}
-			worktreeRoot = defaultPath
-			defaultRoot = true
-		} else {
-			worktreeRoot, defaultRoot, configValue, err = resolveBootstrapWorktreeRoot(repoRoot, bootstrapRoot)
-			if err != nil {
-				return createWorktreePlan{}, err
-			}
-			setConfig = true
-			rootSource = "bootstrap selection"
-		}
+		worktreeRoot = filepath.Join(defaultRoot, repoID)
 	}
 
-	worktreeRoot, err = validateWorktreeRoot(worktreeRoot, defaultRoot)
-	if err != nil {
+	if err := validateWorktreeRoot(worktreeRoot); err != nil {
 		return createWorktreePlan{}, err
 	}
 	worktreePath := filepath.Join(worktreeRoot, filepath.FromSlash(branch))
@@ -319,24 +254,18 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 	if err != nil {
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve worktree root: %w", err)
 	}
-	if !defaultRoot && isUnder(repoRoot, rootCanonical) {
-		return createWorktreePlan{}, errors.New("create_worktree: external worktree root must be outside the repository")
+	if isUnder(repoRoot, rootCanonical) {
+		return createWorktreePlan{}, errors.New("create_worktree: worktree root must be outside the repository")
 	}
 	pathCanonical, err := canonicalOrParent(worktreePath)
 	if err != nil {
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve worktree path: %w", err)
 	}
 	if !isUnder(rootCanonical, pathCanonical) {
-		return createWorktreePlan{}, errors.New("create_worktree: branch path escapes configured worktree root")
+		return createWorktreePlan{}, errors.New("create_worktree: branch path escapes the worktree root")
 	}
 
-	ignorePath := ""
-	accessPaths := []string{repoRoot, commonDir, worktreeRoot, worktreePath}
-	if defaultRoot {
-		ignorePath = filepath.Join(repoRoot, ".gitignore")
-		accessPaths = append(accessPaths, ignorePath)
-	}
-	if err := t.checkReadWriteAccess(accessPaths...); err != nil {
+	if err := t.checkReadWriteAccess(repoRoot, commonDir, worktreeRoot, worktreePath); err != nil {
 		return createWorktreePlan{}, err
 	}
 	if _, err := os.Lstat(worktreePath); err == nil {
@@ -352,29 +281,9 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: branch %q already exists", branch)
 	}
 
-	ignore := worktreesIgnoreUpdate{}
-	ignoreAction := "not modified (external worktree root)"
-	if defaultRoot {
-		ignore, err = newWorktreesIgnoreUpdate(ignorePath)
-		if err != nil {
-			return createWorktreePlan{}, fmt.Errorf("create_worktree: read .gitignore: %w", err)
-		}
-		ignoreAction = "already ignores " + defaultWorktreeRoot + "/"
-		if ignore.changed {
-			ignoreAction = "add " + worktreesIgnoreEntry
-		}
-	}
-
-	displayRoot := worktreeRoot
-	if defaultRoot {
-		displayRoot = defaultWorktreeRoot
-	}
-	displayPath := displayWorktreePath(repoRoot, worktreePath, defaultRoot)
-	configAction := ""
-	if setConfig {
-		configAction = fmt.Sprintf("local config: set %s=%s\n", worktreeConfigKey, configValue)
-	}
-	previewText := fmt.Sprintf("create worktree\nbranch: %s\nbase: %s\nworktree root: %s\nroot source: %s\npath: %s\n%s.gitignore: %s\n", branch, base, filepath.ToSlash(displayRoot), rootSource, displayPath, configAction, ignoreAction)
+	displayRoot := filepath.ToSlash(worktreeRoot)
+	displayPath := filepath.ToSlash(worktreePath)
+	previewText := fmt.Sprintf("create worktree\nbranch: %s\nbase: %s\nworktree root: %s\nroot source: %s\npath: %s\n", branch, base, displayRoot, rootSource, displayPath)
 	return createWorktreePlan{
 		repoRoot:     repoRoot,
 		branch:       branch,
@@ -382,40 +291,72 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		worktreeRoot: worktreeRoot,
 		worktreePath: worktreePath,
 		rootSource:   rootSource,
-		configValue:  configValue,
-		setConfig:    setConfig,
+		repoID:       repoID,
 		previewText:  previewText,
 		preview: core.ToolResult{
 			Content: []provider.Content{provider.TextBlock{Text: previewText}},
 			Details: map[string]any{
-				"state":           "ready",
-				"branch":          branch,
-				"base":            base,
-				"worktree_root":   displayRoot,
-				"root_source":     rootSource,
-				"path":            displayPath,
-				"bootstrap_saved": setConfig,
+				"state":         "ready",
+				"branch":        branch,
+				"base":          base,
+				"worktree_root": displayRoot,
+				"root_source":   rootSource,
+				"repo_id":       repoID,
+				"path":          displayPath,
 			},
 		},
-		ignore: ignore,
 	}, nil
 }
 
-func bootstrapRequiredPlan(branch, repoRoot string) createWorktreePlan {
-	text := fmt.Sprintf("Worktree bootstrap is required.\nbranch: %s\nrepository: %s\nChoose a location with the user, then call create_worktree again with bootstrap_root set to .worktrees for the repository default or to an absolute external directory. This call made no changes.\n", branch, filepath.ToSlash(repoRoot))
-	return createWorktreePlan{
-		branch:            branch,
-		bootstrapRequired: true,
-		previewText:       text,
-		preview: core.ToolResult{
-			Content: []provider.Content{provider.TextBlock{Text: text}},
-			Details: map[string]any{
-				"state":                  "bootstrap_required",
-				"branch":                 branch,
-				"default_bootstrap_root": defaultWorktreeRoot,
-			},
-		},
+func (t *CreateWorktreeTool) defaultRoot() (string, error) {
+	root := strings.TrimSpace(t.DefaultRoot)
+	if root == "" {
+		return "", errors.New("create_worktree: default worktree root is not configured")
 	}
+	return canonicalOrParent(root)
+}
+
+// worktreeRepoID derives a stable, collision-resistant directory name for the
+// repository that owns commonDir. The name pairs a readable slug with a hash of
+// the canonical common directory so repositories sharing a base name still get
+// distinct roots while one repository keeps the same directory across sessions.
+func worktreeRepoID(commonDir string) string {
+	sum := sha256.Sum256([]byte(filepath.ToSlash(commonDir)))
+	return worktreeRepoSlug(commonDir) + "-" + hex.EncodeToString(sum[:])[:worktreeRepoIDHashLength]
+}
+
+func worktreeRepoSlug(commonDir string) string {
+	base := filepath.Base(commonDir)
+	if trimmed := strings.TrimSuffix(base, ".git"); trimmed != "" {
+		base = trimmed
+	} else {
+		base = filepath.Base(filepath.Dir(commonDir))
+	}
+	var builder strings.Builder
+	dashed := false
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			builder.WriteRune(r)
+			dashed = false
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r + ('a' - 'A'))
+			dashed = false
+		default:
+			if !dashed {
+				builder.WriteByte('-')
+				dashed = true
+			}
+		}
+	}
+	slug := strings.Trim(builder.String(), "-._")
+	if len(slug) > worktreeRepoSlugMaxLen {
+		slug = strings.Trim(slug[:worktreeRepoSlugMaxLen], "-._")
+	}
+	if slug == "" {
+		slug = "repo"
+	}
+	return slug
 }
 
 func (t *CreateWorktreeTool) accessibleCWD() (string, error) {
@@ -476,95 +417,42 @@ func (t *CreateWorktreeTool) checkReadWriteAccess(paths ...string) error {
 	return nil
 }
 
-func resolveConfiguredWorktreeRoot(repoRoot, value string) (string, bool, error) {
+func resolveConfiguredWorktreeRoot(value string) (string, error) {
 	value = strings.TrimSpace(value)
-	if value == defaultWorktreeRoot {
-		return filepath.Join(repoRoot, defaultWorktreeRoot), true, nil
+	if value == "" {
+		return "", errors.New("create_worktree: local worktree configuration is empty")
 	}
 	if !filepath.IsAbs(value) {
-		return "", false, errors.New("create_worktree: local worktree configuration must be .worktrees or an absolute external path")
+		return "", errors.New("create_worktree: local worktree configuration must be an absolute path; remove a legacy relative value with `git config --local --unset zut.worktrees.path`")
 	}
-	return value, false, nil
+	return filepath.Clean(value), nil
 }
 
-func resolveBootstrapWorktreeRoot(repoRoot, value string) (string, bool, string, error) {
-	if value == defaultWorktreeRoot {
-		return filepath.Join(repoRoot, defaultWorktreeRoot), true, defaultWorktreeRoot, nil
-	}
-	if !filepath.IsAbs(value) {
-		return "", false, "", errors.New("create_worktree: bootstrap_root must be .worktrees or an absolute external path")
-	}
-	root, err := canonicalOrParent(value)
-	if err != nil {
-		return "", false, "", fmt.Errorf("create_worktree: resolve bootstrap_root: %w", err)
-	}
-	if isUnder(repoRoot, root) {
-		return "", false, "", errors.New("create_worktree: external bootstrap_root must be outside the repository")
-	}
-	return root, false, root, nil
-}
-
-func validateWorktreeRoot(path string, defaultRoot bool) (string, error) {
+func validateWorktreeRoot(path string) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return path, nil
+		return nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("create_worktree: inspect worktree root: %w", err)
+		return fmt.Errorf("create_worktree: inspect worktree root: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("create_worktree: worktree root must not be a symbolic link")
+		return errors.New("create_worktree: worktree root must not be a symbolic link")
 	}
 	if !info.IsDir() {
-		return "", errors.New("create_worktree: worktree root exists but is not a directory")
+		return errors.New("create_worktree: worktree root exists but is not a directory")
 	}
-	if defaultRoot && filepath.Base(path) != defaultWorktreeRoot {
-		return "", errors.New("create_worktree: invalid default worktree root")
-	}
-	return path, nil
-}
-
-func inspectWorktreeRoot(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("create_worktree: inspect .worktrees: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false, errors.New("create_worktree: .worktrees must not be a symbolic link")
-	}
-	if !info.IsDir() {
-		return false, errors.New("create_worktree: .worktrees exists but is not a directory")
-	}
-	return true, nil
-}
-
-func displayWorktreePath(repoRoot, path string, defaultRoot bool) string {
-	if defaultRoot {
-		relative, err := filepath.Rel(repoRoot, path)
-		if err == nil {
-			return filepath.ToSlash(relative)
-		}
-	}
-	return filepath.ToSlash(path)
+	return nil
 }
 
 func sameCreateWorktreePlan(a, b createWorktreePlan) bool {
-	return a.bootstrapRequired == b.bootstrapRequired &&
-		a.repoRoot == b.repoRoot &&
+	return a.repoRoot == b.repoRoot &&
 		a.branch == b.branch &&
 		a.base == b.base &&
 		a.worktreeRoot == b.worktreeRoot &&
 		a.worktreePath == b.worktreePath &&
 		a.rootSource == b.rootSource &&
-		a.configValue == b.configValue &&
-		a.setConfig == b.setConfig &&
-		a.ignore.path == b.ignore.path &&
-		a.ignore.existed == b.ignore.existed &&
-		a.ignore.changed == b.ignore.changed &&
-		bytes.Equal(a.ignore.before, b.ignore.before)
+		a.repoID == b.repoID
 }
 
 func missingWorktreeParents(worktreePath string) ([]string, error) {
@@ -599,21 +487,6 @@ func removeCreatedWorktreeParents(parents []string) error {
 		}
 	}
 	return nil
-}
-
-func (p createWorktreePlan) removeBootstrapConfig(ctx context.Context) error {
-	value, configured, err := createWorktreeGitConfigValue(ctx, p.repoRoot, worktreeConfigKey)
-	if err != nil {
-		return err
-	}
-	if !configured {
-		return nil
-	}
-	if value != p.configValue {
-		return errors.New("local worktree configuration changed during creation")
-	}
-	_, err = createWorktreeGitOutput(ctx, p.repoRoot, "config", "--local", "--unset-all", worktreeConfigKey)
-	return err
 }
 
 func (p createWorktreePlan) cleanupFailedCheckout(ctx context.Context) error {
@@ -802,123 +675,4 @@ func createWorktreeGitEnv() []string {
 		"GIT_ASKPASS=",
 		"SSH_ASKPASS=",
 	)
-}
-
-type worktreesIgnoreUpdate struct {
-	path    string
-	before  []byte
-	after   []byte
-	existed bool
-	mode    os.FileMode
-	changed bool
-}
-
-func newWorktreesIgnoreUpdate(path string) (worktreesIgnoreUpdate, error) {
-	contents, mode, existed, err := readWorktreesIgnore(path)
-	if err != nil {
-		return worktreesIgnoreUpdate{}, err
-	}
-	for _, line := range strings.Split(string(contents), "\n") {
-		switch strings.TrimSuffix(line, "\r") {
-		case worktreesIgnoreEntry, worktreesUnanchoredIgnoreEntry:
-			return worktreesIgnoreUpdate{path: path, before: contents, existed: existed, mode: mode}, nil
-		}
-	}
-	lineEnding := "\n"
-	if bytes.Contains(contents, []byte("\r\n")) {
-		lineEnding = "\r\n"
-	}
-	after := append([]byte(nil), contents...)
-	if len(after) > 0 && !strings.HasSuffix(string(after), "\n") {
-		after = append(after, lineEnding...)
-	}
-	after = append(after, []byte(worktreesIgnoreEntry+lineEnding)...)
-	return worktreesIgnoreUpdate{path: path, before: contents, after: after, existed: existed, mode: mode, changed: true}, nil
-}
-
-func (u worktreesIgnoreUpdate) apply() error {
-	if !u.changed {
-		return nil
-	}
-	current, _, existed, err := readWorktreesIgnore(u.path)
-	if err != nil {
-		return err
-	}
-	if existed != u.existed || !bytes.Equal(current, u.before) {
-		return errors.New(".gitignore changed since preview; inspect it and retry")
-	}
-	return writeWorktreesIgnore(u.path, u.after, u.mode)
-}
-
-func (u worktreesIgnoreUpdate) restore() error {
-	if !u.changed {
-		return nil
-	}
-	current, _, existed, err := readWorktreesIgnore(u.path)
-	if err != nil {
-		return err
-	}
-	if !existed || !bytes.Equal(current, u.after) {
-		return nil
-	}
-	if !u.existed {
-		if err := os.Remove(u.path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	return writeWorktreesIgnore(u.path, u.before, u.mode)
-}
-
-func readWorktreesIgnore(path string) ([]byte, os.FileMode, bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return nil, 0o644, false, nil
-	}
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, 0, false, errors.New(".gitignore must not be a symbolic link")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, false, errors.New(".gitignore must be a regular file")
-	}
-	if info.Size() > maxCreateWorktreeIgnoreBytes {
-		return nil, 0, false, fmt.Errorf(".gitignore exceeds %d bytes", maxCreateWorktreeIgnoreBytes)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	defer file.Close()
-	contents, err := io.ReadAll(io.LimitReader(file, maxCreateWorktreeIgnoreBytes+1))
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if len(contents) > maxCreateWorktreeIgnoreBytes {
-		return nil, 0, false, fmt.Errorf(".gitignore exceeds %d bytes", maxCreateWorktreeIgnoreBytes)
-	}
-	return contents, info.Mode().Perm(), true, nil
-}
-
-func writeWorktreesIgnore(path string, contents []byte, mode os.FileMode) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".zut-gitignore-*")
-	if err != nil {
-		return err
-	}
-	tempPath := file.Name()
-	defer os.Remove(tempPath)
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
 }

@@ -6,7 +6,7 @@
 //
 // The double underscore separates the server name from the tool name,
 // avoiding collisions with zut's built-in tools (read, write, edit, bash,
-// create_worktree, grep, lsp, web_search, skill). The web_search and grep
+// worktree, grep, lsp, web_search, skill). The web_search and grep
 // names are reserved even when those built-ins are disabled.
 package main
 

@@ -101,6 +101,10 @@ type Agent struct {
 	// collection into one lifecycle round trip.
 	BeforeTurnContext func(ctx context.Context, step int) (allowed bool, reason, context string)
 
+	// HostContext returns bounded host-owned context for the current turn. It is
+	// composed with extension context instead of replacing extension hooks.
+	HostContext func(ctx context.Context) string
+
 	// CommitToolResult, if set, commits extension/tool metadata immediately
 	// after each tool call completes. Returning an error converts the result to
 	// an error before it is appended to the transcript or sent to the provider.
@@ -666,7 +670,11 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 			}
 		}
 
-		a.appendDynamicContext(turnContext)
+		hostContext := ""
+		if a.HostContext != nil {
+			hostContext = a.HostContext(ctx)
+		}
+		a.appendDynamicContext(hostContext, turnContext)
 
 		var (
 			stop         provider.StopReason

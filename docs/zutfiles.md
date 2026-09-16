@@ -303,7 +303,7 @@ In `--print` / `--stream` / `--json` modes, `pre` still runs first: shell escape
 
 ## Filesystem permissions
 
-Filesystem permissions are enforced by the built-in `read`, `write`, `edit`, `grep`, and `create_worktree` tools. Empty or omitted scopes deny the operation.
+Filesystem permissions are enforced by the built-in `read`, `write`, `edit`, `grep`, and `worktree` tools. Empty or omitted scopes deny the operation.
 
 Two variables are available in filesystem scopes:
 
@@ -373,23 +373,25 @@ Data-only agent:
 
 Filesystem checks canonicalize existing paths, or the nearest existing parent for a new path, so symlinks cannot be used to escape a declared scope.
 
-`create_worktree` bootstraps a repository without an existing worktree root in two calls. Its first branch-only call returns no-write guidance for the agent to ask the user whether to use `.worktrees` or an external directory. The reply is sent as `bootstrap_root`: `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the repository root's `.gitignore`; an absolute external path creates `<external-root>/<branch>` without changing repository files. The selected root is stored privately as `zut.worktrees.path` in local Git config, so later calls only need `branch`.
+The `worktree` tool's `create` action resolves its destination without prompting. A local `zut.worktrees.path` Git configuration entry (an absolute path) overrides the default for that repository. Repositories configured by an older zut release with the relative value `.worktrees` must remove it with `git config --local --unset zut.worktrees.path` before using the new default. Otherwise the tool checks out under `<default-root>/<repo-id>`, where the default root is `$ZUT_HOME/worktrees` and `<repo-id>` combines a readable repository slug with a hash of the canonical Git common directory. The same repository therefore keeps a stable directory across sessions, while repositories that share a name stay separate. The tool changes no repository files, never copies uncommitted or ignored files, and refuses an existing branch or worktree path.
 
-The tool needs read and write scopes covering the repository root, Git metadata, and the selected worktree root. It also requires Bash permission for `git`, even though it invokes Git directly without a shell:
+The tool needs read and write scopes covering the repository root, Git metadata, and the resolved worktree destination. Because the default destination lives outside the workspace, an unconfigured repository also needs a scope covering `$ZUT_HOME/worktrees`; set `zut.worktrees.path` to a directory inside a declared scope for a fully contained layout. It also requires Bash permission for `git`, even though it invokes Git directly without a shell:
 
 ```json
 {
   "permissions": {
     "fs": {
-      "read": ["${workspace}"],
-      "write": ["${workspace}"]
+      "read": ["${workspace}", "/home/you/.local/state/zut/worktrees"],
+      "write": ["${workspace}", "/home/you/.local/state/zut/worktrees"]
     },
     "bash": { "mode": "allowlist", "allow": ["git"] }
   }
 }
 ```
 
-The tool disables Git hooks, but a repository checkout can still use configured Git filters. Treat `git` permission for `create_worktree` as permission to run repository-controlled checkout behavior; jail mode remains an accident-prevention guardrail, not a security sandbox.
+Replace the worktrees path with the resolved `$ZUT_HOME/worktrees` directory for the host, or configure `zut.worktrees.path` per repository instead.
+
+The tool disables Git hooks, but a repository checkout can still use configured Git filters. Treat `git` permission for `worktree` creation as permission to run repository-controlled checkout behavior; jail mode remains an accident-prevention guardrail, not a security sandbox.
 
 If the working directory changes during a run, `${workspace}` permissions are expanded again for the new directory.
 

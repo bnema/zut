@@ -2,10 +2,35 @@ package core
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestDynamicContextComposesHostAndExtensionContext(t *testing.T) {
+	agent := NewAgent(&compactLifecycleClient{}, "test-model", "system", Registry{})
+	agent.HostContext = func(context.Context) string { return "host inventory" }
+	agent.BeforeTurnContext = func(context.Context, int) (bool, string, string) {
+		return true, "", "extension data"
+	}
+	if err := agent.Prompt(context.Background(), "user message", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	messages := agent.Messages()
+	if len(messages) < 2 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	text, ok := messages[0].Content[0].(provider.TextBlock)
+	if !ok {
+		t.Fatalf("context content = %T", messages[0].Content[0])
+	}
+	for _, want := range []string{"host inventory", "[Extension context]", "extension data"} {
+		if !strings.Contains(text.Text, want) {
+			t.Fatalf("dynamic context missing %q: %q", want, text.Text)
+		}
+	}
+}
 
 func TestFirstDynamicContextPersistsAsTranscriptReplacement(t *testing.T) {
 	client := &compactLifecycleClient{}

@@ -421,7 +421,7 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // into the agent's registry once the extension's ready frame fires.
 //
 // Conflicts with active built-in tool names (read, write, edit, bash,
-// python, create_worktree, grep, glob, ast, lsp, web_search, web_open,
+// python, worktree, grep, glob, ast, lsp, web_search, web_open,
 // web_find, web_click, schedule, update_goal, update_plan, and skill) are
 // silently shadowed by the built-in. Every native public-web name, plus
 // grep, glob, ast, python, schedule,
