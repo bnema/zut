@@ -116,6 +116,10 @@ func (i *Interactive) registerCoordinatorWorker(workerID string) {
 	coordinator := i.ensureCoordinatorLocked()
 	implicitWave := i.completionDeliveryHolds == 0
 	if implicitWave {
+		// A one-worker sealed wave replaces whatever wave an older release may
+		// still be holding a sampled snapshot for. Bump the generation so that
+		// release cannot seal this newer wave when it relocks.
+		i.completionDeliveryGeneration++
 		coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerStarted})
 	}
 	i.coordinatorWorkerSeq++
@@ -144,6 +148,11 @@ func (i *Interactive) cancelCoordinator() {
 	if i.completionTracker != nil {
 		i.completionTracker.Reset()
 	}
+	// Cancellation also invalidates any snapshot a release sampled before it.
+	// Bump the wave generation rather than zeroing the hold count: outstanding
+	// release closures must still balance that count, and the generation is
+	// what stops a stale snapshot from sealing the replacement coordinator.
+	i.completionDeliveryGeneration++
 	i.turnCoordinator = orchestration.New()
 	i.coordinatorWorkerIDs = nil
 	i.completionDeliveryMu.Unlock()
@@ -221,6 +230,12 @@ func (i *Interactive) beginCompletionDeliveryHold() func() {
 		return func() {}
 	}
 	i.completionDeliveryMu.Lock()
+	if i.completionDeliveryHolds == 0 {
+		// A wave starts only from zero holds. Bumping the generation here lets a
+		// release that drained an older wave detect that a newer wave replaced
+		// it while it sampled goal state.
+		i.completionDeliveryGeneration++
+	}
 	i.ensureCoordinatorLocked().Apply(orchestration.Event{Kind: orchestration.EventManagerStarted})
 	i.completionDeliveryHolds++
 	i.completionDeliveryMu.Unlock()
@@ -230,21 +245,58 @@ func (i *Interactive) releaseCompletionDeliveryHold() {
 	if i == nil {
 		return
 	}
+	i.completionDeliveryMu.Lock()
+	sealing := false
+	var sealingGeneration uint64
+	if i.completionDeliveryHolds > 0 {
+		i.completionDeliveryHolds--
+		if i.completionDeliveryHolds == 0 {
+			sealing = true
+			sealingGeneration = i.completionDeliveryGeneration
+		}
+	}
+	if !sealing {
+		// A nested or duplicate release only returns a hold; it must not sample
+		// goal state or seal a wave it does not own. Starting pending delivery
+		// stays available because that is the existing behaviour whenever the
+		// wave is already idle.
+		start := i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning
+		if start {
+			i.completionDeliveryRunning = true
+		}
+		i.completionDeliveryMu.Unlock()
+		if start {
+			go i.deliverCompletionUpdates()
+		}
+		return
+	}
+	i.completionDeliveryMu.Unlock()
+
+	// Only the release that drained the last hold seals the wave, so this
+	// snapshot belongs to exactly that wave. Read the goal and interruption
+	// state before taking completionDeliveryMu: both helpers acquire i.mu, and
+	// callers legitimately hold i.mu while they read coordinator state, so
+	// acquiring i.mu while holding completionDeliveryMu would invert the lock
+	// order and deadlock.
+	//
+	// The coordinator must observe the goal before sealing the wave, so a
+	// pending worker wins the wake decision instead of a direct continuation.
+	// An Esc-armed reassessment prompt suppresses the wake: the next ordinary
+	// user message owns the turn, not autonomous work.
+	_, goalActive := i.goalContinuationMessage()
+	if i.interruptedPromptPending() {
+		goalActive = false
+	}
+
 	start := false
 	var actions []orchestration.Action
 	i.completionDeliveryMu.Lock()
-	if i.completionDeliveryHolds > 0 {
-		i.completionDeliveryHolds--
-	}
-	if i.completionDeliveryHolds == 0 {
-		// The coordinator must observe the goal before sealing the wave, so a
-		// pending worker wins the wake decision instead of a direct continuation.
-		// An Esc-armed reassessment prompt suppresses the wake: the next
-		// ordinary user message owns the turn, not autonomous work.
-		_, goalActive := i.goalContinuationMessage()
-		if i.interruptedPromptPending() {
-			goalActive = false
-		}
+	// A newer wave may have replaced this one while goal state was sampled, so
+	// the hold count alone is not enough: a newer hold can begin and fully
+	// drain, leaving the count at zero, and sealing then would re-apply this
+	// stale snapshot over the wave that already sealed. The captured generation
+	// identifies exactly the wave this release drained.
+	if i.completionDeliveryHolds == 0 && i.completionDeliveryGeneration == sealingGeneration {
 		coordinator := i.ensureCoordinatorLocked()
 		coordinator.Apply(orchestration.Event{Kind: orchestration.EventGoalChanged, GoalActive: goalActive})
 		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
