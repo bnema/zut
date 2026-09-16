@@ -57,8 +57,8 @@ func killBashProcessGroup(cmd *exec.Cmd) error {
 }
 
 // killProcessGroup sends SIGTERM then SIGKILL to the entire process group.
-// It is also used by the create_worktree helper, which keeps its existing
-// graceful cancellation behavior.
+// It is also used by the worktree Git helper, which keeps graceful
+// cancellation behavior.
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return

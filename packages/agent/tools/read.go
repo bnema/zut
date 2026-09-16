@@ -1,5 +1,5 @@
 // Package tools implements zut's built-in tools: read, write, edit, bash,
-// create_worktree, grep, lsp, web search, and autonomous goal updates.
+// worktree management, grep, lsp, web search, and autonomous goal updates.
 package tools
 
 import (

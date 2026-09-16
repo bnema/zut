@@ -1312,8 +1312,13 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.PythonTool:
 			v.Sandbox = s
-		case *tools.CreateWorktreeTool:
-			v.Sandbox = s
+		case *tools.WorktreeTool:
+			if v.Create != nil {
+				v.Create.Sandbox = s
+			}
+			if v.Manage != nil {
+				v.Manage.Sandbox = s
+			}
 		case *tools.LSPTool:
 			v.Sandbox = s
 		case *tools.GrepTool:
@@ -1336,6 +1341,12 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
 	a.FastMode = r.FastMode
+	if _, ok := r.ToolRegistry["worktree"].(*tools.WorktreeTool); ok {
+		cwd := r.CWD
+		a.HostContext = func(ctx context.Context) string {
+			return tools.WorktreeInventoryContext(ctx, cwd)
+		}
+	}
 	return a
 }
 
@@ -1352,16 +1363,19 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		manager = lsp.NewManagerWithOptions(options)
 	}
 	all := map[string]core.Tool{
-		"read":            &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
-		"write":           &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
-		"edit":            &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
-		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
-		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
-		"grep":            &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
-		"glob":            &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
-		"ast":             &tools.ASTTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
-		"update_goal":     &tools.UpdateGoalTool{},
-		"update_plan":     &tools.UpdatePlanTool{},
+		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
+		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
+		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
+		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"worktree": &tools.WorktreeTool{
+			Create: &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox, DefaultRoot: filepath.Join(ZutHome(), "worktrees")},
+			Manage: &tools.ManageWorktreesTool{CWD: cwd, Sandbox: sandbox},
+		},
+		"grep":        &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
+		"glob":        &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
+		"ast":         &tools.ASTTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
+		"update_goal": &tools.UpdateGoalTool{},
+		"update_plan": &tools.UpdatePlanTool{},
 	}
 	if webSearchAllowedForRegistry(args) {
 		for name, tool := range tools.NewWebTools() {
@@ -1508,7 +1522,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "glob", "ast", "bash", "python", "create_worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "grep", "glob", "ast", "bash", "python", "worktree", "lsp", "web_search", "web_open", "web_find", "web_click", "update_goal", "update_plan"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

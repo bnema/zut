@@ -13,10 +13,13 @@ const internalContextMarker = "internal_context"
 // only when its canonical value changes. It is deliberately separate from the
 // stable top-level instructions so changing time or extension state cannot
 // rewrite the instruction cache prefix.
-func (a *Agent) appendDynamicContext(turnContext string) {
-	parts := make([]string, 0, 2)
+func (a *Agent) appendDynamicContext(hostContext, turnContext string) {
+	parts := make([]string, 0, 3)
 	if timeContext := a.providerTimeContext().developerText(); timeContext != "" {
 		parts = append(parts, timeContext)
+	}
+	if hostContext = boundedTurnContext(hostContext); hostContext != "" {
+		parts = append(parts, hostContext)
 	}
 	if turnContext = boundedTurnContext(turnContext); turnContext != "" {
 		parts = append(parts, "[Extension context]\n"+turnContext)
