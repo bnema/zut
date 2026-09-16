@@ -91,7 +91,11 @@ func TestWorktreeInventoryContextReportsRepositoryWorktrees(t *testing.T) {
 	gitTestOutput(t, repo, "worktree", "add", path, "merged")
 
 	contextText := WorktreeInventoryContext(context.Background(), repo)
-	for _, want := range []string{"[Repository worktrees]", filepath.ToSlash(path), "worktree action=list"} {
+	wantPath, err := canonicalOrParent(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[Repository worktrees]", filepath.ToSlash(wantPath), "worktree action=list"} {
 		if !strings.Contains(contextText, want) {
 			t.Fatalf("context missing %q:\n%s", want, contextText)
 		}

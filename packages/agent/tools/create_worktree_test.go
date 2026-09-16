@@ -50,8 +50,12 @@ func TestCreateWorktreeUsesGlobalDefaultRoot(t *testing.T) {
 	if id, _ := details["repo_id"].(string); id != repoID {
 		t.Fatalf("repo_id = %q, want %q", id, repoID)
 	}
-	if got, _ := details["worktree_root"].(string); got != filepath.ToSlash(filepath.Join(defaultRoot, repoID)) {
-		t.Fatalf("worktree_root = %q", got)
+	wantRoot, err := filepath.EvalSymlinks(filepath.Join(defaultRoot, repoID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := details["worktree_root"].(string); got != filepath.ToSlash(wantRoot) {
+		t.Fatalf("worktree_root = %q, want %q", got, filepath.ToSlash(wantRoot))
 	}
 	if got := gitTestOutputAllowExit(t, repo, "config", "--local", "--get", worktreeConfigKey); got.exitCode != 1 {
 		t.Fatalf("default root saved local config: %#v", got)
