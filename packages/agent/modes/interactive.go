@@ -871,6 +871,12 @@ type Interactive struct {
 	completionDeliveryRunning bool
 	completionDeliveryRequest bool
 	completionDeliveryHolds   int
+	// completionDeliveryGeneration identifies the current hold wave. It is
+	// bumped whenever a new wave starts (a first hold, an implicit one-worker
+	// wave, or a coordinator replacement after cancellation), so a release can
+	// tell whether a newer wave replaced the one it drained while it sampled
+	// goal state.
+	completionDeliveryGeneration uint64
 
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
