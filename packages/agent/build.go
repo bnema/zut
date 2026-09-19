@@ -1476,7 +1476,7 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 }
 
 func autoSubagentsToolAllowed(args Args) bool {
-	return autoSubagentsToolAllowedFor(args, "subagent_spawn")
+	return subagentActionAllowed(args, tools.SubagentActionSpawn)
 }
 
 // orchestratorExplorationToolsAllowed keeps the primary orchestrator's
@@ -1486,15 +1486,15 @@ func orchestratorExplorationToolsAllowed(args Args) bool {
 }
 
 func autoSubagentsStatusToolAllowed(args Args) bool {
-	return autoSubagentsToolAllowedFor(args, "subagent_status")
+	return subagentActionAllowed(args, tools.SubagentActionStatus)
 }
 
 func autoSubagentsStopToolAllowed(args Args) bool {
-	return autoSubagentsToolAllowedFor(args, "subagent_stop")
+	return subagentActionAllowed(args, tools.SubagentActionStop)
 }
 
 func autoSubagentsResumeToolAllowed(args Args) bool {
-	return autoSubagentsToolAllowedFor(args, "subagent_resume")
+	return subagentActionAllowed(args, tools.SubagentActionResume)
 }
 
 func autoSubagentsAnyToolAllowed(args Args) bool {
@@ -1504,7 +1504,11 @@ func autoSubagentsAnyToolAllowed(args Args) bool {
 		autoSubagentsResumeToolAllowed(args)
 }
 
-func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
+// subagentActionAllowed reports whether the launch-time tool policy grants one
+// subagent action. A bare "subagent" entry grants every action; a
+// "subagent:<action>" entry grants that action alone. Unrecognized entries are
+// ignored, matching how every other --tools name is treated.
+func subagentActionAllowed(args Args, action string) bool {
 	if args.NoTools || args.PermissionSet != nil {
 		return false
 	}
@@ -1515,7 +1519,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 		return true
 	}
 	for _, name := range args.Tools {
-		if name == toolName {
+		if name == tools.SubagentToolName || name == tools.SubagentToolName+":"+action {
 			return true
 		}
 	}

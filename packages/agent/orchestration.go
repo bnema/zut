@@ -29,7 +29,7 @@ func validateOrchestrationArgs(args Args) error {
 		return fmt.Errorf("--orchestrate cannot be combined with --stats")
 	}
 	if !autoSubagentsToolAllowed(args) {
-		return fmt.Errorf("--orchestrate requires the subagent_spawn tool")
+		return fmt.Errorf("--orchestrate requires the subagent spawn action")
 	}
 	return nil
 }

@@ -439,6 +439,18 @@ func (m *ResidentManager) dispatch() {
 // resident child. A disk-only child is rebuilt only for this explicit new
 // prompt; reconciliation itself never constructs or replays one.
 func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) error {
+	return m.ResumeWithTurn(ctx, childID, prompt, uuid.NewString())
+}
+
+// ResumeWithTurn is Resume with a caller-owned turn ID. The ID names the
+// accepted follow-up turn in its completion, so a caller that must observe the
+// outcome can subscribe with WatchCompletion before the turn can finish. The
+// ID must be unique per child: replay rejects a duplicate turn.accepted record,
+// so reusing one makes the journal unreplayable.
+func (m *ResidentManager) ResumeWithTurn(ctx context.Context, childID, prompt, turnID string) error {
+	if strings.TrimSpace(turnID) == "" {
+		turnID = uuid.NewString()
+	}
 	if m == nil {
 		return errors.New("resident manager: unavailable")
 	}
@@ -537,7 +549,6 @@ func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) er
 	if child == nil {
 		return errors.New("resident manager: child is not live")
 	}
-	turnID := uuid.NewString()
 	if child.journal == nil {
 		_, err := child.resumeAccepted(ctx, turnID, prompt)
 		return err

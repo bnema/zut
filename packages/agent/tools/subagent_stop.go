@@ -22,31 +22,25 @@ type subagentStopArgs struct {
 	AgentID string `json:"agent_id"`
 }
 
+// subagentWaitOutcome reports the result of an explicit bounded wait on one
+// resident turn. An expired wait leaves the child active.
+type subagentWaitOutcome struct {
+	Seconds  int    `json:"seconds"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+}
+
 type subagentActionResponse struct {
-	Action string              `json:"action"`
-	Agent  subagentStatusEntry `json:"agent"`
+	Action string               `json:"action"`
+	Agent  subagentStatusEntry  `json:"agent"`
+	Wait   *subagentWaitOutcome `json:"wait,omitempty"`
 }
 
-const subagentStopSchema = `{
-  "type": "object",
-  "properties": {
-    "agent_id": {
-      "type": "string",
-		"description": "Child id or unique id prefix for the stuck resident sub-agent to terminate."
-    }
-  },
-  "required": ["agent_id"]
-}`
-
-func (t *SubagentStopTool) Name() string { return SubagentStopToolName }
-
-func (t *SubagentStopTool) Description() string {
-	return "Request termination of a stuck resident sub-agent."
-}
-
-func (t *SubagentStopTool) Schema() json.RawMessage {
-	return json.RawMessage(subagentStopSchema)
-}
+// Name returns the shared facade name: this type is an internal
+// implementation and is never registered on its own.
+func (t *SubagentStopTool) Name() string { return SubagentToolName }
 
 func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	if ctx != nil {
@@ -86,7 +80,13 @@ func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ f
 }
 
 func renderResidentAction(action string, entry subagentStatusEntry) (core.ToolResult, error) {
-	response := subagentActionResponse{Action: action, Agent: entry}
+	return renderResidentActionWait(action, entry, nil)
+}
+
+// renderResidentActionWait renders an action response plus the outcome of an
+// explicit bounded wait, if the caller requested one.
+func renderResidentActionWait(action string, entry subagentStatusEntry, wait *subagentWaitOutcome) (core.ToolResult, error) {
+	response := subagentActionResponse{Action: action, Agent: entry, Wait: wait}
 	data, err := json.Marshal(response)
 	if err != nil {
 		return core.ToolResult{}, fmt.Errorf("subagent action: encode response: %w", err)

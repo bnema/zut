@@ -152,7 +152,7 @@ func TestResidentChildSpecOmitsParentOnlyTools(t *testing.T) {
 		"read":           nil,
 		"schedule":       nil,
 		"host-only-tool": nil,
-		"subagent_spawn": nil,
+		"subagent":       nil,
 		"update_goal":    nil,
 	}
 	spec, err := runtime.buildResidentChildSpec(context.Background(), tools.ResidentSpawnRequest{Task: "review"}, parent)
@@ -165,7 +165,7 @@ func TestResidentChildSpecOmitsParentOnlyTools(t *testing.T) {
 	if !slices.Contains(spec.Tools, "read") {
 		t.Fatalf("generic child lost supported tool: %v", spec.Tools)
 	}
-	for _, name := range []string{"subagent_spawn", "update_goal"} {
+	for _, name := range []string{"subagent", "update_goal"} {
 		if slices.Contains(spec.Tools, name) {
 			t.Fatalf("generic child kept forbidden tool %q: %v", name, spec.Tools)
 		}
@@ -340,5 +340,63 @@ func TestResidentChildSpecDisabledSkillsDoNotLeak(t *testing.T) {
 	}
 	if _, err := residentChildRegistry(resolved.ToolRegistry, spec.Tools); err != nil {
 		t.Fatalf("skill-disabled spec failed validation: %v", err)
+	}
+}
+
+// TestInjectToolsRegistersOneSubagentFacade pins the registry contract: the four
+// legacy tools collapse into exactly one facade entry whose non-nil fields are
+// the granted actions.
+func TestInjectToolsRegistersOneSubagentFacade(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	cwd := t.TempDir()
+	cwdArgs := func() Args {
+		return Args{CWD: cwd, NoSkill: true, NoContextFiles: true, NoLSP: true}
+	}
+	cases := []struct {
+		name                        string
+		args                        Args
+		spawn, status, stop, resume bool
+	}{
+		{name: "default grants every action", args: cwdArgs(), spawn: true, status: true, stop: true, resume: true},
+		{name: "resume suffix grants resume only", args: func() Args {
+			args := cwdArgs()
+			args.ToolsSet = true
+			args.Tools = []string{"subagent:resume"}
+			return args
+		}(), resume: true},
+	}
+	legacy := []string{"subagent_spawn", "subagent_status", "subagent_stop", "subagent_resume"}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := newSubagentRuntime(subagentRuntimeConfig{
+				Args:     tc.args,
+				Root:     t.TempDir(),
+				RepoRoot: cwd,
+				Provider: "openai", Model: "gpt-5.6-sol",
+			})
+			t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+			registry := runtime.InjectTools(core.Registry{})
+			if len(registry) != 1 {
+				t.Fatalf("injected registry has %d entries, want 1", len(registry))
+			}
+			tool, ok := registry[tools.SubagentToolName]
+			if !ok {
+				t.Fatalf("injected registry has no %q entry", tools.SubagentToolName)
+			}
+			facade, ok := tool.(*tools.SubagentTool)
+			if !ok {
+				t.Fatalf("registry entry %q = %T, want *tools.SubagentTool", tools.SubagentToolName, tool)
+			}
+			got := [4]bool{facade.Spawn != nil, facade.Status != nil, facade.Stop != nil, facade.Resume != nil}
+			want := [4]bool{tc.spawn, tc.status, tc.stop, tc.resume}
+			if got != want {
+				t.Fatalf("facade actions = %v, want %v", got, want)
+			}
+			for _, name := range legacy {
+				if _, ok := registry[name]; ok {
+					t.Fatalf("injected registry still exposes legacy tool %q", name)
+				}
+			}
+		})
 	}
 }

@@ -358,7 +358,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	allTools := make([]string, 0, len(catalogue))
 	for name := range catalogue {
 		switch name {
-		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal":
+		case tools.SubagentToolName, "update_goal":
 			continue
 		}
 		if _, ok := resolved.ToolRegistry[name]; !ok {
@@ -454,8 +454,9 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 	if reg == nil || rt == nil || rt.resident == nil || !autoSubagentsAnyToolAllowed(rt.args) {
 		return reg
 	}
+	facade := &tools.SubagentTool{}
 	if autoSubagentsToolAllowed(rt.args) {
-		spawn := &tools.SubagentSpawnTool{
+		facade.Spawn = &tools.SubagentSpawnTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
 			DefaultModel: func() string {
@@ -472,29 +473,26 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 				return rt.buildResidentChildSpec(ctx, request, reg)
 			},
 		}
-		reg[spawn.Name()] = spawn
 	}
 	if autoSubagentsStatusToolAllowed(rt.args) {
-		status := &tools.SubagentStatusTool{
+		facade.Status = &tools.SubagentStatusTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
 		}
-		reg[status.Name()] = status
 	}
 	if autoSubagentsStopToolAllowed(rt.args) {
-		stop := &tools.SubagentStopTool{
+		facade.Stop = &tools.SubagentStopTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
 		}
-		reg[stop.Name()] = stop
 	}
 	if autoSubagentsResumeToolAllowed(rt.args) {
-		resume := &tools.SubagentResumeTool{
+		facade.Resume = &tools.SubagentResumeTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
 		}
-		reg[resume.Name()] = resume
 	}
+	reg[facade.Name()] = facade
 	return reg
 }
 
