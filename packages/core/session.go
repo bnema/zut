@@ -149,6 +149,9 @@ type SessionMeta struct {
 	// GoalHistory records prior durable goal states in chronological order.
 	// It stays linear: there is only one current goal at a time.
 	GoalHistory []SessionGoal `json:"goal_history,omitempty"`
+	// Plan is the agent-owned task checklist. It is optional so older
+	// sessions remain compatible.
+	Plan *SessionPlan `json:"plan,omitempty"`
 
 	// Parent is the ID of the session this one was forked from, or
 	// empty for top-level sessions. The tree picker walks parents
@@ -463,6 +466,9 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: %w", path, err)
 	}
 	normalizeSessionGoalMeta(&snapshot.Meta)
+	// The goal normalizer returns early when Meta.Goal is nil, so plan-only
+	// sessions normalize here as a sibling call.
+	snapshot.Meta.Plan = normalizeSessionPlan(snapshot.Meta.Plan)
 	snapshot.CompactionGeneration = generation
 	snapshot.ExtensionState = extensionState
 
@@ -1313,6 +1319,42 @@ func (s *Session) UpdateGoal(goal *SessionGoal) error {
 	return nil
 }
 
+// PlanSteps returns the persisted plan's steps, or nil when no plan is stored.
+// It lets hosts seed agent plan state without nil-checking Meta.Plan at every
+// call site.
+func (m *SessionMeta) PlanSteps() []PlanStep {
+	if m == nil || m.Plan == nil {
+		return nil
+	}
+	return m.Plan.Steps
+}
+
+// UpdatePlan persists the agent-owned plan as a meta transition. It deep-copies
+// the steps into session state, stamps the update time, and rolls back the
+// in-memory plan when the write fails, mirroring UpdateGoal. A nil plan clears
+// it.
+func (s *Session) UpdatePlan(plan *SessionPlan) error {
+	if s == nil {
+		return nil
+	}
+	previous := cloneSessionPlan(s.Meta.Plan)
+	if plan == nil {
+		s.Meta.Plan = nil
+	} else {
+		copyPlan := *plan
+		copyPlan.Steps = clonePlanSteps(plan.Steps)
+		// Stamping here, rather than in every caller, keeps a persisted plan from
+		// carrying a zero timestamp.
+		copyPlan.Updated = time.Now().UTC()
+		s.Meta.Plan = &copyPlan
+	}
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.Plan = previous
+		return fmt.Errorf("update plan: %w", err)
+	}
+	return nil
+}
+
 // SupersedeGoal atomically archives the active goal as superseded and starts
 // its replacement in the same mission. Mission assignment enforces the normal
 // manager transition bound.
@@ -1420,6 +1462,46 @@ func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
 		}
 	}
 	return nil
+}
+
+// normalizeSessionPlan drops steps that carry no text or an unknown status and
+// keeps only the first in_progress step. It returns nil when nothing remains.
+// It does not cap the plan length.
+func normalizeSessionPlan(plan *SessionPlan) *SessionPlan {
+	if plan == nil {
+		return nil
+	}
+	steps := make([]PlanStep, 0, len(plan.Steps))
+	seenInProgress := false
+	for _, step := range plan.Steps {
+		if strings.TrimSpace(step.Step) == "" {
+			continue
+		}
+		// An omitted status means pending, exactly as previewPlanOperation
+		// materializes it. Dropping the step instead would make the same JSON mean
+		// two different things before and after a reload.
+		status := step.Status
+		if status == "" {
+			status = PlanPending
+		}
+		switch status {
+		case PlanPending, PlanCompleted:
+		case PlanInProgress:
+			if seenInProgress {
+				continue
+			}
+			seenInProgress = true
+		default:
+			continue
+		}
+		steps = append(steps, PlanStep{Step: step.Step, Status: status})
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	clone := *plan
+	clone.Steps = steps
+	return &clone
 }
 
 func normalizeSessionGoalMeta(meta *SessionMeta) {
@@ -1643,7 +1725,7 @@ func (s *Session) Close() error {
 	defer s.writerMu.Unlock()
 	flushErr := s.buf.Flush()
 	closeErr := s.writer.Close()
-	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Mission == nil && s.Meta.Goal == nil && len(s.Meta.GoalHistory) == 0 {
+	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 && s.Meta.Mission == nil && s.Meta.Goal == nil && len(s.Meta.GoalHistory) == 0 && s.Meta.Plan == nil {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.

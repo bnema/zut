@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -323,5 +324,30 @@ func TestBtwToolConfirmationRoutesThroughSideAgent(t *testing.T) {
 	case <-mainResp:
 	default:
 		t.Fatal("main confirmation was not retained after resolving the side-chat call")
+	}
+}
+
+// TestNewBtwAgentCarriesMainPlan guards GO-003: the /btw side agent shares the
+// main registry (which contains plan) and the main transcript, so it must also
+// carry the main plan. Otherwise `show` answers empty and an indexed update
+// fails on a checklist the side transcript displays.
+func TestNewBtwAgentCarriesMainPlan(t *testing.T) {
+	main := core.NewAgent(nil, "model", "system", nil)
+	want := []core.PlanStep{
+		{Step: "one", Status: core.PlanPending},
+		{Step: "two", Status: core.PlanInProgress},
+	}
+	main.SetPlan(want)
+
+	side := newBtwAgent(main, "system", "model", "btw")
+	if got := side.CurrentPlan(); !slices.Equal(got, want) {
+		t.Fatalf("side agent plan = %#v, want %#v", got, want)
+	}
+
+	// The side plan must be an independent copy.
+	got := side.CurrentPlan()
+	got[0].Step = "mutated"
+	if again := main.CurrentPlan(); again[0].Step != "one" {
+		t.Fatalf("side plan aliases the main plan: %#v", again)
 	}
 }

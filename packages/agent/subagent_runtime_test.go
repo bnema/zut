@@ -154,6 +154,7 @@ func TestResidentChildSpecOmitsParentOnlyTools(t *testing.T) {
 		"host-only-tool": nil,
 		"subagent":       nil,
 		"update_goal":    nil,
+		"plan":           nil,
 	}
 	spec, err := runtime.buildResidentChildSpec(context.Background(), tools.ResidentSpawnRequest{Task: "review"}, parent)
 	if err != nil {
@@ -165,7 +166,7 @@ func TestResidentChildSpecOmitsParentOnlyTools(t *testing.T) {
 	if !slices.Contains(spec.Tools, "read") {
 		t.Fatalf("generic child lost supported tool: %v", spec.Tools)
 	}
-	for _, name := range []string{"subagent", "update_goal"} {
+	for _, name := range []string{"subagent", "update_goal", "plan"} {
 		if slices.Contains(spec.Tools, name) {
 			t.Fatalf("generic child kept forbidden tool %q: %v", name, spec.Tools)
 		}

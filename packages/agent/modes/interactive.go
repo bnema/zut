@@ -394,6 +394,22 @@ type InteractiveConfig struct {
 	// PersistGoalRuntime records execution bookkeeping without adding a mission
 	// transition to goal history.
 	PersistGoalRuntime func(goal *core.SessionGoal) error
+	// CurrentPlan returns a copy of the agent-owned checklist. PersistPlan
+	// writes it as a session meta transition. They let the TUI seed its plan
+	// counters and snapshot map on resume and clear them on /clear without
+	// owning session state.
+	CurrentPlan func() []core.PlanStep
+	PersistPlan func(plan *core.SessionPlan) error
+	// PersistedPlan reports the plan stored on the bound session, or nil. It
+	// lets /clear drop a file plan that diverged from core state.
+	PersistedPlan func() *core.SessionPlan
+	// InitialPlanSnapshots, when non-nil, seeds the historical plan checklist
+	// snapshots at construction. The CLI reconstructs them from the session's
+	// full transcript, which reaches further back than the resumed agent's
+	// trimmed message window: replaying a delta against an empty base would
+	// rebuild the wrong checklist. When nil, the constructor derives snapshots
+	// from the agent's own messages.
+	InitialPlanSnapshots map[string]core.PlanUpdate
 	// GoalMaxTokenBudget is optional. Nil means autonomous goals are unlimited.
 	GoalMaxTokenBudget *uint64
 
@@ -479,6 +495,7 @@ type chatCacheKey struct {
 	welcomeShowVer       bool
 	expandAll            bool
 	tailLimit            int
+	planRev              uint64
 	renderedMessageCount int
 	viewCacheRev         uint64
 }
@@ -727,6 +744,8 @@ type Interactive struct {
 	goalStatus        core.GoalStatus
 	planCurrent       int
 	planTotal         int
+	planSnapshots     map[string]core.PlanUpdate
+	planRevision      uint64
 	goalRun           *goalContinuationRun
 	reloadStatusSeq   uint64
 	extStatuses       map[string]map[string]extensionStatus
@@ -1154,6 +1173,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		if len(i.view.Messages) > initialResumeTailLimit {
 			i.view.TailLimit = initialResumeTailLimit
 		}
+		i.seedPlanState()
 	}
 	i.sessionTitle = core.NormalizeSessionTitle(cfg.InitialSessionTitle)
 	if cfg.InitialSessionTitlePending {

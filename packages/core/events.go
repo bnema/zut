@@ -171,7 +171,7 @@ type EvToolProgress struct {
 
 func (EvToolProgress) Type() string { return "tool_progress" }
 
-// PlanStepStatus is the state of one update_plan checklist step.
+// PlanStepStatus is the state of one plan checklist step.
 type PlanStepStatus string
 
 const (
@@ -192,8 +192,11 @@ type PlanUpdate struct {
 	Plan        []PlanStep `json:"plan"`
 }
 
-// EvPlanUpdate reports a successful update_plan call before its tool result.
+// EvPlanUpdate reports a successful plan call before its tool result.
 type EvPlanUpdate struct {
+	// CallID identifies the tool call that produced this update. It is
+	// optional for compatibility with hosts that predate persisted plans.
+	CallID string
 	Update PlanUpdate
 }
 

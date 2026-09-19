@@ -72,6 +72,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 		welcomeShowVer:       showVer,
 		expandAll:            i.view.ExpandAll,
 		tailLimit:            i.view.TailLimit,
+		planRev:              i.planRevision,
 		renderedMessageCount: len(i.view.Messages),
 		viewCacheRev:         i.view.RenderCacheRevision,
 	}
@@ -245,6 +246,11 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		i.view.Messages = nil
 		i.view.MessagesRevision = 0
 	}
+	// Plan checklists render from the snapshot map, keyed by tool-call id. Clone
+	// for the render goroutine deep-copies it; the revision is part of the render
+	// cache key so a late snapshot invalidates stale rows.
+	i.view.PlanUpdates = i.planSnapshots
+	i.view.PlanRevision = i.planRevision
 	// Transcript rewinds and compaction can remove messages that an info block
 	// was anchored after. Clamp those anchors once so later turns still append
 	// below the block instead of making it jump through the conversation.

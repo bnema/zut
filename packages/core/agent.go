@@ -166,6 +166,9 @@ type Agent struct {
 
 	mu       sync.Mutex
 	messages []provider.Message
+	// plan is the agent-owned task checklist. It is mutex-protected; use
+	// SetPlan to seed it and CurrentPlan to read it.
+	plan []PlanStep
 	// rev increments whenever the transcript slice is replaced or a
 	// message is appended. The TUI uses it as a cheap redraw cache key
 	// so editor-only typing doesn't copy/rebuild a long transcript on
@@ -1331,6 +1334,32 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			continue
 		}
 		res := a.runOneTool(ctx, tc, tools, sink)
+		// A plan tool result carries the parsed operation, not the resulting
+		// checklist: core validates it against the current plan and materializes
+		// what would be stored. Nothing mutates state here; that happens only
+		// after CommitToolResult persisted the materialized list below.
+		if op, ok := res.Details.(PlanOperation); ok && !res.IsError {
+			update, err := a.previewPlanOperation(op)
+			switch {
+			case err != nil:
+				// Validation failed: keep the current plan and surface the reason.
+				res = ToolResult{
+					Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
+					IsError: true,
+					Timing:  res.Timing,
+				}
+			case op.Action == "show":
+				// show is a read: return the listing without persisting a meta row
+				// or committing anything.
+				res.Content = []provider.Content{provider.TextBlock{Text: planResultText(op.Action, update)}}
+				res.Details = nil
+				res.PlanOperation = nil
+			default:
+				res.Details = update
+				res.PlanOperation = &op
+				res.Content = []provider.Content{provider.TextBlock{Text: planResultText(op.Action, update)}}
+			}
+		}
 		if a.CommitToolResult != nil {
 			if err := a.CommitToolResult(tc.ID, res); err != nil {
 				res = ToolResult{
@@ -1358,8 +1387,12 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if a.OnToolResult != nil {
 			a.OnToolResult(tc.ID, res)
 		}
-		if update, ok := res.Details.(PlanUpdate); ok && !res.IsError {
-			sink(EvPlanUpdate{Update: update})
+		// Commit the validated plan only after the result was persisted: a failed
+		// write replaced the result above and cleared PlanOperation, so state and
+		// the event stream stay untouched.
+		if update, ok := res.Details.(PlanUpdate); ok && !res.IsError && res.PlanOperation != nil {
+			a.commitPlanUpdate(update)
+			sink(EvPlanUpdate{CallID: tc.ID, Update: update})
 		}
 		sink(EvToolResult{ID: tc.ID, Result: res})
 	}

@@ -85,11 +85,11 @@ func TestEventToJSONCacheDiagnosticsAreSanitized(t *testing.T) {
 
 func TestEventToJSONPlanUpdate(t *testing.T) {
 	explanation := "Discovery complete"
-	event := EventToJSON(core.EvPlanUpdate{Update: core.PlanUpdate{
+	event := EventToJSON(core.EvPlanUpdate{CallID: "call-7", Update: core.PlanUpdate{
 		Explanation: &explanation,
 		Plan:        []core.PlanStep{{Step: "Implement", Status: core.PlanInProgress}},
 	}})
-	if event["type"] != "plan_update" || event["explanation"] != "Discovery complete" {
+	if event["type"] != "plan_update" || event["explanation"] != "Discovery complete" || event["id"] != "call-7" {
 		t.Fatalf("plan event = %#v", event)
 	}
 	plan, ok := event["plan"].([]core.PlanStep)
@@ -99,6 +99,9 @@ func TestEventToJSONPlanUpdate(t *testing.T) {
 	withoutExplanation := EventToJSON(core.EvPlanUpdate{Update: core.PlanUpdate{Plan: []core.PlanStep{}}})
 	if withoutExplanation["explanation"] != nil {
 		t.Fatalf("missing explanation = %#v, want null", withoutExplanation["explanation"])
+	}
+	if _, ok := withoutExplanation["id"]; ok {
+		t.Fatalf("missing call id = %#v, want omitted", withoutExplanation["id"])
 	}
 }
 

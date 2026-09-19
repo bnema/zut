@@ -425,6 +425,10 @@ type sessionResumeCandidate struct {
 	provider         string
 	model            string
 	rebuilt          bool
+	// planSnapshots is the per-call checklist reconstruction over the full
+	// on-disk transcript. The resumed agent only keeps the trimmed tail, so
+	// the interactive must seed from this rather than replay its messages.
+	planSnapshots map[string]core.PlanUpdate
 }
 
 // prepareSessionResume opens and validates a selected session without
@@ -472,6 +476,10 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 
 	fullMessageCount := len(msgs)
 	resumedMessages := trimMessagesForResume(msgs, 100)
+	// Reconstruct the historical checklists from the untrimmed messages: a
+	// plan delta inside the trim window needs the pre-window base to rebuild
+	// the right list, and the view must keep using the trimmed transcript.
+	planSnapshots := core.PlanUpdateSnapshots(msgs)
 	storedProvider := strings.TrimSpace(sess.Meta.Provider)
 	storedModel := strings.TrimSpace(sess.Meta.Model)
 	currentProvider = strings.TrimSpace(currentProvider)
@@ -486,6 +494,7 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 		lastTurn:         lastTurn,
 		provider:         currentProvider,
 		model:            currentModel,
+		planSnapshots:    planSnapshots,
 	}
 
 	// Old sessions may have either field absent. Only a complete stored
@@ -586,6 +595,7 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	if len(ag.Messages()) == 0 &&
 		strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(currentProvider) &&
 		strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(currentModel) {
+		ag.SetPlan(sess.Meta.PlanSteps())
 		return candidate, nil
 	}
 	candidate, err := prepareSessionResumeWithOptions(sess.Path, ag, currentProvider, currentModel, explicitProvider, explicitModel, false, buildAgentFor)
@@ -606,6 +616,12 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 		return sessionResumeCandidate{}, errors.Join(fmt.Errorf("close session: %w", closeErr), joinSessionCloseError(nil, candidate.session))
 	}
 	candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
+	// Seed the agent-owned plan from the loaded session so a resumed session's
+	// core state matches its file: the transcript holds steps while core would
+	// otherwise hold none, which makes show answer "Plan is empty" and indexed
+	// update/remove fail. Done after the candidate is fully hydrated but before
+	// the caller commits it.
+	candidate.agent.SetPlan(candidate.session.Meta.PlanSteps())
 	return candidate, nil
 }
 
@@ -708,12 +724,18 @@ var (
 	errGoalStaleUpdate        = errors.New("stale goal update")
 	errGoalStorageUnavailable = errors.New("goal storage unavailable")
 	errGoalStateWrite         = errors.New("goal state write")
+
+	errPlanStorageUnavailable = errors.New("plan storage unavailable")
+	errPlanStateWrite         = errors.New("plan state write")
 )
 
 func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result core.ToolResult, goalMaxTokenBudget ...*uint64) error {
 	if sess == nil {
 		if _, ok := tools.GoalUpdateFromResult(result); ok {
 			return goalCommitError(errGoalStorageUnavailable)
+		}
+		if result.PlanOperation != nil && !result.IsError {
+			return planCommitError(errPlanStorageUnavailable)
 		}
 		return nil
 	}
@@ -727,6 +749,9 @@ func persistToolResultState(mgr *extensions.Manager, sess *core.Session, result 
 	}
 	if err := persistGoalToolResult(sess, result, goalMaxTokenBudget...); err != nil {
 		return goalCommitError(err)
+	}
+	if err := persistPlanToolResult(sess, result); err != nil {
+		return planCommitError(err)
 	}
 	return nil
 }
@@ -749,6 +774,21 @@ func safeGoalCommitMessage(err error) string {
 		return "goal state could not be saved"
 	default:
 		return "goal update could not be persisted"
+	}
+}
+
+func planCommitError(err error) error {
+	return &core.ToolResultCommitError{Message: safePlanCommitMessage(err), Err: fmt.Errorf("plan state: %w", err)}
+}
+
+func safePlanCommitMessage(err error) string {
+	switch {
+	case errors.Is(err, errPlanStorageUnavailable):
+		return "plan state unavailable: session persistence is disabled"
+	case errors.Is(err, errPlanStateWrite):
+		return "plan state could not be saved"
+	default:
+		return "plan update could not be persisted"
 	}
 }
 
@@ -805,6 +845,23 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 	goal.Reason = update.Reason
 	if err := sess.UpdateGoal(&goal); err != nil {
 		return fmt.Errorf("%w: %w", errGoalStateWrite, err)
+	}
+	return nil
+}
+
+// persistPlanToolResult writes the materialized checklist for a validated plan
+// mutation. show carries neither Details nor PlanOperation, and error results
+// were already rejected, so both are skipped here.
+func persistPlanToolResult(sess *core.Session, result core.ToolResult) error {
+	if sess == nil || result.IsError || result.PlanOperation == nil {
+		return nil
+	}
+	update, ok := result.Details.(core.PlanUpdate)
+	if !ok {
+		return nil
+	}
+	if err := sess.UpdatePlan(&core.SessionPlan{Steps: update.Plan}); err != nil {
+		return fmt.Errorf("%w: %w", errPlanStateWrite, err)
 	}
 	return nil
 }
@@ -1863,6 +1920,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 
 	var sessBaselineMsgs int // messages already on disk when current session opened
 	var sessionTitlePending bool
+	// initialPlanSnapshots is reconstructed from the untrimmed resumed
+	// transcript. The interactive seeds from it because the live agent only
+	// receives the trim window after a resume.
+	var initialPlanSnapshots map[string]core.PlanUpdate
 	if !args.NoSess && ag != nil {
 		var sessErr error
 		sess, sessErr = openOrCreateSession(ctx, args, r, ag, version)
@@ -1883,6 +1944,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			sess = candidate.session
 			ag = candidate.agent
 			sessBaselineMsgs = candidate.fullMessageCount
+			initialPlanSnapshots = candidate.planSnapshots
 			activeProvider = candidate.provider
 			activeModel = candidate.model
 			r.Provider = candidate.provider
@@ -2036,6 +2098,29 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			return nil
 		}
 		return append([]core.SessionGoal(nil), sess.Meta.GoalHistory...)
+	}
+	currentPlan := func() []core.PlanStep {
+		return liveInteractiveAgent(iv, ag).CurrentPlan()
+	}
+	persistedPlan := func() *core.SessionPlan {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil || sess.Meta.Plan == nil {
+			return nil
+		}
+		plan := *sess.Meta.Plan
+		plan.Steps = append([]core.PlanStep(nil), sess.Meta.Plan.Steps...)
+		return &plan
+	}
+	persistPlan := func(plan *core.SessionPlan) error {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return errors.New("session persistence is disabled")
+		}
+		return sess.UpdatePlan(plan)
 	}
 	bindAgentToolResultSession := func(a *core.Agent, boundSession *core.Session) {
 		if a == nil {
@@ -2242,6 +2327,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 		sess = candidate.session
 		bindAgentToolResultSession(candidate.agent, candidate.session)
+		// Seed core plan state from the loaded session before the swap publishes
+		// the agent; see applySessionResume for why this is required on resume.
+		candidate.agent.SetPlan(candidate.session.Meta.PlanSteps())
 		candidate.agent.SetSessionTimeContext(candidate.session.Meta.Started, candidate.session.Meta.Timezone, candidate.session.Meta.TimezoneOffset)
 		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
 		// The live agent only receives a compact resume window, but the
@@ -2282,6 +2370,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		persistMu.Unlock()
 		if iv != nil {
 			iv.RefreshGoal()
+			iv.RefreshPlan(candidate.planSnapshots)
 		}
 		if candidate.session.Meta.Parent != "" {
 			extMgr.EmitSessionEvent("session_forked", sessionContext(candidate.session), newStates)
@@ -2468,6 +2557,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			startupPaths := instructionContextPaths(loadAgentsContext(absPath, ZutHome()))
 			iv.ApplyChangedCWDWithStartupContext(newAg, newProvider, newModel, absPath, startupPaths)
 			iv.RefreshGoal()
+			// A new cwd starts a fresh session with no plan; reset the counters
+			// and snapshot map so the previous workspace's checklist is gone.
+			iv.RefreshPlan(nil)
 		}
 
 		// Re-scope the subagent dashboard to the new session.
@@ -2741,6 +2833,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		PersistGoalRuntime:    persistGoalRuntime,
 		CurrentGoal:           currentGoal,
 		CurrentGoalHistory:    currentGoalHistory,
+		CurrentPlan:           currentPlan,
+		PersistPlan:           persistPlan,
+		PersistedPlan:         persistedPlan,
+		InitialPlanSnapshots:  initialPlanSnapshots,
 		EnsureMission:         ensureMission,
 		CurrentSessionPath: func() string {
 			persistMu.Lock()

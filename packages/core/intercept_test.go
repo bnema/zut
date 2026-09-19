@@ -85,11 +85,10 @@ func TestToolResultPersistenceFailureBecomesToolError(t *testing.T) {
 }
 
 func TestExecuteToolsEmitsPlanUpdateBeforeResult(t *testing.T) {
-	update := PlanUpdate{Plan: []PlanStep{{Step: "Implement", Status: PlanInProgress}}}
 	agent := NewAgent(nil, "test", "", Registry{
 		"result": &resultTool{result: ToolResult{
 			Content: []provider.Content{provider.TextBlock{Text: "Plan updated"}},
-			Details: update,
+			Details: PlanOperation{Action: "set", Steps: []PlanStep{{Step: "Implement", Status: PlanInProgress}}},
 		}},
 	})
 	message := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{
@@ -107,7 +106,7 @@ func TestExecuteToolsEmitsPlanUpdateBeforeResult(t *testing.T) {
 		t.Fatalf("events = %#v, want plan update and tool result", events)
 	}
 	planEvent, ok := events[0].(EvPlanUpdate)
-	if !ok || len(planEvent.Update.Plan) != 1 || planEvent.Update.Plan[0].Step != "Implement" {
+	if !ok || planEvent.CallID != "call-1" || len(planEvent.Update.Plan) != 1 || planEvent.Update.Plan[0].Step != "Implement" {
 		t.Fatalf("first event = %#v, want plan update", events[0])
 	}
 	if _, ok := events[1].(EvToolResult); !ok {

@@ -352,6 +352,10 @@ func newBtwAgent(main *core.Agent, system, model, origin string) *core.Agent {
 	agent.RetryBaseDelay = main.RetryBaseDelay
 	agent.OnEvent = main.OnEvent
 	agent.SetMessages(main.Messages())
+	// The side agent shares the main registry (which contains plan) and the main
+	// transcript, so it must also carry the main plan: otherwise `show` answers
+	// empty and an indexed update fails on a checklist the transcript displays.
+	agent.SetPlan(main.CurrentPlan())
 	return agent
 }
 

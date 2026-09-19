@@ -172,6 +172,17 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 	// a tool_use ID that doesn't exist.
 	tail = repairOrphanedToolResults(tail)
 
+	// Carry the active plan over the compaction boundary. The step text is
+	// otherwise lost with the summarized transcript, so the model could not
+	// resolve the indices its indexed update and remove actions need. The block
+	// is merged into the internal-context message that survives compaction;
+	// with no plan the retained message is left byte-for-byte unchanged.
+	if latestContext != nil {
+		if block := planContextBlock(a.CurrentPlan()); block != "" {
+			*latestContext = mergePlanContextBlock(*latestContext, block)
+		}
+	}
+
 	next := make([]provider.Message, 0, 2+len(tail))
 	if latestContext != nil {
 		next = append(next, *latestContext)
@@ -191,6 +202,70 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 	}
 
 	return summary, nil
+}
+
+// planContextStepLimit bounds the steps carried into the retained internal
+// context. It is deliberately the only size bound on a plan: state, storage,
+// and the tool itself have no cap, but the post-compaction block the model
+// reads on every later request stays small.
+const planContextStepLimit = 12
+
+// planContextHeader opens the plan block. The whole block is always appended
+// last, so the final occurrence of this line marks where a previous block
+// starts and mergePlanContextBlock can replace rather than duplicate it.
+const planContextHeader = "## Current plan"
+
+// planContextBlock renders the plan carried across compaction. Step lines use
+// the same markers as show output, so the model can map them to the listing and
+// to the 1-based indices the tool accepts.
+func planContextBlock(steps []PlanStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	shown := steps
+	if len(shown) > planContextStepLimit {
+		shown = shown[:planContextStepLimit]
+	}
+	var b strings.Builder
+	b.WriteString(planContextHeader)
+	for idx, step := range shown {
+		fmt.Fprintf(&b, "\n%d. [%s] %s", idx+1, planStepMarker(step.Status), step.Step)
+	}
+	if remaining := len(steps) - len(shown); remaining > 0 {
+		fmt.Fprintf(&b, "\n…and %d more (call action:\"show\")", remaining)
+	}
+	return b.String()
+}
+
+// mergePlanContextBlock returns message with block merged into its internal
+// context text. An earlier plan block is replaced, so compacting twice cannot
+// duplicate it. A message that is not a single text block is returned
+// unchanged rather than risk dropping content.
+func mergePlanContextBlock(message provider.Message, block string) provider.Message {
+	if block == "" || len(message.Content) != 1 {
+		return message
+	}
+	text, ok := message.Content[0].(provider.TextBlock)
+	if !ok {
+		return message
+	}
+	base := stripPlanContextBlock(text.Text)
+	merged := block
+	if base != "" {
+		merged = base + "\n\n" + block
+	}
+	message.Content = []provider.Content{provider.TextBlock{Text: merged}}
+	return message
+}
+
+// stripPlanContextBlock removes a previously injected plan block. The block is
+// always appended last, so the final header occurrence is its start.
+func stripPlanContextBlock(text string) string {
+	idx := strings.LastIndex(text, planContextHeader)
+	if idx < 0 {
+		return text
+	}
+	return strings.TrimRight(text[:idx], " \t\n")
 }
 
 // repairOrphanedToolResults removes tool_result content blocks (and

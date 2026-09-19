@@ -110,6 +110,11 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["id"] = e.ID
 		m["text"] = e.Text
 	case core.EvPlanUpdate:
+		// Omit an empty call id, matching the SDK's omitempty so both wire
+		// projections agree.
+		if e.CallID != "" {
+			m["id"] = e.CallID
+		}
 		if e.Update.Explanation != nil {
 			m["explanation"] = *e.Update.Explanation
 		} else {
