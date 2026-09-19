@@ -792,6 +792,24 @@ zut --provider ollama --model qwen3.5:4b
 
 That's it. No API key needed for local models. zut defaults to `http://localhost:11434`.
 
+### Ollama Cloud with OLLAMA_API_KEY
+
+Set `OLLAMA_API_KEY` (from [ollama.com/settings/keys](https://ollama.com/settings/keys)) and zut uses Ollama Cloud automatically — no `--base-url` needed:
+
+```bash
+export OLLAMA_API_KEY=...
+zut --provider ollama --model gemma4:31b
+```
+
+With a real key and no explicit endpoint, zut defaults to `https://ollama.com/v1`. Precedence:
+
+1. `--base-url` always wins — pass `--base-url http://localhost:11434` to force local while the key is set.
+2. A `baseUrl` in `models.json` (model- or provider-level) wins when no `--base-url` is given.
+3. Otherwise a real key (`--api-key`, `OLLAMA_API_KEY`, or `/login`) selects the cloud endpoint.
+4. With no key, zut stays local with no auth.
+
+You can also save the key with `/login` → api key → Ollama (stored in `auth.json`). `--api-key` overrides env and stored credentials.
+
 For a remote ollama instance or one behind auth:
 
 ```bash

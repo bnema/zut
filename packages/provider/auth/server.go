@@ -136,7 +136,7 @@ func apiKeyProviderMessage() string {
 // APIKeyProviders is the ordered list shown by /login -> api key.
 func APIKeyProviders() []string {
 	return []string{
-		"anthropic", "openai", "kimi", "deepseek", "google", "llama.cpp",
+		"anthropic", "openai", "kimi", "deepseek", "google", "ollama", "llama.cpp",
 		"moonshotai", "moonshotai-cn", "groq", "cerebras", "xai", "together",
 		"huggingface", "openrouter", "mistral", "zai",
 		"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",

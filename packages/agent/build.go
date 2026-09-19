@@ -593,10 +593,21 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		method    string
 		accountID string
 		credErr   error
+		// hasRealOllamaCred tracks whether ResolveCredentialFull returned a
+		// genuine ollama credential (--api-key, OLLAMA_API_KEY, auth.json).
+		// It drives the cloud-vs-local endpoint default below; the dummy
+		// "ollama" credential never triggers the cloud default.
+		hasRealOllamaCred bool
 	)
 	if provName == "ollama" {
-		cred = firstNonEmpty(args.APIKey, "ollama")
-		method = "apikey"
+		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
+		if credErr != nil {
+			// Local ollama needs no key: fall back to the dummy
+			// credential instead of failing resolution.
+			cred, method, accountID, credErr = "ollama", "apikey", "", nil
+		} else {
+			hasRealOllamaCred = true
+		}
 	} else {
 		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
 	}
@@ -817,7 +828,15 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		args.BaseURL = resolvedModel.BaseURL
 	}
 	if args.BaseURL == "" && provName == "ollama" {
-		args.BaseURL = "http://localhost:11434"
+		// A real ollama credential with no explicit endpoint means
+		// Ollama Cloud; without one, stay on the local server.
+		// Explicit --base-url and model-level baseUrl (applied above)
+		// both win over this default.
+		if hasRealOllamaCred {
+			args.BaseURL = "https://ollama.com/v1"
+		} else {
+			args.BaseURL = "http://localhost:11434"
+		}
 	}
 	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
 		managementURL, _, configErr := ResolveLlamaCPPConfig()

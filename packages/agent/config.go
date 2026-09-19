@@ -543,6 +543,9 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
+	// ollama needs no explicit case: the generic
+	// normalizeCustomProviderEnvVar fallback below already maps
+	// provider "ollama" to OLLAMA_API_KEY before auth.json.
 	case "llama.cpp":
 		baseURL, apiKey, resolveErr := resolveLlamaCPPConfig(ctx, commandMode)
 		if resolveErr != nil {

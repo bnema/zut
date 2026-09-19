@@ -104,6 +104,7 @@ show instructions and should be configured with environment variables.
 | Kimi | `KIMI_API_KEY` or `MOONSHOT_API_KEY` | `kimi` |
 | Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `google` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
+| Ollama Cloud | `OLLAMA_API_KEY` | `ollama` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI China | `MOONSHOT_API_KEY` | `moonshotai-cn` |
 | Groq | `GROQ_API_KEY` | `groq` |
@@ -135,6 +136,14 @@ Example:
 export OPENROUTER_API_KEY=...
 zut --provider openrouter
 ```
+
+### Ollama local vs Cloud
+
+The `ollama` provider serves both local and Cloud models over the OpenAI-compatible `/v1` API. Secrets are sent only as `Authorization: Bearer` headers, never in URLs or logs.
+
+- No key: `http://localhost:11434`, no auth (local models).
+- Real key (`--api-key`, `OLLAMA_API_KEY`, or `/login` → Ollama) with no explicit endpoint: `https://ollama.com/v1` (Cloud models).
+- `--base-url` always wins; a `baseUrl` in `models.json` (model- or provider-level) wins over the automatic default.
 
 ### OpenCode Go model catalog
 
