@@ -139,6 +139,43 @@ func TestFilterCacheByProviderScopesDropsLegacyAuthoritativeCodex(t *testing.T) 
 	}
 }
 
+func TestRefreshModelsDiscoversOllamaWithExplicitKeyAndEndpointScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("OLLAMA_API_KEY", "")
+	provider.SetLiveModels(nil)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	previous := discoverOllamaFn
+	t.Cleanup(func() { discoverOllamaFn = previous })
+	var gotKey, gotBaseURL string
+	discoverOllamaFn = func(_ context.Context, key, baseURL string) ([]provider.Model, error) {
+		gotKey, gotBaseURL = key, baseURL
+		return []provider.Model{{Provider: provider.ProviderOllama, ID: "cloud-model", Source: "live"}}, nil
+	}
+
+	baseURL := "https://private.example/v4"
+	refreshModels(provider.ProviderOllama, "explicit-key", baseURL, "")
+	if gotKey != "explicit-key" || gotBaseURL != baseURL {
+		t.Fatalf("discovery key/baseURL = %q, %q", gotKey, gotBaseURL)
+	}
+	model, err := provider.FindModel(provider.ProviderOllama, "cloud-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Provider != provider.ProviderOllama {
+		t.Fatalf("model = %+v", model)
+	}
+	cache, err := provider.LoadCache(filepath.Join(home, "models-cache.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantScope := credentialScopeForEndpoint("explicit-key", baseURL)
+	if cache.ProviderScopes[provider.ProviderOllama] != wantScope {
+		t.Fatalf("ollama scope = %q, want %q", cache.ProviderScopes[provider.ProviderOllama], wantScope)
+	}
+}
+
 func TestRefreshLlamaCPPModelsAddsOnlyLoadedModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {

@@ -114,6 +114,47 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	return out, nil
 }
 
+const OllamaCloudBaseURL = "https://ollama.com/v1"
+
+// DiscoverOllama lists the public Ollama Cloud catalog. Ollama model IDs do
+// not follow OpenAI's gpt-/o* naming convention, so discovery keeps every ID.
+func DiscoverOllama(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
+	if baseURL == "" {
+		baseURL = OllamaCloudBaseURL
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	baseURL = strings.TrimRight(baseURL, "/")
+	url := baseURL + "/v1/models"
+	if versionSegmentSuffix.MatchString(baseURL) {
+		url = baseURL + "/models"
+	}
+	body, err := fetchDiscoveryJSON(ctx, client, url, "Bearer "+apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("ollama discover: %w", err)
+	}
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("ollama discover parse: %w", err)
+	}
+	out := make([]Model, 0, len(page.Data))
+	for _, item := range page.Data {
+		if item.ID == "" {
+			continue
+		}
+		out = append(out, Model{
+			Provider:    "ollama",
+			ID:          item.ID,
+			DisplayName: item.ID,
+			Source:      "live",
+		})
+	}
+	return out, nil
+}
+
 const (
 	modelsDevAPIURL          = "https://models.dev/api.json"
 	OpenCodeGoDefaultBaseURL = "https://opencode.ai/zen/go/v1"

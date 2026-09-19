@@ -833,7 +833,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// Explicit --base-url and model-level baseUrl (applied above)
 		// both win over this default.
 		if hasRealOllamaCred {
-			args.BaseURL = "https://ollama.com/v1"
+			args.BaseURL = provider.OllamaCloudBaseURL
 		} else {
 			args.BaseURL = "http://localhost:11434"
 		}

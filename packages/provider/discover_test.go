@@ -53,6 +53,41 @@ func TestDiscoverOpenAICodex(t *testing.T) {
 	}
 }
 
+func TestDiscoverOllamaKeepsCloudModelIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer ollama-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"qwen3.5:397b-cloud"},{"id":"gemma3:27b"}]}`)
+	}))
+	defer srv.Close()
+
+	got, err := DiscoverOllama(context.Background(), "ollama-key", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Provider != "ollama" || got[0].ID != "qwen3.5:397b-cloud" || got[1].ID != "gemma3:27b" {
+		t.Fatalf("models = %+v", got)
+	}
+}
+
+func TestDiscoverOllamaAcceptsVersionedBaseURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer srv.Close()
+
+	if _, err := DiscoverOllama(context.Background(), "ollama-key", srv.URL+"/v1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDiscoverOpenAICodexRejectsHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "denied", http.StatusUnauthorized)

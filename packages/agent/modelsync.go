@@ -16,6 +16,7 @@ import (
 
 var (
 	discoverOpenCodeGoFn = provider.DiscoverOpenCodeGo
+	discoverOllamaFn     = provider.DiscoverOllama
 	modelCatalogMu       sync.Mutex
 )
 
@@ -115,6 +116,9 @@ func currentModelProviderScopesForBaseURL(openCodeGoBaseURL string) map[string]s
 	if key, method, _, err := resolveCredentialFull(context.Background(), provider.ProviderOpenCodeGo, "", apiKeyCommandSkip); err == nil && method == "apikey" && key != "" {
 		scopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(key, openCodeGoBaseURL)
 	}
+	if key, method, _, err := resolveCredentialFull(context.Background(), provider.ProviderOllama, "", apiKeyCommandSkip); err == nil && method == "apikey" && key != "" {
+		scopes[provider.ProviderOllama] = credentialScopeForEndpoint(key, provider.OllamaCloudBaseURL)
+	}
 	return scopes
 }
 
@@ -140,7 +144,10 @@ func modelProviderScopes(explicitProvider, explicitAPIKey, explicitBaseURL strin
 	}
 	scopes := currentModelProviderScopesForBaseURL(openCodeGoBaseURL)
 	if explicitProvider == provider.ProviderOpenCodeGo && explicitAPIKey != "" {
-		scopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(explicitAPIKey, explicitBaseURL)
+		scopes[provider.ProviderOpenCodeGo] = credentialScopeForEndpoint(explicitAPIKey, firstNonEmpty(explicitBaseURL, provider.OpenCodeGoDefaultBaseURL))
+	}
+	if explicitProvider == provider.ProviderOllama && explicitAPIKey != "" {
+		scopes[provider.ProviderOllama] = credentialScopeForEndpoint(explicitAPIKey, firstNonEmpty(explicitBaseURL, provider.OllamaCloudBaseURL))
 	}
 	return scopes
 }
@@ -495,6 +502,25 @@ func refreshModelsWithContext(parent context.Context, explicitProvider, explicit
 			markEligible(provider.ProviderOpenAI)
 			if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
 				recordDiscovery(provider.ProviderOpenAI, live, false, "")
+			}
+		}
+	}
+	if onlyProvider == "" {
+		var ollamaKey string
+		if explicitProvider == provider.ProviderOllama && explicitAPIKey != "" {
+			ollamaKey = explicitAPIKey
+		} else if cred, method, err := resolveCredentialForCatalog(ctx, provider.ProviderOllama, commandMode); err == nil && method == "apikey" {
+			ollamaKey = cred
+		}
+		if ollamaKey != "" {
+			markEligible(provider.ProviderOllama)
+			baseURL := provider.OllamaCloudBaseURL
+			if explicitProvider == provider.ProviderOllama && explicitBaseURL != "" {
+				baseURL = explicitBaseURL
+			}
+			if live, err := discoverOllamaFn(ctx, ollamaKey, baseURL); err == nil {
+				scope := credentialScopeForEndpoint(ollamaKey, baseURL)
+				recordDiscovery(provider.ProviderOllama, live, false, scope)
 			}
 		}
 	}
