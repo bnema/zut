@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -517,7 +518,7 @@ func TestResidentManagerCapturesSuccessfulWorktreeBeforeCleanup(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if workspace.cleaned {
+	if workspace.Cleaned() {
 		t.Fatal("idle child worktree was removed before explicit close")
 	}
 	result, err := manager.Result("capture-child")
@@ -534,7 +535,7 @@ func TestResidentManagerCapturesSuccessfulWorktreeBeforeCleanup(t *testing.T) {
 	if err := manager.Stop(context.Background(), "capture-child"); err != nil {
 		t.Fatal(err)
 	}
-	if !workspace.cleaned {
+	if !workspace.Cleaned() {
 		t.Fatal("successful worktree was not cleaned on stop")
 	}
 }
@@ -560,7 +561,7 @@ func TestResidentManagerCapturesFailedWorktreePatch(t *testing.T) {
 	}
 	// A non-canceled failure still captures partial work, but the turn
 	// stays failed: capture never converts failure to success.
-	if !workspace.captured {
+	if !workspace.Captured() {
 		t.Fatal("failed worktree was not captured")
 	}
 	snapshot := manager.Snapshot()[0]
@@ -597,8 +598,8 @@ func TestResidentManagerRetainsFailedWorktree(t *testing.T) {
 	}
 	// Non-canceled failures capture partial work for recovery, but the
 	// worktree is retained (never cleaned) until an explicit stop or close.
-	if !workspace.captured || workspace.cleaned {
-		t.Fatalf("failed worktree captured=%t cleaned=%t", workspace.captured, workspace.cleaned)
+	if !workspace.Captured() || workspace.Cleaned() {
+		t.Fatalf("failed worktree captured=%t cleaned=%t", workspace.Captured(), workspace.Cleaned())
 	}
 }
 
@@ -646,21 +647,29 @@ func TestResidentManagerCapturesRealWorktreePatch(t *testing.T) {
 	}
 }
 
+// testResidentWorkspace flags are atomic because Capture/Cleanup run on
+// the resident child's goroutine while tests read them after polling
+// manager state (no happens-before edge the race detector can see).
 type testResidentWorkspace struct {
-	dir               string
-	mode              WorkspaceMode
-	capture           WorkspaceCapture
-	captured, cleaned bool
+	dir     string
+	mode    WorkspaceMode
+	capture WorkspaceCapture
+
+	captured atomic.Bool
+	cleaned  atomic.Bool
 }
+
+func (w *testResidentWorkspace) Captured() bool { return w.captured.Load() }
+func (w *testResidentWorkspace) Cleaned() bool  { return w.cleaned.Load() }
 
 func (w *testResidentWorkspace) Dir() string            { return w.dir }
 func (w *testResidentWorkspace) RepositoryRoot() string { return "/repo" }
 func (w *testResidentWorkspace) Mode() WorkspaceMode    { return w.mode }
 func (w *testResidentWorkspace) Capture(context.Context) (WorkspaceCapture, error) {
-	w.captured = true
+	w.captured.Store(true)
 	return w.capture, nil
 }
-func (w *testResidentWorkspace) Cleanup(context.Context) error { w.cleaned = true; return nil }
+func (w *testResidentWorkspace) Cleanup(context.Context) error { w.cleaned.Store(true); return nil }
 
 func TestResidentManagerRejectsDuplicateBeforeSecondJournalAcceptance(t *testing.T) {
 	root := t.TempDir()
