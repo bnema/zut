@@ -83,6 +83,62 @@ func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
 	}
 }
 
+func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing.T) {
+	proactive := ProactiveSubagentsSystemAddendumFor(true, false, false)
+	for _, want := range []string{
+		"Route before you work:",
+		"routing happens when the user states the request you are about to work on",
+		"the [subagents_list] profile that owns each delegable part",
+		"let the tool calls that follow speak for themselves",
+		"Say plainly when nothing is worth delegating",
+	} {
+		if !strings.Contains(proactive, want) {
+			t.Fatalf("proactive addendum missing %q:\n%s", want, proactive)
+		}
+	}
+
+	// Without the spawn action there is nothing to route to, and the
+	// spawn-withheld branches in the same prompt tell the primary to stay
+	// local; naming profiles there would contradict them.
+	for _, tc := range []struct {
+		name         string
+		stop, resume bool
+	}{
+		{name: "spawn withheld"},
+		{name: "stop only", stop: true},
+		{name: "resume only", resume: true},
+		{name: "stop and resume", stop: true, resume: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProactiveSubagentsSystemAddendumFor(false, tc.stop, tc.resume)
+			for _, unwanted := range []string{"Route before you work:", "[subagents_list]", "spawn a clearly described general worker"} {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("spawn-withheld addendum kept %q:\n%s", unwanted, got)
+				}
+			}
+			if !strings.Contains(got, ProactiveSubagentsSystemAddendum) {
+				t.Fatalf("spawn-withheld addendum lost the ownership contract:\n%s", got)
+			}
+			// Fully unavailable delegation falls back to the dedicated notice;
+			// an enabled lifecycle action uses the shorter local-work line.
+			fallback := "Continue non-delegated work locally."
+			if !tc.stop && !tc.resume {
+				fallback = ProactiveSubagentsDelegationUnavailableAddendum
+			}
+			if !strings.Contains(got, fallback) {
+				t.Fatalf("spawn-withheld addendum lost its local-work fallback %q:\n%s", fallback, got)
+			}
+		})
+	}
+
+	// Routing is the interactive collaboration step; the headless strict
+	// contract divides scopes itself and must not inherit it.
+	strict := StrictOrchestratorSystemAddendumFor(true, false, false)
+	if strings.Contains(strict, "Route before you work:") || strings.Contains(strict, "[subagents_list]") {
+		t.Fatalf("strict orchestrator inherited interactive routing guidance:\n%s", strict)
+	}
+}
+
 func TestSubagentPoliciesHandleUnavailableDelegationByMode(t *testing.T) {
 	proactive := ProactiveSubagentsSystemAddendumFor(false, false, false)
 	if !strings.Contains(proactive, "Continue the user's task locally") || strings.Contains(proactive, "report this limitation") {
