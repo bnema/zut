@@ -1,16 +1,15 @@
 package tui
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/mattn/go-runewidth"
 )
@@ -129,9 +128,19 @@ type View struct {
 	// short args) for the call, so a tool_result message can render
 	// the box top edge without having to look back at the assistant
 	// message that originated the call. Rebuilt on each Build().
-	toolCallLabels  map[string]string
-	toolCallNames   map[string]string
-	toolCallArgs    map[string]json.RawMessage
+	toolCallLabels map[string]string
+	toolCallNames  map[string]string
+	toolCallArgs   map[string]json.RawMessage
+	// PlanUpdates maps a plan tool-call id to the checklist snapshot materialized
+	// after that call. The transcript only stores per-call deltas, so the host
+	// replays them at load and fills this map from plan_update events live. It is
+	// deep-copied by CloneForRender so the render goroutine never shares it with
+	// the live view.
+	PlanUpdates map[string]core.PlanUpdate
+	// PlanRevision advances whenever PlanUpdates changes. It is part of
+	// msgVisualKey so a snapshot arriving after a message was first cached
+	// invalidates that cache entry.
+	PlanRevision    uint64
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -220,6 +229,9 @@ type msgVisualKey struct {
 	compactUser bool
 	imageProto  ImageProtocol
 	theme       uint64
+	// planRev carries the plan snapshot revision so a new snapshot invalidates
+	// cached message rows that render a plan checklist.
+	planRev uint64
 }
 
 // msgCacheKey identifies a cached message render. hash is a 64-bit
@@ -281,6 +293,7 @@ func (v *View) CloneForRender() *View {
 	clone.toolCallLabels = cloneStringMap(v.toolCallLabels)
 	clone.toolCallNames = cloneStringMap(v.toolCallNames)
 	clone.toolCallArgs = cloneRawMessageMap(v.toolCallArgs)
+	clone.PlanUpdates = clonePlanUpdateMap(v.PlanUpdates)
 	clone.liveBodyHigh = cloneIntMap(v.liveBodyHigh)
 	if v.renderCache != nil {
 		clone.renderCache = make(map[msgCacheKey][]string, len(v.renderCache))
@@ -331,6 +344,25 @@ func cloneIntMap(src map[string]int) map[string]int {
 	return dst
 }
 
+// clonePlanUpdateMap deep-copies a plan snapshot map. Each entry's Plan slice is
+// copied too, so the render clone owns every step it reads on the other
+// goroutine.
+func clonePlanUpdateMap(src map[string]core.PlanUpdate) map[string]core.PlanUpdate {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]core.PlanUpdate, len(src))
+	for key, value := range src {
+		if value.Plan != nil {
+			steps := make([]core.PlanStep, len(value.Plan))
+			copy(steps, value.Plan)
+			value.Plan = steps
+		}
+		dst[key] = value
+	}
+	return dst
+}
+
 // AdoptRenderCacheFrom transfers caches produced from a render snapshot
 // back to the owning view. Callers must ensure the transcript revision is
 // still current before adopting them.
@@ -348,6 +380,8 @@ func (v *View) AdoptRenderCacheFrom(snapshot *View) {
 	v.toolCallLabels = snapshot.toolCallLabels
 	v.toolCallNames = snapshot.toolCallNames
 	v.toolCallArgs = snapshot.toolCallArgs
+	v.PlanUpdates = snapshot.PlanUpdates
+	v.PlanRevision = snapshot.PlanRevision
 	v.toolPathRevision = snapshot.toolPathRevision
 }
 
@@ -786,6 +820,7 @@ func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnO
 		compactUser: v.CompactUser,
 		imageProto:  v.ImageProto,
 		theme:       themeKey,
+		planRev:     v.PlanRevision,
 	}
 	if v.MessagesRevision != 0 {
 		cacheIdx := idx - v.messageCacheStart
@@ -945,65 +980,18 @@ func fnv64aWrite(h uint64, p []byte) uint64 {
 	return h
 }
 
-type planUpdateArgs struct {
-	Explanation string           `json:"explanation,omitempty"`
-	Plan        []planUpdateStep `json:"plan"`
-}
-
-type planUpdateStep struct {
-	Step   string `json:"step"`
-	Status string `json:"status"`
-}
-
-type planUpdateWire struct {
-	Explanation *string               `json:"explanation"`
-	Plan        *[]planUpdateStepWire `json:"plan"`
-}
-
-type planUpdateStepWire struct {
-	Step   *string `json:"step"`
-	Status *string `json:"status"`
-}
-
-func parsePlanUpdate(raw json.RawMessage) (planUpdateArgs, bool) {
-	var wire planUpdateWire
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return planUpdateArgs{}, false
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF || wire.Plan == nil {
-		return planUpdateArgs{}, false
-	}
-
-	update := planUpdateArgs{Plan: make([]planUpdateStep, len(*wire.Plan))}
-	if wire.Explanation != nil {
-		update.Explanation = *wire.Explanation
-	}
-	for idx, step := range *wire.Plan {
-		if step.Step == nil || step.Status == nil {
-			return planUpdateArgs{}, false
-		}
-		switch *step.Status {
-		case "pending", "in_progress", "completed":
-		default:
-			return planUpdateArgs{}, false
-		}
-		update.Plan[idx] = planUpdateStep{Step: *step.Step, Status: *step.Status}
-	}
-	return update, true
-}
-
-func (v *View) renderPlanUpdate(update planUpdateArgs, width int) []string {
+func (v *View) renderPlanUpdate(update core.PlanUpdate, width int) []string {
 	lines := []string{v.Theme.FGColor(v.Theme.Muted, "• ") + Bold("Updated Plan")}
 	bodyWidth := width - 4
 	if bodyWidth < 1 {
 		bodyWidth = 1
 	}
 	var body []string
-	if explanation := strings.TrimSpace(update.Explanation); explanation != "" {
-		for _, line := range wrapLine(explanation, bodyWidth, "") {
-			body = append(body, Dim(Italic(line)))
+	if update.Explanation != nil {
+		if explanation := strings.TrimSpace(*update.Explanation); explanation != "" {
+			for _, line := range wrapLine(explanation, bodyWidth, "") {
+				body = append(body, Dim(Italic(line)))
+			}
 		}
 	}
 	if len(update.Plan) == 0 {
@@ -1013,9 +1001,9 @@ func (v *View) renderPlanUpdate(update planUpdateArgs, width int) []string {
 			marker := "□ "
 			style := func(text string) string { return Dim(text) }
 			switch step.Status {
-			case "completed":
+			case core.PlanCompleted:
 				marker = "✓ "
-			case "in_progress":
+			case core.PlanInProgress:
 				style = func(text string) string { return v.Theme.FGColor(v.Theme.Accent, Bold(text)) }
 			}
 			stepWidth := bodyWidth - 2
@@ -1040,6 +1028,25 @@ func (v *View) renderPlanUpdate(update planUpdateArgs, width int) []string {
 		lines = append(lines, prefix+line)
 	}
 	return lines
+}
+
+// isPlanToolName reports whether a tool name is a plan checklist tool. It
+// accepts the legacy update_plan name too, so a pre-rename transcript's
+// replayed snapshots keep rendering as checklists.
+func isPlanToolName(name string) bool {
+	return name == "plan" || name == "update_plan"
+}
+
+// renderPlanCompact is the live-overlay fallback for a plan call whose
+// checklist snapshot does not exist yet: the arguments are still streaming, so
+// there is nothing to render but the action being invoked.
+func (v *View) renderPlanCompact(tc ToolCallView, width int) []string {
+	action, _, _ := ExtractPartialStringField(tc.RawJSONBuf, "action")
+	label := "plan"
+	if action != "" {
+		label = "plan: " + action
+	}
+	return []string{v.Theme.FGColor(v.Theme.Muted, "• "+truncateToWidth(label, width-2))}
 }
 
 func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []string {
@@ -1152,8 +1159,8 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 	case provider.RoleTool:
 		for _, c := range m.Content {
 			if tr, ok := c.(provider.ToolResultBlock); ok {
-				if !tr.IsError && v.toolCallNames[tr.CallID] == "update_plan" {
-					if update, ok := parsePlanUpdate(v.toolCallArgs[tr.CallID]); ok {
+				if !tr.IsError && isPlanToolName(v.toolCallNames[tr.CallID]) {
+					if update, ok := v.PlanUpdates[tr.CallID]; ok {
 						lines = append(lines, v.renderPlanUpdate(update, width)...)
 						continue
 					}
@@ -1365,9 +1372,15 @@ func hashThemeColor(h uint64, c TerminalColor) uint64 {
 }
 
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
-	if tc.Name == "update_plan" && tc.Done && !tc.Error {
-		if update, ok := parsePlanUpdate(json.RawMessage(tc.RawJSONBuf)); ok {
+	if isPlanToolName(tc.Name) {
+		// The checklist is materialized only once core accepts the call, so the
+		// live overlay renders from the snapshot map. Before execution there is
+		// no snapshot yet: name the action instead of inventing a list.
+		if update, ok := v.PlanUpdates[tc.ID]; ok {
 			return v.renderPlanUpdate(update, width)
+		}
+		if !tc.Done && !tc.Error {
+			return v.renderPlanCompact(tc, width)
 		}
 	}
 

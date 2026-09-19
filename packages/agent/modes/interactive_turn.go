@@ -216,8 +216,6 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
-	i.planCurrent = 0
-	i.planTotal = 0
 	i.extNotes = nil   // ext notes are one-shot; a new prompt clears them
 	i.scrollOffset = 0 // jump back to the bottom on new turn
 	// Lift the resume tail cap once the user starts interacting. The
@@ -452,8 +450,6 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			}
 		}
 		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || hasScheduled || agentQueued > 0 || continueGoal || interruptedReturn, offer, recoverContextOverflow, shouldAutoCompact)
-		i.planCurrent = 0
-		i.planTotal = 0
 		// interruptedReturn already reserves the turn slot (like the
 		// compact handoff path below): the reserved continuation owns
 		// busy and must not re-enter the idle gate.

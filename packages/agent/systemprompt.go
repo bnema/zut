@@ -89,6 +89,8 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 	sb.WriteString("\n\n")
 	sb.WriteString(taskExecutionGuidance)
 	sb.WriteString("\n\n")
+	sb.WriteString(planGuidance)
+	sb.WriteString("\n\n")
 	sb.WriteString(skillPriorityGuidance)
 	sb.WriteString("\n\n")
 	sb.WriteString(writingGuidance)
@@ -108,6 +110,8 @@ const toolSelectionGuidance = `Prefer dedicated tools over bash: glob for file d
 const compactedSummaryHandoffInstruction = `When you see a "## Context Summary (compacted)" message, treat it as a handoff from earlier work. Keep its active constraints and preferences in force, continue the most recent unresolved user request without waiting for the user to type "continue", and follow a newer user request when it supersedes the summary.`
 
 const taskExecutionGuidance = `Treat requests such as "can you" as instructions to do the requested work within the user's intended scope; do not stop at a plan or an offer to continue. Proceed with authorized, non-destructive work and reasonable assumptions until the task is complete or genuinely blocked. Follow each progress statement with the action it describes: pair every intermediate update with tool calls or a concrete next step in the same turn. Final answers contain the result of the work or a concrete blocker, never a bare promise to continue. Respect requests for explanation, planning, or review without making unsolicited changes. Ask only when a necessary decision blocks safe, correct progress; complete independent authorized work first. Preserve tool permissions, required confirmations, and explicit approval requirements; do not infer permission for destructive or irreversible actions.`
+
+const planGuidance = `For multi-phase or dependency-ordered work, and whenever the user asks for a plan, maintain the plan checklist instead of tracking steps in prose. Skip it for single-step or informational requests. Keep at most one step in_progress and update the plan at phase boundaries, not after every command. Group related steps instead of appending endlessly: a plan is phases you can verify, not a task log. Never mark a step completed without doing the work, and do not batch-complete steps after the fact. Prefer add, update, and remove over re-sending the whole list with set; use set only to replace the checklist and clear to remove it. After a plan call, do not restate the plan in prose because the interface already shows it. After compaction, or whenever step identity is unclear, call plan with action:"show" instead of guessing an index. A plan carried over from earlier work stays visible until it is cleared or replaced, so clear it once the work it describes is no longer in flight.`
 
 const skillPriorityGuidance = `Explicit user instructions take precedence over skill guidelines. Skills do not grant permissions or override system or developer constraints. If a skill would block requested work or change its scope, identify its source and the relevant instruction, explain the conflict, and follow the applicable higher-priority instruction.`
 

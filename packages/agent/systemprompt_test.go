@@ -55,6 +55,42 @@ func TestBuildSystemPromptAlwaysIncludesFinalWritingGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptAlwaysIncludesPlanGuidance(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		custom string
+		append []string
+	}{
+		{name: "default"},
+		{name: "custom identity", custom: "custom identity"},
+		{name: "with appended context", append: []string{"Use terse replies."}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt := BuildSystemPrompt(SystemPromptOpts{Custom: tt.custom, Append: tt.append})
+			if count := strings.Count(prompt, planGuidance); count != 1 {
+				t.Fatalf("plan guidance count = %d, want 1:\n%s", count, prompt)
+			}
+			// Ordering keeps shared guidance stable: plan rules follow task rules and
+			// precede skill priority.
+			if strings.Index(prompt, planGuidance) < strings.Index(prompt, taskExecutionGuidance) {
+				t.Fatalf("plan guidance must follow task guidance:\n%s", prompt)
+			}
+			if strings.Index(prompt, planGuidance) > strings.Index(prompt, skillPriorityGuidance) {
+				t.Fatalf("plan guidance must precede skill priority:\n%s", prompt)
+			}
+			// The rules that matter for token cost and for correct index handling.
+			for _, want := range []string{"in_progress", "add, update, and remove", "Group related steps", `action:"show"`, "do not restate the plan"} {
+				if !strings.Contains(planGuidance, want) {
+					t.Fatalf("plan guidance is missing %q", want)
+				}
+			}
+			if strings.Contains(prompt, "update_plan") {
+				t.Fatalf("prompt still references the retired tool name:\n%s", prompt)
+			}
+		})
+	}
+}
+
 func TestBuildSystemPromptAlwaysIncludesTaskAndSkillGuidance(t *testing.T) {
 	for _, custom := range []string{"", "Custom identity"} {
 		t.Run(custom, func(t *testing.T) {

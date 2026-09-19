@@ -37,14 +37,14 @@ func TestToEventPreservesCacheDiagnostics(t *testing.T) {
 
 func TestToEventPreservesPlanUpdate(t *testing.T) {
 	explanation := "Discovery complete"
-	event := toEvent(core.EvPlanUpdate{Update: core.PlanUpdate{
+	event := toEvent(core.EvPlanUpdate{CallID: "call-7", Update: core.PlanUpdate{
 		Explanation: &explanation,
 		Plan: []core.PlanStep{
 			{Step: "Implement", Status: core.PlanInProgress},
 			{Step: "Verify", Status: core.PlanPending},
 		},
 	}})
-	if event.Type != "plan_update" || event.Explanation == nil || *event.Explanation != explanation {
+	if event.Type != "plan_update" || event.ID != "call-7" || event.Explanation == nil || *event.Explanation != explanation {
 		t.Fatalf("plan event = %#v", event)
 	}
 	if event.Plan == nil || len(*event.Plan) != 2 || (*event.Plan)[0].Status != "in_progress" {
@@ -58,6 +58,9 @@ func TestToEventPreservesPlanUpdate(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"plan":[]`) {
 		t.Fatalf("empty plan JSON = %s, want explicit empty list", encoded)
+	}
+	if strings.Contains(string(encoded), `"id"`) {
+		t.Fatalf("call id should be omitted when empty: %s", encoded)
 	}
 }
 

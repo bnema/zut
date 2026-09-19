@@ -315,12 +315,25 @@ func openOrCreateSessionForBot(args Args, r Resolved, ag *core.Agent, version st
 			}
 			ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
 			ag.SetMessages(msgs)
+			// Seed the agent-owned plan from the resumed session so show and indexed
+			// updates see the persisted checklist instead of empty core state.
+			ag.SetPlan(s.Meta.PlanSteps())
+			// Route tool-result commits through the session so plan (and goal)
+			// mutations the bot makes are durable, matching the other modes.
+			ag.CommitToolResult = func(_ string, result core.ToolResult) error {
+				return persistToolResultState(nil, s, result)
+			}
 			return s, nil, nil
 		}
 	}
 	s, err := core.NewSession(ZutHome(), args.CWD, r.Provider, r.Model, version)
 	if err == nil {
 		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
+		// Route tool-result commits through the session so plan (and goal)
+		// mutations the bot makes are durable, matching the other modes.
+		ag.CommitToolResult = func(_ string, result core.ToolResult) error {
+			return persistToolResultState(nil, s, result)
+		}
 	}
 	return s, nil, err
 }

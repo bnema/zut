@@ -56,6 +56,10 @@ type ToolResult struct {
 	// Context describes workspace resources read, discovered, or mutated by
 	// this result. Core uses it only for provider-visible stale-result pruning.
 	Context provider.ToolContext
+	// PlanOperation is set by core when a plan call passed validation and is
+	// pending commit. It is applied to agent state only after CommitToolResult
+	// succeeds.
+	PlanOperation *PlanOperation
 }
 
 // Registry is a name->Tool map.

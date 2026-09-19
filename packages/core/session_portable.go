@@ -231,6 +231,7 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		Mission:        cloneSessionMission(snapshot.Meta.Mission),
 		Goal:           cloneSessionGoal(snapshot.Meta.Goal),
 		GoalHistory:    cloneGoalHistory(snapshot.Meta.GoalHistory),
+		Plan:           cloneSessionPlan(snapshot.Meta.Plan),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &importMeta})
 	if err != nil {
@@ -466,6 +467,224 @@ func goalHistoryAtBranch(parent SessionMeta, messages []provider.Message, limit 
 	return cloneGoalHistory(parent.GoalHistory)
 }
 
+// cloneSessionPlan returns an independent copy of plan, or nil.
+func cloneSessionPlan(plan *SessionPlan) *SessionPlan {
+	if plan == nil {
+		return nil
+	}
+	clone := *plan
+	clone.Steps = clonePlanSteps(plan.Steps)
+	return &clone
+}
+
+// planAtBranch reconstructs the agent-owned plan as it stood at a fork point.
+//
+// A fork at the end of the effective transcript keeps the parent's persisted
+// plan: it is what the host recorded, and it is the only surviving record when
+// the parent was compacted and its plan calls are gone.
+//
+// A fork that cuts the transcript short replays the plan calls inside that prefix
+// and reaches back no further, so the branch never inherits work its own
+// transcript does not contain — the rule goals already follow. Replay skips calls
+// whose paired tool result failed, was denied, or is missing: those calls left a
+// transcript row but changed nothing.
+func planAtBranch(parent SessionMeta, messages []provider.Message, limit int) *SessionPlan {
+	if limit > len(messages) {
+		limit = len(messages)
+	}
+	if limit == len(messages) {
+		return cloneSessionPlan(parent.Plan)
+	}
+	steps, _ := replayPlanOps(messages[:limit])
+	if len(steps) == 0 {
+		return nil
+	}
+	// Normalize the replay result so a hand-edited or legacy transcript cannot
+	// seed a branch with steps the live agent could never hold.
+	return normalizeSessionPlan(&SessionPlan{Steps: steps})
+}
+
+// PlanUpdateSnapshots reconstructs the per-call checklist snapshots the host
+// renders from a transcript. The transcript stores only per-call deltas, so the
+// materialized list shown for a historical plan call cannot be read back from
+// its arguments; it must be rebuilt by applying each accepted operation in
+// order. The result is keyed by tool-call id. Both the legacy update_plan
+// full-list shape and the plan action shape are accepted, and calls whose paired
+// tool result failed, was denied, or is missing are skipped, matching
+// planAtBranch.
+func PlanUpdateSnapshots(messages []provider.Message) map[string]PlanUpdate {
+	_, snapshots := replayPlanOps(messages)
+	return snapshots
+}
+
+// replayPlanOps applies every successful plan call in segment in order and
+// returns the final steps plus the materialized checklist after each applied
+// call, keyed by tool-call id. Read-only or invalid operations do not change
+// state and therefore produce no snapshot.
+func replayPlanOps(segment []provider.Message) ([]PlanStep, map[string]PlanUpdate) {
+	applied := planToolResults(segment)
+	var steps []PlanStep
+	var snapshots map[string]PlanUpdate
+	for idx := range segment {
+		for _, content := range segment[idx].Content {
+			call, ok := content.(provider.ToolCallBlock)
+			if !ok || !applied[call.ID] {
+				continue
+			}
+			op, ok := planOperationFromToolCall(call.Name, call.Arguments)
+			if !ok {
+				continue
+			}
+			next, changed := applyPlanOperation(steps, op)
+			if !changed {
+				continue
+			}
+			steps = next
+			if snapshots == nil {
+				snapshots = make(map[string]PlanUpdate)
+			}
+			snapshots[call.ID] = PlanUpdate{Explanation: op.Explanation, Plan: clonePlanSteps(steps)}
+		}
+	}
+	return steps, snapshots
+}
+
+// planToolResults maps the call ids in segment to whether their tool result
+// reports success. A call whose result is an error, or that has no result at all
+// because the turn ended first, never changed the plan.
+func planToolResults(segment []provider.Message) map[string]bool {
+	applied := make(map[string]bool)
+	for idx := range segment {
+		for _, content := range segment[idx].Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if !ok || result.CallID == "" {
+				continue
+			}
+			applied[result.CallID] = !result.IsError
+		}
+	}
+	return applied
+}
+
+const (
+	// planToolName is the current plan tool name. Core cannot import
+	// packages/agent/tools, so the wire name is repeated here for transcript
+	// replay.
+	planToolName = "plan"
+	// legacyPlanToolName is the pre-rename checklist tool. Historical sessions
+	// still carry its calls.
+	legacyPlanToolName = "update_plan"
+)
+
+type planToolStep struct {
+	Step   *string `json:"step"`
+	Status *string `json:"status"`
+}
+
+// planOperationFromToolCall decodes one plan-affecting tool call. The legacy
+// update_plan shape carries a full list with replace semantics, so it maps to a
+// set operation; the new shape carries an explicit action.
+func planOperationFromToolCall(name string, args json.RawMessage) (PlanOperation, bool) {
+	switch name {
+	case legacyPlanToolName:
+		var legacy struct {
+			Explanation *string         `json:"explanation"`
+			Plan        *[]planToolStep `json:"plan"`
+		}
+		if err := json.Unmarshal(args, &legacy); err != nil || legacy.Plan == nil {
+			return PlanOperation{}, false
+		}
+		steps, ok := planToolSteps(*legacy.Plan)
+		if !ok {
+			return PlanOperation{}, false
+		}
+		return PlanOperation{Action: "set", Explanation: legacy.Explanation, Steps: steps}, true
+	case planToolName:
+		var raw struct {
+			Action      string         `json:"action"`
+			Explanation *string        `json:"explanation"`
+			Steps       []planToolStep `json:"steps"`
+			Index       int            `json:"index"`
+			Status      string         `json:"status"`
+			Step        *string        `json:"step"`
+		}
+		if err := json.Unmarshal(args, &raw); err != nil {
+			return PlanOperation{}, false
+		}
+		steps, ok := planToolSteps(raw.Steps)
+		if !ok {
+			return PlanOperation{}, false
+		}
+		return PlanOperation{
+			Action:      raw.Action,
+			Explanation: raw.Explanation,
+			Steps:       steps,
+			Index:       raw.Index,
+			Text:        raw.Step,
+			Status:      PlanStepStatus(raw.Status),
+		}, true
+	default:
+		return PlanOperation{}, false
+	}
+}
+
+func planToolSteps(raw []planToolStep) ([]PlanStep, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	steps := make([]PlanStep, 0, len(raw))
+	for _, step := range raw {
+		if step.Step == nil {
+			return nil, false
+		}
+		steps = append(steps, PlanStep{Step: *step.Step, Status: planToolStatus(step.Status)})
+	}
+	return steps, true
+}
+
+// planToolStatus defaults an omitted status to pending, matching the schema's
+// optional status on new-shape steps.
+func planToolStatus(status *string) PlanStepStatus {
+	if status == nil {
+		return PlanPending
+	}
+	return PlanStepStatus(*status)
+}
+
+// applyPlanOperation replays op against steps and reports whether it changed
+// state. Invalid or read-only operations leave steps untouched.
+func applyPlanOperation(steps []PlanStep, op PlanOperation) ([]PlanStep, bool) {
+	switch op.Action {
+	case "set":
+		return clonePlanSteps(op.Steps), true
+	case "add":
+		if len(op.Steps) == 0 {
+			return steps, false
+		}
+		return append(clonePlanSteps(steps), clonePlanSteps(op.Steps)...), true
+	case "update":
+		if op.Index < 1 || op.Index > len(steps) {
+			return steps, false
+		}
+		if op.Text != nil {
+			steps[op.Index-1].Step = *op.Text
+		}
+		if op.Status != "" {
+			steps[op.Index-1].Status = op.Status
+		}
+		return steps, true
+	case "remove":
+		if op.Index < 1 || op.Index > len(steps) {
+			return steps, false
+		}
+		return append(steps[:op.Index-1:op.Index-1], steps[op.Index:]...), true
+	case "clear":
+		return nil, true
+	default:
+		return steps, false
+	}
+}
+
 func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage, compactHandoff json.RawMessage, goal *SessionGoal) (string, error) {
 	dir := SessionsDir(root, cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -515,6 +734,7 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		Mission:          missionAtBranch(parent, messages, limit),
 		Goal:             cloneSessionGoal(goal),
 		GoalHistory:      goalHistoryAtBranch(parent, messages, limit),
+		Plan:             planAtBranch(parent, messages, limit),
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
 	if err != nil {

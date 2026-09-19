@@ -200,6 +200,7 @@ func toEvent(ev core.AgentEvent) Event {
 		out.ID = e.ID
 		out.Text = e.Text
 	case core.EvPlanUpdate:
+		out.ID = e.CallID
 		out.Explanation = e.Update.Explanation
 		plan := make([]PlanStep, len(e.Update.Plan))
 		for idx, step := range e.Update.Plan {

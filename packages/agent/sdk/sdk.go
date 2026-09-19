@@ -79,7 +79,7 @@ type Config struct {
 
 	// Tools is the list of tools to enable. Nil/empty enables the ordinary
 	// built-ins: read, write, edit, bash, python, worktree, grep, glob, ast, lsp,
-	// update_goal, and update_plan. The public-web capability is excluded unless this list
+	// update_goal, and plan. The public-web capability is excluded unless this list
 	// explicitly contains "web_search"; that selector enables web_search,
 	// web_open, web_find, and web_click. Pass NoTools=true to disable everything.
 	Tools []string
@@ -206,6 +206,36 @@ func (r *Runtime) SetMessages(msgs []Message) {
 		})
 	}
 	r.agent.SetMessages(out)
+}
+
+// SetPlan replaces the agent-owned checklist. Use to seed plan state from a
+// session file so `show` and indexed updates see the persisted steps instead
+// of an empty plan. A plan is session-scoped, so seed it alongside SetMessages.
+func (r *Runtime) SetPlan(steps []PlanStep) {
+	if r.agent == nil {
+		return
+	}
+	out := make([]core.PlanStep, len(steps))
+	for i, step := range steps {
+		out[i] = core.PlanStep{Step: step.Step, Status: core.PlanStepStatus(step.Status)}
+	}
+	r.agent.SetPlan(out)
+}
+
+// Plan returns a copy of the agent-owned checklist.
+func (r *Runtime) Plan() []PlanStep {
+	if r.agent == nil {
+		return nil
+	}
+	src := r.agent.CurrentPlan()
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]PlanStep, len(src))
+	for i, step := range src {
+		out[i] = PlanStep{Step: step.Step, Status: string(step.Status)}
+	}
+	return out
 }
 
 // Cost returns the cumulative usage and dollar cost for this Runtime.

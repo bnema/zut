@@ -49,6 +49,14 @@ func runScheduledSession(ctx context.Context, task scheduler.Task, args Args, ba
 		return fmt.Errorf("build scheduled session agent: %w", err)
 	}
 	ag.SetMessages(trimMessagesForResume(messages, 100))
+	// Seed the agent-owned plan from the reconstructed session so a scheduled
+	// turn sees the persisted checklist instead of empty core state.
+	ag.SetPlan(sess.Meta.PlanSteps())
+	// Route tool-result commits through the session so plan (and goal)
+	// mutations the scheduled turn makes are durable, matching the other modes.
+	ag.CommitToolResult = func(_ string, result core.ToolResult) error {
+		return persistToolResultState(nil, sess, result)
+	}
 	if cumulative, lastTurn, usageErr := core.SessionUsageDetail(path); usageErr == nil {
 		ag.SeedCost(cumulative)
 		ag.SeedLastTurnUsage(lastTurn)

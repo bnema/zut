@@ -218,10 +218,20 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/exit":
 		return true
 	case "/clear":
+		// The bound session may still hold a plan core no longer has (a failed or
+		// skipped seed, a stray write). Read it before taking i.mu: the callback
+		// takes the host persistence lock, which must not nest under the mode
+		// lock. It is part of the clear decision so a divergence still clears the
+		// file.
+		persistedPlan := i.cfg.PersistedPlan != nil && i.cfg.PersistedPlan() != nil
+		i.mu.Lock()
+		// Read i.agent under i.mu, the same field the locked Agent accessor
+		// returns; the lock-free read this replaced could race a session swap.
+		clearPlan := i.agent != nil && len(i.agent.CurrentPlan()) > 0
 		if i.agent != nil {
 			i.agent.SetMessages(nil)
+			i.agent.SetPlan(nil)
 		}
-		i.mu.Lock()
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
 		i.toolGate = map[string]int{}
@@ -234,11 +244,23 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.reloadErrors = nil
+		i.planSnapshots = nil
+		i.planCurrent = 0
+		i.planTotal = 0
+		i.planRevision++
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
+		}
+		// Persist outside the lock: session writes are file I/O. Only write when
+		// a plan existed in core or on disk, so /clear in --no-session mode stays
+		// a no-op there.
+		if (clearPlan || persistedPlan) && i.cfg.PersistPlan != nil {
+			if err := i.cfg.PersistPlan(nil); err != nil {
+				i.ReportError(fmt.Errorf("clear plan: %w", err))
+			}
 		}
 	case "/help":
 		i.mu.Lock()
@@ -1202,9 +1224,11 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	// cross-provider /model swap.
 	var carryMsgs []provider.Message
 	var carryCost provider.Usage
+	var carryPlan []core.PlanStep
 	if i.agent != nil {
 		carryMsgs = i.agent.Messages()
 		carryCost = i.agent.Cost()
+		carryPlan = i.agent.CurrentPlan()
 	}
 
 	ag, p, md, err := builder(m.Provider, m.ID)
@@ -1224,6 +1248,10 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	if len(carryMsgs) > 0 {
 		ag.SetMessages(carryMsgs)
 	}
+	// A provider rebuild is a fresh agent; carry the session-scoped plan over so
+	// the checklist survives a cross-provider /model swap, matching the way the
+	// transcript and cumulative cost are handed off.
+	ag.SetPlan(carryPlan)
 	ag.SeedCost(carryCost)
 
 	if i.agent != nil && i.agent != ag {

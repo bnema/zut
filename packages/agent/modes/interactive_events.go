@@ -197,6 +197,18 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		}
 	case core.EvPlanUpdate:
 		i.planCurrent, i.planTotal = planProgress(e.Update.Plan)
+		// Copy-on-write: the live view may still reference the previous map while
+		// a render reads it. Replacing the map instead of mutating it in place
+		// keeps every published map immutable, so no reader can race a map write.
+		next := make(map[string]core.PlanUpdate, len(i.planSnapshots)+1)
+		for id, update := range i.planSnapshots {
+			next[id] = update
+		}
+		next[e.CallID] = e.Update
+		i.planSnapshots = next
+		// A checklist can arrive after the tool-result message was first cached.
+		// Bumping the revision invalidates those rows through msgVisualKey.
+		i.planRevision++
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative
 		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {

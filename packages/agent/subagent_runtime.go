@@ -358,7 +358,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	allTools := make([]string, 0, len(catalogue))
 	for name := range catalogue {
 		switch name {
-		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal":
+		case tools.SubagentSpawnToolName, tools.SubagentStatusToolName, tools.SubagentStopToolName, tools.SubagentResumeToolName, "update_goal", tools.PlanToolName:
 			continue
 		}
 		if _, ok := resolved.ToolRegistry[name]; !ok {
