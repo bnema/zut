@@ -46,11 +46,16 @@ func ProbeAPIKey(ctx context.Context, provider, key string) error {
 		}
 		req.Header.Set("authorization", "Bearer "+key)
 	case "ollama":
-		req, err = http.NewRequestWithContext(ctx, "GET", "https://ollama.com/v1/models", nil)
+		// GET /v1/models is public on ollama.com (200 without a key),
+		// so it cannot validate one. POST /v1/chat/completions is
+		// auth-gated: 401/403 means the key was rejected. The empty
+		// body is enough — auth runs before request validation.
+		req, err = http.NewRequestWithContext(ctx, "POST", "https://ollama.com/v1/chat/completions", strings.NewReader("{}"))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+key)
+		req.Header.Set("content-type", "application/json")
 	case "google":
 		// Google Generative Language: list models with the API key.
 		// Accepts the key via x-goog-api-key header (preferred over
@@ -217,6 +222,11 @@ func ProbeAPIKey(ctx context.Context, provider, key string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("%s rejected the key (http %d)", provider, resp.StatusCode)
+	}
+	if provider == "ollama" && resp.StatusCode == http.StatusBadRequest {
+		// Chat-completions probe with an empty body: auth passed,
+		// request validation failed. Key is valid.
+		return nil
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("%s http %d", provider, resp.StatusCode)

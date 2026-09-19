@@ -143,7 +143,7 @@ The `ollama` provider serves both local and Cloud models over the OpenAI-compati
 
 - No key: `http://localhost:11434`, no auth (local models).
 - Real key (`--api-key`, `OLLAMA_API_KEY`, or `/login` → Ollama) with no explicit endpoint: `https://ollama.com/v1` (Cloud models).
-- `--base-url` always wins; a model-level `baseUrl` in `models.json` wins over the automatic default.
+- `--base-url` always wins; a `baseUrl` in `models.json` (model- or provider-level) wins over the automatic default.
 
 ### OpenCode Go model catalog
 

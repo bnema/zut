@@ -804,7 +804,7 @@ zut --provider ollama --model gemma4:31b
 With a real key and no explicit endpoint, zut defaults to `https://ollama.com/v1`. Precedence:
 
 1. `--base-url` always wins — pass `--base-url http://localhost:11434` to force local while the key is set.
-2. A model-level `baseUrl` in `models.json` wins when no `--base-url` is given.
+2. A `baseUrl` in `models.json` (model- or provider-level) wins when no `--base-url` is given.
 3. Otherwise a real key (`--api-key`, `OLLAMA_API_KEY`, or `/login`) selects the cloud endpoint.
 4. With no key, zut stays local with no auth.
 
