@@ -543,6 +543,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
+	case "ollama":
+		if v := os.Getenv("OLLAMA_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
 	case "llama.cpp":
 		baseURL, apiKey, resolveErr := resolveLlamaCPPConfig(ctx, commandMode)
 		if resolveErr != nil {

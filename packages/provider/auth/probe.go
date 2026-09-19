@@ -45,6 +45,12 @@ func ProbeAPIKey(ctx context.Context, provider, key string) error {
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+key)
+	case "ollama":
+		req, err = http.NewRequestWithContext(ctx, "GET", "https://ollama.com/v1/models", nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("authorization", "Bearer "+key)
 	case "google":
 		// Google Generative Language: list models with the API key.
 		// Accepts the key via x-goog-api-key header (preferred over
