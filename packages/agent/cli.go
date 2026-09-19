@@ -1400,7 +1400,7 @@ var errInteractiveAgentChanged = errors.New("interactive agent or web-search pol
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
 // zutfile entry.pre installs new skills or extensions.
-// mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
+// mutateRegistry, if non-nil, can inject session-specific tools (e.g. the subagent tool).
 // interactive, when non-nil, serializes the final commit with agent replacement.
 func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) (subagents.WebSearchPolicy, error) {
 	if ag == nil {

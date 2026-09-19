@@ -38,7 +38,9 @@ const subagentStopSchema = `{
   "required": ["agent_id"]
 }`
 
-func (t *SubagentStopTool) Name() string { return SubagentStopToolName }
+// Name returns the shared facade name: this type is an internal
+// implementation and is never registered on its own.
+func (t *SubagentStopTool) Name() string { return SubagentToolName }
 
 func (t *SubagentStopTool) Description() string {
 	return "Request termination of a stuck resident sub-agent."

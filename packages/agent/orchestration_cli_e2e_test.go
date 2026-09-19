@@ -317,9 +317,9 @@ func requestIsParent(body []byte) bool {
 
 func writeToolCall(w http.ResponseWriter, id, task string) {
 	w.Header().Set("content-type", "text/event-stream")
-	arguments, _ := json.Marshal(map[string]string{"task": task})
+	arguments, _ := json.Marshal(map[string]any{"action": "spawn", "task": task})
 	chunk := map[string]any{
-		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": id, "type": "function", "function": map[string]string{"name": "subagent_spawn", "arguments": string(arguments)}}}}, "finish_reason": "tool_calls"}},
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": id, "type": "function", "function": map[string]string{"name": "subagent", "arguments": string(arguments)}}}}, "finish_reason": "tool_calls"}},
 		"usage":   map[string]int{"prompt_tokens": 8, "completion_tokens": 2},
 	}
 	data, _ := json.Marshal(chunk)

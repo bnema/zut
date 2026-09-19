@@ -25,10 +25,14 @@ import (
 // primary-agent prompt decides whether delegation is proactive or only on an
 // explicit user request.
 const (
-	SubagentSpawnToolName  = "subagent_spawn"
-	SubagentStatusToolName = "subagent_status"
-	SubagentStopToolName   = "subagent_stop"
-	SubagentResumeToolName = "subagent_resume"
+	// SubagentToolName is the single model-facing subagent tool. One call
+	// carries one action; see the SubagentAction* constants.
+	SubagentToolName = "subagent"
+
+	SubagentActionSpawn  = "spawn"
+	SubagentActionStatus = "status"
+	SubagentActionStop   = "stop"
+	SubagentActionResume = "resume"
 
 	maxSubagentWaitSeconds = 5 * 60
 )
@@ -126,9 +130,11 @@ const subagentSpawnSchemaTemplate = `{
   "required": ["task"]
 }`
 
-func (t *SubagentSpawnTool) Name() string { return SubagentSpawnToolName }
+// Name returns the shared facade name: the four subagent tool types are
+// internal implementations and are never registered on their own.
+func (t *SubagentSpawnTool) Name() string { return SubagentToolName }
 func (t *SubagentSpawnTool) Description() string {
-	return "Delegate a concrete, bounded scope to a resident sub-agent. For proactive delegation, use an independent sidecar only when the parent has useful non-overlapping work; keep immediate blockers local. A worker owns its scope until completion, so never duplicate it in the parent. If delegation owns the blocking task, end or yield the parent turn. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through subagent_resume. Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, dashboard, metadata, or file checks solely to wait."
+	return subagentSpawnGuidance
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	return json.RawMessage(subagentSpawnSchemaTemplate)

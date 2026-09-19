@@ -452,7 +452,7 @@ func (i *Interactive) autoSubagentsUnavailableHint() string {
 		hints = append(hints, "resident subagent manager is unavailable in this mode")
 	}
 	if !autoSubagentsAnyToolAllowedConfig(i.cfg) {
-		hints = append(hints, "launch-time tool policy excludes subagent manager tools")
+		hints = append(hints, "launch-time tool policy excludes every subagent action")
 	}
 	return strings.Join(hints, "; ")
 }
@@ -511,14 +511,15 @@ func (i *Interactive) applyAutoSubagentsTool() {
 	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
-		if name == "subagent_spawn" || name == "subagent_status" || name == "subagent_stop" || name == "subagent_resume" {
+		if name == tools.SubagentToolName {
 			continue
 		}
 		next[name] = t
 	}
 	if i.autoSubagentsAvailable() {
+		facade := &tools.SubagentTool{}
 		if i.autoSubagentsToolAllowed() {
-			canonical := &tools.SubagentSpawnTool{
+			facade.Spawn = &tools.SubagentSpawnTool{
 				ResidentManager:   i.cfg.ResidentManager,
 				BuildResidentSpec: i.cfg.BuildResidentSpec,
 				Enabled:           func() bool { return true },
@@ -527,29 +528,26 @@ func (i *Interactive) applyAutoSubagentsTool() {
 				DefaultReasoning:  func() string { return i.cfg.Reasoning },
 				ResolveSubagent:   i.cfg.ResolveSubagent,
 			}
-			next[canonical.Name()] = canonical
 		}
 		if i.autoSubagentsStatusToolAllowed() {
-			statusTool := &tools.SubagentStatusTool{
+			facade.Status = &tools.SubagentStatusTool{
 				ResidentManager: i.cfg.ResidentManager,
 				Enabled:         func() bool { return true },
 			}
-			next[statusTool.Name()] = statusTool
 		}
 		if i.autoSubagentsStopToolAllowed() {
-			stopTool := &tools.SubagentStopTool{
+			facade.Stop = &tools.SubagentStopTool{
 				ResidentManager: i.cfg.ResidentManager,
 				Enabled:         func() bool { return true },
 			}
-			next[stopTool.Name()] = stopTool
 		}
 		if i.autoSubagentsResumeToolAllowed() {
-			resumeTool := &tools.SubagentResumeTool{
+			facade.Resume = &tools.SubagentResumeTool{
 				ResidentManager: i.cfg.ResidentManager,
 				Enabled:         func() bool { return true },
 			}
-			next[resumeTool.Name()] = resumeTool
 		}
+		next[facade.Name()] = facade
 	}
 	i.agent.SetTools(next)
 }

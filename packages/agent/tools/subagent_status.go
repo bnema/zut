@@ -58,7 +58,9 @@ const subagentStatusSchema = `{
   }
 }`
 
-func (t *SubagentStatusTool) Name() string { return SubagentStatusToolName }
+// Name returns the shared facade name: this type is an internal
+// implementation and is never registered on its own.
+func (t *SubagentStatusTool) Name() string { return SubagentToolName }
 
 func (t *SubagentStatusTool) Description() string {
 	return "Query live status for one background sub-agent or list all visible workers without waiting for completion. Set include_result with agent_id to retrieve its saved result without model execution."
@@ -151,7 +153,7 @@ func publicResidentStatus(snapshot subagents.ResidentSnapshot) subagentStatusEnt
 func renderSubagentStatus(response subagentStatusResponse) (core.ToolResult, error) {
 	data, err := json.Marshal(response)
 	if err != nil {
-		return core.ToolResult{}, fmt.Errorf("%s: encode status: %w", "subagent_status", err)
+		return core.ToolResult{}, fmt.Errorf("%s: encode status: %w", SubagentToolName, err)
 	}
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: string(data)}},

@@ -38,7 +38,9 @@ const subagentResumeSchema = `{
   "required": ["agent_id", "prompt"]
 }`
 
-func (t *SubagentResumeTool) Name() string { return SubagentResumeToolName }
+// Name returns the shared facade name: this type is an internal
+// implementation and is never registered on its own.
+func (t *SubagentResumeTool) Name() string { return SubagentToolName }
 
 func (t *SubagentResumeTool) Description() string {
 	return "Continue a resident sub-agent with a follow-up prompt and retained session. After a terminal failure, inspect its saved result first; explicit resume continues the retained session without discarding progress or satisfying required work."
