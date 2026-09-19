@@ -207,11 +207,11 @@ func TestResidentChildRunnerInjectsContextReminderIntoNextRequest(t *testing.T) 
 
 func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T) {
 	catalogue := core.Registry{
-		"read":           nil,
-		"bash":           nil,
-		"subagent_spawn": nil,
-		"update_goal":    nil,
-		"plan":           nil,
+		"read":        nil,
+		"bash":        nil,
+		"subagent":    nil,
+		"update_goal": nil,
+		"plan":        nil,
 	}
 	registry, err := residentChildRegistry(catalogue, []string{"read"})
 	if err != nil {
@@ -220,7 +220,7 @@ func TestResidentChildRegistryUsesExactToolListAndForbidsDelegation(t *testing.T
 	if len(registry) != 1 {
 		t.Fatalf("registry = %#v", registry)
 	}
-	for _, name := range []string{"subagent_spawn", "update_goal", "plan", "missing"} {
+	for _, name := range []string{"subagent", "update_goal", "plan", "missing"} {
 		_, err := residentChildRegistry(catalogue, []string{name})
 		if err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("residentChildRegistry(%q) error = %v", name, err)

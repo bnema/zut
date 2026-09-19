@@ -283,7 +283,7 @@ func residentChildRegistry(catalogue core.Registry, names []string) (core.Regist
 		if name == "" {
 			return nil, fmt.Errorf("resident child has an empty tool name")
 		}
-		if name == tools.SubagentSpawnToolName || name == tools.SubagentStatusToolName || name == tools.SubagentStopToolName || name == tools.SubagentResumeToolName || name == "update_goal" || name == tools.PlanToolName {
+		if name == tools.SubagentToolName || name == "update_goal" || name == tools.PlanToolName {
 			return nil, fmt.Errorf("resident child tool %q is not allowed", name)
 		}
 		tool, ok := catalogue[name]

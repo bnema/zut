@@ -1457,7 +1457,7 @@ var errInteractiveAgentChanged = errors.New("interactive agent or web-search pol
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
 // zutfile entry.pre installs new skills or extensions.
-// mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
+// mutateRegistry, if non-nil, can inject session-specific tools (e.g. the subagent tool).
 // interactive, when non-nil, serializes the final commit with agent replacement.
 func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) (subagents.WebSearchPolicy, error) {
 	if ag == nil {
@@ -1746,7 +1746,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			}
 			if confirmGate != nil {
 				var content strings.Builder
+				// The remembered "always allow" grant is keyed by tool name,
+				// or a finer per-action key when the tool asks for one (the
+				// subagent facade). Compute it from the effective args so a
+				// grant matches the call that will actually run.
 				_, currentTools := a.PromptConfig()
+				confirmationKey := confirmationKeyFor(currentTools, call.Name, effectiveArgs)
 				if tool, err := currentTools.Get(call.Name); err == nil {
 					if previewer, ok := tool.(core.ToolPreviewer); ok {
 						preview, err := previewer.Preview(ctx, effectiveArgs)
@@ -1766,6 +1771,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 				ok, reason, _ := confirmGate.CheckToolCall(core.ToolCallConfirmation{
 					ID:      call.ID,
 					Name:    call.Name,
+					Key:     confirmationKey,
 					Summary: core.BuildPreview(effectiveArgs, 120),
 					Content: content.String(),
 					Origin:  call.Origin,
@@ -3381,4 +3387,18 @@ func printModels() {
 			srcW, source,
 			m.DisplayName)
 	}
+}
+
+// confirmationKeyFor returns the session-scoped confirmation grant key for a
+// tool call. A tool that implements core.ConfirmationKeyer may expose a finer
+// key than its name (the subagent facade keys one grant per action); every
+// other tool, and any unknown tool, keeps its own name. It mirrors the
+// confirmation gate's lookup so a remembered grant matches the call that will
+// actually run.
+func confirmationKeyFor(reg core.Registry, name string, args json.RawMessage) string {
+	tool, err := reg.Get(name)
+	if err != nil {
+		return name
+	}
+	return core.ConfirmationKey(tool, name, args)
 }

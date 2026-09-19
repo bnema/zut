@@ -4,6 +4,15 @@
 > Previous state is ignored rather than read or migrated; remove it when you
 > no longer need it. Existing child jobs are never resumed.
 
+> **V0.x breaking change:** the separate `subagent_spawn`, `subagent_status`,
+> `subagent_stop`, and `subagent_resume` tools are replaced by one `subagent`
+> tool with `spawn`, `status`, `stop`, and `resume` actions.
+> `--tools subagent_spawn` no longer selects anything; use
+> `--tools subagent:spawn`, or bare `--tools subagent` for every action.
+> Under `--no-yolo`, "always allow" is remembered per action
+> (`subagent:status` and `subagent:spawn` are separate grants), so approving a
+> read-only `status` call never pre-approves `spawn`, `stop`, or `resume`.
+
 Subagents are independent `core.Agent` conversations resident in the same zut
 process as their parent. A child has a stable, private session identity, its own
 provider client and tool registry, a cancellation boundary, and an authoritative
@@ -60,18 +69,19 @@ subagents/<child-id>/
   patch.diff        # optional worktree capture
 ```
 
-Acceptance is durable before `subagent_spawn` reports success. Finalized user,
-assistant, tool-call, and tool-result messages are journaled; streamed deltas
-and hidden reasoning are not exposed as ordinary history. A tool call is stored
-before execution and reconciliation repairs incomplete call/result pairs. A
-context-overflow recovery appends one `child.compacted` checkpoint carrying the
-replacement transcript; resume starts from the newest checkpoint, while the
-paged history view still shows everything appended before it.
+Acceptance is durable before the `subagent` tool's `spawn` action reports
+success. Finalized user, assistant, tool-call, and tool-result messages are
+journaled; streamed deltas and hidden reasoning are not exposed as ordinary
+history. A tool call is stored before execution and reconciliation repairs
+incomplete call/result pairs. A context-overflow recovery appends one
+`child.compacted` checkpoint carrying the replacement transcript; resume
+starts from the newest checkpoint, while the paged history view still shows
+everything appended before it.
 
 All children stop when the host exits. On the next start, queued or running
 turns are marked `interrupted`; zut never replays their task. Resume only with
-an explicit new prompt through `subagent_resume`, the child-session composer,
-or `/subagents resume <id> <prompt>`.
+an explicit new prompt through the `subagent` tool's `resume` action, the
+child-session composer, or `/subagents resume <id> <prompt>`.
 
 Multiple zut processes may share a state root. Each resident journal has one
 host owner at a time. A process that finds a child owned elsewhere reports it
@@ -82,9 +92,9 @@ leaves any ambiguous journal corruption untouched. A repair retains the
 pre-repair transcript as `.transcript-backup-*`; it can contain private session
 data and is intentionally not removed automatically.
 
-`subagent_status` reports `owned_elsewhere: true` when another process owns a
-child. The field is omitted when false. A foreign-owned child cannot be resumed,
-or have its history or result read, from this process.
+The `subagent` tool's `status` action reports `owned_elsewhere: true` when
+another process owns a child. The field is omitted when false. A foreign-owned
+child cannot be resumed, or have its history or result read, from this process.
 
 The global scheduler admits the oldest eligible accepted prompt, runs at most
 one turn for each child, and defaults to six concurrent turns. Set
@@ -108,8 +118,8 @@ Compatibility notes: new journals write version 3 and carry no budget
 fields, baselines, or exhaustion states. Version 2 archives are read with
 explicit translation and their transcripts are never rewritten by
 translation. `result.json` keeps a deprecated `handoff` field that stays
-empty for new results and remains readable for archives. `subagent_status`
-no longer exposes `budget` or `budget_source` fields.
+empty for new results and remains readable for archives. The `subagent` tool's
+`status` action no longer exposes `budget` or `budget_source` fields.
 
 ### Context reminders
 
@@ -160,14 +170,14 @@ guarantee.
 Retrieve the saved result without executing a model:
 
 ```json
-{"agent_id":"<child-id>","include_result":true}
+{"action":"status","agent_id":"<child-id>","include_result":true}
 ```
 
-Pass this to `subagent_status`, then reconcile the history and artifacts before
-repeating any side effects. Explicit `subagent_resume` after a terminal failure
-continues the retained session, workspace, and cumulative cost. It does not
-automatically retry the task. Ordinary follow-ups continue the existing
-session.
+Pass this to the `subagent` tool's `status` action, then reconcile the history
+and artifacts before repeating any side effects. The `subagent` tool's explicit
+`resume` action after a terminal failure continues the retained session,
+workspace, and cumulative cost. It does not automatically retry the task.
+Ordinary follow-ups continue the existing session.
 
 `required: true` makes a delegated result an obligation of the parent turn.
 Failed, cancelled, and interrupted required work remains
@@ -200,32 +210,41 @@ required capability.
 
 ## Tools and slash commands
 
-The model-facing tools retain their logical names:
+The model-facing tool keeps one logical name and four actions, selected by its
+`action` argument. Launch-time gating is per action: `--tools subagent` grants
+every action, `--tools subagent:<action>` grants one, and `--no-tools` disables
+all of them.
 
-- `subagent_spawn` accepts `task`, optional `agent`, `model` and `provider`,
-  `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
-  `worktree`).
-  `wait` is an explicit whole-second value from 1 through 300; when omitted,
-  spawning returns immediately. A timed-out wait leaves the
-  accepted child active, whether it is queued or running. Do not retry that
-  task until it reaches a terminal failure, cancellation, or interruption. It
-  returns a logical `subagent://<id>` reference.
-- `subagent_status` returns bounded current state for one child or the current
-  set immediately. With `agent_id` and `include_result: true`, it also reads the
-  saved terminal result without model execution. Without this
-  option it remains metadata-only; foreign-owned results cannot be read.
-  Result-read errors distinguish foreign ownership, a missing saved result,
-  and permission denial without exposing filesystem paths or saved content.
-- `subagent_stop` stops one live child.
-- `subagent_resume` accepts an explicit follow-up prompt for an existing child.
-  After a terminal failure, inspect the saved result before resuming; resume
-  continues the retained session.
+- `subagent` accepts an `action` of `spawn`, `status`, `stop`, or `resume`.
+  - `spawn` accepts `task`, optional `agent`, `model` and `provider`,
+    `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
+    `worktree`).
+    `wait` is an explicit whole-second value from 1 through 300; when omitted,
+    spawning returns immediately. A timed-out wait leaves the
+    accepted child active, whether it is queued or running. Do not retry that
+    task until it reaches a terminal failure, cancellation, or interruption. It
+    returns a logical `subagent://<id>` reference.
+  - `status` accepts optional `agent_id` and `include_result`, and returns
+    bounded current state for one child or the current set immediately. With
+    `agent_id` and `include_result: true`, it also reads the saved terminal
+    result without model execution. Without this option it remains
+    metadata-only; foreign-owned results cannot be read. Result-read errors
+    distinguish foreign ownership, a missing saved result, and permission
+    denial without exposing filesystem paths or saved content.
+  - `stop` accepts `agent_id` and stops one live child.
+  - `resume` accepts `agent_id`, `prompt`, and optional `wait`. `prompt` is an
+    explicit follow-up prompt for an existing child. After a terminal failure,
+    inspect the saved result before resuming; resume continues the retained
+    session. `wait` uses the same 1–300 second bound as `spawn` and waits for
+    the accepted follow-up turn, returning its outcome or reporting the timeout
+    while the child stays active.
 
-Child execution started by `subagent_spawn` is asynchronous unless it receives
-an explicit `wait` value. For an unwaited spawn, completion arrives through the
-host’s typed completion update; `subagent_status` returns immediately and does
-not wait for completion. Do not use sleep loops, repeated status calls, journal
-files, or terminal UI inspection as a completion signal.
+Child execution started by the `subagent` tool's `spawn` or `resume` action is
+asynchronous unless it receives an explicit `wait` value. For an unwaited call,
+completion arrives through the host’s typed completion update; the `subagent`
+tool's `status` action returns immediately and does not wait for completion. Do
+not use sleep loops, repeated status calls, journal files, or terminal UI
+inspection as a completion signal.
 In interactive mode, a result received while the primary is busy enters the
 visible **sliding in** queue and reaches the model at its next safe boundary,
 without interrupting a model request or tool call and without waiting for other
@@ -233,7 +252,8 @@ children. Results already queued are not repeated when the parent turn ends.
 Undelivered results remain queued after a provider or compaction error for the
 next turn; they do not automatically retry the failed request. Explicit
 cancellation clears pending queue entries. The queue is in memory, while the
-child’s saved result remains available through `subagent_status`.
+child’s saved result remains available through the `subagent` tool's `status`
+action.
 When the primary is idle, each child completion immediately starts the next
 parent turn instead of waiting for its siblings. The host update names the
 finished child and lists sibling agent IDs that are still running. A completion
@@ -269,8 +289,9 @@ list. zut never applies a captured patch automatically. Failed or interrupted
 worktrees are retained for inspection; an idle successful worktree is cleaned
 when its child is explicitly stopped.
 
-Use `subagent_status` with `agent_id` and `include_result: true` to retrieve the
-saved result, `changed_files`, and `patch_ref` when a patch was captured. The
+Use the `subagent` tool's `status` action with `agent_id` and
+`include_result: true` to retrieve the saved result, `changed_files`, and
+`patch_ref` when a patch was captured. The
 patch bytes are stored in `subagents/<child-id>/patch.diff` under the managed
 state root shown above; logical references are identifiers, not filesystem
 paths. Inspect the retained worktree and patch before resuming or applying

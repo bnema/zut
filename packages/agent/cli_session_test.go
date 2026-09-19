@@ -894,8 +894,8 @@ func TestApplyInitialSessionResumeWithRuntimePreservesInheritedModelDefaults(t *
 	if got := runtime.currentModel(); got != "stored-local-model" {
 		t.Fatalf("runtime inherited model = %q, want stored-local-model", got)
 	}
-	if _, ok := gotAgent.ToolsSnapshot()["subagent_spawn"]; !ok {
-		t.Fatal("resumed parent lost canonical subagent_spawn manager tool")
+	if _, ok := gotAgent.ToolsSnapshot()["subagent"]; !ok {
+		t.Fatal("resumed parent lost the canonical subagent manager tool")
 	}
 }
 

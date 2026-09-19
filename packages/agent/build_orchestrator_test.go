@@ -79,7 +79,7 @@ func TestOrchestratorAlwaysReceivesResearchTools(t *testing.T) {
 	}{
 		{
 			name:          "requested allowlist",
-			args:          Args{Orchestrate: true, ToolsSet: true, Tools: []string{"subagent_spawn"}},
+			args:          Args{Orchestrate: true, ToolsSet: true, Tools: []string{"subagent:spawn"}},
 			wantResearch:  true,
 			wantWeb:       true,
 			wantWriteTool: false,

@@ -6,6 +6,12 @@ import (
 )
 
 func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
+	// Substrings that identify the stop and resume action guidance.
+	const (
+		stopAction    = "stop action to request termination of a stuck worker"
+		resumeAction  = "resume action with an agent id and follow-up prompt"
+		noSpawnNotice = "Spawning new workers is unavailable"
+	)
 	builders := []struct {
 		name            string
 		build           func(bool, bool, bool) string
@@ -25,14 +31,14 @@ func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 				unwanted  []string
 				available bool
 			}{
-				{name: "none", spawn: true, unwanted: []string{"subagent_stop", "subagent_resume"}, available: true},
-				{name: "fully unavailable", unwanted: []string{"subagent_stop", "subagent_resume"}},
-				{name: "stop", spawn: true, stop: true, want: []string{"subagent_stop"}, unwanted: []string{"subagent_resume"}, available: true},
-				{name: "resume", spawn: true, resume: true, want: []string{"subagent_resume"}, unwanted: []string{"subagent_stop"}, available: true},
-				{name: "both", spawn: true, stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume"}, available: true},
-				{name: "stop without spawn", stop: true, want: []string{"subagent_stop", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_resume"}},
-				{name: "resume without spawn", resume: true, want: []string{"subagent_resume", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_stop"}},
-				{name: "both without spawn", stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume", "Spawning new workers is unavailable"}},
+				{name: "none", spawn: true, unwanted: []string{stopAction, resumeAction}, available: true},
+				{name: "fully unavailable", unwanted: []string{stopAction, resumeAction}},
+				{name: "stop", spawn: true, stop: true, want: []string{stopAction}, unwanted: []string{resumeAction}, available: true},
+				{name: "resume", spawn: true, resume: true, want: []string{resumeAction}, unwanted: []string{stopAction}, available: true},
+				{name: "both", spawn: true, stop: true, resume: true, want: []string{stopAction, resumeAction}, available: true},
+				{name: "stop without spawn", stop: true, want: []string{stopAction, noSpawnNotice}, unwanted: []string{resumeAction}},
+				{name: "resume without spawn", resume: true, want: []string{resumeAction, noSpawnNotice}, unwanted: []string{stopAction}},
+				{name: "both without spawn", stop: true, resume: true, want: []string{stopAction, resumeAction, noSpawnNotice}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					got := builder.build(tc.spawn, tc.stop, tc.resume)
