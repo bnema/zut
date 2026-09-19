@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+func TestAPIKeyProvidersIncludesOllama(t *testing.T) {
+	found := false
+	for _, p := range APIKeyProviders() {
+		if p == "ollama" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("APIKeyProviders() = %v, want ollama listed", APIKeyProviders())
+	}
+}
+
 func TestProbeAPIKeyAcceptsExtraProviderWithoutProbe(t *testing.T) {
 	SetExtraAPIKeyProviders([]string{"my-company"})
 	t.Cleanup(func() { SetExtraAPIKeyProviders(nil) })
