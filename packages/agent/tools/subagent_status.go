@@ -44,31 +44,9 @@ type subagentStatusEntry struct {
 	OwnedElsewhere bool                    `json:"owned_elsewhere,omitempty"`
 }
 
-const subagentStatusSchema = `{
-  "type": "object",
-  "properties": {
-    "agent_id": {
-      "type": "string",
-		"description": "Optional child id or unique id prefix. Omit it to list all resident sub-agents."
-    },
-    "include_result": {
-      "type": "boolean",
-      "description": "With agent_id, retrieve the saved terminal result without running the child."
-    }
-  }
-}`
-
 // Name returns the shared facade name: this type is an internal
 // implementation and is never registered on its own.
 func (t *SubagentStatusTool) Name() string { return SubagentToolName }
-
-func (t *SubagentStatusTool) Description() string {
-	return "Query live status for one background sub-agent or list all visible workers without waiting for completion. Set include_result with agent_id to retrieve its saved result without model execution."
-}
-
-func (t *SubagentStatusTool) Schema() json.RawMessage {
-	return json.RawMessage(subagentStatusSchema)
-}
 
 func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	if ctx != nil {

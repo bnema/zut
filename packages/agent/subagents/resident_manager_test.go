@@ -81,6 +81,73 @@ func TestResidentManagerCompletedAnswerCanResume(t *testing.T) {
 	}
 }
 
+// ResumeWithTurn lets a caller subscribe to the exact follow-up turn before it
+// can complete.
+func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	initial, cancelInitial := manager.WatchCompletion("turn-child", "initial-turn")
+	defer cancelInitial()
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "turn-child", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-initial:
+	case <-time.After(time.Second):
+		t.Fatal("initial turn did not complete")
+	}
+	followUp, cancelFollowUp := manager.WatchCompletion("turn-child", "follow-up-turn")
+	defer cancelFollowUp()
+	if err := manager.ResumeWithTurn(context.Background(), "turn-child", "continue", "follow-up-turn"); err != nil {
+		t.Fatalf("ResumeWithTurn: %v", err)
+	}
+	select {
+	case completion := <-followUp:
+		if completion.TurnID != "follow-up-turn" {
+			t.Fatalf("completion turn ID = %q", completion.TurnID)
+		}
+		if completion.Err != nil {
+			t.Fatalf("completion error = %v", completion.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no completion for the caller-owned turn")
+	}
+}
+
+// A blank or whitespace caller turn ID falls back to a generated unique ID, so
+// the completion is still addressable and the journal stays replayable.
+func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
+	completions := make(chan ResidentCompletion, 4)
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
+		return func(context.Context, string) error { return nil }, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	initial, cancelInitial := manager.WatchCompletion("blank-turn-child", "initial-turn")
+	defer cancelInitial()
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "blank-turn-child", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-initial:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial turn did not complete")
+	}
+	manager.SetCompletionObserver(func(completion ResidentCompletion) { completions <- completion })
+	if err := manager.ResumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
+		t.Fatalf("ResumeWithTurn: %v", err)
+	}
+	select {
+	case completion := <-completions:
+		if completion.TurnID == "" || strings.TrimSpace(completion.TurnID) == "" {
+			t.Fatalf("completion turn ID = %q, want a generated non-blank ID", completion.TurnID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no completion for the blank caller turn ID")
+	}
+}
+
 func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
 	completed := make(chan ResidentCompletion, 1)
 	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {

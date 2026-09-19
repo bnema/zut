@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -209,4 +210,63 @@ func TestBuildPreview(t *testing.T) {
 
 func hasEllipsis(s string) bool {
 	return strings.HasSuffix(s, "...")
+}
+
+// keyedFakeTool implements Tool and ConfirmationKeyer. An empty key exercises
+// the fallback path back to the registered tool name.
+type keyedFakeTool struct{ key string }
+
+func (t keyedFakeTool) Name() string        { return "subagent" }
+func (t keyedFakeTool) Description() string { return "" }
+func (t keyedFakeTool) Schema() json.RawMessage {
+	return nil
+}
+func (t keyedFakeTool) ConfirmationKey(json.RawMessage) string { return t.key }
+func (t keyedFakeTool) Execute(context.Context, json.RawMessage, func(string)) (ToolResult, error) {
+	return ToolResult{}, nil
+}
+
+// plainFakeTool implements Tool but not ConfirmationKeyer.
+type plainFakeTool struct{}
+
+func (plainFakeTool) Name() string        { return "read" }
+func (plainFakeTool) Description() string { return "" }
+func (plainFakeTool) Schema() json.RawMessage {
+	return nil
+}
+func (plainFakeTool) Execute(context.Context, json.RawMessage, func(string)) (ToolResult, error) {
+	return ToolResult{}, nil
+}
+
+func TestConfirmationKeyFallsBackToToolName(t *testing.T) {
+	args := json.RawMessage(`{"action":"status"}`)
+	if got := ConfirmationKey(keyedFakeTool{key: "subagent:status"}, "subagent", args); got != "subagent:status" {
+		t.Fatalf("keyed tool key = %q, want subagent:status", got)
+	}
+	if got := ConfirmationKey(keyedFakeTool{}, "subagent", args); got != "subagent" {
+		t.Fatalf("empty key should fall back to the tool name, got %q", got)
+	}
+	if got := ConfirmationKey(plainFakeTool{}, "read", args); got != "read" {
+		t.Fatalf("non-keyer should use the tool name, got %q", got)
+	}
+}
+
+func TestConfirmGateRememberKeyScopesGrant(t *testing.T) {
+	rc := &recordingConfirmer{replies: []ConfirmDecision{
+		{Allow: true, RememberTool: true},
+		{Allow: false, Reason: "no"},
+	}}
+	g := NewConfirmGate(rc)
+	if allow, _, _ := g.CheckToolCall(ToolCallConfirmation{Name: "subagent", Key: "subagent:status", Summary: "status"}); !allow {
+		t.Fatal("status call should allow")
+	}
+	if allow, _, _ := g.CheckToolCall(ToolCallConfirmation{Name: "subagent", Key: "subagent:status", Summary: "status again"}); !allow {
+		t.Fatal("remembered key should short-circuit")
+	}
+	if allow, reason, _ := g.CheckToolCall(ToolCallConfirmation{Name: "subagent", Key: "subagent:spawn", Summary: "spawn"}); allow || reason != "no" {
+		t.Fatalf("a sibling action must re-prompt; allow=%v reason=%q", allow, reason)
+	}
+	if len(rc.calls) != 2 {
+		t.Fatalf("confirmer calls = %d, want 2 (status then spawn)", len(rc.calls))
+	}
 }

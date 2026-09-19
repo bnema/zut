@@ -8,11 +8,13 @@ import (
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
+	"github.com/google/uuid"
 )
 
 // SubagentResumeTool gives a sub-agent a follow-up turn while preserving its
 // existing session context. Every explicit follow-up is accepted durably and
-// runs FIFO after any active resident turn.
+// runs FIFO after any active resident turn. An explicit bounded wait may return
+// that turn's completion or expire while the child stays active.
 type SubagentResumeTool struct {
 	ResidentManager *subagents.ResidentManager
 	Enabled         func() bool
@@ -21,34 +23,12 @@ type SubagentResumeTool struct {
 type subagentResumeArgs struct {
 	AgentID string `json:"agent_id"`
 	Prompt  string `json:"prompt"`
+	Wait    *int   `json:"wait,omitempty"`
 }
-
-const subagentResumeSchema = `{
-  "type": "object",
-  "properties": {
-    "agent_id": {
-      "type": "string",
-		"description": "Child id or unique id prefix for the resident sub-agent to continue."
-    },
-    "prompt": {
-      "type": "string",
-      "description": "New manager follow-up for the sub-agent. Its earlier task and conversation remain available in the retained session."
-    }
-  },
-  "required": ["agent_id", "prompt"]
-}`
 
 // Name returns the shared facade name: this type is an internal
 // implementation and is never registered on its own.
 func (t *SubagentResumeTool) Name() string { return SubagentToolName }
-
-func (t *SubagentResumeTool) Description() string {
-	return "Continue a resident sub-agent with a follow-up prompt and retained session. After a terminal failure, inspect its saved result first; explicit resume continues the retained session without discarding progress or satisfying required work."
-}
-
-func (t *SubagentResumeTool) Schema() json.RawMessage {
-	return json.RawMessage(subagentResumeSchema)
-}
 
 func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	if ctx != nil {
@@ -77,15 +57,41 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if strings.TrimSpace(args.Prompt) == "" {
 		return protocolToolError(prefix + ": prompt is required")
 	}
+	if args.Wait != nil && (*args.Wait < 1 || *args.Wait > maxSubagentWaitSeconds) {
+		return protocolToolError(fmt.Sprintf("%s: wait must be between 1 and %d seconds", prefix, maxSubagentWaitSeconds))
+	}
 	snapshot, ok := findResidentStatusSnapshot(t.ResidentManager.Snapshot(), id)
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
-	if err := t.ResidentManager.Resume(ctx, snapshot.ID, args.Prompt); err != nil {
+	// The watch is registered before the follow-up is accepted, so a turn that
+	// finishes immediately cannot complete before this call subscribes.
+	turnID := uuid.NewString()
+	var completionResult <-chan subagents.ResidentCompletion
+	cancelWait := func() {}
+	if args.Wait != nil {
+		completionResult, cancelWait = t.ResidentManager.WatchCompletion(snapshot.ID, turnID)
+	}
+	defer cancelWait()
+	if err := t.ResidentManager.ResumeWithTurn(ctx, snapshot.ID, args.Prompt, turnID); err != nil {
 		return protocolToolError(prefix + ": " + err.Error())
+	}
+	var outcome *subagentWaitOutcome
+	if args.Wait != nil {
+		completion, timedOut, err := waitForResidentCompletion(ctx, completionResult, *args.Wait, prefix)
+		if err != nil {
+			return core.ToolResult{}, err
+		}
+		outcome = &subagentWaitOutcome{Seconds: *args.Wait, TimedOut: timedOut}
+		if !timedOut {
+			result := completion.Completion()
+			outcome.Status = result.Status
+			outcome.Error = result.Error
+			outcome.Summary = result.Summary
+		}
 	}
 	if updated, ok := t.ResidentManager.SnapshotFor(snapshot.ID); ok {
 		snapshot = updated
 	}
-	return renderResidentAction("resumed", publicResidentStatus(snapshot))
+	return renderResidentActionWait("resumed", publicResidentStatus(snapshot), outcome)
 }

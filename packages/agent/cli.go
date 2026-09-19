@@ -1689,7 +1689,12 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			}
 			if confirmGate != nil {
 				var content strings.Builder
+				// The remembered "always allow" grant is keyed by tool name,
+				// or a finer per-action key when the tool asks for one (the
+				// subagent facade). Compute it from the effective args so a
+				// grant matches the call that will actually run.
 				_, currentTools := a.PromptConfig()
+				confirmationKey := confirmationKeyFor(currentTools, call.Name, effectiveArgs)
 				if tool, err := currentTools.Get(call.Name); err == nil {
 					if previewer, ok := tool.(core.ToolPreviewer); ok {
 						preview, err := previewer.Preview(ctx, effectiveArgs)
@@ -1709,6 +1714,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 				ok, reason, _ := confirmGate.CheckToolCall(core.ToolCallConfirmation{
 					ID:      call.ID,
 					Name:    call.Name,
+					Key:     confirmationKey,
 					Summary: core.BuildPreview(effectiveArgs, 120),
 					Content: content.String(),
 					Origin:  call.Origin,
@@ -3285,4 +3291,18 @@ func printModels() {
 			srcW, source,
 			m.DisplayName)
 	}
+}
+
+// confirmationKeyFor returns the session-scoped confirmation grant key for a
+// tool call. A tool that implements core.ConfirmationKeyer may expose a finer
+// key than its name (the subagent facade keys one grant per action); every
+// other tool, and any unknown tool, keeps its own name. It mirrors the
+// confirmation gate's lookup so a remembered grant matches the call that will
+// actually run.
+func confirmationKeyFor(reg core.Registry, name string, args json.RawMessage) string {
+	tool, err := reg.Get(name)
+	if err != nil {
+		return name
+	}
+	return core.ConfirmationKey(tool, name, args)
 }

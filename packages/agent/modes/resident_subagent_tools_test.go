@@ -16,10 +16,11 @@ import (
 func TestApplyAutoSubagentsToolReplacesOneFacadeEntry(t *testing.T) {
 	manager := subagents.NewResidentManager(t.TempDir(), nil)
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	preSeeded := &tools.SubagentTool{}
 	agent := core.NewAgent(nil, "model", "", core.Registry{
 		"read": &tools.GrepTool{},
 		// A previously installed facade, as a prior refresh would have left it.
-		"subagent": &tools.SubagentTool{},
+		"subagent": preSeeded,
 	})
 	allowed, resumeAllowed := true, true
 	interactive := NewInteractive(InteractiveConfig{
@@ -54,6 +55,9 @@ func TestApplyAutoSubagentsToolReplacesOneFacadeEntry(t *testing.T) {
 		facade, ok := snapshot[tools.SubagentToolName].(*tools.SubagentTool)
 		if !ok {
 			t.Fatalf("registry entry %q = %T, want *tools.SubagentTool", tools.SubagentToolName, snapshot[tools.SubagentToolName])
+		}
+		if facade == preSeeded {
+			t.Fatal("interactive refresh reused the pre-seeded facade instead of replacing it")
 		}
 		if facade.Spawn == nil || facade.Status == nil || facade.Stop == nil {
 			t.Fatalf("facade actions = spawn:%v status:%v stop:%v", facade.Spawn != nil, facade.Status != nil, facade.Stop != nil)

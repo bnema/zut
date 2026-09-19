@@ -16,8 +16,10 @@ type ConfirmDecision struct {
 	// Allow=false. Examples: "user declined", "user refused: rm -rf
 	// looks dangerous".
 	Reason string
-	// RememberTool, when true, auto-allows every future call of the
-	// same tool name for the rest of the session without prompting.
+	// RememberTool, when true, auto-allows every future call with the
+	// same confirmation key for the rest of the session without prompting.
+	// The key is the tool name unless the tool implements ConfirmationKeyer
+	// to expose a finer grant (for example one action of a multiplexed tool).
 	RememberTool bool
 	// RememberAll, when true, auto-allows every future call of any
 	// tool for the rest of the session without prompting.
@@ -47,6 +49,35 @@ type ToolCallConfirmation struct {
 	// Origin routes a confirmation to its owning host view. It is opaque to
 	// the confirmation gate and never shown to the model.
 	Origin string
+	// Key is the session-scoped identity the gate remembers for "always
+	// allow". It lets one tool expose several confirmable actions
+	// ("subagent:status") without granting the others. Empty falls back to
+	// Name so every other tool keeps the per-name grant.
+	Key string
+}
+
+// ConfirmationKeyer is optionally implemented by tools whose confirmation
+// grant should be narrower than the tool name. The returned key is what the
+// ConfirmGate stores for "always allow".
+//
+// Implementations must fail closed: when the effective key cannot be derived
+// from args, return an empty string so the gate falls back to the tool name,
+// which never widens an existing grant.
+type ConfirmationKeyer interface {
+	ConfirmationKey(args json.RawMessage) string
+}
+
+// ConfirmationKey resolves the session grant identity for one tool call. A
+// tool that implements ConfirmationKeyer may report a finer key (for example
+// one action of a multiplexed tool); an empty key falls back to name, so an
+// undetermined key cannot widen the remembered grant beyond the tool name.
+func ConfirmationKey(tool Tool, name string, args json.RawMessage) string {
+	if keyer, ok := tool.(ConfirmationKeyer); ok {
+		if key := keyer.ConfirmationKey(args); key != "" {
+			return key
+		}
+	}
+	return name
 }
 
 // ToolCallConfirmer is optionally implemented by confirmation UIs that can
@@ -57,9 +88,10 @@ type ToolCallConfirmer interface {
 
 // ConfirmGate wraps a Confirmer with session-scoped memory for the
 // "allow, always" decisions. Once the user picks RememberTool on a
-// given tool name, the gate short-circuits subsequent calls of that
-// name. Once the user picks RememberAll, the gate short-circuits
-// everything for the rest of the session.
+// given confirmation key (the tool name, or a finer per-action key when
+// the tool implements ConfirmationKeyer), the gate short-circuits
+// subsequent calls with that key. Once the user picks RememberAll, the
+// gate short-circuits everything for the rest of the session.
 //
 // Safe for concurrent use: the allow-lists are guarded by a mutex
 // because the agent can queue tool calls from different goroutines.
@@ -102,7 +134,7 @@ func (g *ConfirmGate) CheckToolCall(call ToolCallConfirmation) (bool, string, js
 		g.mu.Unlock()
 		return true, "", nil
 	}
-	if g.allowedTool[call.Name] {
+	if g.allowedTool[call.confirmationKey()] {
 		g.mu.Unlock()
 		return true, "", nil
 	}
@@ -125,7 +157,7 @@ func (g *ConfirmGate) CheckToolCall(call ToolCallConfirmation) (bool, string, js
 			g.allowAll = true
 		}
 		if decision.RememberTool {
-			g.allowedTool[call.Name] = true
+			g.allowedTool[call.confirmationKey()] = true
 		}
 	}
 	g.mu.Unlock()
@@ -135,6 +167,15 @@ func (g *ConfirmGate) CheckToolCall(call ToolCallConfirmation) (bool, string, js
 		reason = "tool call refused by user"
 	}
 	return decision.Allow, reason, nil
+}
+
+// confirmationKey is the grant identity for the call: an explicit action-aware
+// key when the caller supplied one, else the registered tool name.
+func (call ToolCallConfirmation) confirmationKey() string {
+	if call.Key != "" {
+		return call.Key
+	}
+	return call.Name
 }
 
 // Reset clears the session memory. Invoked when the user toggles

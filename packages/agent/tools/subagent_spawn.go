@@ -83,62 +83,9 @@ type subagentSpawnArgs struct {
 	Isolation string `json:"isolation,omitempty"`
 }
 
-const subagentSpawnSchemaTemplate = `{
-  "type": "object",
-  "properties": {
-    "task": {
-      "type": "string",
-      "description": "The full task description for the sub-agent. Assign a concrete, bounded scope and explicit ownership that does not overlap other active work. Be specific: the child normally has the main agent's built-in tools, including lsp when enabled, but a selected profile can restrict its tools; it starts with NO context from this conversation. Shared isolation uses this working directory; worktree isolation captures a patch without merging it."
-    },
-    "agent": {
-      "type": "string",
-      "description": "Optional named markdown profile from [subagents_list]. The child applies that profile's system prompt, model, thinking level, tool limits, and fast-mode preference. Omit for a generic child."
-    },
-    "model": {
-      "type": "string",
-      "description": "Optional model id to pin the sub-agent to. Normally omit both model and provider so the sub-agent inherits the host session's resolved provider/model/auth route, or omit them when using an agent profile. Do not infer provider from model name. If you override this, also provide provider."
-    },
-    "provider": {
-      "type": "string",
-      "description": "Optional provider id. Normally omit both model and provider so the sub-agent inherits the host session. If you override this, also provide model. Note: openai means public OpenAI API-key auth; openai-codex means ChatGPT/Codex subscription auth."
-    },
-    "reasoning": {
-      "type": "string",
-      "enum": ["off", "minimum", "low", "medium", "high", "xhigh", "max"],
-      "description": "Optional reasoning level for the child. Overrides the selected profile's thinking level when provided."
-    },
-    "fast_mode": {
-      "type": "boolean",
-      "description": "Optional fast-mode override for the child. Omit to inherit the selected profile or host setting."
-    },
-    "required": {
-      "type": "boolean",
-      "description": "Set true when the parent must receive this delegated result before it can finish. The worker remains asynchronous and reports through a host completion update. A bounded wait expiring does not terminate the accepted child and must not be retried while it remains active. Terminal failure or cancellation remains unmet until a successful follow-up. An outcome unobserved across host restart requires explicit user reconciliation."
-    },
-    "wait": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 300,
-      "description": "Optional explicit number of seconds to wait for this sub-agent's initial task to finish. Omit to return immediately. The sub-agent continues in the background if this wait expires."
-    },
-    "isolation": {
-      "type": "string",
-      "enum": ["shared", "worktree"],
-      "description": "Workspace mode. Shared preserves existing behavior; worktree captures a patch without merging it."
-    }
-  },
-  "required": ["task"]
-}`
-
 // Name returns the shared facade name: the four subagent tool types are
 // internal implementations and are never registered on their own.
 func (t *SubagentSpawnTool) Name() string { return SubagentToolName }
-func (t *SubagentSpawnTool) Description() string {
-	return subagentSpawnGuidance
-}
-func (t *SubagentSpawnTool) Schema() json.RawMessage {
-	return json.RawMessage(subagentSpawnSchemaTemplate)
-}
 
 func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	prefix := t.Name()
@@ -247,27 +194,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 			return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(*a.Wait)*time.Second)
-		defer cancel()
-		select {
-		case result, ok := <-completionResult:
-			if !ok {
-				return core.ToolResult{}, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
-			}
-			completion = result
-		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return core.ToolResult{}, ctx.Err()
-			}
-			select {
-			case result, ok := <-completionResult:
-				if !ok {
-					return core.ToolResult{}, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
-				}
-				completion = result
-			default:
-				waitTimedOut = true
-			}
+		completion, waitTimedOut, err = waitForResidentCompletion(ctx, completionResult, *a.Wait, prefix)
+		if err != nil {
+			return core.ToolResult{}, err
 		}
 	} else if _, err := t.ResidentManager.Spawn(ctx, spec, task); err != nil {
 		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
@@ -312,6 +241,35 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		sb.WriteString("\nThe sub-agent is running in the background and owns the delegated scope. Do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].")
 	}
 	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: sb.String()}}}, nil
+}
+
+// waitForResidentCompletion blocks until the watched resident turn reports its
+// completion or the explicit bounded wait expires. A cancelled parent context
+// wins over an expiring wait, and a completion that arrives in the same instant
+// as the deadline is reported instead of a timeout.
+func waitForResidentCompletion(ctx context.Context, completionResult <-chan subagents.ResidentCompletion, seconds int, prefix string) (completion subagents.ResidentCompletion, timedOut bool, err error) {
+	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	defer cancel()
+	select {
+	case result, ok := <-completionResult:
+		if !ok {
+			return subagents.ResidentCompletion{}, false, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
+		}
+		return result, false, nil
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return subagents.ResidentCompletion{}, false, ctx.Err()
+		}
+		select {
+		case result, ok := <-completionResult:
+			if !ok {
+				return subagents.ResidentCompletion{}, false, fmt.Errorf("%s: completion wait ended unexpectedly", prefix)
+			}
+			return result, false, nil
+		default:
+			return subagents.ResidentCompletion{}, true, nil
+		}
+	}
 }
 
 func decodeSubagentArgs(raw json.RawMessage, target any) error {

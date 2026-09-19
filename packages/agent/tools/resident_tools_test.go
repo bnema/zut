@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,9 +107,9 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 }
 
 func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
-	spawn := &SubagentSpawnTool{}
+	facade := &SubagentTool{}
 	for _, want := range []string{"independent sidecar", "keep immediate blockers local", "never duplicate it in the parent", "end or yield the parent turn"} {
-		if got := spawn.Description(); !strings.Contains(got, want) {
+		if got := facade.Description(); !strings.Contains(got, want) {
 			t.Fatalf("description missing %q: %s", want, got)
 		}
 	}
@@ -117,7 +118,7 @@ func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
 			Description string `json:"description"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal(spawn.Schema(), &schema); err != nil {
+	if err := json.Unmarshal(facade.Schema(), &schema); err != nil {
 		t.Fatal(err)
 	}
 	task := schema.Properties["task"].Description
@@ -310,6 +311,169 @@ func TestResidentToolsRejectUnknownFields(t *testing.T) {
 		_, err := tool.Execute(context.Background(), json.RawMessage(`{"unknown":true}`), nil)
 		if err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Fatalf("unknown field error = %v", err)
+		}
+	}
+}
+
+// A resume wait subscribes to the accepted follow-up turn before it can finish,
+// so it returns that turn's completion instead of timing out.
+func TestResidentResumeWaitReturnsFollowUpCompletion(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(_ context.Context, prompt string) error {
+			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer for " + prompt}}}})
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	initial, cancelInitial := manager.WatchCompletion("waited-resume", "initial-turn")
+	defer cancelInitial()
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "waited-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-initial:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial turn did not complete")
+	}
+	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"waited-resume","prompt":"confirm","wait":5}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("resume = (%#v, %v)", result, err)
+	}
+	response, ok := result.Details.(subagentActionResponse)
+	if !ok || response.Wait == nil || response.Wait.TimedOut {
+		t.Fatalf("wait outcome = %#v", result.Details)
+	}
+	if response.Wait.Status != string(subagents.ResidentCompleted) || response.Wait.Summary != "answer for confirm" {
+		t.Fatalf("wait outcome = %#v", response.Wait)
+	}
+	if response.Action != "resumed" || response.Agent.ID != "waited-resume" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+// An expired resume wait reports the timeout and leaves the child active.
+func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			started <- struct{}{}
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, nil
+	})
+	t.Cleanup(func() {
+		releaseBlocker()
+		_ = manager.Close(context.Background())
+	})
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "blocked-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "blocker"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocking turn did not start")
+	}
+	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"blocked-resume","prompt":"follow up","wait":1}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("resume = (%#v, %v)", result, err)
+	}
+	response, ok := result.Details.(subagentActionResponse)
+	if !ok || response.Wait == nil || !response.Wait.TimedOut || response.Wait.Seconds != 1 {
+		t.Fatalf("wait outcome = %#v", result.Details)
+	}
+	if state, found := manager.State("blocked-resume"); !found || state != subagents.ResidentRunning {
+		t.Fatalf("child state = %q (found=%t), want running", state, found)
+	}
+	releaseBlocker()
+}
+
+// A cancelled parent context wins over an expiring wait: the tool returns the
+// host context error rather than a timeout result.
+func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
+	var calls atomic.Int32
+	followUpStarted := make(chan struct{}, 1)
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			if calls.Add(1) == 1 {
+				return nil
+			}
+			followUpStarted <- struct{}{}
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, nil
+	})
+	t.Cleanup(func() {
+		releaseBlocker()
+		_ = manager.Close(context.Background())
+	})
+	initial, cancelInitial := manager.WatchCompletion("cancel-resume", "initial-turn")
+	defer cancelInitial()
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "cancel-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-initial:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial turn did not complete")
+	}
+
+	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		result core.ToolResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := resume.Execute(ctx, json.RawMessage(`{"agent_id":"cancel-resume","prompt":"follow up","wait":300}`), nil)
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-followUpStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("follow-up turn did not start")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled (result=%#v)", got.err, got.result)
+		}
+		if got.result.IsError || len(got.result.Content) != 0 {
+			t.Fatalf("result = %#v, want an empty non-error result on host cancellation", got.result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resume did not return after cancellation")
+	}
+}
+
+func TestResidentResumeRejectsWaitOutsideBounds(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	for _, raw := range []string{
+		`{"agent_id":"child","prompt":"x","wait":0}`,
+		`{"agent_id":"child","prompt":"x","wait":301}`,
+	} {
+		result, err := resume.Execute(context.Background(), json.RawMessage(raw), nil)
+		if err != nil || !result.IsError || !strings.Contains(toolResultText(t, result), "wait must be between 1 and 300 seconds") {
+			t.Fatalf("Execute(%s) = (%#v, %v)", raw, result, err)
 		}
 	}
 }

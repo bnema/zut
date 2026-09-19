@@ -9,6 +9,9 @@
 > tool with `spawn`, `status`, `stop`, and `resume` actions.
 > `--tools subagent_spawn` no longer selects anything; use
 > `--tools subagent:spawn`, or bare `--tools subagent` for every action.
+> Under `--no-yolo`, "always allow" is remembered per action
+> (`subagent:status` and `subagent:spawn` are separate grants), so approving a
+> read-only `status` call never pre-approves `spawn`, `stop`, or `resume`.
 
 Subagents are independent `core.Agent` conversations resident in the same zut
 process as their parent. A child has a stable, private session identity, its own
@@ -229,15 +232,18 @@ all of them.
     distinguish foreign ownership, a missing saved result, and permission
     denial without exposing filesystem paths or saved content.
   - `stop` accepts `agent_id` and stops one live child.
-  - `resume` accepts `agent_id` and `prompt`, an explicit follow-up prompt for
-    an existing child. After a terminal failure, inspect the saved result
-    before resuming; resume continues the retained session.
+  - `resume` accepts `agent_id`, `prompt`, and optional `wait`. `prompt` is an
+    explicit follow-up prompt for an existing child. After a terminal failure,
+    inspect the saved result before resuming; resume continues the retained
+    session. `wait` uses the same 1–300 second bound as `spawn` and waits for
+    the accepted follow-up turn, returning its outcome or reporting the timeout
+    while the child stays active.
 
-Child execution started by the `subagent` tool's `spawn` action is asynchronous
-unless it receives an explicit `wait` value. For an unwaited spawn, completion
-arrives through the host’s typed completion update; the `subagent` tool's
-`status` action returns immediately and does not wait for completion. Do not
-use sleep loops, repeated status calls, journal files, or terminal UI
+Child execution started by the `subagent` tool's `spawn` or `resume` action is
+asynchronous unless it receives an explicit `wait` value. For an unwaited call,
+completion arrives through the host’s typed completion update; the `subagent`
+tool's `status` action returns immediately and does not wait for completion. Do
+not use sleep loops, repeated status calls, journal files, or terminal UI
 inspection as a completion signal.
 In interactive mode, a result received while the primary is busy enters the
 visible **sliding in** queue and reaches the model at its next safe boundary,
