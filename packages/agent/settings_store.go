@@ -284,6 +284,15 @@ func AutoSubagentsEnabled() bool {
 	return cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled
 }
 
+// ProactiveSubagentsRoutingAddendum is prepended to the interactive
+// collaboration contract only when launch-time policy exposes the spawn
+// action: naming a profile is meaningless when the primary cannot dispatch.
+const ProactiveSubagentsRoutingAddendum = `Route before you work:
+- Process start tells you nothing about the task or the workers it needs; routing happens when the user states the request you are about to work on.
+- Name the parts you keep on the critical path and the [subagents_list] profile that owns each delegable part, before you implement or spawn.
+- State that routing once, in the reply that starts the work, and let the tool calls that follow speak for themselves instead of narrating them.
+- Say plainly when nothing is worth delegating instead of inventing sidecars, and spawn a clearly described general worker when no profile matches a scope.`
+
 // ProactiveSubagentsSystemAddendum keeps the interactive primary agent on the
 // critical path and reserves delegation for genuinely parallel sidecar work.
 const ProactiveSubagentsSystemAddendum = `Proactive subagent delegation is enabled. You remain the primary owner and implementer of the user's task.
@@ -333,7 +342,11 @@ const ProactiveSubagentsDelegationUnavailableAddendum = `Proactive delegation is
 // ProactiveSubagentsSystemAddendumFor returns the interactive collaboration
 // contract with guidance only for manager actions exposed at launch time.
 func ProactiveSubagentsSystemAddendumFor(spawnToolAllowed, stopToolAllowed, resumeToolAllowed bool) string {
-	return subagentsSystemAddendumFor(ProactiveSubagentsSystemAddendum, ProactiveSubagentsDelegationUnavailableAddendum, false, spawnToolAllowed, stopToolAllowed, resumeToolAllowed)
+	base := ProactiveSubagentsSystemAddendum
+	if spawnToolAllowed {
+		base = ProactiveSubagentsRoutingAddendum + "\n\n" + base
+	}
+	return subagentsSystemAddendumFor(base, ProactiveSubagentsDelegationUnavailableAddendum, false, spawnToolAllowed, stopToolAllowed, resumeToolAllowed)
 }
 
 // StrictOrchestratorSystemAddendumFor returns the headless manager-only

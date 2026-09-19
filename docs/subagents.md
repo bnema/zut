@@ -188,6 +188,13 @@ retries it automatically.
 ## Delegation ownership
 
 Interactive proactive delegation keeps the primary agent on the critical path.
+Process start says nothing about the task, and the workers it needs only become
+knowable once the user states the request. Routing therefore happens then: the
+reply that starts the work names the parts the primary keeps on the critical
+path and the profile that owns each delegable part, before it implements or
+spawns anything. It states plainly when nothing is worth delegating rather than
+forcing a worker. The routing guidance is part of the prompt only when
+launch-time policy exposes the spawn action.
 Before spawning, it selects useful local work and delegates only a concrete,
 bounded sidecar with a non-overlapping question, responsibility, package, or
 file set. Immediate blockers and tightly coupled work stay local. While a child
