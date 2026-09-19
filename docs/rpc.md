@@ -204,7 +204,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
 | `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
-| `plan_update` | nullable `explanation`, `plan` | The built-in `update_plan` tool replaced the current turn checklist. Each plan item has `step` and `status`. |
+| `plan_update` | optional `id`, nullable `explanation`, `plan` | The built-in `plan` tool changed the session checklist. Each plan item has `step` and `status`. `id` is the tool-call id that produced the update; it is omitted when empty. |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
 | `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. |
@@ -256,4 +256,4 @@ See `examples/rpc/` for working implementations in:
 
 ## Versioning
 
-The `protocol_version` field in the `hello` response is the major version of this schema. Backwards-incompatible changes bump it. The set of supported events and commands within a major version only grows.
+The `protocol_version` field in the `hello` response is the major version of this schema. Backwards-incompatible changes bump it. Within a major version the schema only grows: new events, commands, and optional event fields may appear — such as the `id` field on `plan_update` — so consumers must ignore fields they do not recognize.
