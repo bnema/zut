@@ -180,17 +180,19 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				// Esc return for the replaced goal must not fire.
 				i.interruptedGoalReturn = nil
 			} else if update.Status == core.GoalActive {
-				// A manager may advance a terminal goal to the next persisted
-				// goal in the same mission. Do not let a late tool result resume
-				// a goal explicitly paused by the user.
-				if i.goalStatus != core.GoalPaused {
+				// Persistence runs before this event. Reflect a manager resume or
+				// newly active goal, but do not let a stale result undo a user pause.
+				if i.cfg.CurrentGoal != nil {
+					if current := i.cfg.CurrentGoal(); current != nil {
+						i.goalStatus = current.Status
+					}
+				} else if i.goalStatus != core.GoalPaused {
 					i.goalStatus = core.GoalActive
 				}
 			} else if i.goalStatus == core.GoalActive {
 				i.goalStatus = update.Status
-				// Terminal update_goal transitions settle the mission; an Esc
-				// return for the settled goal is inert by identity, drop it.
-				if update.Status == core.GoalDone || update.Status == core.GoalBlocked {
+				// Paused and terminal goals must not inherit an Esc-armed return.
+				if update.Status == core.GoalPaused || update.Status == core.GoalDone || update.Status == core.GoalBlocked {
 					i.interruptedGoalReturn = nil
 				}
 			}

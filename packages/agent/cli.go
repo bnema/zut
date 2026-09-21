@@ -821,6 +821,21 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 		return nil
 	}
 	if update.Status == core.GoalActive {
+		if strings.TrimSpace(update.Objective) == "" {
+			if sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalPaused {
+				return nil
+			}
+			if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
+				return errGoalMissionMismatch
+			}
+			goal := *sess.Meta.Goal
+			goal.Status = core.GoalActive
+			goal.Reason = ""
+			if err := sess.UpdateGoal(&goal); err != nil {
+				return fmt.Errorf("%w: %w", errGoalStateWrite, err)
+			}
+			return nil
+		}
 		if sess.Meta.Goal != nil && sess.Meta.Goal.Status == core.GoalActive {
 			return errGoalActiveReplacement
 		}
@@ -839,6 +854,9 @@ func persistGoalToolResult(sess *core.Session, result core.ToolResult, goalMaxTo
 	}
 	if sess.Meta.Goal == nil || sess.Meta.Goal.Status != core.GoalActive {
 		return nil
+	}
+	if sess.Meta.Mission != nil && update.MissionID != "" && update.MissionID != sess.Meta.Mission.ID {
+		return errGoalMissionMismatch
 	}
 	goal := *sess.Meta.Goal
 	goal.Status = update.Status

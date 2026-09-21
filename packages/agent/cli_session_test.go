@@ -283,6 +283,52 @@ func TestPersistGoalToolResultStartsGoalInCurrentMissionWithoutID(t *testing.T) 
 	}
 }
 
+func TestPersistGoalToolResultPausesAndResumesCurrentGoal(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "current work", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+	goalID := sess.Meta.Goal.ID
+	missionID := sess.Meta.Mission.ID
+
+	if err := persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalPaused}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalPaused || got.ID != goalID || got.Objective != "current work" {
+		t.Fatalf("paused goal = %#v", got)
+	}
+
+	if err := persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalActive, MissionID: missionID}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalActive || got.ID != goalID || got.Objective != "current work" {
+		t.Fatalf("resumed goal = %#v", got)
+	}
+}
+
+func TestPersistGoalToolResultRejectsPauseForDifferentMission(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.UpdateGoal(&core.SessionGoal{Objective: "current work", Status: core.GoalActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = persistGoalToolResult(sess, core.ToolResult{Details: tools.GoalUpdate{Status: core.GoalPaused, MissionID: "other-mission"}})
+	if !errors.Is(err, errGoalMissionMismatch) {
+		t.Fatalf("error = %v, want %v", err, errGoalMissionMismatch)
+	}
+	if got := sess.Meta.Goal; got == nil || got.Status != core.GoalActive {
+		t.Fatalf("goal changed after rejected pause: %#v", got)
+	}
+}
+
 func TestPersistGoalToolResultRejectsActiveGoalReplacement(t *testing.T) {
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "provider", "model", "version")
 	if err != nil {
