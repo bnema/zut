@@ -46,6 +46,29 @@ func TestUpdateGoalToolReturnsPersistableStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateGoalToolReturnsPauseAndResumeTransitions(t *testing.T) {
+	tool := &UpdateGoalTool{}
+	for _, test := range []struct {
+		name string
+		raw  string
+		want core.GoalStatus
+	}{
+		{name: "pause", raw: `{"status":"paused"}`, want: core.GoalPaused},
+		{name: "resume", raw: `{"status":"active"}`, want: core.GoalActive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := tool.Execute(context.Background(), json.RawMessage(test.raw), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			update, ok := GoalUpdateFromResult(result)
+			if !ok || update.Status != test.want || update.Objective != "" {
+				t.Fatalf("update = %#v, ok = %v", update, ok)
+			}
+		})
+	}
+}
+
 func TestUpdateGoalToolReturnsPersistableManagerGoal(t *testing.T) {
 	tool := &UpdateGoalTool{}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"status":"active","objective":"reproduce the reported failure"}`), nil)
@@ -117,7 +140,7 @@ func TestUpdateGoalToolRejectsSupersededWithoutReplacement(t *testing.T) {
 
 func TestUpdateGoalToolRejectsUnsupportedStatus(t *testing.T) {
 	tool := &UpdateGoalTool{}
-	raw := json.RawMessage(`{"status":"active"}`)
+	raw := json.RawMessage(`{"status":"waiting"}`)
 	result, err := tool.Execute(context.Background(), raw, nil)
 	if err != nil {
 		t.Fatal(err)

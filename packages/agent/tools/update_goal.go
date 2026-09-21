@@ -13,7 +13,7 @@ import (
 
 const (
 	UpdateGoalToolName = "update_goal"
-	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","complete","blocked","superseded"],"description":"Start a mission, set the next active goal, settle the active goal, or atomically replace it within the same mission."},"objective":{"type":"string","description":"Concrete objective required for active and superseded."},"goal_id":{"type":"string","description":"Current goal identifier required for superseded, copied from the active-goal context."},"mission_id":{"type":"string","description":"Optional identifier from the active-goal context. When supplied, it must match the current mission; omit it when starting or continuing the current mission."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
+	updateGoalSchema   = `{"type":"object","properties":{"status":{"type":"string","enum":["active","paused","complete","blocked","superseded"],"description":"Start or resume a mission, pause it, set the next active goal, settle the active goal, or atomically replace it within the same mission."},"objective":{"type":"string","description":"Concrete objective required when starting or advancing with active, and when superseding. Omit active's objective to resume the paused goal."},"goal_id":{"type":"string","description":"Current goal identifier required for superseded, copied from the active-goal context."},"mission_id":{"type":"string","description":"Optional identifier from the active-goal context. When supplied, it must match the current mission; omit it when starting or continuing the current mission."},"reason":{"type":"string","description":"Concise reason when the goal is blocked."}},"required":["status"],"additionalProperties":false}`
 )
 
 // UpdateGoalTool lets the main agent start a mission, set its next concrete
@@ -42,7 +42,7 @@ type GoalUpdate struct {
 func (t *UpdateGoalTool) Name() string { return UpdateGoalToolName }
 
 func (t *UpdateGoalTool) Description() string {
-	return "When no mission is active and the user's objective is clear, bounded, settled, and requires substantial multi-step work, call update_goal with status active before substantial execution. Do not start a mission for brief questions, casual conversation, or requests completed immediately. Inside a mission, set the next concrete goal, mark the active goal complete or blocked, or supersede it with a necessary replacement inside the same mission. Never broaden the mission or use superseded to avoid difficult work. Incidental messages and interrupted turns do not end an active mission."
+	return "When no mission is active and the user's objective is clear, bounded, settled, and requires substantial multi-step work, call update_goal with status active and an objective before substantial execution. Do not start a mission for brief questions, casual conversation, or requests completed immediately. Inside a mission, set the next concrete goal, pause the active goal when work should wait for a decision, resume the paused goal with status active and no objective once the decision is settled, mark the active goal complete or blocked, or supersede it with a necessary replacement inside the same mission. Never broaden the mission or use superseded to avoid difficult work. Incidental messages and interrupted turns do not end an active mission."
 }
 
 func (t *UpdateGoalTool) Schema() json.RawMessage { return json.RawMessage(updateGoalSchema) }
@@ -66,11 +66,11 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 	var update GoalUpdate
 	switch args.Status {
 	case "active":
-		if args.Objective == "" {
-			return goalToolError("objective is required when setting a goal"), nil
-		}
 		update.Status = core.GoalActive
 		update.Objective = args.Objective
+		update.MissionID = args.MissionID
+	case "paused":
+		update.Status = core.GoalPaused
 		update.MissionID = args.MissionID
 	case "complete":
 		update.Status = core.GoalDone
@@ -92,7 +92,7 @@ func (t *UpdateGoalTool) Execute(_ context.Context, raw json.RawMessage, _ func(
 		update.Status = core.GoalBlocked
 		update.Reason = args.Reason
 	default:
-		return goalToolError("status must be active, complete, blocked, or superseded"), nil
+		return goalToolError("status must be active, paused, complete, blocked, or superseded"), nil
 	}
 
 	text := "autonomous goal marked " + string(update.Status)
@@ -114,10 +114,10 @@ func GoalUpdateFromResult(result core.ToolResult) (GoalUpdate, bool) {
 	if !ok {
 		return GoalUpdate{}, false
 	}
-	if update.Status != core.GoalActive && update.Status != core.GoalDone && update.Status != core.GoalBlocked && update.Status != core.GoalSuperseded {
+	if update.Status != core.GoalActive && update.Status != core.GoalPaused && update.Status != core.GoalDone && update.Status != core.GoalBlocked && update.Status != core.GoalSuperseded {
 		return GoalUpdate{}, false
 	}
-	if (update.Status == core.GoalActive || update.Status == core.GoalSuperseded) && strings.TrimSpace(update.Objective) == "" {
+	if update.Status == core.GoalSuperseded && strings.TrimSpace(update.Objective) == "" {
 		return GoalUpdate{}, false
 	}
 	if update.Status == core.GoalSuperseded && strings.TrimSpace(update.GoalID) == "" {
