@@ -296,7 +296,7 @@ func (c *codexClient) findModel(id string) (Model, error) {
 
 func supportsOpenAIExplicitPromptCache(model string) bool {
 	id := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra"
+	return strings.HasPrefix(id, "gpt-5.6-") || strings.HasPrefix(id, "gpt-6-")
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {

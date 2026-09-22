@@ -58,7 +58,7 @@ func defaultReasoningLevels(model Model) []string {
 	}
 	if model.API == APIResponses || model.Provider == "openai-codex" || model.Provider == "openai-responses" || model.Provider == "azure-openai-responses" {
 		levels := []string{"", "low", "medium", "high", "xhigh"}
-		if strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra" {
+		if strings.HasPrefix(id, "gpt-5.6-") || strings.HasPrefix(id, "gpt-6-") {
 			levels = append(levels, "max")
 		}
 		return levels
@@ -262,7 +262,7 @@ func OpenAICompatAnthropicEffort(level string) string {
 }
 
 // OpenAICodexReasoningEffort maps zut levels onto the Responses API effort
-// enum. GPT-5.6 and GPT-6 Astra support native max; other models clamp to xhigh.
+// enum. GPT-5.6 and GPT-6 support native max; other models clamp to xhigh.
 func OpenAICodexReasoningEffort(level, model string) string {
 	switch NormalizeReasoning(level) {
 	case "minimum", "low":
@@ -274,7 +274,7 @@ func OpenAICodexReasoningEffort(level, model string) string {
 	case "xhigh":
 		return "xhigh"
 	case "max":
-		if strings.HasPrefix(strings.ToLower(model), "gpt-5.6-") || strings.EqualFold(model, "gpt-6-astra") {
+		if strings.HasPrefix(strings.ToLower(model), "gpt-5.6-") || strings.HasPrefix(strings.ToLower(model), "gpt-6-") {
 			return "max"
 		}
 		return "xhigh"
