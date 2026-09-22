@@ -567,6 +567,32 @@ func TestClaudeOpus5Catalog(t *testing.T) {
 	}
 }
 
+func TestClaudeOpus55Catalog(t *testing.T) {
+	m, err := FindModel("anthropic", "claude-opus-5-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DisplayName != "Claude Opus 5.5" || m.ContextWindow != 500000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
+		t.Fatalf("unexpected Opus 5.5 model: %+v", m)
+	}
+	if m.PriceInput != 4 || m.PriceOutput != 20 || m.PriceCacheRead != 0.2 || m.PriceCacheWrite != 5 {
+		t.Fatalf("unexpected Opus 5.5 pricing: %+v", m)
+	}
+}
+
+func TestClaudeFable51Catalog(t *testing.T) {
+	m, err := FindModel("anthropic", "claude-fable-5-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DisplayName != "Claude Fable 5.1" || m.ContextWindow != 500000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
+		t.Fatalf("unexpected Fable 5.1 model: %+v", m)
+	}
+	if m.PriceInput != 10 || m.PriceOutput != 50 || m.PriceCacheRead != 0.25 || m.PriceCacheWrite != 12.5 {
+		t.Fatalf("unexpected Fable 5.1 pricing: %+v", m)
+	}
+}
+
 func TestClaudeSonnet5Catalog(t *testing.T) {
 	m, err := FindModel("anthropic", "claude-sonnet-5")
 	if err != nil {
