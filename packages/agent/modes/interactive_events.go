@@ -224,9 +224,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// core, so no goal or scheduler follow-up is started here.
 		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Tool, "Continuing: no final answer received."))
 	case core.EvRepetitionGuard:
-		if e.Stage == core.RepetitionGuardWarning {
+		switch e.Stage {
+		case core.RepetitionGuardWarning:
 			i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Tool, "Repeated content detected; trying a different approach."))
-		} else if e.Stage == core.RepetitionGuardStopped {
+		case core.RepetitionGuardStopped:
 			i.statusErr = fmt.Sprintf("stopped a repetitive loop after %d identical attempts", e.Count)
 			i.statusOK = ""
 		}

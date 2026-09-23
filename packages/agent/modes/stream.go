@@ -104,9 +104,10 @@ func RunStreamWithContextRecovery(ctx context.Context, ag *core.Agent, prompt st
 			// host diagnostic and belongs on the diag channel.
 			fmt.Fprintln(diag, "Continuing: no final answer received.")
 		case core.EvRepetitionGuard:
-			if e.Stage == core.RepetitionGuardWarning {
+			switch e.Stage {
+			case core.RepetitionGuardWarning:
 				fmt.Fprintf(diag, "Repeated content detected (%d occurrences); asking the agent to try another approach.\n", e.Count)
-			} else if e.Stage == core.RepetitionGuardStopped {
+			case core.RepetitionGuardStopped:
 				fmt.Fprintf(diag, "Stopped a repetitive loop after %d occurrences.\n", e.Count)
 			}
 		case core.EvTurnEnd:
