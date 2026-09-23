@@ -57,10 +57,13 @@ type Agent struct {
 	System string
 	// Tools is mutex-protected; use SetTools to write it and PromptConfig
 	// or ToolsSnapshot to read it.
-	Tools       Registry
-	MaxSteps    int
-	Reasoning   string
-	Temperature *float32
+	Tools    Registry
+	MaxSteps int
+	// DisableRepetitionGuard opts out of repeated-content detection for
+	// intentional polling workflows.
+	DisableRepetitionGuard bool
+	Reasoning              string
+	Temperature            *float32
 	// FastMode requests the OpenAI fast service tier. The provider boundary
 	// rejects it for providers that do not support that contract.
 	FastMode bool
@@ -186,7 +189,10 @@ type Agent struct {
 	// execution boundary (guard or confirmation denial) during the current
 	// top-level runLoop invocation. A denied invocation must not gain a
 	// recovery prompt urging more actions.
-	deniedToolCall        bool
+	deniedToolCall bool
+	// repetition state is agent-owned rather than transcript-derived so it
+	// survives compaction and automated Prompt/Continue boundaries.
+	repetition            repetitionGuardState
 	timeContext           agentTimeContext
 	hasSessionTimeContext bool
 	// sessionID identifies this conversation thread. cacheSessionID identifies
@@ -404,6 +410,9 @@ func (a *Agent) appendQueuedAsUser(messages []queuedMessage, sink func(AgentEven
 			Time:    accepted,
 		}
 		a.mu.Lock()
+		if !queued.message.HostEvent {
+			a.repetition = repetitionGuardState{}
+		}
 		a.messages = append(a.messages, msg)
 		a.rev++
 		a.mu.Unlock()
@@ -506,12 +515,30 @@ func (a *Agent) ToolsSnapshot() Registry {
 	return tools
 }
 
-// SetMessages replaces the transcript (used when resuming a session).
+// SetMessages replaces the transcript without changing repetition history.
+// Call ResetRepetitionGuard when replacing it for a new conversation.
 func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.messages = append(a.messages[:0], msgs...)
 	a.rev++
+}
+
+// RestoreMessages replaces a transcript without resetting loop detection.
+// Use it when rolling back a failed compaction/transcript replacement.
+func (a *Agent) RestoreMessages(msgs []provider.Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.messages = append(a.messages[:0], msgs...)
+	a.rev++
+}
+
+// ResetRepetitionGuard clears repeated-content history for an explicit
+// user action without replacing the transcript.
+func (a *Agent) ResetRepetitionGuard() {
+	a.mu.Lock()
+	a.repetition = repetitionGuardState{}
+	a.mu.Unlock()
 }
 
 // AppendUserContext adds a user-role message to the transcript without
@@ -581,9 +608,10 @@ func (a *Agent) fireMessageAppended(m provider.Message) {
 	}
 }
 
-// Prompt sends a user message and runs the agent loop until the model
-// stops or an error occurs. Events are delivered via sink in order.
-// sink must not block the caller for long; buffer as needed.
+// Prompt sends a new user message and runs the agent loop until the model
+// stops or an error occurs. It resets repeated-content tracking for the new
+// request. Events are delivered via sink in order. sink must not block the
+// caller for long; buffer as needed.
 func (a *Agent) Prompt(ctx context.Context, text string, images []provider.ImageBlock, sink func(AgentEvent)) error {
 	if text == "" && len(images) == 0 {
 		return errors.New("prompt is empty")
@@ -604,6 +632,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, images []provider.Image
 	a.mu.Lock()
 	a.messages = append(a.messages, user)
 	a.rev++
+	a.repetition = repetitionGuardState{}
 	a.mu.Unlock()
 	a.fireMessageAppended(user)
 	sink(EvUserMessage{Message: user})
@@ -646,6 +675,10 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		// started yet.
 		if pending := a.drainQueuedMessages(); len(pending) > 0 {
 			a.appendQueuedAsUser(pending, sink)
+		}
+		if a.repetitionStopped() {
+			sink(EvDone{})
+			return a.repetitiveLoopError()
 		}
 
 		sink(EvTurnStart{Step: step, TurnID: requestContext.TurnID})
@@ -748,6 +781,13 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				sink(EvDone{})
 				return err
 			}
+			if a.QueuedMessageCount() == 0 {
+				if decision := a.observeRepetition(assistantMessageFingerprint(assistantMsg), RepetitionKindAssistantMessage, ""); decision.stage != "" {
+					if a.handleRepetitionDecision(decision, sink) {
+						return a.repetitiveLoopError()
+					}
+				}
+			}
 			continue
 		}
 		if stop == provider.StopToolUse {
@@ -788,6 +828,12 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				return err
 			}
 			_ = hadError
+			for _, observation := range repetitionCallObservations(assistantMsg, toolMsg) {
+				decision := a.observeRepetition(observation.fingerprint, observation.kind, observation.toolName)
+				if decision.stage != "" && a.handleRepetitionDecision(decision, sink) {
+					return a.repetitiveLoopError()
+				}
+			}
 			continue
 		}
 
@@ -797,6 +843,14 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		// top-level prompt.
 		if ctx.Err() == nil && a.QueuedMessageCount() > 0 {
 			continue
+		}
+		if stop == provider.StopEnd && !a.sawDeniedToolCall() {
+			if decision := a.observeRepetition(assistantMessageFingerprint(assistantMsg), RepetitionKindAssistantMessage, ""); decision.stage != "" {
+				if a.handleRepetitionDecision(decision, sink) {
+					return a.repetitiveLoopError()
+				}
+				continue
+			}
 		}
 
 		// Bounded normal-turn recovery: a successful normal stop whose

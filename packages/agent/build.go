@@ -39,11 +39,12 @@ type Resolved struct {
 	FastMode        bool
 	WebSearchPolicy subagents.WebSearchPolicy
 
-	ToolRegistry core.Registry
-	ToolSummary  []ToolSummary
-	SystemPrompt string
-	MaxSteps     int
-	Sandbox      *tools.Sandbox
+	ToolRegistry           core.Registry
+	ToolSummary            []ToolSummary
+	SystemPrompt           string
+	MaxSteps               int
+	DisableRepetitionGuard bool
+	Sandbox                *tools.Sandbox
 
 	// ContextWindow and MaxOutput retain the effective model metadata,
 	// including metadata synthesized for valid open-catalog local and routed
@@ -1013,6 +1014,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		ToolSummary:               summaries,
 		SystemPrompt:              sys,
 		MaxSteps:                  max,
+		DisableRepetitionGuard:    args.DisableRepetitionGuard,
 		ContextWindow:             resolvedModel.ContextWindow,
 		MaxOutput:                 resolvedModel.MaxOutput,
 		modelCatalog:              modelCatalog,
@@ -1355,6 +1357,7 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 func (r Resolved) NewAgent() *core.Agent {
 	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
 	a.MaxSteps = r.MaxSteps
+	a.DisableRepetitionGuard = r.DisableRepetitionGuard
 	a.ContextWindow = r.ContextWindow
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning

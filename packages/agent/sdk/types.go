@@ -56,6 +56,12 @@ type Event struct {
 	// user_message / assistant_message
 	Message *Message `json:"message,omitempty"`
 
+	// repetition_guard
+	RepetitionKind    string `json:"kind,omitempty"`
+	RepetitionStage   string `json:"stage,omitempty"`
+	RepetitionCount   int    `json:"count,omitempty"`
+	RepetitionElapsed int64  `json:"elapsed_ms,omitempty"`
+
 	// turn_end
 	Stop string `json:"stop,omitempty"`
 
@@ -239,6 +245,11 @@ func toEvent(ev core.AgentEvent) Event {
 			CacheMeasuredRead:   e.Cumulative.CacheMeasuredReadTokens,
 			CostUSD:             e.Cumulative.CostUSD,
 		}
+	case core.EvRepetitionGuard:
+		out.RepetitionKind = string(e.Kind)
+		out.RepetitionStage = string(e.Stage)
+		out.RepetitionCount = e.Count
+		out.RepetitionElapsed = e.Elapsed.Milliseconds()
 	case core.EvTurnEnd:
 		out.Stop = string(e.Stop)
 		if e.Err != nil {

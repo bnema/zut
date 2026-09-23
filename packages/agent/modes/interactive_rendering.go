@@ -1148,7 +1148,7 @@ func filterHiddenTranscriptMessages(msgs []provider.Message) []provider.Message 
 	return out
 }
 func isHiddenTranscriptMessage(m provider.Message) bool {
-	if m.Meta[autoCompactContinueMetaKey] == "true" || m.Meta[goalContinueMetaKey] == "true" || m.Meta[goalInterruptReassessMetaKey] == "true" {
+	if m.Meta[autoCompactContinueMetaKey] == "true" || m.Meta[goalContinueMetaKey] == "true" || m.Meta[goalInterruptReassessMetaKey] == "true" || m.Meta[core.RepetitionGuardMetaKey] == "true" {
 		return true
 	}
 	if m.Role != provider.RoleUser || len(m.Content) == 0 {

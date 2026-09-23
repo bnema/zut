@@ -324,16 +324,18 @@ func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput
 	i.startQueuedTurn(i.runCtx, message)
 }
 
-// discardQueuedMessagesLocked drops stale input after an error or cancellation.
-// Host evidence survives errors in the agent queue for the next explicit turn;
-// it must not automatically retry the failed provider or compaction request.
-func (i *Interactive) discardQueuedMessagesLocked(preserveHostEvents bool) {
+func (i *Interactive) takeQueuedMessagesLocked() []core.QueuedMessage {
 	var pending []core.QueuedMessage
 	if i.agent != nil {
 		pending = i.agent.DrainQueuedMessages()
 	}
 	pending = append(pending, i.queued...)
 	i.queued = nil
+	return pending
+}
+
+func (i *Interactive) discardQueuedMessagesLocked(preserveHostEvents bool) {
+	pending := i.takeQueuedMessagesLocked()
 	if !preserveHostEvents {
 		return
 	}

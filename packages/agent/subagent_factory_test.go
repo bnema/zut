@@ -25,7 +25,7 @@ func TestResidentChildRunnerWithoutStepLimitRunsPastFormerCap(t *testing.T) {
 	server, requests := residentToolLoopServer(t, 51)
 	runner, _, _ := newResidentChildTestRunner(t, "unlimited-child", Args{
 		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
-		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
+		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true, DisableRepetitionGuard: true,
 	})
 	if err := runner(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want success past the former 50-step cap", err)

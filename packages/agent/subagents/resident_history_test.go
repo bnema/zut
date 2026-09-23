@@ -12,6 +12,34 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestReadResidentHistoryPageIncludesRepetitionGuardNotice(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "guard-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "guard-child", SessionID: "guard-session", Provider: "openai", Model: "test"}
+	if err := journal.Accept(spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordAgentEvent(core.EvRepetitionGuard{
+		Kind: core.RepetitionKindToolCall, Stage: core.RepetitionGuardWarning, Count: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := ReadResidentHistoryPage(filepath.Join(root, spec.ID), "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Type != residentRecordGuard || page.Items[0].Outcome != string(core.RepetitionGuardWarning) || page.Items[0].GuardCount != 5 || page.Items[0].GuardKind != string(core.RepetitionKindToolCall) {
+		t.Fatalf("history items = %#v, want repetition guard warning", page.Items)
+	}
+}
+
 func TestReadResidentHistoryReturnsCompleteFinalizedItems(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenResidentJournal(root, "history-child")

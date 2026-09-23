@@ -249,6 +249,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |
 | `--no-tools` | Disable all tools. |
+| `--no-repetition-guard` | Disable repeated-content loop detection for intentional polling workflows. |
 | `--no-lsp` | Disable the built-in LSP/linter tool for this run. |
 | `--tools <csv>` | Only enable the listed tools. Include `lsp` to select it explicitly. An explicit list must include `web_search` to retain or opt into the complete public-web capability (`web_search`, `web_open`, `web_find`, and `web_click`) for that invocation; explicitly including it overrides the persisted web-search setting. |
 | `--max-steps <n>` | Cap agent loop iterations (default: unlimited). |

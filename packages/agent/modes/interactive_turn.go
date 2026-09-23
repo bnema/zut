@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -142,6 +143,9 @@ func (i *Interactive) startQueuedTurn(parent context.Context, message core.Queue
 	i.startTurnWithImages(parent, message.Text, message.Images)
 }
 func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, continueExisting, overflowRecoveryAttempted bool) {
+	if !continueExisting && i.agent != nil {
+		i.agent.ResetRepetitionGuard()
+	}
 	if i.agent == nil {
 		// Text startup pre cannot run without credentials; continue so
 		// deferred InitialInput (pre-fill or auto-submit) still applies.
@@ -332,14 +336,23 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// conversation. FlushSession is idempotent (it advances the
 		// baseline so subsequent flushes only write new rows).
 		flush := i.cfg.FlushSession
+		goalRun := i.goalRun
 		i.mu.Unlock()
 		runPendingIdleWork(pendingIdleWork)
 		if flush != nil {
 			flush()
 		}
+		stalledGoal := false
+		if errors.Is(err, core.ErrRepetitiveLoop) {
+			stalledGoal = i.stallGoalRun(goalRun, err.Error())
+		}
 		terminalGoalError := ctx.Err() == nil && !offer && !recoverContextOverflow && (err != nil || lastTurnErr != nil || lastStop == provider.StopError)
-		if terminalGoalError {
-			i.updateActiveGoal(core.GoalBlocked, "turn ended with an error")
+		if terminalGoalError && !stalledGoal {
+			status, reason := core.GoalBlocked, "turn ended with an error"
+			if errors.Is(err, core.ErrRepetitiveLoop) {
+				status, reason = core.GoalStalled, err.Error()
+			}
+			i.updateActiveGoal(status, reason)
 		}
 		// A cancelled or failed turn unwinds without scheduling autonomous
 		// work below. Preserve a freshly armed Esc return for the next
@@ -355,16 +368,35 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// Cancellation is user action, not model inaction: unwind the lease
 		// without consuming the no-progress allowance or stalling the goal.
 		continueGoal := i.finishGoalRunCancelled(goalContextLimited, ctx.Err() != nil)
+		if errors.Is(err, core.ErrRepetitiveLoop) {
+			continueGoal = false
+		}
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// A newer explicit prompt may have cleared the handoff while the
 		// completed turn was being flushed. Re-read it under the mutex before
 		// deciding whether this continuation may spend another rescue attempt.
 		statusRescueActive := i.compactContinuation.reason == compactContinuationStatusRescue
+		// A fresh user prompt typed during a repetitive loop is an explicit
+		// request, not an automatic retry. Preserve it and start a new Prompt.
+		if errors.Is(err, core.ErrRepetitiveLoop) {
+			pending := i.takeQueuedMessagesLocked()
+			for _, message := range pending {
+				if message.HostEvent {
+					if i.agent != nil {
+						i.agent.QueuePrompt(message)
+					} else {
+						i.queued = append(i.queued, message)
+					}
+					continue
+				}
+				i.queued = append(i.queued, message)
+			}
+		}
 		// Pop the next queued message, if any, and relaunch.
 		var next core.QueuedMessage
 		var hasNext bool
-		if !awaitingPre && len(i.queued) > 0 && ctx.Err() == nil && err == nil {
+		if !awaitingPre && len(i.queued) > 0 && ctx.Err() == nil && (err == nil || errors.Is(err, core.ErrRepetitiveLoop)) {
 			next, i.queued = i.queued[0], i.queued[1:]
 			hasNext = true
 		}
@@ -372,12 +404,17 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// user isn't bombarded with stale messages after an interrupt.
 		// Scheduler follow-ups deliberately remain: they are distinct turns
 		// whose due time must not let them steer this failed turn.
-		if ctx.Err() != nil || (err != nil && !recoverContextOverflow) {
+		if ctx.Err() != nil || (err != nil && !recoverContextOverflow && !errors.Is(err, core.ErrRepetitiveLoop)) {
 			i.discardQueuedMessagesLocked(ctx.Err() == nil)
 		}
 		var scheduled scheduledFollowUp
 		var hasScheduled bool
-		if !awaitingPre && !hasNext && len(i.scheduled) > 0 {
+		if errors.Is(err, core.ErrRepetitiveLoop) {
+			for _, followUp := range i.scheduled {
+				followUp.accepted <- err
+			}
+			i.scheduled = nil
+		} else if !awaitingPre && !hasNext && len(i.scheduled) > 0 {
 			scheduled, i.scheduled = i.scheduled[0], i.scheduled[1:]
 			hasScheduled = true
 		}
@@ -471,6 +508,12 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			return
 		}
 		switch {
+		case errors.Is(err, core.ErrRepetitiveLoop):
+			// Keep the interactive session open and honor a user prompt queued
+			// during the stopped run, but do not resume autonomous work.
+			if hasNext {
+				i.startQueuedTurn(parent, next)
+			}
 		case hasNext:
 			i.startQueuedTurn(parent, next)
 		case hasScheduled:

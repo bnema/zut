@@ -42,8 +42,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	// A resident child inherits the parent's resolved step limit, including the
 	// unlimited default. Its ceiling is the provider context window, with one
 	// compaction recovery per accepted turn, plus any explicit parent
-	// --max-steps. There is no child-only step budget.
+	// --max-steps. There is no child-only step budget. The explicit
+	// repetition-guard opt-out applies to child turns as well.
 	agent.MaxSteps = resolved.MaxSteps
+	agent.DisableRepetitionGuard = resolved.DisableRepetitionGuard
 	agent.ContextWindow = resolved.ContextWindow
 	agent.MaxTokens = resolved.MaxOutput
 	agent.Reasoning = resolved.Reasoning
@@ -151,13 +153,13 @@ func recoverResidentContextOverflow(ctx context.Context, agent *core.Agent, jour
 		return overflowErr
 	}
 	if _, err := agent.CompactWithEvents(ctx, residentContextRecoveryKeepTail, sink); err != nil {
-		agent.SetMessages(before)
+		agent.RestoreMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("compact resident child transcript: %w", err))
 	}
 	if err := journal.RecordCompacted(residentCheckpointMessages(agent.Messages())); err != nil {
 		// Memory must not run ahead of durable history: a later resume would
 		// otherwise replay the pre-compaction transcript.
-		agent.SetMessages(before)
+		agent.RestoreMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("persist resident child compaction: %w", err))
 	}
 	// The summarization request's usage describes the pre-compaction

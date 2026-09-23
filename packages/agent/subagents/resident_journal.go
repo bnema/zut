@@ -38,6 +38,7 @@ const (
 	residentRecordToolResult   = "tool.result"
 	residentRecordCompacted    = "child.compacted"
 	residentRecordUsage        = "usage"
+	residentRecordGuard        = "repetition.guard"
 	residentJournalVersion     = 3
 	residentJournalVersionV2   = 2
 	residentInterruptedText    = "tool interrupted by resident host restart"
@@ -119,6 +120,9 @@ type residentRecord struct {
 	TurnID       string             `json:"turn_id,omitempty"`
 	Prompt       string             `json:"prompt,omitempty"`
 	Outcome      string             `json:"outcome,omitempty"`
+	GuardKind    string             `json:"guard_kind,omitempty"`
+	GuardCount   int                `json:"guard_count,omitempty"`
+	GuardElapsed string             `json:"guard_elapsed,omitempty"`
 	PatchRef     string             `json:"patch_ref,omitempty"`
 	ChangedFiles []string           `json:"changed_files,omitempty"`
 	Message      json.RawMessage    `json:"message,omitempty"`
@@ -167,6 +171,11 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 			return fmt.Errorf("resident journal encode tool result: %w", err)
 		}
 		record = residentRecord{Type: residentRecordToolResult, ToolID: value.ID, ToolResult: result}
+	case core.EvRepetitionGuard:
+		record = residentRecord{
+			Type: residentRecordGuard, Outcome: string(value.Stage), GuardKind: string(value.Kind),
+			GuardCount: value.Count, GuardElapsed: value.Elapsed.Round(time.Second).String(),
+		}
 	case core.EvUsage:
 		j.usageMu.RLock()
 		contextUsed, contextMax, subscription := j.contextUsed, j.contextMax, j.subscription
@@ -889,6 +898,11 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 				return ResidentMetadata{}, errors.New("resident journal: invalid accepted turn record")
 			}
 			seenTurns[record.TurnID] = residentRecordTurnAccepted
+			lastStateAt = record.Time
+		case residentRecordGuard:
+			if record.Outcome != string(core.RepetitionGuardWarning) && record.Outcome != string(core.RepetitionGuardStopped) {
+				return ResidentMetadata{}, errors.New("resident journal: invalid repetition guard stage")
+			}
 			lastStateAt = record.Time
 		case residentRecordTurnStarted:
 			if record.TurnID == "" || (seenTurns[record.TurnID] != residentRecordTurnAccepted && record.TurnID != spec.InitialTurnID) {

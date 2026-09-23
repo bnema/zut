@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -222,6 +223,14 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// does not read as a stall. The inner continuation is owned by
 		// core, so no goal or scheduler follow-up is started here.
 		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Tool, "Continuing: no final answer received."))
+	case core.EvRepetitionGuard:
+		switch e.Stage {
+		case core.RepetitionGuardWarning:
+			i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Tool, "Repeated content detected; trying a different approach."))
+		case core.RepetitionGuardStopped:
+			i.statusErr = fmt.Sprintf("stopped a repetitive loop after %d identical attempts", e.Count)
+			i.statusOK = ""
+		}
 	case core.EvTurnEnd:
 		if e.Stop == provider.StopAborted {
 			i.resetStreamingStateLocked()

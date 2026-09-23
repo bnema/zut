@@ -71,6 +71,9 @@ type Args struct {
 	// at Inherit; host runtimes and SDK callers set it explicitly.
 	WebSearchPolicy subagents.WebSearchPolicy
 	MaxSteps        int
+	// DisableRepetitionGuard permits deliberate workflows that repeat
+	// identical calls or assistant messages, such as scheduled polling.
+	DisableRepetitionGuard bool
 
 	// Exts is a list of directory paths the user passed via --ext.
 	// Each must contain an extension.json. Loaded for one session
@@ -189,6 +192,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoSess = true
 		case "--no-tools":
 			a.NoTools = true
+		case "--no-repetition-guard":
+			a.DisableRepetitionGuard = true
 		case "--no-lsp":
 			a.NoLSP = true
 		case "--list-models":
@@ -468,6 +473,7 @@ func PrintHelp(version string) {
 	section("workspace, tools, skills",
 		row{"--cwd PATH", "treat PATH as the working directory"},
 		row{"--no-tools", "disable all tools"},
+		row{"--no-repetition-guard", "disable repeated-content loop detection for intentional polling"},
 		row{"--no-lsp", "disable the built-in LSP/linter tool"},
 		row{"--tools csv", "only enable listed tools (include lsp and web_search explicitly; web_search enables public-web navigation; the subagent tool accepts subagent:<action>)"},
 		row{"--no-yolo", "ask before running every tool call"},
