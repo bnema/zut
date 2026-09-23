@@ -521,11 +521,19 @@ func (a *Agent) SetMessages(msgs []provider.Message) {
 	defer a.mu.Unlock()
 	a.messages = append(a.messages[:0], msgs...)
 	a.rev++
-	a.repetition = repetitionGuardState{}
 }
 
-// ResetRepetitionGuard forgets repeated-content history after an explicit
-// user action starts a different line of work.
+// RestoreMessages replaces a transcript without resetting loop detection.
+// Use it when rolling back a failed compaction/transcript replacement.
+func (a *Agent) RestoreMessages(msgs []provider.Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.messages = append(a.messages[:0], msgs...)
+	a.rev++
+}
+
+// ResetRepetitionGuard clears repeated-content history for an explicit
+// user action without replacing the transcript.
 func (a *Agent) ResetRepetitionGuard() {
 	a.mu.Lock()
 	a.repetition = repetitionGuardState{}

@@ -153,13 +153,13 @@ func recoverResidentContextOverflow(ctx context.Context, agent *core.Agent, jour
 		return overflowErr
 	}
 	if _, err := agent.CompactWithEvents(ctx, residentContextRecoveryKeepTail, sink); err != nil {
-		agent.SetMessages(before)
+		agent.RestoreMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("compact resident child transcript: %w", err))
 	}
 	if err := journal.RecordCompacted(residentCheckpointMessages(agent.Messages())); err != nil {
 		// Memory must not run ahead of durable history: a later resume would
 		// otherwise replay the pre-compaction transcript.
-		agent.SetMessages(before)
+		agent.RestoreMessages(before)
 		return errors.Join(overflowErr, fmt.Errorf("persist resident child compaction: %w", err))
 	}
 	// The summarization request's usage describes the pre-compaction

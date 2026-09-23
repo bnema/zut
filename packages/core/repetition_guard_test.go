@@ -160,6 +160,22 @@ func TestAgentDoesNotStopWhenRepeatedToolOutputChanges(t *testing.T) {
 	}
 }
 
+func TestAgentCompactionRollbackPreservesRepetitionCount(t *testing.T) {
+	client := &repetitionTestClient{}
+	agent := NewAgent(client, "model", "system", Registry{})
+	agent.DisableRepetitionGuard = true
+	for i := 0; i < repetitionWarnThreshold-1; i++ {
+		agent.observeRepetition("repeated", RepetitionKindAssistantMessage, "")
+	}
+	before := agent.repetition.patterns["repeated"].count
+
+	agent.SetMessages([]provider.Message{{Role: provider.RoleUser}})
+	agent.RestoreMessages(nil)
+	if got := agent.repetition.patterns["repeated"].count; got != before {
+		t.Fatalf("repetition count after transcript rollback = %d, want %d", got, before)
+	}
+}
+
 func TestAgentTranscriptReplacementResetsRepetitionGuard(t *testing.T) {
 	client := &repetitionTestClient{}
 	agent := NewAgent(client, "model", "system", Registry{})
@@ -171,6 +187,7 @@ func TestAgentTranscriptReplacementResetsRepetitionGuard(t *testing.T) {
 	agent.repetition.stoppedDecision = repetitionDecision{count: repetitionStopThreshold}
 
 	agent.SetMessages(nil)
+	agent.ResetRepetitionGuard()
 	agent.DisableRepetitionGuard = false
 	agent.MaxSteps = 1
 	if err := agent.Continue(context.Background(), nil); !errors.Is(err, ErrMaxSteps) {

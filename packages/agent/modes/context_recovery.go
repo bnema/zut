@@ -131,19 +131,19 @@ func compactContext(ctx context.Context, ag *core.Agent, messages []provider.Mes
 
 	compacted := ag.Messages()
 	if err := ctx.Err(); err != nil {
-		ag.SetMessages(messages)
+		ag.RestoreMessages(messages)
 		return nil, err
 	}
 	if persist != nil {
 		if err := ctx.Err(); err != nil {
-			ag.SetMessages(messages)
+			ag.RestoreMessages(messages)
 			return nil, err
 		}
 		if err := persist(compacted); err != nil {
 			// The session did not receive the compaction checkpoint. Restore the
 			// exact pre-compaction transcript so a later suffix flush cannot mix
 			// the old durable generation with the new in-memory generation.
-			ag.SetMessages(messages)
+			ag.RestoreMessages(messages)
 			return nil, fmt.Errorf("persist compacted transcript: %w", err)
 		}
 	}
