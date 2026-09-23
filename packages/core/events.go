@@ -238,6 +238,16 @@ type EvTurnRecovery struct {
 
 func (EvTurnRecovery) Type() string { return "turn_recovery" }
 
+// EvRepetitionGuard reports repeated content detection to hosts.
+type EvRepetitionGuard struct {
+	Kind    RepetitionKind       `json:"kind"`
+	Stage   RepetitionGuardStage `json:"stage"`
+	Count   int                  `json:"count"`
+	Elapsed time.Duration        `json:"elapsed"`
+}
+
+func (EvRepetitionGuard) Type() string { return "repetition_guard" }
+
 type EvDone struct{}
 
 func (EvDone) Type() string { return "done" }

@@ -74,6 +74,7 @@ func runScheduledSession(ctx context.Context, task scheduler.Task, args Args, ba
 			appendErr = err
 		}
 	}
+	ag.DisableRepetitionGuard = true
 	ag.OnMessageAppended = func(message provider.Message) {
 		recordAppendError(sess.AppendMessage(message))
 	}

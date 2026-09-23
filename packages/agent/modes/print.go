@@ -59,6 +59,12 @@ func RunPrintWithContextRecovery(ctx context.Context, ag *core.Agent, prompt str
 			// exhausted allowance returns ErrIncompleteTurn from Prompt
 			// and never reaches here as success.
 			fmt.Fprintln(os.Stderr, "Continuing: no final answer received.")
+		case core.EvRepetitionGuard:
+			if e.Stage == core.RepetitionGuardWarning {
+				fmt.Fprintf(os.Stderr, "Repeated content detected (%d occurrences); asking the agent to try another approach.\n", e.Count)
+			} else if e.Stage == core.RepetitionGuardStopped {
+				fmt.Fprintf(os.Stderr, "Stopped a repetitive loop after %d occurrences.\n", e.Count)
+			}
 		case core.EvTurnEnd:
 			if e.Err != nil {
 				runErr = e.Err

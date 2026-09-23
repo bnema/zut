@@ -2370,6 +2370,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			ag = candidate.agent
 		} else {
 			currentAg.SetMessages(candidate.messages)
+			currentAg.ResetRepetitionGuard()
 			currentAg.SeedCost(candidate.cumulative)
 			currentAg.SeedLastTurnUsage(candidate.lastTurn)
 			ag = currentAg

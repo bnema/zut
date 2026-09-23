@@ -42,8 +42,10 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	// A resident child inherits the parent's resolved step limit, including the
 	// unlimited default. Its ceiling is the provider context window, with one
 	// compaction recovery per accepted turn, plus any explicit parent
-	// --max-steps. There is no child-only step budget.
+	// --max-steps. There is no child-only step budget. The explicit
+	// repetition-guard opt-out applies to child turns as well.
 	agent.MaxSteps = resolved.MaxSteps
+	agent.DisableRepetitionGuard = resolved.DisableRepetitionGuard
 	agent.ContextWindow = resolved.ContextWindow
 	agent.MaxTokens = resolved.MaxOutput
 	agent.Reasoning = resolved.Reasoning

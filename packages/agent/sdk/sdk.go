@@ -71,6 +71,10 @@ type Config struct {
 	// 0 leaves the loop unlimited.
 	MaxSteps int
 
+	// DisableRepetitionGuard opts out of repeated-content detection for
+	// intentional polling workflows.
+	DisableRepetitionGuard bool
+
 	// APIKey overrides the credential lookup chain.
 	APIKey string
 
@@ -132,21 +136,22 @@ func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
 		}
 	}
 	args := agent.Args{
-		Mode:               agent.ModeJSON, // headless
-		Provider:           cfg.Provider,
-		Model:              cfg.Model,
-		CWD:                cfg.CWD,
-		APIKey:             cfg.APIKey,
-		BaseURL:            cfg.BaseURL,
-		SystemPrompt:       cfg.SystemPrompt,
-		AppendSystemPrompt: cfg.AppendSystemPrompt,
-		Reasoning:          cfg.Reasoning,
-		Temperature:        cfg.Temperature,
-		MaxSteps:           cfg.MaxSteps,
-		Tools:              cfg.Tools,
-		NoTools:            cfg.NoTools,
-		WebSearchPolicy:    webSearchPolicy,
-		NoSess:             true, // SDK callers manage persistence themselves
+		Mode:                   agent.ModeJSON, // headless
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		CWD:                    cfg.CWD,
+		APIKey:                 cfg.APIKey,
+		BaseURL:                cfg.BaseURL,
+		SystemPrompt:           cfg.SystemPrompt,
+		AppendSystemPrompt:     cfg.AppendSystemPrompt,
+		Reasoning:              cfg.Reasoning,
+		Temperature:            cfg.Temperature,
+		MaxSteps:               cfg.MaxSteps,
+		DisableRepetitionGuard: cfg.DisableRepetitionGuard,
+		Tools:                  cfg.Tools,
+		NoTools:                cfg.NoTools,
+		WebSearchPolicy:        webSearchPolicy,
+		NoSess:                 true, // SDK callers manage persistence themselves
 	}
 	r, err := agent.ResolveSDK(ctx, args)
 	if err != nil {

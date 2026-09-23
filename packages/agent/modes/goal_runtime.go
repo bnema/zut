@@ -134,6 +134,24 @@ func (i *Interactive) finishGoalRun(contextLimited bool) bool {
 	return i.finishGoalRunCancelled(contextLimited, false)
 }
 
+func (i *Interactive) stallGoalRun(run *goalContinuationRun, reason string) bool {
+	if run == nil || i.cfg.CurrentGoal == nil || i.cfg.PersistGoal == nil {
+		return false
+	}
+	goal := copySessionGoal(i.cfg.CurrentGoal())
+	if goal == nil || goal.Status != core.GoalActive || run.goalID != "" && goal.ID != run.goalID {
+		return false
+	}
+	goal.Status = core.GoalStalled
+	goal.Reason = reason
+	if err := i.cfg.PersistGoal(goal); err != nil {
+		i.ReportError(fmt.Errorf("persist stalled goal: %w", err))
+		return false
+	}
+	i.setGoalStatus(goal)
+	return true
+}
+
 // finishGoalRunCancelled is finishGoalRun with an explicit cancellation
 // signal from the turn owner. Esc-armed reassessment relies on this so an
 // interrupted corrective continuation cannot stall the still-active goal.

@@ -476,6 +476,9 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 	// the command owns the next wake, not the pending ordinary prompt.
 	if startIfIdle {
 		i.clearInterruptedGoalReturn()
+		if i.agent != nil {
+			i.agent.ResetRepetitionGuard()
+		}
 	}
 	i.setGoalStatus(current)
 	i.setGoalCommandStatus(fmt.Sprintf("autonomous goal %s: %s", current.Status, current.Objective))

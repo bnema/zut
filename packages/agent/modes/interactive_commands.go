@@ -230,6 +230,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		clearPlan := i.agent != nil && len(i.agent.CurrentPlan()) > 0
 		if i.agent != nil {
 			i.agent.SetMessages(nil)
+			i.agent.ResetRepetitionGuard()
 			i.agent.SetPlan(nil)
 		}
 		i.toolCalls = map[string]*tui.ToolCallView{}

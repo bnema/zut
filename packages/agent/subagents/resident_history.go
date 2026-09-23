@@ -36,11 +36,15 @@ type ResidentHistoryItem struct {
 	// transcript of a child that recovered from a context overflow. It is
 	// produced only for residentRecordCompacted items, which the UI pager does
 	// not expose.
-	Messages   []json.RawMessage `json:"messages,omitempty"`
-	ToolID     string            `json:"tool_id,omitempty"`
-	ToolName   string            `json:"tool_name,omitempty"`
-	ToolArgs   json.RawMessage   `json:"tool_args,omitempty"`
-	ToolResult json.RawMessage   `json:"tool_result,omitempty"`
+	Messages     []json.RawMessage `json:"messages,omitempty"`
+	ToolID       string            `json:"tool_id,omitempty"`
+	ToolName     string            `json:"tool_name,omitempty"`
+	ToolArgs     json.RawMessage   `json:"tool_args,omitempty"`
+	ToolResult   json.RawMessage   `json:"tool_result,omitempty"`
+	Outcome      string            `json:"outcome,omitempty"`
+	GuardKind    string            `json:"guard_kind,omitempty"`
+	GuardCount   int               `json:"guard_count,omitempty"`
+	GuardElapsed string            `json:"guard_elapsed,omitempty"`
 }
 
 // ResidentHistoryPage is a recent-first, bounded page of finalized history.
@@ -277,6 +281,12 @@ func residentHistoryItem(record residentRecord) (ResidentHistoryItem, bool, erro
 			return ResidentHistoryItem{}, false, errors.New("resident history: malformed tool result record")
 		}
 		item.ToolID, item.ToolResult = record.ToolID, append(json.RawMessage(nil), record.ToolResult...)
+	case residentRecordGuard:
+		if record.Outcome != string(core.RepetitionGuardWarning) && record.Outcome != string(core.RepetitionGuardStopped) {
+			return ResidentHistoryItem{}, false, errors.New("resident history: malformed repetition guard record")
+		}
+		item.Outcome, item.GuardKind = record.Outcome, record.GuardKind
+		item.GuardCount, item.GuardElapsed = record.GuardCount, record.GuardElapsed
 	default:
 		// Lifecycle records and compaction checkpoints are not history items:
 		// the pager keeps showing the append-only log, while resume replay
@@ -289,7 +299,7 @@ func residentHistoryItem(record residentRecord) (ResidentHistoryItem, bool, erro
 func residentHistoryPageStart(entries []residentHistoryEntry, limit int) int {
 	first, fallback := -1, -1
 	for index := range entries {
-		if entries[index].item.Type != residentRecordUser && entries[index].item.Type != residentRecordAssistant {
+		if entries[index].item.Type != residentRecordUser && entries[index].item.Type != residentRecordAssistant && entries[index].item.Type != residentRecordGuard {
 			continue
 		}
 		fallback = index
@@ -441,6 +451,16 @@ func ReadResidentTranscriptMessages(dir string) ([]provider.Message, error) {
 	}
 	items := make([]ResidentHistoryItem, 0, len(records))
 	for _, record := range records {
+		if record.Type == residentRecordGuard {
+			item, include, err := residentHistoryItem(record)
+			if err != nil {
+				return nil, err
+			}
+			if include {
+				items = append(items, item)
+			}
+			continue
+		}
 		if record.Type == residentRecordCompacted {
 			// The pager hides checkpoints, but resume replay starts from one.
 			items = append(items, ResidentHistoryItem{Type: record.Type, Time: record.Time, Messages: cloneRawMessages(record.Messages)})

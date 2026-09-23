@@ -56,6 +56,51 @@ func TestBotSessionPersistsPlanMutation(t *testing.T) {
 // TestScheduledSessionPersistsPlanMutation guards GO-002 for the scheduled mode:
 // a scheduled turn that calls plan must persist the mutation to the session it
 // reconstructed.
+func TestScheduledSessionDisablesRepetitionGuard(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	sess, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, path := sess.Meta.ID, sess.Path
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("content-type", "text/event-stream")
+		chunk := map[string]any{
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "done"}, "finish_reason": "stop"}},
+			"usage":   map[string]int{"prompt_tokens": 8, "completion_tokens": 2},
+		}
+		data, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+	}))
+	defer server.Close()
+
+	args := Args{Provider: "openai", Model: "gpt-5", BaseURL: server.URL, APIKey: "test-key"}
+	base, err := Resolve(args, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedPath, err := core.ImportSession(path, home, cwd, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runScheduledSession(context.Background(), scheduler.Task{ID: "task-guard", SessionID: id, Message: "scheduled task"}, args, base, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	reopened, messages, err := core.OpenSession(managedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	for _, message := range messages {
+		if message.Meta[core.RepetitionGuardMetaKey] == "true" {
+			t.Fatalf("scheduled run unexpectedly injected repetition warning: %#v", message)
+		}
+	}
+}
+
 func TestScheduledSessionPersistsPlanMutation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)

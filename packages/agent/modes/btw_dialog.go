@@ -336,6 +336,7 @@ func (d *btwDialog) submit(invalidate func()) {
 func newBtwAgent(main *core.Agent, system, model, origin string) *core.Agent {
 	agent := core.NewAgent(main.Client, model, system, main.ToolsSnapshot())
 	agent.MaxSteps = main.MaxSteps
+	agent.DisableRepetitionGuard = main.DisableRepetitionGuard
 	agent.Reasoning = main.Reasoning
 	agent.Temperature = main.Temperature
 	agent.FastMode = main.FastModeEnabled()

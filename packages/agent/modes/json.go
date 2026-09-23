@@ -147,6 +147,11 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvTurnRecovery:
 		m["reason"] = e.Reason
 		m["attempt"] = e.Attempt
+	case core.EvRepetitionGuard:
+		m["kind"] = e.Kind
+		m["stage"] = e.Stage
+		m["count"] = e.Count
+		m["elapsed_ms"] = e.Elapsed.Milliseconds()
 	case core.EvTurnEnd:
 		m["stop"] = string(e.Stop)
 		if e.Err != nil {

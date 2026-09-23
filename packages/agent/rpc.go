@@ -349,6 +349,7 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 
 	case "clear":
 		s.agent.SetMessages(nil)
+		s.agent.ResetRepetitionGuard()
 		s.agent.SetPlan(nil)
 		s.writeResponse(id, cmd, nil)
 
