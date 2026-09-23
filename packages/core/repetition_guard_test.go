@@ -163,11 +163,13 @@ func TestAgentDoesNotStopWhenRepeatedToolOutputChanges(t *testing.T) {
 func TestAgentCompactionRollbackPreservesRepetitionCount(t *testing.T) {
 	client := &repetitionTestClient{}
 	agent := NewAgent(client, "model", "system", Registry{})
-	agent.DisableRepetitionGuard = true
 	for i := 0; i < repetitionWarnThreshold-1; i++ {
 		agent.observeRepetition("repeated", RepetitionKindAssistantMessage, "")
 	}
 	before := agent.repetition.patterns["repeated"].count
+	if before != repetitionWarnThreshold-1 {
+		t.Fatalf("repetition count before rollback = %d, want %d", before, repetitionWarnThreshold-1)
+	}
 
 	agent.SetMessages([]provider.Message{{Role: provider.RoleUser}})
 	agent.RestoreMessages(nil)

@@ -515,7 +515,8 @@ func (a *Agent) ToolsSnapshot() Registry {
 	return tools
 }
 
-// SetMessages replaces the transcript (used when resuming a session).
+// SetMessages replaces the transcript without changing repetition history.
+// Call ResetRepetitionGuard when replacing it for a new conversation.
 func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
