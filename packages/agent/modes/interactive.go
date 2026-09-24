@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -703,73 +702,48 @@ type Interactive struct {
 	// auto-subagents. Disable only removes these owned occurrences, leaving
 	// identical text that came from the user's base prompt untouched.
 	managedAutoSubagentsAddenda []string
-	streaming                   strings.Builder // what's currently painted on screen
-	streamOn                    bool
-	pendingAlert                *extproto.AlertRequest
-
-	// streamPending is the runes buffered after each EvTextDelta that
-	// haven't yet been promoted into `streaming` for rendering. It
-	// exists because some provider paths (notably Anthropic via the
-	// oauth/subscription channel) coalesce the model's output into a
-	// few fat chunks instead of drip-streaming. Painting those fat
-	// chunks verbatim looks like the summary "just appears". The
-	// paintPace goroutine drains a handful of runes per tick from
-	// this buffer into `streaming`, giving every path the same
-	// typewriter feel regardless of upstream chunk size.
-	streamPending []rune
-	// streamFlushPending is set when EvAssistantMessage fires while
-	// streamPending still has unrendered runes. The ticker flushes
-	// them, then closes out the stream (clearing flags, resetting
-	// buffers) so the final paint matches the on-disk message.
-	streamFlushPending bool
-	toolCalls          map[string]*tui.ToolCallView
-	toolOrder          []string
+	// stream owns the paced live assistant text and decides how much of
+	// the transcript is visible while that text is on screen.
+	stream       streamPresenter
+	streamWake   chan struct{}
+	pendingAlert *extproto.AlertRequest
+	toolCalls    map[string]*tui.ToolCallView
+	toolOrder    []string
 	// toolRenderRevision is monotonic for the lifetime of the interactive
 	// view. Per-call counters would let unrelated tools alias the same rendered
 	// cache frame when they reach the same local revision.
 	toolRenderRevision uint64
-	// toolGate records, per tool-call id, how many runes of paced
-	// assistant text must have drained into `streaming` before that
-	// tool block may appear. It exists to make stream ordering
-	// deterministic: a tool call can arrive from the provider while
-	// the prose that logically precedes it is still being typed out
-	// by the pacer. Without gating, the tool block would render
-	// immediately while the intro paragraph keeps filling in below
-	// it. We snapshot the total expected stream length (already
-	// streamed + still pending) at the moment the tool starts, and
-	// hold the block back until the pacer reaches it.
-	toolGate          map[string]int
-	statusErr         string
-	statusOK          string
-	goalStatus        core.GoalStatus
-	planCurrent       int
-	planTotal         int
-	planSnapshots     map[string]core.PlanUpdate
-	planRevision      uint64
-	goalRun           *goalContinuationRun
-	reloadStatusSeq   uint64
-	extStatuses       map[string]map[string]extensionStatus
-	extWidgets        map[string]map[string]extensionWidget
-	liveBlock         []string // live streaming/tool progress rendered outside scrollback
-	helpBlock         []string // rendered above the chat when /help was typed
-	sessionInfoBlocks []sessionInfoBlock
-	cumUsage          provider.Usage
-	codexUsage        codexUsageState
-	lastCtxInput      int // input_tokens of the most recent turn — approximates current context size
-	busy              bool
-	ctrlCExit         bool
-	activity          agentActivity
-	pendingIdleWork   []func()
-	dirty             chan struct{}
-	renderScheduler   atomic.Pointer[latestFrameScheduler]
-	renderRevision    atomic.Uint64
-	renderOutsideLock bool
-	modelRefresh      chan modelRefreshResult
-	modelRefreshing   bool
-	startupPreDone    chan startupPreResult
-	cancelTurn        context.CancelFunc
-	scrollOffset      int // rows from the bottom; 0 = pinned to latest
-	prevScrollOffset  int // last value redraw snapped against; tracks intent
+	statusErr          string
+	statusOK           string
+	goalStatus         core.GoalStatus
+	planCurrent        int
+	planTotal          int
+	planSnapshots      map[string]core.PlanUpdate
+	planRevision       uint64
+	goalRun            *goalContinuationRun
+	reloadStatusSeq    uint64
+	extStatuses        map[string]map[string]extensionStatus
+	extWidgets         map[string]map[string]extensionWidget
+	liveBlock          []string // live streaming/tool progress rendered outside scrollback
+	helpBlock          []string // rendered above the chat when /help was typed
+	sessionInfoBlocks  []sessionInfoBlock
+	cumUsage           provider.Usage
+	codexUsage         codexUsageState
+	lastCtxInput       int // input_tokens of the most recent turn — approximates current context size
+	busy               bool
+	ctrlCExit          bool
+	activity           agentActivity
+	pendingIdleWork    []func()
+	dirty              chan struct{}
+	renderScheduler    atomic.Pointer[latestFrameScheduler]
+	renderRevision     atomic.Uint64
+	renderOutsideLock  bool
+	modelRefresh       chan modelRefreshResult
+	modelRefreshing    bool
+	startupPreDone     chan startupPreResult
+	cancelTurn         context.CancelFunc
+	scrollOffset       int // rows from the bottom; 0 = pinned to latest
+	prevScrollOffset   int // last value redraw snapped against; tracks intent
 
 	// prevChatLen and prevChatCols track the chat buffer's size at the
 	// last redraw so that when content grows below the user's viewport
@@ -1103,7 +1077,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		ed:                      tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
 		rend:                    renderer,
 		toolCalls:               map[string]*tui.ToolCallView{},
-		toolGate:                map[string]int{},
+		streamWake:              make(chan struct{}, 1),
 		dirty:                   make(chan struct{}, 8),
 		modelRefresh:            make(chan modelRefreshResult, 1),
 		startupPreDone:          make(chan startupPreResult, 1),
@@ -2279,46 +2253,11 @@ type telegramHost struct{ iv *Interactive }
 // formatInt is a tiny strconv.Itoa shim; keeps the handler above
 // from needing a strconv import just for one call.
 
-// assistantText returns the concatenated text of every TextBlock in
-// m. Used by the streaming-view dedupe guard to tell when a live
-// streamed reply has already been promoted into the transcript.
-
 // resetTranscriptRenderLocked invalidates every render cache that assumes
 // the previous transcript remains structurally intact. Compaction is a
 // replacement, not an append: the flow renderer must repaint from the new
 // transcript rather than diff it against scrollback rows from the old one.
 // Must be called with i.mu held.
-
-// resetStreamingStateLocked clears every piece of streaming state
-// in one shot. Used by abort paths (turn cancel, compact hand-off,
-// queue drain) so the pacer doesn't keep draining stale runes from
-// a prior turn. Must be called with i.mu held.
-
-// openAllToolGatesLocked drops every pending tool gate so that any
-// tool registered during this turn renders unconditionally from now
-// on. Called when streaming finalizes (the paced text has fully
-// drained and `streaming` is about to reset to length 0): without
-// this, the gate comparison against a freshly-reset streaming buffer
-// would wrongly re-hide tools that had already cleared their gate.
-// Must be called with i.mu held.
-
-// gateToolLocked records the stream position at which a tool call may
-// become visible. The gate is the total length the streaming buffer
-// will reach once the pacer has drained everything currently queued
-// (already painted + still pending). Holding the tool block back
-// until the pacer crosses that mark guarantees the prose emitted
-// before the tool call finishes typing out above it, instead of the
-// tool block snapping in while the paragraph is still filling in.
-//
-// We only gate while text is actively streaming. If no stream is in
-// flight (gate 0), the tool shows immediately, which is the correct
-// behaviour for tool-only turns and replayed sessions. First
-// registration wins so a later EvToolCall can't move an existing
-// gate. Must be called with i.mu held.
-
-// toolGateOpenLocked reports whether the gated tool block may render
-// yet, i.e. the pacer has drained enough text to reach the position
-// recorded when the tool call arrived. Must be called with i.mu held.
 
 // assistantMessageSideEffects runs the non-visual hooks attached to
 // EvAssistantMessage: the host-provided OnAssistant callback and the
@@ -2329,26 +2268,3 @@ type telegramHost struct{ iv *Interactive }
 // the callbacks themselves must fire on message arrival so
 // downstream observers (session persistence, telegram, cost panels)
 // don't wait on a UI animation to catch up.
-
-// paintPaceRate is how many runes the streaming pacer releases per
-// tick. With a 16ms tick, 6 runes/tick is ~375 runes/s — fast enough
-// that a 500-rune summary finishes in ~1.3s, slow enough to look
-// like a human typing. Empirically matches the feel of provider
-// paths that already drip-stream natively.
-const paintPaceRate = 6
-
-// paintPaceInterval is the tick interval for the streaming pacer.
-// 16ms lines up with the redraw throttle so we never paint faster
-// than the terminal can keep up.
-const paintPaceInterval = 16 * time.Millisecond
-
-// runStreamPacer drains buffered deltas from streamPending into
-// streaming a small batch per tick, invalidating after each move.
-// It stops when the context cancels (tui shutdown).
-//
-// Why a pacer: providers differ wildly in how they chunk their
-// text_delta events. The API-key path on Anthropic emits ~30 drips
-// for a 400-token summary; the OAuth path can coalesce the same
-// summary into 3 fat chunks, visually indistinguishable from "the
-// whole reply just appeared". The pacer normalizes that so every
-// path looks the same on screen.

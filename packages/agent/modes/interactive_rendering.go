@@ -34,7 +34,7 @@ func (i *Interactive) cachedChatLocked(cols int) []string {
 	// A busy frame contains mutable streaming/tool state. Keep the stable
 	// transcript cache, but never return a full-frame cache entry that would
 	// hide a newly arrived delta or completed result.
-	if i.busy || i.streamOn || i.streamFlushPending {
+	if i.busy || i.stream.Active() {
 		return i.buildChatLocked(cols)
 	}
 	key := i.chatCacheKeyLocked(cols)
@@ -53,7 +53,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	if i.agent != nil {
 		rev = i.agent.Revision()
 	}
-	showVer := len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
+	showVer := len(i.view.Messages) == 0 && !i.stream.Active() && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
 		cols:                 cols,
 		agentRev:             rev,
@@ -240,8 +240,16 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 }
 func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.agent != nil {
-		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
-		i.view.MessagesRevision = i.agent.Revision()
+		msgs, rev := i.agent.Messages(), i.agent.Revision()
+		// While live text is on screen, show the transcript only as it was
+		// when the stream started. The agent appends the finished reply (and
+		// fast tool results) before the pacer has painted it; revealing them
+		// early would show the same text twice.
+		if limit, anchorRev, ok := i.stream.transcriptLimit(len(msgs)); ok {
+			msgs, rev = msgs[:limit], anchorRev
+		}
+		i.view.Messages = filterHiddenTranscriptMessages(msgs)
+		i.view.MessagesRevision = rev
 	} else {
 		i.view.Messages = nil
 		i.view.MessagesRevision = 0
@@ -255,39 +263,8 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// was anchored after. Clamp those anchors once so later turns still append
 	// below the block instead of making it jump through the conversation.
 	clampSessionInfoBlocks(i.sessionInfoBlocks, len(i.view.Messages))
-	// Pacer flush: while the streaming pacer is still draining the
-	// buffer (i.e. EvAssistantMessage already fired but more runes
-	// are queued), the final assistant message is already in
-	// i.agent.Messages() in full. Painting it in the transcript
-	// AND the streaming block at the same time shows the user the
-	// complete text immediately — which defeats the whole pacer.
-	// Hide the last message until the pacer catches up; once the
-	// flush-pending latch clears, the message is revealed (the
-	// streaming block disappears the same frame because streamOn
-	// flips off, so the transition is seamless).
-	if i.streamFlushPending && len(i.view.Messages) > 0 {
-		i.view.Messages = i.view.Messages[:len(i.view.Messages)-1]
-	}
-	i.view.Streaming = i.streaming.String()
-	i.view.StreamingActive = i.streamOn
-	// Guard against the narrow race where EvAssistantMessage has
-	// just promoted a streaming reply into the transcript but a
-	// render tick hasn't flipped streamOn off yet. Without the
-	// guard, the same text would appear twice (once as the
-	// in-flight streaming block, once as the last transcript
-	// message). We detect the duplicate strictly: the last
-	// assistant message's visible text must equal the streaming
-	// buffer. Just matching on role is too broad — it also hides
-	// the next round's typewriter streaming after a tool turn,
-	// because the last transcript message is always assistant
-	// (the tool-use block) until the follow-up summary lands.
-	if i.streamOn && i.streaming.Len() > 0 {
-		if n := len(i.view.Messages); n > 0 && i.view.Messages[n-1].Role == provider.RoleAssistant {
-			if assistantText(i.view.Messages[n-1]) == i.streaming.String() {
-				i.view.StreamingActive = false
-			}
-		}
-	}
+	i.view.Streaming = i.stream.Text()
+	i.view.StreamingActive = i.stream.Active()
 	// Live tool-call view: only shown while a turn is in flight. Once
 	// the agent is idle, every tool call has already been folded into
 	// the transcript (as assistant.ToolCallBlock + a tool-role message),
@@ -302,7 +279,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 			// typing out. toolOrder is append-only in arrival order,
 			// so once one tool is still gated, every later tool is too,
 			// so stop here to avoid showing a tool out of sequence.
-			if !i.toolGateOpenLocked(id) {
+			if !i.stream.GateOpen(id) {
 				break
 			}
 			if tc, ok := i.toolCalls[id]; ok {
@@ -325,7 +302,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// no transcript yet. Disappears after the first message is sent.
 	// The version suffix is shown for welcomeVersionDuration after
 	// startup, then drops off automatically.
-	if len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 {
+	if len(i.view.Messages) == 0 && !i.stream.Active() && len(i.toolOrder) == 0 {
 		showVer := !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 		chat = append(welcomeBanner(i.cfg.Theme, i.cfg.Version, showVer), chat...)
 	}
@@ -1054,7 +1031,7 @@ func (i *Interactive) redraw() {
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
 	}
 	i.mu.Lock()
-	if i.pendingAlert != nil && !i.busy && !i.streamOn && !i.streamFlushPending && len(i.streamPending) == 0 {
+	if i.pendingAlert != nil && !i.busy && !i.stream.Active() {
 		alert := *i.pendingAlert
 		i.pendingAlert = nil
 		i.emitAlertLocked(alert)

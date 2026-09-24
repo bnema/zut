@@ -66,11 +66,7 @@ func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
 }
 
 func TestToolRenderRevisionsAreGloballyMonotonic(t *testing.T) {
-	i := &Interactive{
-		dirty:     make(chan struct{}, 1),
-		toolCalls: make(map[string]*tui.ToolCallView),
-		toolGate:  make(map[string]int),
-	}
+	i := &Interactive{dirty: make(chan struct{}, 1), toolCalls: make(map[string]*tui.ToolCallView)}
 
 	i.handleEventForPresentation(core.EvToolUseStart{ID: "alpha", Name: "edit"})
 	alphaStart := i.toolCalls["alpha"].Revision
@@ -89,11 +85,7 @@ func TestToolRenderRevisionsAreGloballyMonotonic(t *testing.T) {
 
 func TestToolEventBurstUsesThrottledInvalidationPath(t *testing.T) {
 	scheduler := newLatestFrameScheduler()
-	i := &Interactive{
-		dirty:     make(chan struct{}, 1),
-		toolCalls: make(map[string]*tui.ToolCallView),
-		toolGate:  make(map[string]int),
-	}
+	i := &Interactive{dirty: make(chan struct{}, 1), toolCalls: make(map[string]*tui.ToolCallView)}
 	i.renderScheduler.Store(scheduler)
 
 	i.handleEventForPresentation(core.EvToolUseStart{ID: "call", Name: "bash"})
@@ -143,33 +135,35 @@ func TestStableChatCacheRevealsMessageAfterStreamFlush(t *testing.T) {
 	const finalText = "final message revealed after paced flush"
 
 	agent := &core.Agent{}
-	agent.SetMessages([]provider.Message{
-		{
-			Role:    provider.RoleUser,
-			Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
-		},
-		{
-			Role:    provider.RoleAssistant,
-			Content: []provider.Content{provider.TextBlock{Text: finalText}},
-		},
-	})
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
+	}})
 	i := &Interactive{
-		agent:              agent,
-		view:               &tui.View{Theme: tui.Dark},
-		renderOutsideLock:  true,
-		streamFlushPending: true,
+		agent:             agent,
+		view:              &tui.View{Theme: tui.Dark},
+		renderOutsideLock: true,
 	}
 
-	revision := agent.Revision()
+	i.mu.Lock()
+	i.startStreamLocked()
+	i.stream.Push(finalText)
+	i.stream.Finish()
+	i.mu.Unlock()
+	// The agent appends the finished reply while the pacer is still busy.
+	agent.SetMessages(append(agent.Messages(), provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: finalText}},
+	}))
+
 	i.mu.Lock()
 	before := strings.Join(i.cachedChatLocked(80), "\n")
-	i.streamFlushPending = false
+	for i.stream.Active() {
+		i.stream.Tick()
+	}
 	after := strings.Join(i.cachedChatLocked(80), "\n")
 	i.mu.Unlock()
 
-	if got := agent.Revision(); got != revision {
-		t.Fatalf("stream flush changed the transcript revision: got %d, want %d", got, revision)
-	}
 	if strings.Contains(before, finalText) {
 		t.Fatal("stable cache revealed the final message while stream flush was pending")
 	}
@@ -179,11 +173,7 @@ func TestStableChatCacheRevealsMessageAfterStreamFlush(t *testing.T) {
 }
 
 func TestInteractiveToolProgressStormDoesNotInvalidate(t *testing.T) {
-	i := &Interactive{
-		dirty:     make(chan struct{}, 1),
-		toolCalls: make(map[string]*tui.ToolCallView),
-		toolGate:  make(map[string]int),
-	}
+	i := &Interactive{dirty: make(chan struct{}, 1), toolCalls: make(map[string]*tui.ToolCallView)}
 	i.handleEventForPresentation(core.EvToolUseStart{ID: "storm", Name: "bash"})
 	select {
 	case <-i.dirty:

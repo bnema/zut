@@ -117,8 +117,7 @@ func (i *Interactive) canArmSessionTreeEscape() bool {
 		return false
 	}
 	i.mu.Lock()
-	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
-		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
 	queued := len(i.queued) != 0
 	ag := i.agent
 	pendingFork := i.pendingFork
@@ -143,8 +142,7 @@ func (i *Interactive) canOpenSessionTree() bool {
 	}
 
 	i.mu.Lock()
-	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
-		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
 	queued := len(i.queued) != 0
 	ag := i.agent
 	pendingFork := i.pendingFork
@@ -168,8 +166,7 @@ func (i *Interactive) canCommitSessionTreeSelection() bool {
 		return false
 	}
 	i.mu.Lock()
-	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
-		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
 	queued := len(i.queued) != 0
 	ag := i.agent
 	i.mu.Unlock()

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
@@ -995,7 +994,7 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	}
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
-	i.toolGate = map[string]int{}
+	i.stream.Reset()
 	i.extNotes = nil
 	if selection.restoreDraft {
 		i.ed.SetValue(selection.draftText)
@@ -1073,18 +1072,6 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 func formatInt(n int) string {
 	return fmt.Sprintf("%d", n)
 }
-func assistantText(m provider.Message) string {
-	var sb strings.Builder
-	for _, c := range m.Content {
-		if tb, ok := c.(provider.TextBlock); ok {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(tb.Text)
-		}
-	}
-	return sb.String()
-}
 func (i *Interactive) resetTranscriptRenderLocked() {
 	i.view.InvalidateRenderCache()
 	i.chatCacheValid = false
@@ -1093,35 +1080,6 @@ func (i *Interactive) resetTranscriptRenderLocked() {
 	i.prevChatRows = 0
 	i.prevScrollOffset = 0
 	i.requestRendererInvalidate()
-}
-func (i *Interactive) resetStreamingStateLocked() {
-	i.streaming.Reset()
-	i.streamPending = i.streamPending[:0]
-	i.streamFlushPending = false
-	i.streamOn = false
-	i.openAllToolGatesLocked()
-}
-func (i *Interactive) openAllToolGatesLocked() {
-	for id := range i.toolGate {
-		i.toolGate[id] = 0
-	}
-}
-func (i *Interactive) gateToolLocked(id string) {
-	if _, ok := i.toolGate[id]; ok {
-		return
-	}
-	if !i.streamOn {
-		i.toolGate[id] = 0
-		return
-	}
-	i.toolGate[id] = i.streaming.Len() + len(i.streamPending)
-}
-func (i *Interactive) toolGateOpenLocked(id string) bool {
-	gate, ok := i.toolGate[id]
-	if !ok || gate == 0 {
-		return true
-	}
-	return i.streaming.Len() >= gate
 }
 func (i *Interactive) assistantMessageSideEffects(m provider.Message) {
 	if i.cfg.OnAssistant != nil {
@@ -1139,44 +1097,6 @@ func (i *Interactive) assistantMessageSideEffects(m provider.Message) {
 		}
 		if text := sb.String(); strings.TrimSpace(text) != "" {
 			go i.telegramBridge.OnAssistantText(text)
-		}
-	}
-}
-func (i *Interactive) runStreamPacer(ctx context.Context) {
-	t := time.NewTicker(paintPaceInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			i.mu.Lock()
-			if len(i.streamPending) == 0 {
-				// EvAssistantMessage already fired but the pacer
-				// was still draining a tick ago. Everything is now
-				// painted; clear the streaming flags so the next
-				// redraw shows the finalised transcript message
-				// and hides the streaming overlay.
-				if i.streamFlushPending {
-					i.streamFlushPending = false
-					i.streaming.Reset()
-					i.streamOn = false
-					i.openAllToolGatesLocked()
-					i.mu.Unlock()
-					i.invalidate()
-					continue
-				}
-				i.mu.Unlock()
-				continue
-			}
-			n := paintPaceRate
-			if n > len(i.streamPending) {
-				n = len(i.streamPending)
-			}
-			i.streaming.WriteString(string(i.streamPending[:n]))
-			i.streamPending = i.streamPending[n:]
-			i.mu.Unlock()
-			i.invalidate()
 		}
 	}
 }

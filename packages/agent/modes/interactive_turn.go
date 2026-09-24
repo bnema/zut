@@ -214,12 +214,10 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.cancelTurn = cancel
 	i.statusErr = ""
 	i.statusOK = ""
-	i.streaming.Reset()
-	i.streamOn = true
 	i.pendingAlert = nil
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
-	i.toolGate = map[string]int{}
+	i.stream.Reset()
 	i.extNotes = nil   // ext notes are one-shot; a new prompt clears them
 	i.scrollOffset = 0 // jump back to the bottom on new turn
 	// Lift the resume tail cap once the user starts interacting. The
@@ -277,12 +275,13 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// provider's final event; publishing idle before inspecting queues can
 		// strand that summary in the core agent queue or start an overlapping
 		// turn.
-		// Don't touch streamPending / streamFlushPending here — the
-		// pacer may still be draining the final deltas and needs to
-		// paint them even though Prompt has returned. It will reset
-		// streamOn on its own once the buffer empties.
-		if len(i.streamPending) == 0 {
-			i.streamOn = false
+		// On success, let the pacer finish painting the final deltas; it
+		// returns the presenter to idle when done. A cancelled turn stops
+		// typing at once.
+		if ctx.Err() != nil {
+			i.stream.Reset()
+		} else {
+			i.stream.Finish()
 		}
 		i.cancelTurn = nil
 		pendingIdleWork := i.takePendingIdleWorkLocked()
@@ -463,7 +462,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// race the still-live stream frame; otherwise stale deltas can repaint
 		// after the replacement and corrupt the scrollback renderer's model.
 		if recoverContextOverflow || shouldAutoCompact {
-			i.resetStreamingStateLocked()
+			i.stream.Reset()
 		}
 		// A clean ordinary turn that owns a pending Esc return resumes the
 		// same still-active goal exactly once through the existing scheduler.

@@ -235,7 +235,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
-		i.toolGate = map[string]int{}
+		i.stream.Reset()
 		i.statusErr = ""
 		i.statusOK = ""
 		i.helpBlock = nil
@@ -437,7 +437,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Lock()
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
-		i.toolGate = map[string]int{}
+		i.stream.Reset()
 		i.helpBlock = nil
 		i.sessionInfoBlocks = nil
 		i.parkedTurn = 0
@@ -1022,8 +1022,7 @@ func (i *Interactive) canResumeSessionSelection() bool {
 		return false
 	}
 	i.mu.Lock()
-	busy := i.busy || i.streamOn || i.streamFlushPending || len(i.streamPending) != 0 ||
-		i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
 	queued := len(i.queued) != 0
 	ag := i.agent
 	i.mu.Unlock()
