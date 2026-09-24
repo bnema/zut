@@ -2,103 +2,80 @@ package tui
 
 import "strings"
 
+// assistantIndent is the left indent of assistant prose rows.
+const assistantIndent = "  "
+
 // liveTextCache keeps the rendered rows of the finished blocks of a
 // streaming assistant reply. Streaming text only grows, so each frame
 // renders just the unfinished tail instead of the whole reply.
 type liveTextCache struct {
 	width int
 	theme uint64
-	// src is the source prefix already rendered; it always ends right
-	// after a blank line outside a code fence.
+	// src is the source prefix already rendered; it always ends at a
+	// renderMarkdownRaw block boundary.
 	src  string
 	rows []string
 }
 
-// renderAssistantText renders assistant prose as a finished transcript
-// message: markdown, wrapped and indented rows. Live text must render
-// identically, otherwise rows already pushed into terminal scrollback would
-// no longer match the final message.
-func renderAssistantText(text string, th Theme, width int) []string {
-	const indent = "  "
-	inner := assistantBodyWidth(width - len(indent))
-	var out []string
-	for _, l := range strings.Split(RenderMarkdown(strings.TrimLeft(text, "\n"), th, inner), "\n") {
+// appendAssistantRows wraps rendered markdown rows to inner and indents them.
+func appendAssistantRows(dst []string, rendered string, inner int) []string {
+	for _, l := range strings.Split(rendered, "\n") {
 		for _, w := range wrapANSILine(l, inner) {
-			out = append(out, indent+w)
+			dst = append(dst, assistantIndent+w)
 		}
 	}
-	return out
+	return dst
 }
 
-// stableMarkdownPrefix returns the byte length of the longest prefix of src
-// that ends after a blank line outside a code fence. Markdown state never
-// crosses that boundary, so the prefix renders identically on its own.
-func stableMarkdownPrefix(src string) int {
-	cut := 0
-	inFence := false
-	prevBlank := false
-	for pos := 0; pos < len(src); {
-		end := strings.IndexByte(src[pos:], '\n')
-		if end < 0 {
-			// The last line is still being typed.
-			break
-		}
-		line := src[pos : pos+end]
-		pos += end + 1
-		if isMarkdownFence(line) {
-			inFence = !inFence
-			prevBlank = false
-			continue
-		}
-		blank := !inFence && strings.TrimSpace(line) == ""
-		if blank && !prevBlank {
-			cut = pos
-		}
-		prevBlank = blank
-	}
-	return cut
+// renderAssistantText renders assistant prose as a finished transcript
+// message. Live text must render identically, otherwise rows already pushed
+// into terminal scrollback would no longer match the final message.
+func renderAssistantText(text string, th Theme, width int) []string {
+	inner := assistantBodyWidth(width - len(assistantIndent))
+	return appendAssistantRows(nil, RenderMarkdown(strings.TrimLeft(text, "\n"), th, inner), inner)
 }
 
 // liveTextRows renders the streaming reply, reusing cached rows for its
 // finished blocks. The result is identical to renderAssistantText(text).
 func (v *View) liveTextRows(text string, width int) []string {
 	text = strings.TrimLeft(text, "\n")
-	const indent = "  "
-	inner := assistantBodyWidth(width - len(indent))
+	inner := assistantBodyWidth(width - len(assistantIndent))
 	c := &v.liveText
 	themeKey := toolThemeKey(v.Theme)
 	if c.width != width || c.theme != themeKey || !strings.HasPrefix(text, c.src) {
 		*c = liveTextCache{width: width, theme: themeKey}
 	}
-	if cut := stableMarkdownPrefix(text); cut > len(c.src) {
-		add := text[len(c.src):cut]
-		raw := renderMarkdownRaw(strings.Split(strings.TrimSuffix(add, "\n"), "\n"), v.Theme, inner)
-		for _, l := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
-			for _, w := range wrapANSILine(l, inner) {
-				c.rows = append(c.rows, indent+w)
-			}
+
+	// Render only the uncached tail. The renderer reports where finished
+	// blocks end, so the cache never has to re-parse markdown on its own.
+	lines := strings.Split(text[len(c.src):], "\n")
+	cutLine, cutOut := 0, 0
+	raw := renderMarkdownRaw(lines, v.Theme, inner, func(line, outLen int) {
+		cutLine, cutOut = line, outLen
+	})
+	if cutLine > 0 {
+		c.rows = appendAssistantRows(c.rows, strings.TrimSuffix(raw[:cutOut], "\n"), inner)
+		n := 0
+		for _, l := range lines[:cutLine] {
+			n += len(l) + 1
 		}
-		c.src = text[:cut]
+		c.src = text[:len(c.src)+n]
+		raw = raw[cutOut:]
 	}
+
 	// RenderMarkdown trims trailing newlines from the whole reply. When the
 	// tail has content, that trim only affects the tail; otherwise it also
 	// drops the cached block's trailing empty rows.
-	tail := strings.TrimRight(renderMarkdownRaw(strings.Split(text[len(c.src):], "\n"), v.Theme, inner), "\n")
+	tail := strings.TrimRight(raw, "\n")
 	if tail == "" {
 		rows := c.rows
-		for len(rows) > 1 && rows[len(rows)-1] == indent {
+		for len(rows) > 1 && rows[len(rows)-1] == assistantIndent {
 			rows = rows[:len(rows)-1]
 		}
 		if len(rows) == 0 {
-			return []string{indent}
+			return []string{assistantIndent}
 		}
 		return append([]string(nil), rows...)
 	}
-	rows := append(make([]string, 0, len(c.rows)+8), c.rows...)
-	for _, l := range strings.Split(tail, "\n") {
-		for _, w := range wrapANSILine(l, inner) {
-			rows = append(rows, indent+w)
-		}
-	}
-	return rows
+	return appendAssistantRows(append(make([]string, 0, len(c.rows)+8), c.rows...), tail, inner)
 }

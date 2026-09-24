@@ -2253,8 +2253,6 @@ type telegramHost struct{ iv *Interactive }
 // formatInt is a tiny strconv.Itoa shim; keeps the handler above
 // from needing a strconv import just for one call.
 
-// assistantText returns the concatenated text of every TextBlock in m.
-
 // resetTranscriptRenderLocked invalidates every render cache that assumes
 // the previous transcript remains structurally intact. Compaction is a
 // replacement, not an append: the flow renderer must repaint from the new

@@ -261,7 +261,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 	}
 	i.statusErr = ""
 	i.statusOK = ""
-	// Do NOT set streamOn: the summary text should not be visible
+	// Do NOT start the stream presenter: the summary text should not be visible
 	// in the chat while compacting. The user just sees the spinner
 	// and can keep typing / queue prompts.
 	i.scrollOffset = 0

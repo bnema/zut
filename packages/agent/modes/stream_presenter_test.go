@@ -82,7 +82,7 @@ func TestStreamReplyNotDuplicatedWhileMessageIsPersisted(t *testing.T) {
 	client := &scriptedTurnsClient{turns: [][]provider.Event{textTurn(reply, provider.StopEnd)}}
 	i, ag := newStreamRaceInteractive(t, client, nil)
 
-	worst := 0
+	var seen []int
 	ag.OnMessageAppended = func(m provider.Message) {
 		if m.Role != provider.RoleAssistant {
 			return
@@ -91,13 +91,13 @@ func TestStreamReplyNotDuplicatedWhileMessageIsPersisted(t *testing.T) {
 		i.mu.Lock()
 		drainTicks(&i.stream, 3)
 		i.mu.Unlock()
-		worst = max(worst, countVisible(i, "alpha"))
+		seen = append(seen, countVisible(i, "alpha"))
 	}
 	if err := ag.Prompt(context.Background(), "question", nil, i.handleEvent); err != nil {
 		t.Fatal(err)
 	}
-	if worst > 1 {
-		t.Fatalf("reply painted %d times while the message was being persisted", worst)
+	if len(seen) != 1 || seen[0] != 1 {
+		t.Fatalf("reply painted %v times while the message was being persisted, want exactly once", seen)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestStreamReplyNotDuplicatedWhenToolResultArrivesEarly(t *testing.T) {
 	}}
 	i, ag := newStreamRaceInteractive(t, client, core.Registry{"echo": echoTool{}})
 
-	worst := 0
+	var seen []int
 	sawLive := false
 	ag.OnMessageAppended = func(m provider.Message) {
 		if m.Role != provider.RoleTool {
@@ -123,7 +123,7 @@ func TestStreamReplyNotDuplicatedWhenToolResultArrivesEarly(t *testing.T) {
 		drainTicks(&i.stream, 3)
 		sawLive = sawLive || i.stream.Active()
 		i.mu.Unlock()
-		worst = max(worst, countVisible(i, "let me"))
+		seen = append(seen, countVisible(i, "let me"))
 	}
 	if err := ag.Prompt(context.Background(), "question", nil, i.handleEvent); err != nil {
 		t.Fatal(err)
@@ -131,8 +131,33 @@ func TestStreamReplyNotDuplicatedWhenToolResultArrivesEarly(t *testing.T) {
 	if !sawLive {
 		t.Fatal("test setup: pacer finished before the tool result was appended")
 	}
-	if worst > 1 {
-		t.Fatalf("reply painted %d times after the tool result arrived", worst)
+	if len(seen) != 1 || seen[0] != 1 {
+		t.Fatalf("reply painted %v times after the tool result arrived, want exactly once", seen)
+	}
+}
+
+// Esc usually surfaces as a context error, not StopAborted. Buffered text
+// must stop at once instead of typing on and then vanishing.
+func TestStreamStopsImmediatelyOnCancel(t *testing.T) {
+	i := &Interactive{view: &tui.View{Theme: tui.Dark}, toolCalls: map[string]*tui.ToolCallView{}}
+	i.handleEvent(core.EvAssistantStart{})
+	i.handleEvent(core.EvTextDelta{Delta: strings.Repeat("x", 500)})
+	i.handleEvent(core.EvTurnEnd{Stop: provider.StopError, Err: context.Canceled})
+	if i.stream.Active() || i.stream.Text() != "" {
+		t.Fatalf("stream still active after cancel: active=%t text=%d", i.stream.Active(), len(i.stream.Text()))
+	}
+}
+
+// Replacing the agent (/model, /login) while text drains must drop the old
+// agent's transcript anchor.
+func TestStreamResetOnAgentReplacement(t *testing.T) {
+	i := &Interactive{view: &tui.View{Theme: tui.Dark}, toolCalls: map[string]*tui.ToolCallView{}}
+	i.stream.Start(3, 7)
+	i.stream.Push("draining")
+	i.stream.Finish()
+	i.prepareReplacementAgentLocked(nil)
+	if i.stream.Active() {
+		t.Fatal("stream anchor survived an agent replacement")
 	}
 }
 

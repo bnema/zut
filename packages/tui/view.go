@@ -456,6 +456,9 @@ func (v *View) BuildLive(width int) []string {
 	var out []string
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
 		out = v.liveTextRows(v.Streaming, width)
+	} else {
+		// Release the finished reply's cached source and rows.
+		v.liveText = liveTextCache{}
 	}
 	finalised := map[string]bool{}
 	for _, m := range v.Messages {
@@ -648,7 +651,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		out = append(out, "")
 	}
 	// Only render the streaming header/body when there's actual
-	// text to show. An empty streaming block (streamOn=true,
+	// text to show. An empty streaming block (StreamingActive with
 	// Streaming="") appears when a turn starts with a tool_use
 	// block instead of text — in that case the live tool-call
 	// overlay below is the real content and a naked "zut" bar

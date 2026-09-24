@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -217,7 +218,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.statusOK = ""
 		}
 	case core.EvTurnEnd:
-		if e.Stop == provider.StopAborted {
+		// Cancellation usually surfaces as a context error rather than
+		// StopAborted. Either way, stop typing at once: text that never
+		// reached the transcript must not keep painting and then vanish.
+		if e.Stop == provider.StopAborted || errors.Is(e.Err, context.Canceled) {
 			i.stream.Reset()
 			i.statusErr = ""
 			i.statusOK = "cancelled"
@@ -287,6 +291,8 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
 	// This runs inside the replacement commit, never during candidate builds.
 	i.resetCodexUsageLocked()
+	// A draining stream is anchored in the old agent's transcript.
+	i.stream.Reset()
 	if ag == nil {
 		i.setWebSearchAvailable(false)
 		return

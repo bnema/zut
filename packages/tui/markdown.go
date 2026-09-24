@@ -21,15 +21,19 @@ const FlushLeftSentinel = '\x1c'
 // width is used to draw horizontal rules (e.g. around code fences).
 // Pass 0 to use a reasonable fallback.
 func RenderMarkdown(src string, th Theme, width int) string {
-	return strings.TrimRight(renderMarkdownRaw(strings.Split(src, "\n"), th, width), "\n")
+	return strings.TrimRight(renderMarkdownRaw(strings.Split(src, "\n"), th, width, nil), "\n")
 }
 
 // renderMarkdownRaw renders source lines without trimming trailing blank
-// rows; every emitted row ends with "\n". Rendering state never crosses a
-// blank line outside a code fence, so for such a split point
-// raw(a ++ b) == raw(a) + raw(b). Live streaming relies on this to render
-// only the unfinished tail of a reply on each frame.
-func renderMarkdownRaw(lines []string, th Theme, width int) string {
+// rows; every emitted row ends with "\n".
+//
+// If boundary is non-nil it is called with (line, outLen) for each line index
+// where no block state carries over: the previous line was a plain blank
+// line outside any fence or table. At such a point
+// raw(lines) == raw(lines[:line]) + raw(lines[line:]), and outLen is the
+// length of raw(lines[:line]). Live streaming uses these boundaries to cache
+// finished blocks and re-render only the unfinished tail of a reply.
+func renderMarkdownRaw(lines []string, th Theme, width int, boundary func(line, outLen int)) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -67,7 +71,12 @@ func renderMarkdownRaw(lines []string, th Theme, width int) string {
 		fenceBuf.Reset()
 	}
 
+	prevBlank := false
 	for idx := 0; idx < len(lines); idx++ {
+		if prevBlank && boundary != nil {
+			boundary(idx, out.Len())
+		}
+		prevBlank = false
 		line := lines[idx]
 		trim := strings.TrimLeft(line, " ")
 		if isMarkdownFence(line) {
@@ -135,6 +144,7 @@ func renderMarkdownRaw(lines []string, th Theme, width int) string {
 			out.WriteString(indent + th.FGColor(th.Accent, num+". ") + renderInline(body, th) + "\n")
 			continue
 		}
+		prevBlank = strings.TrimSpace(line) == ""
 		out.WriteString(renderInline(line, th) + "\n")
 	}
 	// Handle streaming / truncated input: the opening ``` arrived

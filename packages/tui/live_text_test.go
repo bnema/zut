@@ -17,19 +17,54 @@ const liveTextSample = "Intro paragraph with **bold** and `code`.\n\n" +
 // Live rows must equal the finished-message rows for every prefix of a reply,
 // or rows already in terminal scrollback would diverge from the final text.
 func TestLiveTextRowsMatchFinalRendering(t *testing.T) {
-	for _, width := range []int{24, 80} {
-		v := &View{Theme: Dark}
-		for n := 1; n <= len(liveTextSample); n++ {
-			prefix := liveTextSample[:n]
-			got := strings.Join(v.liveTextRows(prefix, width), "\n")
-			want := strings.Join(renderAssistantText(prefix, Dark, width), "\n")
-			if got != want {
-				t.Fatalf("width %d, prefix %d %q:\nlive:\n%s\nfinal:\n%s", width, n, prefix, got, want)
+	corpus := map[string]string{
+		"mixed":            liveTextSample,
+		"fence-like table": "| a | b |\n| --- | --- |\n```x | y\n\ntext\n```\n\nm\n\nafter",
+		"crlf":             "one\r\n\r\ntwo **b**\r\n\r\n- item\r\n",
+		"blank spaces":     "para one\n  \n\t\t\npara two\n\n\n\npara three",
+		"leading newlines": "\n\nstarts late\n\nand ends\n\n",
+		"indented fence":   "list:\n\n  ```sh\n  echo hi\n\n  echo bye\n  ```\n\ndone",
+		"trailing table":   "| h | i |\n| - | - |\n| 1 | 2 |\n\n\n",
+	}
+	for name, sample := range corpus {
+		for _, width := range []int{10, 24, 80} {
+			v := &View{Theme: Dark}
+			for n := 1; n <= len(sample); n++ {
+				prefix := sample[:n]
+				got := strings.Join(v.liveTextRows(prefix, width), "\n")
+				want := strings.Join(renderAssistantText(prefix, Dark, width), "\n")
+				if got != want {
+					t.Fatalf("%s, width %d, prefix %d %q:\nlive:\n%q\nfinal:\n%q", name, width, n, prefix, got, want)
+				}
 			}
 		}
-		if v.liveText.src == "" {
-			t.Fatalf("width %d: no finished block was cached", width)
-		}
+	}
+}
+
+// Width and theme changes must not reuse rows rendered for other settings.
+func TestLiveTextRowsResetOnWidthAndTheme(t *testing.T) {
+	const text = "first **block**\n\n```go\nx := 1\n```\n\ntail"
+	v := &View{Theme: Dark}
+	v.liveTextRows(text, 80)
+	if v.liveText.src == "" {
+		t.Fatal("no finished block was cached")
+	}
+	if got, want := strings.Join(v.liveTextRows(text, 12), "\n"), strings.Join(renderAssistantText(text, Dark, 12), "\n"); got != want {
+		t.Fatalf("width change reused stale rows:\n%q\nwant\n%q", got, want)
+	}
+	v.Theme = Light
+	if got, want := strings.Join(v.liveTextRows(text, 12), "\n"), strings.Join(renderAssistantText(text, Light, 12), "\n"); got != want {
+		t.Fatalf("theme change reused stale rows:\n%q\nwant\n%q", got, want)
+	}
+}
+
+// Render snapshots must not share the live-text cache with the owning view.
+func TestCloneForRenderIsolatesLiveTextCache(t *testing.T) {
+	v := &View{Theme: Dark}
+	v.liveTextRows("block one\n\nblock two\n\n", 80)
+	clone := v.CloneForRender()
+	if clone.liveText.src != "" || clone.liveText.rows != nil {
+		t.Fatal("clone shares the live-text cache")
 	}
 }
 
@@ -44,10 +79,12 @@ func TestLiveTextRowsResetOnNewReply(t *testing.T) {
 	}
 }
 
-func TestStableMarkdownPrefixSkipsOpenFence(t *testing.T) {
-	src := "text\n\n```\ncode\n\nmore code\n"
-	if got := stableMarkdownPrefix(src); got != len("text\n\n") {
-		t.Fatalf("cut = %d, want %d (no split inside an open fence)", got, len("text\n\n"))
+func TestMarkdownBoundariesSkipOpenFence(t *testing.T) {
+	lines := strings.Split("text\n\n```\ncode\n\nmore code\n", "\n")
+	var got []int
+	renderMarkdownRaw(lines, Dark, 80, func(line, _ int) { got = append(got, line) })
+	if len(got) != 1 || got[0] != 2 {
+		t.Fatalf("boundaries = %v, want [2] (none inside an open fence)", got)
 	}
 }
 

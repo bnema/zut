@@ -1072,18 +1072,6 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 func formatInt(n int) string {
 	return fmt.Sprintf("%d", n)
 }
-func assistantText(m provider.Message) string {
-	var sb strings.Builder
-	for _, c := range m.Content {
-		if tb, ok := c.(provider.TextBlock); ok {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(tb.Text)
-		}
-	}
-	return sb.String()
-}
 func (i *Interactive) resetTranscriptRenderLocked() {
 	i.view.InvalidateRenderCache()
 	i.chatCacheValid = false

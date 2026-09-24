@@ -275,9 +275,14 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// provider's final event; publishing idle before inspecting queues can
 		// strand that summary in the core agent queue or start an overlapping
 		// turn.
-		// Leave any paced text alone: the pacer may still be painting the
-		// final deltas and returns the presenter to idle when it is done.
-		i.stream.Finish()
+		// On success, let the pacer finish painting the final deltas; it
+		// returns the presenter to idle when done. A cancelled turn stops
+		// typing at once.
+		if ctx.Err() != nil {
+			i.stream.Reset()
+		} else {
+			i.stream.Finish()
+		}
 		i.cancelTurn = nil
 		pendingIdleWork := i.takePendingIdleWorkLocked()
 		if err != nil && ctx.Err() == nil {

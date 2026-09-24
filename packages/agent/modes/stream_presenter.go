@@ -11,9 +11,9 @@ import (
 // when a provider sends a few fat chunks instead of a steady drip.
 const paintPaceRate = 6
 
-// paintCatchUpTicks bounds how far the painted text may lag behind what the
-// provider has sent. A larger backlog is released proportionally faster so
-// a fast stream never trails by more than roughly this many ticks.
+// paintCatchUpTicks sets how fast a backlog drains: each tick releases about
+// 1/paintCatchUpTicks of the unpainted text (at least paintPaceRate runes),
+// so a large lag shrinks geometrically instead of growing with a fast stream.
 const paintCatchUpTicks = 24
 
 // paintPaceInterval is the pacer tick. It matches the redraw throttle so the
