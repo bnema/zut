@@ -299,7 +299,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		// Keep busy/compacting asserted while cleanup and queue selection run.
 		// Completion updates can arrive in this window; clearing busy before
 		// inspecting the queues lets them race a new turn or be stranded.
-		i.resetStreamingStateLocked()
+		i.stream.Reset()
 		i.cancelTurn = nil
 		i.autoCompacting = false
 		pendingIdleWork := i.takePendingIdleWorkLocked()
@@ -354,7 +354,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			i.lastCtxInput = estimateCompactedContextInput(msgs)
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
-			i.toolGate = map[string]int{}
+			i.stream.Reset()
 			i.resetTranscriptRenderLocked()
 			switch {
 			case i.continueAfterCompact:

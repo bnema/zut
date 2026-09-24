@@ -57,15 +57,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	i.activity.apply(ev)
 	switch e := ev.(type) {
 	case core.EvAssistantStart:
-		// Fires at the top of every oneTurn, including follow-up
-		// turns after tool use. Without this, the streaming buffer
-		// is still marked off from the previous assistant message
-		// and the final summary text pops in all at once instead
-		// of typewriter-streaming delta by delta.
-		i.streaming.Reset()
-		i.streamPending = i.streamPending[:0]
-		i.streamFlushPending = false
-		i.streamOn = true
+		// Fires at the top of every model request, including follow-ups
+		// after tool use. The presenter anchors the transcript here so the
+		// reply is never shown both as live text and as a finished message.
+		i.startStreamLocked()
 		// Clear the live tool-call overlay. Any tools from the
 		// previous round are now fully folded into the transcript
 		// (assistant tool_use block + tool role message with the
@@ -76,28 +71,18 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// will populate fresh entries for this turn's tools.
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
-		i.toolGate = map[string]int{}
 	case core.EvTextDelta:
-		// Buffer into streamPending; the paintPace ticker drains
-		// it into i.streaming a few runes at a time for a smooth
-		// typewriter effect independent of upstream chunk size.
-		i.streamPending = append(i.streamPending, []rune(e.Delta)...)
-		i.streamOn = true
+		// The pacer paints buffered text a few runes per tick so every
+		// provider has the same typewriter feel regardless of chunk size.
+		i.stream.Push(e.Delta)
+		i.wakeStreamPacer()
 	case core.EvAssistantMessage:
-		// OnAssistant + telegram mirroring always fire on message
-		// arrival — they read the FINAL message content, which is
-		// complete regardless of what's still in the pacer.
+		// Side effects read the final message, which is complete even
+		// while the pacer is still painting it.
 		i.assistantMessageSideEffects(e.Message)
-		// If the pacer still has characters to drain, keep streamOn
-		// true and mark flush pending; the paintPace ticker will
-		// drain the remainder and reset streaming state when done.
-		// Otherwise (rare: full-replay sessions, abort paths) clear
-		// synchronously so a later render doesn't show stale text.
-		if len(i.streamPending) > 0 {
-			i.streamFlushPending = true
-			return
-		}
-		i.resetStreamingStateLocked()
+		// The presenter keeps the live text until the last rune is painted,
+		// then reveals the transcript in the same frame.
+		i.stream.Finish()
 	case core.EvToolUseStart:
 		// Live streaming: pre-create the view so the user sees the
 		// tool call being composed in real time. Any subsequent
@@ -112,7 +97,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.bumpToolRevisionLocked(tc)
 			i.toolCalls[e.ID] = tc
 			i.toolOrder = append(i.toolOrder, e.ID)
-			i.gateToolLocked(e.ID)
+			i.stream.Gate(e.ID)
 		}
 	case core.EvToolUseArgs:
 		if tc, ok := i.toolCalls[e.ID]; ok {
@@ -153,7 +138,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.bumpToolRevisionLocked(tc)
 			i.toolCalls[e.ID] = tc
 			i.toolOrder = append(i.toolOrder, e.ID)
-			i.gateToolLocked(e.ID)
+			i.stream.Gate(e.ID)
 		}
 	case core.EvToolResult:
 		if tc, ok := i.toolCalls[e.ID]; ok {
@@ -233,11 +218,15 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		}
 	case core.EvTurnEnd:
 		if e.Stop == provider.StopAborted {
-			i.resetStreamingStateLocked()
+			i.stream.Reset()
 			i.statusErr = ""
 			i.statusOK = "cancelled"
 			return
 		}
+		// A request can end without an assistant message (empty reply,
+		// extension suppression, provider error). Close the stream so the
+		// transcript anchor never outlives its request.
+		i.stream.Finish()
 		if e.Stop == provider.StopLength {
 			// The model hit its output-token cap mid-response, so the
 			// reply (often a long write/edit) is truncated. Surface it

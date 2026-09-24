@@ -149,7 +149,7 @@ func TestMainTurnEmitsBellAfterVisibleResponse(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		i.mu.Lock()
-		ready := i.pendingAlert != nil && !i.streamFlushPending && len(i.streamPending) == 0
+		ready := i.pendingAlert != nil && !i.stream.Active()
 		i.mu.Unlock()
 		if ready {
 			i.redraw()
@@ -166,8 +166,9 @@ func TestMainAlertWaitsForPacedText(t *testing.T) {
 	term := &alertTestTerminal{}
 	i := NewInteractive(InteractiveConfig{Terminal: term})
 	i.rend = tui.NewRenderer(io.Discard)
-	i.streamPending = []rune("final answer")
-	i.streamFlushPending = true
+	i.stream.Start(-1, 0)
+	i.stream.Push("final answer")
+	i.stream.Finish()
 	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "agent_done"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -176,7 +177,7 @@ func TestMainAlertWaitsForPacedText(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		i.mu.Lock()
-		ready := !i.streamFlushPending && len(i.streamPending) == 0 && i.pendingAlert != nil
+		ready := !i.stream.Active() && i.pendingAlert != nil
 		i.mu.Unlock()
 		if ready {
 			i.redraw()
@@ -188,10 +189,10 @@ func TestMainAlertWaitsForPacedText(t *testing.T) {
 		t.Fatalf("paced alert output = %q, want BEL after final redraw", got)
 	}
 	i.mu.Lock()
-	on, pending, alert := i.streamOn, len(i.streamPending), i.pendingAlert
+	on, alert := i.stream.Active(), i.pendingAlert
 	i.mu.Unlock()
-	if on || pending != 0 || alert != nil {
-		t.Fatalf("stream state after alert: on=%v pending=%d alert=%v", on, pending, alert)
+	if on || alert != nil {
+		t.Fatalf("stream state after alert: on=%v alert=%v", on, alert)
 	}
 }
 

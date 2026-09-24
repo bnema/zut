@@ -199,6 +199,7 @@ type View struct {
 	// tool results do not need to hash their payload on every frame.
 	renderCache          map[msgCacheKey][]string
 	liveRenderCache      map[liveToolCacheKey][]string
+	liveText             liveTextCache
 	messageCache         []messageRenderCacheEntry
 	messageCacheStart    int
 	messageCacheRevision uint64
@@ -269,6 +270,7 @@ func (v *View) InvalidateRenderCache() {
 	v.RenderCacheRevision++
 	v.renderCache = nil
 	v.liveRenderCache = nil
+	v.liveText = liveTextCache{}
 	v.messageCache = nil
 	v.messageCacheStart = 0
 	v.messageCacheRevision = 0
@@ -283,6 +285,8 @@ func (v *View) InvalidateRenderCache() {
 // state mutex without racing the next snapshot.
 func (v *View) CloneForRender() *View {
 	clone := *v
+	// The live-text cache grows in place; a snapshot must not share it.
+	clone.liveText = liveTextCache{}
 	clone.Messages = append([]provider.Message(nil), v.Messages...)
 	clone.ToolCalls = append([]ToolCallView(nil), v.ToolCalls...)
 	clone.StartupContextPaths = append([]string(nil), v.StartupContextPaths...)
@@ -451,15 +455,7 @@ func (v *View) BuildLive(width int) []string {
 	themeKey := toolThemeKey(v.Theme)
 	var out []string
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
-		const indent = "  "
-		inner := assistantBodyWidth(width - len(indent))
-		md := RenderMarkdown(v.Streaming, v.Theme, inner)
-		for _, l := range strings.Split(md, "\n") {
-			for _, w := range wrapANSILine(l, inner) {
-				out = append(out, indent+w)
-			}
-		}
-		// out = append(out, "")
+		out = v.liveTextRows(v.Streaming, width)
 	}
 	finalised := map[string]bool{}
 	for _, m := range v.Messages {
@@ -664,17 +660,8 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		// don't suddenly reflow when the turn ends. No speaker header
 		// is drawn; the indent matches the finalised assistant body in
 		// renderMessage so the column stays consistent across the
-		// stream/finalise transition. Width is capped so ultra-wide
-		// terminals don't produce edge-to-edge code-fence rules or
-		// unreadably long prose lines.
-		const indent = "  "
-		inner := assistantBodyWidth(width - len(indent))
-		md := RenderMarkdown(v.Streaming, v.Theme, inner)
-		for _, l := range strings.Split(md, "\n") {
-			for _, w := range wrapANSILine(l, inner) {
-				out = append(out, indent+w)
-			}
-		}
+		// stream/finalise transition.
+		out = append(out, v.liveTextRows(v.Streaming, width)...)
 		out = append(out, "")
 	}
 	// Live tool-call overlay: keep the in-flight box visible after
@@ -1136,17 +1123,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		// small left indent so it visually aligns with tool box body
 		// content, but no "zut" header.
 		_ = turnOpen
-		const indent = "  "
-		inner := assistantBodyWidth(width - len(indent))
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
-				md := RenderMarkdown(strings.TrimLeft(b.Text, "\n"), v.Theme, inner)
-				for _, l := range strings.Split(md, "\n") {
-					for _, w := range wrapANSILine(l, inner) {
-						lines = append(lines, indent+w)
-					}
-				}
+				lines = append(lines, renderAssistantText(b.Text, v.Theme, width)...)
 			case provider.ToolCallBlock:
 				// The whole box (top + body + bottom) is rendered by
 				// the matching tool_result message so a single

@@ -182,11 +182,10 @@ func TestAutoCompactionSettlesFinalStreamingStateBeforeCompacting(t *testing.T) 
 	}
 
 	interactive.mu.Lock()
-	streaming, pending := interactive.streaming.Len(), len(interactive.streamPending)
-	streamOn, flushPending := interactive.streamOn, interactive.streamFlushPending
+	streamText, streamOn := interactive.stream.Text(), interactive.stream.Active()
 	interactive.mu.Unlock()
-	if streaming != 0 || pending != 0 || streamOn || flushPending {
-		t.Fatalf("auto-compaction started with live stream state: rendered=%d pending=%d on=%t flush=%t", streaming, pending, streamOn, flushPending)
+	if streamText != "" || streamOn {
+		t.Fatalf("auto-compaction started with live stream state: text=%q on=%t", streamText, streamOn)
 	}
 
 	close(client.releaseCompaction)

@@ -21,11 +21,19 @@ const FlushLeftSentinel = '\x1c'
 // width is used to draw horizontal rules (e.g. around code fences).
 // Pass 0 to use a reasonable fallback.
 func RenderMarkdown(src string, th Theme, width int) string {
+	return strings.TrimRight(renderMarkdownRaw(strings.Split(src, "\n"), th, width), "\n")
+}
+
+// renderMarkdownRaw renders source lines without trimming trailing blank
+// rows; every emitted row ends with "\n". Rendering state never crosses a
+// blank line outside a code fence, so for such a split point
+// raw(a ++ b) == raw(a) + raw(b). Live streaming relies on this to render
+// only the unfinished tail of a reply on each frame.
+func renderMarkdownRaw(lines []string, th Theme, width int) string {
 	if width <= 0 {
 		width = 80
 	}
 
-	lines := strings.Split(src, "\n")
 	var out strings.Builder
 	var fenceBuf strings.Builder
 	inFence := false
@@ -62,7 +70,7 @@ func RenderMarkdown(src string, th Theme, width int) string {
 	for idx := 0; idx < len(lines); idx++ {
 		line := lines[idx]
 		trim := strings.TrimLeft(line, " ")
-		if strings.HasPrefix(trim, "```") {
+		if isMarkdownFence(line) {
 			if inFence {
 				flushFence()
 				inFence = false
@@ -135,7 +143,12 @@ func RenderMarkdown(src string, th Theme, width int) string {
 	if inFence {
 		flushFence()
 	}
-	return strings.TrimRight(out.String(), "\n")
+	return out.String()
+}
+
+// isMarkdownFence reports whether line opens or closes a fenced code block.
+func isMarkdownFence(line string) bool {
+	return strings.HasPrefix(strings.TrimLeft(line, " "), "```")
 }
 
 var (

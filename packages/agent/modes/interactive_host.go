@@ -118,7 +118,7 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.view.InvalidateRenderCache()
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
-	i.toolGate = map[string]int{}
+	i.stream.Reset()
 	i.helpBlock = nil
 	i.sessionInfoBlocks = nil
 	i.extNotes = nil
@@ -203,7 +203,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.writeTerminalTitleLocked("")
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
-	i.toolGate = map[string]int{}
+	i.stream.Reset()
 	i.helpBlock = nil
 	i.sessionInfoBlocks = nil
 	i.parkedTurn = 0
