@@ -43,7 +43,7 @@ const subagentSchema = `{
     "action": {
       "type": "string",
       "enum": ["spawn", "status", "stop", "resume"],
-      "description": "One action per call. spawn delegates a new resident sub-agent. status reads bounded state for one child or lists the current set. stop requests termination of a stuck child. resume continues an existing child with a new prompt, keeping its session context, and can wait for that follow-up turn."
+      "description": "One action per call. spawn delegates a new resident sub-agent. status reads bounded state for one child, including its current live activity, or lists the current set. stop requests termination of a stuck child. resume continues an existing child with a new prompt, keeping its session context, and can wait for that follow-up turn."
     },
     "task": {
       "type": "string",
@@ -93,6 +93,12 @@ const subagentSchema = `{
       "type": "boolean",
       "description": "With status and agent_id, retrieve the saved terminal result without running the child. Only valid when action is status."
     },
+    "watch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "description": "With status and agent_id, observe the child's live activity (waiting for the model, writing text, or running tools) for this many seconds and return a timeline of changes. Returns early when the child stops running. Use it to inspect progress, not to wait for completion. Only valid when action is status."
+    },
     "prompt": {
       "type": "string",
       "description": "New manager follow-up for the sub-agent. Its earlier task and conversation remain available in the retained session. Required when action is resume. After a terminal failure, inspect its saved result first; resume continues the retained session without discarding progress or satisfying required work. Combine with wait to block on that follow-up turn."
@@ -106,7 +112,7 @@ const subagentSchema = `{
 // action is rejected before dispatch.
 var subagentActionFields = map[string][]string{
 	SubagentActionSpawn:  {"task", "agent", "model", "provider", "reasoning", "fast_mode", "required", "wait", "isolation"},
-	SubagentActionStatus: {"agent_id", "include_result"},
+	SubagentActionStatus: {"agent_id", "include_result", "watch"},
 	SubagentActionStop:   {"agent_id"},
 	SubagentActionResume: {"agent_id", "prompt", "wait"},
 }

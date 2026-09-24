@@ -238,6 +238,13 @@ all of them.
     metadata-only; foreign-owned results cannot be read. Result-read errors
     distinguish foreign ownership, a missing saved result, and permission
     denial without exposing filesystem paths or saved content.
+    With `agent_id`, a running child also includes `activity`: a `phase`
+    (`waiting_for_model`, `writing`, `tools`, or `working`), the tail of its
+    visible text, and its active tools with truncated arguments. Hidden
+    reasoning is never exposed. `watch` (1–60 seconds, requires `agent_id`)
+    observes that activity and returns a `timeline` of phase and tool changes.
+    It returns early when the child stops running. Use it to inspect progress,
+    not to wait for completion.
   - `stop` accepts `agent_id` and stops one live child.
   - `resume` accepts `agent_id`, `prompt`, and optional `wait`. `prompt` is an
     explicit follow-up prompt for an existing child. After a terminal failure,
