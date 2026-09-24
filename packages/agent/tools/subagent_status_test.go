@@ -9,7 +9,72 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
 )
+
+func TestResidentStatusWatchReportsLiveActivity(t *testing.T) {
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		return func(ctx context.Context, _ string) error {
+			_ = journal.RecordAgentEvent(core.EvTextDelta{Delta: "Reading the parser"})
+			_ = journal.RecordAgentEvent(core.EvToolExecutionStarted{ID: "call-1", Name: "read"})
+			close(ready)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	spec := subagents.ResidentChildSpec{ID: "watched", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
+	if _, err := manager.Spawn(t.Context(), spec, "investigate"); err != nil {
+		t.Fatal(err)
+	}
+	<-ready
+	tool := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
+
+	result, err := tool.Execute(t.Context(), json.RawMessage(`{"agent_id":"watched","watch":1}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+	var response subagentStatusResponse
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Watch == nil || len(response.Watch.Timeline) == 0 || response.Watch.EndState != subagents.ResidentRunning {
+		t.Fatalf("watch = %#v", response.Watch)
+	}
+	activity := response.Activity
+	if activity == nil || activity.Phase != "tools" || activity.Text != "Reading the parser" || len(activity.Tools) != 1 || activity.Tools[0].Name != "read" {
+		t.Fatalf("activity = %#v", activity)
+	}
+
+	close(release)
+	result, err = tool.Execute(t.Context(), json.RawMessage(`{"agent_id":"watched","watch":60}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+	response = subagentStatusResponse{}
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Watch == nil || response.Watch.EndState == subagents.ResidentRunning || response.Watch.Seconds >= 30 || response.Activity != nil {
+		t.Fatalf("watch did not end with the turn: %#v", response)
+	}
+}
+
+func TestResidentStatusWatchValidation(t *testing.T) {
+	manager := subagents.NewResidentManager(t.TempDir(), nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	tool := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	result, err := tool.Execute(t.Context(), json.RawMessage(`{"watch":5}`), nil)
+	if err != nil || !result.IsError || !strings.Contains(toolResultText(t, result), "watch requires agent_id") {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+}
 
 func TestResidentStatusResultReadErrors(t *testing.T) {
 	for _, scenario := range []struct {

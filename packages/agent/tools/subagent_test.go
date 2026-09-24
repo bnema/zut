@@ -63,7 +63,7 @@ func TestSubagentFacadeNameAndSchema(t *testing.T) {
 	}
 	for _, field := range []string{
 		"action", "task", "agent", "model", "provider", "reasoning", "fast_mode",
-		"required", "wait", "isolation", "agent_id", "include_result", "prompt",
+		"required", "wait", "isolation", "agent_id", "include_result", "watch", "prompt",
 	} {
 		if _, ok := schema.Properties[field]; !ok {
 			t.Fatalf("schema is missing property %q", field)
@@ -123,6 +123,7 @@ var subagentActionAnnotation = map[string]string{
 	"isolation":      "Only valid when action is spawn.",
 	"agent_id":       "Required when action is stop or resume.",
 	"include_result": "Only valid when action is status.",
+	"watch":          "Only valid when action is status.",
 	"prompt":         "Required when action is resume.",
 }
 
