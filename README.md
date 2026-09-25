@@ -425,7 +425,7 @@ Resident subagents run alongside the main session as independent in-process agen
 
 > **V0.x breaking change:** previous subprocess subagent state is unsupported and ignored. Outstanding jobs are never migrated or replayed; remove the old state directory when you no longer need it.
 
-> **V0.x breaking change:** the separate `subagent_spawn`, `subagent_status`, `subagent_stop`, and `subagent_resume` tools are replaced by one `subagent` tool with `spawn`, `status`, `stop`, and `resume` actions. `--tools subagent_spawn` no longer selects anything; use `--tools subagent:spawn`, or bare `--tools subagent` for every action. Under `--no-yolo` the "always allow" grant is remembered per action (`subagent:status` and `subagent:spawn` are separate grants), so approving a read-only `status` call never pre-approves `spawn`, `stop`, or `resume`.
+> **V0.x breaking change:** the separate `subagent_spawn`, `subagent_status`, `subagent_stop`, and `subagent_resume` tools are replaced by one `subagent` tool whose actions are selected by an `action` argument. `--tools subagent_spawn` no longer selects anything; use `--tools subagent:spawn`, or bare `--tools subagent` for every action. Under `--no-yolo` the "always allow" grant is remembered per action (`subagent:status` and `subagent:spawn` are separate grants), so approving a read-only `status` call never pre-approves any other action.
 
 > **Choose the workspace deliberately.** Use `isolation:"worktree"` for parallel coding so children cannot edit the host checkout. Use shared mode for read-only review or explicitly coordinated work. Worktree isolation is an accident-prevention guardrail, not a security sandbox.
 

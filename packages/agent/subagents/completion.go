@@ -34,6 +34,11 @@ func (c ResidentCompletion) Completion() Completion {
 	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: string(ResidentCompleted), Task: c.Task, Summary: c.Summary, Undelivered: append([]string(nil), c.Undelivered...)}
 	if c.NotStarted {
 		result.Status = CompletionDropped
+		// Cancellation is the expected reason; any other error, such as a
+		// journal failure, explains why the follow-up could not run.
+		if c.Err != nil && !errors.Is(c.Err, context.Canceled) {
+			result.Error = c.Err.Error()
+		}
 		return result
 	}
 	if c.Err != nil {
@@ -178,7 +183,11 @@ func FormatCompletionUpdateWithActive(batch []Completion, activeAgentIDs []strin
 		if completion.Status == CompletionDropped {
 			// The child never read this follow-up. Echoing it as a task would
 			// read as work the child attempted.
-			fmt.Fprintf(&b, " (queued follow-up never started: %s)\n", undeliveredPreview(completion.Task))
+			fmt.Fprintf(&b, " (queued follow-up never started: %s)", undeliveredPreview(completion.Task))
+			if completion.Error != "" {
+				fmt.Fprintf(&b, " (%s)", completion.Error)
+			}
+			b.WriteByte('\n')
 			continue
 		}
 		if completion.Error != "" {

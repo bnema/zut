@@ -102,3 +102,45 @@ func TestResidentInterruptToolRequiresRunningTurn(t *testing.T) {
 		t.Fatalf("result = (%#v, %v), want no-running-turn error", result, err)
 	}
 }
+
+// The facade dispatches interrupt to a running child and keeps it live.
+func TestSubagentFacadeInterruptsRunningTurn(t *testing.T) {
+	started := make(chan struct{}, 1)
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
+			started <- struct{}{}
+			<-ctx.Done()
+			return ctx.Err()
+		}), nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	done, cancel := manager.WatchCompletion("running-child", "initial")
+	defer cancel()
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "running-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	facade := &SubagentTool{Interrupt: &SubagentInterruptTool{ResidentManager: manager, Enabled: func() bool { return true }}}
+	result, err := facade.Execute(t.Context(), json.RawMessage(`{"action":"interrupt","agent_id":"running-child"}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("interrupt = (%#v, %v)", result, err)
+	}
+	if response, ok := result.Details.(subagentActionResponse); !ok || response.Action != "interrupt_requested" {
+		t.Fatalf("response = %#v", result.Details)
+	}
+	select {
+	case completion := <-done:
+		if completion.Completion().Status != string(subagents.ResidentInterrupted) {
+			t.Fatalf("completion = %#v", completion)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted turn did not complete")
+	}
+	if manager.Get("running-child") == nil {
+		t.Fatal("interrupt removed the live child")
+	}
+	result, err = facade.Execute(t.Context(), json.RawMessage(`{"action":"interrupt","agent_id":"running-child","mode":"steer"}`), nil)
+	if err != nil || !result.IsError {
+		t.Fatalf("mode on interrupt = (%#v, %v), want foreign-field error", result, err)
+	}
+}

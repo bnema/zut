@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/provider"
@@ -339,34 +340,47 @@ const StrictOrchestratorDelegationUnavailableAddendum = `Delegation is unavailab
 
 const ProactiveSubagentsDelegationUnavailableAddendum = `Proactive delegation is unavailable in this session because the launch-time tool policy does not expose the subagent spawn action. Continue the user's task locally; do not report delegation as a blocker.`
 
+// SubagentActions records which subagent actions the launch-time tool policy
+// exposes, so prompt guidance names only actions the model can call.
+type SubagentActions struct {
+	Spawn, Stop, Resume, Interrupt bool
+}
+
+func (a SubagentActions) lifecycle() bool { return a.Stop || a.Resume || a.Interrupt }
+
 // ProactiveSubagentsSystemAddendumFor returns the interactive collaboration
 // contract with guidance only for manager actions exposed at launch time.
-func ProactiveSubagentsSystemAddendumFor(spawnToolAllowed, stopToolAllowed, resumeToolAllowed bool) string {
+func ProactiveSubagentsSystemAddendumFor(actions SubagentActions) string {
 	base := ProactiveSubagentsSystemAddendum
-	if spawnToolAllowed {
+	if actions.Spawn {
 		base = ProactiveSubagentsRoutingAddendum + "\n\n" + base
 	}
-	return subagentsSystemAddendumFor(base, ProactiveSubagentsDelegationUnavailableAddendum, false, spawnToolAllowed, stopToolAllowed, resumeToolAllowed)
+	return subagentsSystemAddendumFor(base, ProactiveSubagentsDelegationUnavailableAddendum, false, actions)
 }
 
 // StrictOrchestratorSystemAddendumFor returns the headless manager-only
 // contract with guidance only for manager actions exposed at launch time.
-func StrictOrchestratorSystemAddendumFor(spawnToolAllowed, stopToolAllowed, resumeToolAllowed bool) string {
-	return subagentsSystemAddendumFor(StrictOrchestratorSystemAddendum, StrictOrchestratorDelegationUnavailableAddendum, true, spawnToolAllowed, stopToolAllowed, resumeToolAllowed)
+func StrictOrchestratorSystemAddendumFor(actions SubagentActions) string {
+	return subagentsSystemAddendumFor(StrictOrchestratorSystemAddendum, StrictOrchestratorDelegationUnavailableAddendum, true, actions)
 }
 
-func subagentsSystemAddendumFor(base, unavailable string, strict, spawnToolAllowed, stopToolAllowed, resumeToolAllowed bool) string {
+func subagentsSystemAddendumFor(base, unavailable string, strict bool, actions SubagentActions) string {
 	addendum := base + "\n\n" + subagentLifecycleAddendum
-	switch {
-	case stopToolAllowed && resumeToolAllowed:
-		addendum += "\n\nManager lifecycle actions are available: use the subagent tool's stop action to request termination of a stuck worker, and its resume action with an agent id and follow-up prompt to continue an idle worker, steer a running worker mid-turn, or restart a stopped worker with its existing session context."
-	case stopToolAllowed:
-		addendum += "\n\nA manager lifecycle action is available: use the subagent tool's stop action to request termination of a stuck worker."
-	case resumeToolAllowed:
-		addendum += "\n\nA manager lifecycle action is available: use the subagent tool's resume action with an agent id and follow-up prompt to continue an idle worker, steer a running worker mid-turn, or restart a stopped worker with its existing session context."
+	var lifecycle []string
+	if actions.Resume {
+		lifecycle = append(lifecycle, "use resume with an agent id and follow-up prompt to continue an idle worker, steer a running worker mid-turn, or restart a stopped worker with its existing session context")
 	}
-	if !spawnToolAllowed {
-		if stopToolAllowed || resumeToolAllowed {
+	if actions.Interrupt {
+		lifecycle = append(lifecycle, "use interrupt to cancel only a worker's running turn while keeping its context, for example before asking it to wrap up")
+	}
+	if actions.Stop {
+		lifecycle = append(lifecycle, "use stop to request termination of a stuck worker")
+	}
+	if len(lifecycle) != 0 {
+		addendum += "\n\nSubagent manager lifecycle actions available: " + strings.Join(lifecycle, "; ") + "."
+	}
+	if !actions.Spawn {
+		if actions.lifecycle() {
 			addendum += "\n\nSpawning new workers is unavailable in this session. Use only the enabled manager lifecycle actions for existing workers."
 			if strict {
 				addendum += " Do not implement, debug, test, or review directly."

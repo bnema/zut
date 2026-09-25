@@ -82,7 +82,7 @@ func TestResidentManagerCompletedAnswerCanResume(t *testing.T) {
 	}
 }
 
-// ResumeWithTurn lets a caller subscribe to the exact follow-up turn before it
+// resumeWithTurn lets a caller subscribe to the exact follow-up turn before it
 // can complete.
 func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
 	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
@@ -101,8 +101,8 @@ func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
 	}
 	followUp, cancelFollowUp := manager.WatchCompletion("turn-child", "follow-up-turn")
 	defer cancelFollowUp()
-	if err := manager.ResumeWithTurn(context.Background(), "turn-child", "continue", "follow-up-turn"); err != nil {
-		t.Fatalf("ResumeWithTurn: %v", err)
+	if err := manager.resumeWithTurn(context.Background(), "turn-child", "continue", "follow-up-turn"); err != nil {
+		t.Fatalf("resumeWithTurn: %v", err)
 	}
 	select {
 	case completion := <-followUp:
@@ -136,8 +136,8 @@ func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
 		t.Fatal("initial turn did not complete")
 	}
 	manager.SetCompletionObserver(func(completion ResidentCompletion) { completions <- completion })
-	if err := manager.ResumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
-		t.Fatalf("ResumeWithTurn: %v", err)
+	if err := manager.resumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
+		t.Fatalf("resumeWithTurn: %v", err)
 	}
 	select {
 	case completion := <-completions:

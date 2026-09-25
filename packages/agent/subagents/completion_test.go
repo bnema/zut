@@ -39,6 +39,21 @@ func TestResidentCompletionProjection(t *testing.T) {
 	}
 }
 
+// A dropped follow-up hides expected cancellation but keeps any other cause.
+func TestDroppedCompletionKeepsNonCancellationError(t *testing.T) {
+	canceled := (ResidentCompletion{ChildID: "c", TurnID: "t", Task: "next", Err: context.Canceled, NotStarted: true}).Completion()
+	if canceled.Status != CompletionDropped || canceled.Error != "" {
+		t.Fatalf("canceled drop = %#v", canceled)
+	}
+	failed := (ResidentCompletion{ChildID: "c", TurnID: "t", Task: "next", Err: errors.New("journal full"), NotStarted: true}).Completion()
+	if failed.Status != CompletionDropped || failed.Error != "journal full" {
+		t.Fatalf("failed drop = %#v", failed)
+	}
+	if text := FormatCompletionUpdate([]Completion{failed}, ""); !strings.Contains(text, "dropped (queued follow-up never started: next) (journal full)") {
+		t.Fatalf("update = %q", text)
+	}
+}
+
 func TestFormatCompletionUpdateIncludesFinalSummary(t *testing.T) {
 	got := FormatCompletionUpdate([]Completion{{AgentID: "child", Status: "completed", Task: "review", Summary: "found the regression"}}, "")
 	if !strings.Contains(got, "final: found the regression") {

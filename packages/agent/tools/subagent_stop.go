@@ -23,19 +23,20 @@ type subagentStopArgs struct {
 }
 
 // subagentWaitOutcome reports the result of an explicit bounded wait on one
-// resident turn. An expired wait leaves the child active.
+// resident turn. An expired wait leaves the child active. Undelivered lists
+// steered follow-ups the child never read before that turn ended.
 type subagentWaitOutcome struct {
-	Seconds  int    `json:"seconds"`
-	TimedOut bool   `json:"timed_out,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Summary  string `json:"summary,omitempty"`
+	Seconds     int      `json:"seconds"`
+	TimedOut    bool     `json:"timed_out,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+	Undelivered []string `json:"undelivered,omitempty"`
 }
 
 type subagentActionResponse struct {
-	Action string               `json:"action"`
-	Agent  subagentStatusEntry  `json:"agent"`
-	Wait   *subagentWaitOutcome `json:"wait,omitempty"`
+	Action string              `json:"action"`
+	Agent  subagentStatusEntry `json:"agent"`
 }
 
 // Name returns the shared facade name: this type is an internal
@@ -80,13 +81,7 @@ func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ f
 }
 
 func renderResidentAction(action string, entry subagentStatusEntry) (core.ToolResult, error) {
-	return renderResidentActionWait(action, entry, nil)
-}
-
-// renderResidentActionWait renders an action response plus the outcome of an
-// explicit bounded wait, if the caller requested one.
-func renderResidentActionWait(action string, entry subagentStatusEntry, wait *subagentWaitOutcome) (core.ToolResult, error) {
-	return renderSubagentResponse(subagentActionResponse{Action: action, Agent: entry, Wait: wait})
+	return renderSubagentResponse(subagentActionResponse{Action: action, Agent: entry})
 }
 
 func renderSubagentResponse(response any) (core.ToolResult, error) {

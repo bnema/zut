@@ -462,7 +462,7 @@ type ResumeMode string
 
 const (
 	// ResumeSteer injects the follow-up into the running turn at its next
-	// model-call boundary. An idle child starts a new turn instead.
+	// tool or model boundary. An idle child starts a new turn instead.
 	ResumeSteer ResumeMode = "steer"
 	// ResumeQueue runs the follow-up as a separate turn after the current one.
 	ResumeQueue ResumeMode = "queue"
@@ -504,18 +504,18 @@ func (m *ResidentManager) ResumeFollowUp(ctx context.Context, childID, prompt st
 	if strings.TrimSpace(turnID) == "" {
 		turnID = uuid.NewString()
 	}
-	if err := m.ResumeWithTurn(ctx, childID, prompt, turnID); err != nil {
+	if err := m.resumeWithTurn(ctx, childID, prompt, turnID); err != nil {
 		return ResumeOutcome{}, err
 	}
 	return ResumeOutcome{TurnID: turnID}, nil
 }
 
-// ResumeWithTurn is Resume with a caller-owned turn ID. The ID names the
+// resumeWithTurn queues a follow-up turn with a caller-owned ID. The ID names the
 // accepted follow-up turn in its completion, so a caller that must observe the
 // outcome can subscribe with WatchCompletion before the turn can finish. The
 // ID must be unique per child: replay rejects a duplicate turn.accepted record,
 // so reusing one makes the journal unreplayable.
-func (m *ResidentManager) ResumeWithTurn(ctx context.Context, childID, prompt, turnID string) error {
+func (m *ResidentManager) resumeWithTurn(ctx context.Context, childID, prompt, turnID string) error {
 	if strings.TrimSpace(turnID) == "" {
 		turnID = uuid.NewString()
 	}

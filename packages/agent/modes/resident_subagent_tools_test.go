@@ -30,6 +30,7 @@ func TestApplyAutoSubagentsToolReplacesOneFacadeEntry(t *testing.T) {
 		AutoSubagentsStatusToolAllowed: &allowed,
 		AutoSubagentsStopToolAllowed:   &allowed,
 		AutoSubagentsResumeToolAllowed: &resumeAllowed,
+		// Interrupt is left unset, so it follows the spawn grant.
 	})
 
 	interactive.applyAutoSubagentsTool()
@@ -59,8 +60,8 @@ func TestApplyAutoSubagentsToolReplacesOneFacadeEntry(t *testing.T) {
 		if facade == preSeeded {
 			t.Fatal("interactive refresh reused the pre-seeded facade instead of replacing it")
 		}
-		if facade.Spawn == nil || facade.Status == nil || facade.Stop == nil {
-			t.Fatalf("facade actions = spawn:%v status:%v stop:%v", facade.Spawn != nil, facade.Status != nil, facade.Stop != nil)
+		if facade.Spawn == nil || facade.Status == nil || facade.Stop == nil || facade.Interrupt == nil {
+			t.Fatalf("facade actions = spawn:%v status:%v stop:%v interrupt:%v", facade.Spawn != nil, facade.Status != nil, facade.Stop != nil, facade.Interrupt != nil)
 		}
 		if (facade.Resume != nil) != wantResume {
 			t.Fatalf("facade resume = %v, want %v", facade.Resume != nil, wantResume)

@@ -32,6 +32,10 @@ func (r *residentAgentRuntime) Run(ctx context.Context, prompt string) error {
 		// A follow-up steered after the agent's last queue check would
 		// otherwise be silently left behind by a successful turn. Closing
 		// the steer window under the lock makes delivery all-or-nothing.
+		// On error or cancellation the queue is left for the child to
+		// drain and report as undelivered. The loop ends because each
+		// continuation drains the queue at its first step, and Steer only
+		// refills it on an explicit manager call.
 		r.mu.Lock()
 		if err != nil || ctx.Err() != nil || r.agent.QueuedMessageCount() == 0 {
 			r.running = false

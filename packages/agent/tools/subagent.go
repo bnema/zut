@@ -152,7 +152,7 @@ func (t *SubagentTool) Description() string {
 func (t *SubagentTool) Schema() json.RawMessage { return json.RawMessage(subagentSchema) }
 
 // ConfirmationKey implements core.ConfirmationKeyer. The facade multiplexes
-// four actions under one tool name, so the session "always allow" grant is
+// several actions under one tool name, so the session "always allow" grant is
 // scoped per action instead of per name. A missing, empty, or non-string
 // action returns the plain base name so a malformed call cannot widen the
 // remembered grant.

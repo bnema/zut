@@ -6,12 +6,12 @@
 
 > **V0.x breaking change:** the separate `subagent_spawn`, `subagent_status`,
 > `subagent_stop`, and `subagent_resume` tools are replaced by one `subagent`
-> tool with `spawn`, `status`, `stop`, and `resume` actions.
+> tool whose actions are selected by an `action` argument.
 > `--tools subagent_spawn` no longer selects anything; use
 > `--tools subagent:spawn`, or bare `--tools subagent` for every action.
 > Under `--no-yolo`, "always allow" is remembered per action
 > (`subagent:status` and `subagent:spawn` are separate grants), so approving a
-> read-only `status` call never pre-approves `spawn`, `stop`, or `resume`.
+> read-only `status` call never pre-approves any other action.
 
 Subagents are independent `core.Agent` conversations resident in the same zut
 process as their parent. A child has a stable, private session identity, its own
@@ -262,7 +262,9 @@ all of them.
     never jumps ahead of already queued turns. The response's `delivery` is
     `steered` or `queued`. `wait` uses the same 1–300 second bound as `spawn`
     and waits for the turn that answers the follow-up, returning its outcome or
-    reporting the timeout while the child stays active.
+    reporting the timeout while the child stays active. A returned outcome can
+    be `dropped` when a queued follow-up never started, and it lists
+    `undelivered` steers the child never read.
   - `interrupt` accepts `agent_id` and cancels only the child's running turn.
     Unlike `stop`, the child stays live with its transcript, so a later
     `resume` such as "report what you have" continues with full context.

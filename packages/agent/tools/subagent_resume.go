@@ -13,7 +13,7 @@ import (
 
 // SubagentResumeTool sends a sub-agent a follow-up while preserving its session
 // context. In steer mode, the default, a follow-up to a running child joins its
-// current turn at the next model-call boundary; otherwise it is accepted
+// current turn at the next tool or model boundary; otherwise it is accepted
 // durably as a new turn that runs FIFO after any active one. An explicit
 // bounded wait may return the answering turn's completion or expire while the
 // child stays active.
@@ -117,6 +117,7 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 			outcome.Status = result.Status
 			outcome.Error = result.Error
 			outcome.Summary = result.Summary
+			outcome.Undelivered = result.Undelivered
 		}
 	}
 	if updated, ok := t.ResidentManager.SnapshotFor(snapshot.ID); ok {
