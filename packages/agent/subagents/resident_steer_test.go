@@ -269,6 +269,40 @@ func TestResidentInterruptKeepsChildResumable(t *testing.T) {
 	}
 }
 
+// An interrupt can be accepted just before the turn finishes on its own. The
+// turn must still report interrupted exactly once, and a late interrupt on the
+// now-idle child must be refused.
+func TestResidentInterruptRacingNaturalCompletion(t *testing.T) {
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	// This runtime ignores cancellation, so its turn ends successfully after
+	// the interrupt was already accepted.
+	runtime := ResidentTurnRunner(func(context.Context, string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	})
+	manager, completions := newSteerTestManager(t, runtime)
+	spec := ResidentChildSpec{ID: "racing", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
+	if _, err := manager.Spawn(t.Context(), spec, "work"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if ok, err := manager.Interrupt(t.Context(), spec.ID); err != nil || !ok {
+		t.Fatalf("Interrupt = %t, %v", ok, err)
+	}
+	close(release)
+	got := drainCompletions(t, completions, 1)
+	if got[0].TurnID != "initial" || got[0].Completion().Status != string(ResidentInterrupted) {
+		t.Fatalf("completion = %#v", got[0])
+	}
+	if ok, err := manager.Interrupt(t.Context(), spec.ID); err != nil || ok {
+		t.Fatalf("late Interrupt = %t, %v, want refused on idle child", ok, err)
+	}
+	if manager.Get(spec.ID) == nil {
+		t.Fatal("interrupt removed the live child")
+	}
+}
+
 // Steering must not jump ahead of a queued follow-up.
 func TestResidentSteerQueuesBehindPendingTurns(t *testing.T) {
 	runtime := newSteerableRuntime()
