@@ -137,7 +137,7 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 			root = filepath.Join(ZutHome(), "subagents")
 			rt.root = root
 		}
-		rt.resident = subagents.NewResidentManagerWithPolicy(root, cfg.Policy, func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+		rt.resident = subagents.NewResidentManagerWithPolicy(root, cfg.Policy, func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
 			return newResidentChildRunner(residentChildArgs(rt.args, rt.credentialProvider, spec), spec, journal)
 		})
 		rt.resident.SetCompletionObserver(cfg.ResidentCompletion)
@@ -488,6 +488,12 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 	}
 	if autoSubagentsResumeToolAllowed(rt.args) {
 		facade.Resume = &tools.SubagentResumeTool{
+			ResidentManager: rt.residentManagerForTools(),
+			Enabled:         func() bool { return true },
+		}
+	}
+	if autoSubagentsInterruptToolAllowed(rt.args) {
+		facade.Interrupt = &tools.SubagentInterruptTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
 		}

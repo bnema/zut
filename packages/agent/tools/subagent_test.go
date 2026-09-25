@@ -63,13 +63,13 @@ func TestSubagentFacadeNameAndSchema(t *testing.T) {
 	}
 	for _, field := range []string{
 		"action", "task", "agent", "model", "provider", "reasoning", "fast_mode",
-		"required", "wait", "isolation", "agent_id", "include_result", "watch", "prompt",
+		"required", "wait", "isolation", "agent_id", "include_result", "watch", "prompt", "mode",
 	} {
 		if _, ok := schema.Properties[field]; !ok {
 			t.Fatalf("schema is missing property %q", field)
 		}
 	}
-	if got := facade.Description(); got != "Spawn, inspect, resume, and stop resident sub-agents. One action per call.\n\n"+subagentSpawnGuidance {
+	if got := facade.Description(); got != "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call.\n\n"+subagentSpawnGuidance {
 		t.Fatalf("description = %q", got)
 	}
 }
@@ -121,10 +121,11 @@ var subagentActionAnnotation = map[string]string{
 	"required":       "Only valid when action is spawn.",
 	"wait":           "Only valid when action is spawn or resume.",
 	"isolation":      "Only valid when action is spawn.",
-	"agent_id":       "Required when action is stop or resume.",
+	"agent_id":       "Required when action is stop, resume, or interrupt.",
 	"include_result": "Only valid when action is status.",
 	"watch":          "Only valid when action is status.",
 	"prompt":         "Required when action is resume.",
+	"mode":           "Only valid when action is resume.",
 }
 
 func TestSubagentFacadeSchemaAnnotatesActionFields(t *testing.T) {
@@ -308,7 +309,7 @@ func TestSubagentFacadeRejectsForeignFieldsAndKeepsUnknownOnes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected host error: %v", err)
 	}
-	if !result.IsError || facadeResultText(t, result) != "subagent: agent_id is not valid for action spawn; it belongs to the resume, status, stop actions" {
+	if !result.IsError || facadeResultText(t, result) != "subagent: agent_id is not valid for action spawn; it belongs to the interrupt, resume, status, stop actions" {
 		t.Fatalf("multi-owner foreign field result = %#v", result)
 	}
 	_, err = facade.Execute(context.Background(), json.RawMessage(`{"action":"stop","agent_id":"nope","bogus":1}`), nil)

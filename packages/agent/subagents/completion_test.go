@@ -3,6 +3,7 @@ package subagents
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -85,7 +86,7 @@ func TestCompletionTrackerWaitReadyDoesNotWaitForSiblings(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	got, err := tracker.WaitReady(ctx)
-	if err != nil || len(got) != 1 || got[0] != want {
+	if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("WaitReady = %#v, %v, want ready result despite pending sibling", got, err)
 	}
 	if _, err := tracker.WaitReady(ctx); !errors.Is(err, context.Canceled) {

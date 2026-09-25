@@ -86,7 +86,10 @@ func renderResidentAction(action string, entry subagentStatusEntry) (core.ToolRe
 // renderResidentActionWait renders an action response plus the outcome of an
 // explicit bounded wait, if the caller requested one.
 func renderResidentActionWait(action string, entry subagentStatusEntry, wait *subagentWaitOutcome) (core.ToolResult, error) {
-	response := subagentActionResponse{Action: action, Agent: entry, Wait: wait}
+	return renderSubagentResponse(subagentActionResponse{Action: action, Agent: entry, Wait: wait})
+}
+
+func renderSubagentResponse(response any) (core.ToolResult, error) {
 	data, err := json.Marshal(response)
 	if err != nil {
 		return core.ToolResult{}, fmt.Errorf("subagent action: encode response: %w", err)

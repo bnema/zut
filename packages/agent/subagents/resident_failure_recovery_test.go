@@ -28,8 +28,8 @@ func TestResidentFailureRecoveryKeepsRequiredUnmetUntilResume(t *testing.T) {
 					spec.WorkspaceMode, spec.WorkspaceCapture = WorkspaceWorktree, CapturePatch
 				}
 				turnErr := errors.New("turn failed")
-				factory := func(spec ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
-					return func(_ context.Context, prompt string) error {
+				factory := func(spec ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+					return ResidentTurnRunner(func(_ context.Context, prompt string) error {
 						if prompt == "continue remaining work" {
 							messages, err := ReadResidentTranscriptMessages(journal.Dir())
 							if err != nil || len(messages) < 3 {
@@ -66,7 +66,7 @@ func TestResidentFailureRecoveryKeepsRequiredUnmetUntilResume(t *testing.T) {
 							}
 						}
 						return turnErr
-					}, nil
+					}), nil
 				}
 				manager := NewResidentManager(root, factory)
 				t.Cleanup(func() { _ = manager.Close(context.Background()) })

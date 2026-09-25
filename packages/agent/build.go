@@ -1519,11 +1519,16 @@ func autoSubagentsResumeToolAllowed(args Args) bool {
 	return subagentActionAllowed(args, tools.SubagentActionResume)
 }
 
+func autoSubagentsInterruptToolAllowed(args Args) bool {
+	return subagentActionAllowed(args, tools.SubagentActionInterrupt)
+}
+
 func autoSubagentsAnyToolAllowed(args Args) bool {
 	return autoSubagentsToolAllowed(args) ||
 		autoSubagentsStatusToolAllowed(args) ||
 		autoSubagentsStopToolAllowed(args) ||
-		autoSubagentsResumeToolAllowed(args)
+		autoSubagentsResumeToolAllowed(args) ||
+		autoSubagentsInterruptToolAllowed(args)
 }
 
 // subagentActionAllowed reports whether the launch-time tool policy grants one

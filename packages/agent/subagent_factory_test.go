@@ -27,7 +27,7 @@ func TestResidentChildRunnerWithoutStepLimitRunsPastFormerCap(t *testing.T) {
 		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
 		CWD: t.TempDir(), NoContextFiles: true, NoSkill: true, DisableRepetitionGuard: true,
 	})
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want success past the former 50-step cap", err)
 	}
 	if got := requests.Load(); got != 52 {
@@ -41,7 +41,7 @@ func TestResidentChildRunnerEnforcesExplicitParentStepLimit(t *testing.T) {
 		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL,
 		MaxSteps: 3, CWD: t.TempDir(), NoContextFiles: true, NoSkill: true,
 	})
-	err := runner(t.Context(), "review")
+	err := runner.Run(t.Context(), "review")
 	if !errors.Is(err, core.ErrMaxSteps) || !strings.Contains(err.Error(), "3") {
 		t.Fatalf("runner error = %v, want step limit 3", err)
 	}
@@ -83,7 +83,7 @@ func residentToolLoopServer(t *testing.T, toolCalls int) (*httptest.Server, *ato
 
 // newResidentChildTestRunner builds one journaled resident child runner with
 // its own accepted spec.
-func newResidentChildTestRunner(t *testing.T, childID string, args Args) (subagents.ResidentTurnRunner, *subagents.ResidentJournal, subagents.ResidentChildSpec) {
+func newResidentChildTestRunner(t *testing.T, childID string, args Args) (subagents.ResidentRuntime, *subagents.ResidentJournal, subagents.ResidentChildSpec) {
 	t.Helper()
 	spec := subagents.ResidentChildSpec{
 		ID: childID, SessionID: childID + "-session", Provider: "openai", Model: "gpt-4o",
@@ -97,11 +97,11 @@ func newResidentChildTestRunner(t *testing.T, childID string, args Args) (subage
 	if err := journal.Accept(spec, "review"); err != nil {
 		t.Fatal(err)
 	}
-	runner, err := newResidentChildRunner(args, spec, journal)
+	runtime, err := newResidentChildRunner(args, spec, journal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return runner, journal, spec
+	return runtime, journal, spec
 }
 
 func TestResidentChildRunnerInjectsContextReminderIntoNextRequest(t *testing.T) {
@@ -159,10 +159,10 @@ func TestResidentChildRunnerInjectsContextReminderIntoNextRequest(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatal(err)
 	}
-	if err := runner(t.Context(), "follow up"); err != nil {
+	if err := runner.Run(t.Context(), "follow up"); err != nil {
 		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -353,7 +353,7 @@ func TestResidentChildRunnerKeepsToolsAcrossTurns(t *testing.T) {
 	defer server.Close()
 
 	runner, journal := newResidentTestRunner(t, server.URL)
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -384,7 +384,7 @@ func TestResidentChildRunnerRunsHighUsageFollowUpWithoutBudget(t *testing.T) {
 	defer server.Close()
 
 	runner, journal := newResidentTestRunner(t, server.URL)
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want terminal result", err)
 	}
 	if got := requests.Load(); got != 1 {
@@ -394,7 +394,7 @@ func TestResidentChildRunnerRunsHighUsageFollowUpWithoutBudget(t *testing.T) {
 		t.Fatalf("latest summary = %q", summary)
 	}
 	// Without a cumulative budget, a high-usage follow-up runs normally.
-	if err := runner(t.Context(), "continue"); err != nil {
+	if err := runner.Run(t.Context(), "continue"); err != nil {
 		t.Fatalf("follow-up error = %v, want success", err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -429,7 +429,7 @@ func TestResidentChildRunnerResumesWithRetainedHistory(t *testing.T) {
 	}))
 	defer server.Close()
 	cwd := t.TempDir()
-	manager := subagents.NewResidentManager(t.TempDir(), func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
 		return newResidentChildRunner(Args{Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: server.URL, CWD: cwd, NoContextFiles: true, NoSkill: true}, spec, journal)
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
@@ -460,7 +460,7 @@ func TestResidentChildRunnerResumesWithRetainedHistory(t *testing.T) {
 	}
 }
 
-func newResidentTestRunner(t *testing.T, baseURL string) (subagents.ResidentTurnRunner, *subagents.ResidentJournal) {
+func newResidentTestRunner(t *testing.T, baseURL string) (subagents.ResidentRuntime, *subagents.ResidentJournal) {
 	t.Helper()
 	runner, journal, _ := newResidentChildTestRunner(t, "resident-child", Args{
 		Provider: "openai", Model: "gpt-4o", APIKey: "synthetic", BaseURL: baseURL,
@@ -672,7 +672,7 @@ func TestResidentChildRunnerRecoversFromContextOverflowOnce(t *testing.T) {
 	if err := journal.RecordTurnStarted(spec, "turn-1"); err != nil {
 		t.Fatal(err)
 	}
-	runErr := runner(t.Context(), "review")
+	runErr := runner.Run(t.Context(), "review")
 	if err := journal.RecordTurnFinished(spec, "turn-1", runErr); err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +728,7 @@ func TestResidentChildRunnerDoesNotRecoverTwicePerTurn(t *testing.T) {
 	script := &residentOverflowScript{toolCallRequests: 2, secondOverflow: true, finalText: "unreached"}
 	server := script.start(t)
 	runner, journal, _ := newResidentChildTestRunner(t, "double-overflow", residentArguments(t, server.URL))
-	err := runner(t.Context(), "review")
+	err := runner.Run(t.Context(), "review")
 	if err == nil || !provider.IsContextOverflowError(err) {
 		t.Fatalf("runner error = %v, want the second overflow to stay terminal", err)
 	}
@@ -746,7 +746,7 @@ func TestResidentChildRunnerDoesNotReplenishExplicitStepLimit(t *testing.T) {
 	args := residentArguments(t, server.URL)
 	args.MaxSteps = 4
 	runner, journal, _ := newResidentChildTestRunner(t, "limited-overflow", args)
-	err := runner(t.Context(), "review")
+	err := runner.Run(t.Context(), "review")
 	if err == nil || !provider.IsContextOverflowError(err) {
 		t.Fatalf("runner error = %v, want the overflow", err)
 	}
@@ -791,7 +791,7 @@ func TestResidentChildRunnerFailsTurnWhenCheckpointCannotPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runner(t.Context(), "review"); err == nil {
+	if err := runner.Run(t.Context(), "review"); err == nil {
 		t.Fatal("runner recovered without persisting its checkpoint")
 	}
 	if got := script.requests.Load(); got != 4 {
@@ -815,7 +815,7 @@ func TestResidentChildRunnerFailsTurnWhenCheckpointCannotPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runner(t.Context(), "verify"); err != nil {
+	if err := runner.Run(t.Context(), "verify"); err != nil {
 		t.Fatalf("follow-up error = %v", err)
 	}
 	bodies := script.capturedBodies()
@@ -891,7 +891,7 @@ func TestResidentChildRunnerIgnoresCompactionUsageInReminder(t *testing.T) {
 	}
 	server := script.start(t)
 	runner, _, _ := newResidentChildTestRunner(t, "usage-child", residentArguments(t, server.URL))
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want one recovered turn", err)
 	}
 	bodies := script.capturedBodies()
@@ -936,7 +936,7 @@ func TestResidentChildRunnerKeepsHostContextOutOfCheckpoint(t *testing.T) {
 	}
 	server := script.start(t)
 	runner, journal, _ := newResidentChildTestRunner(t, "checkpoint-context", residentArguments(t, server.URL))
-	if err := runner(t.Context(), "review"); err != nil {
+	if err := runner.Run(t.Context(), "review"); err != nil {
 		t.Fatalf("runner error = %v, want one recovered turn", err)
 	}
 	messages, err := subagents.ReadResidentTranscriptMessages(journal.Dir())
@@ -964,7 +964,7 @@ func TestResidentChildRunnerKeepsRemainingStepAllowanceAcrossRecovery(t *testing
 	args := residentArguments(t, server.URL)
 	args.MaxSteps = 5
 	runner, journal, _ := newResidentChildTestRunner(t, "partial-allowance", args)
-	err := runner(t.Context(), "review")
+	err := runner.Run(t.Context(), "review")
 	if !errors.Is(err, core.ErrMaxSteps) {
 		t.Fatalf("runner error = %v, want the continuation to exhaust the remaining allowance", err)
 	}
@@ -982,7 +982,7 @@ func TestResidentChildRunnerDoesNotCompactWithoutHistory(t *testing.T) {
 	script := &residentOverflowScript{toolCallRequests: 0, finalText: "unreached"}
 	server := script.start(t)
 	runner, journal, _ := newResidentChildTestRunner(t, "short-overflow", residentArguments(t, server.URL))
-	err := runner(t.Context(), "review")
+	err := runner.Run(t.Context(), "review")
 	if err == nil || !provider.IsContextOverflowError(err) || !strings.Contains(err.Error(), "context_length_exceeded") {
 		t.Fatalf("runner error = %v, want the original overflow", err)
 	}

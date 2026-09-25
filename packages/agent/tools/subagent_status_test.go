@@ -15,8 +15,8 @@ import (
 func TestResidentStatusWatchReportsLiveActivity(t *testing.T) {
 	ready := make(chan struct{})
 	release := make(chan struct{})
-	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			_ = journal.RecordAgentEvent(core.EvTextDelta{Delta: "Reading the parser"})
 			_ = journal.RecordAgentEvent(core.EvToolExecutionStarted{ID: "call-1", Name: "read"})
 			close(ready)
@@ -26,7 +26,7 @@ func TestResidentStatusWatchReportsLiveActivity(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spec := subagents.ResidentChildSpec{ID: "watched", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
@@ -87,11 +87,11 @@ func TestResidentStatusResultReadErrors(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			root := t.TempDir()
-			manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-				return func(ctx context.Context, _ string) error {
+			manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+				return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 					<-ctx.Done()
 					return ctx.Err()
-				}, nil
+				}), nil
 			})
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			spec := subagents.ResidentChildSpec{ID: "status-error", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}

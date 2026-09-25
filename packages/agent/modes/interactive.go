@@ -94,11 +94,12 @@ type InteractiveConfig struct {
 	// the launch-time --no-tools/--tools policy excludes status queries.
 	AutoSubagentsStatusToolAllowed *bool
 
-	// AutoSubagentsStopToolAllowed and AutoSubagentsResumeToolAllowed are nil
-	// for normal sessions and false when the launch-time tool policy excludes
-	// manager lifecycle actions.
-	AutoSubagentsStopToolAllowed   *bool
-	AutoSubagentsResumeToolAllowed *bool
+	// AutoSubagentsStopToolAllowed, AutoSubagentsResumeToolAllowed, and
+	// AutoSubagentsInterruptToolAllowed are nil for normal sessions and false
+	// when the launch-time tool policy excludes manager lifecycle actions.
+	AutoSubagentsStopToolAllowed      *bool
+	AutoSubagentsResumeToolAllowed    *bool
+	AutoSubagentsInterruptToolAllowed *bool
 
 	// FastMode mirrors the active profile's or global persisted OpenAI
 	// fast-mode flag at startup. nil/missing means disabled. Unsupported

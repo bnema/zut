@@ -13,11 +13,61 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+// residentAgentRuntime runs a child's turns on one core.Agent and lets the
+// manager steer the running turn through the agent's queued-message boundary.
+type residentAgentRuntime struct {
+	agent *core.Agent
+	run   func(context.Context, string) error
+
+	mu      sync.Mutex
+	running bool
+}
+
+func (r *residentAgentRuntime) Run(ctx context.Context, prompt string) error {
+	r.mu.Lock()
+	r.running = true
+	r.mu.Unlock()
+	err := r.run(ctx, prompt)
+	for {
+		// A follow-up steered after the agent's last queue check would
+		// otherwise be silently left behind by a successful turn. Closing
+		// the steer window under the lock makes delivery all-or-nothing.
+		r.mu.Lock()
+		if err != nil || ctx.Err() != nil || r.agent.QueuedMessageCount() == 0 {
+			r.running = false
+			r.mu.Unlock()
+			return err
+		}
+		r.mu.Unlock()
+		err = r.run(ctx, "")
+	}
+}
+
+func (r *residentAgentRuntime) Steer(prompt string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.running {
+		return false
+	}
+	return r.agent.QueueMessage(prompt, nil)
+}
+
+func (r *residentAgentRuntime) PendingSteers() int { return r.agent.QueuedMessageCount() }
+
+func (r *residentAgentRuntime) DrainSteers() []string {
+	drained := r.agent.DrainQueuedMessages()
+	out := make([]string, 0, len(drained))
+	for _, message := range drained {
+		out = append(out, message.Text)
+	}
+	return out
+}
+
 // newResidentChildRunner is the host-owned construction boundary for one
 // resident child. It resolves a fresh provider client and a fresh core.Agent
 // exactly once for the child's durable session; no subprocess configuration or
 // credential transfer is involved.
-func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
 	if strings.TrimSpace(spec.SessionID) == "" {
 		return nil, fmt.Errorf("resident child %q has no session identity", spec.ID)
 	}
@@ -81,10 +131,9 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 	}
 	limit := agent.MaxSteps
-	return func(ctx context.Context, prompt string) error {
-		if ctx == nil {
-			ctx = context.Background()
-		}
+	// run executes one accepted prompt, or continues the transcript to deliver
+	// late steered follow-ups when prompt is empty.
+	run := func(ctx context.Context, prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		var journalErr error
@@ -115,7 +164,12 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 				journalMu.Unlock()
 			}
 		}
-		err := agent.Prompt(turnCtx, prompt, nil, sink)
+		var err error
+		if prompt == "" {
+			err = agent.Continue(turnCtx, sink)
+		} else {
+			err = agent.Prompt(turnCtx, prompt, nil, sink)
+		}
 		if journalFailure := checkJournal(); journalFailure != nil {
 			return journalFailure
 		}
@@ -126,7 +180,8 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 			}
 		}
 		return err
-	}, nil
+	}
+	return &residentAgentRuntime{agent: agent, run: run}, nil
 }
 
 // A compaction recovery never rewrites a transcript with nothing worth

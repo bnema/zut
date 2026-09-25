@@ -722,8 +722,8 @@ func TestReconcileResidentJournalTranslatesV2BudgetHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			factory := func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-				return func(context.Context, string) error { return nil }, nil
+			factory := func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+				return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 			}
 			manager := NewResidentManager(root, factory)
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })

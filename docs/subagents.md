@@ -217,12 +217,13 @@ required capability.
 
 ## Tools and slash commands
 
-The model-facing tool keeps one logical name and four actions, selected by its
+The model-facing tool keeps one logical name and five actions, selected by its
 `action` argument. Launch-time gating is per action: `--tools subagent` grants
 every action, `--tools subagent:<action>` grants one, and `--no-tools` disables
 all of them.
 
-- `subagent` accepts an `action` of `spawn`, `status`, `stop`, or `resume`.
+- `subagent` accepts an `action` of `spawn`, `status`, `stop`, `resume`, or
+  `interrupt`.
   - `spawn` accepts `task`, optional `agent`, `model` and `provider`,
     `reasoning`, `fast_mode`, `required`, `wait`, and `isolation` (`shared` or
     `worktree`).
@@ -244,14 +245,33 @@ all of them.
     reasoning is never exposed. `watch` (1–60 seconds, requires `agent_id`)
     observes that activity and returns a `timeline` of phase and tool changes.
     It returns early when the child stops running. Use it to inspect progress,
-    not to wait for completion.
+    not to wait for completion. `pending_followups` counts follow-ups the
+    child has accepted but not read yet.
   - `stop` accepts `agent_id` and stops one live child.
-  - `resume` accepts `agent_id`, `prompt`, and optional `wait`. `prompt` is an
-    explicit follow-up prompt for an existing child. After a terminal failure,
-    inspect the saved result before resuming; resume continues the retained
-    session. `wait` uses the same 1–300 second bound as `spawn` and waits for
-    the accepted follow-up turn, returning its outcome or reporting the timeout
-    while the child stays active.
+  - `resume` accepts `agent_id`, `prompt`, optional `mode`, and optional
+    `wait`. `prompt` is an explicit follow-up prompt for an existing child.
+    After a terminal failure, inspect the saved result before resuming; resume
+    continues the retained session. `mode` controls how a follow-up reaches a
+    running child:
+    - `steer` (default) injects it into the current turn at the next tool or
+      model boundary, like typing while the main agent works. It adds no new
+      turn and no extra completion.
+    - `queue` runs it as a separate turn after the current one.
+
+    An idle or stopped child starts a new turn in either mode, and a steer
+    never jumps ahead of already queued turns. The response's `delivery` is
+    `steered` or `queued`. `wait` uses the same 1–300 second bound as `spawn`
+    and waits for the turn that answers the follow-up, returning its outcome or
+    reporting the timeout while the child stays active.
+  - `interrupt` accepts `agent_id` and cancels only the child's running turn.
+    Unlike `stop`, the child stays live with its transcript, so a later
+    `resume` such as "report what you have" continues with full context.
+    Queued follow-ups are dropped. It fails when no turn is running.
+
+When a turn ends before the child reads a steered follow-up, for example after
+`stop`, `interrupt`, or a failure, the completion update lists it as
+`undelivered`. Queued follow-ups that never started are reported as `dropped`.
+Neither appears as an interrupted task.
 
 Child execution started by the `subagent` tool's `spawn` or `resume` action is
 asynchronous unless it receives an explicit `wait` value. For an unwaited call,
@@ -282,7 +302,8 @@ as `completed`, a relative update time, and a short ID. Press Down from the
 main composer to open this list without clearing a draft when a child exists.
 Use arrows and Enter to open a child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
 opens its history; `/subagents result <id>` shows the bounded final summary;
-`kill <id>` stops it; and `resume <id> <prompt>` continues it.
+`kill <id>` stops it; and `resume <id> <prompt>` continues it. A prompt sent
+from the child composer or `resume` to a running child steers its current turn.
 
 The child session uses the same transcript renderer as the main session.
 Recent history is bounded and loaded asynchronously; PgUp asks for an older

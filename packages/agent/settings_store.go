@@ -359,11 +359,11 @@ func subagentsSystemAddendumFor(base, unavailable string, strict, spawnToolAllow
 	addendum := base + "\n\n" + subagentLifecycleAddendum
 	switch {
 	case stopToolAllowed && resumeToolAllowed:
-		addendum += "\n\nManager lifecycle actions are available: use the subagent tool's stop action to request termination of a stuck worker, and its resume action with an agent id and follow-up prompt to continue an idle worker or restart a stopped worker with its existing session context."
+		addendum += "\n\nManager lifecycle actions are available: use the subagent tool's stop action to request termination of a stuck worker, and its resume action with an agent id and follow-up prompt to continue an idle worker, steer a running worker mid-turn, or restart a stopped worker with its existing session context."
 	case stopToolAllowed:
 		addendum += "\n\nA manager lifecycle action is available: use the subagent tool's stop action to request termination of a stuck worker."
 	case resumeToolAllowed:
-		addendum += "\n\nA manager lifecycle action is available: use the subagent tool's resume action with an agent id and follow-up prompt to continue an idle worker or restart a stopped worker with its existing session context."
+		addendum += "\n\nA manager lifecycle action is available: use the subagent tool's resume action with an agent id and follow-up prompt to continue an idle worker, steer a running worker mid-turn, or restart a stopped worker with its existing session context."
 	}
 	if !spawnToolAllowed {
 		if stopToolAllowed || resumeToolAllowed {

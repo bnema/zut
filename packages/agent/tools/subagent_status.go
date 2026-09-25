@@ -83,6 +83,8 @@ type subagentStatusEntry struct {
 	Workspace      subagents.WorkspaceMode `json:"workspace_mode,omitempty"`
 	Required       bool                    `json:"required,omitempty"`
 	OwnedElsewhere bool                    `json:"owned_elsewhere,omitempty"`
+	// PendingFollowUps counts accepted follow-ups the child has not read yet.
+	PendingFollowUps int `json:"pending_followups,omitempty"`
 }
 
 // Name returns the shared facade name: this type is an internal
@@ -295,7 +297,7 @@ func findResidentStatusSnapshot(snapshots []subagents.ResidentSnapshot, id strin
 }
 
 func publicResidentStatus(snapshot subagents.ResidentSnapshot) subagentStatusEntry {
-	return subagentStatusEntry{ID: snapshot.ID, State: snapshot.State, Profile: snapshot.Profile, Provider: snapshot.Provider, Model: snapshot.Model, Workspace: snapshot.WorkspaceMode, Required: snapshot.Required, OwnedElsewhere: snapshot.OwnedElsewhere}
+	return subagentStatusEntry{ID: snapshot.ID, State: snapshot.State, Profile: snapshot.Profile, Provider: snapshot.Provider, Model: snapshot.Model, Workspace: snapshot.WorkspaceMode, Required: snapshot.Required, OwnedElsewhere: snapshot.OwnedElsewhere, PendingFollowUps: snapshot.PendingFollowUps}
 }
 
 func renderSubagentStatus(response subagentStatusResponse) (core.ToolResult, error) {

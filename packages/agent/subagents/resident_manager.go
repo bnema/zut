@@ -16,9 +16,9 @@ import (
 )
 
 // ResidentFactory is the host-owned construction boundary. It receives only
-// an already-resolved non-secret specification and returns an in-process turn
-// runner; it never starts another zut binary.
-type ResidentFactory func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error)
+// an already-resolved non-secret specification and returns an in-process
+// runtime; it never starts another zut binary.
+type ResidentFactory func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error)
 
 type ResidentManager struct {
 	root              string
@@ -216,6 +216,7 @@ type ResidentSnapshot struct {
 	TurnStartedAt     time.Time
 	ActivityUpdatedAt time.Time
 	WaitingForModel   bool
+	PendingFollowUps  int
 	OwnedElsewhere    bool
 	Usage             provider.Usage
 	ContextUsed       int
@@ -232,7 +233,7 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
 		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
-		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel,
+		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel, PendingFollowUps: child.PendingFollowUps(),
 		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription}
 }
 
@@ -378,7 +379,20 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	return child, nil
 }
 
-func (m *ResidentManager) scheduledRunner(childID string, runner ResidentTurnRunner) ResidentTurnRunner {
+// scheduledRuntime gates each turn on a global scheduler slot. Steering needs
+// no slot: it only reaches a turn that already holds one.
+type scheduledRuntime struct {
+	ResidentRuntime
+	run ResidentTurnRunner
+}
+
+func (r scheduledRuntime) Run(ctx context.Context, prompt string) error { return r.run(ctx, prompt) }
+
+func (m *ResidentManager) scheduledRunner(childID string, runtime ResidentRuntime) ResidentRuntime {
+	return scheduledRuntime{ResidentRuntime: runtime, run: m.scheduledRun(childID, runtime)}
+}
+
+func (m *ResidentManager) scheduledRun(childID string, runtime ResidentRuntime) ResidentTurnRunner {
 	return func(ctx context.Context, prompt string) error {
 		if ctx == nil {
 			ctx = context.Background()
@@ -418,7 +432,7 @@ func (m *ResidentManager) scheduledRunner(childID string, runner ResidentTurnRun
 			_ = m.scheduler.Release(childID)
 			m.dispatch()
 		}()
-		return runner(ctx, prompt)
+		return runtime.Run(ctx, prompt)
 	}
 }
 
@@ -439,7 +453,61 @@ func (m *ResidentManager) dispatch() {
 // resident child. A disk-only child is rebuilt only for this explicit new
 // prompt; reconciliation itself never constructs or replays one.
 func (m *ResidentManager) Resume(ctx context.Context, childID, prompt string) error {
-	return m.ResumeWithTurn(ctx, childID, prompt, uuid.NewString())
+	_, err := m.ResumeFollowUp(ctx, childID, prompt, ResumeSteer, uuid.NewString(), nil)
+	return err
+}
+
+// ResumeMode selects how a follow-up reaches a child that is running a turn.
+type ResumeMode string
+
+const (
+	// ResumeSteer injects the follow-up into the running turn at its next
+	// model-call boundary. An idle child starts a new turn instead.
+	ResumeSteer ResumeMode = "steer"
+	// ResumeQueue runs the follow-up as a separate turn after the current one.
+	ResumeQueue ResumeMode = "queue"
+)
+
+// ResumeOutcome identifies the turn that will answer a follow-up.
+type ResumeOutcome struct {
+	// TurnID is the new turn for a queued follow-up, or the running turn
+	// that received a steered one.
+	TurnID  string
+	Steered bool
+}
+
+// ResumeFollowUp delivers a follow-up by mode. A steered follow-up joins the
+// running turn, so it creates no new turn and no new completion. onSteered, when
+// set, runs before that turn can complete so a caller can watch its completion
+// without racing it. When steering is impossible, the follow-up is queued as a
+// new turn named turnID.
+func (m *ResidentManager) ResumeFollowUp(ctx context.Context, childID, prompt string, mode ResumeMode, turnID string, onSteered func(turnID string)) (ResumeOutcome, error) {
+	if mode == "" {
+		mode = ResumeSteer
+	}
+	if mode != ResumeSteer && mode != ResumeQueue {
+		return ResumeOutcome{}, fmt.Errorf("resident manager: unknown resume mode %q", mode)
+	}
+	if mode == ResumeSteer && m != nil && strings.TrimSpace(prompt) != "" {
+		m.lifecycleMu.Lock()
+		child := m.Get(strings.TrimSpace(childID))
+		if child != nil {
+			steered, activeTurn, err := child.steer(ctx, prompt, onSteered)
+			if err == nil && steered {
+				m.lifecycleMu.Unlock()
+				m.notifyUpdate(child.spec.ID, false)
+				return ResumeOutcome{TurnID: activeTurn, Steered: true}, nil
+			}
+		}
+		m.lifecycleMu.Unlock()
+	}
+	if strings.TrimSpace(turnID) == "" {
+		turnID = uuid.NewString()
+	}
+	if err := m.ResumeWithTurn(ctx, childID, prompt, turnID); err != nil {
+		return ResumeOutcome{}, err
+	}
+	return ResumeOutcome{TurnID: turnID}, nil
 }
 
 // ResumeWithTurn is Resume with a caller-owned turn ID. The ID names the
@@ -926,6 +994,27 @@ func (m *ResidentManager) UnmetRequired() []ResidentSnapshot {
 		}
 	}
 	return result
+}
+
+// Interrupt cancels only a live child's running turn and drops its queued
+// follow-ups. The child stays live with its transcript, so a later resume
+// continues with full context. It reports false when no turn is running.
+func (m *ResidentManager) Interrupt(ctx context.Context, childID string) (bool, error) {
+	if m == nil {
+		return false, errors.New("resident manager: unavailable")
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	child := m.Get(strings.TrimSpace(childID))
+	if child == nil {
+		return false, errors.New("resident manager: child is not live")
+	}
+	interrupted, err := child.interruptTurn(ctx)
+	if err != nil {
+		return false, err
+	}
+	m.notifyUpdate(child.spec.ID, false)
+	return interrupted, nil
 }
 
 // Stop cancels one live child and waits for its control loop. A disk-only

@@ -33,6 +33,8 @@ const (
 	SubagentActionStatus = "status"
 	SubagentActionStop   = "stop"
 	SubagentActionResume = "resume"
+	// SubagentActionInterrupt cancels only the running turn and keeps the child.
+	SubagentActionInterrupt = "interrupt"
 
 	maxSubagentWaitSeconds = 5 * 60
 )
