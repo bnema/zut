@@ -940,17 +940,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if primaryOrchestrator {
 		// Headless orchestration owns its strict prompt contract rather than
 		// inheriting the interactive collaboration setting.
-		append_ = append(append_, StrictOrchestratorSystemAddendumFor(
-			autoSubagentsToolAllowed(args),
-			autoSubagentsStopToolAllowed(args),
-			autoSubagentsResumeToolAllowed(args),
-		))
+		append_ = append(append_, StrictOrchestratorSystemAddendumFor(subagentActionsAllowed(args)))
 	} else if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		append_ = append(append_, ProactiveSubagentsSystemAddendumFor(
-			autoSubagentsToolAllowed(args),
-			autoSubagentsStopToolAllowed(args),
-			autoSubagentsResumeToolAllowed(args),
-		))
+		append_ = append(append_, ProactiveSubagentsSystemAddendumFor(subagentActionsAllowed(args)))
 	} else if primaryInteractive && autoSubagentsAnyToolAllowed(args) {
 		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
@@ -1519,11 +1511,26 @@ func autoSubagentsResumeToolAllowed(args Args) bool {
 	return subagentActionAllowed(args, tools.SubagentActionResume)
 }
 
+func autoSubagentsInterruptToolAllowed(args Args) bool {
+	return subagentActionAllowed(args, tools.SubagentActionInterrupt)
+}
+
+// subagentActionsAllowed collects the launch-time subagent action grants.
+func subagentActionsAllowed(args Args) SubagentActions {
+	return SubagentActions{
+		Spawn:     autoSubagentsToolAllowed(args),
+		Stop:      autoSubagentsStopToolAllowed(args),
+		Resume:    autoSubagentsResumeToolAllowed(args),
+		Interrupt: autoSubagentsInterruptToolAllowed(args),
+	}
+}
+
 func autoSubagentsAnyToolAllowed(args Args) bool {
 	return autoSubagentsToolAllowed(args) ||
 		autoSubagentsStatusToolAllowed(args) ||
 		autoSubagentsStopToolAllowed(args) ||
-		autoSubagentsResumeToolAllowed(args)
+		autoSubagentsResumeToolAllowed(args) ||
+		autoSubagentsInterruptToolAllowed(args)
 }
 
 // subagentActionAllowed reports whether the launch-time tool policy grants one

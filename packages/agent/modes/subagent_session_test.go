@@ -32,8 +32,8 @@ func TestResidentChildSessionBuildsSharedTranscriptView(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	session := newResidentChildSession(manager, "child", tui.Dark)
 	if err := session.LoadRecent(20); err != nil {
@@ -52,11 +52,11 @@ func TestResidentChildSessionBuildsSharedTranscriptView(t *testing.T) {
 func TestResidentChildSessionKeepsComposerUntilFollowUpIsAccepted(t *testing.T) {
 	root := t.TempDir()
 	runs := make(chan string, 2)
-	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(_ context.Context, prompt string) error {
+	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(_ context.Context, prompt string) error {
 			runs <- prompt
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		if err := manager.Close(context.Background()); err != nil {
@@ -227,8 +227,8 @@ func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
 	started := make(chan struct{})
 	stream := make(chan struct{})
 	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-stream
 			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streamed without input"}); err != nil {
@@ -236,7 +236,7 @@ func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
 			}
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		close(release)
@@ -277,8 +277,8 @@ func TestInteractiveResidentHistoryUpdatesRefreshOpenChildSession(t *testing.T) 
 	started := make(chan struct{})
 	persist := make(chan struct{})
 	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-persist
 			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "bash", Arguments: json.RawMessage(`{"command":"printf fresh"}`)}}}}); err != nil {
@@ -289,7 +289,7 @@ func TestInteractiveResidentHistoryUpdatesRefreshOpenChildSession(t *testing.T) 
 			}
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		close(release)
@@ -328,8 +328,8 @@ func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *te
 	persist := make(chan struct{})
 	persisted := make(chan struct{})
 	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-persist
 			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "durable update"}}}}); err != nil {
@@ -338,7 +338,7 @@ func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *te
 			close(persisted)
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		close(release)
@@ -365,8 +365,8 @@ func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *te
 }
 
 func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() {
 		if err := manager.Close(context.Background()); err != nil {
@@ -399,12 +399,12 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 func TestInteractiveResidentActivityDrivesIndependentAnimation(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		if err := manager.Close(context.Background()); err != nil {

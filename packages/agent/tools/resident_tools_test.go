@@ -17,13 +17,13 @@ import (
 
 func TestResidentStatusRetrievesFailedResultWithoutExecution(t *testing.T) {
 	failure := errors.New("worker failed")
-	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "partial finding"}}}}); err != nil {
 				return err
 			}
 			return failure
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spec := subagents.ResidentChildSpec{ID: "failed-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
@@ -66,8 +66,8 @@ func TestResidentStatusRetrievesFailedResultWithoutExecution(t *testing.T) {
 
 func TestResidentToolsUseManagerOnly(t *testing.T) {
 	runs := make(chan string, 2)
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(_ context.Context, prompt string) error { runs <- prompt; return nil }, nil
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(_ context.Context, prompt string) error { runs <- prompt; return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spawn := &SubagentSpawnTool{
@@ -141,8 +141,8 @@ func TestResidentSpawnWaitReturnsInitialCompletion(t *testing.T) {
 		{"cancellation with failure", errors.Join(context.Canceled, errors.New("worker failed")), "interrupted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-				return func(context.Context, string) error { return tc.err }, nil
+			manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+				return subagents.ResidentTurnRunner(func(context.Context, string) error { return tc.err }), nil
 			})
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			spawn := &SubagentSpawnTool{
@@ -174,8 +174,8 @@ func TestResidentSpawnWaitExpiryReportsQueuedChild(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
 	finished := make(chan string, 1)
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 1, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, prompt string) error {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 1, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, prompt string) error {
 			switch prompt {
 			case "blocker":
 				started <- struct{}{}
@@ -189,7 +189,7 @@ func TestResidentSpawnWaitExpiryReportsQueuedChild(t *testing.T) {
 				finished <- prompt
 			}
 			return nil
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		releaseBlocker()
@@ -234,8 +234,8 @@ func TestResidentSpawnWaitExpiryReportsQueuedChild(t *testing.T) {
 }
 
 func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	built := 0
@@ -271,8 +271,8 @@ func TestResidentSpawnRejectsInvalidInputBeforeCreatingChild(t *testing.T) {
 }
 
 func TestResidentSpawnProfileAndExplicitOverridesReachFactory(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	profileFast := false
@@ -318,10 +318,10 @@ func TestResidentToolsRejectUnknownFields(t *testing.T) {
 // A resume wait subscribes to the accepted follow-up turn before it can finish,
 // so it returns that turn's completion instead of timing out.
 func TestResidentResumeWaitReturnsFollowUpCompletion(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(_ context.Context, prompt string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(_ context.Context, prompt string) error {
 			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer for " + prompt}}}})
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	initial, cancelInitial := manager.WatchCompletion("waited-resume", "initial-turn")
@@ -339,8 +339,8 @@ func TestResidentResumeWaitReturnsFollowUpCompletion(t *testing.T) {
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
 	}
-	response, ok := result.Details.(subagentActionResponse)
-	if !ok || response.Wait == nil || response.Wait.TimedOut {
+	response, ok := result.Details.(subagentResumeResponse)
+	if !ok || response.Wait == nil || response.Wait.TimedOut || response.Delivery != "queued" {
 		t.Fatalf("wait outcome = %#v", result.Details)
 	}
 	if response.Wait.Status != string(subagents.ResidentCompleted) || response.Wait.Summary != "answer for confirm" {
@@ -357,8 +357,8 @@ func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			started <- struct{}{}
 			select {
 			case <-release:
@@ -366,7 +366,7 @@ func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		releaseBlocker()
@@ -381,11 +381,11 @@ func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
 		t.Fatal("blocking turn did not start")
 	}
 	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
-	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"blocked-resume","prompt":"follow up","wait":1}`), nil)
+	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"blocked-resume","prompt":"follow up","mode":"queue","wait":1}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
 	}
-	response, ok := result.Details.(subagentActionResponse)
+	response, ok := result.Details.(subagentResumeResponse)
 	if !ok || response.Wait == nil || !response.Wait.TimedOut || response.Wait.Seconds != 1 {
 		t.Fatalf("wait outcome = %#v", result.Details)
 	}
@@ -403,8 +403,8 @@ func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
 	releaseBlocker := func() { releaseOnce.Do(func() { close(release) }) }
 	var calls atomic.Int32
 	followUpStarted := make(chan struct{}, 1)
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			if calls.Add(1) == 1 {
 				return nil
 			}
@@ -415,7 +415,7 @@ func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() {
 		releaseBlocker()

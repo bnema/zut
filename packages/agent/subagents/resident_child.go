@@ -12,14 +12,57 @@ import (
 	"github.com/google/uuid"
 )
 
-// ResidentTurnRunner executes one already-accepted prompt. The child owns the
-// ordering and cancellation boundary; implementations own agent/provider work.
+// ResidentRuntime owns one child's agent. The child owns turn ordering and
+// cancellation; the runtime owns agent/provider work.
+//
+// Run executes one accepted turn. Steer injects a follow-up into the turn Run
+// is executing and reports false when no turn can still receive it; a true
+// result guarantees Run delivers the follow-up before it returns successfully.
+// PendingSteers counts follow-ups not yet delivered, and DrainSteers removes
+// and returns them after a turn ended without delivering them.
+type ResidentRuntime interface {
+	Run(ctx context.Context, prompt string) error
+	Steer(prompt string) bool
+	PendingSteers() int
+	DrainSteers() []string
+}
+
+// ResidentTurnRunner is a runtime that runs turns but cannot be steered, so
+// every follow-up becomes a separate queued turn.
 type ResidentTurnRunner func(context.Context, string) error
+
+func (r ResidentTurnRunner) Run(ctx context.Context, prompt string) error { return r(ctx, prompt) }
+func (ResidentTurnRunner) Steer(string) bool                              { return false }
+func (ResidentTurnRunner) PendingSteers() int                             { return 0 }
+func (ResidentTurnRunner) DrainSteers() []string                          { return nil }
 
 type residentPrompt struct {
 	turnID string
 	prompt string
 	ack    chan error
+}
+
+type residentControlKind int
+
+const (
+	residentControlSteer residentControlKind = iota + 1
+	residentControlInterrupt
+)
+
+// residentControl is a request handled by the control goroutine, so it is
+// ordered with turn start and completion.
+type residentControl struct {
+	kind   residentControlKind
+	prompt string
+	// onSteered runs on the control goroutine before the active turn can
+	// report its completion, so a caller can subscribe without a race.
+	onSteered func(turnID string)
+	reply     chan residentControlReply
+}
+
+type residentControlReply struct {
+	ok     bool
+	turnID string
 }
 
 type residentTurnResult struct {
@@ -34,13 +77,19 @@ type ResidentCompletion struct {
 	Task    string
 	Err     error
 	Summary string
+	// NotStarted marks a queued follow-up that was dropped before the child
+	// ever ran it, for example because the child was stopped or interrupted.
+	NotStarted bool
+	// Undelivered lists follow-ups steered into this turn that the child never
+	// read because the turn ended first.
+	Undelivered []string
 }
 
 // ResidentChild serializes prompt execution through one control goroutine.
 // No mutex is held while a runner performs provider or tool I/O. When a
 // journal is configured, every state boundary is committed by that goroutine.
 type ResidentChild struct {
-	runner        ResidentTurnRunner
+	runtime       ResidentRuntime
 	journal       *ResidentJournal
 	workspace     WorkspaceHandle
 	spec          ResidentChildSpec
@@ -48,11 +97,12 @@ type ResidentChild struct {
 	onUpdate      func(historyChanged bool)
 	onStateChange func(ResidentState)
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	inbox  chan residentPrompt
-	done   chan struct{}
-	once   sync.Once
+	ctx     context.Context
+	cancel  context.CancelFunc
+	inbox   chan residentPrompt
+	control chan residentControl
+	done    chan struct{}
+	once    sync.Once
 
 	mu                sync.RWMutex
 	state             ResidentState
@@ -61,39 +111,41 @@ type ResidentChild struct {
 	activityUpdatedAt time.Time
 	live              *residentLiveProjection
 	cleanupWorkspace  bool
+	queuedTurns       int
 }
 
-func NewResidentChild(runner ResidentTurnRunner) *ResidentChild {
-	return newResidentChild(ResidentChildSpec{}, nil, runner)
+func NewResidentChild(runtime ResidentRuntime) *ResidentChild {
+	return newResidentChild(ResidentChildSpec{}, nil, runtime)
 }
 
-func newJournaledResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runner ResidentTurnRunner, onCompletion func(ResidentCompletion)) *ResidentChild {
-	child := newResidentChildWithWorkspace(spec, journal, nil, runner)
+func newJournaledResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runtime ResidentRuntime, onCompletion func(ResidentCompletion)) *ResidentChild {
+	child := newResidentChildWithWorkspace(spec, journal, nil, runtime)
 	child.onCompletion = onCompletion
 	return child
 }
 
-func newJournaledResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runner ResidentTurnRunner, onCompletion func(ResidentCompletion)) *ResidentChild {
-	child := newResidentChildWithWorkspace(spec, journal, workspace, runner)
+func newJournaledResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runtime ResidentRuntime, onCompletion func(ResidentCompletion)) *ResidentChild {
+	child := newResidentChildWithWorkspace(spec, journal, workspace, runtime)
 	child.onCompletion = onCompletion
 	return child
 }
 
-func newResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runner ResidentTurnRunner) *ResidentChild {
-	return newResidentChildWithWorkspace(spec, journal, nil, runner)
+func newResidentChild(spec ResidentChildSpec, journal *ResidentJournal, runtime ResidentRuntime) *ResidentChild {
+	return newResidentChildWithWorkspace(spec, journal, nil, runtime)
 }
 
-func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runner ResidentTurnRunner) *ResidentChild {
+func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJournal, workspace WorkspaceHandle, runtime ResidentRuntime) *ResidentChild {
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now().UTC()
 	child := &ResidentChild{
-		runner:            runner,
+		runtime:           runtime,
 		journal:           journal,
 		workspace:         workspace,
 		spec:              spec,
 		ctx:               ctx,
 		cancel:            cancel,
 		inbox:             make(chan residentPrompt),
+		control:           make(chan residentControl),
 		done:              make(chan struct{}),
 		state:             ResidentQueued,
 		stateUpdatedAt:    now,
@@ -183,6 +235,27 @@ func (c *ResidentChild) ActivityUpdatedAt() time.Time {
 	return c.activityUpdatedAt
 }
 
+// PendingFollowUps counts follow-ups the child has accepted but not yet read:
+// queued turns plus messages steered into the running turn.
+func (c *ResidentChild) PendingFollowUps() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	queued := c.queuedTurns
+	c.mu.RUnlock()
+	if c.runtime != nil {
+		queued += c.runtime.PendingSteers()
+	}
+	return queued
+}
+
+func (c *ResidentChild) setQueuedTurns(n int) {
+	c.mu.Lock()
+	c.queuedTurns = n
+	c.mu.Unlock()
+}
+
 func (c *ResidentChild) setState(state ResidentState) {
 	c.mu.Lock()
 	now := time.Now().UTC()
@@ -270,8 +343,42 @@ func (c *ResidentChild) enqueue(ctx context.Context, request residentPrompt) err
 	return err
 }
 
+// steer injects a follow-up into the running turn. It reports false, leaving
+// the child unchanged, when no turn is executing or earlier follow-ups are
+// still queued; the caller must then queue the follow-up as a new turn.
+func (c *ResidentChild) steer(ctx context.Context, prompt string, onSteered func(turnID string)) (bool, string, error) {
+	reply, err := c.sendControl(ctx, residentControl{kind: residentControlSteer, prompt: strings.TrimSpace(prompt), onSteered: onSteered})
+	return reply.ok, reply.turnID, err
+}
+
+// interruptTurn cancels only the running turn. The child stays alive with its
+// transcript, and queued follow-ups are dropped. It reports false when no turn
+// is running.
+func (c *ResidentChild) interruptTurn(ctx context.Context) (bool, error) {
+	reply, err := c.sendControl(ctx, residentControl{kind: residentControlInterrupt})
+	return reply.ok, err
+}
+
+func (c *ResidentChild) sendControl(ctx context.Context, request residentControl) (residentControlReply, error) {
+	if c == nil || c.runtime == nil {
+		return residentControlReply{}, errors.New("resident child: no runtime")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request.reply = make(chan residentControlReply, 1)
+	select {
+	case <-ctx.Done():
+		return residentControlReply{}, ctx.Err()
+	case <-c.done:
+		return residentControlReply{}, errors.New("resident child: closed")
+	case c.control <- request:
+	}
+	return <-request.reply, nil
+}
+
 func (c *ResidentChild) enqueueAccepted(ctx context.Context, request residentPrompt) (bool, error) {
-	if c == nil || c.runner == nil {
+	if c == nil || c.runtime == nil {
 		return false, errors.New("resident child: no runner")
 	}
 	if ctx == nil {
@@ -336,10 +443,28 @@ func (c *ResidentChild) run() {
 
 	var queue []residentPrompt
 	var interruptedPrompts []residentPrompt
+	var droppedPrompts []residentPrompt
 	results := make(chan residentTurnResult, 1)
 	var active residentPrompt
-	running, interrupted := false, false
+	turnCancel := context.CancelFunc(func() {})
+	defer func() { turnCancel() }()
+	running, interrupted, turnInterrupted := false, false, false
+	// dropQueued reports queued follow-ups that never started. Each was
+	// accepted and tracked, so each still gets exactly one completion, marked
+	// NotStarted so the parent does not mistake it for interrupted work.
+	dropQueued := func(err error) {
+		for _, pending := range queue {
+			if c.journal != nil {
+				_ = c.journal.RecordTurnInterrupted(c.spec, pending.turnID)
+			}
+			if c.onCompletion != nil {
+				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: err, NotStarted: true})
+			}
+		}
+		queue = nil
+	}
 	for {
+		c.setQueuedTurns(len(queue))
 		if !interrupted && !running && len(queue) > 0 {
 			active, queue = queue[0], queue[1:]
 			if c.journal != nil {
@@ -358,10 +483,12 @@ func (c *ResidentChild) run() {
 				}
 			}
 			c.startTurn(active.turnID)
-			running = true
-			go func(request residentPrompt) {
-				results <- residentTurnResult{turnID: request.turnID, err: c.runner(c.ctx, request.prompt)}
-			}(active)
+			running, turnInterrupted = true, false
+			turnCtx, cancelTurn := context.WithCancel(c.ctx)
+			turnCancel = cancelTurn
+			go func(ctx context.Context, request residentPrompt) {
+				results <- residentTurnResult{turnID: request.turnID, err: c.runtime.Run(ctx, request.prompt)}
+			}(turnCtx, active)
 		}
 
 		if interrupted && !running {
@@ -369,7 +496,10 @@ func (c *ResidentChild) run() {
 			c.setState(ResidentInterrupted)
 			if c.onCompletion != nil {
 				for _, prompt := range interruptedPrompts {
-					c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: prompt.turnID, Task: prompt.prompt, Err: context.Canceled})
+					c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: prompt.turnID, Task: prompt.prompt, Err: context.Canceled, Undelivered: c.runtime.DrainSteers()})
+				}
+				for _, prompt := range droppedPrompts {
+					c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: prompt.turnID, Task: prompt.prompt, Err: context.Canceled, NotStarted: true})
 				}
 			}
 			return
@@ -392,12 +522,38 @@ func (c *ResidentChild) run() {
 				}
 			}
 			for _, pending := range queue {
-				interruptedPrompts = append(interruptedPrompts, pending)
+				droppedPrompts = append(droppedPrompts, pending)
 				if c.journal != nil {
 					_ = c.journal.RecordTurnInterrupted(c.spec, pending.turnID)
 				}
 			}
 			queue = nil
+			c.setQueuedTurns(0)
+		case request := <-c.control:
+			switch request.kind {
+			case residentControlSteer:
+				// Steering past queued turns would reorder follow-ups, and an
+				// interrupted turn can no longer read new input.
+				if running && !interrupted && !turnInterrupted && len(queue) == 0 && request.prompt != "" && c.runtime.Steer(request.prompt) {
+					if request.onSteered != nil {
+						request.onSteered(active.turnID)
+					}
+					c.notifyUpdate(false)
+					request.reply <- residentControlReply{ok: true, turnID: active.turnID}
+				} else {
+					request.reply <- residentControlReply{}
+				}
+			case residentControlInterrupt:
+				if !running || interrupted || turnInterrupted {
+					request.reply <- residentControlReply{}
+					continue
+				}
+				turnInterrupted = true
+				turnCancel()
+				dropQueued(context.Canceled)
+				c.setQueuedTurns(0)
+				request.reply <- residentControlReply{ok: true, turnID: active.turnID}
+			}
 		case request := <-c.inbox:
 			if interrupted {
 				request.ack <- errors.New("resident child: closed")
@@ -407,10 +563,17 @@ func (c *ResidentChild) run() {
 			request.ack <- nil
 		case result := <-results:
 			running = false
+			turnCancel()
 			if interrupted {
 				continue
 			}
 			terminalErr := result.err
+			if turnInterrupted && terminalErr == nil {
+				// The turn finished before cancellation reached it; the
+				// manager still asked for an interruption.
+				terminalErr = context.Canceled
+			}
+			undelivered := c.runtime.DrainSteers()
 			var capture *WorkspaceCapture
 			if (terminalErr == nil || !errors.Is(terminalErr, context.Canceled)) && c.workspace != nil && c.workspace.Mode() == WorkspaceWorktree {
 				captured, err := c.workspace.Capture(c.ctx)
@@ -441,14 +604,10 @@ func (c *ResidentChild) run() {
 			c.live.Finish(state)
 			c.setState(state)
 			if c.onCompletion != nil {
-				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: result.turnID, Task: active.prompt, Err: terminalErr, Summary: summary})
-				if persistenceFailed {
-					for _, pending := range queue {
-						c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: pending.turnID, Task: pending.prompt, Err: terminalErr})
-					}
-				}
+				c.onCompletion(ResidentCompletion{ChildID: c.spec.ID, TurnID: result.turnID, Task: active.prompt, Err: terminalErr, Summary: summary, Undelivered: undelivered})
 			}
 			if persistenceFailed {
+				dropQueued(terminalErr)
 				return
 			}
 		}

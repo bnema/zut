@@ -354,17 +354,23 @@ func TestInjectToolsRegistersOneSubagentFacade(t *testing.T) {
 		return Args{CWD: cwd, NoSkill: true, NoContextFiles: true, NoLSP: true}
 	}
 	cases := []struct {
-		name                        string
-		args                        Args
-		spawn, status, stop, resume bool
+		name                                   string
+		args                                   Args
+		spawn, status, stop, resume, interrupt bool
 	}{
-		{name: "default grants every action", args: cwdArgs(), spawn: true, status: true, stop: true, resume: true},
+		{name: "default grants every action", args: cwdArgs(), spawn: true, status: true, stop: true, resume: true, interrupt: true},
 		{name: "resume suffix grants resume only", args: func() Args {
 			args := cwdArgs()
 			args.ToolsSet = true
 			args.Tools = []string{"subagent:resume"}
 			return args
 		}(), resume: true},
+		{name: "interrupt suffix grants interrupt only", args: func() Args {
+			args := cwdArgs()
+			args.ToolsSet = true
+			args.Tools = []string{"subagent:interrupt"}
+			return args
+		}(), interrupt: true},
 	}
 	legacy := []string{"subagent_spawn", "subagent_status", "subagent_stop", "subagent_resume"}
 	for _, tc := range cases {
@@ -388,8 +394,8 @@ func TestInjectToolsRegistersOneSubagentFacade(t *testing.T) {
 			if !ok {
 				t.Fatalf("registry entry %q = %T, want *tools.SubagentTool", tools.SubagentToolName, tool)
 			}
-			got := [4]bool{facade.Spawn != nil, facade.Status != nil, facade.Stop != nil, facade.Resume != nil}
-			want := [4]bool{tc.spawn, tc.status, tc.stop, tc.resume}
+			got := [5]bool{facade.Spawn != nil, facade.Status != nil, facade.Stop != nil, facade.Resume != nil, facade.Interrupt != nil}
+			want := [5]bool{tc.spawn, tc.status, tc.stop, tc.resume, tc.interrupt}
 			if got != want {
 				t.Fatalf("facade actions = %v, want %v", got, want)
 			}

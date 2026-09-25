@@ -261,8 +261,8 @@ func TestReadResidentHistoryPageCursorSurvivesJournalAppend(t *testing.T) {
 }
 
 func TestResidentManagerHistoryRejectsPathTraversal(t *testing.T) {
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	if _, err := manager.History("../escape", 10); err == nil {
 		t.Fatal("History accepted traversal")

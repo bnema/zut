@@ -11,8 +11,8 @@ func TestResidentCancellationPreservesInterruptedState(t *testing.T) {
 	for _, turnErr := range []error{context.Canceled, errors.Join(context.Canceled, errors.New("worker failed"))} {
 		t.Run(turnErr.Error(), func(t *testing.T) {
 			root := t.TempDir()
-			manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-				return func(context.Context, string) error { return turnErr }, nil
+			manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+				return ResidentTurnRunner(func(context.Context, string) error { return turnErr }), nil
 			})
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			spec := ResidentChildSpec{ID: "canceled", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}

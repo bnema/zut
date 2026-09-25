@@ -32,12 +32,12 @@ func TestResidentSubagentListUsesHumanLabelTerminalStateAndRelativeTime(t *testi
 
 func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 	completed := make(chan struct{}, 2)
-	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
 		journal.ConfigureUsage(272_000, true)
-		return func(context.Context, string) error {
+		return subagents.ResidentTurnRunner(func(context.Context, string) error {
 			usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525}
 			return journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage})
-		}, nil
+		}), nil
 	})
 	manager.SetCompletionObserver(func(subagents.ResidentCompletion) { completed <- struct{}{} })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })

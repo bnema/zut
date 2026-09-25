@@ -77,11 +77,16 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents "+sub+" <id> <prompt>: missing id or prompt")
 			return
 		}
-		if err := i.cfg.ResidentManager.Resume(ctx, id, prompt); err != nil {
+		outcome, err := i.cfg.ResidentManager.ResumeFollowUp(ctx, id, prompt, subagents.ResumeSteer, "", nil)
+		if err != nil {
 			i.subagentsStatus("", sub+": "+err.Error())
 			return
 		}
-		i.subagentsStatus("accepted follow-up for "+id, "")
+		if outcome.Steered {
+			i.subagentsStatus("steered follow-up into the running turn of "+id, "")
+		} else {
+			i.subagentsStatus("queued follow-up for "+id, "")
+		}
 	default:
 		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
 	}

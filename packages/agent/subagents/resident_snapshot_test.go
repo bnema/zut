@@ -8,8 +8,8 @@ import (
 )
 
 func TestResidentManagerSnapshotPageAndLookupAreBounded(t *testing.T) {
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	for i := 0; i < 5; i++ {

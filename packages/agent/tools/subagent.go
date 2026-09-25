@@ -16,10 +16,11 @@ import (
 // action; each action delegates to an internal implementation, and a nil
 // implementation means that action is unavailable under the launch-time policy.
 type SubagentTool struct {
-	Spawn  *SubagentSpawnTool
-	Status *SubagentStatusTool
-	Stop   *SubagentStopTool
-	Resume *SubagentResumeTool
+	Spawn     *SubagentSpawnTool
+	Status    *SubagentStatusTool
+	Stop      *SubagentStopTool
+	Resume    *SubagentResumeTool
+	Interrupt *SubagentInterruptTool
 }
 
 // subagentSpawnGuidance is the operational contract for delegation. It is the
@@ -27,11 +28,11 @@ type SubagentTool struct {
 // cannot drift between them.
 const subagentSpawnGuidance = "Delegate a concrete, bounded scope to a resident sub-agent. For proactive delegation, use an independent sidecar only when the parent has useful non-overlapping work; keep immediate blockers local. A worker owns its scope until completion, so never duplicate it in the parent. If delegation owns the blocking task, end or yield the parent turn. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through the resume action. Never use bash sleep, watch, tail -f, polling loops, repeated status calls, dashboard, metadata, or file checks solely to wait."
 
-// subagentSchema merges the four action schemas into the flat, model-facing
-// schema the project keeps for provider compatibility. Every property is
-// annotated with the action that owns it; agent_id carries one merged
-// description because it means "omit to list" for status and "required" for
-// stop and resume. Because the schema advertises every action's arguments at
+// subagentSchema merges the action schemas into the flat, model-facing schema
+// the project keeps for provider compatibility. Every property is annotated
+// with the action that owns it; agent_id carries one merged description because
+// it means "omit to list" for status and "required" for stop, resume, and
+// interrupt. Because the schema advertises every action's arguments at
 // once, a field that belongs to a different action is reported instead of
 // ignored, so a mis-selected action cannot silently run as another one. Fields
 // that no action owns still reach the sub-tool, whose strict decoder rejects
@@ -42,8 +43,8 @@ const subagentSchema = `{
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["spawn", "status", "stop", "resume"],
-      "description": "One action per call. spawn delegates a new resident sub-agent. status reads bounded state for one child, including its current live activity, or lists the current set. stop requests termination of a stuck child. resume continues an existing child with a new prompt, keeping its session context, and can wait for that follow-up turn."
+      "enum": ["spawn", "status", "stop", "resume", "interrupt"],
+      "description": "One action per call. spawn delegates a new resident sub-agent. status reads bounded state for one child, including its current live activity and pending follow-ups, or lists the current set. resume sends an existing child a follow-up, keeping its session context; by default it steers a running child mid-turn, and it can wait for the answering turn. interrupt cancels only the child's running turn and keeps the child and its context, so a later resume can ask it to wrap up. stop terminates a stuck child."
     },
     "task": {
       "type": "string",
@@ -87,7 +88,7 @@ const subagentSchema = `{
     },
     "agent_id": {
       "type": "string",
-      "description": "Child id or unique id prefix. With status, omit it to list all resident sub-agents. Required when action is stop or resume."
+      "description": "Child id or unique id prefix. With status, omit it to list all resident sub-agents. Required when action is stop, resume, or interrupt."
     },
     "include_result": {
       "type": "boolean",
@@ -101,7 +102,12 @@ const subagentSchema = `{
     },
     "prompt": {
       "type": "string",
-      "description": "New manager follow-up for the sub-agent. Its earlier task and conversation remain available in the retained session. Required when action is resume. After a terminal failure, inspect its saved result first; resume continues the retained session without discarding progress or satisfying required work. Combine with wait to block on that follow-up turn."
+      "description": "New manager follow-up for the sub-agent. Its earlier task and conversation remain available in the retained session. Required when action is resume. After a terminal failure, inspect its saved result first; resume continues the retained session without discarding progress or satisfying required work. Combine with wait to block on the turn that answers it."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["steer", "queue"],
+      "description": "How resume reaches a running child. steer (default) injects the prompt into its current turn at the next tool or model boundary, so the child sees it without waiting for the turn to end. queue runs the prompt as a separate turn after the current one. An idle child starts a new turn either way. Only valid when action is resume."
     }
   },
   "required": ["action"]
@@ -111,10 +117,11 @@ const subagentSchema = `{
 // the selected action, or by no action, is forwarded; a field owned by another
 // action is rejected before dispatch.
 var subagentActionFields = map[string][]string{
-	SubagentActionSpawn:  {"task", "agent", "model", "provider", "reasoning", "fast_mode", "required", "wait", "isolation"},
-	SubagentActionStatus: {"agent_id", "include_result", "watch"},
-	SubagentActionStop:   {"agent_id"},
-	SubagentActionResume: {"agent_id", "prompt", "wait"},
+	SubagentActionSpawn:     {"task", "agent", "model", "provider", "reasoning", "fast_mode", "required", "wait", "isolation"},
+	SubagentActionStatus:    {"agent_id", "include_result", "watch"},
+	SubagentActionStop:      {"agent_id"},
+	SubagentActionResume:    {"agent_id", "prompt", "mode", "wait"},
+	SubagentActionInterrupt: {"agent_id"},
 }
 
 var (
@@ -140,12 +147,12 @@ func (e *subagentForeignFieldError) Error() string {
 
 func (t *SubagentTool) Name() string { return SubagentToolName }
 func (t *SubagentTool) Description() string {
-	return "Spawn, inspect, resume, and stop resident sub-agents. One action per call.\n\n" + subagentSpawnGuidance
+	return "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call.\n\n" + subagentSpawnGuidance
 }
 func (t *SubagentTool) Schema() json.RawMessage { return json.RawMessage(subagentSchema) }
 
 // ConfirmationKey implements core.ConfirmationKeyer. The facade multiplexes
-// four actions under one tool name, so the session "always allow" grant is
+// several actions under one tool name, so the session "always allow" grant is
 // scoped per action instead of per name. A missing, empty, or non-string
 // action returns the plain base name so a malformed call cannot widen the
 // remembered grant.
@@ -205,6 +212,11 @@ func (t *SubagentTool) Execute(ctx context.Context, raw json.RawMessage, progres
 			return protocolToolError("subagent: resume action is unavailable in this mode")
 		}
 		return t.Resume.Execute(ctx, payload, progress)
+	case SubagentActionInterrupt:
+		if t.Interrupt == nil {
+			return protocolToolError("subagent: interrupt action is unavailable in this mode")
+		}
+		return t.Interrupt.Execute(ctx, payload, progress)
 	}
 	return protocolToolError("subagent: unknown action")
 }

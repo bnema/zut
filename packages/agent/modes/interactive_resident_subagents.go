@@ -478,11 +478,18 @@ func autoSubagentsResumeToolAllowedConfig(cfg InteractiveConfig) bool {
 	}
 	return autoSubagentsToolAllowedConfig(cfg)
 }
+func autoSubagentsInterruptToolAllowedConfig(cfg InteractiveConfig) bool {
+	if cfg.AutoSubagentsInterruptToolAllowed != nil {
+		return *cfg.AutoSubagentsInterruptToolAllowed
+	}
+	return autoSubagentsToolAllowedConfig(cfg)
+}
 func autoSubagentsAnyToolAllowedConfig(cfg InteractiveConfig) bool {
 	return autoSubagentsToolAllowedConfig(cfg) ||
 		autoSubagentsStatusToolAllowedConfig(cfg) ||
 		autoSubagentsStopToolAllowedConfig(cfg) ||
-		autoSubagentsResumeToolAllowedConfig(cfg)
+		autoSubagentsResumeToolAllowedConfig(cfg) ||
+		autoSubagentsInterruptToolAllowedConfig(cfg)
 }
 func (i *Interactive) autoSubagentsToolAllowed() bool {
 	return autoSubagentsToolAllowedConfig(i.cfg)
@@ -495,6 +502,9 @@ func (i *Interactive) autoSubagentsStopToolAllowed() bool {
 }
 func (i *Interactive) autoSubagentsResumeToolAllowed() bool {
 	return autoSubagentsResumeToolAllowedConfig(i.cfg)
+}
+func (i *Interactive) autoSubagentsInterruptToolAllowed() bool {
+	return autoSubagentsInterruptToolAllowedConfig(i.cfg)
 }
 func (i *Interactive) autoSubagentsEnabledLocked() bool {
 	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled && i.autoSubagentsAvailable()
@@ -542,6 +552,12 @@ func (i *Interactive) applyAutoSubagentsTool() {
 		}
 		if i.autoSubagentsResumeToolAllowed() {
 			facade.Resume = &tools.SubagentResumeTool{
+				ResidentManager: i.cfg.ResidentManager,
+				Enabled:         func() bool { return true },
+			}
+		}
+		if i.autoSubagentsInterruptToolAllowed() {
+			facade.Interrupt = &tools.SubagentInterruptTool{
 				ResidentManager: i.cfg.ResidentManager,
 				Enabled:         func() bool { return true },
 			}

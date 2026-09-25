@@ -44,11 +44,11 @@ func (t *residentIndicatorTerminal) Reset() {
 }
 
 func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAllows(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			<-ctx.Done()
 			return ctx.Err()
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spawnRunningResidentIndicatorChildren(t, manager, 10)
@@ -79,11 +79,11 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 }
 
 func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeight(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			<-ctx.Done()
 			return ctx.Err()
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spawnRunningResidentIndicatorChildren(t, manager, 6)
@@ -105,11 +105,11 @@ func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeigh
 }
 
 func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeightFits(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			<-ctx.Done()
 			return ctx.Err()
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spawnRunningResidentIndicatorChildren(t, manager, 2)
@@ -175,11 +175,11 @@ func spawnResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentMan
 }
 
 func TestRenderResidentSubagentActivityPageReportsHiddenActiveChildren(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			<-ctx.Done()
 			return ctx.Err()
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spawnResidentIndicatorChildren(t, manager, 5)

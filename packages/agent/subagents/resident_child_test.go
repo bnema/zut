@@ -14,7 +14,7 @@ func TestJournaledResidentChildReceivesLiveJournalEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := newJournaledResidentChild(ResidentChildSpec{}, journal, func(context.Context, string) error { return nil }, nil)
+	child := newJournaledResidentChild(ResidentChildSpec{}, journal, ResidentTurnRunner(func(context.Context, string) error { return nil }), nil)
 	defer child.Close(context.Background())
 	oldActivity := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	child.mu.Lock()
@@ -36,7 +36,7 @@ func TestResidentChildRunsAcceptedPromptsFIFOWithOneActiveTurn(t *testing.T) {
 	started := make(chan string, 2)
 	releaseFirst := make(chan struct{})
 	completed := make(chan string, 2)
-	child := NewResidentChild(func(ctx context.Context, prompt string) error {
+	child := NewResidentChild(ResidentTurnRunner(func(ctx context.Context, prompt string) error {
 		started <- prompt
 		if prompt == "first" {
 			select {
@@ -47,7 +47,7 @@ func TestResidentChildRunsAcceptedPromptsFIFOWithOneActiveTurn(t *testing.T) {
 		}
 		completed <- prompt
 		return nil
-	})
+	}))
 	defer child.Close(context.Background())
 
 	if err := child.Resume(context.Background(), "first"); err != nil {
@@ -95,10 +95,10 @@ func TestResidentChildReportsAndPreservesFailureWhenTurnStartCannotPersist(t *te
 	child := newJournaledResidentChild(
 		ResidentChildSpec{ID: "start-persistence-failure"},
 		journal,
-		func(context.Context, string) error {
+		ResidentTurnRunner(func(context.Context, string) error {
 			run <- struct{}{}
 			return nil
-		},
+		}),
 		func(completion ResidentCompletion) { completed <- completion },
 	)
 

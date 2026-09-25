@@ -6,15 +6,16 @@ import (
 )
 
 func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
-	// Substrings that identify the stop and resume action guidance.
+	// Substrings that identify the lifecycle action guidance.
 	const (
-		stopAction    = "stop action to request termination of a stuck worker"
-		resumeAction  = "resume action with an agent id and follow-up prompt"
-		noSpawnNotice = "Spawning new workers is unavailable"
+		stopAction      = "use stop to request termination of a stuck worker"
+		resumeAction    = "use resume with an agent id and follow-up prompt"
+		interruptAction = "use interrupt to cancel only a worker's running turn"
+		noSpawnNotice   = "Spawning new workers is unavailable"
 	)
 	builders := []struct {
 		name            string
-		build           func(bool, bool, bool) string
+		build           func(SubagentActions) string
 		noSpawnFallback string
 	}{
 		{name: "proactive", build: ProactiveSubagentsSystemAddendumFor, noSpawnFallback: "Continue non-delegated work locally."},
@@ -27,22 +28,25 @@ func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 				spawn     bool
 				stop      bool
 				resume    bool
+				interrupt bool
 				want      []string
 				unwanted  []string
 				available bool
 			}{
-				{name: "none", spawn: true, unwanted: []string{stopAction, resumeAction}, available: true},
-				{name: "fully unavailable", unwanted: []string{stopAction, resumeAction}},
-				{name: "stop", spawn: true, stop: true, want: []string{stopAction}, unwanted: []string{resumeAction}, available: true},
-				{name: "resume", spawn: true, resume: true, want: []string{resumeAction}, unwanted: []string{stopAction}, available: true},
-				{name: "both", spawn: true, stop: true, resume: true, want: []string{stopAction, resumeAction}, available: true},
-				{name: "stop without spawn", stop: true, want: []string{stopAction, noSpawnNotice}, unwanted: []string{resumeAction}},
-				{name: "resume without spawn", resume: true, want: []string{resumeAction, noSpawnNotice}, unwanted: []string{stopAction}},
-				{name: "both without spawn", stop: true, resume: true, want: []string{stopAction, resumeAction, noSpawnNotice}},
+				{name: "none", spawn: true, unwanted: []string{stopAction, resumeAction, interruptAction}, available: true},
+				{name: "fully unavailable", unwanted: []string{stopAction, resumeAction, interruptAction}},
+				{name: "stop", spawn: true, stop: true, want: []string{stopAction}, unwanted: []string{resumeAction, interruptAction}, available: true},
+				{name: "resume", spawn: true, resume: true, want: []string{resumeAction}, unwanted: []string{stopAction, interruptAction}, available: true},
+				{name: "interrupt", spawn: true, interrupt: true, want: []string{interruptAction}, unwanted: []string{stopAction, resumeAction}, available: true},
+				{name: "all", spawn: true, stop: true, resume: true, interrupt: true, want: []string{stopAction, resumeAction, interruptAction}, available: true},
+				{name: "stop without spawn", stop: true, want: []string{stopAction, noSpawnNotice}, unwanted: []string{resumeAction, interruptAction}},
+				{name: "resume without spawn", resume: true, want: []string{resumeAction, noSpawnNotice}, unwanted: []string{stopAction, interruptAction}},
+				{name: "interrupt without spawn", interrupt: true, want: []string{interruptAction, noSpawnNotice}, unwanted: []string{stopAction, resumeAction}},
+				{name: "all without spawn", stop: true, resume: true, interrupt: true, want: []string{stopAction, resumeAction, interruptAction, noSpawnNotice}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					got := builder.build(tc.spawn, tc.stop, tc.resume)
-					if !tc.spawn && (tc.stop || tc.resume) && !strings.Contains(got, builder.noSpawnFallback) {
+					got := builder.build(SubagentActions{Spawn: tc.spawn, Stop: tc.stop, Resume: tc.resume, Interrupt: tc.interrupt})
+					if !tc.spawn && (tc.stop || tc.resume || tc.interrupt) && !strings.Contains(got, builder.noSpawnFallback) {
 						t.Fatalf("addendum missing mode-specific no-spawn fallback %q:\n%s", builder.noSpawnFallback, got)
 					}
 					for _, want := range tc.want {
@@ -65,7 +69,7 @@ func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 }
 
 func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
-	proactive := ProactiveSubagentsSystemAddendumFor(true, false, false)
+	proactive := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
 	for _, want := range []string{"primary owner and implementer", "immediate next task you will perform locally", "If you cannot name useful non-overlapping local work, do not delegate", "Do not search, read, test, review, edit"} {
 		if !strings.Contains(proactive, want) {
 			t.Fatalf("proactive addendum missing %q:\n%s", want, proactive)
@@ -75,7 +79,7 @@ func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
 		t.Fatalf("proactive addendum retained strict orchestrator contract:\n%s", proactive)
 	}
 
-	strict := StrictOrchestratorSystemAddendumFor(true, false, false)
+	strict := StrictOrchestratorSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
 	for _, want := range []string{"not an implementer", "non-overlapping worker scopes", "Once a worker is active", "Only coordinate workers"} {
 		if !strings.Contains(strict, want) {
 			t.Fatalf("strict addendum missing %q:\n%s", want, strict)
@@ -84,7 +88,7 @@ func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
 }
 
 func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing.T) {
-	proactive := ProactiveSubagentsSystemAddendumFor(true, false, false)
+	proactive := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
 	for _, want := range []string{
 		"Route before you work:",
 		"routing happens when the user states the request you are about to work on",
@@ -110,7 +114,7 @@ func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing
 		{name: "stop and resume", stop: true, resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ProactiveSubagentsSystemAddendumFor(false, tc.stop, tc.resume)
+			got := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: false, Stop: tc.stop, Resume: tc.resume})
 			for _, unwanted := range []string{"Route before you work:", "[subagents_list]", "spawn a clearly described general worker"} {
 				if strings.Contains(got, unwanted) {
 					t.Fatalf("spawn-withheld addendum kept %q:\n%s", unwanted, got)
@@ -133,18 +137,18 @@ func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing
 
 	// Routing is the interactive collaboration step; the headless strict
 	// contract divides scopes itself and must not inherit it.
-	strict := StrictOrchestratorSystemAddendumFor(true, false, false)
+	strict := StrictOrchestratorSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
 	if strings.Contains(strict, "Route before you work:") || strings.Contains(strict, "[subagents_list]") {
 		t.Fatalf("strict orchestrator inherited interactive routing guidance:\n%s", strict)
 	}
 }
 
 func TestSubagentPoliciesHandleUnavailableDelegationByMode(t *testing.T) {
-	proactive := ProactiveSubagentsSystemAddendumFor(false, false, false)
+	proactive := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: false, Stop: false, Resume: false})
 	if !strings.Contains(proactive, "Continue the user's task locally") || strings.Contains(proactive, "report this limitation") {
 		t.Fatalf("proactive unavailable guidance blocks local work:\n%s", proactive)
 	}
-	strict := StrictOrchestratorSystemAddendumFor(false, false, false)
+	strict := StrictOrchestratorSystemAddendumFor(SubagentActions{Spawn: false, Stop: false, Resume: false})
 	if !strings.Contains(strict, "report this limitation") || !strings.Contains(strict, "rather than implementing") {
 		t.Fatalf("strict unavailable guidance permits local implementation:\n%s", strict)
 	}

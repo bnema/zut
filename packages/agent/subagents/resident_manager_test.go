@@ -20,8 +20,8 @@ import (
 
 func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 	run := make(chan string, 1)
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(_ context.Context, prompt string) error { run <- prompt; return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(_ context.Context, prompt string) error { run <- prompt; return nil }), nil
 	})
 	defer manager.Close(context.Background())
 
@@ -57,10 +57,10 @@ func TestResidentManagerSpawnsJournaledInProcessChild(t *testing.T) {
 }
 
 func TestResidentManagerCompletedAnswerCanResume(t *testing.T) {
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			return journal.RecordAgentEvent(core.EvUsage{Cumulative: provider.Usage{InputTokens: 100}})
-		}, nil
+		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	spec := ResidentChildSpec{ID: "completed-child", SessionID: "completed-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
@@ -82,11 +82,11 @@ func TestResidentManagerCompletedAnswerCanResume(t *testing.T) {
 	}
 }
 
-// ResumeWithTurn lets a caller subscribe to the exact follow-up turn before it
+// resumeWithTurn lets a caller subscribe to the exact follow-up turn before it
 // can complete.
 func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	initial, cancelInitial := manager.WatchCompletion("turn-child", "initial-turn")
@@ -101,8 +101,8 @@ func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
 	}
 	followUp, cancelFollowUp := manager.WatchCompletion("turn-child", "follow-up-turn")
 	defer cancelFollowUp()
-	if err := manager.ResumeWithTurn(context.Background(), "turn-child", "continue", "follow-up-turn"); err != nil {
-		t.Fatalf("ResumeWithTurn: %v", err)
+	if err := manager.resumeWithTurn(context.Background(), "turn-child", "continue", "follow-up-turn"); err != nil {
+		t.Fatalf("resumeWithTurn: %v", err)
 	}
 	select {
 	case completion := <-followUp:
@@ -121,8 +121,8 @@ func TestResidentManagerResumeWithTurnNamesTheAcceptedTurn(t *testing.T) {
 // the completion is still addressable and the journal stays replayable.
 func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
 	completions := make(chan ResidentCompletion, 4)
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	initial, cancelInitial := manager.WatchCompletion("blank-turn-child", "initial-turn")
@@ -136,8 +136,8 @@ func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
 		t.Fatal("initial turn did not complete")
 	}
 	manager.SetCompletionObserver(func(completion ResidentCompletion) { completions <- completion })
-	if err := manager.ResumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
-		t.Fatalf("ResumeWithTurn: %v", err)
+	if err := manager.resumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
+		t.Fatalf("resumeWithTurn: %v", err)
 	}
 	select {
 	case completion := <-completions:
@@ -151,10 +151,10 @@ func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
 
 func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
 	completed := make(chan ResidentCompletion, 1)
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "the actual child answer"}}}})
-		}, nil
+		}), nil
 	})
 	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
@@ -179,13 +179,13 @@ func TestResidentManagerReportsQueuedTurnsWhenFinalResultCannotPersist(t *testin
 	release := make(chan struct{})
 	completed := make(chan ResidentCompletion, 2)
 	var journal *ResidentJournal
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, childJournal *ResidentJournal) (ResidentTurnRunner, error) {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, childJournal *ResidentJournal) (ResidentRuntime, error) {
 		journal = childJournal
-		return func(context.Context, string) error {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
@@ -226,12 +226,12 @@ func TestResidentManagerReportsQueuedTurnsWhenFinalResultCannotPersist(t *testin
 func TestResidentManagerReportsAcceptedInterruptedTurn(t *testing.T) {
 	started := make(chan struct{})
 	completed := make(chan ResidentCompletion, 1)
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(ctx context.Context, _ string) error {
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(ctx context.Context, _ string) error {
 			close(started)
 			<-ctx.Done()
 			return ctx.Err()
-		}, nil
+		}), nil
 	})
 	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
@@ -261,12 +261,12 @@ func TestResidentManagerReportsAcceptedInterruptedTurn(t *testing.T) {
 func TestResidentManagerLiveReturnsChildSnapshot(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	defer manager.Close(context.Background())
 	defer close(release)
@@ -294,8 +294,8 @@ func TestResidentManagerHistoryObserverSkipsTransientStreamEvents(t *testing.T) 
 	persist := make(chan struct{})
 	release := make(chan struct{})
 	historyUpdates := make(chan string, 1)
-	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streaming"}); err != nil {
 				return err
@@ -307,7 +307,7 @@ func TestResidentManagerHistoryObserverSkipsTransientStreamEvents(t *testing.T) 
 			}
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	manager.SetHistoryUpdateObserver(func(childID string) { historyUpdates <- childID })
 	t.Cleanup(func() {
@@ -341,12 +341,12 @@ func TestResidentManagerActivityObserverTracksRunningChildrenWithoutPolling(t *t
 	started := make(chan struct{})
 	release := make(chan struct{})
 	activity := make(chan bool, 2)
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			close(started)
 			<-release
 			return nil
-		}, nil
+		}), nil
 	})
 	manager.SetActivityObserver(func(active bool) { activity <- active })
 	t.Cleanup(func() {
@@ -387,7 +387,7 @@ func TestResidentManagerActivityObserverTracksRunningChildrenWithoutPolling(t *t
 
 func TestResidentManagerRecordsFactoryFailureAfterAcceptance(t *testing.T) {
 	root := t.TempDir()
-	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
 		return nil, errors.New("synthetic factory failure")
 	})
 	spec := ResidentChildSpec{ID: "factory-failure", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}
@@ -412,7 +412,7 @@ func TestResidentManagerReconcileIgnoresLegacyAgentsContainer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacyChild, "events.jsonl"), []byte("legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
 		return nil, nil
 	})
 	if errs := manager.Reconcile(); len(errs) != 0 {
@@ -425,15 +425,15 @@ func TestResidentManagerReconcileIgnoresLegacyAgentsContainer(t *testing.T) {
 
 func TestResidentManagerResumeRebuildsStoppedChild(t *testing.T) {
 	runs := make(chan string, 2)
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(ctx context.Context, prompt string) error {
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(ctx context.Context, prompt string) error {
 			runs <- prompt
 			if prompt == "initial" {
 				<-ctx.Done()
 				return ctx.Err()
 			}
 			return nil
-		}, nil
+		}), nil
 	})
 	defer manager.Close(context.Background())
 	spec := ResidentChildSpec{ID: "stopped-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5", Required: true}
@@ -470,11 +470,11 @@ func TestResidentManagerPreparesWorkspaceBeforeAcceptance(t *testing.T) {
 			t.Fatalf("workspace request = %#v", req)
 		}
 		return SharedWorkspace{Root: req.RepositoryRoot}.Prepare(context.Background(), req)
-	}, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
+	}, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
 		if !prepared || spec.Workspace != "/repo" {
 			t.Fatalf("factory spec = %#v, prepared=%t", spec, prepared)
 		}
-		return func(context.Context, string) error { return nil }, nil
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "workspace-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo"}, "task"); err != nil {
@@ -487,8 +487,8 @@ func TestResidentManagerRejectsWorkspaceOutsideAllowedRootsBeforeAcceptance(t *t
 	manager := newResidentManager(t.TempDir(), SubagentPolicy{AllowedRoots: []string{t.TempDir()}}, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) {
 		prepared = true
 		return nil, nil
-	}, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	}, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	outside := t.TempDir()
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "outside-root", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: outside}, "task"); err == nil {
@@ -504,8 +504,8 @@ func TestResidentManagerCapturesSuccessfulWorktreeBeforeCleanup(t *testing.T) {
 	workspace := &testResidentWorkspace{dir: "/isolated", mode: WorkspaceWorktree, capture: WorkspaceCapture{Patch: []byte("patch"), ChangedFiles: []string{"changed.go"}}}
 	manager := NewResidentManagerWithWorkspace(root, 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) {
 		return workspace, nil
-	}, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	}, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "capture-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo", WorkspaceMode: WorkspaceWorktree}, "task"); err != nil {
@@ -545,8 +545,8 @@ func TestResidentManagerCapturesFailedWorktreePatch(t *testing.T) {
 	workspace := &testResidentWorkspace{dir: "/isolated", mode: WorkspaceWorktree, capture: WorkspaceCapture{Patch: []byte("partial patch"), ChangedFiles: []string{"changed.go"}}}
 	manager := NewResidentManagerWithWorkspace(root, 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) {
 		return workspace, nil
-	}, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return errors.New("turn failed") }, nil
+	}, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return errors.New("turn failed") }), nil
 	})
 	defer manager.Close(context.Background())
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "failed-capture", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo", WorkspaceMode: WorkspaceWorktree}, "task"); err != nil {
@@ -582,8 +582,8 @@ func TestResidentManagerCapturesFailedWorktreePatch(t *testing.T) {
 
 func TestResidentManagerRetainsFailedWorktree(t *testing.T) {
 	workspace := &testResidentWorkspace{dir: "/isolated", mode: WorkspaceWorktree}
-	manager := NewResidentManagerWithWorkspace(t.TempDir(), 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) { return workspace, nil }, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return errors.New("turn failed") }, nil
+	manager := NewResidentManagerWithWorkspace(t.TempDir(), 0, func(context.Context, WorkspaceRequest) (WorkspaceHandle, error) { return workspace, nil }, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return errors.New("turn failed") }), nil
 	})
 	defer manager.Close(context.Background())
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "failed-worktree", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo", WorkspaceMode: WorkspaceWorktree}, "task"); err != nil {
@@ -608,10 +608,10 @@ func TestResidentManagerCapturesRealWorktreePatch(t *testing.T) {
 		t.Skip("git is required")
 	}
 	root, repo := t.TempDir(), initTestRepo(t)
-	manager := NewResidentManager(root, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error {
+	manager := NewResidentManager(root, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
 			return os.WriteFile(filepath.Join(spec.Workspace, "README.md"), []byte("resident change\n"), 0o600)
-		}, nil
+		}), nil
 	})
 	defer manager.Close(context.Background())
 	child, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "git-worktree", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: repo, WorkspaceMode: WorkspaceWorktree, WorkspaceBase: "HEAD", WorkspaceCapture: CapturePatch}, "task")
@@ -673,8 +673,8 @@ func (w *testResidentWorkspace) Cleanup(context.Context) error { w.cleaned.Store
 
 func TestResidentManagerRejectsDuplicateBeforeSecondJournalAcceptance(t *testing.T) {
 	root := t.TempDir()
-	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	spec := ResidentChildSpec{ID: "duplicate", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}
@@ -794,9 +794,9 @@ func TestResidentManagerReconcileMakesInterruptedJournalDiscoverableWithoutRepla
 		t.Fatal(err)
 	}
 	runs := 0
-	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
 		runs++
-		return func(context.Context, string) error { return nil }, nil
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	if errs := manager.Reconcile(); len(errs) != 0 {
 		t.Fatalf("Reconcile errors = %v", errs)
@@ -881,8 +881,8 @@ func TestResidentManagerReconcileDoesNotMutateForeignProcessJournal(t *testing.T
 		t.Fatal(err)
 	}
 
-	observer := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	observer := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	if errs := observer.Reconcile(); len(errs) != 0 {
 		t.Fatalf("Reconcile errors = %v", errs)
@@ -944,11 +944,11 @@ func TestResidentManagerExplicitlyResumesRecoveredChildWithoutReplayingTask(t *t
 		t.Fatal(err)
 	}
 	runs := make(chan string, 1)
-	manager := NewResidentManager(root, func(got ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
+	manager := NewResidentManager(root, func(got ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
 		if got.SessionID != spec.SessionID {
 			t.Fatalf("session = %q, want %q", got.SessionID, spec.SessionID)
 		}
-		return func(_ context.Context, prompt string) error { runs <- prompt; return nil }, nil
+		return ResidentTurnRunner(func(_ context.Context, prompt string) error { runs <- prompt; return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	if errs := manager.Reconcile(); len(errs) != 0 {
@@ -989,8 +989,8 @@ func TestResidentManagerExplicitResumeReusesInterruptedWorktree(t *testing.T) {
 			t.Fatalf("resume workspace request = %#v", req)
 		}
 		return workspace, nil
-	}, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	}, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	if errs := manager.Reconcile(); len(errs) != 0 {
@@ -1004,14 +1004,14 @@ func TestResidentManagerExplicitResumeReusesInterruptedWorktree(t *testing.T) {
 func TestResidentManagerAppliesPositiveQueueTimeoutDurably(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
-	manager := NewResidentManagerWithPolicy(t.TempDir(), SubagentPolicy{MaxConcurrent: 1, QueueTimeout: 20 * time.Millisecond}, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(_ context.Context, _ string) error {
+	manager := NewResidentManagerWithPolicy(t.TempDir(), SubagentPolicy{MaxConcurrent: 1, QueueTimeout: 20 * time.Millisecond}, func(spec ResidentChildSpec, _ *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(_ context.Context, _ string) error {
 			started <- spec.ID
 			if spec.ID == "first" {
 				<-release
 			}
 			return nil
-		}, nil
+		}), nil
 	})
 	defer manager.Close(context.Background())
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "first", SessionID: "first", Provider: "openai", Model: "gpt-5"}, "first"); err != nil {
@@ -1048,8 +1048,8 @@ func TestResidentManagerAppliesPositiveQueueTimeoutDurably(t *testing.T) {
 }
 
 func TestResidentManagerNotifiesAcceptedObserverForFollowUps(t *testing.T) {
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(context.Context, string) error { return nil }, nil
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	defer manager.Close(context.Background())
 	accepted := make(chan string, 2)
@@ -1082,7 +1082,7 @@ func TestResidentManagerReconcileReplacesStaleRecoveredSnapshots(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) { return nil, nil })
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) { return nil, nil })
 	if errs := manager.Reconcile(); len(errs) != 0 || len(manager.Snapshot()) != 1 {
 		t.Fatalf("first Reconcile = %v, snapshots=%#v", errs, manager.Snapshot())
 	}
@@ -1097,8 +1097,8 @@ func TestResidentManagerReconcileReplacesStaleRecoveredSnapshots(t *testing.T) {
 func TestResidentManagerLimitsConcurrentTurnsGlobally(t *testing.T) {
 	started := make(chan string, DefaultResidentConcurrency+1)
 	release := make(chan struct{})
-	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentTurnRunner, error) {
-		return func(ctx context.Context, prompt string) error {
+	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(ctx context.Context, prompt string) error {
 			started <- prompt
 			select {
 			case <-release:
@@ -1106,7 +1106,7 @@ func TestResidentManagerLimitsConcurrentTurnsGlobally(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}, nil
+		}), nil
 	})
 	defer manager.Close(context.Background())
 

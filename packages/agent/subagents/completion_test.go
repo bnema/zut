@@ -3,6 +3,7 @@ package subagents
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,21 @@ func TestResidentCompletionProjection(t *testing.T) {
 				t.Fatalf("update = %q", text)
 			}
 		})
+	}
+}
+
+// A dropped follow-up hides expected cancellation but keeps any other cause.
+func TestDroppedCompletionKeepsNonCancellationError(t *testing.T) {
+	canceled := (ResidentCompletion{ChildID: "c", TurnID: "t", Task: "next", Err: context.Canceled, NotStarted: true}).Completion()
+	if canceled.Status != CompletionDropped || canceled.Error != "" {
+		t.Fatalf("canceled drop = %#v", canceled)
+	}
+	failed := (ResidentCompletion{ChildID: "c", TurnID: "t", Task: "next", Err: errors.New("journal full"), NotStarted: true}).Completion()
+	if failed.Status != CompletionDropped || failed.Error != "journal full" {
+		t.Fatalf("failed drop = %#v", failed)
+	}
+	if text := FormatCompletionUpdate([]Completion{failed}, ""); !strings.Contains(text, "dropped (queued follow-up never started: next) (journal full)") {
+		t.Fatalf("update = %q", text)
 	}
 }
 
@@ -85,7 +101,7 @@ func TestCompletionTrackerWaitReadyDoesNotWaitForSiblings(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	got, err := tracker.WaitReady(ctx)
-	if err != nil || len(got) != 1 || got[0] != want {
+	if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("WaitReady = %#v, %v, want ready result despite pending sibling", got, err)
 	}
 	if _, err := tracker.WaitReady(ctx); !errors.Is(err, context.Canceled) {

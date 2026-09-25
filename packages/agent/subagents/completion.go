@@ -16,12 +16,31 @@ type Completion struct {
 	Task    string
 	Error   string
 	Summary string
+	// Undelivered lists follow-ups steered into the turn that the child never
+	// read because the turn ended first.
+	Undelivered []string
 }
+
+// CompletionDropped is the status of a queued follow-up that was discarded
+// before the child ever started it.
+const CompletionDropped = "dropped"
+
+// maxUndeliveredPreview bounds each undelivered follow-up in a parent update.
+const maxUndeliveredPreview = 120
 
 // Completion projects a typed resident outcome into the parent notification
 // shared by interactive and orchestrated modes.
 func (c ResidentCompletion) Completion() Completion {
-	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: string(ResidentCompleted), Task: c.Task, Summary: c.Summary}
+	result := Completion{AgentID: c.ChildID, TurnID: c.TurnID, Status: string(ResidentCompleted), Task: c.Task, Summary: c.Summary, Undelivered: append([]string(nil), c.Undelivered...)}
+	if c.NotStarted {
+		result.Status = CompletionDropped
+		// Cancellation is the expected reason; any other error, such as a
+		// journal failure, explains why the follow-up could not run.
+		if c.Err != nil && !errors.Is(c.Err, context.Canceled) {
+			result.Error = c.Err.Error()
+		}
+		return result
+	}
 	if c.Err != nil {
 		result.Status, result.Error = string(ResidentFailed), c.Err.Error()
 		if errors.Is(c.Err, context.Canceled) {
@@ -161,11 +180,27 @@ func FormatCompletionUpdateWithActive(batch []Completion, activeAgentIDs []strin
 	b.WriteString("[auto-subagents update]\n")
 	for _, completion := range batch {
 		fmt.Fprintf(&b, "- %s: %s", completion.AgentID, completion.Status)
+		if completion.Status == CompletionDropped {
+			// The child never read this follow-up. Echoing it as a task would
+			// read as work the child attempted.
+			fmt.Fprintf(&b, " (queued follow-up never started: %s)", undeliveredPreview(completion.Task))
+			if completion.Error != "" {
+				fmt.Fprintf(&b, " (%s)", completion.Error)
+			}
+			b.WriteByte('\n')
+			continue
+		}
 		if completion.Error != "" {
 			fmt.Fprintf(&b, " (%s)", completion.Error)
 		}
 		if completion.Task != "" {
 			fmt.Fprintf(&b, " — %s", completion.Task)
+		}
+		if len(completion.Undelivered) != 0 {
+			fmt.Fprintf(&b, "\n  undelivered: %d follow-up(s) the child never read:", len(completion.Undelivered))
+			for _, text := range completion.Undelivered {
+				fmt.Fprintf(&b, "\n    - %s", undeliveredPreview(text))
+			}
 		}
 		if completion.Summary != "" {
 			label := "final"
@@ -187,4 +222,14 @@ func FormatCompletionUpdateWithActive(batch []Completion, activeAgentIDs []strin
 		b.WriteString(instruction)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// undeliveredPreview renders one follow-up on a single bounded line.
+func undeliveredPreview(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) <= maxUndeliveredPreview {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:maxUndeliveredPreview-1])) + "…"
 }
