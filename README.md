@@ -1004,7 +1004,8 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 |---|---|
 | `enter` | Submit (queued if the agent is busy). |
 | `alt+enter` | Newline. |
-| `tab` | Complete the selected slash command. |
+| `tab` | Complete the selected slash command, file, or path token; otherwise cycle to the next model profile (empty slots open the picker). |
+| `shift+tab` | Cycle to the previous model profile (empty slots open the picker). |
 | `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
 | `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |

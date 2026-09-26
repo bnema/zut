@@ -3,6 +3,8 @@ package modes
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -408,11 +410,79 @@ func TestShiftTabFromActiveProfileGoesBackward(t *testing.T) {
 func TestTabOnPathKeepsPathCompletion(t *testing.T) {
 	i, _ := newProfileInteractive(t)
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	i.cfg.CWD = dir
 	i.cfg.ActiveModelProfile = 0
-	i.ed.SetValue("./")
+	i.ed.SetValue("./al")
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The path token must complete to the single match; profiles stay put.
+	if i.ed.Value() != "./alpha.txt" {
+		t.Fatalf("tab did not complete path: %q", i.ed.Value())
+	}
 	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 0 {
 		t.Fatalf("tab on path cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWithSlashPopupCompletesCommand(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.ed.SetValue("/mod")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The slash popup owns Tab while visible: it completes the command
+	// instead of cycling profiles.
+	if i.ed.Value() != "/model" {
+		t.Fatalf("tab did not complete slash command: %q", i.ed.Value())
+	}
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("tab with slash popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWithFilePopupKeepsPopup(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.cfg.CWD = dir
+	i.fileSuggest.SetCWD(dir)
+	i.ed.SetValue("@")
+	if !i.fileSuggest.Active(i.ed.Value()) {
+		t.Fatal("file popup did not open for @")
+	}
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The file popup owns Tab while visible: no profile cycling.
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("tab with file popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWhileBusyShowsGuard(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.busy = true
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if !strings.Contains(i.statusErr, "cannot switch model while a turn is running") {
+		t.Fatalf("tab while busy did not show guard: %q", i.statusErr)
+	}
+}
+
+func TestModifiedTabDoesNotCycle(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	for _, k := range []tui.Key{
+		{Kind: tui.KeyTab, Ctrl: true},
+		{Kind: tui.KeyTab, Alt: true},
+		{Kind: tui.KeyTab, Super: true},
+		{Kind: tui.KeyTab, Shift: true},
+		{Kind: tui.KeyShiftTab, Ctrl: true},
+		{Kind: tui.KeyShiftTab, Alt: true},
+		{Kind: tui.KeyShiftTab, Super: true},
+	} {
+		i.ed.Clear()
+		i.handleKey(context.Background(), k)
+		if i.modelDialog.Active() || i.quickModelAssign != 0 {
+			t.Fatalf("modified tab cycled profiles: key=%+v assign=%d", k, i.quickModelAssign)
+		}
 	}
 }
