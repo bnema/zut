@@ -12,7 +12,8 @@ import (
 var helpKeyRows = [][2]string{
 	{"enter", "submit the current input"},
 	{"shift+enter / alt+enter", "insert a newline"},
-	{"tab", "complete the highlighted slash command"},
+	{"tab", "complete the highlighted slash command; next model profile when idle"},
+	{"shift+tab", "previous model profile"},
 	{"esc", "cancel the current turn (while busy) - clear idle input; two bare Esc presses within 500ms open /session tree"},
 	{"ctrl+c", "exit (while idle) - cancel the current turn (while busy)"},
 	{"ctrl+w", "delete previous word"},

@@ -582,6 +582,25 @@ func (i *Interactive) applyQuickModelShortcut(slot int) {
 	}
 	i.activateModelProfile(slot, p)
 }
+
+// cycleModelProfile moves to the next (+1) or previous (-1) profile slot
+// with wraparound across slots 1-9. It delegates to applyQuickModelShortcut
+// so empty slots open the model picker and busy turns show the same guard
+// as Ctrl+1..9. With no active profile, Tab starts at slot 1 and Shift-Tab
+// at slot 9.
+func (i *Interactive) cycleModelProfile(dir int) {
+	start := i.cfg.ActiveModelProfile
+	var next int
+	switch {
+	case start >= 1 && start <= 9:
+		next = ((start-1+dir)%9+9)%9 + 1
+	case dir < 0:
+		next = 9
+	default:
+		next = 1
+	}
+	i.applyQuickModelShortcut(next)
+}
 func (i *Interactive) applyQuickModelSetting(key, value string) {
 	slotText := strings.TrimPrefix(key, "quick_model_")
 	slot, err := strconv.Atoi(slotText)

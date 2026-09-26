@@ -349,3 +349,70 @@ func TestModelProfileCommandRejectsInvalidSlots(t *testing.T) {
 		}
 	}
 }
+
+func TestTabCyclesModelProfilesForward(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.ed.SetValue("hello")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if i.cfg.ActiveModelProfile != 2 || s.active != 2 || i.cfg.Model != "gpt-5.5" {
+		t.Fatalf("tab did not cycle to slot 2: active=%d model=%q", i.cfg.ActiveModelProfile, i.cfg.Model)
+	}
+	if i.ed.Value() != "hello" {
+		t.Fatalf("tab modified editor text: %q", i.ed.Value())
+	}
+}
+
+func TestTabCyclesModelProfilesWithWraparound(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 9
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
+		t.Fatalf("tab did not wrap to slot 1: active=%d", i.cfg.ActiveModelProfile)
+	}
+}
+
+func TestTabStopsOnEmptySlot(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 2
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// Empty slot 3 opens the picker like Ctrl+3; the active slot is
+	// unchanged until the user picks a model.
+	if !i.modelDialog.Active() || i.quickModelAssign != 3 || i.cfg.ActiveModelProfile != 2 {
+		t.Fatalf("tab did not stop on empty slot 3: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
+	}
+}
+
+func TestShiftTabCyclesModelProfilesBackward(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
+	// Empty slot 9 opens the picker like Ctrl+9; the active slot is
+	// unchanged until the user picks a model.
+	if !i.modelDialog.Active() || i.quickModelAssign != 9 || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("shift-tab did not stop on empty slot 9: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
+	}
+}
+
+func TestShiftTabFromActiveProfileGoesBackward(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 2
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
+	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
+		t.Fatalf("shift-tab did not move to slot 1: active=%d", i.cfg.ActiveModelProfile)
+	}
+}
+
+func TestTabOnPathKeepsPathCompletion(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	dir := t.TempDir()
+	i.cfg.CWD = dir
+	i.cfg.ActiveModelProfile = 0
+	i.ed.SetValue("./")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 0 {
+		t.Fatalf("tab on path cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
