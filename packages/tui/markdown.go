@@ -37,6 +37,12 @@ func renderMarkdownRaw(lines []string, th Theme, width int, boundary func(line, 
 	if width <= 0 {
 		width = 80
 	}
+	// Sanitize per line so boundary indexes still match the caller's lines.
+	safe := make([]string, len(lines))
+	for i, l := range lines {
+		safe[i] = sanitizeLine(l, codeTabStop)
+	}
+	lines = safe
 
 	var out strings.Builder
 	var fenceBuf strings.Builder
