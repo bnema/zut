@@ -82,6 +82,23 @@ func TestLiveToolOverlayShowsFullBashCommandBeforeResult(t *testing.T) {
 	}
 }
 
+// A streamed bash command can carry tabs (heredocs of Go code) and
+// raw escapes. They must not reach the terminal: a tab advances the
+// cursor without erasing, so the box edge and stale cells glitch.
+func TestLiveBashCommandWithTabsKeepsBoxRowsAligned(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{
+		"command": "python3 - <<'EOF'\nold=\"\"\"\t\t\tdrainAllFrames(sends)\n\tif tt.saturated {\x1b[2J\r\nEOF",
+	})
+	const width = 100
+	v := View{
+		Theme: Dark,
+		ToolCalls: []ToolCallView{
+			{ID: "toolu_1", Name: "bash", Args: ShortArgs("bash", args), RawJSONBuf: string(args)},
+		},
+	}
+	assertTerminalSafeRows(t, v.BuildLive(width), width)
+}
+
 func TestLiveToolCacheSeparatesCallsAtTheSameRevision(t *testing.T) {
 	v := View{Theme: Dark, ToolCalls: []ToolCallView{
 		{

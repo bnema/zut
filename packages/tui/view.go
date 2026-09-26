@@ -1562,7 +1562,7 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 	}
 	prompt := v.Theme.FGColor(v.Theme.Muted, "$ ")
 	var out []string
-	for i, line := range strings.Split(command, "\n") {
+	for i, line := range normalizeBashOutputLines(strings.Split(command, "\n")) {
 		firstPrefix := "    "
 		if i == 0 {
 			firstPrefix += prompt
