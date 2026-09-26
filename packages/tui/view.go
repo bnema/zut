@@ -14,45 +14,6 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// expandTabs replaces tab characters with 4 spaces so code from
-// tab-indented languages (Go, Makefiles, etc.) renders at a
-// consistent width instead of the terminal's default 8-column tabs.
-func expandTabs(s string) string {
-	return strings.ReplaceAll(s, "\t", "    ")
-}
-
-// sanitizeUserBubbleLine prepares a single user-bubble row for safe
-// rendering. Pasted content from another terminal can contain
-// embedded ANSI escape sequences, control bytes, and tabs that
-// either reset the bubble's background colour or move the cursor in
-// ways that break the bubble's painted column.
-func sanitizeUserBubbleLine(s string) string {
-	if s == "" {
-		return s
-	}
-	s = expandTabs(s)
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		c := s[i]
-		if c == 0x1b { // ESC: drop CSI/OSC/DCS and simple escapes.
-			i = skipEscapeSequence(s, i)
-			continue
-		}
-		if c == '\r' || c == '\b' || c == 0x07 {
-			i++
-			continue
-		}
-		if c < 0x20 || c == 0x7f {
-			i++
-			continue
-		}
-		b.WriteByte(c)
-		i++
-	}
-	return b.String()
-}
-
 // pathFromToolArgs returns the "path" argument from a tool_call's
 // JSON arguments, or "" if the args aren't a JSON object or don't
 // include one. Used to pick a syntax language for rendering the
@@ -501,7 +462,7 @@ func (v *View) renderErr(width int) []string {
 	var out []string
 	// Each returned row must represent one terminal line, including when
 	// the error contains explicit newlines or blank separator lines.
-	for _, paragraph := range strings.Split(v.Err, "\n") {
+	for _, paragraph := range splitLines(sanitizeText(v.Err, terminalTabStop)) {
 		for _, line := range wrapLine(paragraph, wrapWidth, "") {
 			prefix := indent
 			if len(out) == 0 {
@@ -979,7 +940,7 @@ func (v *View) renderPlanUpdate(update core.PlanUpdate, width int) []string {
 	var body []string
 	if update.Explanation != nil {
 		if explanation := strings.TrimSpace(*update.Explanation); explanation != "" {
-			for _, line := range wrapLine(explanation, bodyWidth, "") {
+			for _, line := range wrapLine(sanitizeLine(explanation, codeTabStop), bodyWidth, "") {
 				body = append(body, Dim(Italic(line)))
 			}
 		}
@@ -1000,7 +961,7 @@ func (v *View) renderPlanUpdate(update core.PlanUpdate, width int) []string {
 			if stepWidth < 1 {
 				stepWidth = 1
 			}
-			wrapped := wrapLine(step.Step, stepWidth, "")
+			wrapped := wrapLine(sanitizeLine(step.Step, codeTabStop), stepWidth, "")
 			if len(wrapped) == 0 {
 				wrapped = []string{""}
 			}
@@ -1100,8 +1061,8 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
-				for _, l := range strings.Split(b.Text, "\n") {
-					l = sanitizeUserBubbleLine(l)
+				for _, l := range splitLines(b.Text) {
+					l = sanitizeLine(l, codeTabStop)
 					for _, w := range wrapLine(l, innerWidth, "") {
 						bubble = append(bubble, row(w))
 					}
@@ -1562,7 +1523,7 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 	}
 	prompt := v.Theme.FGColor(v.Theme.Muted, "$ ")
 	var out []string
-	for i, line := range strings.Split(command, "\n") {
+	for i, line := range splitLines(sanitizeText(command, terminalTabStop)) {
 		firstPrefix := "    "
 		if i == 0 {
 			firstPrefix += prompt
@@ -1650,13 +1611,7 @@ func toolBoxTop(th Theme, label string, width int) string {
 		// Label overflows; truncate with an ellipsis so the right
 		// corner still lands on the right edge. Rare on real
 		// terminals (the chat column is usually wide enough).
-		over := -fill
-		runes := []rune(label)
-		if over+3 < len(runes) {
-			label = string(runes[:len(runes)-over-3]) + "..."
-		} else {
-			label = "..."
-		}
+		label = truncateWithEllipsis(label, visibleWidth(label)+fill)
 		used = visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix)
 		fill = w - used - 1
 		if fill < 0 {
@@ -1668,8 +1623,22 @@ func toolBoxTop(th Theme, label string, width int) string {
 	return margin + th.FGColor(th.Muted, prefix) + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest+suffix+fillStr+"┐") + margin
 }
 
+// truncateWithEllipsis shortens plain text to at most limit terminal
+// cells, ending with "..." when it had to cut. Counting cells rather than
+// runes keeps wide and zero-width characters from pushing the row past
+// limit.
+func truncateWithEllipsis(s string, limit int) string {
+	if visibleWidth(s) <= limit {
+		return s
+	}
+	if limit <= 3 {
+		return strings.Repeat(".", max(0, limit))
+	}
+	return truncateToWidth(s, limit-3) + "..."
+}
+
 func oneLineToolLabel(label string) string {
-	return strings.Join(strings.Fields(label), " ")
+	return strings.Join(strings.Fields(sanitizeLine(label, 1)), " ")
 }
 
 func splitToolLabel(label string) (name, rest string) {
@@ -1713,10 +1682,8 @@ func flatToolHeader(th Theme, label string, width int) string {
 		avail = 12
 	}
 	if visibleWidth(name+rest) > avail {
-		over := visibleWidth(name+rest) - avail
-		runes := []rune(rest)
-		if over+3 < len(runes) {
-			rest = string(runes[:len(runes)-over-3]) + "..."
+		if visibleWidth(name)+3 < avail {
+			rest = truncateWithEllipsis(rest, avail-visibleWidth(name))
 		} else if visibleWidth(name) <= avail {
 			rest = ""
 		}
@@ -1740,10 +1707,8 @@ func compactToolHeader(th Theme, label string, width int) string {
 		avail = 12
 	}
 	if visibleWidth(name+rest) > avail {
-		over := visibleWidth(name+rest) - avail
-		runes := []rune(rest)
-		if over+3 < len(runes) {
-			rest = string(runes[:len(runes)-over-3]) + "..."
+		if visibleWidth(name)+3 < avail {
+			rest = truncateWithEllipsis(rest, avail-visibleWidth(name))
 		} else if visibleWidth(name) <= avail {
 			rest = ""
 		}
@@ -2167,7 +2132,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 
 	// No truncation — the full tool output is rendered into chat and
 	// becomes part of the scrollback you can page back through.
-	lines := strings.Split(text, "\n")
+	lines := splitLines(text)
 
 	// Bash-result styling: when the first row looks like a shell
 	// prompt line ("$ ...") emitted by the bash tool, style the
@@ -2185,7 +2150,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 		// Detect diff header: "--- name" followed somewhere by "+++ name".
 		if strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ") {
 			inDiff = true
-			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, l))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, sanitizeLine(l, terminalTabStop)))
 			continue
 		}
 		// Hunk header "@@ -a,b +c,d @@" resets the counters so patches
@@ -2194,7 +2159,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 			if o, n, ok := parseHunkHeader(l); ok {
 				oldLine, newLine = o, n
 			}
-			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, l))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, sanitizeLine(l, terminalTabStop)))
 			continue
 		}
 		if inDiff && strings.TrimSpace(l) == "..." {
@@ -2220,7 +2185,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 			}
 		}
 		// Regular line.
-		for _, w := range wrapLine(l, width-4, "    ") {
+		for _, w := range wrapLine(sanitizeLine(l, terminalTabStop), width-4, "    ") {
 			out = append(out, "    "+v.Theme.FGColor(defaultColor, w))
 		}
 	}
@@ -2278,7 +2243,7 @@ func (v *View) renderDiffRow(line string, width int, color TerminalColor, lineNo
 	if len(line) == 0 {
 		return []string{""}
 	}
-	code := expandTabs(line[1:]) // strip the leading marker; expand tabs
+	code := sanitizeLine(line[1:], codeTabStop) // strip the leading marker
 
 	// Gutter shape: sign + number share a color so they read as one
 	// visual token ("+123") instead of a neutral line number next to
@@ -2477,11 +2442,11 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 		if idx < 0 || !numberedLineRE.MatchString(l) {
 			// Non-code footer (e.g. "[truncated at 2000 lines]").
 			gutters = append(gutters, "")
-			codes = append(codes, l)
+			codes = append(codes, sanitizeLine(l, terminalTabStop))
 			continue
 		}
-		gutter := l[:idx] + " " // replace tab with single space
-		code := expandTabs(l[idx+1:])
+		gutter := sanitizeLine(l[:idx], 1) + " " // replace tab with single space
+		code := sanitizeLine(l[idx+1:], codeTabStop)
 		gutters = append(gutters, gutter)
 		codes = append(codes, code)
 	}
@@ -2529,7 +2494,9 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 // in muted type, everything else on the default tool-output color.
 // Called from renderToolText when the first line starts with "$ ".
 func (v *View) renderBashResult(lines []string, width int, defaultColor TerminalColor) []string {
-	lines = normalizeBashOutputLines(lines)
+	for i, l := range lines {
+		lines[i] = sanitizeLine(l, terminalTabStop)
+	}
 	// Identify the footer line (exit + timing). The bash tool writes
 	// it as the last non-empty line of the result.
 	footerIdx := -1
@@ -2565,108 +2532,6 @@ func (v *View) renderBashResult(lines []string, width int, defaultColor Terminal
 		}
 	}
 	return out
-}
-
-// normalizeBashOutputLines turns arbitrary terminal output into plain,
-// box-safe rows before wrapping. Unlike read/write/edit output, bash
-// stdout/stderr may contain tabs, carriage returns, ANSI/OSC escapes,
-// and other C0 controls from subprocesses. If those reach the bordered
-// tool box, the width calculator can undercount what the terminal will
-// draw and the right edge appears broken. Keep printable text, expand
-// tabs to spaces, split carriage-return progress rows, and drop escape
-// / control sequences.
-func normalizeBashOutputLines(lines []string) []string {
-	var out []string
-	for _, line := range lines {
-		for _, part := range strings.Split(strings.ReplaceAll(line, "\r", "\n"), "\n") {
-			out = append(out, normalizeBashOutputLine(part))
-		}
-	}
-	if len(out) == 0 {
-		return []string{""}
-	}
-	return out
-}
-
-func normalizeBashOutputLine(s string) string {
-	var b strings.Builder
-	col := 0
-	for i := 0; i < len(s); {
-		c := s[i]
-		if c == 0x1b { // ESC: strip CSI/OSC/DCS and simple escapes.
-			i = skipEscapeSequence(s, i)
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			i++
-			continue
-		}
-		switch r {
-		case '\t':
-			spaces := 8 - (col % 8)
-			if spaces == 0 {
-				spaces = 8
-			}
-			b.WriteString(strings.Repeat(" ", spaces))
-			col += spaces
-		case '\b':
-			// Backspace-overstrike output is common in spinners/progress bars.
-			// Dropping it is safer than moving the TUI cursor backwards.
-		case '\n', '\r':
-			// Already split by normalizeBashOutputLines.
-		default:
-			if r < 0x20 || r == 0x7f {
-				// Drop non-printing controls.
-				break
-			}
-			b.WriteRune(r)
-			col += runewidth.RuneWidth(r)
-		}
-		i += size
-	}
-	return b.String()
-}
-
-func skipEscapeSequence(s string, i int) int {
-	if i >= len(s) || s[i] != 0x1b {
-		return i + 1
-	}
-	if i+1 >= len(s) {
-		return len(s)
-	}
-	switch s[i+1] {
-	case '[': // CSI: ESC [ ... final byte 0x40-0x7e
-		j := i + 2
-		for j < len(s) {
-			c := s[j]
-			j++
-			if c >= 0x40 && c <= 0x7e {
-				break
-			}
-		}
-		return j
-	case ']': // OSC: ESC ] ... BEL or ST
-		return skipStringEscape(s, i+2)
-	case 'P', '_', '^', 'X': // DCS/APC/PM/SOS: ESC P ... ST, etc.
-		return skipStringEscape(s, i+2)
-	default:
-		// Two-byte escape (cursor save/restore, charset select, etc.).
-		return i + 2
-	}
-}
-
-func skipStringEscape(s string, i int) int {
-	for i < len(s) {
-		if s[i] == 0x07 { // BEL
-			return i + 1
-		}
-		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' { // ST
-			return i + 2
-		}
-		i++
-	}
-	return len(s)
 }
 
 // astRewriteArgs reports whether a completed AST call requested mutation.
@@ -2747,7 +2612,7 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 			oldLine++
 			newLine++
 		default:
-			for _, w := range wrapLine(l, width-4, "    ") {
+			for _, w := range wrapLine(sanitizeLine(l, terminalTabStop), width-4, "    ") {
 				out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, w))
 			}
 		}
@@ -2792,10 +2657,11 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 	code := lines[:codeEnd]
 	footer := lines[codeEnd:]
 
-	// Expand tabs to 4 spaces so Go / Makefile code renders
-	// at a consistent width.
 	for i, c := range code {
-		code[i] = expandTabs(c)
+		code[i] = sanitizeLine(c, codeTabStop)
+	}
+	for i, f := range footer {
+		footer[i] = sanitizeLine(f, terminalTabStop)
 	}
 
 	lang := LanguageFromPath(sourcePath)

@@ -891,8 +891,14 @@ func normalizeEditorText(s string) string {
 	return strings.ReplaceAll(s, "\r", "\n")
 }
 
+// visibleWidth returns the terminal cells s occupies, ignoring CSI and
+// OSC escapes. Text should be sanitized before layout; if a tab slips
+// through anyway it counts as a full terminal tab stop, the most cells
+// it can advance, so a drawn row is never wider than its measured width
+// and cannot wrap onto the next terminal row.
 func visibleWidth(s string) int {
-	return runewidth.StringWidth(stripANSI(s))
+	plain := stripANSI(s)
+	return runewidth.StringWidth(plain) + strings.Count(plain, "\t")*terminalTabStop
 }
 
 func stripANSI(s string) string {
