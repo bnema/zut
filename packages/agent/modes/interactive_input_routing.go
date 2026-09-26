@@ -834,17 +834,23 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
-	// Tab-complete a path token in the editor when no popup is open.
-	// Recognises tokens that look like paths (start with ~, /, ./, ../
-	// or contain a slash); shell-style completion expands ~, lists the
-	// parent dir, and completes the basename to the longest common
-	// prefix. Single match: full replace and trailing / for dirs.
-	// No match: no-op. Plain bare words (no slash, no tilde) fall
-	// through so Tab keeps its current no-op behaviour outside paths.
-	if k.Kind == tui.KeyTab && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
+	// Tab cycles model profiles when no popup is open and the token is not
+	// a path. Path-like tokens keep shell-style completion (paths win);
+	// plain Tab on anything else moves to the next profile slot, stopping
+	// on empty slots via the model picker like Ctrl+1..9. Shift-Tab moves
+	// to the previous slot. Modified chords (ctrl/alt/super) are left alone.
+	if k.Kind == tui.KeyShiftTab && !k.Ctrl && !k.Alt && !k.Super && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
+		i.inputHistoryIndex = -1
+		i.cycleModelProfile(-1)
+		return false
+	}
+	if k.Kind == tui.KeyTab && !k.Ctrl && !k.Alt && !k.Super && !k.Shift && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
 		if i.tryPathTabComplete() {
 			return false
 		}
+		i.inputHistoryIndex = -1
+		i.cycleModelProfile(+1)
+		return false
 	}
 
 	if i.inputHistoryIndex >= 0 && k.Kind != tui.KeyUp && k.Kind != tui.KeyDown {

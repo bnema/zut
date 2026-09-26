@@ -3,6 +3,8 @@ package modes
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -346,6 +348,141 @@ func TestModelProfileCommandRejectsInvalidSlots(t *testing.T) {
 		i.runSlash(context.Background(), command)
 		if !strings.Contains(i.statusErr, "usage:") || s.active != 0 {
 			t.Fatalf("%s: %s", command, i.statusErr)
+		}
+	}
+}
+
+func TestTabCyclesModelProfilesForward(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.ed.SetValue("hello")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if i.cfg.ActiveModelProfile != 2 || s.active != 2 || i.cfg.Model != "gpt-5.5" {
+		t.Fatalf("tab did not cycle to slot 2: active=%d model=%q", i.cfg.ActiveModelProfile, i.cfg.Model)
+	}
+	if i.ed.Value() != "hello" {
+		t.Fatalf("tab modified editor text: %q", i.ed.Value())
+	}
+}
+
+func TestTabCyclesModelProfilesWithWraparound(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 9
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
+		t.Fatalf("tab did not wrap to slot 1: active=%d", i.cfg.ActiveModelProfile)
+	}
+}
+
+func TestTabStopsOnEmptySlot(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 2
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// Empty slot 3 opens the picker like Ctrl+3; the active slot is
+	// unchanged until the user picks a model.
+	if !i.modelDialog.Active() || i.quickModelAssign != 3 || i.cfg.ActiveModelProfile != 2 {
+		t.Fatalf("tab did not stop on empty slot 3: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
+	}
+}
+
+func TestShiftTabCyclesModelProfilesBackward(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
+	// Empty slot 9 opens the picker like Ctrl+9; the active slot is
+	// unchanged until the user picks a model.
+	if !i.modelDialog.Active() || i.quickModelAssign != 9 || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("shift-tab did not stop on empty slot 9: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
+	}
+}
+
+func TestShiftTabFromActiveProfileGoesBackward(t *testing.T) {
+	i, s := newProfileInteractive(t)
+	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+	i.cfg.ActiveModelProfile = 2
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
+	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
+		t.Fatalf("shift-tab did not move to slot 1: active=%d", i.cfg.ActiveModelProfile)
+	}
+}
+
+func TestTabOnPathKeepsPathCompletion(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.cfg.CWD = dir
+	i.cfg.ActiveModelProfile = 0
+	i.ed.SetValue("./al")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The path token must complete to the single match; profiles stay put.
+	if i.ed.Value() != "./alpha.txt" {
+		t.Fatalf("tab did not complete path: %q", i.ed.Value())
+	}
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 0 {
+		t.Fatalf("tab on path cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWithSlashPopupCompletesCommand(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.ed.SetValue("/mod")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The slash popup owns Tab while visible: it completes the command
+	// instead of cycling profiles.
+	if i.ed.Value() != "/model" {
+		t.Fatalf("tab did not complete slash command: %q", i.ed.Value())
+	}
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("tab with slash popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWithFilePopupKeepsPopup(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.cfg.CWD = dir
+	i.fileSuggest.SetCWD(dir)
+	i.ed.SetValue("@")
+	if !i.fileSuggest.Active(i.ed.Value()) {
+		t.Fatal("file popup did not open for @")
+	}
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	// The file popup owns Tab while visible: no profile cycling.
+	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
+		t.Fatalf("tab with file popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
+	}
+}
+
+func TestTabWhileBusyShowsGuard(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	i.busy = true
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
+	if !strings.Contains(i.statusErr, "cannot switch model while a turn is running") {
+		t.Fatalf("tab while busy did not show guard: %q", i.statusErr)
+	}
+}
+
+func TestModifiedTabDoesNotCycle(t *testing.T) {
+	i, _ := newProfileInteractive(t)
+	for _, k := range []tui.Key{
+		{Kind: tui.KeyTab, Ctrl: true},
+		{Kind: tui.KeyTab, Alt: true},
+		{Kind: tui.KeyTab, Super: true},
+		{Kind: tui.KeyTab, Shift: true},
+		{Kind: tui.KeyShiftTab, Ctrl: true},
+		{Kind: tui.KeyShiftTab, Alt: true},
+		{Kind: tui.KeyShiftTab, Super: true},
+	} {
+		i.ed.Clear()
+		i.handleKey(context.Background(), k)
+		if i.modelDialog.Active() || i.quickModelAssign != 0 {
+			t.Fatalf("modified tab cycled profiles: key=%+v assign=%d", k, i.quickModelAssign)
 		}
 	}
 }
