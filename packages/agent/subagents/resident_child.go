@@ -462,11 +462,13 @@ func (c *ResidentChild) run() {
 			}
 		}
 		queue = nil
+		c.setQueuedTurns(0)
 	}
 	for {
 		c.setQueuedTurns(len(queue))
 		if !interrupted && !running && len(queue) > 0 {
 			active, queue = queue[0], queue[1:]
+			c.setQueuedTurns(len(queue))
 			if c.journal != nil {
 				if err := c.journal.RecordTurnStarted(c.spec, active.turnID); err != nil {
 					terminalErr := fmt.Errorf("persist resident child start state: %w", err)
@@ -560,6 +562,7 @@ func (c *ResidentChild) run() {
 				continue
 			}
 			queue = append(queue, request)
+			c.setQueuedTurns(len(queue))
 			request.ack <- nil
 		case result := <-results:
 			running = false
