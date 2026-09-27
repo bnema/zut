@@ -190,3 +190,28 @@ func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 8", got)
 	}
 }
+
+// SubmitFollowUp on an idle interactive without a Run context must start a
+// turn instead of panicking in context.WithCancel(nil parent). This pins the
+// fallback deterministically; the racy busy-to-idle interleaving behind the
+// Windows CI panic needs no timing to cover the nil-parent path itself.
+func TestSubmitFollowUpWithoutRunContextStartsTurn(t *testing.T) {
+	client := &repetitiveInteractiveClient{requests: make(chan repetitiveInteractiveRequest, 16)}
+	agent := core.NewAgent(client, "model", "system", core.Registry{"repeat": &repetitiveInteractiveTool{}})
+	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+	if interactive.runCtx != nil {
+		t.Fatalf("runCtx = %#v, want nil without Run", interactive.runCtx)
+	}
+	if err := interactive.SubmitFollowUp(context.Background(), "scheduled task"); err != nil {
+		t.Fatalf("SubmitFollowUp = %v, want nil", err)
+	}
+	select {
+	case request := <-client.requests:
+		if request.call != 1 {
+			t.Fatalf("provider request = %#v, want first call", request)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider request was not observed")
+	}
+	waitInteractiveIdle(t, interactive)
+}

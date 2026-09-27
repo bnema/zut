@@ -260,10 +260,10 @@ func (i *Interactive) SubmitFollowUp(ctx context.Context, text string) error {
 		}
 	}
 	i.mu.Unlock()
-	// The busy check above and this start are not atomic: the active turn
-	// can finish in between, landing here instead of the scheduled path.
-	// runCtx is only set by Run, so fall back like the turn-completion
-	// handler does rather than panicking in context.WithCancel.
+	// The active turn can finish before the busy check above, landing
+	// here instead of the scheduled path. runCtx is only set by Run, so
+	// fall back like the turn-completion handler does rather than
+	// panicking in context.WithCancel.
 	parent := i.runCtx
 	if parent == nil {
 		parent = context.Background()
