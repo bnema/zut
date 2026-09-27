@@ -553,7 +553,6 @@ func (c *ResidentChild) run() {
 				turnInterrupted = true
 				turnCancel()
 				dropQueued(context.Canceled)
-				c.setQueuedTurns(0)
 				request.reply <- residentControlReply{ok: true, turnID: active.turnID}
 			}
 		case request := <-c.inbox:
