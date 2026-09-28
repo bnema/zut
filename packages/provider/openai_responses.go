@@ -38,7 +38,11 @@ func (t *openaiResponsesTransport) RoundTrip(req *http.Request) (*http.Response,
 	clone.Header.Del("chatgpt-account-id")
 	clone.Header.Del("openai-beta")
 	clone.Header.Del("originator")
-	// Keep Authorization: Bearer <key> as set by the codex client.
+	// The shared Codex client sets a Bearer header even with an empty key.
+	// Keyless custom Responses endpoints need no Authorization header at all.
+	if strings.TrimSpace(clone.Header.Get("authorization")) == "Bearer" {
+		clone.Header.Del("authorization")
+	}
 	return t.inner.RoundTrip(clone)
 }
 

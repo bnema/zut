@@ -66,14 +66,18 @@ type Resolved struct {
 	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
 	// so the system prompt can be rebuilt later without re-running
 	// resolve.
-	systemAppend     []string
-	systemCustom     string
-	systemCustomSet  bool
-	toolDescriptions map[string]string
+	credentialOptional bool
+	systemAppend       []string
+	systemCustom       string
+	systemCustomSet    bool
+	toolDescriptions   map[string]string
 }
 
-// HasCredential reports whether a credential was resolved.
-func (r Resolved) HasCredential() bool { return r.Credential != "" }
+// HasCredential reports whether the resolved configuration can create a client.
+// Configured custom endpoints may intentionally omit an API credential.
+func (r Resolved) HasCredential() bool {
+	return r.Credential != "" || r.credentialOptional
+}
 
 // MergeExtensionTools folds every tool registered by an extension
 // into r's ToolRegistry and re-renders the system prompt's tool
@@ -363,7 +367,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		accountID string
 		credErr   error
 	)
-	if args.inheritedCredential != "" {
+	customCfg, customProvider := provider.CustomProviders()[provName]
+	keylessCustom := customProvider && !isBuiltinProvider(provName) && customCfg.NoAuth
+	if keylessCustom {
+		// Explicit keyless configuration takes precedence over CLI, env, and
+		// stored credentials. Never execute a stored API key command.
+	} else if args.inheritedCredential != "" {
 		cred = args.inheritedCredential
 		method = args.inheritedAuthMethod
 		accountID = args.inheritedAccountID
@@ -376,7 +385,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// Persist --api-key for custom providers so subsequent runs don't
 	// need to pass it again.
-	if !isBuiltinProvider(provName) && args.APIKey != "" {
+	if !isBuiltinProvider(provName) && !keylessCustom && args.APIKey != "" {
 		if store := AuthStoreFor(); store != nil {
 			_ = store.SetAPIKey(provName, args.APIKey)
 		}
@@ -594,13 +603,25 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// If the model has a base URL, credentials are optional (local
 	// models like ollama don't need real API keys).
-	if resolvedModel.BaseURL != "" && credErr != nil {
-		cred = "ollama"
-		if provName == "amazon-bedrock" {
-			// The default AWS CLI profile is resolved by the Bedrock client,
-			// not the general credential resolver. Never pass the local-model
-			// placeholder as a bearer token.
-			cred = "<aws>"
+	credentialOptional := false
+	if keylessCustom {
+		if args.BaseURL == "" {
+			return Resolved{}, fmt.Errorf("custom provider %q has auth none but no base URL", provName)
+		}
+		credentialOptional = true
+	} else if resolvedModel.BaseURL != "" && credErr != nil {
+		if _, isCustom := provider.CustomProviders()[provName]; isCustom {
+			// A custom endpoint may be configured for keyless access. Keep the
+			// credential empty so the provider does not send a placeholder token.
+			credentialOptional = true
+		} else {
+			cred = "ollama"
+			if provName == "amazon-bedrock" {
+				// The default AWS CLI profile is resolved by the Bedrock client,
+				// not the general credential resolver. Never pass the local-model
+				// placeholder as a bearer token.
+				cred = "<aws>"
+			}
 		}
 		credErr = nil
 		requireCred = false
@@ -713,29 +734,30 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	max := args.MaxSteps // 0 = unlimited
 
 	return Resolved{
-		Provider:         provName,
-		Model:            model,
-		Credential:       cred,
-		AuthMethod:       method,
-		AccountID:        accountID,
-		BaseURL:          args.BaseURL,
-		InsecureTLS:      insecureTLS,
-		CWD:              args.CWD,
-		Reasoning:        reasoning,
-		Temperature:      temperature,
-		ToolRegistry:     reg,
-		ToolSummary:      summaries,
-		SystemPrompt:     sys,
-		MaxSteps:         max,
-		MaxOutput:        resolvedModel.MaxOutput,
-		Sandbox:          sandbox,
-		SkillTool:        skillTool,
-		SkillDiagnostics: skillDiagnostics,
-		ContextFiles:     contextFiles,
-		systemAppend:     append_,
-		systemCustom:     custom,
-		systemCustomSet:  customSet,
-		toolDescriptions: descMapFromSummaries(summaries),
+		Provider:           provName,
+		Model:              model,
+		Credential:         cred,
+		AuthMethod:         method,
+		AccountID:          accountID,
+		BaseURL:            args.BaseURL,
+		InsecureTLS:        insecureTLS,
+		CWD:                args.CWD,
+		Reasoning:          reasoning,
+		Temperature:        temperature,
+		ToolRegistry:       reg,
+		ToolSummary:        summaries,
+		SystemPrompt:       sys,
+		MaxSteps:           max,
+		MaxOutput:          resolvedModel.MaxOutput,
+		Sandbox:            sandbox,
+		SkillTool:          skillTool,
+		SkillDiagnostics:   skillDiagnostics,
+		ContextFiles:       contextFiles,
+		credentialOptional: credentialOptional,
+		systemAppend:       append_,
+		systemCustom:       custom,
+		systemCustomSet:    customSet,
+		toolDescriptions:   descMapFromSummaries(summaries),
 	}, nil
 }
 
@@ -844,11 +866,11 @@ func descMapFromSummaries(summaries []ToolSummary) map[string]string {
 }
 
 // NewClient returns a provider.Client for r, choosing the auth mode
-// based on r.AuthMethod. Panics if no credential is present; callers
-// must check HasCredential() first.
+// based on r.AuthMethod. Panics if no credential or usable keyless
+// endpoint is present; callers must check HasCredential() first.
 func (r Resolved) NewClient() provider.Client {
 	if !r.HasCredential() {
-		panic("NewClient called without credential; check HasCredential first")
+		panic("NewClient called without credential or keyless endpoint; check HasCredential first")
 	}
 	wrap := r.withHTTPClient
 	switch r.Provider {

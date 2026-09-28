@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -566,6 +567,142 @@ func TestCustomProviderUsesOpenAIResponsesAPI(t *testing.T) {
 	}
 	if got := <-requestPath; got != "/v1/responses" {
 		t.Fatalf("request path = %q, want /v1/responses", got)
+	}
+}
+
+func TestCustomProviderKeylessOpenAICompatOmitsAuthorization(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	authorization := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		if got := r.Header.Get("Authorization"); got != "" {
+			http.Error(w, `{"error":"unexpected authorization"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	loadTestModelsJSON(t, `{"providers":{"unsloth":{"baseUrl":"`+srv.URL+`/v1","api":"openai","models":[{"id":"qista"}]}}}`)
+	r, err := Resolve(Args{Provider: "unsloth", Model: "qista", NoSkill: true}, true)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if r.Credential != "" {
+		t.Fatalf("credential = %q, want empty for a keyless endpoint", r.Credential)
+	}
+	if !r.HasCredential() {
+		t.Fatal("keyless custom endpoint should still be usable")
+	}
+
+	events, err := r.NewClient().Stream(context.Background(), provider.Request{
+		Model:    "qista",
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+	for range events {
+	}
+	if got := <-authorization; got != "" {
+		t.Fatalf("Authorization = %q, want header omitted", got)
+	}
+}
+
+func TestCustomProviderExplicitKeylessIgnoresStoredKey(t *testing.T) {
+	for _, api := range []string{"openai", "openai-responses", "anthropic"} {
+		t.Run(api, func(t *testing.T) {
+			t.Setenv("ZOT_HOME", t.TempDir())
+			t.Setenv("UNSLOTH_API_KEY", "env-key")
+			authorization := make(chan string, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, ok := r.Header["Authorization"]; ok {
+					authorization <- "Authorization present"
+				} else if _, ok := r.Header["X-Api-Key"]; ok {
+					authorization <- "X-Api-Key present"
+				} else {
+					authorization <- ""
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+			loadTestModelsJSON(t, `{"providers":{"unsloth":{"baseUrl":"`+srv.URL+`/v1","api":"`+api+`","auth":"none","models":[{"id":"qista"}]}}}`)
+			if err := AuthStoreFor().SetAPIKey("unsloth", "stored-key"); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Resolve(Args{Provider: "unsloth", Model: "qista", APIKey: "cli-key", NoSkill: true}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Credential != "" || !r.HasCredential() {
+				t.Fatalf("keyless resolved credential = %q, usable = %v", r.Credential, r.HasCredential())
+			}
+			events, err := r.NewClient().Stream(context.Background(), provider.Request{
+				Model: "qista", Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range events {
+			}
+			if got := <-authorization; got != "" {
+				t.Fatalf("Authorization = %q, want omitted", got)
+			}
+			t.Setenv("UNSLOTH_API_KEY", "")
+			stored, _, _, err := ResolveCredentialFull("unsloth", "")
+			if err != nil || stored != "stored-key" {
+				t.Fatalf("stored credential changed: %q, %v", stored, err)
+			}
+		})
+	}
+}
+
+func TestModelPickerProvidersIncludeKeylessCustomEndpoint(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("UNSLOTH_API_KEY", "")
+	loadTestModelsJSON(t, `{"providers":{"unsloth":{"baseUrl":"http://127.0.0.1:8888/v1","api":"openai","models":[{"id":"qista"}]}}}`)
+	if CredentialAvailable("unsloth") {
+		t.Fatal("test requires no credential")
+	}
+	if !slices.Contains(modelPickerProviders(), "unsloth") {
+		t.Fatal("keyless custom endpoint missing from model picker")
+	}
+	loadTestModelsJSON(t, `{"providers":{"unsloth":{"models":[{"id":"qista","baseUrl":"http://127.0.0.1:8888/v1"}]}}}`)
+	if !slices.Contains(modelPickerProviders(), "unsloth") {
+		t.Fatal("model-level keyless endpoint missing from model picker")
+	}
+}
+
+func TestCustomProviderWithKeyStillSendsAuthorization(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("UNSLOTH_API_KEY", "")
+	authorization := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	loadTestModelsJSON(t, `{"providers":{"unsloth":{"baseUrl":"`+srv.URL+`/v1","api":"openai","models":[{"id":"qista"}]}}}`)
+	if err := AuthStoreFor().SetAPIKey("unsloth", "stored-key"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{Provider: "unsloth", Model: "qista", NoSkill: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := r.NewClient().Stream(context.Background(), provider.Request{
+		Model: "qista", Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if got := <-authorization; got != "Bearer stored-key" {
+		t.Fatalf("Authorization = %q, want stored key", got)
 	}
 }
 

@@ -609,7 +609,7 @@ A top-level provider key that is not a built-in id defines a custom provider. Gi
 }
 ```
 
-Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. Supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Because many self-hosted gateways do not expose a model-list endpoint, custom provider keys are accepted and stored without a verification probe; an invalid key surfaces on the first model call.
+Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. For endpoints that require authentication, supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Custom providers with a configured base URL also work without a key. For a keyless endpoint that must ignore an existing stored, environment, or CLI key, set `"auth": "none"` on its provider in `models.json`. This also disables credentials for model discovery. Only use this with trusted endpoints. Because many self-hosted gateways do not expose a model-list endpoint, custom provider keys are accepted and stored without a verification probe; an invalid key surfaces on the first model call.
 
 To retrieve this custom provider's key from a password manager, add a matching entry to `$ZOT_HOME/auth.json`:
 
@@ -648,7 +648,7 @@ Set `"discover": true` on a custom provider to list its models from the OpenAI-c
 }
 ```
 
-zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
+zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present, unless the provider sets `"auth": "none"`; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
 
 ### Kimi Code
 
