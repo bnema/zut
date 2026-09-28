@@ -564,7 +564,9 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 			// Remove x-api-key entirely by NOT setting it.
 		} else {
 			httpReq.Header.Set("accept", "text/event-stream")
-			httpReq.Header.Set("x-api-key", c.apiKey)
+			if c.apiKey != "" {
+				httpReq.Header.Set("x-api-key", c.apiKey)
+			}
 		}
 		// Extra headers (set by anthropic-messages-compatible third parties
 		// — kimi-coding's X-Msh-*, copilot's Editor-Plugin-Version, etc.).

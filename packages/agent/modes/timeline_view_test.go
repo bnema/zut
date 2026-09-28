@@ -74,6 +74,46 @@ func TestBuildTimelineEntriesPairsToolDetails(t *testing.T) {
 	}
 }
 
+func TestTimelineReasoningIsReadableAndScrollable(t *testing.T) {
+	data := timelineTestData()
+	data.Messages[1].Content = append([]provider.Content{provider.ReasoningBlock{
+		Summary: "**First** step\n" + strings.Repeat("A long line of thought. ", 25) + "\nFinal insight",
+	}}, data.Messages[1].Content...)
+	entries := buildTimelineEntries(data)
+	if len(entries) != 5 || entries[2].Kind != "reasoning" || entries[3].Kind != "assistant" {
+		t.Fatalf("reasoning entries = %+v", entries)
+	}
+	if strings.Contains(entries[3].Summary, "First") {
+		t.Fatalf("reasoning duplicated in assistant: %+v", entries[3])
+	}
+	view := newTimelineView()
+	view.Open(data)
+	view.cursor = 2
+	rows := timelineDetailRows(tui.Dark, 40, entries[2], 0)
+	if len(rows) < 4 || !strings.Contains(stripANSIBytes(strings.Join(rows, "\n")), "Final insight") {
+		t.Fatalf("reasoning detail not complete: %q", rows)
+	}
+	for _, row := range rows {
+		if runewidth.StringWidth(stripANSIBytes(row)) > 40 {
+			t.Fatalf("row exceeds width: %q", row)
+		}
+	}
+	first := strings.Join(view.Render(tui.Dark, 40, 17, data), "\n")
+	view.HandleKey(tui.Key{Kind: tui.KeyEnd}, data)
+	last := strings.Join(view.Render(tui.Dark, 40, 17, data), "\n")
+	if view.detailTop == 0 || first == last || !strings.Contains(stripANSIBytes(last), "Final insight") {
+		t.Fatalf("detail did not scroll to end: top=%d, output=%q", view.detailTop, last)
+	}
+	view.HandleKey(tui.Key{Kind: tui.KeyLeft}, data)
+	if view.detailTop == 0 {
+		t.Fatal("left did not scroll detail up")
+	}
+	view.HandleKey(tui.Key{Kind: tui.KeyTab}, data)
+	if view.detailTop != 0 {
+		t.Fatal("changing tab did not reset detail scroll")
+	}
+}
+
 func TestTimelineNavigationKeysMoveSelection(t *testing.T) {
 	data := timelineTestData()
 	view := newTimelineView()

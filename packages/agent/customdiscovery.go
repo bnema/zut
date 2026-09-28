@@ -43,6 +43,9 @@ func CustomDiscoveryConfigured() bool {
 // unauthenticated requests. skip is true when the only key is command-backed
 // and mode forbids running the command.
 func customProviderKey(ctx context.Context, name string, mode apiKeyCommandMode) (key string, skip bool, err error) {
+	if cfg, ok := provider.CustomProviders()[name]; ok && cfg.NoAuth && !isBuiltinProvider(name) {
+		return "", false, nil
+	}
 	if v := os.Getenv(normalizeCustomProviderEnvVar(name) + "_API_KEY"); v != "" {
 		return v, false, nil
 	}

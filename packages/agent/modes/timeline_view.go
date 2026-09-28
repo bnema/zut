@@ -44,6 +44,7 @@ type timelineView struct {
 	active    bool
 	cursor    int
 	tab       int
+	detailTop int
 	searching bool
 	filter    string
 	notice    string
@@ -64,6 +65,7 @@ func (v *timelineView) Open(data timelineData) {
 	v.filter = ""
 	v.notice = ""
 	v.tab = 0
+	v.detailTop = 0
 	v.cursor = len(buildTimelineEntries(data)) - 1
 	if v.cursor < 0 {
 		v.cursor = 0
@@ -75,6 +77,7 @@ func (v *timelineView) Close() {
 	v.searching = false
 	v.filter = ""
 	v.notice = ""
+	v.detailTop = 0
 }
 
 func (v *timelineView) SetNotice(s string) { v.notice = s }
@@ -83,7 +86,18 @@ func (v *timelineView) HandleKey(k tui.Key, data timelineData) timelineAction {
 	entries := filterTimelineEntries(buildTimelineEntries(data), v.filter)
 	clampTimelineCursor(v, len(entries))
 
+	previousCursor, previousTab := v.cursor, v.tab
 	switch k.Kind {
+	case tui.KeyLeft:
+		if v.detailTop > 0 {
+			v.detailTop--
+		}
+	case tui.KeyRight:
+		v.detailTop++
+	case tui.KeyHome:
+		v.detailTop = 0
+	case tui.KeyEnd:
+		v.detailTop = int(^uint(0) >> 1)
 	case tui.KeyUp:
 		if v.cursor > 0 {
 			v.cursor--
@@ -111,11 +125,13 @@ func (v *timelineView) HandleKey(k tui.Key, data timelineData) timelineAction {
 			r := []rune(v.filter)
 			v.filter = string(r[:len(r)-1])
 			v.cursor = 0
+			v.detailTop = 0
 		}
 	case tui.KeyPaste:
 		if v.searching {
 			v.filter += singleLinePaste(k.Paste)
 			v.cursor = 0
+			v.detailTop = 0
 		}
 	case tui.KeyRune:
 		if !v.searching && k.Rune == '/' {
@@ -124,12 +140,14 @@ func (v *timelineView) HandleKey(k tui.Key, data timelineData) timelineAction {
 		} else if v.searching && !k.Ctrl && !k.Alt && !k.Super {
 			v.filter += string(k.Rune)
 			v.cursor = 0
+			v.detailTop = 0
 		}
 	case tui.KeyEsc, tui.KeyCtrlC:
 		if v.searching {
 			if v.filter != "" {
 				v.filter = ""
 				v.cursor = 0
+				v.detailTop = 0
 			} else {
 				v.searching = false
 			}
@@ -137,6 +155,9 @@ func (v *timelineView) HandleKey(k tui.Key, data timelineData) timelineAction {
 		}
 		v.Close()
 		return timelineAction{Close: true}
+	}
+	if v.cursor != previousCursor || v.tab != previousTab {
+		v.detailTop = 0
 	}
 	return timelineAction{}
 }
@@ -167,7 +188,7 @@ func (v *timelineView) Render(th tui.Theme, width, height int, data timelineData
 	lines := []string{frameHeader(th, "timeline", width)}
 	lines = append(lines, renderTimelineContext(th, width, data)...)
 
-	hint := "↑/↓ select  pgup/pgdn move  tab details  / search  ctrl+e export  esc chat"
+	hint := "↑/↓ select  tab details  ←/→ scroll detail  home/end  / search  ctrl+e export  esc chat"
 	if v.searching {
 		hint = "search: " + v.filter + "_  (esc clears)"
 	}
@@ -211,7 +232,15 @@ func (v *timelineView) Render(th tui.Theme, width, height int, data timelineData
 		if detailRows < 3 {
 			detailRows = 3
 		}
-		lines = append(lines, renderTimelineDetail(th, width, entries[v.cursor], v.tab, detailRows)...)
+		detail := timelineDetailRows(th, width, entries[v.cursor], v.tab)
+		maxTop := len(detail) - detailRows
+		if maxTop < 0 {
+			maxTop = 0
+		}
+		if v.detailTop > maxTop {
+			v.detailTop = maxTop
+		}
+		lines = append(lines, detail[v.detailTop:min(v.detailTop+detailRows, len(detail))]...)
 	}
 	if v.notice != "" {
 		lines = append(lines, th.FG256(th.Tool, fitTimelineLine(v.notice, width)))
@@ -248,6 +277,14 @@ func buildTimelineEntries(data timelineData) []timelineEntry {
 	for _, message := range data.Messages {
 		if message.Role == provider.RoleUser {
 			turn++
+		}
+		for _, content := range message.Content {
+			if block, ok := content.(provider.ReasoningBlock); ok && strings.TrimSpace(block.Summary) != "" {
+				entries = append(entries, timelineEntry{
+					Kind: "reasoning", Turn: turn, Label: "REASONING", Summary: firstTimelineLine(block.Summary),
+					Time: message.Time, Payload: block.Summary,
+				})
+			}
 		}
 		textParts := timelineMessageText(message)
 		if len(textParts) > 0 {
@@ -293,10 +330,6 @@ func timelineMessageText(message provider.Message) []string {
 		case provider.TextBlock:
 			if strings.TrimSpace(block.Text) != "" {
 				out = append(out, block.Text)
-			}
-		case provider.ReasoningBlock:
-			if strings.TrimSpace(block.Summary) != "" {
-				out = append(out, "reasoning: "+block.Summary)
 			}
 		case provider.ImageBlock:
 			out = append(out, fmt.Sprintf("[image %s, %d bytes]", block.MimeType, len(block.Data)))
@@ -383,7 +416,7 @@ func timelineColor(th tui.Theme, entry timelineEntry, line string) string {
 	switch entry.Kind {
 	case "user":
 		color = th.User
-	case "assistant":
+	case "assistant", "reasoning":
 		color = th.Assistant
 	case "tool":
 		color = th.Tool
@@ -436,7 +469,7 @@ func timelineTabsWidth(start, end int) int {
 	return width
 }
 
-func renderTimelineDetail(th tui.Theme, width int, entry timelineEntry, tab, maxRows int) []string {
+func timelineDetailRows(th tui.Theme, width int, entry timelineEntry, tab int) []string {
 	var detail string
 	switch tab {
 	case 0:
@@ -461,13 +494,13 @@ func renderTimelineDetail(th tui.Theme, width int, entry timelineEntry, tab, max
 	if strings.TrimSpace(detail) == "" {
 		detail = "not available for this event"
 	}
+	if entry.Kind == "reasoning" && (tab == 0 || tab == 1) {
+		return renderDialogMarkdownRows(entry.Payload, th, width)
+	}
 	var rows []string
 	for _, line := range strings.Split(detail, "\n") {
 		for _, wrapped := range tui.WrapANSILine(line, width-2) {
 			rows = append(rows, "  "+th.FG256(th.ToolOut, wrapped))
-			if len(rows) >= maxRows {
-				return rows
-			}
 		}
 	}
 	return rows

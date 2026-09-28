@@ -169,6 +169,24 @@ func TestLoadUserModelsWarnsOnUnknownAPI(t *testing.T) {
 	}
 }
 
+func TestLoadUserModelsKeylessAuthRequiresEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"providers":{
+		"keyless":{"baseUrl":"http://localhost:8888/v1","auth":"none","models":[{"id":"m"}]},
+		"unknown":{"baseUrl":"http://localhost:9999/v1","auth":"typo","models":[{"id":"m"}]},
+		"no-url":{"auth":"none","models":[{"id":"m"}]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, warnings := LoadUserModelsWithWarnings(path)
+	if !CustomProviders()["keyless"].NoAuth || CustomProviders()["unknown"].NoAuth || CustomProviders()["no-url"].NoAuth {
+		t.Fatalf("invalid keyless configuration: %+v", CustomProviders())
+	}
+	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "unknown auth") || !strings.Contains(strings.Join(warnings, "\n"), "without a baseUrl") {
+		t.Fatalf("warnings = %v, want unknown auth and missing URL warnings", warnings)
+	}
+}
+
 func TestLoadUserModelsDiscoverFlag(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")

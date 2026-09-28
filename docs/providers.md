@@ -470,11 +470,16 @@ unknown `api` value falls back to `openai` with a warning.
 ```
 
 Custom providers are first-class: they appear in `--list-models`, `/model`, and
-`/login`. `models.json` never stores secrets. Supply the key through `/login`,
-`--api-key`, or a derived environment variable in upper snake case, so
-`my-company` reads `MY_COMPANY_API_KEY`. Because many self-hosted gateways do
-not expose a model-list endpoint, custom provider keys are accepted and stored
-without a verification probe; an invalid key surfaces on the first model call.
+`/login`. `models.json` never stores secrets. If the endpoint requires a key,
+supply it through `/login`, `--api-key`, or a derived environment variable in
+upper snake case, so `my-company` reads `MY_COMPANY_API_KEY`. Because many
+self-hosted gateways do not expose a model-list endpoint, custom provider keys
+are accepted and stored without a verification probe; an invalid key surfaces
+on the first model call. Custom providers with a configured base URL also work
+without a key. If a stored, environment, or CLI key must be ignored for a
+keyless endpoint, set `"auth": "none"` on that provider in `models.json`. This
+also suppresses credentials during live model discovery. Use only with trusted
+endpoints, since requests will be unauthenticated even if a key is available.
 
 To retrieve this custom provider's key from a password manager, add a matching
 entry to `$ZOT_HOME/auth.json`:
@@ -548,10 +553,9 @@ selection of a discovered model survives restarts even though the model is not
 in `models.json`. The `/models` wire format is assumed to be OpenAI style
 (`{"data": [{"id": ...}]}`) regardless of the provider's `api` setting.
 
-As with every custom provider, `/model` only lists it once a credential exists.
-For a keyless local server, store any placeholder value through `/login` or the
-derived environment variable. `--list-models` prints the catalog before the
-background refresh completes, so discovered models may be missing there.
+`/model` also lists custom providers with a configured base URL and no key.
+`--list-models` prints the catalog before the background refresh completes,
+so discovered models may be missing there.
 
 ## Credential resolution
 

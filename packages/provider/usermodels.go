@@ -37,7 +37,8 @@ type UserModelsFile struct {
 // UserProvider groups models under a provider key.
 type UserProvider struct {
 	BaseURL string `json:"baseUrl,omitempty"`
-	API     string `json:"api,omitempty"` // "openai" (default), "openai-responses", or "anthropic"
+	API     string `json:"api,omitempty"`  // "openai" (default), "openai-responses", or "anthropic"
+	Auth    string `json:"auth,omitempty"` // "none" disables credentials, including stored keys
 	// Discover enables live model listing from the provider-level
 	// baseUrl's /models endpoint. Off by default so existing custom
 	// providers never gain unexpected network traffic.
@@ -50,6 +51,7 @@ type UserProvider struct {
 type CustomProviderConfig struct {
 	BaseURL string
 	API     string // "openai", "openai-responses", or "anthropic"
+	NoAuth  bool   // explicitly configured for keyless access
 	// Discover reports whether live model discovery is enabled. It is
 	// only true when a provider-level BaseURL is present.
 	Discover bool
@@ -172,7 +174,17 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 			warnings = append(warnings, fmt.Sprintf("models.json: provider %q sets discover without a provider-level baseUrl; discovery disabled", providerName))
 			discover = false
 		}
+		if prov.Auth != "" && prov.BaseURL == "" && !hasModelBaseURL {
+			warnings = append(warnings, fmt.Sprintf("models.json: provider %q sets auth without a baseUrl; ignored", providerName))
+		}
 		if prov.BaseURL != "" || prov.API != "" || hasModelBaseURL {
+			auth := strings.ToLower(strings.TrimSpace(prov.Auth))
+			if auth != "" && auth != "none" {
+				warnings = append(warnings, fmt.Sprintf("models.json: provider %q has unknown auth %q; using credentials when available", providerName, prov.Auth))
+			}
+			if prov.BaseURL == "" && !hasModelBaseURL {
+				auth = ""
+			}
 			api := strings.ToLower(strings.TrimSpace(prov.API))
 			if api == "" {
 				api = "openai"
@@ -192,6 +204,7 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 			customProviders[normalized] = CustomProviderConfig{
 				BaseURL:  prov.BaseURL,
 				API:      api,
+				NoAuth:   auth == "none",
 				Discover: discover,
 			}
 		}

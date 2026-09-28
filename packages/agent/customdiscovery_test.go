@@ -136,6 +136,23 @@ func TestRefreshCustomProviderModelsUsesStoredKeyAndKeepsUserOverrides(t *testin
 	}
 }
 
+func TestRefreshCustomProviderModelsExplicitKeylessIgnoresStoredKey(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("M4_API_KEY", "env-key")
+	var requests atomic.Int32
+	server := newModelsServer(t, &requests, "", "qwen3-coder")
+	loadTestModelsJSON(t, fmt.Sprintf(`{"providers":{"m4":{"baseUrl":%q,"discover":true,"auth":"none"}}}`, server.URL+"/v1"))
+	if err := AuthStoreFor().SetAPIKey("m4", "stored-key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefreshCustomProviderModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want 1", requests.Load())
+	}
+}
+
 func TestRefreshCustomProviderModelsBackgroundSkipsKeyCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)

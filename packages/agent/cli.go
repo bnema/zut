@@ -1437,31 +1437,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		SetKimiCLIFallbackDisabled:  SetKimiCLIFallbackDisabled,
 		BuildAgentFor:               buildAgentFor,
 		BuildAgentForRescue:         buildAgentForRescue,
-		LoggedInProviders: func() []string {
-			var out []string
-			seen := map[string]bool{}
-			for _, p := range knownProviders {
-				if CredentialAvailable(p) && !seen[p] {
-					out = append(out, p)
-					seen[p] = true
-				}
-			}
-			// Include custom providers that have credentials stored.
-			for p := range provider.CustomProviders() {
-				if CredentialAvailable(p) && !seen[p] {
-					out = append(out, p)
-					seen[p] = true
-				}
-			}
-			// Ollama models are always available (no auth needed).
-			if !seen["ollama"] {
-				out = append(out, "ollama")
-			}
-			return out
-		},
-		NewSession:  newSession,
-		LoadSession: loadSession,
-		ChangeCWD:   changeCWD,
+		LoggedInProviders:           modelPickerProviders,
+		NewSession:                  newSession,
+		LoadSession:                 loadSession,
+		ChangeCWD:                   changeCWD,
 		CurrentSessionPath: func() string {
 			if sess == nil {
 				return ""
