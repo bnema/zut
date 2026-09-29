@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -80,14 +81,132 @@ func DiscoverBedrock(ctx context.Context, region string) ([]Model, error) {
 
 	out := make([]Model, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Model{
-			Provider: "amazon-bedrock",
-			ID:       id,
-			Source:   "live",
-			BaseURL:  "https://bedrock-runtime." + region + ".amazonaws.com",
-		})
+		out = append(out, bedrockDiscoveredModel(id, region))
 	}
 	return out, nil
+}
+
+// bedrockAnthropicDefaultMaxOutput is the output budget assumed for a
+// discovered Claude model with no catalog entry. It matches Claude Haiku
+// 4.5, the smallest output limit among current Claude models, so it is
+// safe for any Claude 4+ model and far above the client's 4096 fallback.
+const bedrockAnthropicDefaultMaxOutput = 64000
+
+// bedrockAnthropicDefaultContextWindow is the context window assumed
+// for an uncatalogued Claude model, the smallest among current models.
+const bedrockAnthropicDefaultContextWindow = 200000
+
+// bedrockDiscoveredModel builds the Model for a discovered ID. The
+// control plane returns IDs only, so limits and capabilities come from
+// the static catalog. MergeCatalog already uses an exact catalog match;
+// this handles IDs without one, most often a geo-prefixed inference
+// profile (apac., us-gov., ...) whose base model is catalogued. Without
+// this the model would carry MaxOutput 0 and the Bedrock client would
+// cap every response at its 4096-token fallback.
+func bedrockDiscoveredModel(id, region string) Model {
+	m := Model{
+		Provider: "amazon-bedrock",
+		ID:       id,
+		Source:   "live",
+		BaseURL:  "https://bedrock-runtime." + region + ".amazonaws.com",
+	}
+	if bedrockInCatalog(id) {
+		// MergeCatalog keeps the exact catalog entry's metadata.
+		return m
+	}
+	prefix, base := bedrockSplitGeoPrefix(id)
+	if c, ok := bedrockCatalogBase(base); ok {
+		m.ContextWindow = c.ContextWindow
+		m.MaxOutput = c.MaxOutput
+		m.Reasoning = c.Reasoning
+		m.ReasoningLevelMap = maps.Clone(c.ReasoningLevelMap)
+		m.AdaptiveThinking = c.AdaptiveThinking
+		m.PriceInput = c.PriceInput
+		m.PriceOutput = c.PriceOutput
+		m.PriceCacheRead = c.PriceCacheRead
+		m.PriceCacheWrite = c.PriceCacheWrite
+		m.PriceTierInputTokens = c.PriceTierInputTokens
+		m.PriceInputAbove = c.PriceInputAbove
+		m.PriceOutputAbove = c.PriceOutputAbove
+		m.PriceCacheReadAbove = c.PriceCacheReadAbove
+		m.PriceCacheWriteAbove = c.PriceCacheWriteAbove
+		if c.DisplayName != "" {
+			m.DisplayName = c.DisplayName
+			if cp, _ := bedrockSplitGeoPrefix(c.ID); cp != "" {
+				m.DisplayName = strings.TrimSuffix(m.DisplayName, " ("+strings.ToUpper(cp)+")")
+			}
+			if prefix != "" {
+				m.DisplayName += " (" + strings.ToUpper(prefix) + ")"
+			}
+		}
+		return m
+	}
+	if bedrockIsModernClaude(base) {
+		m.ContextWindow = bedrockAnthropicDefaultContextWindow
+		m.MaxOutput = bedrockAnthropicDefaultMaxOutput
+	}
+	return m
+}
+
+// bedrockSplitGeoPrefix separates a cross-region inference-profile geo
+// prefix from the foundation-model ID. prefix is "" when there is none.
+func bedrockSplitGeoPrefix(id string) (prefix, base string) {
+	for _, p := range bedrockGeoPrefixes {
+		if strings.HasPrefix(id, p+".") {
+			return p, id[len(p)+1:]
+		}
+	}
+	return "", id
+}
+
+func bedrockInCatalog(id string) bool {
+	for _, c := range Catalog {
+		if c.Provider == "amazon-bedrock" && c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// bedrockCatalogBase finds catalog metadata for a foundation-model ID:
+// the bare entry if present, otherwise any geo-prefixed variant of it.
+func bedrockCatalogBase(base string) (Model, bool) {
+	var variant Model
+	found := false
+	for _, c := range Catalog {
+		if c.Provider != "amazon-bedrock" {
+			continue
+		}
+		if c.ID == base {
+			return c, true
+		}
+		if !found {
+			if _, b := bedrockSplitGeoPrefix(c.ID); b == base {
+				variant, found = c, true
+			}
+		}
+	}
+	return variant, found
+}
+
+// bedrockIsModernClaude reports whether a foundation-model ID is a Claude
+// model whose output limit is at least bedrockAnthropicDefaultMaxOutput.
+// Legacy Claude 2 / Instant / 3 / 3.5 models cap output at 4096-8192 and
+// would reject a 64000-token request, so they keep the client fallback.
+func bedrockIsModernClaude(base string) bool {
+	if !strings.HasPrefix(base, "anthropic.claude-") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(base, "anthropic.claude-v"),
+		strings.HasPrefix(base, "anthropic.claude-instant"),
+		strings.HasPrefix(base, "anthropic.claude-3-5-"),
+		strings.HasPrefix(base, "anthropic.claude-3-haiku"),
+		strings.HasPrefix(base, "anthropic.claude-3-sonnet"),
+		strings.HasPrefix(base, "anthropic.claude-3-opus"):
+		return false
+	}
+	return true
 }
 
 // bedrockListModelIDs enumerates foundation-model IDs and inference-
