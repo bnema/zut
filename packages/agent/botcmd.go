@@ -272,6 +272,7 @@ func botRun(spec *botSpec, rawTail []string, version string) error {
 			}
 			agent.Client = next.NewClient()
 			agent.Model = next.Model
+			agent.MaxTokens = next.MaxOutput
 			runner.UpdateRuntimeConfig(next.Provider, next.Model, next.AuthMethod, next.CWD)
 			return nil
 		},

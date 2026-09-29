@@ -164,7 +164,7 @@ Drop the entire transcript. Equivalent to the `/clear` slash command.
 
 ### `set_model`
 
-Switch model within the same provider.
+Switch model within the same provider. Subsequent prompts use the new model's output-token limit.
 
 ```json
 {"id":"7","type":"set_model","model":"claude-sonnet-4-5"}

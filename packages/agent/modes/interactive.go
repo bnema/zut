@@ -5793,6 +5793,9 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 		i.mu.Lock()
 		i.cfg.Model = m.ID
 		i.agent.Model = m.ID
+		// The output budget is per model; keeping the previous model's
+		// value can truncate responses (or exceed the new model's cap).
+		i.agent.MaxTokens = m.MaxOutput
 		i.statusOK = "model: " + m.ID
 		i.statusErr = ""
 		i.mu.Unlock()

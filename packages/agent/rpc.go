@@ -289,11 +289,13 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
-		if _, err := provider.FindModel(s.provider, req.Model); err != nil {
+		m, err := provider.FindModel(s.provider, req.Model)
+		if err != nil {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
 		s.agent.Model = req.Model
+		s.agent.MaxTokens = m.MaxOutput
 		s.model = req.Model
 		s.writeResponse(id, cmd, map[string]any{"model": req.Model})
 

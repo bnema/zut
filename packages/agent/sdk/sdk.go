@@ -299,10 +299,12 @@ func (r *Runtime) SetModel(model string) error {
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
 	}
-	if _, err := provider.FindModel(r.provider, model); err != nil {
+	m, err := provider.FindModel(r.provider, model)
+	if err != nil {
 		return err
 	}
 	r.agent.Model = model
+	r.agent.MaxTokens = m.MaxOutput
 	r.model = model
 	return nil
 }
