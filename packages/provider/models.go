@@ -398,6 +398,13 @@ var Catalog = []Model{
 		PriceTierInputTokens: 272000,
 		PriceInputAbove:      20, PriceOutputAbove: 75, PriceCacheReadAbove: 2, PriceCacheWriteAbove: 25,
 	},
+	{
+		Provider: "openai", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", API: APIResponses,
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
+	},
 	// ---- OpenAI Codex / ChatGPT subscription backend ----
 	// Same model ids as the OpenAI family, but routed through the
 	// ChatGPT Codex OAuth backend rather than api.openai.com.
@@ -453,6 +460,13 @@ var Catalog = []Model{
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
 		PriceTierInputTokens: 272000,
 		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.4, PriceCacheWriteAbove: 5,
+	},
+	{
+		Provider: "openai-codex", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol",
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-6-luna", DisplayName: "GPT-6 Luna",

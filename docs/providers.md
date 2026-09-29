@@ -206,6 +206,19 @@ rates, not subscription billing or quota measurements.
 Sources: [Astra model specifications](https://developers.openai.com/api/docs/models/gpt-6-astra)
 and [prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
+## GPT-6.1 Sol
+
+`gpt-6.1-sol` is available through `openai` (Responses API) and `openai-codex`
+with the same 500,000-token working budget, 128,000-token maximum output, and
+native reasoning efforts `low` through `max` as Astra.
+
+Standard API rates per million tokens are $2 input, $10 output, $0.10 cache
+reads, and $2.50 cache writes. Above 272,000 total input tokens, the whole
+request is billed at $4 input, $15 output, $0.20 cache reads, and $5 cache
+writes.
+
+Source: [GPT-6.1 Sol model specifications](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+
 ## Session identity and caching
 
 zut supplies every provider request with a root cache identity, a
