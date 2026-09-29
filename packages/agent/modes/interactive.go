@@ -5788,11 +5788,12 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 	// Same provider AND not a rescue retry: just swap the model on
 	// the existing agent. Mixed-API providers dispatch from model metadata,
 	// so the client remains reusable. Rescue retries always rebuild so a stale
-	// auth header / base URL can't carry over.
+	// auth header / base URL can't carry over. Update the MaxOutput tokens to match the new model's configuration.
 	if !rescue && i.agent != nil && m.Provider == i.cfg.Provider {
 		i.mu.Lock()
 		i.cfg.Model = m.ID
 		i.agent.Model = m.ID
+		i.agent.MaxTokens = m.MaxOutput
 		i.statusOK = "model: " + m.ID
 		i.statusErr = ""
 		i.mu.Unlock()

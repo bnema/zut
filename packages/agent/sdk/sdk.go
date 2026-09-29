@@ -292,17 +292,23 @@ func (r *Runtime) Compact(ctx context.Context, customInstructions string) (Compa
 }
 
 // SetModel switches the active model. Same provider only; for cross-
-// provider switches, create a new Runtime.
+// provider switches, create a new Runtime. Returns ErrBusy during a
+// Prompt or Compact so the model and output limit cannot change mid-turn.
 func (r *Runtime) SetModel(model string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.agent == nil {
 		return fmt.Errorf("sdk: no agent")
 	}
-	if _, err := provider.FindModel(r.provider, model); err != nil {
+	if r.activeCancel != nil {
+		return ErrBusy
+	}
+	m, err := provider.FindModel(r.provider, model)
+	if err != nil {
 		return err
 	}
 	r.agent.Model = model
+	r.agent.MaxTokens = m.MaxOutput
 	r.model = model
 	return nil
 }
@@ -375,8 +381,8 @@ func (r *Runtime) ListModels() []ModelInfo {
 
 // ---- public errors ----
 
-// ErrBusy is returned when a Prompt or Compact is started while
-// another is in flight on the same Runtime.
+// ErrBusy is returned when a Prompt, Compact, or SetModel is called
+// during an active Prompt or Compact on the same Runtime.
 var ErrBusy = errors.New("sdk: runtime is busy")
 
 // ErrClosed is returned by methods on a Runtime after Close.
