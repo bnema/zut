@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	zutdocs "github.com/bnema/zut"
 	"github.com/bnema/zut/packages/agent/lsp"
@@ -1435,6 +1436,11 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 				reg[name] = tool
 			}
 		}
+	}
+	grepTool, hasGrep := reg["grep"].(*tools.GrepTool)
+	astTool, hasAST := reg["ast"].(*tools.ASTTool)
+	if hasGrep && hasAST {
+		grepTool.ASTAvailable = sync.OnceValue(astTool.Available)
 	}
 	return reg
 }

@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/lsp"
@@ -47,11 +49,18 @@ type astArgs struct {
 	Rewrite  string `json:"rewrite,omitempty"`
 }
 
-const astSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"ast-grep structural pattern, such as '$A($$$ARGS)' for a call."},"language":{"type":"string","description":"ast-grep language id, such as go, rust, python, or typescript."},"path":{"type":"string","description":"File or directory to search, relative to the workspace or absolute."},"rewrite":{"type":"string","description":"Optional structural replacement. When supplied, Zut previews and safely applies every match."}},"required":["pattern","language","path"],"additionalProperties":false}`
+const astSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Code-shaped ast-grep pattern. $NAME matches one node, $$$NAME matches zero or more nodes (arguments, statements)."},"language":{"type":"string","description":"Optional ast-grep language id (go, rust, python, typescript, tsx, javascript, ...). Omit to infer it from each file's extension."},"path":{"type":"string","description":"File or directory to search, relative to the workspace or absolute."},"rewrite":{"type":"string","description":"Optional replacement reusing captured metavariables. Zut previews the diff and applies every match."}},"required":["pattern","path"],"additionalProperties":false}`
 
 func (t *ASTTool) Name() string { return "ast" }
 func (t *ASTTool) Description() string {
-	return "Prefer this for syntax-aware code searches and rewrites. Uses installed ast-grep, previews mutations, enforces filesystem scope, and attaches diagnostics. Use grep/edit for plain text."
+	return "Structural code search and rewrite (ast-grep). Prefer it over grep/edit when looking for code shapes: calls, definitions, statements, or a rename/refactor across many places. " +
+		"Matches ignore formatting and span multiple lines. Examples: " +
+		"calls `fmt.Errorf($MSG, $$$REST)`; " +
+		"Go methods `func ($R $T) $NAME($$$) $$$ { $$$ }`; " +
+		"error checks `if err != nil { $$$ }`; " +
+		"JS `console.log($$$)`; " +
+		"rename: pattern `oldFn($$$A)` with rewrite `newFn($$$A)`. " +
+		"Use grep for plain text, comments, or strings."
 }
 func (t *ASTTool) Schema() json.RawMessage { return json.RawMessage(astSchema) }
 
@@ -79,10 +88,8 @@ func (t *ASTTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 	if args.Rewrite == "" {
 		return plan.result, nil
 	}
-	for _, change := range plan.changes {
-		if err := os.WriteFile(change.path, change.content, change.mode); err != nil {
-			return core.ToolResult{}, fmt.Errorf("ast: write %s: %w", change.path, err)
-		}
+	if err := t.applyRewrite(plan.changes); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.LSPDiagnostics {
 		attachMutationDiagnostics(ctx, t.CWD, plan.result.Context.Mutates, t.LSP, &plan.result)
@@ -90,10 +97,90 @@ func (t *ASTTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 	return plan.result, nil
 }
 
+func (t *ASTTool) applyRewrite(changes []astChange) error {
+	// Validate the entire plan before starting any writes, so a stale plan
+	// is rejected without touching any file.
+	for _, change := range changes {
+		if _, err := t.validateASTChange(change); err != nil {
+			return err
+		}
+	}
+	var written []string
+	for _, change := range changes {
+		// Validate again immediately before replacing each file: earlier
+		// writes take time, and a symlink may have been retargeted.
+		target, err := t.validateASTChange(change)
+		if err == nil {
+			err = writeASTChange(target, change)
+		}
+		if err != nil {
+			if len(written) == 0 {
+				return err
+			}
+			return fmt.Errorf("%w (already written: %s)", err, strings.Join(written, ", "))
+		}
+		written = append(written, change.path)
+	}
+	return nil
+}
+
+// validateASTChange resolves the file that will be replaced, checks it
+// against the write scope, and confirms it still holds the planned bytes.
+func (t *ASTTool) validateASTChange(change astChange) (string, error) {
+	if err := t.Sandbox.CheckWritePath(change.path); err != nil {
+		return "", err
+	}
+	// Rename replaces a symlink itself, so write through to its target like
+	// os.WriteFile does, and check that target too.
+	target, err := filepath.EvalSymlinks(change.path)
+	if err != nil {
+		return "", fmt.Errorf("ast: resolve %s: %w", change.path, err)
+	}
+	if err := t.Sandbox.CheckWritePath(target); err != nil {
+		return "", err
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return "", fmt.Errorf("ast: re-read %s: %w", change.path, err)
+	}
+	if !bytes.Equal(current, change.original) {
+		return "", fmt.Errorf("ast: %s changed while applying rewrite", change.path)
+	}
+	return target, nil
+}
+
 type astChange struct {
-	path    string
-	content []byte
-	mode    os.FileMode
+	path     string
+	original []byte
+	content  []byte
+	mode     os.FileMode
+}
+
+// writeASTChange replaces target through a temporary file in the same
+// directory, so a failed write never leaves a truncated file.
+func writeASTChange(target string, change astChange) error {
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".zut-ast-*")
+	if err != nil {
+		return fmt.Errorf("ast: write %s: %w", change.path, err)
+	}
+	defer os.Remove(tmp.Name())
+	err = tmp.Chmod(change.mode)
+	if err == nil {
+		_, err = tmp.Write(change.content)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), target)
+	}
+	if err != nil {
+		return fmt.Errorf("ast: write %s: %w", change.path, err)
+	}
+	return nil
 }
 
 type astPlan struct {
@@ -124,8 +211,8 @@ func parseASTArgs(raw json.RawMessage) (astArgs, error) {
 	}
 	args.Pattern = strings.TrimSpace(args.Pattern)
 	args.Language = strings.TrimSpace(args.Language)
-	if args.Pattern == "" || args.Language == "" || strings.TrimSpace(args.Path) == "" {
-		return args, fmt.Errorf("ast: pattern, language, and path are required")
+	if args.Pattern == "" || strings.TrimSpace(args.Path) == "" {
+		return args, fmt.Errorf("ast: pattern and path are required")
 	}
 	return args, nil
 }
@@ -156,16 +243,103 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	if err != nil {
 		return astPlan{}, err
 	}
-	commandArgs := []string{"run", "--pattern=" + args.Pattern, "--lang=" + args.Language}
+	dir := root
+	if !info.IsDir() {
+		dir = filepath.Dir(root)
+	}
+	commandArgs := []string{"run", "--pattern=" + args.Pattern}
+	if args.Language != "" {
+		commandArgs = append(commandArgs, "--lang="+args.Language)
+	}
 	if args.Rewrite != "" {
 		commandArgs = append(commandArgs, "--rewrite="+args.Rewrite)
 	}
 	commandArgs = append(commandArgs, "--json=stream", root)
-	cmd := exec.CommandContext(ctx, binary, commandArgs...)
-	cmd.Dir = root
-	if !info.IsDir() {
-		cmd.Dir = filepath.Dir(root)
+	run, err := runASTGrep(ctx, binary, dir, commandArgs, args.Rewrite != "")
+	if err != nil {
+		return astPlan{}, err
 	}
+	if len(run.matches) == 0 && astGoCallPattern(args, root) {
+		// tree-sitter-go parses a bare `pkg.Func(...)` pattern as a type
+		// conversion, so it never matches real calls. Retry it as a call
+		// expression inside a function body. A zero-match retry keeps the
+		// original result and its warnings; a failed retry is reported.
+		retry, err := runASTGrep(ctx, binary, dir, astGoCallRuleArgs(args, root), args.Rewrite != "")
+		if err != nil {
+			return astPlan{}, fmt.Errorf("%w (while retrying the Go call pattern as a call expression)", err)
+		}
+		if len(retry.matches) > 0 {
+			run = retry
+		}
+	}
+	matches, stderr := run.matches, run.stderr
+	for index := range matches {
+		if !filepath.IsAbs(matches[index].File) {
+			matches[index].File = filepath.Join(dir, matches[index].File)
+		}
+		matches[index].File = filepath.Clean(matches[index].File)
+	}
+	if args.Rewrite == "" {
+		text, paths := formatASTMatches(matches)
+		if len(matches) == 0 {
+			text += astWarning(stderr) + astNoMatchHint
+		}
+		if run.overflow {
+			text += fmt.Sprintf("\n... [search output truncated at %d bytes; narrow path or pattern for complete results]", maxASTCaptureBytes)
+		}
+		return astPlan{result: core.ToolResult{
+			Content: []provider.Content{provider.TextBlock{Text: text}},
+			Context: provider.ToolContext{Discovers: paths},
+			Details: map[string]any{"engine": "ast-grep", "path": root, "language": args.Language, "matches": len(matches)},
+		}}, nil
+	}
+	plan, err := t.planRewrite(root, args, matches)
+	if err == nil && len(matches) == 0 {
+		text := plan.result.Content[0].(provider.TextBlock).Text + astWarning(stderr) + astNoMatchHint
+		plan.result.Content = []provider.Content{provider.TextBlock{Text: text}}
+		plan.result.Details.(map[string]any)["diff"] = text
+	}
+	return plan, err
+}
+
+// Available reports whether an ast-grep executable can be found.
+func (t *ASTTool) Available() bool {
+	_, err := t.executable()
+	return err == nil
+}
+
+func (t *ASTTool) executable() (string, error) {
+	lookup := t.LookPath
+	if lookup == nil {
+		lookup = exec.LookPath
+	}
+	if path, err := lookup("ast-grep"); err == nil && path != "" {
+		return path, nil
+	}
+	if path, err := lookup("sg"); err == nil && path != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		output, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+		if err == nil && strings.Contains(strings.ToLower(string(output)), "ast-grep") {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("ast: ast-grep executable ('ast-grep' or 'sg') not found in PATH")
+}
+
+const astNoMatchHint = "\nTip: the pattern must be valid code in the target language; $A matches one node and $$$A matches zero or more. Set language when the path mixes languages."
+
+type astRun struct {
+	matches  []astMatch
+	stderr   string
+	overflow bool
+}
+
+// runASTGrep runs one ast-grep command and decodes its JSON stream. Exit
+// status 1 with no output is ast-grep's normal "no matches" result.
+func runASTGrep(ctx context.Context, binary, dir string, commandArgs []string, rewrite bool) (astRun, error) {
+	cmd := exec.CommandContext(ctx, binary, commandArgs...)
+	cmd.Dir = dir
 	configureBashProcess(cmd, nil)
 	var stdout, stderr bytes.Buffer
 	capture := &limitedASTBuffer{buffer: &stdout, limit: maxASTCaptureBytes}
@@ -173,10 +347,18 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
-		return astPlan{}, ctx.Err()
+		return astRun{}, ctx.Err()
 	}
 	if capture.overflow {
-		return astPlan{}, fmt.Errorf("ast: output exceeds %d bytes; use a narrower path or pattern", capture.limit)
+		if rewrite {
+			return astRun{}, fmt.Errorf("ast: output exceeds %d bytes; use a narrower path or pattern", capture.limit)
+		}
+		// The capture can end mid-record. Only decode complete JSON lines.
+		data := append([]byte(nil), stdout.Bytes()...)
+		stdout.Reset()
+		if end := bytes.LastIndexByte(data, '\n'); end >= 0 {
+			_, _ = stdout.Write(data[:end+1])
+		}
 	}
 	if runErr != nil {
 		var exit *exec.ExitError
@@ -185,41 +367,47 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 			if message == "" {
 				message = runErr.Error()
 			}
-			return astPlan{}, fmt.Errorf("ast: %s", message)
+			return astRun{}, fmt.Errorf("ast: %s", message)
 		}
 	}
 	matches, err := decodeASTMatches(stdout.Bytes())
 	if err != nil {
-		return astPlan{}, err
+		return astRun{}, err
 	}
-	for index := range matches {
-		if !filepath.IsAbs(matches[index].File) {
-			matches[index].File = filepath.Join(cmd.Dir, matches[index].File)
-		}
-		matches[index].File = filepath.Clean(matches[index].File)
-	}
-	if args.Rewrite == "" {
-		text, paths := formatASTMatches(matches)
-		return astPlan{result: core.ToolResult{
-			Content: []provider.Content{provider.TextBlock{Text: text}},
-			Context: provider.ToolContext{Discovers: paths},
-			Details: map[string]any{"engine": "ast-grep", "path": root, "language": args.Language, "matches": len(matches)},
-		}}, nil
-	}
-	return t.planRewrite(root, args, matches)
+	return astRun{matches: matches, stderr: stderr.String(), overflow: capture.overflow}, nil
 }
 
-func (t *ASTTool) executable() (string, error) {
-	lookup := t.LookPath
-	if lookup == nil {
-		lookup = exec.LookPath
+var astGoQualifiedCall = regexp.MustCompile(`^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\(.*\)$`)
+
+// astGoCallPattern reports whether a Go search may have hit the tree-sitter
+// ambiguity where `pkg.Func(x)` parses as a type conversion.
+func astGoCallPattern(args astArgs, root string) bool {
+	switch {
+	case strings.EqualFold(args.Language, "go"), strings.EqualFold(args.Language, "golang"):
+	case args.Language == "" && strings.EqualFold(filepath.Ext(root), ".go"):
+	case args.Language == "" && filepath.Ext(root) == "":
+	default:
+		return false
 	}
-	for _, name := range []string{"ast-grep", "sg"} {
-		if path, err := lookup(name); err == nil && path != "" {
-			return path, nil
-		}
+	return astGoQualifiedCall.MatchString(args.Pattern)
+}
+
+// astGoCallRuleArgs matches the pattern as a call expression inside a
+// function body, which removes the type-conversion ambiguity.
+func astGoCallRuleArgs(args astArgs, root string) []string {
+	rule := map[string]any{
+		"id":       "zut-ast",
+		"language": "go",
+		"rule": map[string]any{"pattern": map[string]any{
+			"context":  "func _() { " + args.Pattern + " }",
+			"selector": "call_expression",
+		}},
 	}
-	return "", fmt.Errorf("ast: ast-grep executable ('ast-grep' or 'sg') not found in PATH")
+	if args.Rewrite != "" {
+		rule["fix"] = args.Rewrite
+	}
+	encoded, _ := json.Marshal(rule)
+	return []string{"scan", "--inline-rules=" + string(encoded), "--json=stream", root}
 }
 
 type limitedASTBuffer struct {
@@ -279,6 +467,17 @@ func formatASTMatches(matches []astMatch) (string, []string) {
 		return "No structural matches.", nil
 	}
 	return boundASTText(strings.TrimSpace(output.String())), paths
+}
+
+func astWarning(stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return ""
+	}
+	if len(stderr) > 2048 {
+		stderr = stderr[:2048] + "... [warning truncated]"
+	}
+	return "\n" + stderr
 }
 
 func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (astPlan, error) {
@@ -342,20 +541,28 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 		if bytes.Equal(original, updated) {
 			continue
 		}
-		if strings.EqualFold(args.Language, "go") {
-			formatted, formatErr := format.Source(updated)
-			if formatErr == nil {
-				if bytes.Contains(original, []byte("\r\n")) {
-					formatted = bytes.ReplaceAll(formatted, []byte("\n"), []byte("\r\n"))
+		if strings.EqualFold(args.Language, "go") || strings.EqualFold(args.Language, "golang") || (args.Language == "" && strings.EqualFold(filepath.Ext(path), ".go")) {
+			crlf := bytes.Contains(original, []byte("\r\n"))
+			normalized := bytes.ReplaceAll(original, []byte("\r\n"), []byte("\n"))
+			// Mixed endings and pre-existing gofmt differences must not cause
+			// unrelated lines to change as a side effect of this rewrite.
+			if !crlf || bytes.Count(original, []byte("\n")) == bytes.Count(original, []byte("\r\n")) {
+				if clean, err := format.Source(normalized); err == nil && bytes.Equal(clean, normalized) {
+					formatted, err := format.Source(updated)
+					if err == nil {
+						if crlf {
+							formatted = bytes.ReplaceAll(formatted, []byte("\n"), []byte("\r\n"))
+						}
+						updated = formatted
+					}
 				}
-				updated = formatted
 			}
 		}
 		if bytes.Equal(original, updated) {
 			continue
 		}
 		diffs.WriteString(unifiedDiff(path, string(original), string(updated)))
-		changes = append(changes, astChange{path: path, content: updated, mode: info.Mode().Perm()})
+		changes = append(changes, astChange{path: path, original: original, content: updated, mode: info.Mode().Perm()})
 	}
 	text := boundASTText(diffs.String())
 	if len(changes) == 0 {
