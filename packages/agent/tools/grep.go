@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type GrepTool struct {
 	CWD      string
 	Sandbox  *Sandbox
 	LookPath func(string) (string, error)
+	// ASTAvailable reports whether the ast tool is registered and usable.
+	// When nil or false, grep never suggests ast.
+	ASTAvailable func() bool
 }
 
 var _ core.Tool = (*GrepTool)(nil)
@@ -176,10 +180,21 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 		// diagnostics while reporting the normalized tool exit code above.
 		isError = false
 	}
+
+	discovers := grepResultPaths(text, root, info.IsDir())
+	// The hint is appended after path discovery so it is never read as a
+	// "file:line" result.
+	hint := ""
+	if !isError && t.ASTAvailable != nil {
+		if hint = grepASTHint(args.Pattern); hint != "" && !t.ASTAvailable() {
+			hint = ""
+		}
+	}
+	text += hint
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: text}},
 		IsError: isError,
-		Context: provider.ToolContext{Discovers: grepResultPaths(text, root, info.IsDir())},
+		Context: provider.ToolContext{Discovers: discovers},
 		Details: map[string]any{
 			"engine":            engine,
 			"path":              t.Sandbox.DisplayPath(root, args.Path),
@@ -189,8 +204,31 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 			"bytes_truncated":   output.bytesTruncated(),
 			"lines_truncated":   linesTruncated,
 			"output_cancelled":  outputCancelled,
+			"ast_hint":          hint != "",
 		},
 	}, nil
+}
+
+var (
+	// grepCallPattern matches regexes that search for a call, such as
+	// `fmt\.Errorf\(` or `\bNewClient\(`. The capture is the callee.
+	grepCallPattern = regexp.MustCompile(`^(?:\\b)?([A-Za-z_]\w*(?:\\?\.[A-Za-z_]\w*)*)\\\($`)
+	// grepDefinitionPattern matches regexes that search for a definition.
+	grepDefinitionPattern = regexp.MustCompile(`^\^?(?:\\s\*|\s)*(?:func|def|class|fn|function|interface|struct|impl)(?:\s|\\s|\\b|\\\()`)
+)
+
+// grepASTHint suggests the structural ast tool when a regex is really a
+// search for code shape. Regexes miss calls split across lines and cannot
+// tell code from comments or strings; ast-grep handles both.
+func grepASTHint(pattern string) string {
+	if match := grepCallPattern.FindStringSubmatch(pattern); match != nil {
+		callee := strings.ReplaceAll(match[1], `\.`, ".")
+		return fmt.Sprintf("\nTip: for code structure, the ast tool matches calls across lines and skips comments and strings: ast {\"pattern\":%q,\"path\":\"...\"}. Add \"rewrite\" to change every call at once.\n", callee+"($$$ARGS)")
+	}
+	if grepDefinitionPattern.MatchString(pattern) {
+		return "\nTip: for definitions, the ast tool matches code shape, e.g. ast {\"pattern\":\"func $NAME($$$) $$$ { $$$ }\",\"path\":\"...\"}.\n"
+	}
+	return ""
 }
 
 func grepResultPaths(output, root string, rootIsDir bool) []string {
