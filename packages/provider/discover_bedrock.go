@@ -86,16 +86,6 @@ func DiscoverBedrock(ctx context.Context, region string) ([]Model, error) {
 	return out, nil
 }
 
-// bedrockAnthropicDefaultMaxOutput is the output budget assumed for a
-// discovered Claude model with no catalog entry. It matches Claude Haiku
-// 4.5, the smallest output limit among current Claude models, so it is
-// safe for any Claude 4+ model and far above the client's 4096 fallback.
-const bedrockAnthropicDefaultMaxOutput = 64000
-
-// bedrockAnthropicDefaultContextWindow is the context window assumed
-// for an uncatalogued Claude model, the smallest among current models.
-const bedrockAnthropicDefaultContextWindow = 200000
-
 // bedrockDiscoveredModel builds the Model for a discovered ID. The
 // control plane returns IDs only, so limits and capabilities come from
 // the static catalog. MergeCatalog already uses an exact catalog match;
@@ -133,7 +123,10 @@ func bedrockDiscoveredModel(id, region string) Model {
 		if c.DisplayName != "" {
 			m.DisplayName = c.DisplayName
 			if cp, _ := bedrockSplitGeoPrefix(c.ID); cp != "" {
-				m.DisplayName = strings.TrimSuffix(m.DisplayName, " ("+strings.ToUpper(cp)+")")
+				suffix := " (" + cp + ")"
+				if strings.HasSuffix(strings.ToUpper(m.DisplayName), strings.ToUpper(suffix)) {
+					m.DisplayName = m.DisplayName[:len(m.DisplayName)-len(suffix)]
+				}
 			}
 			if prefix != "" {
 				m.DisplayName += " (" + strings.ToUpper(prefix) + ")"
@@ -141,10 +134,9 @@ func bedrockDiscoveredModel(id, region string) Model {
 		}
 		return m
 	}
-	if bedrockIsModernClaude(base) {
-		m.ContextWindow = bedrockAnthropicDefaultContextWindow
-		m.MaxOutput = bedrockAnthropicDefaultMaxOutput
-	}
+	// Unknown models have no verified output or context limits. Keep the
+	// client's 4096-token fallback rather than guessing from the family:
+	// even Claude Opus 4 supports only 32k, not the 64k of newer models.
 	return m
 }
 
@@ -187,26 +179,6 @@ func bedrockCatalogBase(base string) (Model, bool) {
 		}
 	}
 	return variant, found
-}
-
-// bedrockIsModernClaude reports whether a foundation-model ID is a Claude
-// model whose output limit is at least bedrockAnthropicDefaultMaxOutput.
-// Legacy Claude 2 / Instant / 3 / 3.5 models cap output at 4096-8192 and
-// would reject a 64000-token request, so they keep the client fallback.
-func bedrockIsModernClaude(base string) bool {
-	if !strings.HasPrefix(base, "anthropic.claude-") {
-		return false
-	}
-	switch {
-	case strings.HasPrefix(base, "anthropic.claude-v"),
-		strings.HasPrefix(base, "anthropic.claude-instant"),
-		strings.HasPrefix(base, "anthropic.claude-3-5-"),
-		strings.HasPrefix(base, "anthropic.claude-3-haiku"),
-		strings.HasPrefix(base, "anthropic.claude-3-sonnet"),
-		strings.HasPrefix(base, "anthropic.claude-3-opus"):
-		return false
-	}
-	return true
 }
 
 // bedrockListModelIDs enumerates foundation-model IDs and inference-

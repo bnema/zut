@@ -51,23 +51,27 @@ func TestBedrockDiscoveredProfileInheritsBaseMetadata(t *testing.T) {
 // A base model catalogued only under geo-prefixed IDs still donates its
 // metadata, and the donor's region label is not carried over.
 func TestBedrockDiscoveredProfileUsesPrefixedCatalogVariant(t *testing.T) {
-	const id = "apac.anthropic.claude-opus-5-5"
+	const id = "apac.anthropic.claude-opus-5"
 	m, wire := discoveredWireMaxTokens(t, id)
-	if wire != 128000 || !m.AdaptiveThinking {
-		t.Errorf("%s: wire=%d adaptive=%v, want 128000 adaptive", id, wire, m.AdaptiveThinking)
+	if wire != 128000 || !m.AdaptiveThinking || m.PriceOutput != 25 {
+		t.Errorf("%s: wire=%d adaptive=%v price=%v, want 128000 adaptive and $25", id, wire, m.AdaptiveThinking, m.PriceOutput)
 	}
-	if m.DisplayName != "Claude Opus 5.5 (APAC)" {
+	if m.DisplayName != "Claude Opus 5 (APAC)" {
 		t.Errorf("DisplayName = %q", m.DisplayName)
 	}
 }
 
-// Claude models absent from the catalog get Haiku 4.5's 64k output, the
-// smallest among current Claude models, instead of the 4096 fallback.
-func TestBedrockDiscoveredUnknownClaudeUses64kFloor(t *testing.T) {
-	for _, id := range []string{"anthropic.claude-future-9", "us.anthropic.claude-future-9-v1:0"} {
+// An uncatalogued Claude ID must not assume a 64k output limit. Opus 4
+// supports only 32k, and an unknown future model has no verified limit.
+func TestBedrockDiscoveredUnknownClaudeKeepsFallback(t *testing.T) {
+	for _, id := range []string{
+		"anthropic.claude-opus-4-20250514-v1:0",
+		"us.anthropic.claude-opus-4-20250514-v1:0",
+		"anthropic.claude-future-9",
+	} {
 		m, wire := discoveredWireMaxTokens(t, id)
-		if wire != bedrockAnthropicDefaultMaxOutput || m.ContextWindow != bedrockAnthropicDefaultContextWindow {
-			t.Errorf("%s: wire=%d ctx=%d", id, wire, m.ContextWindow)
+		if m.MaxOutput != 0 || m.ContextWindow != 0 || wire != 4096 {
+			t.Errorf("%s: MaxOutput=%d ctx=%d wire=%d, want 0/0/4096", id, m.MaxOutput, m.ContextWindow, wire)
 		}
 	}
 }
