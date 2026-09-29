@@ -593,6 +593,19 @@ func TestClaudeFable51Catalog(t *testing.T) {
 	}
 }
 
+func TestClaudeSonnet55Catalog(t *testing.T) {
+	m, err := FindModel("anthropic", "claude-sonnet-5-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DisplayName != "Claude Sonnet 5.5" || m.ContextWindow != 1000000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
+		t.Fatalf("unexpected Sonnet 5.5 model: %+v", m)
+	}
+	if m.PriceInput != 2 || m.PriceOutput != 10 || m.PriceCacheRead != 0.2 || m.PriceCacheWrite != 2.5 {
+		t.Fatalf("unexpected Sonnet 5.5 pricing: %+v", m)
+	}
+}
+
 func TestClaudeSonnet5Catalog(t *testing.T) {
 	m, err := FindModel("anthropic", "claude-sonnet-5")
 	if err != nil {
