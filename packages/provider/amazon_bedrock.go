@@ -600,7 +600,7 @@ func resolveBedrockInferenceProfileID(modelID, region string) string {
 // bedrockGeoPrefixes are the cross-region inference-profile geo
 // prefixes Bedrock uses. A model ID that starts with one of these
 // (followed by a dot) is already a profile reference.
-var bedrockGeoPrefixes = []string{"us-gov", "us", "eu", "apac", "ap", "global", "au"}
+var bedrockGeoPrefixes = []string{"us-gov", "us", "eu", "apac", "ap", "global", "au", "jp"}
 
 func bedrockHasGeoPrefix(modelID string) bool {
 	for _, p := range bedrockGeoPrefixes {
