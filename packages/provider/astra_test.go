@@ -43,6 +43,24 @@ func TestAstraReleasedMetadata(t *testing.T) {
 	}
 }
 
+func TestGPT61SolFamilyCapabilities(t *testing.T) {
+	for _, name := range []string{"openai", "openai-codex"} {
+		m, err := FindModel(name, "gpt-6.1-sol")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Speculative || !slices.Contains(AvailableReasoningLevels(m), "max") || ClampReasoningForModel(m, "max") != "max" {
+			t.Fatalf("%s: native max unavailable: %+v", name, m)
+		}
+		if m.PriceTierInputTokens != 272000 || m.PriceInputAbove != 4 || m.PriceOutputAbove != 15 || m.PriceCacheReadAbove != 0.2 || m.PriceCacheWriteAbove != 5 {
+			t.Fatalf("%s: long-context rates: %+v", name, m)
+		}
+	}
+	if OpenAICodexReasoningEffort("max", "gpt-6.1-sol") != "max" || !supportsOpenAIExplicitPromptCache("gpt-6.1-sol") {
+		t.Fatal("gpt-6.1-sol must share GPT-6 max reasoning and explicit prompt caching")
+	}
+}
+
 func TestAstraResponsesCapabilities(t *testing.T) {
 	public := NewOpenAIResponsesNamed("synthetic-token", "", "openai").(*renamedClient).inner.(*responsesWebSocketClient).http
 	custom := NewOpenAIResponsesNamed("synthetic-token", "https://example.com/v1/responses", "openai").(*renamedClient).inner.(*codexClient)
