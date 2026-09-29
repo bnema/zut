@@ -44,8 +44,9 @@ func defaultReasoningLevels(model Model) []string {
 	}
 
 	id := strings.ToLower(model.ID)
-	// Opus 5.5 always uses adaptive thinking, including at its lowest effort.
-	if id == "claude-opus-5-5" || id == "claude-opus-5.5" {
+	// Opus 5.5 and Sonnet 5.5 always use adaptive thinking, including at
+	// their lowest effort.
+	if alwaysOnAdaptiveThinking(id) {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
 	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
@@ -84,6 +85,17 @@ func defaultReasoningLevels(model Model) []string {
 		return []string{""}
 	}
 	return []string{"", "low", "medium", "high"}
+}
+
+// alwaysOnAdaptiveThinking reports whether a Claude model rejects thinking
+// being turned off. Both the hyphenated Anthropic ID and the dotted Copilot
+// ID are recognised.
+func alwaysOnAdaptiveThinking(id string) bool {
+	switch id {
+	case "claude-opus-5-5", "claude-opus-5.5", "claude-sonnet-5-5", "claude-sonnet-5.5":
+		return true
+	}
+	return false
 }
 
 func containsReasoningLevel(levels []string, target string) bool {
