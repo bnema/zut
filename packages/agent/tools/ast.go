@@ -98,27 +98,55 @@ func (t *ASTTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 }
 
 func (t *ASTTool) applyRewrite(changes []astChange) error {
-	// Validate the entire plan before starting any writes.
+	// Validate the entire plan before starting any writes, so a stale plan
+	// is rejected without touching any file.
 	for _, change := range changes {
-		if err := t.Sandbox.CheckWritePath(change.path); err != nil {
+		if _, err := t.validateASTChange(change); err != nil {
 			return err
-		}
-		current, err := os.ReadFile(change.path)
-		if err != nil {
-			return fmt.Errorf("ast: re-read %s: %w", change.path, err)
-		}
-		if !bytes.Equal(current, change.original) {
-			return fmt.Errorf("ast: %s changed while applying rewrite", change.path)
 		}
 	}
 	var written []string
 	for _, change := range changes {
-		if err := writeASTChange(change); err != nil {
-			return fmt.Errorf("ast: write %s: %w (already written: %v)", change.path, err, written)
+		// Validate again immediately before replacing each file: earlier
+		// writes take time, and a symlink may have been retargeted.
+		target, err := t.validateASTChange(change)
+		if err == nil {
+			err = writeASTChange(target, change)
+		}
+		if err != nil {
+			if len(written) == 0 {
+				return err
+			}
+			return fmt.Errorf("%w (already written: %s)", err, strings.Join(written, ", "))
 		}
 		written = append(written, change.path)
 	}
 	return nil
+}
+
+// validateASTChange resolves the file that will be replaced, checks it
+// against the write scope, and confirms it still holds the planned bytes.
+func (t *ASTTool) validateASTChange(change astChange) (string, error) {
+	if err := t.Sandbox.CheckWritePath(change.path); err != nil {
+		return "", err
+	}
+	// Rename replaces a symlink itself, so write through to its target like
+	// os.WriteFile does, and check that target too.
+	target, err := filepath.EvalSymlinks(change.path)
+	if err != nil {
+		return "", fmt.Errorf("ast: resolve %s: %w", change.path, err)
+	}
+	if err := t.Sandbox.CheckWritePath(target); err != nil {
+		return "", err
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return "", fmt.Errorf("ast: re-read %s: %w", change.path, err)
+	}
+	if !bytes.Equal(current, change.original) {
+		return "", fmt.Errorf("ast: %s changed while applying rewrite", change.path)
+	}
+	return target, nil
 }
 
 type astChange struct {
@@ -128,34 +156,31 @@ type astChange struct {
 	mode     os.FileMode
 }
 
-func writeASTChange(change astChange) error {
-	// Rename replaces a symlink itself, so write through to its target like
-	// os.WriteFile did.
-	target, err := filepath.EvalSymlinks(change.path)
-	if err != nil {
-		return err
-	}
+// writeASTChange replaces target through a temporary file in the same
+// directory, so a failed write never leaves a truncated file.
+func writeASTChange(target string, change astChange) error {
 	tmp, err := os.CreateTemp(filepath.Dir(target), ".zut-ast-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("ast: write %s: %w", change.path, err)
 	}
 	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(change.mode); err != nil {
-		_ = tmp.Close()
-		return err
+	err = tmp.Chmod(change.mode)
+	if err == nil {
+		_, err = tmp.Write(change.content)
 	}
-	if _, err := tmp.Write(change.content); err != nil {
-		_ = tmp.Close()
-		return err
+	if err == nil {
+		err = tmp.Sync()
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	if err == nil {
+		err = os.Rename(tmp.Name(), target)
 	}
-	return os.Rename(tmp.Name(), target)
+	if err != nil {
+		return fmt.Errorf("ast: write %s: %w", change.path, err)
+	}
+	return nil
 }
 
 type astPlan struct {
@@ -237,12 +262,14 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 	if len(run.matches) == 0 && astGoCallPattern(args, root) {
 		// tree-sitter-go parses a bare `pkg.Func(...)` pattern as a type
 		// conversion, so it never matches real calls. Retry it as a call
-		// expression inside a function body. A failed retry keeps the
-		// original empty result and its warnings.
-		if retry, retryErr := runASTGrep(ctx, binary, dir, astGoCallRuleArgs(args, root), args.Rewrite != ""); retryErr == nil && len(retry.matches) > 0 {
+		// expression inside a function body. A zero-match retry keeps the
+		// original result and its warnings; a failed retry is reported.
+		retry, err := runASTGrep(ctx, binary, dir, astGoCallRuleArgs(args, root), args.Rewrite != "")
+		if err != nil {
+			return astPlan{}, fmt.Errorf("%w (while retrying the Go call pattern as a call expression)", err)
+		}
+		if len(retry.matches) > 0 {
 			run = retry
-		} else if ctx.Err() != nil {
-			return astPlan{}, ctx.Err()
 		}
 	}
 	matches, stderr := run.matches, run.stderr

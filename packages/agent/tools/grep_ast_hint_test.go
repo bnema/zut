@@ -15,7 +15,8 @@ func TestGrepASTHintClassifiesPatterns(t *testing.T) {
 	}{
 		{`fmt\.Errorf\(`, `"fmt.Errorf($$$ARGS)"`},
 		{`\bNewClient\(`, `"NewClient($$$ARGS)"`},
-		{`os.ReadFile\(`, `"os.ReadFile($$$ARGS)"`},
+		{`os\.ReadFile\(`, `"os.ReadFile($$$ARGS)"`},
+		{`os.ReadFile\(`, ""},
 		{`^func `, "for definitions"},
 		{`^\s*def\s`, "for definitions"},
 		{`class\b`, "for definitions"},

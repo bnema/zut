@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -84,7 +85,7 @@ func TestASTRewriteWritesThroughSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip("symlinks unavailable:", err)
 	}
-	if err := writeASTChange(astChange{path: link, content: []byte("new"), mode: 0o644}); err != nil {
+	if err := (&ASTTool{}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}}); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -92,6 +93,46 @@ func TestASTRewriteWritesThroughSymlink(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(target); string(got) != "new" {
 		t.Fatalf("target = %q", got)
+	}
+}
+
+func TestASTApplyRewriteRejectsSymlinkRetargetedOutsideJail(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	link := filepath.Join(root, "link.go")
+	if err := os.WriteFile(outside, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The plan was made for an in-jail file, but the link now escapes.
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	sandbox := NewSandbox(root)
+	sandbox.Lock()
+	err := (&ASTTool{Sandbox: sandbox}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}})
+	if err == nil {
+		t.Fatal("rewrite through escaping symlink succeeded")
+	}
+	if got, _ := os.ReadFile(outside); string(got) != "old" {
+		t.Fatalf("outside file = %q", got)
+	}
+}
+
+func TestASTGoCallRetryFailureIsReported(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test fixture uses a POSIX script")
+	}
+	root := t.TempDir()
+	// `run` finds nothing (exit 1); the `scan` retry fails with an error.
+	script := filepath.Join(root, "ast-grep")
+	body := "#!/bin/sh\nif [ \"$1\" = scan ]; then echo 'Error: invalid rule' >&2; exit 8; fi\nexit 1\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return script, nil }}
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"fmt.Errorf($$$)","language":"go","path":"."}`), nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid rule") {
+		t.Fatalf("Execute error = %v", err)
 	}
 }
 

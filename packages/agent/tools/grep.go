@@ -212,7 +212,9 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 var (
 	// grepCallPattern matches regexes that search for a call, such as
 	// `fmt\.Errorf\(` or `\bNewClient\(`. The capture is the callee.
-	grepCallPattern = regexp.MustCompile(`^(?:\\b)?([A-Za-z_]\w*(?:\\?\.[A-Za-z_]\w*)*)\\\($`)
+	// Qualified names need an escaped dot: an unescaped `.` matches any
+	// character, so a literal structural pattern would be narrower.
+	grepCallPattern = regexp.MustCompile(`^(?:\\b)?([A-Za-z_]\w*(?:\\\.[A-Za-z_]\w*)*)\\\($`)
 	// grepDefinitionPattern matches regexes that search for a definition.
 	grepDefinitionPattern = regexp.MustCompile(`^\^?(?:\\s\*|\s)*(?:func|def|class|fn|function|interface|struct|impl)(?:\s|\\s|\\b|\\\()`)
 )
