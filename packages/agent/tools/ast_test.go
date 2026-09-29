@@ -112,7 +112,7 @@ func TestASTToolRewritePreviewAndExecute(t *testing.T) {
 	if !strings.Contains(string(got), "fmt.Println") || len(result.Context.Mutates) != 1 {
 		t.Fatalf("result = %q, context = %+v", got, result.Context)
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o640 {
+	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v", info.Mode().Perm())
 	}
 }
@@ -231,7 +231,11 @@ func TestASTScopeAndReadOnly(t *testing.T) {
 	sandbox := NewSandbox(root)
 	sandbox.Lock()
 	tool := &ASTTool{CWD: root, Sandbox: sandbox}
-	args := json.RawMessage(`{"pattern":"$A","language":"go","path":"` + path + `"}`)
+	// Marshal the path: raw Windows backslashes are invalid JSON escapes.
+	args, err := json.Marshal(map[string]string{"pattern": "$A", "language": "go", "path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tool.Execute(context.Background(), args, nil); err == nil || !strings.Contains(err.Error(), "outside sandbox") {
 		t.Fatalf("jail: %v", err)
 	}
@@ -309,7 +313,10 @@ func TestASTApplyRewriteValidatesAllBeforeWriting(t *testing.T) {
 	if got, _ := os.ReadFile(first); string(got) != "new" {
 		t.Fatalf("first file = %q", got)
 	}
-	if info, err := os.Stat(first); err != nil || info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode = %v, %v", info, err)
+	// Windows has no Unix permission bits to preserve.
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(first); err != nil || info.Mode().Perm() != 0o640 {
+			t.Fatalf("mode = %v, %v", info, err)
+		}
 	}
 }
