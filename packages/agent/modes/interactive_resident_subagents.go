@@ -27,6 +27,10 @@ func (i *Interactive) TrackResidentSubagent(childID, turnID string) {
 	i.invalidate()
 	i.requestCompletionDelivery()
 }
+
+// ReportResidentSubagent reports whether the outcome was accepted for host
+// delivery. On false, the caller must retain its own report. Parent cancellation
+// can discard accepted reports that have not yet entered the agent queue.
 func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentCompletion) bool {
 	if i == nil {
 		return false

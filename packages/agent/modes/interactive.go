@@ -2142,9 +2142,6 @@ type telegramSenderAdapter struct {
 // TrackResidentSubagent reserves completion delivery after the manager has
 // durably accepted a resident child prompt and before it is scheduled.
 
-// ReportResidentSubagent delivers a typed resident terminal outcome through
-// the same coordinator path used by legacy worker completions.
-
 // registerCoordinatorWorker associates a tracker registration with the open
 // manager wave. Direct embedders that register a worker outside startTurn get
 // a one-worker sealed wave, retaining the exported tracker API's old behavior.

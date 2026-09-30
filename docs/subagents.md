@@ -266,9 +266,9 @@ all of them.
     `steered` or `queued`. `wait` uses the same 1–300 second bound as `spawn`
     and waits for the turn that answers the follow-up, returning its outcome or
     reporting the timeout while the child stays active. A returned outcome can
-    be `dropped` when a queued follow-up never started. Without a host report
-    channel, it includes the summary and `undelivered` steers the child never
-    read; with a host channel, those details arrive in the completion update.
+    be `dropped` when a queued follow-up never started. When the host accepts
+    the completion report, the summary and `undelivered` steers arrive in the
+    completion update; otherwise the outcome includes them.
   - `interrupt` accepts `agent_id` and cancels only the child's running turn.
     Unlike `stop`, the child stays live with its transcript, so a later
     `resume` such as "report what you have" continues with full context.
