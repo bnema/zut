@@ -26,12 +26,18 @@ import (
 //     alt=true, so the binding fires; we just need to tell the
 //     user the right chord.
 //
+//   - Vev reserves Alt+Up for pane navigation. Alt+Shift+Up is
+//     forwarded to the child process as \x1b[1;4A instead.
+//
 // Detection is by $TERM_PROGRAM; VS Code sets this to "vscode" on
 // every platform it ships an integrated terminal on. The decoder
 // accepts both chords on any terminal, so getting the env-var sniff
 // wrong only ever shows a slightly-off hint string — never breaks
 // the binding itself.
 func slideBackChordHint() string {
+	if strings.EqualFold(os.Getenv("TERM_PROGRAM"), "vev") {
+		return "Alt+Shift+↑"
+	}
 	if strings.EqualFold(os.Getenv("TERM_PROGRAM"), "vscode") {
 		return "Option+Shift+↑"
 	}

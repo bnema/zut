@@ -344,8 +344,8 @@ func (a *Agent) QueuedMessageCount() int {
 	return len(a.queued)
 }
 
-// PopQueuedMessage removes and returns the most recently queued
-// message. Hosts use this for the slide-back keybinding.
+// PopQueuedMessage removes and returns the most recently queued message,
+// including host events.
 func (a *Agent) PopQueuedMessage() (QueuedMessage, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -356,6 +356,24 @@ func (a *Agent) PopQueuedMessage() (QueuedMessage, bool) {
 	message := cloneQueuedMessage(a.queued[n-1].message)
 	a.queued = a.queued[:n-1]
 	return message, true
+}
+
+// PopQueuedUserMessage removes the most recently queued ordinary input,
+// leaving host evidence in place and preserving the remaining queue order.
+func (a *Agent) PopQueuedUserMessage() (QueuedMessage, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for index := len(a.queued) - 1; index >= 0; index-- {
+		if a.queued[index].message.HostEvent {
+			continue
+		}
+		message := cloneQueuedMessage(a.queued[index].message)
+		copy(a.queued[index:], a.queued[index+1:])
+		a.queued[len(a.queued)-1] = queuedMessage{}
+		a.queued = a.queued[:len(a.queued)-1]
+		return message, true
+	}
+	return QueuedMessage{}, false
 }
 
 // DrainQueuedMessages discards and returns every queued message.
