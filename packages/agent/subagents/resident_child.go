@@ -77,6 +77,9 @@ type ResidentCompletion struct {
 	Task    string
 	Err     error
 	Summary string
+	// HostUpdate is set by the manager after the host completion observer
+	// accepts this outcome. Tool waits then omit the full report.
+	HostUpdate bool
 	// NotStarted marks a queued follow-up that was dropped before the child
 	// ever ran it, for example because the child was stopped or interrupted.
 	NotStarted bool

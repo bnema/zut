@@ -71,7 +71,7 @@ func TestResidentFailureRecoveryKeepsRequiredUnmetUntilResume(t *testing.T) {
 				manager := NewResidentManager(root, factory)
 				t.Cleanup(func() { _ = manager.Close(context.Background()) })
 				completions := make(chan ResidentCompletion, 2)
-				manager.SetCompletionObserver(func(c ResidentCompletion) { completions <- c })
+				manager.SetCompletionObserver(func(c ResidentCompletion) bool { completions <- c; return true })
 				if _, err := manager.Spawn(t.Context(), spec, "inspect and verify README"); err != nil {
 					t.Fatal(err)
 				}
@@ -106,7 +106,7 @@ func TestResidentFailureRecoveryKeepsRequiredUnmetUntilResume(t *testing.T) {
 						t.Fatal(err)
 					}
 					manager = NewResidentManager(root, factory)
-					manager.SetCompletionObserver(func(c ResidentCompletion) { completions <- c })
+					manager.SetCompletionObserver(func(c ResidentCompletion) bool { completions <- c; return true })
 					if errs := manager.Reconcile(); len(errs) != 0 {
 						t.Fatal(errs)
 					}

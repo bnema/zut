@@ -85,7 +85,7 @@ type subagentRuntimeConfig struct {
 	ActiveProvider     func() string
 	ActiveModel        func() string
 	ActiveReasoning    func() string
-	ResidentCompletion func(subagents.ResidentCompletion)
+	ResidentCompletion func(subagents.ResidentCompletion) bool
 	OnResidentSpawned  func(subagents.ResidentChildSpec, string, string)
 }
 

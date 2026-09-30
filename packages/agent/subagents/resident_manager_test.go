@@ -135,7 +135,7 @@ func TestResidentManagerResumeWithTurnGeneratesIDForBlank(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("initial turn did not complete")
 	}
-	manager.SetCompletionObserver(func(completion ResidentCompletion) { completions <- completion })
+	manager.SetCompletionObserver(func(completion ResidentCompletion) bool { completions <- completion; return true })
 	if err := manager.resumeWithTurn(context.Background(), "blank-turn-child", "continue", "  "); err != nil {
 		t.Fatalf("resumeWithTurn: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestResidentManagerCompletionCarriesFinalSummary(t *testing.T) {
 			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "the actual child answer"}}}})
 		}), nil
 	})
-	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	manager.SetCompletionObserver(func(completion ResidentCompletion) bool { completed <- completion; return true })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "summary-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestResidentManagerReportsQueuedTurnsWhenFinalResultCannotPersist(t *testin
 			return nil
 		}), nil
 	})
-	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	manager.SetCompletionObserver(func(completion ResidentCompletion) bool { completed <- completion; return true })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "persistence-failure-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "initial task"); err != nil {
@@ -233,7 +233,7 @@ func TestResidentManagerReportsAcceptedInterruptedTurn(t *testing.T) {
 			return ctx.Err()
 		}), nil
 	})
-	manager.SetCompletionObserver(func(completion ResidentCompletion) { completed <- completion })
+	manager.SetCompletionObserver(func(completion ResidentCompletion) bool { completed <- completion; return true })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 
 	child, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "interrupted-child", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "task")

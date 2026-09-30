@@ -32,7 +32,12 @@ type subagentWaitOutcome struct {
 	Error       string   `json:"error,omitempty"`
 	Summary     string   `json:"summary,omitempty"`
 	Undelivered []string `json:"undelivered,omitempty"`
+	// ReportDelivery identifies the full report's host channel when the wait
+	// returns status only. Without a host, Summary and Undelivered stay inline.
+	ReportDelivery string `json:"report_delivery,omitempty"`
 }
+
+const subagentReportHostUpdate = "host_update"
 
 type subagentActionResponse struct {
 	Action string              `json:"action"`

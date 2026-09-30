@@ -229,6 +229,12 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, _ 
 		if waitTimedOut {
 			fmt.Fprintf(&sb, "wait: timed out after %d seconds\n", *a.Wait)
 			sb.WriteString("\nThe accepted sub-agent remains active in the background. It owns the delegated scope: do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].")
+		} else if completion.HostUpdate {
+			fmt.Fprintf(&sb, "report_delivery: %s\n", subagentReportHostUpdate)
+			if completion.Err != nil {
+				fmt.Fprintf(&sb, "error: %s\n", completion.Err)
+			}
+			sb.WriteString("\nThe full report arrives through [auto-subagents update]. Do not resume or poll solely to retrieve it.")
 		} else if completion.Err != nil {
 			fmt.Fprintf(&sb, "error: %s\n", completion.Err)
 			if completion.Summary != "" {

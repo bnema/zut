@@ -208,8 +208,8 @@ func newOrchestratedRuntime(_ context.Context, args Args, r Resolved, cfg Config
 		ContextWindow:   r.ContextWindow,
 		Policy:          subagentPolicyFromConfig(cfg.Subagents),
 		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
-		ResidentCompletion: func(completion subagents.ResidentCompletion) {
-			tracker.Report(completion.Completion())
+		ResidentCompletion: func(completion subagents.ResidentCompletion) bool {
+			return tracker.Report(completion.Completion())
 		},
 		OnResidentSpawned: func(spec subagents.ResidentChildSpec, turnID, _ string) { tracker.TrackResident(spec.ID, turnID) },
 	})
