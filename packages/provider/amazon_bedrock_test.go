@@ -162,6 +162,57 @@ func TestNormalizeBedrockToolResultsInjectsMissingResult(t *testing.T) {
 	}
 }
 
+func bedrockResultText(t *testing.T, m Message) string {
+	t.Helper()
+	if m.Role != RoleTool || len(m.Content) != 1 {
+		t.Fatalf("message = %+v, want one tool result", m)
+	}
+	tr, ok := m.Content[0].(ToolResultBlock)
+	if !ok || len(tr.Content) != 1 {
+		t.Fatalf("content = %#v, want ToolResultBlock", m.Content[0])
+	}
+	return tr.Content[0].(TextBlock).Text
+}
+
+func TestNormalizeBedrockToolResultsPairsReusedIDsInOrder(t *testing.T) {
+	call := Message{Role: RoleAssistant, Content: []Content{ToolCallBlock{ID: "reused", Name: "read", Arguments: json.RawMessage(`{}`)}}}
+	result := func(text string) Message {
+		return Message{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "reused", Content: []Content{TextBlock{Text: text}}}}}
+	}
+	out := normalizeBedrockToolResults([]Message{call, result("first"), call, result("second")})
+	if len(out) != 4 {
+		t.Fatalf("got %d messages, want 4: %+v", len(out), out)
+	}
+	if got := bedrockResultText(t, out[1]); got != "first" {
+		t.Fatalf("first result = %q", got)
+	}
+	if got := bedrockResultText(t, out[3]); got != "second" {
+		t.Fatalf("second result = %q", got)
+	}
+}
+
+func TestNormalizeBedrockToolResultsDropsLeadingOrphanBeforeReusedID(t *testing.T) {
+	call := Message{Role: RoleAssistant, Content: []Content{ToolCallBlock{ID: "reused", Name: "read", Arguments: json.RawMessage(`{}`)}}}
+	result := func(text string) Message {
+		return Message{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "reused", Content: []Content{TextBlock{Text: text}}}}}
+	}
+	// The leading and excess results have no matching call at their position;
+	// they must not be consumed by the later calls that reuse the ID.
+	out := normalizeBedrockToolResults([]Message{
+		result("orphan"), call, result("first"), result("excess"), call,
+	})
+	if len(out) != 4 {
+		t.Fatalf("got %d messages, want 4: %+v", len(out), out)
+	}
+	if got := bedrockResultText(t, out[1]); got != "first" {
+		t.Fatalf("first result = %q, want first", got)
+	}
+	tr := out[3].Content[0].(ToolResultBlock)
+	if out[3].Role != RoleTool || tr.CallID != "reused" || !tr.IsError {
+		t.Fatalf("second call must get a synthetic error result, got %+v", out[3])
+	}
+}
+
 func TestBedrockModelSupportsCaching(t *testing.T) {
 	cases := []struct {
 		model string

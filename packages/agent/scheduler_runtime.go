@@ -12,6 +12,17 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+// scheduledSessionRegistry keeps background runs from opening foreground
+// panels and waiting indefinitely for input from a hidden conversation.
+func scheduledSessionRegistry(registry core.Registry) core.Registry {
+	for name, tool := range registry {
+		if extensions.IsInteractiveTool(tool) {
+			delete(registry, name)
+		}
+	}
+	return registry
+}
+
 // runScheduledSession reconstructs an inactive session in the current zut
 // process and appends the resulting turn to its existing transcript. The
 // caller serializes this with session transitions before invoking it.
@@ -44,7 +55,15 @@ func runScheduledSession(ctx context.Context, task scheduler.Task, args Args, ba
 	if model == "" {
 		model = base.Model
 	}
-	ag, _, _, err := buildNonInteractiveSessionAgentWithRegistry(ctx, args, base, extMgr, providerName, model, prepareRegistry)
+	// The shared manager may be attached to the foreground TUI, but this
+	// reconstructed session has no visible user to answer interactive tools.
+	backgroundRegistry := func(registry core.Registry) core.Registry {
+		if prepareRegistry != nil {
+			registry = prepareRegistry(registry)
+		}
+		return scheduledSessionRegistry(registry)
+	}
+	ag, _, _, err := buildNonInteractiveSessionAgentWithRegistry(ctx, args, base, extMgr, providerName, model, backgroundRegistry)
 	if err != nil {
 		return fmt.Errorf("build scheduled session agent: %w", err)
 	}

@@ -73,6 +73,7 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 		i.settingsDialog.Active() ||
 		i.sessionOpsDialog.Active() ||
 		i.sessionTreeDialog.Active() ||
+		i.timeline.Active() ||
 		i.extPanel.Active()
 }
 func (i *Interactive) restoreConfirmFocus() {
@@ -135,6 +136,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		act := i.dialog.HandleKey(k)
+		if act.Close && i.cfg.AuthManager != nil {
+			i.cfg.AuthManager.CancelOAuth()
+		}
 		if act.StartAPIKey {
 			i.startAPIKeyFlow(act.Provider)
 		}
@@ -377,6 +381,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	if i.timeline.Active() {
+		i.handleTimelineKey(k)
+		return false
+	}
 	if i.sessionOpsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.sessionOpsDialog.Close()
@@ -461,6 +469,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if i.skillsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.skillsDialog.Close()
+			i.invalidate()
+			return false
+		}
+		if i.handleSkillPinKey(k) {
 			i.invalidate()
 			return false
 		}
@@ -558,11 +570,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.ed.Clear()
 			i.clipboardImages = nil
 			i.suggest.Reset()
-			if ag != nil {
-				ag.DrainQueuedMessages()
-			}
 			i.mu.Lock()
-			i.queued = nil
+			i.discardQueuedMessagesLocked(false)
 			i.statusOK = "input cleared"
 			i.statusErr = ""
 			i.mu.Unlock()
@@ -922,6 +931,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			go i.telegramBridge.OnUserTyped(text)
 		}
 		i.maybeStartSessionTitle(ctx, text)
+		// This is the explicit user boundary for pinned skills: the first
+		// genuine prompt carries them whether it starts a turn or is queued
+		// behind a startup command, shell escape, or running turn.
+		text = i.consumePinnedSkills(text)
 		// If a turn is already in flight, queue this prompt inside the
 		// agent loop so it is delivered at the next safe model-call
 		// boundary instead of waiting for the whole run to finish.
@@ -1034,16 +1047,23 @@ func (i *Interactive) handleInputHistoryKey(k tui.Key) bool {
 	return true
 }
 func (i *Interactive) inputHistory() []string {
-	if i.agent == nil {
+	i.mu.Lock()
+	agent := i.agent
+	expanded, original := i.skillPins.expanded, i.skillPins.original
+	i.mu.Unlock()
+	if agent == nil {
 		return nil
 	}
-	msgs := i.agent.Messages()
+	msgs := agent.Messages()
 	hist := make([]string, 0, len(msgs))
 	for _, m := range msgs {
 		if !isForkableUserMessage(m) {
 			continue
 		}
 		text := userMessageText(m)
+		if expanded != "" && text == expanded {
+			text = original
+		}
 		if strings.TrimSpace(text) == "" {
 			continue
 		}

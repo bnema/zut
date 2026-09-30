@@ -90,6 +90,38 @@ These providers support subscription login:
 OAuth tokens are stored in `$ZUT_HOME/auth.json` and refreshed when refresh is
 available.
 
+Anthropic offers browser callback and copy-code login as separate choices.
+Browser login for Anthropic and OpenAI Codex also accepts a pasted callback URL
+or code using the same authorization transaction; it does not start a second
+login. A supplied state must match the pending transaction. Escape cancels the
+pending flow. OpenAI Codex requires the browser callback transaction and has no
+standalone manual-code login.
+
+### GitHub Copilot
+
+Copilot uses the account's short-lived inference token. Claude models use the
+Anthropic Messages API with Copilot Bearer authentication, without Claude Code
+identity headers. Newer GPT, Grok, and MAI models use Responses; older GPT-4 and
+Grok Code models remain on Chat Completions. Gemini and Kimi use Chat Completions
+without `reasoning_effort`. Requests carry user/agent initiator metadata and an
+image request header when appropriate.
+
+Authenticated model discovery filters the runtime catalog by picker visibility,
+policy state, and tool-call support. The individual-account endpoint may fall
+back to explicitly enabled policies when no eligible picker entries exist;
+other endpoints cannot. Zut never enables policies automatically. Availability
+is a selection aid, not an authorization guarantee, and remains in memory rather
+than the shared model cache. Failed discovery retains the previous snapshot.
+Background discovery does not run command-backed credentials. Until discovery
+succeeds, the static catalog is visible. Existing sessions and explicit model
+selection still resolve catalog metadata for models hidden from the picker.
+The default Copilot model is `claude-sonnet-5`. User model overrides retain
+Copilot protocol defaults unless an explicit API or `reasoningLevelMap` overrides
+them. For Copilot rows, the `anthropic` and `openai` API aliases select Messages
+and Chat Completions respectively. Claude 4.5/4.6 rows use explicit thinking
+budgets. The retired
+`mai-code-1-flash-picker` is not in the static catalog; `mai-code-1.1-flash` is.
+
 ## API-key providers
 
 These providers can use environment variables. Simple API-key providers can
@@ -478,11 +510,18 @@ unknown `api` value falls back to `openai` with a warning.
 ```
 
 Custom providers are first-class: they appear in `--list-models`, `/model`, and
-`/login`. `models.json` never stores secrets. Supply the key through `/login`,
-`--api-key`, or a derived environment variable in upper snake case, so
-`my-company` reads `MY_COMPANY_API_KEY`. Because many self-hosted gateways do
-not expose a model-list endpoint, custom provider keys are accepted and stored
-without a verification probe; an invalid key surfaces on the first model call.
+`/login`. `models.json` never stores secrets. For authenticated endpoints, supply
+the key through `/login`, `--api-key`, or a derived environment variable in upper
+snake case, so `my-company` reads `MY_COMPANY_API_KEY`. Custom endpoints with a
+configured base URL can also run without a key. Set `"auth": "none"` on a custom
+provider to ignore inherited, CLI, environment, and stored credentials, including
+command-backed keys, for inference and discovery. Use this only with trusted
+keyless endpoints. Built-in providers retain their own authentication rules;
+setting `auth: "none"` on a built-in provider is ignored with a warning.
+
+Custom provider keys are accepted and stored without a verification probe,
+because many self-hosted gateways do not expose a model-list endpoint; an invalid
+key surfaces on the first model call.
 
 To retrieve this custom provider's key from a password manager, add a matching
 entry to `$ZUT_HOME/auth.json`:
@@ -507,6 +546,54 @@ custom model directly:
 ```sh
 zut --provider my-company --model company-llm-v2
 ```
+
+### Custom model discovery
+
+Set `"discover": true` at the custom provider level to list models from its
+OpenAI-style `/models` endpoint. Discovery is off by default and requires a
+provider-level `baseUrl`; static model entries override discovered metadata.
+For a local keyless server:
+
+```json
+{
+  "providers": {
+    "local-gateway": {
+      "baseUrl": "http://127.0.0.1:48000/v1",
+      "api": "openai",
+      "auth": "none",
+      "discover": true,
+      "models": [
+        { "id": "local-model", "contextWindow": 65536, "maxTokens": 8192 }
+      ]
+    }
+  }
+}
+```
+
+Zut requests `<baseUrl>/models`, or `<baseUrl>/v1/models` when the base has no
+version suffix, with a three-second timeout and an eight-MiB response limit.
+The response must contain `{"data": [{"id": "model-id"}]}`. Discovery trusts IDs
+only: default metadata is 32,768 context tokens, 4,096 output tokens, zero pricing,
+and no reasoning controls. IDs containing `embed` are skipped. Configure explicit
+model metadata to raise limits or enable reasoning. Discovery always verifies
+TLS certificates; `--insecure` and the saved insecure setting apply to inference,
+not discovery. For self-signed servers, install a trusted certificate chain.
+
+Discovery runs in the background at startup and when `/model` opens. Launching
+with an unknown model from a discovery-enabled provider probes only that
+selected provider, without touching other providers' endpoints or key commands.
+`/model` refreshes configured llama.cpp and custom catalogs with independent three-second
+timeouts and still opens the picker if a refresh fails, showing the error.
+Lists stay in memory, separate from the cloud model cache. Failed refreshes
+retain the previous provider snapshot. Background discovery never executes an
+`api_key_command` and skips a provider whose only key is command-backed; an
+explicit refresh may execute that command. The refresh budget also bounds the
+key command; a slow or interactive password-manager prompt can time out.
+Environment or stored keys are used when available unless `auth` is `none`; no
+key is required for a keyless server. If an explicitly selected custom model is
+unknown and discovery fails, inference can still attempt it with the existing
+128,000-context / 16,384-output fallback. Configure static model limits to avoid
+relying on either fallback.
 
 ## Credential resolution
 

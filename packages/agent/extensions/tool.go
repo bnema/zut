@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,20 +36,45 @@ type extensionTool struct {
 	manager     *Manager
 	timeout     time.Duration
 	deferred    bool
+	interactive bool
+}
+
+// defaultToolTimeout is the reply deadline for ordinary extension tools.
+const defaultToolTimeout = 60 * time.Second
+
+// InteractiveTool is implemented by extension tools that wait for user
+// input. Hosts that build child or headless registries from a parent's
+// catalogue can use IsInteractiveTool to exclude them explicitly instead of
+// relying on the runtime rejection in Execute.
+type InteractiveTool interface {
+	Interactive() bool
+}
+
+// IsInteractiveTool reports whether t is an interactive extension tool.
+func IsInteractiveTool(t core.Tool) bool {
+	it, ok := t.(InteractiveTool)
+	return ok && it.Interactive()
 }
 
 // NewTool returns a core.Tool that round-trips invocations through
-// mgr to the extension that registered (name, schema). The default
-// per-call timeout is 60 seconds; callers can override.
+// mgr to the extension that registered (name, schema). Ordinary tools
+// must reply within 60 seconds. Interactive tools have no host reply
+// deadline; the agent context, its deadline, and extension disconnects
+// still end the call.
 func NewTool(mgr *Manager, info ToolInfo) core.Tool {
+	timeout := defaultToolTimeout
+	if info.Interactive {
+		timeout = 0
+	}
 	return &extensionTool{
 		name:        info.Name,
 		description: info.Description,
 		schema:      info.Schema,
 		extension:   info.Extension,
 		manager:     mgr,
-		timeout:     60 * time.Second,
+		timeout:     timeout,
 		deferred:    info.Deferred,
+		interactive: info.Interactive,
 	}
 }
 
@@ -57,6 +83,7 @@ func (t *extensionTool) Description() string     { return t.description }
 func (t *extensionTool) Schema() json.RawMessage { return t.schema }
 func (t *extensionTool) Extension() string       { return t.extension }
 func (t *extensionTool) Deferred() bool          { return t.deferred }
+func (t *extensionTool) Interactive() bool       { return t.interactive }
 
 // Execute is what the agent calls when the LLM invokes the tool. It
 // hands args to the owning extension, waits up to t.timeout for the
@@ -65,8 +92,22 @@ func (t *extensionTool) Execute(ctx context.Context, args json.RawMessage, _ fun
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
+	if t.interactive && !t.manager.supportsInteractiveTools() {
+		// Fail closed: a headless host has nowhere to show the prompt, so
+		// waiting without a deadline would hang the run.
+		return core.ToolResult{
+			IsError: true,
+			Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("extension %s/%s is interactive and requires an interactive host", t.extension, t.name)}},
+		}, nil
+	}
 	resp, err := t.manager.InvokeTool(ctx, t.name, args, t.timeout)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return core.ToolResult{
+				IsError: true,
+				Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("extension %s/%s cancelled: %v", t.extension, t.name, err)}},
+			}, nil
+		}
 		return core.ToolResult{
 			IsError: true,
 			Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("extension %s/%s failed: %v", t.extension, t.name, err)}},

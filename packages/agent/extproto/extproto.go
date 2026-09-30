@@ -48,6 +48,11 @@ type RegisterToolFromExt struct {
 	Description string          `json:"description,omitempty"`
 	Schema      json.RawMessage `json:"schema"`
 	Deferred    bool            `json:"deferred,omitempty"`
+	// Interactive marks a tool that intentionally waits for user input. The
+	// host applies no reply deadline; context cancellation, deadlines, and
+	// disconnects still end the call. Headless hosts reject such tools.
+	// Older hosts ignore the field and keep their normal timeout.
+	Interactive bool `json:"interactive,omitempty"`
 }
 
 type ReadyFromExt struct {
@@ -245,6 +250,14 @@ type CommandInvokedFromHost struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Args string `json:"args,omitempty"`
+}
+
+// ToolCancelFromHost asks the extension to stop an abandoned tool
+// invocation. Sent best-effort, and only to extensions that advertised the
+// "tool_cancel" capability in hello. ID is the tool_call correlation id.
+type ToolCancelFromHost struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
 }
 
 type ToolCallFromHost struct {

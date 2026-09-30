@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -350,6 +351,9 @@ func residentChildRegistry(catalogue core.Registry, names []string) (core.Regist
 		tool, ok := catalogue[name]
 		if !ok {
 			return nil, fmt.Errorf("resident child declares unavailable tool %q", name)
+		}
+		if extensions.IsInteractiveTool(tool) {
+			return nil, fmt.Errorf("resident child tool %q is interactive and not allowed", name)
 		}
 		registry[name] = tool
 	}

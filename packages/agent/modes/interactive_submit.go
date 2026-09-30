@@ -17,6 +17,9 @@ func (i *Interactive) Submit(text string) {
 	i.mu.Unlock()
 	if !awaitingStartupPre {
 		i.maybeStartSessionTitle(parent, text)
+		// Initial and deferred input are user prompts; the startup command
+		// itself is not and leaves the pins pending.
+		text = i.consumePinnedSkills(text)
 	}
 	i.startTurn(parent, text)
 }
@@ -48,6 +51,9 @@ func (i *Interactive) completeStartupPre() {
 // single-threaded. Input entered while resources were reloading wins over the
 // deferred prefill rather than being overwritten.
 func (i *Interactive) applyStartupPreResult(result startupPreResult) {
+	// entry.pre may have added or removed skills; re-resolve the pending pins
+	// without holding the interactive mutex.
+	i.refreshPendingSkillPins()
 	if result.deferred == "" {
 		return
 	}

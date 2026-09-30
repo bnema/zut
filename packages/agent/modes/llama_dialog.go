@@ -130,7 +130,7 @@ func (d *llamaDialog) refresh(next llamaDialogStep, message string) {
 		}
 		return models[i].ID < models[j].ID
 	})
-	provider.SetManagedModels(provider.LlamaCPPModels(models, client.ServerURL))
+	provider.SetManagedModelsForProvider(provider.LlamaCPPProviderID, provider.LlamaCPPModels(models, client.ServerURL))
 	d.mu.Lock()
 	if d.step != llamaClosed {
 		d.models = models

@@ -225,14 +225,19 @@ type bedrockRequest struct {
 	} `json:"toolConfig,omitempty"`
 }
 
+// normalizeBedrockToolResults places each tool result directly after the
+// assistant turn that issued its call. Providers can reuse a tool ID across
+// turns, so results are queued per ID in transcript order and consumed by
+// successive calls. Orphaned or excess results are dropped first, using the
+// same chronological pairing as every other provider request builder, so a
+// stray early result cannot shift onto a later call that reuses its ID.
 func normalizeBedrockToolResults(msgs []Message) []Message {
-	resultByID := map[string]ToolResultBlock{}
+	msgs = RepairOrphanedToolResults(msgs)
+	resultsByID := map[string][]ToolResultBlock{}
 	for _, m := range msgs {
 		for _, c := range m.Content {
 			if tr, ok := c.(ToolResultBlock); ok {
-				if _, exists := resultByID[tr.CallID]; !exists {
-					resultByID[tr.CallID] = tr
-				}
+				resultsByID[tr.CallID] = append(resultsByID[tr.CallID], tr)
 			}
 		}
 	}
@@ -265,8 +270,9 @@ func normalizeBedrockToolResults(msgs []Message) []Message {
 
 		results := make([]Content, 0, len(toolCalls))
 		for _, tc := range toolCalls {
-			if tr, ok := resultByID[tc.ID]; ok {
-				results = append(results, tr)
+			if queue := resultsByID[tc.ID]; len(queue) > 0 {
+				results = append(results, queue[0])
+				resultsByID[tc.ID] = queue[1:]
 				continue
 			}
 			results = append(results, ToolResultBlock{

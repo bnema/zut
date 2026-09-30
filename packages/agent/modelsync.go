@@ -304,6 +304,9 @@ func ValidateAndRepairConfig() {
 			// baked-in entries, so an uncached id must survive startup repair.
 			if provider.AcceptsUnlistedModels(cfg.Provider) {
 				// The live refresh will validate the id when it is available.
+			} else if isDiscoverableCustomProvider(cfg.Provider) {
+				// Discovery is transient and has not run yet at repair time; keep
+				// the selection even if another provider has the same model id.
 			} else if isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(modelID) {
 				// Provider is a router and the id is route-qualified; preserve it.
 			} else if m, err := provider.FindModel("", modelID); err == nil {
@@ -344,11 +347,33 @@ func RefreshModelsAsync(explicitProvider, explicitAPIKey string, explicitBaseURL
 		baseURL = explicitBaseURL[0]
 	}
 	go refreshModels(explicitProvider, explicitAPIKey, baseURL, "")
+	go refreshCopilotModelAvailability()
+	go refreshCustomProvidersBackground()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = refreshLlamaCPPModels(ctx, apiKeyCommandSkip)
 	}()
+}
+
+// refreshCopilotModelAvailability filters the Copilot catalog to the models the
+// authenticated account can select. Availability is account-specific, so it
+// lives only in memory and never in the shared disk cache. It never runs an
+// api-key command. Without a credential the restriction is cleared; a failed
+// refresh keeps the previous snapshot (or the static catalog on first load).
+func refreshCopilotModelAvailability() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cred, _, err := resolveCredentialForBackground(ctx, provider.ProviderGitHubCopilot)
+	if err != nil || cred == "" {
+		provider.SetModelAvailability(provider.ProviderGitHubCopilot, nil)
+		return
+	}
+	ids, err := provider.DiscoverCopilotAvailableModels(ctx, cred)
+	if err != nil {
+		return
+	}
+	provider.SetModelAvailability(provider.ProviderGitHubCopilot, ids)
 }
 
 func refreshModelsAsyncForProvider(ctx context.Context, explicitProvider, explicitAPIKey, explicitBaseURL, onlyProvider string) {
@@ -381,7 +406,7 @@ func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) e
 	if err != nil {
 		return err
 	}
-	provider.SetManagedModels(provider.LlamaCPPModels(models, client.ServerURL))
+	provider.SetManagedModelsForProvider(provider.LlamaCPPProviderID, provider.LlamaCPPModels(models, client.ServerURL))
 	return nil
 }
 

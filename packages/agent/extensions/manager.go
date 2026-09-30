@@ -22,9 +22,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -108,11 +110,18 @@ type Extension struct {
 	stdout   io.ReadCloser
 	logFile  *os.File
 	helloAck bool
-	commands []extproto.RegisterCommandFromExt
-	tools    []extproto.RegisterToolFromExt
-	skills   []*skills.Skill
+	// toolCancel records whether the extension advertised the "tool_cancel"
+	// capability in hello. Set during the handshake, before publication.
+	toolCancel bool
+	commands   []extproto.RegisterCommandFromExt
+	tools      []extproto.RegisterToolFromExt
+	skills     []*skills.Skill
 
-	writeMu sync.Mutex // serializes concurrent host→extension frames
+	// writeMu serializes concurrent host→extension frames on plain writers.
+	// Spawned extensions use an orderedPipe, which serializes internally and
+	// bounds every synchronous write; writeMu is then only used by the
+	// lifecycle writer's lock probe.
+	writeMu sync.Mutex
 
 	// lifecycleFrames decouples session-event delivery from the host's
 	// synchronous control paths. The queue preserves lifecycle ordering while
@@ -190,6 +199,24 @@ type HostHooks interface {
 	SetStatus(extName, key, level, text string)
 	SetWidget(extName, id, position, title string, lines []string)
 	ClearWidget(extName, id string)
+}
+
+// InteractiveToolHostHooks is an optional extension to HostHooks. A host
+// that can actually show extension panels and wait for a person returns true
+// from SupportsInteractiveTools. Hosts that do not implement it, or return
+// false, are headless: interactive tool calls fail closed with a tool error
+// instead of waiting forever on an invisible prompt.
+type InteractiveToolHostHooks interface {
+	SupportsInteractiveTools() bool
+}
+
+// supportsInteractiveTools reports whether the current host opted in.
+func (m *Manager) supportsInteractiveTools() bool {
+	if m == nil {
+		return false
+	}
+	h, ok := m.hooks.(InteractiveToolHostHooks)
+	return ok && h.SupportsInteractiveTools()
 }
 
 // AlertHostHooks is an optional extension to HostHooks. Hosts that support
@@ -724,6 +751,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	}
 	// Trust the manifest's name; ignore mismatch from the hello.
 	ext.helloAck = true
+	ext.toolCancel = slices.Contains(hello.Capabilities, "tool_cancel")
 
 	m.mu.RLock()
 	var activeSession *extproto.SessionContext
@@ -745,6 +773,11 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	if _, err := stdin.Write(ack); err != nil {
 		return fmt.Errorf("send hello_ack (stderr log: %s): %w", logPath, err)
 	}
+
+	// Every frame after the handshake goes through the bounded, ordered
+	// transport so a subprocess that stops reading stdin cannot pin host
+	// goroutines indefinitely.
+	ext.stdin = newOrderedPipe(stdin)
 
 	cleanup = false
 
@@ -828,6 +861,13 @@ func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
 // Returns when stdout closes.
 func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 	defer func() {
+		// The peer is gone: disconnect the transport so every pending
+		// synchronous call (including deadline-free interactive tools)
+		// observes the disconnect instead of waiting for a reply that
+		// can never arrive.
+		if ext.stdin != nil {
+			_ = ext.stdin.Close()
+		}
 		// On close, drop every command + tool this extension owned so
 		// future invocations don't dangle. The subprocess is gone; we
 		// won't hear back about its commands or tool calls anymore.
@@ -1053,18 +1093,35 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 
 const lifecycleWriteGrace = 250 * time.Millisecond
 
+// writeFrame sends one synchronous host frame. On the ordered transport the
+// write is serialized and bounded by transportWriteTimeout; on a plain
+// writer (tests, legacy embedders) writeMu provides the serialization.
 func (ext *Extension) writeFrame(frame []byte) (int, error) {
 	if ext == nil || ext.stdin == nil {
 		return 0, fmt.Errorf("extension stdin is closed")
+	}
+	if pipe, ok := ext.stdin.(*orderedPipe); ok {
+		return pipe.Write(frame)
 	}
 	ext.writeMu.Lock()
 	defer ext.writeMu.Unlock()
 	return ext.stdin.Write(frame)
 }
 
-// tryWriteLifecycleFrame bounds only a lifecycle writer's wait for the shared
-// writer lock. Synchronous host frames retain their existing write behavior;
-// a stalled lifecycle snapshot is dropped rather than delaying them.
+// orderedStdin returns the bounded transport when the extension was spawned
+// by this manager. The bool is false for plain writers.
+func (ext *Extension) orderedStdin() (*orderedPipe, bool) {
+	if ext == nil || ext.stdin == nil {
+		return nil, false
+	}
+	pipe, ok := ext.stdin.(*orderedPipe)
+	return pipe, ok
+}
+
+// tryWriteLifecycleFrame bounds a lifecycle writer's wait for writeMu; a
+// snapshot that cannot acquire it is dropped. Frames are serialized and bounded
+// by the ordered transport: a blocked pipe write still triggers its timeout
+// and disconnects the extension.
 func (ext *Extension) tryWriteLifecycleFrame(frame []byte) error {
 	if ext == nil || ext.stdin == nil {
 		return fmt.Errorf("extension stdin is closed")
@@ -1283,6 +1340,8 @@ type ToolInfo struct {
 	Description string
 	Schema      json.RawMessage
 	Deferred    bool
+	// Interactive tools wait for user input and carry no reply deadline.
+	Interactive bool
 }
 
 // Tools returns a snapshot of every (extension, tool) pair currently
@@ -1300,6 +1359,7 @@ func (m *Manager) Tools() []ToolInfo {
 				Description: t.Description,
 				Schema:      t.Schema,
 				Deferred:    t.Deferred,
+				Interactive: t.Interactive,
 			})
 		}
 	}
@@ -1335,7 +1395,18 @@ func (m *Manager) HasTool(name string) bool {
 // InvokeTool sends a tool_call to the owning extension and waits for
 // the matching tool_result. Used by the core.Tool wrapper that the
 // agent registers per extension-defined tool.
+//
+// timeout bounds the wait for the reply; timeout <= 0 means no reply
+// deadline (interactive tools). Regardless of timeout, the request write is
+// bounded by the transport, and context cancellation, context deadlines, and
+// an extension disconnect always end the call. When the call is abandoned
+// after the request was delivered, a best-effort tool_cancel is sent to
+// extensions that advertised the "tool_cancel" capability. A late
+// tool_result for an abandoned id is ignored.
 func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error) {
+	if err := ctx.Err(); err != nil {
+		return extproto.ToolResultFromExt{}, err
+	}
 	m.mu.RLock()
 	ext, ok := m.toolIndex[name]
 	m.mu.RUnlock()
@@ -1348,6 +1419,11 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 	ext.mu.Lock()
 	ext.pendingTool[id] = ch
 	ext.mu.Unlock()
+	defer func() {
+		ext.mu.Lock()
+		delete(ext.pendingTool, id)
+		ext.mu.Unlock()
+	}()
 
 	frame, _ := extproto.Encode(extproto.ToolCallFromHost{
 		Type: "tool_call",
@@ -1355,26 +1431,57 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 		Name: name,
 		Args: args,
 	})
-	if _, err := ext.writeFrame(frame); err != nil {
-		ext.mu.Lock()
-		delete(ext.pendingTool, id)
-		ext.mu.Unlock()
+	var disconnected <-chan struct{}
+	var err error
+	pipe, ordered := ext.orderedStdin()
+	if ordered {
+		disconnected = pipe.Done()
+		_, err = pipe.writeContext(ctx, frame, transportWriteTimeout)
+	} else {
+		_, err = ext.writeFrame(frame)
+	}
+	if err != nil {
 		return extproto.ToolResultFromExt{}, fmt.Errorf("write: %w", err)
 	}
 
+	// cancelRemote tells a capable extension to abandon the delivered
+	// invocation. Enqueue only: the caller is already leaving and must not
+	// block on a stalled pipe.
+	cancelRemote := func() {
+		if !ordered || !ext.toolCancel {
+			return
+		}
+		cancelFrame, encErr := extproto.Encode(extproto.ToolCancelFromHost{Type: "tool_cancel", ID: id})
+		if encErr != nil {
+			return
+		}
+		_, _ = pipe.enqueue(cancelFrame, nil)
+	}
+
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(timeout):
-		ext.mu.Lock()
-		delete(ext.pendingTool, id)
-		ext.mu.Unlock()
-		return extproto.ToolResultFromExt{}, fmt.Errorf("timeout waiting for %s/%s", ext.Manifest.Name, name)
+	case <-deadline:
+		cancelRemote()
+		return extproto.ToolResultFromExt{}, fmt.Errorf("timeout waiting for %s/%s: %w", ext.Manifest.Name, name, context.DeadlineExceeded)
 	case <-ctx.Done():
-		ext.mu.Lock()
-		delete(ext.pendingTool, id)
-		ext.mu.Unlock()
+		cancelRemote()
 		return extproto.ToolResultFromExt{}, ctx.Err()
+	case <-disconnected:
+		// readLoop may have delivered a result immediately before EOF. Prefer
+		// that completed reply over the simultaneously ready disconnect.
+		select {
+		case resp := <-ch:
+			return resp, nil
+		default:
+		}
+		return extproto.ToolResultFromExt{}, fmt.Errorf("extension %s disconnected", ext.Manifest.Name)
 	}
 }
 
@@ -1482,17 +1589,30 @@ func (m *Manager) Stop(gracePeriod time.Duration) {
 }
 
 func stopExtensions(exts []*Extension, gracePeriod time.Duration) {
+	deadline := time.Now().Add(gracePeriod)
 	for _, ext := range exts {
 		if ext.stdin == nil {
 			continue
 		}
 		if frame, err := extproto.Encode(extproto.ShutdownFromHost{Type: "shutdown"}); err == nil {
-			_, _ = ext.writeFrame(frame)
+			if pipe, ok := ext.orderedStdin(); ok {
+				// Never wait longer than the shutdown grace for a peer that
+				// stopped reading; the process is killed below anyway.
+				wait := time.Until(deadline)
+				if wait > transportWriteTimeout {
+					wait = transportWriteTimeout
+				}
+				if wait < 50*time.Millisecond {
+					wait = 50 * time.Millisecond
+				}
+				_, _ = pipe.writeContext(context.Background(), frame, wait)
+			} else {
+				_, _ = ext.writeFrame(frame)
+			}
 		}
 		_ = ext.stdin.Close()
 	}
 
-	deadline := time.Now().Add(gracePeriod)
 	for _, ext := range exts {
 		if ext.cmd == nil {
 			if ext.logFile != nil {
@@ -1535,9 +1655,11 @@ func (m *Manager) All() []*Extension {
 	return out
 }
 
-// newCorrelationID returns a short non-cryptographic id. We don't
-// need uniqueness across processes, just within the lifetime of one
-// extension's pending map.
+var correlationSequence atomic.Uint64
+
+// newCorrelationID returns an id that is unique within this host process.
+// Two invocations issued in the same microsecond must never share a pending
+// slot, so a monotonic counter replaces the former clock-derived id.
 func newCorrelationID() string {
-	return strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	return fmt.Sprintf("c%d", correlationSequence.Add(1))
 }

@@ -132,30 +132,27 @@ type ReasoningBlock struct {
 func (ReasoningBlock) isContent() {}
 
 // RepairOrphanedToolResults removes invalid tool_result content blocks
-// and entire messages that become empty. A result is invalid when its
-// matching tool_use ID does not appear anywhere in the messages or when
-// an earlier result already covers the same ID. Resume tails, compaction
-// repair, and provider request builders all need this so the upstream API
-// sees exactly one result for each referenced tool call.
+// and entire messages that become empty. A result is invalid when there
+// is no preceding unmatched tool_use with the same ID in the messages.
+// Tool IDs normally are unique, but a provider can reuse one across turns.
+// Counting occurrences preserves each valid pair while still dropping
+// duplicate results. Resume tails, compaction repair, and provider request
+// builders all need this so the upstream API sees one result for each
+// referenced tool call.
 func RepairOrphanedToolResults(msgs []Message) []Message {
-	useIDs := map[string]bool{}
-	for _, m := range msgs {
-		for _, c := range m.Content {
-			if tc, ok := c.(ToolCallBlock); ok {
-				useIDs[tc.ID] = true
-			}
-		}
-	}
-	resultIDs := map[string]bool{}
+	openCalls := map[string]int{}
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
 		var filtered []Content
 		for _, c := range m.Content {
-			if tr, ok := c.(ToolResultBlock); ok {
-				if !useIDs[tr.CallID] || resultIDs[tr.CallID] {
+			switch block := c.(type) {
+			case ToolCallBlock:
+				openCalls[block.ID]++
+			case ToolResultBlock:
+				if openCalls[block.CallID] == 0 {
 					continue
 				}
-				resultIDs[tr.CallID] = true
+				openCalls[block.CallID]--
 			}
 			filtered = append(filtered, c)
 		}

@@ -251,13 +251,18 @@ func LanguageFromPath(p string) string {
 	return extLang[ext]
 }
 
-// chooseLexer picks the best lexer for a language hint; falls back to
-// nil (no highlighting) if the hint is empty or unknown.
 // stripANSIBackgrounds removes SGR background-color attributes emitted by
 // terminal syntax formatters while preserving foreground colors and styles.
 // Chroma's inherited styles can assign black backgrounds to a few tokens
 // (notably punctuation/error-ish spans), which looks like random black blocks
 // inside zut's dark-gray tool boxes. Foreground color is enough for code.
+//
+// Extended color parameters ("38;5;N", "38;2;R;G;B" and their "48;..."
+// background twins) are consumed as whole units. The color index of an
+// extended foreground is a value, not a standalone ANSI code: stripping a
+// "45" or "101" out of "\x1b[38;5;45m" leaves the malformed "\x1b[38;5m",
+// whose leftover "5" terminals read as blink (SGR 5). A truncated extended
+// color cannot be rendered anyway, so it is dropped rather than forwarded.
 func stripANSIBackgrounds(s string) string {
 	var out strings.Builder
 	out.Grow(len(s))
@@ -280,16 +285,14 @@ func stripANSIBackgrounds(s string) string {
 		for p := 0; p < len(params); p++ {
 			param := params[p]
 			switch param {
-			case "48":
-				// 48;5;N or 48;2;R;G;B background color.
-				if p+1 < len(params) && params[p+1] == "5" {
-					p += 2
-					continue
+			case "38", "48":
+				span, complete := extendedColorSpan(params, p)
+				if complete && param == "38" {
+					kept = append(kept, span...)
 				}
-				if p+1 < len(params) && params[p+1] == "2" {
-					p += 4
-					continue
-				}
+				// Consume the whole unit either way: a truncated
+				// "38;5" must not leave its "5" to be read as blink.
+				p += len(span) - 1
 				continue
 			case "49":
 				continue
@@ -313,6 +316,32 @@ func stripANSIBackgrounds(s string) string {
 	return out.String()
 }
 
+// extendedColorSpan returns the parameter run that belongs to the extended
+// color starting at params[i] ("38" or "48"): "5;N" or "2;R;G;B". complete
+// reports whether the run can be rendered; a truncated run is still returned
+// so its parameters are consumed instead of being reprocessed as standalone
+// codes (a bare "5" would mean blink).
+func extendedColorSpan(params []string, i int) (span []string, complete bool) {
+	if i+1 >= len(params) {
+		return params[i : i+1], false
+	}
+	switch params[i+1] {
+	case "5":
+		if i+2 >= len(params) {
+			return params[i : i+2], false
+		}
+		return params[i : i+3], true
+	case "2":
+		if i+5 > len(params) {
+			return params[i:], false
+		}
+		return params[i : i+5], true
+	}
+	return params[i : i+1], false
+}
+
+// chooseLexer picks the best lexer for a language hint; falls back to
+// nil (no highlighting) if the hint is empty or unknown.
 func chooseLexer(lang string) chroma.Lexer {
 	if lang == "" {
 		return nil

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	zutdocs "github.com/bnema/zut"
 	"github.com/bnema/zut/packages/agent/lsp"
@@ -69,6 +70,11 @@ type Resolved struct {
 	// client construction does not reread a mutable global registry.
 	customProviderConfig *provider.CustomProviderConfig
 
+	// credentialOptional marks a configured custom endpoint that may run
+	// without any API credential (keyless). Credential stays empty then, so
+	// clients send no Authorization header.
+	credentialOptional bool
+
 	// SkillTool is the on-demand skill loader registered with the
 	// agent's tool registry, or nil if no SKILL.md files were
 	// discovered. Exposed so the tui can list / preview skills.
@@ -93,8 +99,11 @@ type Resolved struct {
 	toolDescriptions map[string]string
 }
 
-// HasCredential reports whether a credential was resolved.
-func (r Resolved) HasCredential() bool { return r.Credential != "" }
+// HasCredential reports whether the resolved configuration can create a client.
+// Configured custom endpoints may intentionally omit an API credential.
+func (r Resolved) HasCredential() bool {
+	return r.Credential != "" || r.credentialOptional
+}
 
 // ModelCatalogSnapshot returns the runtime-owned model metadata captured while
 // resolving. It is used by SDK clients whose provider catalog is scoped to a
@@ -235,6 +244,7 @@ type ExtensionToolInfo struct {
 	Description string
 	Schema      []byte
 	Deferred    bool
+	Interactive bool
 }
 
 // toolSummariesFromRegistry rebuilds the system-prompt tool list
@@ -343,7 +353,7 @@ func defaultModelForProvider(prov string) string {
 	case provider.ProviderAzureOpenAIResponses:
 		return "gpt-5"
 	case provider.ProviderGitHubCopilot:
-		return "claude-sonnet-4.5"
+		return "claude-sonnet-5"
 	default:
 		// Custom providers: pick the first model from the catalog for
 		// that provider, or fall back to the global default.
@@ -590,6 +600,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		repairConfig = true
 	}
 
+	// An explicit auth:"none" custom provider ignores CLI, env, and stored
+	// credentials entirely and never runs a stored api-key command.
+	customCfg, customProvider := provider.CustomProviders()[provName]
+	keylessCustom := customProvider && !isBuiltinProvider(provName) && customCfg.NoAuth
+
 	var (
 		cred      string
 		method    string
@@ -601,7 +616,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// "ollama" credential never triggers the cloud default.
 		hasRealOllamaCred bool
 	)
-	if provName == "ollama" {
+	if keylessCustom {
+		// Explicit keyless configuration takes precedence over CLI, env, and
+		// stored credentials. Never execute a stored API key command.
+		cred, method, accountID, credErr = "", "", "", nil
+	} else if provName == "ollama" {
 		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
 		if credErr != nil {
 			// Local ollama needs no key: fall back to the dummy
@@ -616,7 +635,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// Persist --api-key for custom providers so subsequent runs don't
 	// need to pass it again.
-	if !isBuiltinProvider(provName) && args.APIKey != "" {
+	if !isBuiltinProvider(provName) && !keylessCustom && args.APIKey != "" {
 		if store := AuthStoreFor(); store != nil {
 			_ = store.SetAPIKey(provName, args.APIKey)
 		}
@@ -705,6 +724,17 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			}
 		} else if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
 			model = defaultModelForProvider(provName)
+		}
+	}
+	if isDiscoverableCustomProvider(provName) {
+		if _, ferr := provider.FindModel(provName, model); ferr != nil {
+			// Restore discovery-enabled custom models after restart. Skipped
+			// when the model is already known to avoid a probe per launch.
+			// Scoped to the selected provider: other providers' endpoints and
+			// api-key commands must not run for this launch.
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = refreshCustomProviderModel(ctx, provName, apiKeyCommandExecute)
+			cancel()
 		}
 	}
 	resolvedModel, err := findModelForResolve(provName, model, args.modelCatalog)
@@ -820,7 +850,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		_ = SaveConfig(cfg)
 	}
 
-	explicitBaseURL := args.BaseURL != "" || (resolvedModel.Source == "user" && resolvedModel.BaseURL != "")
+	// Discovered custom-provider models inherit the user's models.json
+	// endpoint, so they count as explicit for --insecure scoping too.
+	discoveredCustom := resolvedModel.Source == "live" && isDiscoverableCustomProvider(provName)
+	explicitBaseURL := args.BaseURL != "" || ((resolvedModel.Source == "user" || discoveredCustom) && resolvedModel.BaseURL != "")
 
 	// If the model defines a base URL (e.g. local ollama) and the
 	// user didn't pass --base-url, use the model's URL. For ollama,
@@ -859,8 +892,21 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// If the model has a base URL, credentials are optional (local
 	// models like ollama don't need real API keys).
-	if resolvedModel.BaseURL != "" && credErr != nil {
-		cred = "ollama"
+	credentialOptional := false
+	if keylessCustom {
+		if args.BaseURL == "" {
+			return Resolved{}, fmt.Errorf("custom provider %q has auth none but no base URL", provName)
+		}
+		credentialOptional = true
+		requireCred = false
+	} else if resolvedModel.BaseURL != "" && credErr != nil {
+		if customProviderConfig != nil && !isBuiltinProvider(provName) {
+			// A custom endpoint may be configured for keyless access. Keep the
+			// credential empty so no placeholder token is ever sent.
+			credentialOptional = true
+		} else {
+			cred = "ollama"
+		}
 		credErr = nil
 		requireCred = false
 	}
@@ -1013,6 +1059,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		modelCatalog:              modelCatalog,
 		modelCatalogAuthoritative: args.modelCatalogAuthoritative,
 		customProviderConfig:      customProviderConfig,
+		credentialOptional:        credentialOptional,
 		Sandbox:                   sandbox,
 		SkillTool:                 skillTool,
 		skillsEnabled:             skillsEnabled,
@@ -1133,7 +1180,7 @@ func descMapFromSummaries(summaries []ToolSummary) map[string]string {
 // must check HasCredential() first.
 func (r Resolved) NewClient() provider.Client {
 	if !r.HasCredential() {
-		panic("NewClient called without credential; check HasCredential first")
+		panic("NewClient called without credential or keyless endpoint; check HasCredential first")
 	}
 	wrap := r.withHTTPClient
 	switch r.Provider {

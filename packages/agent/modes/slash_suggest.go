@@ -59,7 +59,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/fork", Desc: "pick a user message and fork the current session"},
-	{Name: "/session", Desc: "export/import, fork, or browse the current session tree"},
+	{Name: "/session", Desc: "inspect, export, import, fork, or browse the current session"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
 	{Name: "/compact", Desc: "summarize and replace the transcript to free up context"},
 	{Name: "/study", Desc: "read every file in the cwd (or a passed file/dir) so the agent has full context"},
@@ -73,6 +73,14 @@ var slashCatalog = []slashCommand{
 	{Name: "/settings", Desc: "open settings"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zut"},
+}
+
+var sessionSlashCommands = []slashCommand{
+	{Name: "/session timeline", Desc: "inspect context, messages, and tool calls"},
+	{Name: "/session export", Desc: "write the current session to a .zutsession file"},
+	{Name: "/session import", Desc: "load a .zutsession file into this directory"},
+	{Name: "/session fork", Desc: "branch from a past user message"},
+	{Name: "/session tree", Desc: "switch between session branches"},
 }
 
 // slashSuggester renders the popup that appears when the editor starts
@@ -285,15 +293,26 @@ func newSlashSuggester() *slashSuggester { return &slashSuggester{} }
 // matches returns the commands whose name has input as a prefix.
 // If input is just "/", everything is shown.
 func (s *slashSuggester) matches(input string) []slashCommand {
-	input = strings.TrimRight(input, " ")
 	if input == "" || !strings.HasPrefix(input, "/") {
 		return nil
 	}
-	// If there is a space, the user has moved past the command name.
-	if idx := strings.IndexByte(input, ' '); idx >= 0 {
+	matchPrefix := strings.ToLower(input)
+	// /session exposes its actions after the first space.
+	if strings.HasPrefix(matchPrefix, "/session ") {
+		var out []slashCommand
+		for _, c := range sessionSlashCommands {
+			if strings.HasPrefix(strings.ToLower(c.Name), matchPrefix) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	// Any other command: a space means the user has moved on to its arguments.
+	input = strings.TrimRight(input, " ")
+	if strings.ContainsRune(input, ' ') {
 		return nil
 	}
-	matchPrefix := strings.ToLower(input)
+	matchPrefix = strings.ToLower(input)
 	catalog := s.allCatalog()
 	if strings.HasPrefix(matchPrefix, skillCommandPrefix) {
 		catalog = s.skills
@@ -311,7 +330,15 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 			out = append(out, c)
 		}
 	}
-	return pruneOrphanHeaders(out)
+	out = pruneOrphanHeaders(out)
+	// Prefer an exact command over longer commands sharing its prefix so
+	// /session stays selected instead of the earlier /sessions entry.
+	for _, c := range out {
+		if !c.Header && strings.EqualFold(c.Name, input) {
+			return []slashCommand{c}
+		}
+	}
+	return out
 }
 
 // pruneOrphanHeaders removes header rows that have no commands

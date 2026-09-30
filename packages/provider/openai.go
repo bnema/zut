@@ -614,7 +614,10 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		}
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", "text/event-stream")
-		httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
+		if c.apiKey != "" {
+			// Keyless custom endpoints send no Authorization header at all.
+			httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
+		}
 		for k, v := range c.headers {
 			httpReq.Header.Set(k, v)
 		}

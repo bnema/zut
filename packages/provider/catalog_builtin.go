@@ -14,7 +14,14 @@ package provider
 // the small seed list for kimi / deepseek / google) are not duplicated
 // here; they take precedence on (provider, id) match.
 
-func init() { Catalog = append(Catalog, builtinCatalog...) }
+func init() {
+	for i := range builtinCatalog {
+		if builtinCatalog[i].Provider == ProviderGitHubCopilot {
+			configureCopilotModel(&builtinCatalog[i])
+		}
+	}
+	Catalog = append(Catalog, builtinCatalog...)
+}
 
 var builtinCatalog = []Model{
 	// ----- amazon-bedrock -----
@@ -141,28 +148,48 @@ var builtinCatalog = []Model{
 	{Provider: "fireworks", ID: "accounts/fireworks/routers/glm-5p1-fast", DisplayName: "GLM 5.1 Fast", ContextWindow: 202800, MaxOutput: 131072, Reasoning: true, PriceInput: 2.8, PriceOutput: 8.8, PriceCacheRead: 0.52, BaseURL: "https://api.fireworks.ai/inference"},
 	{Provider: "fireworks", ID: "accounts/fireworks/routers/kimi-k2p6-turbo", DisplayName: "Kimi K2.6 Turbo", ContextWindow: 262000, MaxOutput: 262000, Reasoning: true, PriceInput: 2, PriceOutput: 8, PriceCacheRead: 0.3, BaseURL: "https://api.fireworks.ai/inference"},
 	// ----- github-copilot -----
+	// Copilot model metadata follows the upstream catalog; availability is
+	// filtered at runtime using the account's inference model list.
+	{Provider: "github-copilot", ID: "claude-fable-5", DisplayName: "Claude Fable 5", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true, PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-fable-5.1", DisplayName: "Claude Fable 5.1", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true, PriceInput: 10, PriceOutput: 50, PriceCacheRead: 0.25, PriceCacheWrite: 12.5, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-opus-4.8-fast", DisplayName: "Claude Opus 4.8 (fast mode)", ContextWindow: 200000, MaxOutput: 64000, Reasoning: true, AdaptiveThinking: true, PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-opus-5", DisplayName: "Claude Opus 5", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, AdaptiveThinking: true, PriceInput: 5, PriceOutput: 25, PriceCacheRead: 0.5, PriceCacheWrite: 6.25, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-3.6-flash", DisplayName: "Gemini 3.6 Flash", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, PriceInput: 0.75, PriceOutput: 3.75, PriceCacheRead: 0.075, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-3.7-flash", DisplayName: "Gemini 3.7 Flash", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, PriceInput: 0.75, PriceOutput: 3.75, PriceCacheRead: 0.075, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-3.8-flash", DisplayName: "Gemini 3.8 Flash", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, PriceInput: 0.75, PriceOutput: 3.75, PriceCacheRead: 0.075, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "grok-4.5", DisplayName: "Grok 4.5", ContextWindow: 500000, MaxOutput: 128000, Reasoning: true, PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.5, PriceTierInputTokens: 200000, PriceInputAbove: 4, PriceOutputAbove: 12, PriceCacheReadAbove: 1, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "grok-4.6", DisplayName: "Grok 4.6", ContextWindow: 500000, MaxOutput: 128000, Reasoning: true, PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.5, PriceTierInputTokens: 200000, PriceInputAbove: 4, PriceOutputAbove: 12, PriceCacheReadAbove: 1, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code", ContextWindow: 256000, MaxOutput: 32000, Reasoning: true, PriceInput: 0.95, PriceOutput: 4, PriceCacheRead: 0.19, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "kimi-k3", DisplayName: "Kimi K3", ContextWindow: 1048576, MaxOutput: 131072, Reasoning: true, PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "mai-code-1.1-flash", DisplayName: "MAI-Code-1.1-Flash", ContextWindow: 256000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5", ContextWindow: 144000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "claude-opus-4.5", DisplayName: "Claude Opus 4.5", ContextWindow: 160000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "claude-opus-4.6", DisplayName: "Claude Opus 4.6", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "claude-opus-4.7", DisplayName: "Claude Opus 4.7", ContextWindow: 144000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "claude-opus-4.8", DisplayName: "Claude Opus 4.8", ContextWindow: 144000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "claude-sonnet-4.5", DisplayName: "Claude Sonnet 4.5", ContextWindow: 144000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6", ContextWindow: 1000000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", ContextWindow: 128000, MaxOutput: 64000, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gemini-3-flash-preview", DisplayName: "Gemini 3 Flash", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gemini-3.1-pro-preview", DisplayName: "Gemini 3.1 Pro Preview", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gemini-3.5-flash", DisplayName: "Gemini 3.5 Flash", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gpt-4.1", DisplayName: "GPT-4.1", ContextWindow: 128000, MaxOutput: 16384, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gpt-4o", DisplayName: "GPT-4o", ContextWindow: 128000, MaxOutput: 4096, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gpt-5-mini", DisplayName: "GPT-5-mini", ContextWindow: 264000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gpt-5.2", DisplayName: "GPT-5.2", ContextWindow: 264000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "gpt-5.2-codex", DisplayName: "GPT-5.2-Codex", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gpt-5.3-codex", DisplayName: "GPT-5.3-Codex", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gpt-5.4", DisplayName: "GPT-5.4", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "gpt-5.5", DisplayName: "GPT-5.5", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "grok-code-fast-1", DisplayName: "Grok Code Fast 1", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", API: APIResponses, ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", API: APIResponses, ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", API: APIResponses, ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-6-astra", DisplayName: "GPT-6 Astra", API: APIResponses, ContextWindow: 1050000, MaxOutput: 128000, Reasoning: true, PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5, PriceTierInputTokens: 272000, PriceInputAbove: 20, PriceOutputAbove: 75, PriceCacheReadAbove: 2, PriceCacheWriteAbove: 25, BaseURL: "https://api.individual.githubcopilot.com"},
+	// Availability varies by account; keep metadata for explicit selections
+	// and existing sessions even when a model is hidden from the picker.
+	{Provider: "github-copilot", ID: "claude-opus-4.5", DisplayName: "Claude Opus 4.5", ContextWindow: 160000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-opus-4.6", DisplayName: "Claude Opus 4.6", ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-sonnet-4.5", DisplayName: "Claude Sonnet 4.5", ContextWindow: 144000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6", ContextWindow: 1000000, MaxOutput: 32000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", ContextWindow: 128000, MaxOutput: 64000, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-3-flash-preview", DisplayName: "Gemini 3 Flash", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-3.1-pro-preview", DisplayName: "Gemini 3.1 Pro Preview", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-4.1", API: APICompletions, DisplayName: "GPT-4.1", ContextWindow: 128000, MaxOutput: 16384, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-4o", API: APICompletions, DisplayName: "GPT-4o", ContextWindow: 128000, MaxOutput: 4096, Reasoning: false, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.2", DisplayName: "GPT-5.2", ContextWindow: 264000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.2-codex", DisplayName: "GPT-5.2-Codex", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "grok-code-fast-1", API: APICompletions, DisplayName: "Grok Code Fast 1", ContextWindow: 128000, MaxOutput: 64000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://api.individual.githubcopilot.com"},
 	// ----- google -----
 	{Provider: "google", ID: "gemini-3-flash-preview", DisplayName: "Gemini 3 Flash Preview", ContextWindow: 1048576, MaxOutput: 65536, Reasoning: true, PriceInput: 0.5, PriceOutput: 3, PriceCacheRead: 0.05, BaseURL: "https://generativelanguage.googleapis.com/v1beta"},
 	{Provider: "google", ID: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro Preview", ContextWindow: 1048576, MaxOutput: 65536, Reasoning: true, PriceInput: 2, PriceOutput: 12, PriceCacheRead: 0.2, BaseURL: "https://generativelanguage.googleapis.com/v1beta"},

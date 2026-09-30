@@ -689,6 +689,7 @@ func (h *telegramHost) Notify(level, message string) {
 }
 func (i *Interactive) openSessionOpsDialog() {
 	items := []sessionOpsItem{
+		{label: "timeline", action: "timeline", hint: "inspect context, messages, and tool calls"},
 		{label: "export", action: "export", hint: "write the current session to a .zutsession file"},
 		{label: "import", action: "import", hint: "load a .zutsession file into this directory"},
 		{label: "fork", action: "fork", hint: "branch from a past user message into a new session"},
@@ -699,6 +700,8 @@ func (i *Interactive) openSessionOpsDialog() {
 }
 func (i *Interactive) doSessionOp(action, arg string) {
 	switch action {
+	case "timeline":
+		i.openTimeline()
 	case "export":
 		i.doSessionExport(arg)
 	case "import":
@@ -709,7 +712,7 @@ func (i *Interactive) doSessionOp(action, arg string) {
 		i.doSessionTree()
 	default:
 		i.mu.Lock()
-		i.statusErr = "unknown /session action: " + action + " (use export, import, fork, or tree)"
+		i.statusErr = "unknown /session action: " + action + " (use timeline, export, import, fork, or tree)"
 		i.mu.Unlock()
 		i.invalidate()
 	}

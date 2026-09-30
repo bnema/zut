@@ -31,6 +31,11 @@ func TestCopilotHostRewrite(t *testing.T) {
 		baseURL:   "https://api.enterprise.copilot.proxy",
 	}
 	copilotCache.mu.Unlock()
+	t.Cleanup(func() {
+		copilotCache.mu.Lock()
+		delete(copilotCache.tokens, pat)
+		copilotCache.mu.Unlock()
+	})
 
 	mockRT := &mockRoundTripper{}
 	transport := &copilotRefreshTransport{
@@ -66,5 +71,29 @@ func TestCopilotHostRewrite(t *testing.T) {
 	}
 	if mockRT.lastReq.Host != wantHost {
 		t.Errorf("expected Host header (Request.Host) to be %q, got %q", wantHost, mockRT.lastReq.Host)
+	}
+}
+
+func TestCopilotRoutesModernGPTToResponses(t *testing.T) {
+	client, ok := NewGithubCopilotClient("pat").(*copilotClient)
+	if !ok {
+		t.Fatal("NewGithubCopilotClient did not return a copilotClient")
+	}
+	codex, ok := client.router.byAPI[APIResponses].(*codexClient)
+	if !ok {
+		t.Fatal("github-copilot Responses client is not a codexClient")
+	}
+	const want = "https://api.individual.githubcopilot.com/responses"
+	if codex.baseURL != want {
+		t.Errorf("github-copilot Responses baseURL = %q, want %q", codex.baseURL, want)
+	}
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"} {
+		m, err := FindModel("github-copilot", id)
+		if err != nil {
+			t.Fatalf("FindModel(%q): %v", id, err)
+		}
+		if m.API != APIResponses {
+			t.Errorf("model %q API = %q, want %q", id, m.API, APIResponses)
+		}
 	}
 }

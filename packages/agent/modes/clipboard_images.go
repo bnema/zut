@@ -34,7 +34,10 @@ func (i *Interactive) restoreQueuedMessageToEditor(message core.QueuedMessage) b
 	if message.Text == "" && len(message.Images) == 0 {
 		return false
 	}
-	text := message.Text
+	i.mu.Lock()
+	text := i.skillPins.rawPrompt(message.Text)
+	i.skillPins.recall(message.Text)
+	i.mu.Unlock()
 	attachments := make([]clipboardImageAttachment, 0, len(message.Images))
 	for index, image := range message.Images {
 		markerIndex := index + 1

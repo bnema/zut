@@ -254,3 +254,143 @@ func TestUserPriceOverrideClearsCatalogTiers(t *testing.T) {
 		t.Fatalf("cost = %v, want user base price %v", got, want)
 	}
 }
+
+func TestLoadUserModelsKeylessAuthRequiresEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"providers":{
+		"keyless":{"baseUrl":"http://localhost:8888/v1","auth":"none","models":[{"id":"m"}]},
+		"unknown":{"baseUrl":"http://localhost:9999/v1","auth":"typo","models":[{"id":"m"}]},
+		"no-url":{"auth":"none","models":[{"id":"m"}]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, warnings := LoadUserModelsWithWarnings(path)
+	if !CustomProviders()["keyless"].NoAuth || CustomProviders()["unknown"].NoAuth || CustomProviders()["no-url"].NoAuth {
+		t.Fatalf("invalid keyless configuration: %+v", CustomProviders())
+	}
+	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "unknown auth") || !strings.Contains(strings.Join(warnings, "\n"), "without a baseUrl") {
+		t.Fatalf("warnings = %v, want unknown auth and missing URL warnings", warnings)
+	}
+}
+
+func TestLoadUserModelsDiscoverFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"m4": {"baseUrl": "http://127.0.0.1:48000/v1", "discover": true},
+			"m5": {"baseUrl": "http://127.0.0.1:48001/v1", "models": [{"id": "pinned"}]},
+			"no-base": {"discover": true, "models": [{"id": "m1", "baseUrl": "http://127.0.0.1:48002/v1"}]}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `"no-base"`) || !strings.Contains(warnings[0], "discover") {
+		t.Fatalf("warnings = %v, want one discover warning for no-base", warnings)
+	}
+	cps := CustomProviders()
+	if !cps["m4"].Discover {
+		t.Fatal("m4 discovery not enabled")
+	}
+	if cps["m5"].Discover {
+		t.Fatal("m5 discovery enabled without flag")
+	}
+	if cfg, ok := cps["no-base"]; !ok || cfg.Discover {
+		t.Fatalf("no-base = %+v, %v; want registered without discovery", cfg, ok)
+	}
+}
+
+func TestLoadUserModelsBuiltinProviderIgnoresAuthNone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"providers":{
+		"anthropic":{"baseUrl":"http://localhost:8888/v1","auth":"none","models":[{"id":"m"}]},
+		"local-x":{"baseUrl":"http://localhost:8889/v1","auth":"none","models":[{"id":"m"}]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, warnings := LoadUserModelsWithWarnings(path)
+	cps := CustomProviders()
+	if cps["anthropic"].NoAuth {
+		t.Fatal("built-in provider accepted auth none")
+	}
+	if !cps["local-x"].NoAuth {
+		t.Fatal("custom provider lost auth none")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `"anthropic"`) || !strings.Contains(warnings[0], "built-in") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}
+
+func TestLoadUserModelsBuiltinBaseURLOnlyKeepsProtocolDefaults(t *testing.T) {
+	SetLiveModels(nil)
+	SetUserModels(nil)
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+		LoadUserModelsWithWarnings(filepath.Join(t.TempDir(), "missing.json"))
+	})
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"providers":{
+		"github-copilot":{"baseUrl":"https://copilot.proxy.example","models":[
+			{"id":"claude-opus-4.7","reasoning":true},{"id":"gpt-5.5","reasoning":true},{"id":"proxy-only"}]},
+		"company-proxy":{"baseUrl":"https://llm.example.com/v1","models":[{"id":"m"}]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	models, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	for _, m := range models {
+		switch m.Provider + "/" + m.ID {
+		case "github-copilot/claude-opus-4.7", "github-copilot/gpt-5.5", "github-copilot/proxy-only":
+			if m.API != "" {
+				t.Errorf("%s/%s API = %q, want empty so built-in routing applies", m.Provider, m.ID, m.API)
+			}
+		case "company-proxy/m":
+			if m.API != "openai" {
+				t.Errorf("custom provider API = %q, want openai default", m.API)
+			}
+		}
+	}
+	SetUserModels(models)
+	for id, want := range map[string]string{"claude-opus-4.7": APIAnthropicMessages, "gpt-5.5": APIResponses, "proxy-only": APICompletions} {
+		got, err := FindModel("github-copilot", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.API != want || got.BaseURL != "https://copilot.proxy.example" {
+			t.Errorf("%s API=%q baseURL=%q, want API %q with override URL", id, got.API, got.BaseURL, want)
+		}
+	}
+}
+
+func TestLoadUserModelsBuiltinExplicitAPIOverridesDefaults(t *testing.T) {
+	SetLiveModels(nil)
+	SetUserModels(nil)
+	t.Cleanup(func() {
+		SetLiveModels(nil)
+		SetUserModels(nil)
+		LoadUserModelsWithWarnings(filepath.Join(t.TempDir(), "missing.json"))
+	})
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"providers":{
+		"github-copilot":{"baseUrl":"https://copilot.proxy.example","api":"openai","models":[{"id":"claude-opus-4.7","reasoning":true},{"id":"gpt-5.5","reasoning":true}]}
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	models, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	SetUserModels(models)
+	for _, id := range []string{"claude-opus-4.7", "gpt-5.5"} {
+		got, err := FindModel("github-copilot", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.API != APICompletions {
+			t.Errorf("%s API = %q, want explicit openai alias mapped to %q", id, got.API, APICompletions)
+		}
+	}
+}

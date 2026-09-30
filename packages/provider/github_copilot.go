@@ -14,12 +14,11 @@ package provider
 //     User-Agent). The response carries `{ "token": "...", "expires_at": <unix> }`.
 //  3. The short-lived token's value embeds a `proxy-ep=<host>` field that
 //     tells us the real API host (individual users: api.individual.githubcopilot.com).
-//  4. Inference requests go to `<host>/chat/completions` with the
+//  4. Inference requests use Messages, Responses, or Chat Completions with the
 //     short-lived token in `Authorization: Bearer` plus extras:
 //       - X-Initiator: user|agent
 //       - Openai-Intent: conversation-edits
-//       - Copilot-Vision-Request: true (when images present; not wired
-//         here because the zut openai client currently sends images inline)
+//       - Copilot-Vision-Request: true (when images are present)
 //
 // Token caching: short-lived tokens last ~30min. We cache one per PAT in
 // memory for the process lifetime and refresh on demand. No disk cache.
@@ -162,12 +161,21 @@ func (t *copilotRefreshTransport) RoundTrip(req *http.Request) (*http.Response, 
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+tok.value)
+	// Messages uses Copilot Bearer auth, never an Anthropic API key.
+	clone.Header.Del("x-api-key")
 	// Identity headers also required on inference requests.
 	for k, v := range copilotIdentityHeaders {
 		clone.Header.Set(k, v)
 	}
-	clone.Header.Set("X-Initiator", "agent")
-	clone.Header.Set("Openai-Intent", "conversation-edits")
+	if metadata, ok := req.Context().Value(copilotRequestKey{}).(copilotRequestMetadata); ok {
+		clone.Header.Set("X-Initiator", metadata.initiator)
+		if metadata.vision {
+			clone.Header.Set("Copilot-Vision-Request", "true")
+		} else {
+			clone.Header.Del("Copilot-Vision-Request")
+		}
+		clone.Header.Set("Openai-Intent", "conversation-edits")
+	}
 	// If the request URL host doesn't match the token's proxy-ep, rewrite
 	// it. The openaiClient pinned a static host at construction time, but
 	// the canonical host comes from the token.
@@ -181,20 +189,61 @@ func (t *copilotRefreshTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return t.inner.RoundTrip(clone)
 }
 
-// NewGithubCopilotClient returns a Copilot-pinned OpenAI-compat client.
-// The pat must be a GitHub Personal Access Token with Copilot access.
+// copilotResponsesStripTransport removes the codex client's ChatGPT
+// OAuth identity headers before handing off to copilotRefreshTransport,
+// which applies the Copilot token and identity headers. The Copilot
+// proxy rejects requests that carry chatgpt-account-id / openai-beta.
+type copilotResponsesStripTransport struct {
+	inner http.RoundTripper
+}
+
+func (t *copilotResponsesStripTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.Header.Del("chatgpt-account-id")
+	clone.Header.Del("openai-beta")
+	clone.Header.Del("originator")
+	return t.inner.RoundTrip(clone)
+}
+
+const copilotDefaultBaseURL = "https://api.individual.githubcopilot.com"
+
+// NewGithubCopilotClient uses Messages for Claude, Responses for GPT/Grok/MAI,
+// and Chat Completions for Gemini/Kimi. The PAT is exchanged for Copilot tokens.
 func NewGithubCopilotClient(pat string) Client {
-	httpClient := &http.Client{
-		Transport: &copilotRefreshTransport{inner: http.DefaultTransport, pat: pat},
-		Timeout:   0,
-	}
+	refresh := &copilotRefreshTransport{inner: http.DefaultTransport, pat: pat}
+	completionsHTTP := &http.Client{Transport: refresh, Timeout: 0}
 	// Initial baseURL is a sane default; copilotRefreshTransport rewrites
 	// the host on every request based on the freshly-issued token.
-	return &openaiClient{
+	completions := &openaiClient{
 		apiKey:              pat, // unused at the wire level (transport overrides Auth) but kept for parity
-		baseURL:             "https://api.individual.githubcopilot.com",
+		baseURL:             copilotDefaultBaseURL,
 		chatCompletionsPath: "/chat/completions",
 		name:                "github-copilot",
-		http:                httpClient,
+		http:                completionsHTTP,
 	}
+
+	responsesHTTP := &http.Client{
+		Transport: &copilotResponsesStripTransport{inner: refresh},
+		Timeout:   0,
+	}
+	responses := &codexClient{
+		token:             pat, // unused at the wire level (transport overrides Auth) but kept for parity
+		baseURL:           copilotDefaultBaseURL + "/responses",
+		errorLabel:        "github copilot",
+		providerName:      "github-copilot",
+		disableCLIRouting: true,
+		http:              responsesHTTP,
+	}
+
+	messages := &anthropicClient{
+		name:    "github-copilot",
+		baseURL: copilotDefaultBaseURL,
+		// Do not set oauthTok: that would inject Claude Code identity and rename tools.
+		http: &http.Client{Transport: refresh},
+	}
+	return &copilotClient{router: NewModelRouter("github-copilot", completions, map[string]Client{
+		APICompletions:       completions,
+		APIResponses:         responses,
+		APIAnthropicMessages: messages,
+	}).(*modelRouter)}
 }
