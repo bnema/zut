@@ -1127,6 +1127,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if v.toolCallLabels != nil {
 					label = v.toolCallLabels[tr.CallID]
 				}
+				label += mutatedFilesSuffix(tr.Context.Mutates)
 				// Each tool result owns a complete box: top edge with
 				// the call's label, body rows wrapped in vertical
 				// edges, bottom edge to close. The label is looked up
@@ -2532,6 +2533,15 @@ func (v *View) renderBashResult(lines []string, width int, defaultColor Terminal
 		}
 	}
 	return out
+}
+
+// mutatedFilesSuffix labels a tool result that changed several files, so a
+// project-wide rewrite shows its scope. Single-file edits stay unlabeled.
+func mutatedFilesSuffix(paths []string) string {
+	if len(paths) < 2 {
+		return ""
+	}
+	return fmt.Sprintf(" · %d files changed", len(paths))
 }
 
 // astRewriteArgs reports whether a completed AST call requested mutation.

@@ -218,6 +218,42 @@ func TestCompletedASTRewriteRendersPersistentDiff(t *testing.T) {
 	}
 }
 
+func TestMultiFileRewriteLabelShowsChangedFileCount(t *testing.T) {
+	args := json.RawMessage(`{"pattern":"old($A)","language":"go","path":"src","rewrite":"new($A)"}`)
+	for _, tc := range []struct {
+		name    string
+		mutates []string
+		want    bool
+	}{
+		{"several files", []string{"src/a.go", "src/b.go", "src/c.go"}, true},
+		{"single file", []string{"src/a.go"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, flat := range []bool{false, true} {
+				v := View{
+					Theme:     Dark,
+					FlatTools: flat,
+					Messages: []provider.Message{
+						{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "toolu_ast", Name: "ast", Arguments: args}}},
+						{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+							CallID:  "toolu_ast",
+							Content: []provider.Content{provider.TextBlock{Text: "-old(value)\n+new(value)\n"}},
+							Context: provider.ToolContext{Mutates: tc.mutates},
+						}}},
+					},
+				}
+				plain := stripANSI(strings.Join(v.Build(80), "\n"))
+				if got := strings.Contains(plain, "ast src · 3 files changed"); got != tc.want {
+					t.Fatalf("flat=%v: file count shown = %v, want %v:\n%s", flat, got, tc.want, plain)
+				}
+				if strings.Contains(plain, "files changed") != tc.want {
+					t.Fatalf("flat=%v: unexpected file count label:\n%s", flat, plain)
+				}
+			}
+		})
+	}
+}
+
 func TestASTSearchResultIsNotForcedIntoDiffRendering(t *testing.T) {
 	args := json.RawMessage(`{"pattern":"old($A)","language":"go","path":"sample.go"}`)
 	v := View{
