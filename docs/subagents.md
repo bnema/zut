@@ -250,6 +250,9 @@ all of them.
   - `stop` accepts `agent_id` and stops one live child.
   - `resume` accepts `agent_id`, `prompt`, optional `mode`, and optional
     `wait`. `prompt` is an explicit follow-up prompt for an existing child.
+    Do not use `resume` solely to wait for existing work or ask for its result
+    again: yield for the automatic completion update. `queue` schedules another
+    turn and produces another completion.
     After a terminal failure, inspect the saved result before resuming; resume
     continues the retained session. `mode` controls how a follow-up reaches a
     running child:
@@ -263,8 +266,9 @@ all of them.
     `steered` or `queued`. `wait` uses the same 1–300 second bound as `spawn`
     and waits for the turn that answers the follow-up, returning its outcome or
     reporting the timeout while the child stays active. A returned outcome can
-    be `dropped` when a queued follow-up never started, and it lists
-    `undelivered` steers the child never read.
+    be `dropped` when a queued follow-up never started. Without a host report
+    channel, it includes the summary and `undelivered` steers the child never
+    read; with a host channel, those details arrive in the completion update.
   - `interrupt` accepts `agent_id` and cancels only the child's running turn.
     Unlike `stop`, the child stays live with its transcript, so a later
     `resume` such as "report what you have" continues with full context.
@@ -281,6 +285,11 @@ completion arrives through the host’s typed completion update; the `subagent`
 tool's `status` action returns immediately and does not wait for completion. Do
 not use sleep loops, repeated status calls, journal files, or terminal UI
 inspection as a completion signal.
+When the host delivers completion updates, a completed `spawn` or `resume`
+wait returns terminal status and `report_delivery: host_update`; the full report
+arrives only through the completion update, not again in the tool result.
+Without a host completion observer, the tool result includes the full report.
+An expired or cancelled wait does not suppress later completion delivery.
 In interactive mode, a result received while the primary is busy enters the
 visible **sliding in** queue and reaches the model at its next safe boundary,
 without interrupting a model request or tool call and without waiting for other

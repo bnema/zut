@@ -116,8 +116,12 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 			result := completion.Completion()
 			outcome.Status = result.Status
 			outcome.Error = result.Error
-			outcome.Summary = result.Summary
-			outcome.Undelivered = result.Undelivered
+			if completion.HostUpdate {
+				outcome.ReportDelivery = subagentReportHostUpdate
+			} else {
+				outcome.Summary = result.Summary
+				outcome.Undelivered = result.Undelivered
+			}
 		}
 	}
 	if updated, ok := t.ResidentManager.SnapshotFor(snapshot.ID); ok {

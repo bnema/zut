@@ -102,6 +102,9 @@ func (m *ResidentManager) reportCompletion(completion ResidentCompletion) {
 	delete(m.completionWaiters, key)
 	observer := m.onCompletion
 	m.mu.Unlock()
+	// Snapshot the delivery route together with the observer, rather than
+	// consulting current host state after the tool wait has returned.
+	completion.HostUpdate = observer != nil
 	for _, waiter := range waiters {
 		waiter <- completion
 		close(waiter)

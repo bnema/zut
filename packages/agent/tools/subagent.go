@@ -26,7 +26,7 @@ type SubagentTool struct {
 // subagentSpawnGuidance is the operational contract for delegation. It is the
 // facade description tail and the internal spawn tool description, so the text
 // cannot drift between them.
-const subagentSpawnGuidance = "Delegate a concrete, bounded scope to a resident sub-agent. For proactive delegation, use an independent sidecar only when the parent has useful non-overlapping work; keep immediate blockers local. A worker owns its scope until completion, so never duplicate it in the parent. If delegation owns the blocking task, end or yield the parent turn. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through the resume action. Never use bash sleep, watch, tail -f, polling loops, repeated status calls, dashboard, metadata, or file checks solely to wait."
+const subagentSpawnGuidance = "Delegate a concrete, bounded scope to a resident sub-agent. For proactive delegation, use an independent sidecar only when the parent has useful non-overlapping work; keep immediate blockers local. A worker owns its scope until completion, so never duplicate it in the parent. If delegation owns the blocking task, end or yield the parent turn. Omit wait to return immediately and receive completion through [auto-subagents update]; set wait to an explicit 1–300 second value only when this turn should wait for the initial task. Set required=true when the outcome is mandatory before the parent's terminal response; failures remain recoverable through the resume action. Do not use resume solely to wait for an existing task or request its result again; yield for the automatic completion update instead. Resume requires a real new instruction; queue schedules a separate turn and another completion. Never use bash sleep, watch, tail -f, polling loops, repeated status calls, dashboard, metadata, or file checks solely to wait."
 
 // subagentSchema merges the action schemas into the flat, model-facing schema
 // the project keeps for provider compatibility. Every property is annotated
@@ -79,7 +79,7 @@ const subagentSchema = `{
       "type": "integer",
       "minimum": 1,
       "maximum": 300,
-      "description": "Optional explicit number of seconds to wait for this sub-agent's initial task to finish. Omit to return immediately. The sub-agent continues in the background if this wait expires. With resume it waits for the accepted follow-up turn instead. Only valid when action is spawn or resume."
+      "description": "Optional explicit number of seconds to wait for this sub-agent's initial task to finish. Omit to return immediately. The sub-agent continues in the background if this wait expires. With resume it waits for the accepted follow-up turn instead. Do not use resume solely to wait for an already running task; yield for its automatic completion update. When the host delivers reports, a completed wait returns status and report_delivery=host_update without repeating the full report. Only valid when action is spawn or resume."
     },
     "isolation": {
       "type": "string",
