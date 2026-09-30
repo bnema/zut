@@ -168,15 +168,52 @@ func TestInteractiveRepetitionGuardCanResumeStalledGoal(t *testing.T) {
 }
 
 func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
-	client := &repetitiveInteractiveClient{}
+	client := &repetitiveInteractiveClient{
+		entered: make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-client.resume:
+		default:
+			close(client.resume)
+		}
+	}()
 	agent := core.NewAgent(client, "model", "system", core.Registry{"repeat": &repetitiveInteractiveTool{}})
 	interactive := NewInteractive(InteractiveConfig{Agent: agent})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	interactive.startTurn(ctx, "start")
+	select {
+	case <-client.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("eighth provider request did not start")
+	}
 	followUp := make(chan error, 1)
 	go func() { followUp <- interactive.SubmitFollowUp(ctx, "scheduled task") }()
+
+	// SubmitFollowUp blocks until teardown resolves it. Hold the eighth
+	// provider call until the scheduled prompt is actually registered, not
+	// merely until its goroutine has been launched.
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
+		interactive.mu.Lock()
+		queued := len(interactive.scheduled) == 1
+		interactive.mu.Unlock()
+		if queued {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("scheduled follow-up did not enter the queue")
+		case <-poll.C:
+		}
+	}
+	close(client.resume)
 
 	select {
 	case err := <-followUp:
@@ -186,6 +223,7 @@ func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("scheduled follow-up remained blocked after repetitive loop stop")
 	}
+	waitInteractiveIdle(t, interactive)
 	if got := client.calls.Load(); got != 8 {
 		t.Fatalf("provider calls = %d, want 8", got)
 	}
