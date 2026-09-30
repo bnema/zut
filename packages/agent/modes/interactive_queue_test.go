@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 
@@ -65,6 +66,146 @@ func TestSlideBackRestoresQueuedImagesToEditor(t *testing.T) {
 	}
 	if len(i.clipboardImages) != 1 || string(i.clipboardImages[0].Image.Data) != "png-1" {
 		t.Fatalf("clipboard images = %#v, want png-1", i.clipboardImages)
+	}
+}
+
+func TestSlideBackSkipsHostEvents(t *testing.T) {
+	for _, hostQueue := range []bool{false, true} {
+		name := "agent queue"
+		if hostQueue {
+			name = "host queue"
+		}
+		t.Run(name, func(t *testing.T) {
+			agent := core.NewAgent(nil, "test-model", "", nil)
+			i := NewInteractive(InteractiveConfig{Agent: agent})
+			i.busy = true
+			messages := []core.QueuedMessage{
+				{Text: "first report", HostEvent: true},
+				{Text: "older draft"},
+				{Text: "recover this draft"},
+				{Text: "latest report", HostEvent: true},
+			}
+			if hostQueue {
+				i.queued = messages
+			} else {
+				for _, message := range messages {
+					agent.QueuePrompt(message)
+				}
+			}
+			for _, want := range []string{"recover this draft", "older draft"} {
+				i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
+				if got := i.ed.Value(); got != want {
+					t.Fatalf("editor = %q, want %q", got, want)
+				}
+			}
+			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
+			if got := i.ed.Value(); got != "older draft" {
+				t.Fatalf("host-only queue changed editor to %q", got)
+			}
+			pending := i.queued
+			if !hostQueue {
+				pending = agent.PendingQueuedMessages()
+			}
+			if len(pending) != 2 || pending[0].Text != "first report" || pending[1].Text != "latest report" || !pending[0].HostEvent || !pending[1].HostEvent {
+				t.Fatalf("remaining reports = %#v, want both reports in original order", pending)
+			}
+		})
+	}
+}
+
+func TestSlideBackParsesModifiedArrow(t *testing.T) {
+	for name, sequence := range map[string]string{
+		"alt up":       "\x1b[1;3A",
+		"alt shift up": "\x1b[1;4A",
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := core.NewAgent(nil, "test-model", "", nil)
+			i := NewInteractive(InteractiveConfig{Agent: agent})
+			i.busy = true
+			i.ed.SetValue("recover this draft")
+			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+			agent.QueuePrompt(core.QueuedMessage{Text: "worker report", HostEvent: true})
+			reader := tui.NewReader(func() (byte, error) {
+				if sequence == "" {
+					return 0, io.EOF
+				}
+				b := sequence[0]
+				sequence = sequence[1:]
+				return b, nil
+			})
+			key, err := reader.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			i.handleKey(context.Background(), key)
+			if got := i.ed.Value(); got != "recover this draft" {
+				t.Fatalf("editor = %q, want user draft", got)
+			}
+			pending := agent.PendingQueuedMessages()
+			if len(pending) != 1 || !pending[0].HostEvent {
+				t.Fatalf("pending = %#v, want worker report", pending)
+			}
+		})
+	}
+}
+
+func TestEscapeSkipsHostEvents(t *testing.T) {
+	for _, hasUserMessage := range []bool{false, true} {
+		for _, hostQueue := range []bool{false, true} {
+			agent := core.NewAgent(nil, "test-model", "", nil)
+			i := NewInteractive(InteractiveConfig{Agent: agent})
+			i.busy = true
+			i.cancelTurn = func() {}
+			i.ed.SetValue("existing draft")
+			messages := []core.QueuedMessage{{Text: "worker report", HostEvent: true}}
+			want := "existing draft"
+			if hasUserMessage {
+				messages = append([]core.QueuedMessage{{Text: "recover this draft"}}, messages...)
+				want = "recover this draft"
+			}
+			if hostQueue {
+				i.queued = messages
+			} else {
+				for _, message := range messages {
+					agent.QueuePrompt(message)
+				}
+			}
+			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+			if got := i.ed.Value(); got != want {
+				t.Fatalf("user=%v hostQueue=%v: editor = %q, want %q", hasUserMessage, hostQueue, got, want)
+			}
+		}
+	}
+}
+
+func TestSlidingQueueHintOnlyForUserMessages(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vev")
+	for _, hostQueue := range []bool{false, true} {
+		for _, hasUserMessage := range []bool{false, true} {
+			agent := core.NewAgent(nil, "test-model", "", nil)
+			term := &alertTestTerminal{}
+			i := NewInteractive(InteractiveConfig{Agent: agent, Terminal: term, Theme: tui.Dark})
+			i.rend.Resize(80, 24)
+			messages := []core.QueuedMessage{{Text: "worker report", HostEvent: true}}
+			if hasUserMessage {
+				messages = append(messages, core.QueuedMessage{Text: "user draft"})
+			}
+			if hostQueue {
+				i.queued = messages
+			} else {
+				for _, message := range messages {
+					agent.QueuePrompt(message)
+				}
+			}
+			i.redraw()
+			output := stripANSIBytes(term.String())
+			if !strings.Contains(output, "worker report") {
+				t.Fatal("host report missing from sliding queue")
+			}
+			if got := strings.Contains(output, "Press Alt+Shift+↑"); got != hasUserMessage {
+				t.Fatalf("user=%v hostQueue=%v: recall hint visible=%v", hasUserMessage, hostQueue, got)
+			}
+		}
 	}
 }
 

@@ -332,6 +332,27 @@ func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput
 	i.startQueuedTurn(i.runCtx, message)
 }
 
+// popQueuedUserMessageLocked leaves host reports queued for the agent.
+// The caller must hold i.mu, as with the queue's enqueue and teardown paths.
+func (i *Interactive) popQueuedUserMessageLocked() (core.QueuedMessage, bool) {
+	if i.agent != nil {
+		if message, ok := i.agent.PopQueuedUserMessage(); ok {
+			return message, true
+		}
+	}
+	for index := len(i.queued) - 1; index >= 0; index-- {
+		if i.queued[index].HostEvent {
+			continue
+		}
+		message := i.queued[index]
+		copy(i.queued[index:], i.queued[index+1:])
+		i.queued[len(i.queued)-1] = core.QueuedMessage{}
+		i.queued = i.queued[:len(i.queued)-1]
+		return message, true
+	}
+	return core.QueuedMessage{}, false
+}
+
 func (i *Interactive) takeQueuedMessagesLocked() []core.QueuedMessage {
 	var pending []core.QueuedMessage
 	if i.agent != nil {

@@ -717,7 +717,9 @@ func (i *Interactive) redraw() {
 	}
 	if len(queued) > 0 {
 		queue = append(queue, "")
+		hasUserMessage := false
 		for _, q := range queued {
+			hasUserMessage = hasUserMessage || !q.HostEvent
 			label := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "  sliding in: ")
 			text := queuedMessageSummary(q, mainCols-17)
 			queue = append(queue, label+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, text))
@@ -726,8 +728,10 @@ func (i *Interactive) redraw() {
 		// info on the status bar so it reads as ambient metadata
 		// rather than a chip. Tells the user how to recover the
 		// most recent queued message back into the editor.
-		hint := "  Press " + slideBackChordHint() + " to slide back into input"
-		queue = append(queue, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, hint))
+		if hasUserMessage {
+			hint := "  Press " + slideBackChordHint() + " to slide your message back into input"
+			queue = append(queue, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, hint))
+		}
 	}
 
 	extensionLines := i.extensionChromeLinesLocked(mainCols)

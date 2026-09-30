@@ -27,6 +27,17 @@ func TestSlideBackChordHintVSCodeCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestSlideBackChordHintVev(t *testing.T) {
+	for _, value := range []string{"vev", "VEV"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TERM_PROGRAM", value)
+			if got, want := slideBackChordHint(), "Alt+Shift+↑"; got != want {
+				t.Errorf("Vev hint = %q; want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestSlideBackChordHintDefault pins the default for every
 // non-VS-Code terminal: the snappier Option+↑ chord, which Ghostty,
 // iTerm2 (with Meta=Option), Terminal.app (with Use Option as Meta),

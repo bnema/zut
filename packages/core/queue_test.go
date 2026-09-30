@@ -203,6 +203,38 @@ func TestQueuePromptPreservesHostProvenance(t *testing.T) {
 	}
 }
 
+func TestPopQueuedUserMessagePreservesHostEvents(t *testing.T) {
+	a := NewAgent(nil, "fake", "", Registry{})
+	a.QueuePrompt(QueuedMessage{Text: "first report", HostEvent: true})
+	a.QueueMessage("older draft", nil)
+	a.QueueMessage("newest draft", []provider.ImageBlock{{MimeType: "image/png", Data: []byte("png-1")}})
+	a.QueuePrompt(QueuedMessage{Text: "latest report", HostEvent: true})
+	before := append([]queuedMessage(nil), a.queued...)
+
+	message, ok := a.PopQueuedUserMessage()
+	if !ok || message.Text != "newest draft" || len(message.Images) != 1 || string(message.Images[0].Data) != "png-1" {
+		t.Fatalf("popped = %#v, %v, want newest draft with image", message, ok)
+	}
+	for index, original := range []int{0, 1, 3} {
+		if !a.queued[index].accepted.Equal(before[original].accepted) {
+			t.Fatal("recall changed a remaining message's accepted time")
+		}
+	}
+	if message, ok := a.PopQueuedUserMessage(); !ok || message.Text != "older draft" {
+		t.Fatalf("second pop = %#v, %v, want older draft", message, ok)
+	}
+	if message, ok := a.PopQueuedUserMessage(); ok {
+		t.Fatalf("host-only pop = %#v, want no user message", message)
+	}
+	pending := a.DrainQueuedMessages()
+	if len(pending) != 2 || pending[0].Text != "first report" || pending[1].Text != "latest report" || !pending[0].HostEvent || !pending[1].HostEvent {
+		t.Fatalf("remaining reports = %#v, want original reports in order", pending)
+	}
+	if _, ok := a.PopQueuedUserMessage(); ok {
+		t.Fatal("empty pop succeeded")
+	}
+}
+
 func TestQueueMessageSnapshotPopAndDrain(t *testing.T) {
 	a := NewAgent(nil, "fake", "", Registry{})
 	if a.QueueMessage("   ", nil) {

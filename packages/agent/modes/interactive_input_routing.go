@@ -614,15 +614,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if busyCancel {
 			// Keep the most recently queued follow-up as an editable draft
 			// instead of losing it with the cancelled turn's stale queue.
-			if i.agent != nil {
-				restoreQueued, hasRestoreQueued = i.agent.PopQueuedMessage()
-			}
-			if !hasRestoreQueued && len(i.queued) > 0 {
-				n := len(i.queued) - 1
-				restoreQueued = i.queued[n]
-				i.queued = i.queued[:n]
-				hasRestoreQueued = true
-			}
+			restoreQueued, hasRestoreQueued = i.popQueuedUserMessageLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
@@ -670,25 +662,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	case tui.KeyUp:
 		// Alt/Option+Up: pop the most recently queued ("sliding in")
-		// message back into the editor so the user can edit and
+		// user message (never host evidence) so the user can edit and
 		// resend it. Repeated presses keep peeling messages off the
 		// tail of the queue; each press *replaces* the editor
 		// contents (we don't append/push). When the queue is empty
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
 			i.mu.Lock()
-			var message core.QueuedMessage
-			var ok bool
-			if i.agent != nil {
-				message, ok = i.agent.PopQueuedMessage()
-			}
-			if !ok {
-				if n := len(i.queued); n > 0 {
-					message = i.queued[n-1]
-					i.queued = i.queued[:n-1]
-					ok = true
-				}
-			}
+			message, ok := i.popQueuedUserMessageLocked()
 			i.mu.Unlock()
 			if ok && i.restoreQueuedMessageToEditor(message) {
 				i.invalidate()
