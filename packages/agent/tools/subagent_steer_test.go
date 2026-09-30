@@ -3,17 +3,21 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // steerRuntime blocks its turn until the first steer arrives, then finishes.
 type steerRuntime struct {
 	started chan struct{}
 	steered chan string
+	finish  func() error
 
 	mu      sync.Mutex
 	running bool
@@ -29,6 +33,9 @@ func (r *steerRuntime) Run(ctx context.Context, _ string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-r.steered:
+		if r.finish != nil {
+			return r.finish()
+		}
 		return nil
 	}
 }
@@ -70,6 +77,45 @@ func TestResidentResumeSteersRunningChildAndWaitsOnItsTurn(t *testing.T) {
 	response, ok := result.Details.(subagentResumeResponse)
 	if !ok || response.Delivery != "steered" || response.Wait == nil || response.Wait.TimedOut || response.Wait.Status != string(subagents.ResidentCompleted) {
 		t.Fatalf("response = %#v", result.Details)
+	}
+}
+
+func TestResidentSteeredWaitUsesAcceptedHostReport(t *testing.T) {
+	runtime := &steerRuntime{started: make(chan struct{}, 1), steered: make(chan string, 1)}
+	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		runtime.finish = func() error {
+			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "steered report"}}}})
+		}
+		return runtime, nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	tracker := subagents.NewCompletionTracker()
+	manager.SetAcceptedObserver(func(spec subagents.ResidentChildSpec, turn, _ string) { tracker.TrackResident(spec.ID, turn) })
+	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) bool { return tracker.Report(c.Completion()) })
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "steered-host", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "investigate"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not start")
+	}
+	facade := &SubagentTool{Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}}
+	result, err := facade.Execute(t.Context(), json.RawMessage(`{"action":"resume","agent_id":"steered-host","prompt":"report now","wait":5}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("resume = (%#v, %v)", result, err)
+	}
+	response, ok := result.Details.(subagentResumeResponse)
+	if !ok || response.Delivery != "steered" || response.Wait == nil || response.Wait.ReportDelivery != "host_update" || response.Wait.Summary != "" {
+		t.Fatalf("response = %#v", result.Details)
+	}
+	batch, err := tracker.WaitIdle(t.Context())
+	if err != nil || len(batch) != 1 || batch[0].TurnID != "initial" {
+		t.Fatalf("host batch = %#v, error = %v", batch, err)
+	}
+	update := subagents.FormatCompletionUpdate(batch, "")
+	if strings.Count(update, "steered report") != 1 || strings.Contains(toolResultText(t, result), "steered report") {
+		t.Fatalf("report delivery: update=%q, result=%#v", update, result)
 	}
 }
 

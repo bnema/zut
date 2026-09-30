@@ -39,7 +39,7 @@ func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 			return journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage})
 		}), nil
 	})
-	manager.SetCompletionObserver(func(subagents.ResidentCompletion) { completed <- struct{}{} })
+	manager.SetCompletionObserver(func(subagents.ResidentCompletion) bool { completed <- struct{}{}; return true })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	for index := range 2 {
 		id := fmt.Sprintf("usage-child-%d", index)

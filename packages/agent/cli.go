@@ -1673,10 +1673,8 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			iv.TrackResidentSubagent(spec.ID, turnID)
 		}
 	}
-	onResidentCompletion := func(completion subagents.ResidentCompletion) {
-		if iv != nil {
-			iv.ReportResidentSubagent(completion)
-		}
+	onResidentCompletion := func(completion subagents.ResidentCompletion) bool {
+		return iv != nil && iv.ReportResidentSubagent(completion)
 	}
 	activeProviderForSubagents := func() string {
 		persistMu.Lock()

@@ -19,9 +19,10 @@ import (
 // repeated in the tool result. Without a host, the tool remains self-contained.
 func TestResidentWaitResultDelivery(t *testing.T) {
 	for _, action := range []string{"spawn", "resume"} {
-		for _, host := range []bool{false, true} {
+		for _, route := range []string{"inline", "accepted", "rejected"} {
+			host := route == "accepted"
 			for _, turnErr := range []error{nil, errors.New("synthetic failure"), context.Canceled} {
-				t.Run(fmt.Sprintf("%s/host=%t/%s", action, host, completionStatus(turnErr)), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/host=%s/%s", action, route, completionStatus(turnErr)), func(t *testing.T) {
 					const summary = "synthetic worker report"
 					manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
 						return subagents.ResidentTurnRunner(func(_ context.Context, prompt string) error {
@@ -35,30 +36,20 @@ func TestResidentWaitResultDelivery(t *testing.T) {
 						}), nil
 					})
 					t.Cleanup(func() { _ = manager.Close(context.Background()) })
-					spec := subagents.ResidentChildSpec{ID: "delivery-child", InitialTurnID: "initial", SessionID: "child-session", Provider: "openai", Model: "test"}
-					if action == "resume" {
-						done, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
-						defer cancel()
-						if _, err := manager.Spawn(t.Context(), spec, "initial"); err != nil {
-							t.Fatal(err)
-						}
-						select {
-						case <-done:
-						case <-time.After(5 * time.Second):
-							t.Fatal("initial turn did not finish")
-						}
-					}
+					facade := newDeliveryFacade(t, manager, action)
 					updates := make(chan subagents.ResidentCompletion, 2)
-					if host {
-						manager.SetCompletionObserver(func(c subagents.ResidentCompletion) { updates <- c })
+					if route != "inline" {
+						manager.SetCompletionObserver(func(c subagents.ResidentCompletion) bool {
+							if host {
+								updates <- c
+							}
+							return host
+						})
 					}
-					facade := &SubagentTool{
-						Spawn:  &SubagentSpawnTool{ResidentManager: manager, Enabled: func() bool { return true }, BuildResidentSpec: func(context.Context, ResidentSpawnRequest) (subagents.ResidentChildSpec, error) { return spec, nil }},
-						Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }},
-					}
+
 					args := json.RawMessage(`{"action":"spawn","task":"report","wait":5}`)
 					if action == "resume" {
-						args = json.RawMessage(`{"action":"resume","agent_id":"delivery-child","prompt":"report","mode":"queue","wait":5}`)
+						args = json.RawMessage(`{"action":"resume","agent_id":"report-child","prompt":"report","mode":"queue","wait":5}`)
 					}
 					result, err := facade.Execute(t.Context(), args, nil)
 					if err != nil || result.IsError {
@@ -92,6 +83,32 @@ func TestResidentWaitResultDelivery(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// Both action tests share the same durable child setup. Resume needs an idle
+// initial turn before the tested follow-up; observers are installed afterwards.
+func newDeliveryFacade(t *testing.T, manager *subagents.ResidentManager, action string) *SubagentTool {
+	t.Helper()
+	spec := subagents.ResidentChildSpec{ID: "report-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
+	if action == "resume" {
+		done, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
+		defer cancel()
+		if _, err := manager.Spawn(t.Context(), spec, "initial"); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("initial turn did not finish")
+		}
+	}
+	return &SubagentTool{
+		Spawn: &SubagentSpawnTool{
+			ResidentManager: manager, Enabled: func() bool { return true },
+			BuildResidentSpec: func(context.Context, ResidentSpawnRequest) (subagents.ResidentChildSpec, error) { return spec, nil },
+		},
+		Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }},
 	}
 }
 
@@ -129,32 +146,17 @@ func TestResidentAbandonedWaitPreservesHostReport(t *testing.T) {
 					}), nil
 				})
 				t.Cleanup(func() { unblock(); _ = manager.Close(context.Background()) })
-				spec := subagents.ResidentChildSpec{ID: "late-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
-				if action == "resume" {
-					done, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
-					defer cancel()
-					if _, err := manager.Spawn(t.Context(), spec, "initial"); err != nil {
-						t.Fatal(err)
-					}
-					select {
-					case <-done:
-					case <-time.After(5 * time.Second):
-						t.Fatal("initial turn did not finish")
-					}
-				}
+				facade := newDeliveryFacade(t, manager, action)
 				updates := make(chan subagents.ResidentCompletion, 2)
-				manager.SetCompletionObserver(func(c subagents.ResidentCompletion) { updates <- c })
-				facade := &SubagentTool{
-					Spawn:  &SubagentSpawnTool{ResidentManager: manager, Enabled: func() bool { return true }, BuildResidentSpec: func(context.Context, ResidentSpawnRequest) (subagents.ResidentChildSpec, error) { return spec, nil }},
-					Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }},
-				}
+				manager.SetCompletionObserver(func(c subagents.ResidentCompletion) bool { updates <- c; return true })
+
 				seconds := 1
 				if cancelWait {
 					seconds = 300
 				}
 				args := fmt.Sprintf(`{"action":"spawn","task":"report","wait":%d}`, seconds)
 				if action == "resume" {
-					args = fmt.Sprintf(`{"action":"resume","agent_id":"late-child","prompt":"report","mode":"queue","wait":%d}`, seconds)
+					args = fmt.Sprintf(`{"action":"resume","agent_id":"report-child","prompt":"report","mode":"queue","wait":%d}`, seconds)
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()

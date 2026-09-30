@@ -36,7 +36,7 @@ type ResidentManager struct {
 	queueTimeout      time.Duration
 	allowedRoots      []string
 	dispatchMu        sync.Mutex
-	onCompletion      func(ResidentCompletion)
+	onCompletion      func(ResidentCompletion) bool
 	completionWaiters map[string][]chan ResidentCompletion
 	onAccepted        func(ResidentChildSpec, string, string)
 	onUpdate          func(string)
@@ -44,7 +44,9 @@ type ResidentManager struct {
 	onActivity        func(bool)
 }
 
-func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion)) {
+// SetCompletionObserver installs the host report channel. Return true only
+// when the host accepts the full report; false keeps tool waits self-contained.
+func (m *ResidentManager) SetCompletionObserver(observer func(ResidentCompletion) bool) {
 	if m == nil {
 		return
 	}
@@ -102,15 +104,14 @@ func (m *ResidentManager) reportCompletion(completion ResidentCompletion) {
 	delete(m.completionWaiters, key)
 	observer := m.onCompletion
 	m.mu.Unlock()
-	// Snapshot the delivery route together with the observer, rather than
-	// consulting current host state after the tool wait has returned.
-	completion.HostUpdate = observer != nil
+	// The host must accept the report before a tool wait can omit its copy.
+	// Observers run without manager locks, as before.
+	if observer != nil {
+		completion.HostUpdate = observer(completion)
+	}
 	for _, waiter := range waiters {
 		waiter <- completion
 		close(waiter)
-	}
-	if observer != nil {
-		observer(completion)
 	}
 }
 

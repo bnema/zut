@@ -285,11 +285,13 @@ completion arrives through the host’s typed completion update; the `subagent`
 tool's `status` action returns immediately and does not wait for completion. Do
 not use sleep loops, repeated status calls, journal files, or terminal UI
 inspection as a completion signal.
-When the host delivers completion updates, a completed `spawn` or `resume`
+When the host accepts a completion report, a completed `spawn` or `resume`
 wait returns terminal status and `report_delivery: host_update`; the full report
 arrives only through the completion update, not again in the tool result.
-Without a host completion observer, the tool result includes the full report.
-An expired or cancelled wait does not suppress later completion delivery.
+If no host observer accepts the report, the tool result includes it inline.
+An expired wait does not suppress later completion delivery. Cancelling the
+parent turn discards pending completion updates; cancelling only a tool wait
+leaves host tracking intact.
 In interactive mode, a result received while the primary is busy enters the
 visible **sliding in** queue and reaches the model at its next safe boundary,
 without interrupting a model request or tool call and without waiting for other

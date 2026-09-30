@@ -17,7 +17,7 @@ func TestResidentCancellationPreservesInterruptedState(t *testing.T) {
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			spec := ResidentChildSpec{ID: "canceled", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
 			completions := make(chan ResidentCompletion, 1)
-			manager.SetCompletionObserver(func(c ResidentCompletion) { completions <- c })
+			manager.SetCompletionObserver(func(c ResidentCompletion) bool { completions <- c; return true })
 			spawnCtx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if _, err := manager.Spawn(spawnCtx, spec, "investigate"); err != nil {

@@ -434,7 +434,7 @@ func TestResidentChildRunnerResumesWithRetainedHistory(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	completed := make(chan subagents.ResidentCompletion, 2)
-	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) { completed <- c })
+	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) bool { completed <- c; return true })
 	spec := subagents.ResidentChildSpec{ID: "resume-child", SessionID: "session", Provider: "openai", Model: "gpt-4o"}
 	if _, err := manager.Spawn(t.Context(), spec, "review"); err != nil {
 		t.Fatal(err)

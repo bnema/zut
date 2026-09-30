@@ -27,16 +27,17 @@ func (i *Interactive) TrackResidentSubagent(childID, turnID string) {
 	i.invalidate()
 	i.requestCompletionDelivery()
 }
-func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentCompletion) {
+func (i *Interactive) ReportResidentSubagent(completion subagents.ResidentCompletion) bool {
 	if i == nil {
-		return
+		return false
 	}
 	if !i.ensureCompletionTracker().Report(completion.Completion()) {
-		return
+		return false
 	}
 	i.reloadOpenResidentChildSession(completion.ChildID)
 	i.invalidate()
 	i.requestCompletionDelivery()
+	return true
 }
 func (i *Interactive) reloadOpenResidentChildSession(childID string) {
 	if i == nil {

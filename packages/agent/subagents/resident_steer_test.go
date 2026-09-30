@@ -85,7 +85,7 @@ func newSteerTestManager(t *testing.T, runtime ResidentRuntime) (*ResidentManage
 	t.Helper()
 	manager := NewResidentManager(t.TempDir(), func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) { return runtime, nil })
 	completions := make(chan ResidentCompletion, 8)
-	manager.SetCompletionObserver(func(c ResidentCompletion) { completions <- c })
+	manager.SetCompletionObserver(func(c ResidentCompletion) bool { completions <- c; return true })
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	return manager, completions
 }

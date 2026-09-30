@@ -728,7 +728,7 @@ func TestReconcileResidentJournalTranslatesV2BudgetHistory(t *testing.T) {
 			manager := NewResidentManager(root, factory)
 			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 			completions := make(chan ResidentCompletion, 1)
-			manager.SetCompletionObserver(func(c ResidentCompletion) { completions <- c })
+			manager.SetCompletionObserver(func(c ResidentCompletion) bool { completions <- c; return true })
 			if errs := manager.Reconcile(); len(errs) != 0 {
 				t.Fatal(errs)
 			}
