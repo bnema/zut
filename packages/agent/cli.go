@@ -73,6 +73,8 @@ func (h *interactiveExtHooks) iv() *modes.Interactive {
 	return h.interactive
 }
 
+func (h *interactiveExtHooks) SupportsInteractiveTools() bool { return h.iv() != nil }
+
 func (h *interactiveExtHooks) attachInteractive(iv *modes.Interactive) {
 	if h == nil || iv == nil {
 		return
@@ -272,6 +274,7 @@ func (a *extToolAdapter) Tools() []ExtensionToolInfo {
 			Description: t.Description,
 			Schema:      t.Schema,
 			Deferred:    t.Deferred,
+			Interactive: t.Interactive,
 		}
 	}
 	return out
@@ -284,6 +287,7 @@ func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
 		Description: info.Description,
 		Schema:      info.Schema,
 		Deferred:    info.Deferred,
+		Interactive: info.Interactive,
 	})
 }
 
@@ -1146,7 +1150,7 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(ctx, args, r, ag, version)
+	sess, freshSession, err := openOrCreateSessionState(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -1184,6 +1188,7 @@ func runPrintMode(ctx context.Context, args Args, version string) (runErr error)
 		persistCompaction = sess.AppendCompaction
 	}
 	started := time.Now()
+	prompt = preloadSkillPins(args, freshSession, prompt, extMgr.Skills(), os.Stderr)
 	usage, recovery, err := modes.RunPrintWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, persistCompaction)
 	elapsed := time.Since(started)
 	transcriptStart := start
@@ -1228,7 +1233,7 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(ctx, args, r, ag, version)
+	sess, freshSession, err := openOrCreateSessionState(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -1268,6 +1273,7 @@ func runStreamMode(ctx context.Context, args Args, version string) (runErr error
 	if sess != nil {
 		persistCompaction = sess.AppendCompaction
 	}
+	prompt = preloadSkillPins(args, freshSession, prompt, extMgr.Skills(), os.Stderr)
 	recovery, err := modes.RunStreamWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, os.Stderr, persistCompaction)
 	transcriptStart := start
 	if recovery.Compacted {
@@ -1349,7 +1355,7 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(ctx, args, r, ag, version)
+	sess, freshSession, err := openOrCreateSessionState(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -1392,6 +1398,7 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 	if sess != nil {
 		persistCompaction = sess.AppendCompaction
 	}
+	prompt = preloadSkillPins(args, freshSession, prompt, extMgr.Skills(), os.Stderr)
 	recovery, err := modes.RunJSONWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, persistCompaction)
 	transcriptStart := start
 	if recovery.Compacted {
@@ -1934,6 +1941,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		}
 	})
 
+	freshSession := true
 	var sessBaselineMsgs int // messages already on disk when current session opened
 	var sessionTitlePending bool
 	// initialPlanSnapshots is reconstructed from the untrimmed resumed
@@ -1942,7 +1950,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	var initialPlanSnapshots map[string]core.PlanUpdate
 	if !args.NoSess && ag != nil {
 		var sessErr error
-		sess, sessErr = openOrCreateSession(ctx, args, r, ag, version)
+		sess, freshSession, sessErr = openOrCreateSessionState(ctx, args, r, ag, version)
 		if sessErr != nil {
 			return sessErr
 		}
@@ -2386,6 +2394,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		committed = true
 		persistMu.Unlock()
 		if iv != nil {
+			iv.SetPinnedSkillsPending(false)
 			iv.RefreshGoal()
 			iv.RefreshPlan(candidate.planSnapshots)
 		}
@@ -2810,49 +2819,30 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
 			return nil
 		},
-		AuthManager:                mgr,
-		LlamaCPPConfig:             ResolveLlamaCPPConfig,
-		RefreshLlamaCPPModels:      RefreshLlamaCPPModels,
-		BuildAgent:                 buildAgent,
-		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
-		BuildAgentFor:              buildAgentFor,
-		BuildAgentForRescue:        buildAgentForRescue,
-		LoggedInProviders: func() []string {
-			var out []string
-			seen := map[string]bool{}
-			for _, p := range knownProviders {
-				if CredentialAvailable(p) && !seen[p] {
-					out = append(out, p)
-					seen[p] = true
-				}
-			}
-			// Include custom providers that have credentials stored.
-			for p := range provider.CustomProviders() {
-				if CredentialAvailable(p) && !seen[p] {
-					out = append(out, p)
-					seen[p] = true
-				}
-			}
-			// Ollama models are always available (no auth needed).
-			if !seen["ollama"] {
-				out = append(out, "ollama")
-			}
-			return out
-		},
-		LoadSession:           loadSession,
-		LoadSessionContext:    loadSessionContext,
-		ChangeCWD:             changeCWD,
-		PersistCompactHandoff: persistCompactHandoff,
-		CurrentCompactHandoff: currentCompactHandoff,
-		PersistGoal:           persistGoal,
-		PersistGoalRuntime:    persistGoalRuntime,
-		CurrentGoal:           currentGoal,
-		CurrentGoalHistory:    currentGoalHistory,
-		CurrentPlan:           currentPlan,
-		PersistPlan:           persistPlan,
-		PersistedPlan:         persistedPlan,
-		InitialPlanSnapshots:  initialPlanSnapshots,
-		EnsureMission:         ensureMission,
+		AuthManager:                 mgr,
+		LlamaCPPConfig:              ResolveLlamaCPPConfig,
+		RefreshLlamaCPPModels:       RefreshLlamaCPPModels,
+		RefreshCustomProviderModels: RefreshCustomProviderModels,
+		CustomDiscoveryConfigured:   CustomDiscoveryConfigured,
+		BuildAgent:                  buildAgent,
+		SetKimiCLIFallbackDisabled:  SetKimiCLIFallbackDisabled,
+		BuildAgentFor:               buildAgentFor,
+		BuildAgentForRescue:         buildAgentForRescue,
+		LoggedInProviders:           modelPickerProviders,
+		LoadSession:                 loadSession,
+		LoadSessionContext:          loadSessionContext,
+		ChangeCWD:                   changeCWD,
+		PersistCompactHandoff:       persistCompactHandoff,
+		CurrentCompactHandoff:       currentCompactHandoff,
+		PersistGoal:                 persistGoal,
+		PersistGoalRuntime:          persistGoalRuntime,
+		CurrentGoal:                 currentGoal,
+		CurrentGoalHistory:          currentGoalHistory,
+		CurrentPlan:                 currentPlan,
+		PersistPlan:                 persistPlan,
+		PersistedPlan:               persistedPlan,
+		InitialPlanSnapshots:        initialPlanSnapshots,
+		EnsureMission:               ensureMission,
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()
@@ -2931,23 +2921,18 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			_ = MarkChangelogShown(v)
 		},
 		SkillSnapshot: func() []*skills.Skill {
-			if args.NoSkill {
-				// --no-skill: nothing for the picker to show.
-				return nil
-			}
-			// Re-discover so the picker reflects edits made during
-			// the session. Cheap; SKILL.md files are small. Filter
-			// out built-in skills — they're hidden from user-facing
-			// surfaces because they're implementation detail; the
-			// model still sees them through the system-prompt
-			// manifest and the skill tool.
-			userHome, _ := os.UserHomeDir()
-			list, _ := skills.Discover(ZutHome(), r.CWD, userHome, args.WithSkills)
-			list = mergeExtensionSkills(skills.NewTool(list), extMgr.Skills())
-			return skills.VisibleSkills(list)
+			return userSkillSnapshot(args, r.CWD, extMgr.Skills())
 		},
-		NoYolo:      args.NoYolo,
-		ConfirmGate: confirmGate,
+		LoadSkillPins: func(cwd string) (skills.Pins, error) {
+			if args.NoSkill {
+				return skills.Pins{}, nil
+			}
+			return loadSkillPins(cwd)
+		},
+		ToggleSkillPin:      toggleSkillPin,
+		PreloadPinnedSkills: freshSession && !args.NoSkill,
+		NoYolo:              args.NoYolo,
+		ConfirmGate:         confirmGate,
 		PersistModel: newPersistModelCallback(&persistMu, &sess, &activeProvider, &activeModel, func(message string) {
 			if iv != nil {
 				iv.Notify("session", "error", message)
@@ -3157,90 +3142,8 @@ func agentSessionsRoot(root string, args Args) string {
 // openOrCreateSession returns a session for the run. sess may be nil
 // with a nil error if session persistence is disabled.
 func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Agent, version string) (*core.Session, error) {
-	if args.NoSess {
-		// Allocate the one logical identity for this non-persisted run during
-		// runtime assembly instead of allowing a provider adapter to invent it.
-		ag.SessionID()
-		return nil, nil
-	}
-	// Sweep meta-only files left over from older zut versions (and from
-	// any session that crashed before its first AppendMessage) for the
-	// cwd-scoped picker paths. Explicit UUID lookup identifies candidates
-	// from their headers so unrelated transcript corruption does not block
-	// a valid resume.
-	sessionsRoot := agentSessionsRoot(ZutHome(), args)
-	if args.ResumeSessionID == "" {
-		core.PruneEmptySessions(sessionsRoot, args.CWD)
-	}
-	var (
-		s    *core.Session
-		msgs []provider.Message
-		err  error
-	)
-	switch {
-	case args.Session != "":
-		s, msgs, err = core.OpenSession(args.Session)
-		// An explicit session path may be created on first use; session pickers
-		// and resume paths still select existing files only.
-		if err != nil && errors.Is(err, os.ErrNotExist) {
-			s, err = core.NewSessionAtPath(args.Session, args.CWD, r.Provider, r.Model, version)
-			msgs = nil
-		}
-	case args.Continue:
-		latest := core.LatestSession(sessionsRoot, args.CWD)
-		if latest != "" {
-			s, msgs, err = core.OpenSession(latest)
-		}
-	case args.Resume:
-		if args.ResumeSessionID != "" {
-			picked, lookupErr := core.FindManagedSessionByID(ctx, ZutHome(), args.ResumeSessionID)
-			if lookupErr != nil {
-				return nil, lookupErr
-			}
-			if picked == "" {
-				return nil, fmt.Errorf("session %q not found", args.ResumeSessionID)
-			}
-			s, msgs, err = core.OpenSession(picked)
-			if err == nil && s.ID != args.ResumeSessionID {
-				closeErr := s.Close()
-				return nil, errors.Join(
-					fmt.Errorf("session %q changed during resume", args.ResumeSessionID),
-					closeErr,
-				)
-			}
-			break
-		}
-		picked, perr := pickSession(sessionsRoot, args.CWD)
-		if perr != nil {
-			return nil, perr
-		}
-		if picked != "" {
-			s, msgs, err = core.OpenSession(picked)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	if s != nil {
-		if err := ag.BindSessionID(s.Meta.ID); err != nil {
-			return nil, err
-		}
-		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
-		ag.SetMessages(msgs)
-		if cum, last, uerr := core.SessionUsageDetail(s.Path); uerr == nil {
-			ag.SeedCost(cum)
-			ag.SeedLastTurnUsage(last)
-		}
-		return s, nil
-	}
-	s, err = core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
-	if err == nil {
-		if bindErr := ag.BindSessionID(s.Meta.ID); bindErr != nil {
-			return nil, bindErr
-		}
-		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
-	}
-	return s, err
+	sess, _, err := openOrCreateSessionState(ctx, args, r, ag, version)
+	return sess, err
 }
 
 func pickSession(root, cwd string) (string, error) {

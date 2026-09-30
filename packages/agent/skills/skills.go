@@ -23,16 +23,20 @@
 // the related ecosystems works in zut unchanged. User skill roots are
 // walked recursively, and nested files can also be addressed by their
 // slash-separated path relative to the root (for example,
-// systems-backend/subskills/golang-patterns).
+// systems-backend/subskills/golang-patterns). Symlinked directories are
+// followed; see scanUserSkills.
 package skills
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // Skill is one discovered SKILL.md file.
@@ -237,11 +241,58 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 		}
 		return errs
 	}
+	// Real directories load before symlinked ones so a link cannot claim a
+	// fallback name ahead of the real directory it points at. Each entry
+	// stays one level deep, and loadOne still confines every resolved
+	// SKILL.md to dir.Root. A directory reachable both directly and through a
+	// link is loaded once, so an unnamed skill is not duplicated under its
+	// alias name.
+	visited := map[string]bool{}
+	visit := func(path string) bool {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			if !skipLinkError(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			}
+			return false
+		}
+		if visited[resolved] {
+			return false
+		}
+		visited[resolved] = true
+		return true
+	}
+	var linked []string
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() {
+			path := filepath.Join(dir.Dir, entry.Name())
+			if visit(path) {
+				loadOne(filepath.Join(path, "SKILL.md"), entry.Name())
+			}
 			continue
 		}
-		loadOne(filepath.Join(dir.Dir, entry.Name(), "SKILL.md"), entry.Name())
+		if entry.Type()&fs.ModeSymlink == 0 {
+			continue
+		}
+		path := filepath.Join(dir.Dir, entry.Name())
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			// Dangling and cyclic links are skipped; anything else
+			// (permissions, I/O) is reported.
+			if !skipLinkError(statErr) {
+				errs = append(errs, fmt.Errorf("%s: %w", path, statErr))
+			}
+			continue
+		}
+		if info.IsDir() {
+			linked = append(linked, entry.Name())
+		}
+	}
+	for _, name := range linked {
+		path := filepath.Join(dir.Dir, name)
+		if visit(path) {
+			loadOne(filepath.Join(path, "SKILL.md"), name)
+		}
 	}
 	return errs
 }
@@ -250,47 +301,164 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 // populates `seen` with first-match-wins per name or alias. Split out
 // so Discover's includeUser=false path doesn't have to skip over a
 // giant block.
+//
+// Symlinked directories are followed (filepath.WalkDir would not). Real
+// directories are scanned before links so a link cannot claim a name or
+// alias ahead of the real tree, every resolved directory is scanned once so
+// link cycles terminate, and dangling or cyclic links are skipped. Skills
+// reached through a link keep the walked (link) path.
 func scanUserSkills(zutHome, cwd, userHome string, seen map[string]*Skill) []error {
 	var errs []error
 	for _, loc := range searchDirs(zutHome, cwd, userHome) {
-		_ = filepath.WalkDir(loc.dir, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				if !os.IsNotExist(walkErr) {
-					errs = append(errs, fmt.Errorf("%s: %w", path, walkErr))
-				}
-				return nil
-			}
-			if entry.IsDir() || entry.Name() != "SKILL.md" {
-				return nil
-			}
-
-			rel, err := filepath.Rel(loc.dir, filepath.Dir(path))
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s: determine skill name: %w", path, err))
-				return nil
-			}
-			if rel == "." {
-				// Keep the existing convention that a search root is a
-				// collection of skill directories, not a skill itself.
-				return nil
-			}
-
-			s, err := load(path, loc.label)
-			if err != nil {
-				if !os.IsNotExist(err) {
-					errs = append(errs, fmt.Errorf("%s: %w", path, err))
-				}
-				return nil
-			}
-			if s.Name == "" {
-				s.Name = filepath.Base(filepath.Dir(path))
-			}
-			addRelativeAlias(s, loc.dir, path)
-			registerSkill(seen, s)
-			return nil
-		})
+		errs = append(errs, scanUserSkillDir(loc, seen)...)
 	}
 	return errs
+}
+
+// Traversal bounds for one user skill location. Real skill trees are shallow
+// and small; the caps stop a pathological or mis-linked tree (for example a
+// link into a huge shared checkout) from stalling startup. Too-deep
+// subtrees are skipped and the directory-count cap ends the scan of that
+// location; either way one nonfatal diagnostic is reported and every skill
+// already found is kept.
+const (
+	maxSkillScanDepth = 64
+	maxSkillScanDirs  = 10000
+)
+
+type linkedDir struct {
+	path  string
+	depth int
+}
+
+func scanUserSkillDir(loc location, seen map[string]*Skill) []error {
+	var errs []error
+	visited := map[string]bool{}
+	var linkedDirs []linkedDir
+	dirCount := 0
+	truncated := false // directory cap reached: stop the whole location
+	reported := false
+	report := func(why string) {
+		if !reported {
+			reported = true
+			errs = append(errs, fmt.Errorf("%s: skill scan stopped early: %s; some directories were skipped", loc.dir, why))
+		}
+	}
+	// A link whose target is the location itself or one of its ancestors
+	// would pull the surrounding filesystem into the scan. Compare against
+	// the resolved location root.
+	rootResolved, rootErr := filepath.EvalSymlinks(loc.dir)
+	loadSkill := func(path string) {
+		s, err := load(path, loc.label)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			}
+			return
+		}
+		if s.Name == "" {
+			s.Name = filepath.Base(filepath.Dir(path))
+		}
+		addRelativeAlias(s, loc.dir, path)
+		registerSkill(seen, s)
+	}
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if truncated {
+			return
+		}
+		if depth > maxSkillScanDepth {
+			report(fmt.Sprintf("nesting deeper than %d levels", maxSkillScanDepth))
+			return
+		}
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			if !skipLinkError(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			}
+			return
+		}
+		if visited[resolved] {
+			return
+		}
+		if dirCount >= maxSkillScanDirs {
+			truncated = true
+			report(fmt.Sprintf("more than %d directories", maxSkillScanDirs))
+			return
+		}
+		visited[resolved] = true
+		dirCount++
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			}
+			return
+		}
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			isDir := entry.IsDir()
+			if entry.Type()&fs.ModeSymlink != 0 {
+				info, statErr := os.Stat(path)
+				if statErr != nil {
+					// Dangling and cyclic links are not skills; SKILL.md
+					// links fall through to load, which ignores ENOENT.
+					if !skipLinkError(statErr) {
+						errs = append(errs, fmt.Errorf("%s: %w", path, statErr))
+					}
+					continue
+				}
+				if info.IsDir() {
+					if target, err := filepath.EvalSymlinks(path); err == nil && rootErr == nil && containsPath(target, rootResolved) {
+						// Link to the root or an ancestor of it: a cycle.
+						continue
+					}
+					linkedDirs = append(linkedDirs, linkedDir{path: path, depth: depth + 1})
+					continue
+				}
+			}
+			if isDir {
+				walk(path, depth+1)
+				continue
+			}
+			if entry.Name() != "SKILL.md" {
+				continue
+			}
+			if dir == loc.dir {
+				// Keep the existing convention that a search root is a
+				// collection of skill directories, not a skill itself.
+				continue
+			}
+			loadSkill(path)
+		}
+	}
+	walk(loc.dir, 0)
+	for i := 0; i < len(linkedDirs); i++ {
+		walk(linkedDirs[i].path, linkedDirs[i].depth)
+	}
+	return errs
+}
+
+// containsPath reports whether child equals parent or lies beneath it. Both
+// paths must already be resolved and absolute.
+func containsPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// skipLinkError reports whether err means a link points at nothing or loops.
+func skipLinkError(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || symlinkLoopError(err)
+}
+
+func symlinkLoopError(err error) bool {
+	// Windows reports cyclic links as ERROR_CANT_RESOLVE_FILENAME (1921),
+	// rather than ELOOP. syscall does not export a name for this error.
+	return errors.Is(err, syscall.ELOOP) ||
+		(runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(1921)))
 }
 
 // addRelativeAlias makes a nested skill addressable by the directory path

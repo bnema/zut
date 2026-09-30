@@ -280,7 +280,7 @@ func botRun(spec *botSpec, rawTail []string, version string) (runErr error) {
 			}
 			defer closeResolvedLSP(next)
 			agent.Client = next.NewClient()
-			agent.Model = next.Model
+			applyResolvedModel(agent, next)
 			runner.UpdateRuntimeConfig(next.Provider, next.Model, next.AuthMethod, next.CWD)
 			return nil
 		},
@@ -531,4 +531,14 @@ func telegramBotReset() error {
 	}
 	fmt.Println("removed", p)
 	return nil
+}
+
+// applyResolvedModel adopts a reloaded model's ID and limits together so a
+// model change does not keep the previous model's output budget.
+func applyResolvedModel(agent *core.Agent, next Resolved) {
+	agent.Model = next.Model
+	agent.MaxTokens = next.MaxOutput
+	if next.ContextWindow > 0 {
+		agent.ContextWindow = next.ContextWindow
+	}
 }

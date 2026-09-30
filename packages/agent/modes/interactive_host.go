@@ -103,6 +103,8 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.prepareReplacementAgentLocked(ag)
 	i.compactContinuation = decodeCompactHandoff(compactHandoff)
 	i.agent = ag
+	// Resumed, imported and forked conversations already have context.
+	i.skillPins.disarm()
 	i.cfg.Provider = providerName
 	i.cfg.Model = model
 	i.cfg.detachMismatchedModelProfile()
@@ -169,6 +171,12 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	profiles, _ := subagents.Discover(cwd, home)
 	subagentsAddendum := subagents.SystemPromptAddendum(profiles)
 
+	// The new cwd starts a fresh conversation: discover its skills and load its
+	// pins before taking any lock. The host has already switched its own cwd.
+	i.skillPins.ioMu.Lock()
+	defer i.skillPins.ioMu.Unlock()
+	pinFetch := i.skillPins.fetch(cwd, true)
+
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -180,6 +188,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
+	i.armSkillPinsLocked(pinFetch)
 	i.view.InvalidateRenderCache()
 	if i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup {
 		i.view.StartupContextPaths = append(i.view.StartupContextPaths, startupContextPaths...)
@@ -306,6 +315,11 @@ func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput
 		return
 	}
 	i.maybeStartSessionTitle(i.runCtx, text)
+	if userInput {
+		// Only genuine user input carries pinned skills. Host evidence and
+		// scheduler/extension prompts (userInput=false) never consume them.
+		message.Text = i.consumePinnedSkills(message.Text)
+	}
 	i.mu.Lock()
 	if i.busy {
 		// Keep the interactive mutex held through Agent.QueueMessage so turn teardown
@@ -365,6 +379,11 @@ func (i *Interactive) takeQueuedMessagesLocked() []core.QueuedMessage {
 
 func (i *Interactive) discardQueuedMessagesLocked(preserveHostEvents bool) {
 	pending := i.takeQueuedMessagesLocked()
+	for _, message := range pending {
+		if !message.HostEvent {
+			i.skillPins.recall(message.Text)
+		}
+	}
 	if !preserveHostEvents {
 		return
 	}

@@ -8,11 +8,14 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
-// skillsDialog lists every discovered skill and lets the user view
-// the body of one inline. View is read-only — the model loads skills
-// itself via the `skill` tool. This dialog is for inspection.
+// skillsDialog lists every discovered skill, shows its pin scopes, and lets
+// the user view the body of one inline. Viewing is read-only — the model loads
+// skills itself via the `skill` tool. Pin persistence is handled by the
+// interactive host (see skillPinState); the dialog only renders the markers.
 type skillsDialog struct {
 	active  bool
+	pins    skills.Pins // last pins loaded by the host, for the [pg] markers
+	canPin  bool        // host can save pins; hides markers and the hint otherwise
 	skills  []*skills.Skill
 	cursor  int
 	viewing *skills.Skill // when non-nil, render the body instead of the list
@@ -99,6 +102,9 @@ func (d *skillsDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	out := []string{frameHeader(th, "skills (enter to view, esc to close)", width)}
+	if d.canPin {
+		out = append(out, "  "+th.FGColor(th.Muted, "p: project pin, g: global pin (toggle)"))
+	}
 	if len(d.skills) == 0 {
 		out = append(out, "  "+th.FGColor(th.Muted, "no user skills loaded"))
 		out = append(out, "  "+th.FGColor(th.Muted, "add SKILL.md under $ZUT_HOME/skills, .zut/skills, .claude/skills, or .agents/skills"))
@@ -113,7 +119,8 @@ func (d *skillsDialog) Render(th tui.Theme, width int) []string {
 	}
 	for i := start; i < end; i++ {
 		s := d.skills[i]
-		row := formatSkillRow(s, width-2)
+		marker := d.pinMarker(s)
+		row := marker + formatSkillRow(s, width-2-len(marker))
 		if i == d.cursor {
 			out = append(out, th.PadHighlight("  "+row, width))
 		} else {
@@ -126,6 +133,32 @@ func (d *skillsDialog) Render(th tui.Theme, width int) []string {
 	out = append(out, "  "+th.FGColor(th.Muted, "run with /skill:<name> [request]"))
 	out = append(out, frameRule(th, width))
 	return out
+}
+
+// pinMarker returns "[pg] "-style scope markers, or "" when pinning is
+// unavailable (for example a host without pin storage).
+func (d *skillsDialog) pinMarker(s *skills.Skill) string {
+	if !d.canPin {
+		return ""
+	}
+	project, global := "-", "-"
+	projectPinned, globalPinned := d.pins.Scopes(d.skills, s)
+	if projectPinned {
+		project = "p"
+	}
+	if globalPinned {
+		global = "g"
+	}
+	return "[" + project + global + "] "
+}
+
+// selectedSkill returns the skill under the list cursor, or nil in the body
+// view or an empty list.
+func (d *skillsDialog) selectedSkill() *skills.Skill {
+	if !d.Active() || d.viewing != nil || d.cursor < 0 || d.cursor >= len(d.skills) {
+		return nil
+	}
+	return d.skills[d.cursor]
 }
 
 func (d *skillsDialog) renderBody(th tui.Theme, width int) []string {

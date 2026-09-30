@@ -253,6 +253,12 @@ type InteractiveConfig struct {
 	// the catalog before /model opens.
 	RefreshLlamaCPPModels func(context.Context) error
 
+	// RefreshCustomProviderModels lists models from models.json providers
+	// that opted into discovery. CustomDiscoveryConfigured gates it so /model
+	// opens immediately when nothing opted in. Both are optional.
+	RefreshCustomProviderModels func(context.Context) error
+	CustomDiscoveryConfigured   func() bool
+
 	// BuildAgent is called after a successful login to (re)construct the
 	// agent with the fresh credential. It returns the new agent and
 	// the concrete provider/model in use.
@@ -438,6 +444,20 @@ type InteractiveConfig struct {
 	// discovered SKILL.md files. Re-invoked each time /skills opens
 	// so the picker reflects edits made during the session.
 	SkillSnapshot func() []*skills.Skill
+
+	// LoadSkillPins returns the pinned-skill preferences for cwd. With
+	// PreloadPinnedSkills it feeds the first-prompt preload; either way it
+	// drives the /skills pin markers. Nil disables pinning.
+	LoadSkillPins func(cwd string) (skills.Pins, error)
+
+	// ToggleSkillPin flips one skill's pin in the project (global=false) or
+	// global scope. Nil makes the /skills picker read-only.
+	ToggleSkillPin func(cwd, name string, global bool) error
+
+	// PreloadPinnedSkills arms the pinned-skill preload for a fresh
+	// conversation. Hosts that resume a session must leave it false or call
+	// SetPinnedSkillsPending(false) once the session is loaded.
+	PreloadPinnedSkills bool
 
 	// ChangelogChan, if non-nil, delivers release-notes for the
 	// current binary version once at startup. Interactive opens a
@@ -850,8 +870,13 @@ type Interactive struct {
 	telegramBridge          *telegram.Bridge
 	sessionOpsDialog        *sessionOpsDialog
 	sessionTreeDialog       *sessionTreeDialog
+	timeline                *timelineView
 	extPanel                *extPanelDialog
 	llamaConfigured         bool
+
+	// skillPins preload state is guarded by mu; its fixed callbacks run
+	// outside mu, serialized by skillPins.ioMu.
+	skillPins skillPinState
 
 	// completionTracker collects resident child terminal turns for delivery to
 	// the parent orchestration wave.
@@ -1098,6 +1123,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		settingsDialog:          newSettingsDialog(),
 		sessionOpsDialog:        newSessionOpsDialog(),
 		sessionTreeDialog:       newSessionTreeDialog(),
+		timeline:                newTimelineView(),
 		extPanel:                newExtPanelDialog(),
 		extStatuses:             map[string]map[string]extensionStatus{},
 		extWidgets:              map[string]map[string]extensionWidget{},
@@ -1110,6 +1136,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		reloadErrors:            append([]string(nil), cfg.StartupExtensionErrors...),
 		compactContinuation:     decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
+	i.skillPins = newSkillPinState(cfg.LoadSkillPins, cfg.ToggleSkillPin, cfg.SkillSnapshot)
 	i.btwDialog.setCloseHook(func() {
 		i.confirmDialog.CancelChildConfirmations("side chat closed")
 	})
@@ -1161,6 +1188,9 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	i.applyAutoSubagentsTool()
 	i.recoverGoalRun()
+	if cfg.PreloadPinnedSkills {
+		i.SetPinnedSkillsPending(true)
+	}
 	return i
 }
 

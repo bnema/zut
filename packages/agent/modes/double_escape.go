@@ -90,6 +90,7 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 		i.settingsDialog != nil && i.settingsDialog.Active() ||
 		i.sessionOpsDialog != nil && i.sessionOpsDialog.Active() ||
 		i.sessionTreeDialog != nil && i.sessionTreeDialog.Active() ||
+		i.timeline != nil && i.timeline.Active() ||
 		i.extPanel != nil && i.extPanel.Active() ||
 		i.confirmDialog != nil && i.confirmDialog.Active() {
 		return true

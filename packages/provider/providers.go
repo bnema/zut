@@ -54,6 +54,15 @@ var builtinProviderIDs = []string{
 	ProviderCloudflareWorkersAI, ProviderCloudflareAIGateway,
 }
 
+func isBuiltinProviderID(id string) bool {
+	for _, p := range builtinProviderIDs {
+		if p == id {
+			return true
+		}
+	}
+	return false
+}
+
 // BuiltinProviderIDs returns the canonical built-in provider IDs in fallback
 // priority order. The returned slice is independent of package state.
 func BuiltinProviderIDs() []string {

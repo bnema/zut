@@ -18,7 +18,11 @@ func TestResidentCompletionBatchDoesNotReportTerminalSiblingAsRunning(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ag := core.NewAgent(nil, "model", "", nil)
-	i := &Interactive{agent: ag, busy: true, runCtx: ctx}
+	// Own the delivery loop during setup: TrackResidentSubagent requests
+	// delivery immediately, and a manager-wave hold does not stop reports
+	// sliding into a busy parent. Both outcomes must be ready before draining
+	// to exercise the same-batch sibling filter, not two valid separate batches.
+	i := &Interactive{agent: ag, busy: true, runCtx: ctx, completionDeliveryRunning: true}
 	release := i.beginCompletionDeliveryHold()
 	defer release()
 	i.TrackResidentSubagent("first", "turn-1")
@@ -27,24 +31,15 @@ func TestResidentCompletionBatchDoesNotReportTerminalSiblingAsRunning(t *testing
 	tracker := i.ensureCompletionTracker()
 	tracker.Report(subagents.Completion{AgentID: "first", TurnID: "turn-1", Status: "completed"})
 	tracker.Report(subagents.Completion{AgentID: "second", TurnID: "turn-2", Status: "completed"})
-	i.requestCompletionDelivery()
+	i.deliverCompletionUpdates()
 
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
-	for {
-		queued := ag.PendingQueuedMessages()
-		if len(queued) == 2 {
-			for _, message := range queued {
-				if strings.Contains(message.Text, "Still running:") {
-					t.Fatalf("terminal sibling reported as running: %q", message.Text)
-				}
-			}
-			return
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("queued completions = %#v, want 2", queued)
-		case <-time.After(time.Millisecond):
+	queued := ag.PendingQueuedMessages()
+	if len(queued) != 2 {
+		t.Fatalf("queued completions = %#v, want 2", queued)
+	}
+	for _, message := range queued {
+		if strings.Contains(message.Text, "Still running:") {
+			t.Fatalf("terminal sibling reported as running: %q", message.Text)
 		}
 	}
 }

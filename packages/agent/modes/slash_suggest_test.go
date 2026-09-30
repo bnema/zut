@@ -64,6 +64,38 @@ func TestSlashSuggesterHasOrchestratorToggle(t *testing.T) {
 	}
 }
 
+func TestSlashSuggesterPrefersExactSessionCommand(t *testing.T) {
+	s := newSlashSuggester()
+	if got := commandNames(s.matches("/session")); !slices.Equal(got, []string{"/session"}) {
+		t.Fatalf("matches = %v, want exact /session", got)
+	}
+	if got := s.Selection("/session"); got != "/session" {
+		t.Fatalf("selection = %q, want /session", got)
+	}
+}
+
+func TestSlashSuggesterCompletesSessionActions(t *testing.T) {
+	s := newSlashSuggester()
+	if got, want := commandNames(s.matches("/session ")), []string{
+		"/session timeline",
+		"/session export",
+		"/session import",
+		"/session fork",
+		"/session tree",
+	}; !slices.Equal(got, want) {
+		t.Fatalf("matches = %v, want %v", got, want)
+	}
+	if got := commandNames(s.matches("/session t")); !slices.Equal(got, []string{"/session timeline", "/session tree"}) {
+		t.Fatalf("filtered matches = %v", got)
+	}
+	if got := s.Selection("/session t"); got != "/session timeline" {
+		t.Fatalf("selection = %q, want /session timeline", got)
+	}
+	if got := s.matches("/model x"); len(got) != 0 {
+		t.Fatalf("arguments of other commands must not suggest: %v", got)
+	}
+}
+
 func TestSlashCommandsAreCaseInsensitive(t *testing.T) {
 	s := newSlashSuggester()
 	if got := commandNames(s.matches("/EX")); !contains(got, "/exit") {

@@ -53,7 +53,11 @@ func (t *openaiResponsesTransport) RoundTrip(req *http.Request) (*http.Response,
 	if clone.Header.Get("x-opencode-client") != openCodeGoClient {
 		clone.Header.Del("user-agent")
 	}
-	// Keep Authorization: Bearer <key> as set by the codex client.
+	// The shared Responses client sets a Bearer header even with an empty key.
+	// Keyless custom Responses endpoints need no Authorization header at all.
+	if strings.TrimSpace(clone.Header.Get("authorization")) == "Bearer" {
+		clone.Header.Del("authorization")
+	}
 	return t.inner.RoundTrip(clone)
 }
 

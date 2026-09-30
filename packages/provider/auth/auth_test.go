@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -291,5 +293,303 @@ func TestServerCallbackError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no result")
+	}
+}
+
+func TestStartManualOAuthRejectsOpenAIWithoutCallback(t *testing.T) {
+	m := NewManager(NewStore(filepath.Join(t.TempDir(), "auth.json")))
+	if _, err := m.StartManualOAuth("openai-codex"); err == nil {
+		t.Fatal("expected manual OpenAI OAuth to be rejected")
+	} else if !strings.Contains(err.Error(), "manual code login is not supported") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBrowserOAuthSharesTransactionWithPastedCode(t *testing.T) {
+	for _, provider := range []string{"anthropic", "openai-codex"} {
+		t.Run(provider, func(t *testing.T) {
+			m := NewManager(NewStore(filepath.Join(t.TempDir(), "auth.json")))
+			m.openBrowser = false
+			t.Cleanup(m.Close)
+			loginURL, err := m.StartOAuth(provider)
+			if err != nil {
+				if strings.Contains(err.Error(), "bind ") {
+					t.Skipf("callback port unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			u, err := url.Parse(loginURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := u.Query().Get("state")
+			if m.manualOp == nil || m.manualState != state || m.manualPKCE.Challenge != u.Query().Get("code_challenge") {
+				t.Fatal("pasted-code path does not share the browser transaction")
+			}
+			if err := m.CompleteManualOAuth(context.Background(), "code#wrong-state"); err == nil || !strings.Contains(err.Error(), "state mismatch") {
+				t.Fatalf("wrong state accepted: %v", err)
+			}
+			if err := m.CompleteManualOAuth(context.Background(), ""); err == nil || err.Error() != "empty code" {
+				t.Fatalf("shared transaction unavailable after bad code: %v", err)
+			}
+			m.CancelOAuth()
+			if err := m.CompleteManualOAuth(context.Background(), "code#"+state); err == nil || !strings.Contains(err.Error(), "no manual oauth flow") {
+				t.Fatalf("canceled flow still accepts code: %v", err)
+			}
+		})
+	}
+}
+
+func TestPastedOAuthCodeUsesBrowserPKCE(t *testing.T) {
+	requests := make(chan url.Values, 2)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		requests <- r.PostForm
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-token","refresh_token":"test-refresh","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+	old := OpenAIOAuth.TokenURL
+	OpenAIOAuth.TokenURL = tokenServer.URL
+	t.Cleanup(func() { OpenAIOAuth.TokenURL = old })
+
+	for _, method := range []string{"paste", "callback"} {
+		t.Run(method, func(t *testing.T) {
+			store := NewStore(filepath.Join(t.TempDir(), "auth.json"))
+			m := NewManager(store)
+			m.openBrowser = false
+			t.Cleanup(m.Close)
+			loginURL, err := m.StartOAuth("openai-codex")
+			if err != nil {
+				if strings.Contains(err.Error(), "bind ") {
+					t.Skipf("callback port unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			u, err := url.Parse(loginURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifier := m.manualPKCE.Verifier
+			redirect := u.Query().Get("redirect_uri")
+			codeURL := redirect + "?code=test-code&state=" + url.QueryEscape(u.Query().Get("state"))
+			if method == "paste" {
+				if err := m.CompleteManualOAuth(context.Background(), codeURL); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				resp, err := http.Get(codeURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("callback status = %d", resp.StatusCode)
+				}
+			}
+			select {
+			case ev := <-m.Events():
+				if ev.Kind != "started" {
+					t.Fatalf("event = %+v", ev)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no started event")
+			}
+			select {
+			case ev := <-m.Events():
+				if ev.Kind != "success" || ev.Provider != "openai-codex" {
+					t.Fatalf("event = %+v", ev)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no success event")
+			}
+			select {
+			case form := <-requests:
+				if form.Get("code_verifier") != verifier || form.Get("redirect_uri") != redirect || form.Get("code") != "test-code" {
+					t.Fatalf("exchange did not use browser transaction: %v", form)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no token exchange")
+			}
+			creds, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if creds.OpenAI.OAuth == nil || creds.OpenAI.OAuth.AccessToken != "test-token" {
+				t.Fatalf("stored credential: %v", creds.OpenAI.OAuth)
+			}
+		})
+	}
+}
+
+func TestCanceledBrowserOAuthDoesNotExchangeOrEmit(t *testing.T) {
+	exchanged := make(chan struct{}, 1)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exchanged <- struct{}{}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-token","refresh_token":"test-refresh","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+	old := OpenAIOAuth.TokenURL
+	OpenAIOAuth.TokenURL = tokenServer.URL
+	t.Cleanup(func() { OpenAIOAuth.TokenURL = old })
+
+	store := NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	m := NewManager(store)
+	m.openBrowser = false
+	t.Cleanup(m.Close)
+	loginURL, err := m.StartOAuth("openai-codex")
+	if err != nil {
+		if strings.Contains(err.Error(), "bind ") {
+			t.Skipf("callback port unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(loginURL)
+	state := u.Query().Get("state")
+	<-m.Events() // started
+	m.CancelOAuth()
+	// A pasted code after cancellation must not resurrect the transaction.
+	if err := m.CompleteManualOAuth(context.Background(), "code#"+state); err == nil {
+		t.Fatal("canceled transaction accepted a pasted code")
+	}
+	select {
+	case <-exchanged:
+		t.Fatal("token exchange ran after cancellation")
+	case ev := <-m.Events():
+		t.Fatalf("unexpected event after cancellation: %+v", ev)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The callback port must be released so a new login can bind it.
+	if _, err := m.StartOAuth("openai-codex"); err != nil {
+		t.Fatalf("callback port not released after cancel: %v", err)
+	}
+}
+
+func TestPastedOAuthCodeConsumesTransactionOnce(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"test-token","refresh_token":"test-refresh","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+	old := OpenAIOAuth.TokenURL
+	OpenAIOAuth.TokenURL = tokenServer.URL
+	t.Cleanup(func() { OpenAIOAuth.TokenURL = old })
+
+	m := NewManager(NewStore(filepath.Join(t.TempDir(), "auth.json")))
+	m.openBrowser = false
+	t.Cleanup(m.Close)
+	loginURL, err := m.StartOAuth("openai-codex")
+	if err != nil {
+		if strings.Contains(err.Error(), "bind ") {
+			t.Skipf("callback port unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(loginURL)
+	state := u.Query().Get("state")
+	if err := m.CompleteManualOAuth(context.Background(), "code#"+state); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CompleteManualOAuth(context.Background(), "code#"+state); err == nil {
+		t.Fatal("second pasted code accepted")
+	}
+	var success int
+	deadline := time.After(300 * time.Millisecond)
+loop:
+	for {
+		select {
+		case ev := <-m.Events():
+			if ev.Kind == "success" {
+				success++
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	if success != 1 {
+		t.Fatalf("success events = %d, want 1", success)
+	}
+}
+
+// A pasted-code exchange that is blocked at the token endpoint must be
+// canceled by CancelOAuth, Close, or a newer login: no credential, no success
+// event.
+func TestCancelAbortsInFlightPastedCodeExchange(t *testing.T) {
+	for _, name := range []string{"cancel", "new login", "close"} {
+		t.Run(name, func(t *testing.T) {
+			arrived := make(chan struct{}, 4)
+			release := make(chan struct{})
+			tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				arrived <- struct{}{}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				w.Header().Set("content-type", "application/json")
+				_, _ = w.Write([]byte(`{"access_token":"late-token","refresh_token":"late-refresh","expires_in":3600}`))
+			}))
+			defer tokenServer.Close()
+			defer close(release)
+			old := AnthropicManualOAuth.TokenURL
+			AnthropicManualOAuth.TokenURL = tokenServer.URL
+			t.Cleanup(func() { AnthropicManualOAuth.TokenURL = old })
+
+			store := NewStore(filepath.Join(t.TempDir(), "auth.json"))
+			m := NewManager(store)
+			m.openBrowser = false
+			t.Cleanup(m.Close)
+			loginURL, err := m.StartManualOAuth("anthropic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, _ := url.Parse(loginURL)
+			state := u.Query().Get("state")
+			<-m.Events() // started
+
+			// The caller's context is never canceled: only the manager may
+			// abort the exchange.
+			done := make(chan error, 1)
+			go func() { done <- m.CompleteManualOAuth(context.Background(), "code#"+state) }()
+			select {
+			case <-arrived:
+			case <-time.After(2 * time.Second):
+				t.Fatal("token exchange never started")
+			}
+			switch name {
+			case "new login":
+				if _, err := m.StartManualOAuth("anthropic"); err != nil {
+					t.Fatal(err)
+				}
+			case "close":
+				m.Close()
+			default:
+				m.CancelOAuth()
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrOAuthCanceled) {
+					t.Fatalf("CompleteManualOAuth = %v, want ErrOAuthCanceled", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("canceled exchange did not return")
+			}
+			creds, err := store.Load()
+			if err == nil && creds.Anthropic.OAuth != nil {
+				t.Fatalf("canceled exchange stored a credential")
+			}
+			for {
+				select {
+				case ev := <-m.Events():
+					if ev.Kind == "success" || ev.Kind == "error" {
+						t.Fatalf("stale event after cancel: %+v", ev)
+					}
+					continue
+				default:
+				}
+				break
+			}
+		})
 	}
 }

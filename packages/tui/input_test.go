@@ -243,6 +243,25 @@ func TestReaderWithoutPeekDoesNotBlockBareEscapeOrStartAnotherPump(t *testing.T)
 	}
 }
 
+func TestReaderParsesSS3CursorKeys(t *testing.T) {
+	cases := []struct {
+		seq  string
+		want KeyKind
+	}{
+		{"\x1bOA", KeyUp},
+		{"\x1bOB", KeyDown},
+		{"\x1bOC", KeyRight},
+		{"\x1bOD", KeyLeft},
+		{"\x1bOH", KeyHome},
+		{"\x1bOF", KeyEnd},
+	}
+	for _, tc := range cases {
+		if k := readKey(t, tc.seq); k.Kind != tc.want {
+			t.Fatalf("Read(%q) kind=%v, want %v", tc.seq, k.Kind, tc.want)
+		}
+	}
+}
+
 func TestReaderParsesSGRMouseWheel(t *testing.T) {
 	cases := []struct {
 		seq  string

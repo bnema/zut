@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -357,6 +358,9 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	// scheduling/extension tools are never inherited.
 	allTools := make([]string, 0, len(catalogue))
 	for name := range catalogue {
+		if extensions.IsInteractiveTool(catalogue[name]) {
+			continue
+		}
 		switch name {
 		case tools.SubagentToolName, "update_goal", tools.PlanToolName:
 			continue

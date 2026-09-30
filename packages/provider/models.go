@@ -491,8 +491,9 @@ var (
 	active                   []Model // live overlay merged in via SetLiveModels; nil = none yet
 	activeSet                bool    // true once SetLiveModels has run (even with empty live)
 	authoritativeProviderSet map[string]struct{}
-	managedModels            []Model // ephemeral models exposed by local model managers
-	userModels               []Model // highest-precedence models loaded from models.json
+	managedModels            []Model                        // ephemeral models exposed by local model managers
+	userModels               []Model                        // highest-precedence models loaded from models.json
+	modelAvailability        = map[string]map[string]bool{} // account-specific, memory only
 )
 
 // CatalogSnapshot captures the mutable catalog overlays so a caller can
@@ -505,6 +506,7 @@ type CatalogSnapshot struct {
 	authoritativeProviderSet map[string]struct{}
 	managedModels            []Model
 	userModels               []Model
+	modelAvailability        map[string]map[string]bool
 }
 
 // SnapshotCatalog returns a deep copy of the mutable provider catalog state.
@@ -515,6 +517,7 @@ func SnapshotCatalog() CatalogSnapshot {
 	snapshot := CatalogSnapshot{
 		activeSet:                activeSet,
 		authoritativeProviderSet: maps.Clone(authoritativeProviderSet),
+		modelAvailability:        cloneModelAvailability(modelAvailability),
 	}
 	if active != nil {
 		snapshot.active = cloneModels(active)
@@ -540,6 +543,10 @@ func RestoreCatalog(snapshot CatalogSnapshot) {
 	}
 	activeSet = snapshot.activeSet
 	authoritativeProviderSet = maps.Clone(snapshot.authoritativeProviderSet)
+	modelAvailability = cloneModelAvailability(snapshot.modelAvailability)
+	if modelAvailability == nil {
+		modelAvailability = map[string]map[string]bool{}
+	}
 	if snapshot.managedModels != nil {
 		managedModels = cloneModels(snapshot.managedModels)
 	} else {
@@ -629,8 +636,17 @@ func mergeUserModels(active, users []Model) []Model {
 			}
 			existing.Source = "user"
 			existing.Speculative = false
+			if existing.Provider == ProviderGitHubCopilot {
+				configureCopilotModel(&existing) // normalizes a legacy api value
+			}
 			active[idx] = existing
 			continue
+		}
+		if user.Provider == ProviderGitHubCopilot {
+			// A user-only Copilot model has no catalog row, so it would miss the
+			// protocol-specific defaults built-in rows receive. Explicit API and
+			// reasoning mappings from models.json are preserved.
+			configureCopilotModel(&user)
 		}
 		index[key] = len(active)
 		active = append(active, user)
@@ -692,7 +708,11 @@ func ClearLiveModelsForProvider(name string) {
 // Snapshotting Catalog at var-init time would freeze the picker to the
 // curated seed list and drop every extra provider (openrouter, groq,
 // xai, ...). Deferring the read to call time avoids that ordering trap.
-func Active() []Model {
+func Active() []Model { return activeModels(true) }
+
+// activeModels builds the merged catalog. When availableOnly is set, providers
+// with an account availability snapshot expose only the models it lists.
+func activeModels(availableOnly bool) []Model {
 	activeMu.RLock()
 	defer activeMu.RUnlock()
 	src := active
@@ -719,7 +739,56 @@ func Active() []Model {
 	// User models are a durable, highest-precedence overlay. Apply them
 	// after the live and managed overlays so a catalog refresh cannot
 	// discard overrides or user-only entries.
-	return mergeUserModels(out, userModels)
+	out = mergeUserModels(out, userModels)
+	if availableOnly {
+		out = filterAvailableModels(out)
+	}
+	return out
+}
+
+func cloneModelAvailability(in map[string]map[string]bool) map[string]map[string]bool {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string]bool, len(in))
+	for name, ids := range in {
+		out[name] = maps.Clone(ids)
+	}
+	return out
+}
+
+// SetModelAvailability restricts a provider's visible catalog to the supplied
+// account model IDs. A nil slice clears the restriction; an empty non-nil slice
+// hides all of the provider's models. The snapshot is memory-only: it is never
+// written to the shared model cache because it is account-specific.
+func SetModelAvailability(provider string, ids []string) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	if ids == nil {
+		delete(modelAvailability, provider)
+		return
+	}
+	allowed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	modelAvailability[provider] = allowed
+}
+
+// filterAvailableModels removes models hidden by account availability. The
+// caller holds activeMu and owns models.
+func filterAvailableModels(models []Model) []Model {
+	if len(modelAvailability) == 0 {
+		return models
+	}
+	out := models[:0]
+	for _, m := range models {
+		allowed, restricted := modelAvailability[m.Provider]
+		if !restricted || allowed[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // SetManagedModels replaces the ephemeral catalog entries supplied by local
@@ -731,11 +800,32 @@ func SetManagedModels(models []Model) {
 	managedModels = append([]Model(nil), models...)
 }
 
+// SetManagedModelsForProvider replaces only one provider's managed entries,
+// leaving other managers' snapshots (llama.cpp, custom discovery, ...) intact.
+// Entries whose Provider differs from providerID are ignored.
+func SetManagedModelsForProvider(providerID string, models []Model) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	kept := make([]Model, 0, len(managedModels)+len(models))
+	for _, m := range managedModels {
+		if m.Provider != providerID {
+			kept = append(kept, m)
+		}
+	}
+	for _, m := range models {
+		if m.Provider == providerID {
+			kept = append(kept, cloneModel(m))
+		}
+	}
+	managedModels = kept
+}
+
 // FindModel returns a Model by id, optionally constrained by provider.
 // If provider is empty, the first matching id is returned. Looks up
-// against the merged active catalog.
+// against the merged catalog, including models hidden by account availability:
+// existing sessions still need stable wire and pricing metadata after a refresh.
 func FindModel(provider, id string) (Model, error) {
-	for _, m := range Active() {
+	for _, m := range activeModels(false) {
 		if m.ID == id && (provider == "" || m.Provider == provider) {
 			return m, nil
 		}

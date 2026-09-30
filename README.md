@@ -12,7 +12,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - seventeen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
-- extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
+- extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. Interactive tools can wait for user input without a reply deadline and support cooperative cancellation; headless hosts reject them. See [docs/extensions.md](docs/extensions.md).
 - user and extension themes via JSON; see [docs/themes.md](docs/themes.md).
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
 - reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
@@ -113,11 +113,12 @@ Run `zut` and type `/login`. Pick one of two methods:
 - **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you pick a provider from the full API-key provider list, paste the key, and zut saves it to `auth.json` if accepted. Providers with a lightweight model-list endpoint are probed before saving; provider backends that need extra project/account env vars are saved directly.
 - **Subscription**: use your Claude Pro/Max, ChatGPT Plus/Pro, Kimi Code, SuperGrok/X Premium, or GitHub Copilot subscription. DeepSeek and Google Gemini do **not** have a subscription login path. For those, use the API-key flow.
   - Anthropic and OpenAI pin the browser callback to fixed provider-specific ports (`localhost:53692` for Anthropic, `localhost:1455` for OpenAI) because those are the only ports their auth servers will redirect to.
-  - Anthropic uses the Claude Code OAuth flow. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
+  - Anthropic uses the Claude Code OAuth flow, with separate browser callback and copy-code choices. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
+  - Browser login for Anthropic and OpenAI Codex accepts a pasted callback URL or code from the same transaction; a supplied state must match. `esc` cancels the pending flow. OpenAI Codex has no standalone manual-code login.
   - OpenAI uses the Codex CLI OAuth flow. Messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.
   - Kimi uses the Kimi Code device-code OAuth flow. zut opens the verification URL, polls until you approve it in the browser, then sends messages to `api.kimi.com/coding/v1` with the Kimi Code identity headers.
   - xAI uses a device-code OAuth flow. zut opens a prefilled authorization URL, polls for approval, and uses the resulting token with the xAI API.
-  - GitHub Copilot uses GitHub's device-code login flow. zut stores the GitHub access token and exchanges it for short-lived Copilot inference tokens on demand.
+  - GitHub Copilot uses GitHub's device-code login flow. zut stores the GitHub access token and exchanges it for short-lived Copilot inference tokens on demand. Claude uses Messages, models tagged for Responses use that API, and the remaining models use Chat Completions. Account-specific model discovery filters picker availability without enabling policies; see [GitHub Copilot](docs/providers.md#github-copilot).
 
 > **Note on subscription login.** The OAuth client IDs used are the ones published in Anthropic's Claude Code CLI, OpenAI's Codex CLI, Kimi Code CLI, xAI's device flow, and GitHub Copilot's device-code flow. Reusing them from a third-party tool may be against their terms of service and may be revoked at any time. Use it at your own risk; the API-key flow is the safe default.
 
@@ -387,8 +388,9 @@ Shows previous sessions for the current working directory, newest first, with ti
 
 ### `/session`
 
-Four ops on the current session. `/session` alone opens a picker; each is also runnable directly.
+Inspect the current session with `/session info` or `/session timeline`, or export, import, fork, and browse its family tree. `/session` alone opens a picker; each operation is also runnable directly.
 
+- **`/session timeline`**. Opens a read-only floating inspector for the current system prompt, visible messages, reasoning summaries, and tool calls. Select an event with `up`/`down` or `pgup`/`pgdn`; `tab`/`shift+tab` switches between summary, payload, result, schema, and transcript-derived timing. Use `left`/`right` or `home`/`end` to scroll details, `/` to search, and `esc` to return. `ctrl+e` exports JSON to the default export directory with `0600` permissions where supported. Images are represented by MIME type and size; provider-private signatures and encrypted reasoning are omitted. The export still contains conversation and tool text: review it before sharing. Context composition is a byte-based estimate, not tokenizer-exact.
 - **`/session export [path]`**. Writes the running transcript to a portable `.zutsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zutsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zutsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
 
   **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/subagents` child journals are not included.** They remain machine-local managed state; a `.zutsession` is only a main-chat transcript. If you want the child conversation, copy it from the child-session view manually.
@@ -510,7 +512,9 @@ Use `{}` for an empty position. If `active_model_profile` is missing, `0`, or ou
 
 ### `/skills`
 
-Opens a picker listing every discovered SKILL.md file, built-ins hidden. Each row shows the skill name, source, and description. `enter` opens the body inline (scrollable with `up`/`down`/`pgup`/`pgdn`); `esc` goes back. Re-runs discovery each time it opens, so edits to a SKILL.md during a session are reflected immediately.
+Opens a picker listing every discovered SKILL.md file, built-ins hidden. Each row shows the skill name, source, and description. `enter` opens the body inline (scrollable with `up`/`down`/`pgup`/`pgdn`); `esc` goes back. Re-runs discovery each time it opens, so edits to a SKILL.md during a session are reflected immediately. User skill discovery follows directory symlinks, skips cycles and dangling links, and preserves nested path aliases. Extension skills remain confined to the extension directory.
+
+Press `p` or `g` in the list to toggle a project or global pin. Pinned skill bodies join the first user prompt of a fresh supported conversation; a read-only notice shows the pending selection without changing the editor. Resuming does not reload pins. Pins save repeated invocation, not tokens. See [pinning skills](docs/skills.md#pinning-skills) for storage, lifecycle, and mode support.
 
 ### `/compact`
 
@@ -626,7 +630,9 @@ A top-level provider key that is not a built-in id defines a custom provider. Gi
 }
 ```
 
-Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. Supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Because many self-hosted gateways do not expose a model-list endpoint, custom provider keys are accepted and stored without a verification probe; an invalid key surfaces on the first model call.
+Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. For authenticated endpoints, supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Custom endpoints with a configured URL can also run without a key. Set `"auth": "none"` on a custom provider to ignore inherited, CLI, environment, and stored credentials for inference and discovery; command-backed keys are not executed. Use this only with trusted keyless endpoints. Custom keys are saved without a verification probe; an invalid key surfaces on the first model call.
+
+Set `"discover": true` at the provider level for opt-in model discovery from its OpenAI-style `/models` endpoint. A provider-level `baseUrl` is required. Discovered models use conservative 32K context and 4K output defaults; explicit model entries override their metadata. Failed refreshes keep the previous in-memory list, and background discovery never executes command-backed credentials. See [custom model discovery](docs/providers.md#custom-model-discovery) for the schema and limits.
 
 To retrieve this custom provider's key from a password manager, add a matching entry to `$ZUT_HOME/auth.json`:
 

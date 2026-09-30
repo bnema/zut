@@ -530,6 +530,9 @@ func (i *Interactive) redraw() {
 		dialogID = "session-tree"
 		i.sessionTreeDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.timeline.Active():
+		dialogID = "timeline"
+		dialog = i.timeline.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight(), i.timelineDataLocked())
 	}
 	dialogTitle := floatingOverlayTitle(dialogID)
 	dialogRemovedTopRows := 0
@@ -742,10 +745,15 @@ func (i *Interactive) redraw() {
 	// content. The status block and editor get their own dedicated
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
+	var pinnedSkillLines []string
+	if len(dialog) == 0 && len(suggest) == 0 {
+		pinnedSkillLines = i.skillPins.notice(i.cfg.Theme, mainCols)
+	}
 	composeBottom := func(residentSubagentLines []string) (bottom []string, inputStartRow int) {
-		bottom = make([]string, 0, len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
+		bottom = make([]string, 0, len(suggest)+len(queue)+len(pinnedSkillLines)+len(extensionLines)+len(statusLines)+len(residentSubagentLines)+len(edLines)+9)
 		bottom = append(bottom, suggest...)
 		bottom = append(bottom, queue...)
+		bottom = append(bottom, pinnedSkillLines...)
 		lineInput := inputStyle == tui.InputStyleLines
 		statusBelow := statusPosition == tui.StatusPositionBelowInput
 		workingBelow := workingPosition == tui.WorkingPositionBelowInput

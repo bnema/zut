@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -224,7 +225,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// lock. It is part of the clear decision so a divergence still clears the
 		// file.
 		persistedPlan := i.cfg.PersistedPlan != nil && i.cfg.PersistedPlan() != nil
-		i.mu.Lock()
+		// Pinned-skill discovery and preference loads are file I/O as well:
+		// prefetch them beside the plan read, publish under the lock below.
+		pinFetch, pinDone := i.lockWithSkillPinFetch()
 		// Read i.agent under i.mu, the same field the locked Agent accessor
 		// returns; the lock-free read this replaced could race a session swap.
 		clearPlan := i.agent != nil && len(i.agent.CurrentPlan()) > 0
@@ -242,6 +245,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.sessionInfoBlocks = nil
 		i.parkedTurn = 0
 		i.parkedTotal = 0
+		i.lastCtxInput = 0
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.reloadErrors = nil
@@ -251,7 +255,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.planRevision++
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.view.InvalidateRenderCache()
+		// A cleared conversation gets its pinned skills again.
+		i.armSkillPinsLocked(pinFetch)
 		i.mu.Unlock()
+		pinDone()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
 		}
@@ -290,16 +297,18 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/model":
 		if len(parts) >= 2 {
 			i.applyModelSelection("", parts[1])
-		} else if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
+		} else if i.modelRefreshNeeded() {
 			i.mu.Lock()
 			i.modelRefreshing = true
 			i.statusOK = "Refreshing models"
 			i.statusErr = ""
 			i.mu.Unlock()
 			go func() {
-				refreshCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				defer cancel()
-				i.modelRefresh <- modelRefreshResult{err: i.cfg.RefreshLlamaCPPModels(refreshCtx)}
+				err := i.refreshModelCatalogs(ctx)
+				select {
+				case i.modelRefresh <- modelRefreshResult{err: err}:
+				case <-ctx.Done():
+				}
 			}()
 		} else {
 			i.openModelPickerAfterRefresh(nil)
@@ -513,6 +522,41 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	}
 	return false
 }
+
+// modelRefreshNeeded reports whether /model must synchronize an optional
+// transient catalog (llama.cpp router or opted-in custom discovery) first.
+func (i *Interactive) modelRefreshNeeded() bool {
+	if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
+		return true
+	}
+	return i.customDiscoveryEnabled()
+}
+
+func (i *Interactive) customDiscoveryEnabled() bool {
+	return i.cfg.RefreshCustomProviderModels != nil && i.cfg.CustomDiscoveryConfigured != nil && i.cfg.CustomDiscoveryConfigured()
+}
+
+// refreshModelCatalogs runs each applicable refresh under its own 3 second
+// deadline, so one slow source cannot starve the other. Failures are joined;
+// the picker still opens with whatever catalog is available.
+func (i *Interactive) refreshModelCatalogs(ctx context.Context) error {
+	var errs []error
+	run := func(refresh func(context.Context) error) {
+		refreshCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if err := refresh(refreshCtx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
+		run(i.cfg.RefreshLlamaCPPModels)
+	}
+	if i.customDiscoveryEnabled() {
+		run(i.cfg.RefreshCustomProviderModels)
+	}
+	return errors.Join(errs...)
+}
+
 func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 	var loggedIn []string
 	if i.cfg.LoggedInProviders != nil {
@@ -521,7 +565,7 @@ func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 	i.modelDialog.Open(i.cfg.Model, loggedIn, i.cfg.Reasoning)
 	i.mu.Lock()
 	if refreshErr != nil {
-		i.statusErr = "llama.cpp model refresh: " + refreshErr.Error()
+		i.statusErr = "model refresh: " + refreshErr.Error()
 		i.statusOK = ""
 	} else if i.statusOK == "Refreshing models" {
 		i.statusOK = ""
@@ -805,20 +849,14 @@ func (i *Interactive) startOAuthFlow(provider string) {
 		i.dialog.ShowWaiting(loginURL)
 		return
 	}
-	// Always run the manual/copy-code flow in parallel with the local
-	// callback server so headless environments (docker, SSH) can paste
-	// the authorization code directly without first pressing 'p'.
-	_, err := i.cfg.AuthManager.StartOAuth(provider)
+	// One browser transaction: the callback server and the pasted-code path
+	// share the same PKCE verifier and state inside the auth manager.
+	loginURL, err := i.cfg.AuthManager.StartOAuth(provider)
 	if err != nil {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	manualURL, mErr := i.cfg.AuthManager.StartManualOAuth(provider)
-	if mErr == nil {
-		i.dialog.ShowWaiting(manualURL)
-	} else {
-		i.dialog.ShowResult(false, mErr.Error())
-	}
+	i.dialog.ShowWaiting(loginURL)
 }
 func (i *Interactive) startManualOAuthFlow(provider string) {
 	if i.cfg.AuthManager == nil {
@@ -830,7 +868,7 @@ func (i *Interactive) startManualOAuthFlow(provider string) {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.url = url
+	i.dialog.ShowPasteCode(url)
 	i.invalidate()
 }
 func (i *Interactive) submitManualOAuthCode(code string) {
@@ -838,10 +876,14 @@ func (i *Interactive) submitManualOAuthCode(code string) {
 		return
 	}
 	go func() {
-		if err := i.cfg.AuthManager.CompleteManualOAuth(i.runCtx, code); err != nil {
-			i.dialog.ShowResult(false, err.Error())
-			i.invalidate()
+		err := i.cfg.AuthManager.CompleteManualOAuth(i.runCtx, code)
+		if err == nil || errors.Is(err, auth.ErrOAuthCanceled) {
+			// A canceled or replaced login must not overwrite the dialog of
+			// whatever login is current now.
+			return
 		}
+		i.dialog.ShowResult(false, err.Error())
+		i.invalidate()
 	}()
 }
 func (i *Interactive) cancelAndWaitForIdle() {
@@ -910,6 +952,8 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		i.invalidate()
 		return
 	}
+	// A typed /skill:name command is a genuine user prompt.
+	prompt = i.skillPins.consume(prompt)
 	if i.busy {
 		// Keep the mutex held while enqueueing so the turn-completion
 		// goroutine cannot publish idle and inspect an empty queue between
@@ -934,11 +978,7 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 	i.startTurn(ctx, prompt)
 }
 func (i *Interactive) openSkillsDialog() {
-	var list []*skills.Skill
-	if i.cfg.SkillSnapshot != nil {
-		list = i.cfg.SkillSnapshot()
-	}
-	i.skillsDialog.Open(list)
+	i.openSkillsDialogWithPins()
 	i.invalidate()
 }
 func (i *Interactive) openJumpDialog(args []string) {
@@ -1204,6 +1244,16 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 		i.mu.Lock()
 		i.cfg.Model = m.ID
 		i.agent.Model = m.ID
+		// Output budget and context capacity are per model; keeping the
+		// previous model's values can truncate responses or mis-size
+		// compaction. Router clients also retain the selected metadata.
+		if setter, ok := i.agent.Client.(provider.ModelMetadataSetter); ok {
+			setter.SetModelMetadata(m)
+		}
+		i.agent.MaxTokens = m.MaxOutput
+		if m.ContextWindow > 0 {
+			i.agent.ContextWindow = m.ContextWindow
+		}
 		i.statusOK = "model: " + m.ID
 		i.statusErr = ""
 		i.mu.Unlock()
@@ -1288,6 +1338,10 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	switch ev.Kind {
 	case "started":
+		// The manual flow already shows its own URL in the paste-code step.
+		if i.dialog.step == loginStepPasteCode && i.dialog.url == ev.URL {
+			return
+		}
 		i.dialog.ShowWaiting(ev.URL)
 	case "browser_open":
 		// no-op

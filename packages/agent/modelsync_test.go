@@ -191,8 +191,10 @@ func TestRefreshLlamaCPPModelsAddsOnlyLoadedModels(t *testing.T) {
 	if err := AuthStoreFor().SetEndpointCredential(provider.LlamaCPPProviderID, server.URL, ""); err != nil {
 		t.Fatal(err)
 	}
-	provider.SetManagedModels(nil)
-	t.Cleanup(func() { provider.SetManagedModels(nil) })
+	preserveProviderCatalog(t)
+	provider.SetManagedModelsForProvider(provider.LlamaCPPProviderID, nil)
+	// A custom-discovery snapshot must survive the llama.cpp refresh.
+	provider.SetManagedModelsForProvider("m5", []provider.Model{{Provider: "m5", ID: "kept", Source: "live"}})
 
 	if err := RefreshLlamaCPPModels(context.Background()); err != nil {
 		t.Fatal(err)
@@ -206,6 +208,9 @@ func TestRefreshLlamaCPPModelsAddsOnlyLoadedModels(t *testing.T) {
 	}
 	if _, err := provider.FindModel(provider.LlamaCPPProviderID, "offline"); err == nil {
 		t.Fatal("unloaded model must not be selectable")
+	}
+	if _, err := provider.FindModel("m5", "kept"); err != nil {
+		t.Fatal("llama.cpp refresh dropped another provider's managed models")
 	}
 }
 

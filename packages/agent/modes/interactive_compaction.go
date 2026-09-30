@@ -325,12 +325,14 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 				i.statusOK = "compaction cancelled"
 			}
 			i.discardQueuedMessagesLocked(false)
+			i.skillPins.recall(i.pendingCompactPrompt)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		case err != nil:
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
 			i.discardQueuedMessagesLocked(true)
+			i.skillPins.recall(i.pendingCompactPrompt)
 			i.clearPendingCompactTurnLocked()
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		default:

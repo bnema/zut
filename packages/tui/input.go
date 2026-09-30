@@ -275,6 +275,15 @@ func (r *Reader) readEscape() (Key, error) {
 			return Key{}, err
 		}
 		switch c {
+		// Terminals in application cursor mode send arrows as SS3.
+		case 'A':
+			return Key{Kind: KeyUp}, nil
+		case 'B':
+			return Key{Kind: KeyDown}, nil
+		case 'C':
+			return Key{Kind: KeyRight}, nil
+		case 'D':
+			return Key{Kind: KeyLeft}, nil
 		case 'H':
 			return Key{Kind: KeyHome}, nil
 		case 'F':

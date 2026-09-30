@@ -40,6 +40,12 @@ type Manager struct {
 	manualEventProvider string
 	manualPKCE          PKCE
 	manualState         string
+
+	// exchangeCtx/exchangeCancel own the in-flight pasted-code token exchange.
+	// They are registered under mu so CancelOAuth, Close and a newer login can
+	// abort it, and the exchange re-checks them before persisting anything.
+	exchangeCtx    context.Context
+	exchangeCancel context.CancelFunc
 }
 
 // NewManager returns a Manager bound to store.
@@ -67,14 +73,8 @@ func (m *Manager) Close() {
 		cancel()
 		m.keyServer = nil
 	}
-	if m.oauthServer != nil {
-		m.oauthServer.Shutdown()
-		m.oauthServer = nil
-	}
-	if m.oauthCancel != nil {
-		m.oauthCancel()
-		m.oauthCancel = nil
-	}
+	// stopOAuthLocked also cancels an in-flight pasted-code exchange.
+	m.stopOAuthLocked()
 }
 
 // ---- API key flow ----
@@ -159,13 +159,7 @@ func (m *Manager) StartOAuth(provider string) (string, error) {
 	}
 
 	m.mu.Lock()
-	if m.oauthServer != nil {
-		m.oauthServer.Shutdown()
-		m.oauthServer = nil
-	}
-	if m.oauthCancel != nil {
-		m.oauthCancel()
-	}
+	m.stopOAuthLocked()
 	m.mu.Unlock()
 
 	pkce, err := NewPKCE()
@@ -187,6 +181,14 @@ func (m *Manager) StartOAuth(provider string) (string, error) {
 	m.oauthServer = cs
 	m.oauthCtx = ctx
 	m.oauthCancel = cancel
+	// The pasted-code path shares the browser transaction (same PKCE
+	// verifier, state, and redirect URI) so a code copied from either
+	// route is exchanged exactly once.
+	m.manualOp = &op
+	m.manualStoreProvider = storeProvider
+	m.manualEventProvider = provider
+	m.manualPKCE = pkce
+	m.manualState = state
 	m.mu.Unlock()
 
 	go m.awaitOAuth(ctx, op, storeProvider, provider, cs, pkce, state)
@@ -203,18 +205,49 @@ func (m *Manager) awaitOAuth(ctx context.Context, op OAuthProvider, storeProvide
 	res, err := cs.Result(waitCtx)
 	if err != nil {
 		if ctx.Err() == nil {
+			m.mu.Lock()
+			if m.oauthCtx == ctx {
+				m.clearManualOAuthLocked()
+			}
+			m.mu.Unlock()
 			m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: "timeout waiting for callback"})
 		}
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if res.Err != nil {
+		m.mu.Lock()
+		if m.oauthCtx == ctx {
+			m.clearManualOAuthLocked()
+		}
+		m.mu.Unlock()
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: res.Err.Error()})
 		return
 	}
+	// Claim the transaction. If a pasted code, cancellation, or a newer
+	// login already consumed it, this callback result is stale.
+	m.mu.Lock()
+	if m.oauthCtx != ctx || m.manualOp == nil || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.clearManualOAuthLocked()
+	m.mu.Unlock()
 
-	exCtx, exCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Derived from ctx so canceling the login also aborts the exchange.
+	exCtx, exCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer exCancel()
 	tok, err := op.Exchange(exCtx, res.Code, res.State, pkce)
+	// Persist and report only while this login is still the current one. The
+	// check and the write share the lock, so a cancel or newer login cannot
+	// interleave between them.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ctx.Err() != nil || m.oauthCtx != ctx {
+		return
+	}
 	if err != nil {
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: err.Error()})
 		return
@@ -230,9 +263,7 @@ func (m *Manager) awaitOAuth(ctx context.Context, op OAuthProvider, storeProvide
 func (m *Manager) StartKimiDeviceOAuth() (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
-	if m.oauthCancel != nil {
-		m.oauthCancel()
-	}
+	m.stopOAuthLocked()
 	m.oauthCtx = ctx
 	m.oauthCancel = cancel
 	m.mu.Unlock()
@@ -265,9 +296,7 @@ func (m *Manager) StartKimiDeviceOAuth() (string, error) {
 func (m *Manager) StartXAIDeviceOAuth() (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
-	if m.oauthCancel != nil {
-		m.oauthCancel()
-	}
+	m.stopOAuthLocked()
 	m.oauthCtx = ctx
 	m.oauthCancel = cancel
 	m.mu.Unlock()
@@ -300,9 +329,7 @@ func (m *Manager) StartXAIDeviceOAuth() (string, error) {
 func (m *Manager) StartGitHubCopilotDeviceOAuth() (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
-	if m.oauthCancel != nil {
-		m.oauthCancel()
-	}
+	m.stopOAuthLocked()
 	m.oauthCtx = ctx
 	m.oauthCancel = cancel
 	m.mu.Unlock()
@@ -354,8 +381,7 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 	case "anthropic":
 		op = AnthropicManualOAuth
 	case "openai", "openai-codex":
-		op = OpenAIOAuth
-		storeProvider = "openai"
+		return "", fmt.Errorf("openai login requires the browser callback flow; manual code login is not supported")
 	case "google":
 		return "", fmt.Errorf("google login is api-key only; use api key login for gemini")
 	case "deepseek":
@@ -364,6 +390,7 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 		return "", fmt.Errorf("provider must be anthropic, openai, openai-codex, kimi, xai, github-copilot, deepseek, or google")
 	}
 
+	m.CancelOAuth()
 	pkce, err := NewPKCE()
 	if err != nil {
 		return "", err
@@ -389,27 +416,50 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 // a token and stores it. Accepts either a raw code or a "code#state"
 // token shown by providers like Anthropic when code=true is set.
 func (m *Manager) CompleteManualOAuth(ctx context.Context, input string) error {
+	code, pastedState := parseManualCodeInput(strings.TrimSpace(input))
 	m.mu.Lock()
-	op := m.manualOp
+	if m.manualOp == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no manual oauth flow in progress")
+	}
+	if pastedState != "" && pastedState != m.manualState {
+		m.mu.Unlock()
+		return fmt.Errorf("oauth state mismatch")
+	}
+	if code == "" {
+		m.mu.Unlock()
+		return fmt.Errorf("empty code")
+	}
+	// Claim the transaction and stop the browser callback so only one
+	// result can be produced.
+	op := *m.manualOp
 	storeProvider := m.manualStoreProvider
 	eventProvider := m.manualEventProvider
 	pkce := m.manualPKCE
 	state := m.manualState
-	m.mu.Unlock()
-	if op == nil {
-		return fmt.Errorf("no manual oauth flow in progress")
-	}
-	code, pastedState := parseManualCodeInput(strings.TrimSpace(input))
-	if pastedState != "" {
-		state = pastedState
-	}
-	if code == "" {
-		return fmt.Errorf("empty code")
-	}
+	m.stopOAuthLocked()
+	// The exchange is manager-owned: derived from the caller's context but
+	// cancelable through CancelOAuth, Close, or a newer login.
 	exCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	m.exchangeCtx, m.exchangeCancel = exCtx, cancel
+	m.mu.Unlock()
 	defer cancel()
+
 	tok, err := op.Exchange(exCtx, code, state, pkce)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.exchangeCtx != exCtx || exCtx.Err() != nil && err == nil {
+		// Canceled or superseded: report the cancellation, store nothing,
+		// emit nothing.
+		return ErrOAuthCanceled
+	}
+	if m.exchangeCtx == exCtx {
+		m.exchangeCtx, m.exchangeCancel = nil, nil
+	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return ErrOAuthCanceled
+		}
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: err.Error()})
 		return err
 	}
@@ -417,16 +467,13 @@ func (m *Manager) CompleteManualOAuth(ctx context.Context, input string) error {
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: err.Error()})
 		return err
 	}
-	m.mu.Lock()
-	m.manualOp = nil
-	m.manualStoreProvider = ""
-	m.manualEventProvider = ""
-	m.manualPKCE = PKCE{}
-	m.manualState = ""
-	m.mu.Unlock()
 	m.emit(Event{Kind: "success", Provider: eventProvider, Method: "oauth"})
 	return nil
 }
+
+// ErrOAuthCanceled is returned to a pasted-code caller whose login was
+// canceled or replaced while its token exchange was in flight.
+var ErrOAuthCanceled = errors.New("oauth login canceled")
 
 // parseManualCodeInput accepts any of:
 //   - a bare authorization code
@@ -483,6 +530,17 @@ func HasBrowser() bool {
 func (m *Manager) CancelOAuth() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.stopOAuthLocked()
+}
+
+// stopOAuthLocked cancels any in-flight OAuth flow, shuts down its callback
+// server, and discards the shared transaction. m.mu must be held.
+func (m *Manager) stopOAuthLocked() {
+	if m.exchangeCancel != nil {
+		m.exchangeCancel()
+		m.exchangeCancel = nil
+		m.exchangeCtx = nil
+	}
 	if m.oauthCancel != nil {
 		m.oauthCancel()
 		m.oauthCancel = nil
@@ -491,6 +549,15 @@ func (m *Manager) CancelOAuth() {
 		m.oauthServer.Shutdown()
 		m.oauthServer = nil
 	}
+	m.clearManualOAuthLocked()
+}
+
+func (m *Manager) clearManualOAuthLocked() {
+	m.manualOp = nil
+	m.manualStoreProvider = ""
+	m.manualEventProvider = ""
+	m.manualPKCE = PKCE{}
+	m.manualState = ""
 }
 
 // ---- shared ----

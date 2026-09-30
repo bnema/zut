@@ -200,6 +200,12 @@ or any other stdout frame before `hello`.
  "capabilities":["commands","tools","alerts","panels"]}
 ```
 
+Include `"tool_cancel"` in `capabilities` to opt in to host cancellation
+notifications for abandoned tool calls (see `tool_cancel` below). The Go
+SDK advertises it automatically. The host only sends `tool_cancel` to
+extensions that advertised that exact capability; extensions that omit it
+never receive the frame and otherwise behave as before.
+
 #### `register_command`
 
 ```json
@@ -241,6 +247,66 @@ Set `"deferred": true` to register a tool without advertising its definition ini
 ```
 
 On Kimi K3's OpenAI-compatible routes, zut places newly activated schemas at the tool-result position using Kimi's native deferred-tool format. Other models receive the complete active tool list on the next request. Unknown names are ignored. The Go extension SDK exposes `DeferredTool` and `ToolResult.ActivateTools` for the same protocol.
+
+##### Interactive tools
+
+Set `"interactive": true` on `register_tool` for a tool that intentionally
+waits for a person, for example one that opens a panel and returns once the
+user answers. Omitted or `false` keeps the normal 60-second reply timeout.
+
+```json
+{"type":"register_tool","name":"ask_user",
+ "description":"Ask the user a question","schema":{"type":"object"},
+ "interactive":true}
+```
+
+An interactive tool has no host-imposed reply deadline. The call still ends
+when the agent context is cancelled (user abort, turn deadline), when the
+extension disconnects, or when zut shuts down; each of those surfaces a tool
+error to the model. Only the interactive terminal host can run interactive
+tools. Print, JSON, RPC, and bot hosts reject the call with a tool error instead
+of waiting on an invisible panel. Scheduled background sessions exclude
+interactive tools from their catalog, even when the shared extension manager is
+attached to the foreground TUI. Resident subagents also exclude them and reject
+a declared interactive tool during assembly. Ordinary extension tools retain
+their existing mode-specific availability.
+
+Interactive tools also run from `/btw` and an interactive conversation mirrored
+to Telegram, but their panels appear only in the local TUI, not in Telegram.
+A Telegram-only user must use `/stop` to cancel a waiting main-turn call;
+`/btw` calls are cancelled with Escape in the local TUI. Panels use one shared
+slot: opening another panel replaces the visible one without notifying
+the previous owner. Extension handlers must honor cancellation and must not
+rely on simultaneous panels.
+
+The Go SDK provides a context-aware handler:
+
+```go
+e.InteractiveTool("ask_user", "Ask the user a question", schema,
+    func(ctx context.Context, args json.RawMessage) ext.ToolResult {
+        // Open your panel and arrange for its callbacks to deliver an answer.
+        // Use invocation-local state, including a unique panel ID.
+        defer closeQuestionPanel()
+        select {
+        case answer := <-answers:
+            return ext.TextResult(answer)
+        case <-ctx.Done():
+            return ext.TextErrorResult("question cancelled")
+        }
+    })
+```
+
+`schema`, `answers`, and `closeQuestionPanel` are extension-owned values.
+Panel dismissal must also resolve the handler's wait. Cancellation is
+cooperative: the SDK cancels the handler's `ctx` on `tool_cancel`, on
+`shutdown`, and when the host connection ends, and it discards a result the
+handler returns after cancellation, but it cannot stop a handler that ignores
+`ctx`. Existing `Tool` and `DeferredTool` handlers are unchanged and remain
+source-compatible.
+
+The `interactive` field is additive and does not change the protocol
+version. Older hosts ignore it and apply their normal timeout. Both host and
+extension must support the feature for a cancellable, unlimited wait.
 
 #### `ready`
 
@@ -541,7 +607,42 @@ responsible for validating/coercing it.
 
 Reply with `tool_result` within the host's tool timeout (default 60s).
 Missing the timeout surfaces an error to the model and the call is
-marked as failed.
+marked as failed. Tools registered with `"interactive": true` have no reply
+timeout (see *Interactive tools* above).
+
+The request write itself is always bounded, independently of the reply
+deadline: host frames are queued in order, synchronous writes have a
+five-second timeout, and a write timeout disconnects the extension. The queue is
+bounded to 256 frames and 16 MiB; overflowing it disconnects the extension
+rather than dropping frames silently. If the agent cancels a call
+while its `tool_call` frame is still queued, the frame is withdrawn and the
+transport stays healthy. If writing has begun, the host allows up to 250 ms
+for that frame to finish, then disconnects if it is still blocked: a torn frame
+cannot be withdrawn, and other pending calls on that extension fail too.
+
+Every `tool_call` carries a correlation `id` that is unique within the host
+process. A `tool_result` for an id the host no longer waits on (timed out,
+cancelled, or already answered) is ignored.
+
+#### `tool_cancel`
+
+Sent best-effort when a delivered `tool_call` is abandoned because the agent
+context was cancelled or the reply timeout elapsed, and only to extensions
+that advertised `"tool_cancel"` in `hello.capabilities`. Normal completion
+never sends it. `id` is the `tool_call` correlation id, not a transcript
+tool id.
+
+```json
+{"type":"tool_cancel","id":"..."}
+```
+
+Stop the associated work, close any panel it opened, and discard its pending
+state. Ignore unknown or already-completed ids. `tool_cancel` may arrive
+before your handler goroutine has started, so register cancellation state
+before dispatching work. Delivery is not guaranteed after a transport
+disconnect; extensions must also clean up on `shutdown` and on stdin EOF.
+The host ignores late results for abandoned calls, including races with
+cancellation.
 
 #### `event`
 
