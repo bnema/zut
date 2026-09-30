@@ -238,7 +238,9 @@ func TestDiscoverIgnoresLinkToAncestorOfRoot(t *testing.T) {
 	symlinkOrSkip(t, home, filepath.Join(root, "up-home"))
 	symlinkOrSkip(t, filepath.Join(home, ".agents"), filepath.Join(root, "up-agents"))
 	symlinkOrSkip(t, root, filepath.Join(root, "self"))
-	symlinkOrSkip(t, string(filepath.Separator), filepath.Join(root, "up-fs-root"))
+	// On Windows a bare separator depends on the process drive, which can
+	// differ from the temporary directory's drive. Use this tree's own root.
+	symlinkOrSkip(t, filepath.VolumeName(root)+string(filepath.Separator), filepath.Join(root, "up-fs-root"))
 	list, errs := Discover("", filepath.Join(tmp, "proj"), home, true)
 	if len(errs) != 0 {
 		t.Fatalf("errors = %v", errs)
