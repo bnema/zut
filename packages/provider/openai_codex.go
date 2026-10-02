@@ -796,12 +796,8 @@ func (c *codexClient) runResponseEventsWithFirst(ctx context.Context, req Reques
 					content = append(content, TextBlock{Text: it.textBuf.String(), Phase: it.phase})
 				}
 			case "function_call":
-				args := it.argsBuf.String()
-				if args == "" || !json.Valid([]byte(args)) {
-					args = "{}"
-				}
 				content = append(content, ToolCallBlock{
-					ID: it.callID, Name: it.name, Arguments: json.RawMessage(args),
+					ID: it.callID, Name: it.name, Arguments: normalizeToolArgs(it.argsBuf.String()),
 				})
 			case "reasoning":
 				if it.encrypted == "" && it.summary.Len() == 0 && it.rawID == "" {
