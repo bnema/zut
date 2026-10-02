@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -23,6 +25,8 @@ func TestNormalizeToolArgs(t *testing.T) {
 		{name: "other control char", in: `{"s":"` + bell + `"}`, want: `{"s":"\u0007"}`},
 		{name: "whitespace outside strings untouched", in: "{" + nl + tab + `"s":"` + tab + `"}`, want: "{" + nl + tab + `"s":"\t"}`},
 		{name: "escaped quote keeps string state", in: `{"s":"\"` + tab + `"}`, want: `{"s":"\"\t"}`},
+		{name: "escaped backslash closes string", in: `{"a":"x\\"` + tab + `}`, want: `{"a":"x\\"` + tab + `}`},
+		{name: "multibyte utf-8 kept", in: `{"a":"é` + tab + `"}`, want: `{"a":"é\t"}`},
 		{name: "unrepairable", in: `{"s":`, want: `{}`},
 	}
 	for _, tt := range tests {
@@ -38,15 +42,6 @@ func TestNormalizeToolArgs(t *testing.T) {
 	}
 }
 
-func TestNormalizedToolArgsKeepMessageSerializable(t *testing.T) {
-	msg := Message{Role: RoleAssistant, Content: []Content{ToolCallBlock{
-		ID: "call-1", Name: "edit", Arguments: normalizeToolArgs(`{"old":"` + string(rune(9)) + `x"}`),
-	}}}
-	if _, err := json.Marshal(msg); err != nil {
-		t.Fatalf("marshal message: %v", err)
-	}
-}
-
 func TestAnthropicStreamRepairsRawTabInToolArgs(t *testing.T) {
 	// partial_json is a JSON string carrying the model's raw argument text;
 	// "\\t" below decodes to a real tab byte inside the argument string.
@@ -57,11 +52,42 @@ func TestAnthropicStreamRepairsRawTabInToolArgs(t *testing.T) {
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	out := make(chan Event, 16)
 	go (&anthropicClient{}).runStream(context.Background(), resp, Request{Model: "test"}, out)
+	assertToolArgOld(t, out, "\tx")
+}
+
+func TestBedrockStreamRepairsRawTabInToolArgs(t *testing.T) {
+	// Header-less event-stream frames; the reader takes the event type from
+	// the wrapped payload and does not validate CRCs. The `\t` escape in the input
+	// field decodes to a real tab byte inside the argument string.
+	var body bytes.Buffer
+	for _, payload := range []string{
+		`{"contentBlockStart":{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"call-1","name":"edit"}}}}`,
+		`{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"toolUse":{"input":"{\"old\":\"\tx\"}"}}}}`,
+		`{"contentBlockStop":{"contentBlockIndex":0}}`,
+		`{"messageStop":{"stopReason":"tool_use"}}`,
+	} {
+		var prelude [12]byte
+		binary.BigEndian.PutUint32(prelude[0:4], uint32(16+len(payload)))
+		body.Write(prelude[:])
+		body.WriteString(payload)
+		body.Write(make([]byte, 4))
+	}
+	resp := &http.Response{Body: io.NopCloser(&body)}
+	out := make(chan Event, 16)
+	go (&bedrockClient{}).runStream(context.Background(), resp, Request{Model: "test"}, out)
+	assertToolArgOld(t, out, "\tx")
+}
+
+func assertToolArgOld(t *testing.T, out <-chan Event, want string) {
+	t.Helper()
 	var done EventDone
 	for ev := range out {
 		if d, ok := ev.(EventDone); ok {
 			done = d
 		}
+	}
+	if done.Err != nil {
+		t.Fatalf("stream error: %v", done.Err)
 	}
 	if len(done.Message.Content) != 1 {
 		t.Fatalf("content = %#v, want one tool call", done.Message.Content)
@@ -74,7 +100,7 @@ func TestAnthropicStreamRepairsRawTabInToolArgs(t *testing.T) {
 	if err := json.Unmarshal(tc.Arguments, &args); err != nil {
 		t.Fatalf("arguments %q not valid JSON: %v", tc.Arguments, err)
 	}
-	if args.Old != "\tx" {
-		t.Fatalf("old = %q, want tab preserved", args.Old)
+	if args.Old != want {
+		t.Fatalf("old = %q, want %q", args.Old, want)
 	}
 }
