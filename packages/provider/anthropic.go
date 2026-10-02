@@ -689,11 +689,7 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				}
 			case "tool_use":
 				tc := be.toolCall
-				args := be.toolArgs.String()
-				if args == "" {
-					args = "{}"
-				}
-				tc.Arguments = json.RawMessage(args)
+				tc.Arguments = normalizeToolArgs(be.toolArgs.String())
 				content = append(content, tc)
 			}
 		}

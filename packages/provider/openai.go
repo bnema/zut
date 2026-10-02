@@ -703,12 +703,8 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					content = append(content, TextBlock{Text: b.textBuf.String()})
 				}
 			case "tool_use":
-				args := b.toolArgs.String()
-				if args == "" || !json.Valid([]byte(args)) {
-					args = "{}"
-				}
 				content = append(content, ToolCallBlock{
-					ID: b.toolID, Name: b.toolName, Arguments: json.RawMessage(args),
+					ID: b.toolID, Name: b.toolName, Arguments: normalizeToolArgs(b.toolArgs.String()),
 				})
 			}
 		}
