@@ -6,20 +6,6 @@ import (
 	"time"
 )
 
-func TestBuildSystemPromptAlwaysIncludesVerificationGuidance(t *testing.T) {
-	for _, custom := range []string{"", "Custom identity"} {
-		prompt := BuildSystemPrompt(SystemPromptOpts{Custom: custom, Append: []string{"Project context"}})
-		for _, want := range []string{
-			"Verify changes with checks appropriate to their scope.",
-			"Report which checks ran and what remains unverified.",
-		} {
-			if count := strings.Count(prompt, want); count != 1 {
-				t.Fatalf("verification guidance %q count = %d, want 1", want, count)
-			}
-		}
-	}
-}
-
 func TestBuildSystemPromptAlwaysPrefersDedicatedTools(t *testing.T) {
 	for _, custom := range []string{"", "Custom identity"} {
 		prompt := BuildSystemPrompt(SystemPromptOpts{Custom: custom})
@@ -127,6 +113,8 @@ func TestBuildSystemPromptAlwaysIncludesTaskAndSkillGuidance(t *testing.T) {
 				"Final answers contain the result of the work or a concrete blocker",
 				"Respect requests for explanation, planning, or review without making unsolicited changes",
 				"Ask only when a necessary decision blocks safe, correct progress",
+				"Verify changes with checks appropriate to their scope.",
+				"Report which checks ran and what remains unverified.",
 				"Preserve tool permissions, required confirmations, and explicit approval requirements",
 				"Explicit user instructions take precedence over skill guidelines",
 				"Skills do not grant permissions or override system or developer constraints",

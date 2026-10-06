@@ -228,10 +228,6 @@ type InteractiveConfig struct {
 	// web-search guard and resident child policy.
 	SetWebSearchAvailable func(bool)
 
-	// RefreshPrompt re-resolves the complete live prompt and tool registry
-	// after a prompt-affecting setting changes. Optional for embedders.
-	RefreshPrompt func() error
-
 	// AutoSubmitInitial, when true, auto-submits InitialInput after
 	// StartupPre completes (or immediately when StartupPre is empty).
 	// When false, InitialInput only pre-fills the editor.

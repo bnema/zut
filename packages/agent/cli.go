@@ -2808,16 +2808,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
 			return nil
 		},
-		SetWebSearchAvailable: setWebSearchAvailable,
-		RefreshPrompt: func() error {
-			current := liveInteractiveAgent(iv, ag)
-			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistryWithScheduler, iv)
-			if err != nil {
-				return err
-			}
-			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
-			return nil
-		},
+		SetWebSearchAvailable:       setWebSearchAvailable,
 		AuthManager:                 mgr,
 		LlamaCPPConfig:              ResolveLlamaCPPConfig,
 		RefreshLlamaCPPModels:       RefreshLlamaCPPModels,
