@@ -102,10 +102,6 @@ type Config struct {
 	// nil/missing means disabled. Toggle from /settings.
 	AutoSubagentsEnabled *bool `json:"auto_subagents_enabled,omitempty"`
 
-	// PonytailEnabled controls the compact coding-guidance addendum. On by
-	// default; nil/missing means enabled. Toggle from /settings.
-	PonytailEnabled *bool `json:"ponytail_enabled,omitempty"`
-
 	// WebSearchEnabled controls the built-in web_search capability for
 	// normal CLI sessions. nil/missing means enabled so existing config
 	// files retain the default-on behavior.
@@ -272,12 +268,6 @@ func (c Config) LSPEnabledFor(subagent bool) bool {
 		value = c.SubagentLSPEnabled
 	}
 	return value == nil || *value
-}
-
-// PonytailModeEnabled reports the default-on coding-guidance preference
-// without requiring a generated config entry.
-func (c Config) PonytailModeEnabled() bool {
-	return c.PonytailEnabled == nil || *c.PonytailEnabled
 }
 
 // WebSearchEnabledForCLI reports the default-on web-search preference

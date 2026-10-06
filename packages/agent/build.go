@@ -962,11 +962,6 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		contextFiles = loadAgentsContext(args.CWD, ZutHome())
 	}
 	append_ := []string(nil)
-	if cfg.PonytailModeEnabled() {
-		if ponytailAddendum := PonytailSystemAddendum(); ponytailAddendum != "" {
-			append_ = append(append_, ponytailAddendum)
-		}
-	}
 	append_ = append(append_, args.AppendSystemPrompt...)
 	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
 		append_ = append(append_, agentsAddendum)

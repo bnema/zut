@@ -106,18 +106,6 @@ func (configSettingsStore) SetAutoSubagents(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
-func (configSettingsStore) SetPonytailEnabled(enabled bool) error {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return fmt.Errorf("load config for Ponytail setting: %w", err)
-	}
-	cfg.PonytailEnabled = &enabled
-	if err := SaveConfig(cfg); err != nil {
-		return fmt.Errorf("save Ponytail setting: %w", err)
-	}
-	return nil
-}
-
 func (configSettingsStore) SetWebSearchEnabled(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

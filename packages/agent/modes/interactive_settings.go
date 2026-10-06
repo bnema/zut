@@ -158,13 +158,6 @@ func (i *Interactive) openSettingsDialog() {
 		autoSubagents = false
 	}
 
-	ponytailEnabled := i.ponytailEnabled()
-	ponytailDisabled := !i.ponytailSettingsAvailable()
-	ponytailHint := ""
-	if ponytailDisabled {
-		ponytailHint = "requires persistent settings and live prompt refresh support"
-	}
-
 	webSearchEnabled := i.webSearchEffectiveEnabled()
 	webSearchDisabled := !i.webSearchSettingsAvailable()
 	webSearchHint := i.webSearchUnavailableHint()
@@ -295,14 +288,6 @@ func (i *Interactive) openSettingsDialog() {
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,
-		},
-		{
-			key:      "ponytail_enabled",
-			label:    "ponytail coding mode",
-			desc:     "apply compact coding guidance that favors small, validated, maintainable changes",
-			value:    ponytailEnabled,
-			disabled: ponytailDisabled,
-			hint:     ponytailHint,
 		},
 		{
 			key:      "web_search_enabled",
@@ -645,13 +630,6 @@ func (i *Interactive) resetSettingsToggle(key string, value bool) {
 		}
 	}
 }
-func (i *Interactive) ponytailEnabled() bool {
-	return i.cfg.PonytailEnabled == nil || *i.cfg.PonytailEnabled
-}
-func (i *Interactive) ponytailSettingsAvailable() bool {
-	_, persistent := i.cfg.SettingsStore.(ponytailSettingsStore)
-	return persistent && i.cfg.RefreshPrompt != nil
-}
 func (i *Interactive) webSearchEnabled() bool {
 	return i.cfg.WebSearchEnabled == nil || *i.cfg.WebSearchEnabled
 }
@@ -847,56 +825,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		} else {
 			apply()
 		}
-	case "ponytail_enabled":
-		previous := i.ponytailEnabled()
-		store, available := i.cfg.SettingsStore.(ponytailSettingsStore)
-		if !available || i.cfg.RefreshPrompt == nil {
-			i.resetSettingsToggle(key, previous)
-			i.mu.Lock()
-			i.statusOK = ""
-			i.statusErr = "ponytail coding mode unavailable: persistent settings and live prompt refresh are required"
-			i.mu.Unlock()
-			return
-		}
-		if err := store.SetPonytailEnabled(value); err != nil {
-			i.resetSettingsToggle(key, previous)
-			i.mu.Lock()
-			i.statusOK = ""
-			i.statusErr = "settings: " + err.Error()
-			i.mu.Unlock()
-			return
-		}
-		val := value
-		i.cfg.PonytailEnabled = &val
-		if err := i.cfg.RefreshPrompt(); err != nil {
-			errMsg := "settings: ponytail prompt refresh: " + err.Error()
-			if rollbackErr := store.SetPonytailEnabled(previous); rollbackErr != nil {
-				// The first write succeeded, so keep the in-memory setting at
-				// the value that remains durable instead of claiming that the
-				// rollback took effect.
-				i.resetSettingsToggle(key, value)
-				errMsg += "; rollback persistence: " + rollbackErr.Error()
-				if reconcileErr := i.cfg.RefreshPrompt(); reconcileErr != nil {
-					errMsg += "; durable-state refresh: " + reconcileErr.Error()
-				}
-			} else {
-				previousVal := previous
-				i.cfg.PonytailEnabled = &previousVal
-				i.resetSettingsToggle(key, previous)
-				if refreshErr := i.cfg.RefreshPrompt(); refreshErr != nil {
-					errMsg += "; rollback refresh: " + refreshErr.Error()
-				}
-			}
-			i.mu.Lock()
-			i.statusOK = ""
-			i.statusErr = errMsg
-			i.mu.Unlock()
-			return
-		}
-		i.mu.Lock()
-		i.statusOK = "ponytail coding mode " + onOff(value)
-		i.statusErr = ""
-		i.mu.Unlock()
 	case "auto_subagents_enabled":
 		if value && !i.autoSubagentsAvailable() {
 			i.mu.Lock()

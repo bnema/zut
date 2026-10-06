@@ -2715,7 +2715,6 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		TerminalAlertsEnabled:             initialCfg.TerminalAlertsEnabled,
 		TerminalTitleEnabled:              initialCfg.TerminalTitleEnabled,
 		AutoSubagentsEnabled:              initialCfg.AutoSubagentsEnabled,
-		PonytailEnabled:                   initialCfg.PonytailEnabled,
 		WebSearchEnabled:                  initialCfg.WebSearchEnabled,
 		WebSearchToolAllowed:              &webSearchToolAllowedForInvocation,
 		WebSearchInvocationOverride:       webSearchInvocationOverride,
