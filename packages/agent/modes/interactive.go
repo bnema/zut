@@ -69,10 +69,6 @@ type InteractiveConfig struct {
 	// re-reading config.json on every open.
 	AutoSubagentsEnabled *bool
 
-	// PonytailEnabled mirrors the persisted default-on coding-guidance
-	// setting at startup. nil/missing means enabled.
-	PonytailEnabled *bool
-
 	// WebSearchEnabled mirrors the persisted default-on web-search setting.
 	// nil/missing means enabled for normal interactive sessions.
 	WebSearchEnabled *bool
@@ -231,10 +227,6 @@ type InteractiveConfig struct {
 	// Interactive or wait on either lock. The CLI callback only updates its
 	// web-search guard and resident child policy.
 	SetWebSearchAvailable func(bool)
-
-	// RefreshPrompt re-resolves the complete live prompt and tool registry
-	// after a prompt-affecting setting changes. Optional for embedders.
-	RefreshPrompt func() error
 
 	// AutoSubmitInitial, when true, auto-submits InitialInput after
 	// StartupPre completes (or immediately when StartupPre is empty).
@@ -584,10 +576,6 @@ type autoCompactThresholdSettingsStore interface {
 
 type fastModeSettingsStore interface {
 	SetFastMode(enabled bool) error
-}
-
-type ponytailSettingsStore interface {
-	SetPonytailEnabled(enabled bool) error
 }
 
 type webSearchSettingsStore interface {
@@ -1994,8 +1982,7 @@ const modalBackdropDimPercent = 50
 // hold i.mu.
 
 // autoCompactContinuationPrompt is an interactive-only compact-handoff
-// instruction. Its completion criteria must stay separate from Ponytail so
-// toggling the optional coding-style addendum never changes recovery behavior.
+// instruction defining recovery completion criteria.
 const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Inspect the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. A progress report, plan update, or statement of future work is not completion: if required work remains, take the next concrete action now. Only finish when the request is actually complete or when a specific user decision is required. If nothing remains, give a brief truthful completion; do not invent work or force a tool call.`
 
 type compactHandoffResume uint8

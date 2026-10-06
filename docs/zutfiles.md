@@ -115,7 +115,7 @@ Set `replace_system_prompt` to `true` in the manifest to use `AGENT.md` as the r
 }
 ```
 
-Replacement is intended for fully specialized agents. It replaces zut's built-in identity, while global append addenda such as enabled Ponytail coding guidance, project context, and skills retain their normal inclusion rules. The default layering behavior is usually preferable because it retains zut's normal identity and tool-use guidance.
+Replacement is intended for fully specialized agents. It replaces zut's built-in identity, while shared harness guidance and global append addenda such as project context and skills retain their normal inclusion rules. The default layering behavior is usually preferable because it retains zut's normal identity and tool-use guidance.
 
 ## Bundled skills
 
