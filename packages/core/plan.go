@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -140,24 +141,19 @@ func (a *Agent) previewPlanOperationLocked(op PlanOperation) (PlanUpdate, error)
 }
 
 // validatePlanSteps rejects steps that cannot be rendered or persisted: empty
-// text, an unknown status, or more than one in_progress step. There is
+// text or an unknown status. Several steps may be in_progress at once so
+// parallel work (for example concurrent sub-agents) can be tracked. There is
 // deliberately no length cap.
 func validatePlanSteps(plan []PlanStep) error {
-	inProgress := 0
 	for idx := range plan {
 		if strings.TrimSpace(plan[idx].Step) == "" {
 			return fmt.Errorf("plan: step text is required")
 		}
 		switch plan[idx].Status {
-		case PlanPending, PlanCompleted:
-		case PlanInProgress:
-			inProgress++
+		case PlanPending, PlanCompleted, PlanInProgress:
 		default:
 			return fmt.Errorf("plan: unknown status %q", plan[idx].Status)
 		}
-	}
-	if inProgress > 1 {
-		return fmt.Errorf("plan: at most one step can be in_progress")
 	}
 	return nil
 }
@@ -191,18 +187,22 @@ func planMutationSummary(plan []PlanStep) string {
 		return "Plan cleared"
 	}
 	completed := 0
-	inProgressIndex := 0
+	var inProgress []string
 	for idx, step := range plan {
 		switch step.Status {
 		case PlanCompleted:
 			completed++
 		case PlanInProgress:
-			inProgressIndex = idx + 1
+			inProgress = append(inProgress, strconv.Itoa(idx+1))
 		}
 	}
 	summary := fmt.Sprintf("Plan updated (%d/%d completed", completed, len(plan))
-	if inProgressIndex > 0 {
-		summary += fmt.Sprintf("; in progress: step %d", inProgressIndex)
+	switch len(inProgress) {
+	case 0:
+	case 1:
+		summary += "; in progress: step " + inProgress[0]
+	default:
+		summary += "; in progress: steps " + strings.Join(inProgress, ", ")
 	}
 	return summary + ")"
 }

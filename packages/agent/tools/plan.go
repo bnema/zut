@@ -56,7 +56,7 @@ func (t *PlanTool) Name() string { return PlanToolName }
 func (t *PlanTool) AllowArgumentRewrite() bool { return false }
 
 func (t *PlanTool) Description() string {
-	return "Maintain a persisted task checklist. Actions: set (replace every step), add, update one step, remove one step, clear, show the current checklist. At most one step may be in_progress at a time; prefer add/update/remove deltas over re-sending the whole list with set."
+	return "Maintain a persisted task checklist. Actions: set (replace every step), add, update one step, remove one step, clear, show the current checklist. Several steps may be in_progress at once when work runs in parallel (for example concurrent sub-agents); prefer add/update/remove deltas over re-sending the whole list with set."
 }
 
 func (t *PlanTool) Schema() json.RawMessage { return json.RawMessage(planSchema) }

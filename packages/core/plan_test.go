@@ -68,6 +68,28 @@ func TestPreviewPlanOperationDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestPreviewPlanOperationAllowsParallelInProgress(t *testing.T) {
+	agent := &Agent{}
+	agent.SetPlan([]PlanStep{
+		planStep("first", PlanInProgress),
+		planStep("second", PlanPending),
+		planStep("third", PlanPending),
+	})
+
+	update, err := agent.previewPlanOperation(PlanOperation{Action: "update", Index: 3, Status: PlanInProgress})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got := planMutationSummary(update.Plan); got != "Plan updated (0/3 completed; in progress: steps 1, 3)" {
+		t.Fatalf("summary = %q", got)
+	}
+
+	parallel := []PlanStep{planStep("a", PlanInProgress), planStep("b", PlanInProgress)}
+	if _, err := agent.previewPlanOperation(PlanOperation{Action: "set", Steps: parallel}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+}
+
 func TestPreviewPlanOperationErrors(t *testing.T) {
 	base := []PlanStep{
 		planStep("first", PlanInProgress),
@@ -134,21 +156,6 @@ func TestPreviewPlanOperationErrors(t *testing.T) {
 			name: "set without steps",
 			op:   PlanOperation{Action: "set"},
 			want: "plan: steps are required for set (use clear to remove every step)",
-		},
-		{
-			name: "set two in progress",
-			op:   PlanOperation{Action: "set", Steps: []PlanStep{planStep("a", PlanInProgress), planStep("b", PlanInProgress)}},
-			want: "plan: at most one step can be in_progress",
-		},
-		{
-			name: "add second in progress",
-			op:   PlanOperation{Action: "add", Steps: []PlanStep{planStep("fourth", PlanInProgress)}},
-			want: "plan: at most one step can be in_progress",
-		},
-		{
-			name: "update second in progress",
-			op:   PlanOperation{Action: "update", Index: 2, Status: PlanInProgress},
-			want: "plan: at most one step can be in_progress",
 		},
 		{
 			name: "set unknown status",
@@ -463,6 +470,7 @@ func TestSessionPlanNormalizesOnLoad(t *testing.T) {
 	defer reopened.Close()
 	want := []PlanStep{
 		planStep("first", PlanInProgress),
+		planStep("second", PlanInProgress),
 		planStep("third", PlanCompleted),
 	}
 	if reopened.Meta.Plan == nil || !slices.Equal(reopened.Meta.Plan.Steps, want) {
@@ -801,13 +809,13 @@ func TestNormalizeSessionPlan(t *testing.T) {
 			want: []PlanStep{planStep("kept", PlanCompleted)},
 		},
 		{
-			name: "keeps only first in progress",
+			name: "keeps parallel in progress steps",
 			in: &SessionPlan{Steps: []PlanStep{
 				planStep("first", PlanInProgress),
 				planStep("second", PlanInProgress),
 				planStep("third", PlanPending),
 			}},
-			want: []PlanStep{planStep("first", PlanInProgress), planStep("third", PlanPending)},
+			want: []PlanStep{planStep("first", PlanInProgress), planStep("second", PlanInProgress), planStep("third", PlanPending)},
 		},
 	}
 	for _, tt := range tests {

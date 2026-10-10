@@ -1464,15 +1464,14 @@ func (s *Session) assignGoalToMission(goal, previous *SessionGoal) error {
 	return nil
 }
 
-// normalizeSessionPlan drops steps that carry no text or an unknown status and
-// keeps only the first in_progress step. It returns nil when nothing remains.
+// normalizeSessionPlan drops steps that carry no text or an unknown status. It
+// returns nil when nothing remains.
 // It does not cap the plan length.
 func normalizeSessionPlan(plan *SessionPlan) *SessionPlan {
 	if plan == nil {
 		return nil
 	}
 	steps := make([]PlanStep, 0, len(plan.Steps))
-	seenInProgress := false
 	for _, step := range plan.Steps {
 		if strings.TrimSpace(step.Step) == "" {
 			continue
@@ -1485,12 +1484,7 @@ func normalizeSessionPlan(plan *SessionPlan) *SessionPlan {
 			status = PlanPending
 		}
 		switch status {
-		case PlanPending, PlanCompleted:
-		case PlanInProgress:
-			if seenInProgress {
-				continue
-			}
-			seenInProgress = true
+		case PlanPending, PlanCompleted, PlanInProgress:
 		default:
 			continue
 		}
