@@ -32,6 +32,7 @@ type serverEntry struct {
 	client    *Client
 	tools     []Tool
 	err       error
+	refresher *toolRefresher
 }
 
 // Manager owns the MCP connections of one zut process. It is safe for
@@ -108,7 +109,12 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	s.mu.Lock()
 	stale := s.client
 	s.client = nil
+	staleRefresher := s.refresher
+	s.refresher = nil
 	s.mu.Unlock()
+	if staleRefresher != nil {
+		staleRefresher.stop()
+	}
 	if stale != nil {
 		_ = stale.Close()
 	}
@@ -120,7 +126,11 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	}
 	startCtx, cancel := withTimeout(ctx, s.cfg.StartupTimeout())
 	defer cancel()
-	client, err := Connect(startCtx, s.name, s.cfg, m.cwd, m.info, m.httpClient)
+	// The refresher exists before the handshake so a list_changed notification
+	// that arrives while the first listing is in flight is remembered, and
+	// the listing is repeated once the client is published.
+	refresher := newToolRefresher()
+	client, err := connectWith(startCtx, s.name, s.cfg, m.cwd, m.info, m.httpClient, refresher.notify)
 	var tools []Tool
 	if err == nil {
 		tools, err = client.ListTools(startCtx)
@@ -129,6 +139,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 		}
 	}
 	if err != nil {
+		refresher.stop()
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start", s.cfg.StartupTimeout())
 		}
@@ -138,12 +149,12 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 		s.mu.Unlock()
 		return nil, err
 	}
-	client.SetToolsChanged(func() { m.refreshTools(s, client) })
 	// Publish under m.mu so Close either sees this client or we see closed.
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		// Close ran during the handshake; do not leak the new process.
+		refresher.stop()
 		_ = client.Close()
 		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
 	}
@@ -151,8 +162,18 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	s.client = client
 	s.tools = filterTools(s.cfg, tools)
 	s.err = nil
+	old := s.refresher
+	s.refresher = refresher
 	s.mu.Unlock()
 	m.mu.Unlock()
+	if old != nil {
+		old.stop()
+	}
+	go func() {
+		<-client.Done()
+		refresher.stop()
+	}()
+	refresher.start(func(ctx context.Context) { m.refreshTools(ctx, s, client) })
 	return client, nil
 }
 
@@ -172,9 +193,11 @@ func (s *serverEntry) live() *Client {
 }
 
 // refreshTools re-lists tools after notifications/tools/list_changed. New
-// definitions reach the model the next time zut builds a tool registry.
-func (m *Manager) refreshTools(s *serverEntry, client *Client) {
-	ctx, cancel := withTimeout(context.Background(), s.cfg.StartupTimeout())
+// definitions reach the model the next time zut builds a tool registry. It is
+// only called from the server's refresher, which serializes and coalesces
+// calls.
+func (m *Manager) refreshTools(ctx context.Context, s *serverEntry, client *Client) {
+	ctx, cancel := withTimeout(ctx, s.cfg.StartupTimeout())
 	defer cancel()
 	tools, err := client.ListTools(ctx)
 	if err != nil {
@@ -185,6 +208,75 @@ func (m *Manager) refreshTools(s *serverEntry, client *Client) {
 		s.tools = filterTools(s.cfg, tools)
 	}
 	s.mu.Unlock()
+}
+
+// toolRefresher coalesces list_changed notifications for one connection into
+// serialized re-listings. Any number of notifications that arrive while a
+// listing runs cause exactly one more listing afterwards. It does nothing
+// until start installs the listing function, so notifications that arrive
+// during the initial handshake are remembered rather than raced.
+type toolRefresher struct {
+	mu      sync.Mutex
+	dirty   bool
+	running bool
+	stopped bool
+	list    func(ctx context.Context)
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+func newToolRefresher() *toolRefresher {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &toolRefresher{ctx: ctx, cancel: cancel}
+}
+
+// notify records that the server's tool list changed.
+func (r *toolRefresher) notify() {
+	r.mu.Lock()
+	r.dirty = true
+	r.spawnLocked()
+	r.mu.Unlock()
+}
+
+// start enables listing with fn and runs it once if a notification arrived
+// earlier.
+func (r *toolRefresher) start(fn func(ctx context.Context)) {
+	r.mu.Lock()
+	r.list = fn
+	r.spawnLocked()
+	r.mu.Unlock()
+}
+
+// stop cancels any running listing and ignores later notifications.
+func (r *toolRefresher) stop() {
+	r.mu.Lock()
+	r.stopped = true
+	r.dirty = false
+	r.mu.Unlock()
+	r.cancel()
+}
+
+func (r *toolRefresher) spawnLocked() {
+	if r.stopped || r.running || !r.dirty || r.list == nil {
+		return
+	}
+	r.running = true
+	go r.run()
+}
+
+func (r *toolRefresher) run() {
+	for {
+		r.mu.Lock()
+		if r.stopped || !r.dirty {
+			r.running = false
+			r.mu.Unlock()
+			return
+		}
+		r.dirty = false
+		list := r.list
+		r.mu.Unlock()
+		list(r.ctx)
+	}
 }
 
 func filterTools(cfg ServerConfig, tools []Tool) []Tool {
@@ -294,7 +386,12 @@ func (m *Manager) Close() error {
 			s.mu.Lock()
 			client := s.client
 			s.client = nil
+			refresher := s.refresher
+			s.refresher = nil
 			s.mu.Unlock()
+			if refresher != nil {
+				refresher.stop()
+			}
 			if client != nil {
 				_ = client.Close()
 			}
@@ -304,7 +401,8 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// FormatStatus renders a short human-readable status table.
+// FormatStatus renders a short human-readable status table. Server-derived
+// text (names, errors) is stripped of terminal control sequences.
 func FormatStatus(statuses []ServerStatus) string {
 	if len(statuses) == 0 {
 		return "no MCP servers configured"
@@ -316,12 +414,12 @@ func FormatStatus(statuses []ServerStatus) string {
 		if st.Connected {
 			state = "connected"
 		}
-		fmt.Fprintf(&b, "%s (%s): %s, %d tools", st.Name, st.Transport, state, st.Tools)
+		fmt.Fprintf(&b, "%s (%s): %s, %d tools", sanitizeText(st.Name, false), sanitizeText(st.Transport, false), state, st.Tools)
 		if st.Resources {
 			b.WriteString(", resources")
 		}
 		if st.Err != "" {
-			b.WriteString("\n  error: " + firstLine(st.Err))
+			b.WriteString("\n  error: " + sanitizeText(firstLine(st.Err), false))
 		}
 		b.WriteByte('\n')
 	}

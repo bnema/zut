@@ -44,7 +44,7 @@ func TestManagerHTTPEndToEnd(t *testing.T) {
 			if len(failures) != 0 {
 				t.Fatalf("failures: %v", failures)
 			}
-			if st := m.Status()[0]; !st.Connected || st.Transport != "http" || st.Tools != 14 || !st.Resources {
+			if st := m.Status()[0]; !st.Connected || st.Transport != "http" || st.Tools != fakeToolCount || !st.Resources {
 				t.Fatalf("status = %+v", st)
 			}
 

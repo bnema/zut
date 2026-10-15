@@ -13,7 +13,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -31,18 +33,26 @@ type httpTransport struct {
 	url     string
 	headers map[string]string
 	client  *http.Client
+	red     *redactor
 
 	mu        sync.Mutex
 	sessionID string
 	protocol  string
 	handler   incomingHandler
 	err       error
+	// sessionGone is set when the server dropped our session (HTTP 404); the
+	// DELETE on close is pointless then.
+	sessionGone bool
+	deleted     bool
 
 	ctx       context.Context
 	cancel    context.CancelFunc
 	doneCh    chan struct{}
 	closeOnce sync.Once
 	listening bool
+
+	// cancelsSent counts notifications/cancelled sends started.
+	cancelsSent atomic.Int64
 }
 
 func newHTTPTransport(name string, cfg ServerConfig, client *http.Client) (*httpTransport, error) {
@@ -71,6 +81,7 @@ func newHTTPTransport(name string, cfg ServerConfig, client *http.Client) (*http
 		url:     cfg.URL,
 		headers: headers,
 		client:  client,
+		red:     newRedactor(cfg),
 		ctx:     ctx,
 		cancel:  cancel,
 		doneCh:  make(chan struct{}),
@@ -105,6 +116,17 @@ func (t *httpTransport) newRequest(ctx context.Context, method string, body []by
 	return req, nil
 }
 
+// bind returns a context that ends when ctx ends or the transport fails or
+// closes, so no request outlives the connection.
+func (t *httpTransport) bind(ctx context.Context) (context.Context, context.CancelFunc) {
+	bound, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(t.ctx, cancel)
+	return bound, func() {
+		stop()
+		cancel()
+	}
+}
+
 func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response, error) {
 	req, err := t.newRequest(ctx, http.MethodPost, frame)
 	if err != nil {
@@ -112,7 +134,7 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, t.red.scrubError(err)
 	}
 	if sid := resp.Header.Get(headerSessionID); sid != "" {
 		t.mu.Lock()
@@ -122,9 +144,25 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return nil, httpStatusError(resp.StatusCode, snippet)
+		return nil, t.statusFailure(req, resp.StatusCode, snippet)
 	}
 	return resp, nil
+}
+
+// statusFailure builds the error for a non-success status. A 404 for a
+// request that carried a session id means the server forgot the session
+// (expired or restarted): the transport becomes unusable so the manager
+// reconnects with a fresh initialize. The failed call is not replayed.
+func (t *httpTransport) statusFailure(req *http.Request, status int, body []byte) error {
+	err := t.red.statusError(status, body)
+	if status == http.StatusNotFound && req.Header.Get(headerSessionID) != "" {
+		err = fmt.Errorf("mcp session expired: %w", err)
+		t.mu.Lock()
+		t.sessionGone = true
+		t.mu.Unlock()
+		t.fail(err)
+	}
+	return err
 }
 
 // HTTPStatusError reports a non-success HTTP status from a server.
@@ -145,9 +183,20 @@ func (e *HTTPStatusError) Error() string {
 }
 
 func httpStatusError(status int, body []byte) error {
-	text := strings.TrimSpace(string(body))
+	return (*redactor)(nil).statusError(status, body)
+}
+
+// statusError builds an HTTPStatusError whose body is redacted, stripped of
+// terminal control sequences, and shortened for display.
+func (r *redactor) statusError(status int, body []byte) error {
+	// Redact before truncating so a secret cut at the limit is not half shown.
+	text := strings.TrimSpace(r.scrubOneLine(string(body)))
 	if len(text) > 300 {
-		text = text[:300] + "…"
+		cut := 300
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut] + "…"
 	}
 	return &HTTPStatusError{Status: status, Body: text}
 }
@@ -161,18 +210,16 @@ func (t *httpTransport) request(ctx context.Context, id int64, method string, pa
 		return nil, err
 	}
 	// Bind the request to both the caller and the transport lifetime.
-	reqCtx, cancel := context.WithCancel(ctx)
+	reqCtx, cancel := t.bind(ctx)
 	defer cancel()
-	stop := context.AfterFunc(t.ctx, cancel)
-	defer stop()
 	resp, err := t.post(reqCtx, frame)
 	if err != nil {
 		if ctx.Err() != nil {
-			_ = t.notify(context.Background(), "notifications/cancelled", map[string]any{"requestId": id, "reason": ctx.Err().Error()})
+			t.cancelRequest(id, method, ctx.Err().Error())
 			return nil, ctx.Err()
 		}
 		if t.ctx.Err() != nil {
-			return nil, errors.New("connection closed")
+			return nil, t.failure()
 		}
 		return nil, err
 	}
@@ -194,7 +241,10 @@ func (t *httpTransport) request(ctx context.Context, id int64, method string, pa
 		err = readSSEFrames(resp.Body, handle)
 	default:
 		var raw []byte
-		raw, err = io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
+		raw, err = io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody+1))
+		if err == nil && len(raw) > maxHTTPBody {
+			err = fmt.Errorf("response exceeds %d bytes", maxHTTPBody)
+		}
 		if err == nil {
 			var frames []message
 			frames, err = parseFrames(raw)
@@ -207,25 +257,57 @@ func (t *httpTransport) request(ctx context.Context, id int64, method string, pa
 	}
 	if result == nil {
 		if ctx.Err() != nil {
-			_ = t.notify(context.Background(), "notifications/cancelled", map[string]any{"requestId": id, "reason": ctx.Err().Error()})
+			t.cancelRequest(id, method, ctx.Err().Error())
 			return nil, ctx.Err()
 		}
+		if t.ctx.Err() != nil {
+			return nil, t.failure()
+		}
 		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
+			return nil, fmt.Errorf("read response: %w", t.red.scrubError(err))
 		}
 		return nil, errors.New("server closed the response without a result")
 	}
 	if result.Error != nil {
-		return nil, result.Error
+		return nil, t.red.scrubRPCError(result.Error)
 	}
 	return result.Result, nil
+}
+
+// cancelRequest announces an abandoned request on a best-effort basis. It
+// never delays the caller, is bounded by cancelNotifyTimeout, and ends with
+// the transport. initialize is never cancelled (MCP lifecycle).
+func (t *httpTransport) cancelRequest(id int64, method, reason string) {
+	if !shouldSendCancel(method) || t.ctx.Err() != nil {
+		return
+	}
+	t.cancelsSent.Add(1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.ctx, cancelNotifyTimeout)
+		defer cancel()
+		_ = t.notify(ctx, "notifications/cancelled", map[string]any{"requestId": id, "reason": reason})
+	}()
+}
+
+// errSSEEventTooLarge reports an SSE event whose aggregated data exceeds the
+// body limit.
+type errSSEEventTooLarge struct{ limit int }
+
+func (e errSSEEventTooLarge) Error() string {
+	return fmt.Sprintf("sse event data exceeds %d bytes", e.limit)
 }
 
 // readSSEFrames delivers each SSE data payload as JSON-RPC frames until
 // handle returns true or the stream ends.
 func readSSEFrames(r io.Reader, handle func(message) bool) error {
+	return readSSEFramesLimit(r, maxHTTPBody, handle)
+}
+
+// readSSEFramesLimit is readSSEFrames with an explicit bound on the data of
+// one event, counted across all of its data: lines.
+func readSSEFramesLimit(r io.Reader, limit int, handle func(message) bool) error {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), maxHTTPBody)
+	sc.Buffer(make([]byte, 0, 64*1024), limit+1)
 	var data strings.Builder
 	flush := func() bool {
 		if data.Len() == 0 {
@@ -257,16 +339,27 @@ func readSSEFrames(r io.Reader, handle func(message) bool) error {
 		field, value, _ := strings.Cut(line, ":")
 		value = strings.TrimPrefix(value, " ")
 		if field == "data" {
+			extra := len(value)
+			if data.Len() > 0 {
+				extra++
+			}
+			if data.Len()+extra > limit {
+				return errSSEEventTooLarge{limit: limit}
+			}
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
 			data.WriteString(value)
 		}
 	}
-	if flush() {
-		return nil
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return errSSEEventTooLarge{limit: limit}
+		}
+		return err
 	}
-	return sc.Err()
+	flush()
+	return nil
 }
 
 func (t *httpTransport) dispatchIncoming(msg message) {
@@ -305,6 +398,8 @@ func (t *httpTransport) notify(ctx context.Context, method string, params any) e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	ctx, stop := t.bind(ctx)
+	defer stop()
 	resp, err := t.post(ctx, frame)
 	if err != nil {
 		return err
@@ -341,6 +436,12 @@ func (t *httpTransport) listen() {
 			}
 			if resp.StatusCode != http.StatusOK {
 				resp.Body.Close()
+				if resp.StatusCode == http.StatusNotFound && req.Header.Get(headerSessionID) != "" {
+					t.mu.Lock()
+					t.sessionGone = true
+					t.mu.Unlock()
+					t.fail(fmt.Errorf("mcp session expired: %w", t.red.statusError(resp.StatusCode, nil)))
+				}
 				// 405: no server stream. Other statuses: give up quietly; the
 				// POST path still works.
 				return
@@ -389,24 +490,32 @@ func (t *httpTransport) failure() error {
 	return t.err
 }
 
-// close ends the session with DELETE (best effort) and stops all streams.
-func (t *httpTransport) close() error {
+// fail marks the transport unusable: pending and future requests error out,
+// background streams stop, and done() is closed so the manager reconnects.
+func (t *httpTransport) fail(err error) {
 	t.mu.Lock()
 	if t.err == nil {
-		t.err = errors.New("connection closed")
+		t.err = err
 	}
-	sid := t.sessionID
 	t.mu.Unlock()
 	t.cancel()
 	t.closeOnce.Do(func() { close(t.doneCh) })
-	if sid != "" {
+}
+
+// close ends the session with DELETE (best effort) and stops all streams.
+func (t *httpTransport) close() error {
+	t.fail(errors.New("connection closed"))
+	t.mu.Lock()
+	sid, gone := t.sessionID, t.sessionGone
+	send := !t.deleted && sid != "" && !gone
+	t.deleted = true
+	t.mu.Unlock()
+	if send {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if req, err := http.NewRequestWithContext(ctx, http.MethodDelete, t.url, nil); err == nil {
-			for k, v := range t.headers {
-				req.Header.Set(k, v)
-			}
-			req.Header.Set(headerSessionID, sid)
+		// Built like every other request so it carries the protocol version
+		// and configured headers as well as the session id.
+		if req, err := t.newRequest(ctx, http.MethodDelete, nil); err == nil {
 			if resp, err := t.client.Do(req); err == nil {
 				resp.Body.Close()
 			}

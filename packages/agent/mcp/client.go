@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -124,6 +126,13 @@ type ClientInfo struct {
 
 // Connect starts the transport for cfg and performs the initialize handshake.
 func Connect(ctx context.Context, name string, cfg ServerConfig, cwd string, info ClientInfo, httpClient *http.Client) (*Client, error) {
+	return connectWith(ctx, name, cfg, cwd, info, httpClient, nil)
+}
+
+// connectWith is Connect with the tools/list_changed callback installed before
+// the handshake starts, so a notification sent right after initialize is not
+// lost.
+func connectWith(ctx context.Context, name string, cfg ServerConfig, cwd string, info ClientInfo, httpClient *http.Client, onToolsChanged func()) (*Client, error) {
 	var (
 		t   transport
 		err error
@@ -147,14 +156,17 @@ func Connect(ctx context.Context, name string, cfg ServerConfig, cwd string, inf
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{name: name, t: t, cwd: cwd}
+	c := &Client{name: name, t: t, cwd: cwd, onToolsChanged: onToolsChanged}
 	t.setHandler(c.handleIncoming)
 	if err := c.initialize(ctx, info); err != nil {
+		// Close first: it reaps the process and waits for stderr to drain, so
+		// the tail is complete (a server that fails fast writes its reason
+		// to stderr just before exiting).
+		_ = t.close()
 		tail := ""
 		if st, ok := t.(*stdioTransport); ok {
 			tail = st.stderrTail()
 		}
-		_ = t.close()
 		if tail != "" {
 			return nil, fmt.Errorf("%w\nserver stderr:\n%s", err, tail)
 		}
@@ -245,8 +257,7 @@ func (c *Client) handleIncoming(msg message) (any, *RPCError) {
 		roots := []map[string]string{}
 		if c.cwd != "" {
 			if abs, err := filepath.Abs(c.cwd); err == nil {
-				u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
-				roots = append(roots, map[string]string{"uri": u.String(), "name": filepath.Base(abs)})
+				roots = append(roots, map[string]string{"uri": pathToFileURI(abs), "name": filepath.Base(abs)})
 			}
 		}
 		return map[string]any{"roots": roots}, nil
@@ -406,4 +417,44 @@ func withTimeout(ctx context.Context, d time.Duration) (context.Context, context
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, d)
+}
+
+// pathToFileURI converts an absolute path of the running platform to a file URI.
+func pathToFileURI(path string) string {
+	return fileURI(path, runtime.GOOS == "windows")
+}
+
+// fileURI builds a file URI from an absolute path. windows selects Windows
+// path syntax (drive letters, UNC shares, backslashes) and is a parameter so
+// both shapes can be tested on any platform:
+//
+//	C:\Users\me\proj   -> file:///C:/Users/me/proj
+//	\\host\share\dir   -> file://host/share/dir
+//	/home/me/my proj    -> file:///home/me/my%20proj
+func fileURI(path string, windows bool) string {
+	u := url.URL{Scheme: "file"}
+	if !windows {
+		u.Path = path
+		return u.String()
+	}
+	p := path
+	// Strip the extended-length prefixes: \\?\C:\x and \\?\UNC\host\share.
+	switch {
+	case strings.HasPrefix(p, `\\?\UNC\`):
+		p = `\\` + p[len(`\\?\UNC\`):]
+	case strings.HasPrefix(p, `\\?\`):
+		p = p[len(`\\?\`):]
+	}
+	p = strings.ReplaceAll(p, `\`, "/")
+	if strings.HasPrefix(p, "//") {
+		host, rest, _ := strings.Cut(strings.TrimLeft(p, "/"), "/")
+		u.Host = host
+		u.Path = "/" + rest
+		return u.String()
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // C:/x -> /C:/x
+	}
+	u.Path = p
+	return u.String()
 }

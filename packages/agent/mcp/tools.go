@@ -81,6 +81,9 @@ func (t *serverTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 }
 
 func errorResult(text string) core.ToolResult {
+	// Error text may embed server-controlled strings; keep it free of
+	// terminal control sequences.
+	text = sanitizeText(text, true)
 	return core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: text}}}
 }
 
@@ -271,65 +274,109 @@ func (t *listResourcesTool) Execute(ctx context.Context, args json.RawMessage, _
 	if in.Server != "" {
 		servers = []string{in.Server}
 	}
-	var b strings.Builder
+	// Output is budgeted while it is formatted: once maxResultTextBytes is
+	// reached nothing more is built and no further server is contacted.
+	out := &budgetedText{}
 	for _, server := range servers {
+		if out.full() {
+			break
+		}
 		client, cfg, err := t.manager.client(ctx, server)
 		if err != nil {
-			fmt.Fprintf(&b, "## %s\nunavailable: %s\n\n", server, firstLine(err.Error()))
+			out.printf("## %s\nunavailable: %s\n\n", sanitizeText(server, false), sanitizeText(firstLine(err.Error()), false))
 			continue
 		}
 		if !client.Info().HasResources {
 			if in.Server != "" {
-				fmt.Fprintf(&b, "## %s\nthis server does not offer resources\n\n", server)
+				out.printf("## %s\nthis server does not offer resources\n\n", sanitizeText(server, false))
 			}
 			continue
 		}
 		reqCtx, cancel := withTimeout(ctx, cfg.ToolTimeout())
 		resources, rErr := client.ListResources(reqCtx)
-		templates, tErr := client.ListResourceTemplates(reqCtx)
-		cancel()
-		fmt.Fprintf(&b, "## %s\n", server)
+		out.printf("## %s\n", sanitizeText(server, false))
 		if rErr != nil {
-			fmt.Fprintf(&b, "resources error: %v\n", rErr)
+			out.printf("resources error: %s\n", sanitizeText(rErr.Error(), false))
 		}
 		for _, r := range resources {
-			fmt.Fprintf(&b, "- %s", r.URI)
+			if out.full() {
+				break
+			}
+			var line strings.Builder
+			fmt.Fprintf(&line, "- %s", sanitizeText(r.URI, false))
 			if name := firstNonEmpty(r.Title, r.Name); name != "" {
-				fmt.Fprintf(&b, " — %s", name)
+				fmt.Fprintf(&line, " — %s", sanitizeText(name, false))
 			}
 			if r.MimeType != "" {
-				fmt.Fprintf(&b, " (%s)", r.MimeType)
+				fmt.Fprintf(&line, " (%s)", sanitizeText(r.MimeType, false))
 			}
 			if r.Description != "" {
-				fmt.Fprintf(&b, ": %s", r.Description)
+				fmt.Fprintf(&line, ": %s", sanitizeText(r.Description, false))
 			}
-			b.WriteByte('\n')
+			line.WriteByte('\n')
+			out.write(line.String())
 		}
+		// Templates are only fetched while there is budget left for them.
+		var templates []ResourceTemplate
+		var tErr error
+		if !out.full() {
+			templates, tErr = client.ListResourceTemplates(reqCtx)
+		}
+		cancel()
 		if tErr != nil && !isMethodNotFound(tErr) {
-			fmt.Fprintf(&b, "templates error: %v\n", tErr)
+			out.printf("templates error: %s\n", sanitizeText(tErr.Error(), false))
 		}
 		for _, tpl := range templates {
-			fmt.Fprintf(&b, "- template %s", tpl.URITemplate)
+			if out.full() {
+				break
+			}
+			var line strings.Builder
+			fmt.Fprintf(&line, "- template %s", sanitizeText(tpl.URITemplate, false))
 			if name := firstNonEmpty(tpl.Title, tpl.Name); name != "" {
-				fmt.Fprintf(&b, " — %s", name)
+				fmt.Fprintf(&line, " — %s", sanitizeText(name, false))
 			}
 			if tpl.Description != "" {
-				fmt.Fprintf(&b, ": %s", tpl.Description)
+				fmt.Fprintf(&line, ": %s", sanitizeText(tpl.Description, false))
 			}
-			b.WriteByte('\n')
+			line.WriteByte('\n')
+			out.write(line.String())
 		}
 		if len(resources) == 0 && len(templates) == 0 && rErr == nil {
-			b.WriteString("(no resources)\n")
+			out.write("(no resources)\n")
 		}
-		b.WriteByte('\n')
+		out.write("\n")
 	}
-	text := strings.TrimSpace(b.String())
+	text := strings.TrimSpace(out.String())
 	if text == "" {
 		text = "no connected MCP server offers resources"
 	}
-	budget := &textBudget{}
-	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: budget.take(text)}}}, nil
+	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}}, nil
 }
+
+// budgetedText accumulates text up to maxResultTextBytes, then ignores
+// further writes and appends a truncation marker once.
+type budgetedText struct {
+	b      strings.Builder
+	budget textBudget
+}
+
+func (t *budgetedText) full() bool { return t.budget.truncated }
+
+func (t *budgetedText) write(s string) {
+	if t.budget.truncated {
+		return
+	}
+	t.b.WriteString(t.budget.take(s))
+}
+
+func (t *budgetedText) printf(format string, args ...any) {
+	if t.budget.truncated {
+		return
+	}
+	t.write(fmt.Sprintf(format, args...))
+}
+
+func (t *budgetedText) String() string { return t.b.String() }
 
 func isMethodNotFound(err error) bool {
 	var rpcErr *RPCError
@@ -401,6 +448,7 @@ func (m *Manager) SystemPromptAddendum() string {
 		}
 		b.WriteByte('\n')
 		if instr := strings.TrimSpace(st.Info.Instructions); instr != "" {
+			instr = sanitizeText(instr, true)
 			if len(instr) > maxDescriptionBytes {
 				instr = instr[:maxDescriptionBytes] + "…"
 			}

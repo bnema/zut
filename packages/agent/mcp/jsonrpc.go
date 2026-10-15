@@ -4,7 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
+
+// cancelNotifyTimeout bounds one best-effort notifications/cancelled send.
+const cancelNotifyTimeout = 2 * time.Second
+
+// shouldSendCancel reports whether abandoning a request of this method may be
+// announced with notifications/cancelled. The MCP lifecycle forbids cancelling
+// initialize; an abandoned initialize just fails and closes the connection.
+func shouldSendCancel(method string) bool { return method != "initialize" }
+
+// scrubRPCError returns a copy of e whose message is safe to print.
+func (r *redactor) scrubRPCError(e *RPCError) *RPCError {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	cp.Message = r.scrubOneLine(e.Message)
+	return &cp
+}
 
 // message is one JSON-RPC 2.0 frame: request, notification, or response.
 type message struct {

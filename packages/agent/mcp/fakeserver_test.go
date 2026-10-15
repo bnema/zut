@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,11 +10,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -24,11 +28,22 @@ import (
 
 const fakeServerEnv = "ZUT_MCP_FAKE_SERVER"
 
+// fakeToolCount is the number of tools the fake server lists in total.
+const fakeToolCount = 17
+
 var fakeImageBytes = []byte("\x89PNG\r\n\x1a\nfake-image-bytes")
 
 func TestMain(m *testing.M) {
-	if os.Getenv(fakeServerEnv) == "1" {
+	switch os.Getenv(fakeServerEnv) {
+	case "1":
 		runFakeStdioServer()
+		os.Exit(0)
+	case "sleeper", "sleeper-stubborn":
+		// A descendant of the fake server that outlives it.
+		if os.Getenv(fakeServerEnv) == "sleeper-stubborn" {
+			signal.Ignore(syscall.SIGTERM)
+		}
+		time.Sleep(2 * time.Minute)
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -41,14 +56,22 @@ type fakeBackend struct {
 	protocol    string
 	repeatPage  bool
 	extraTool   atomic.Bool
+	// manyResources makes resources/list return this many long entries.
+	manyResources int
+	events        string
 }
 
 func fakeBackendFromEnv() *fakeBackend {
-	return &fakeBackend{
+	b := &fakeBackend{
 		noResources: os.Getenv("FAKE_NO_RESOURCES") == "1",
 		protocol:    os.Getenv("FAKE_PROTO"),
 		repeatPage:  os.Getenv("FAKE_BAD_CURSOR") == "1",
+		events:      os.Getenv("FAKE_EVENT_FILE"),
 	}
+	if n, err := strconv.Atoi(os.Getenv("FAKE_MANY_RESOURCES")); err == nil {
+		b.manyResources = n
+	}
+	return b
 }
 
 func fakeToolDef(name, desc string, readOnly bool) map[string]any {
@@ -92,6 +115,9 @@ func (b *fakeBackend) toolPage(cursor string) map[string]any {
 		fakeToolDef("add_tool", "Add a tool and notify list_changed", false),
 		fakeToolDef("getenv", "Read an environment variable", false),
 		fakeToolDef("pid", "Return the server process id", false),
+		fakeToolDef("spawn", "Start a descendant process and return its pid", false),
+		fakeToolDef("stall", "Stop reading stdin", false),
+		fakeToolDef("stderr_flood", "Write a huge stderr line", false),
 		fakeToolDef("cwd", "Return the server working directory", false),
 	}
 	if b.extraTool.Load() {
@@ -184,6 +210,16 @@ func (b *fakeBackend) handle(method string, params json.RawMessage) (any, *RPCEr
 		if b.noResources {
 			return nil, notFound
 		}
+		fakeEvent(b.events, "list-resources")
+		if b.manyResources > 0 {
+			list := make([]any, 0, b.manyResources)
+			for i := 0; i < b.manyResources; i++ {
+				list = append(list, map[string]any{
+					"uri": fmt.Sprintf("mem://item/%d", i), "name": "item", "description": strings.Repeat("d", 100),
+				})
+			}
+			return map[string]any{"resources": list}, nil
+		}
 		return map[string]any{"resources": []any{map[string]any{
 			"uri": "mem://a", "name": "A", "mimeType": "text/plain", "description": "first",
 		}}}, nil
@@ -191,6 +227,7 @@ func (b *fakeBackend) handle(method string, params json.RawMessage) (any, *RPCEr
 		if b.noResources {
 			return nil, notFound
 		}
+		fakeEvent(b.events, "list-templates")
 		return map[string]any{"resourceTemplates": []any{map[string]any{
 			"uriTemplate": "mem://item/{id}", "name": "Item",
 		}}}, nil
@@ -287,11 +324,15 @@ func runFakeStdioServer() {
 				time.Sleep(ms)
 			}
 			if os.Getenv("FAKE_INIT_ERR") == "1" {
-				fmt.Fprintln(os.Stderr, "fatal: missing credentials")
-				// Give the host's stderr reader time to drain the line
-				// before the failure is reported.
-				time.Sleep(250 * time.Millisecond)
-				respond(msg.ID, nil, &RPCError{Code: -32000, Message: "init refused"})
+				line := "fatal: missing credentials"
+				if echo := os.Getenv("FAKE_ERR_ECHO"); echo != "" {
+					line += " token=" + echo + " see http://example.invalid/x?k=" + echo
+				}
+				if os.Getenv("FAKE_ANSI") == "1" {
+					line += " \x1b[31mred\x1b[0m\x1b]0;evil-title\x07 end"
+				}
+				fmt.Fprintln(os.Stderr, line)
+				respond(msg.ID, nil, &RPCError{Code: -32000, Message: "init refused " + os.Getenv("FAKE_ERR_ECHO")})
 				return
 			}
 		}
@@ -313,6 +354,24 @@ func runFakeStdioServer() {
 			case "exit":
 				fakeEvent(events, "exit-tool")
 				os.Exit(0)
+			case "spawn":
+				var in struct {
+					Mode string `json:"mode"`
+				}
+				_ = json.Unmarshal(p.Args, &in)
+				child := exec.Command(os.Args[0], "-test.run=^$")
+				child.Env = append(os.Environ(), fakeServerEnv+"="+in.Mode)
+				if err := child.Start(); err != nil {
+					respond(msg.ID, nil, &RPCError{Code: -32000, Message: err.Error()})
+					return
+				}
+				respond(msg.ID, fakeCallResult(fakeText(strconv.Itoa(child.Process.Pid))), nil)
+				return
+			case "stderr_flood":
+				os.Stderr.WriteString(strings.Repeat("x", 3<<20) + "\n")
+				fmt.Fprintln(os.Stderr, "after-flood")
+				respond(msg.ID, fakeCallResult(fakeText("flooded")), nil)
+				return
 			case "ask_roots":
 				roots, ok1 := askClient("srv-roots", "roots/list")
 				ping, ok2 := askClient("srv-ping", "ping")
@@ -331,6 +390,17 @@ func runFakeStdioServer() {
 		}
 		result, rpcErr := backend.handle(msg.Method, msg.Params)
 		respond(msg.ID, result, rpcErr)
+		if msg.Method == "tools/list" && os.Getenv("FAKE_NOTIFY_ON_LIST") == "1" {
+			var p struct {
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			if p.Cursor == "p2" && !backend.extraTool.Load() {
+				// The tool set changes right after the initial listing.
+				backend.extraTool.Store(true)
+				send(map[string]any{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+			}
+		}
 	}
 
 	sc := bufio.NewScanner(os.Stdin)
@@ -350,6 +420,11 @@ func runFakeStdioServer() {
 				ch <- msg
 			}
 		case msg.isRequest():
+			if msg.Method == "tools/call" && bytes.Contains(msg.Params, []byte(`"name":"stall"`)) {
+				// Stop reading stdin so the client's writes back up.
+				fakeEvent(events, "stalled")
+				time.Sleep(time.Minute)
+			}
 			go serve(msg)
 		case msg.Method == "notifications/cancelled":
 			var p struct {
@@ -454,10 +529,23 @@ type httpFake struct {
 	wantAuth  string
 	sessionID string
 
+	// expireNextCall makes the next tools/call that carries a session id
+	// answer 404 (session expired).
+	expireNextCall atomic.Bool
+	// hangInit makes initialize block until the client goes away.
+	hangInit bool
+	// cancelGate, when set, makes notifications/cancelled block until it is
+	// closed or the client disconnects.
+	cancelGate chan struct{}
+	// errorBody, when set, is returned with a 500 for every tools/list.
+	errorBody string
+
 	mu          sync.Mutex
 	records     []httpRecord
 	pingReplies chan message
 	deleted     chan string
+	initCount   int
+	callCount   int
 }
 
 func newHTTPFake(sse bool) *httpFake {
@@ -474,6 +562,12 @@ func (f *httpFake) start(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func (f *httpFake) counts() (inits, calls int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.initCount, f.callCount
 }
 
 func (f *httpFake) snapshot() []httpRecord {
@@ -535,6 +629,12 @@ func (f *httpFake) servePost(w http.ResponseWriter, r *http.Request, rec httpRec
 		return
 	}
 	if !msg.isRequest() {
+		if msg.Method == "notifications/cancelled" && f.cancelGate != nil {
+			select {
+			case <-f.cancelGate:
+			case <-r.Context().Done():
+			}
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -544,7 +644,34 @@ func (f *httpFake) servePost(w http.ResponseWriter, r *http.Request, rec httpRec
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	if msg.Method == "initialize" {
-		w.Header().Set("Mcp-Session-Id", f.sessionID)
+		if f.hangInit {
+			<-r.Context().Done()
+			return
+		}
+		f.mu.Lock()
+		f.initCount++
+		n := f.initCount
+		f.mu.Unlock()
+		sid := f.sessionID
+		if n > 1 {
+			sid = fmt.Sprintf("%s-%d", f.sessionID, n)
+		}
+		w.Header().Set("Mcp-Session-Id", sid)
+	}
+	if msg.Method == "tools/call" {
+		f.mu.Lock()
+		f.callCount++
+		f.mu.Unlock()
+		if rec.Session != "" && f.expireNextCall.CompareAndSwap(true, false) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+	}
+	if msg.Method == "tools/list" && f.errorBody != "" {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(f.errorBody))
+		return
 	}
 
 	if msg.Method == "tools/call" && p.Name == "slow" {

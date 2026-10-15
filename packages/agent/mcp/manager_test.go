@@ -98,7 +98,7 @@ func TestManagerStdioToolsAndDescriptions(t *testing.T) {
 		t.Fatal("manager should not be empty")
 	}
 	st := m.Status()
-	if len(st) != 1 || !st[0].Connected || st[0].Tools != 14 || !st[0].Resources || st[0].Transport != "stdio" {
+	if len(st) != 1 || !st[0].Connected || st[0].Tools != fakeToolCount || !st[0].Resources || st[0].Transport != "stdio" {
 		t.Fatalf("status = %+v", st)
 	}
 	if st[0].Info.ProtocolVersion != "2025-06-18" || !st[0].Info.ToolsChanged || st[0].Info.Name != "fake" {
@@ -106,8 +106,8 @@ func TestManagerStdioToolsAndDescriptions(t *testing.T) {
 	}
 
 	tools := m.Tools()
-	// 14 server tools across two pages + 2 resource helpers.
-	if len(tools) != 16 {
+	// All server tools across two pages + 2 resource helpers.
+	if len(tools) != fakeToolCount+2 {
 		t.Fatalf("got %d tools: %v", len(tools), toolNames(m))
 	}
 	seen := map[string]bool{}
@@ -160,14 +160,14 @@ func TestManagerStdioToolsAndDescriptions(t *testing.T) {
 	}
 
 	text := FormatStatus(m.Status())
-	if !strings.Contains(text, "fake (stdio): connected, 14 tools, resources") {
+	if !strings.Contains(text, "fake (stdio): connected, 17 tools, resources") {
 		t.Errorf("FormatStatus = %q", text)
 	}
 	if FormatStatus(nil) != "no MCP servers configured" {
 		t.Error("empty FormatStatus")
 	}
 	add := m.SystemPromptAddendum()
-	for _, want := range []string{"[mcp_servers]", "fake: 14 tools", "mcp__fake__<tool>", "Be nice"} {
+	for _, want := range []string{"[mcp_servers]", "fake: 17 tools", "mcp__fake__<tool>", "Be nice"} {
 		if !strings.Contains(add, want) {
 			t.Errorf("addendum missing %q:\n%s", want, add)
 		}
@@ -325,7 +325,7 @@ func TestManagerToolFiltering(t *testing.T) {
 				t.Errorf("%s should be filtered", n)
 			}
 		}
-		if !hasTool(m, "mcp__fake__image") || len(m.ServerTools("fake")) != 11 {
+		if !hasTool(m, "mcp__fake__image") || len(m.ServerTools("fake")) != fakeToolCount-3 {
 			t.Errorf("remaining tools wrong: %v", toolNames(m))
 		}
 	})
@@ -621,7 +621,7 @@ func TestManagerResourceToolsOnlyWhenServerHasResources(t *testing.T) {
 	if hasTool(m, ListResourcesToolName) || hasTool(m, ReadResourceToolName) {
 		t.Errorf("resource tools should be absent: %v", toolNames(m))
 	}
-	if len(m.Tools()) != 14 {
+	if len(m.Tools()) != fakeToolCount {
 		t.Errorf("tools = %v", toolNames(m))
 	}
 	if strings.Contains(FormatStatus(m.Status()), "resources") {

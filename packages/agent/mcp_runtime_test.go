@@ -172,6 +172,13 @@ func TestOrchestratorHoldsReadOnlyMCPToolsAndWorkersGetAll(t *testing.T) {
 	if _, ok := r.ToolRegistry["mcp__fake__deploy"]; ok {
 		t.Fatal("orchestrator holds a mutating MCP tool")
 	}
+	narrowed := args
+	narrowed.Tools, narrowed.ToolsSet = []string{"subagent", "mcp__fake__deploy"}, true
+	narrowReg := core.Registry{}
+	addMCPTools(narrowReg, narrowed)
+	if len(narrowReg) != 0 {
+		t.Fatalf("orchestrator --tools selection ignored: %v", keys(narrowReg))
+	}
 	if !strings.Contains(r.SystemPrompt, "delegate MCP actions") {
 		t.Fatalf("orchestrator prompt lacks MCP delegation guidance:\n%s", r.SystemPrompt)
 	}
@@ -308,6 +315,47 @@ func TestMCPCommandAddListRemove(t *testing.T) {
 	}
 	if handled, _ := runMCPCommand(context.Background(), []string{"chat"}, "test", &out); handled {
 		t.Fatal("non-mcp args handled")
+	}
+}
+
+func TestMCPCommandListRedactsAndKeepsDisabledEntries(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+	t.Setenv("REVIEW_SECRET", "synthetic-review-secret")
+	off := false
+	cfg := mcp.Config{Servers: map[string]mcp.ServerConfig{
+		"local":  {Command: "server", Args: []string{"--token", "${REVIEW_SECRET}"}},
+		"remote": {Type: "http", URL: "https://user:pw@example.test/mcp?key=${REVIEW_SECRET}"},
+		"off":    {Command: "server", Enabled: &off},
+	}}
+	if err := mcp.WriteConfigFile(mcp.GlobalConfigPath(root), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"get", "remote"}, {"get", "local"}} {
+		var out strings.Builder
+		if _, err := runMCPCommand(context.Background(), append([]string{"mcp"}, args...), "test", &out); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if strings.Contains(out.String(), "synthetic-review-secret") || strings.Contains(out.String(), "pw@") {
+			t.Fatalf("%v leaked a secret:\n%s", args, out.String())
+		}
+		if args[0] == "list" && !strings.Contains(out.String(), "off") {
+			t.Fatalf("%v hides disabled entry:\n%s", args, out.String())
+		}
+	}
+}
+
+func TestMCPCommandFailsOnMalformedConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+	if err := os.WriteFile(mcp.GlobalConfigPath(root), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"status"}} {
+		var out strings.Builder
+		if _, err := runMCPCommand(context.Background(), append([]string{"mcp"}, args...), "test", &out); err == nil {
+			t.Fatalf("%v succeeded on malformed config:\n%s", args, out.String())
+		}
 	}
 }
 

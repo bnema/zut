@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -80,9 +81,33 @@ func mcpConfigPath(cwd string, project bool) string {
 	return mcp.GlobalConfigPath(ZutHome())
 }
 
+// rawMCPConfig merges the global and project files without ${VAR} expansion
+// or validation, so list/get show disabled and currently broken entries and
+// never print expanded secret values.
+func rawMCPConfig(cwd string) (mcp.Config, error) {
+	cfg := mcp.Config{Servers: map[string]mcp.ServerConfig{}}
+	var errs []error
+	for _, path := range []string{mcp.GlobalConfigPath(ZutHome()), mcp.ProjectConfigPath(cwd)} {
+		file, err := mcp.ReadConfigFile(path)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		for name, srv := range file.Servers {
+			cfg.Servers[name] = srv
+		}
+	}
+	return cfg, errors.Join(errs...)
+}
+
 func mcpList(out io.Writer, cwd string, args []string) error {
 	asJSON := len(args) > 0 && args[0] == "--json"
-	cfg, errs := mcp.LoadConfig(ZutHome(), cwd)
+	cfg, cfgErr := rawMCPConfig(cwd)
+	if cfgErr != nil {
+		return cfgErr
+	}
 	if asJSON {
 		redacted := map[string]mcp.ServerConfig{}
 		for name, srv := range cfg.Servers {
@@ -101,21 +126,31 @@ func mcpList(out io.Writer, cwd string, args []string) error {
 		fmt.Fprintln(out, "no MCP servers configured")
 	}
 	for _, name := range names {
-		srv := cfg.Servers[name]
+		srv := redactServer(cfg.Servers[name])
 		target := srv.URL
 		if srv.Kind() == "stdio" {
 			target = strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " "))
 		}
-		fmt.Fprintf(out, "%s\t%s\t%s\n", name, srv.Kind(), target)
-	}
-	for _, err := range errs {
-		fmt.Fprintln(os.Stderr, "mcp:", err)
+		state := ""
+		if srv.Enabled != nil && !*srv.Enabled {
+			state = "\tdisabled"
+		}
+		fmt.Fprintf(out, "%s\t%s\t%s%s\n", name, srv.Kind(), target, state)
 	}
 	return nil
 }
 
-// redactServer hides values that commonly carry secrets.
+// redactServer hides values that commonly carry secrets: env and header
+// values, URL credentials and query strings. Arguments are shown as written
+// in the file (${VAR} references stay unexpanded).
 func redactServer(srv mcp.ServerConfig) mcp.ServerConfig {
+	if u, err := url.Parse(srv.URL); err == nil && (u.User != nil || u.RawQuery != "") {
+		u.User = nil
+		if u.RawQuery != "" {
+			u.RawQuery = "*****"
+		}
+		srv.URL = u.String()
+	}
 	hide := func(m map[string]string) map[string]string {
 		if len(m) == 0 {
 			return m
@@ -135,10 +170,13 @@ func mcpGet(out io.Writer, cwd string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: zut mcp get NAME [--json]")
 	}
-	cfg, _ := mcp.LoadConfig(ZutHome(), cwd)
+	cfg, err := rawMCPConfig(cwd)
+	if err != nil {
+		return err
+	}
 	srv, ok := cfg.Servers[args[0]]
 	if !ok {
-		return fmt.Errorf("mcp server %q is not configured or is invalid", args[0])
+		return fmt.Errorf("mcp server %q is not configured", args[0])
 	}
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
@@ -293,12 +331,12 @@ func mcpRemove(out io.Writer, cwd string, args []string) error {
 func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []string) error {
 	cfg, errs := mcp.LoadConfig(ZutHome(), cwd)
 	for _, err := range errs {
-		fmt.Fprintln(out, "config error:", err)
+		fmt.Fprintln(os.Stderr, "mcp config error:", err)
 	}
 	if len(args) > 0 {
 		srv, ok := cfg.Servers[args[0]]
 		if !ok {
-			return fmt.Errorf("mcp server %q is not configured or is invalid", args[0])
+			return fmt.Errorf("mcp server %q is not configured, disabled, or invalid", args[0])
 		}
 		cfg.Servers = map[string]mcp.ServerConfig{args[0]: srv}
 	}
@@ -306,13 +344,13 @@ func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []str
 	defer manager.Close()
 	failures, _ := manager.Start(ctx)
 	fmt.Fprintln(out, mcp.FormatStatus(manager.Status()))
-	for _, server := range manager.Servers() {
-		for _, tool := range manager.ServerTools(server) {
-			fmt.Fprintf(out, "  %s\n", mcp.QualifiedName(server, tool.Name))
-		}
+	// Names come from the registry builder so collision suffixes match what
+	// --tools and the model see.
+	for _, tool := range manager.Tools() {
+		fmt.Fprintf(out, "  %s\n", tool.Name())
 	}
-	if len(failures) > 0 {
-		return fmt.Errorf("%d MCP server(s) failed to start", len(failures))
+	if n := len(failures) + len(errs); n > 0 {
+		return fmt.Errorf("%d MCP configuration or startup problem(s)", n)
 	}
 	return nil
 }

@@ -13,14 +13,24 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // maxStdioFrame bounds one newline-delimited JSON-RPC message from a server.
 const maxStdioFrame = 64 << 20
 
-// stderrTailLines is how many stderr lines are kept for startup diagnostics.
-const stderrTailLines = 20
+const (
+	// stderrTailLines is how many stderr lines are kept for diagnostics.
+	stderrTailLines = 20
+	// maxStderrLine truncates one retained stderr line; the rest of a longer
+	// line is still drained from the pipe, just not kept.
+	maxStderrLine = 4096
+	// writeQueueSize bounds frames waiting for the writer goroutine.
+	writeQueueSize = 64
+	// responseWriteTimeout bounds answering one server-initiated request.
+	responseWriteTimeout = 30 * time.Second
+)
 
 // defaultEnvVars are inherited by stdio servers. Everything else from the host
 // environment, including provider API keys, is withheld unless listed in
@@ -42,12 +52,28 @@ var defaultEnvVars = func() []string {
 	}
 }()
 
-type stdioTransport struct {
-	name string
-	cmd  *exec.Cmd
+// writeReq is one frame queued for the writer goroutine.
+type writeReq struct {
+	ctx   context.Context
+	frame []byte
+	res   chan error
+}
 
-	writeMu sync.Mutex
-	stdin   io.WriteCloser
+type stdioTransport struct {
+	name  string
+	cmd   *exec.Cmd
+	guard *processGuard
+	red   *redactor
+
+	// ctx spans the transport's lifetime; it is cancelled when the
+	// connection fails or closes and bounds every background send.
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	stdin  io.WriteCloser
+	outR   *os.File
+	errR   *os.File
+	writeQ chan *writeReq
 
 	mu      sync.Mutex
 	pending map[string]chan message
@@ -57,9 +83,15 @@ type stdioTransport struct {
 	stderrMu sync.Mutex
 	stderr   []string
 
-	doneCh    chan struct{}
-	closeOnce sync.Once
-	exited    chan struct{}
+	doneCh     chan struct{}
+	closeOnce  sync.Once
+	exited     chan struct{}
+	readDone   chan struct{}
+	stderrDone chan struct{}
+
+	// cancelsSent counts notifications/cancelled sends started (diagnostics
+	// and tests).
+	cancelsSent atomic.Int64
 }
 
 // buildStdioEnv returns the restricted child environment.
@@ -96,60 +128,122 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Plain OS pipes instead of StdoutPipe/StderrPipe: Wait closes those as
+	// soon as the child exits, which can discard output the child wrote just
+	// before exiting (a final response, a fatal stderr line).
+	outR, outW, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	errR, errW, err := os.Pipe()
 	if err != nil {
+		outR.Close()
+		outW.Close()
 		return nil, err
 	}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+	red := newRedactor(cfg)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", cfg.Command, err)
+		outR.Close()
+		outW.Close()
+		errR.Close()
+		errW.Close()
+		return nil, fmt.Errorf("start %s: %w", cfg.Command, red.scrubError(err))
 	}
+	outW.Close()
+	errW.Close()
+	ctx, cancel := context.WithCancel(context.Background())
 	t := &stdioTransport{
-		name:    name,
-		cmd:     cmd,
-		stdin:   stdin,
-		pending: map[string]chan message{},
-		doneCh:  make(chan struct{}),
-		exited:  make(chan struct{}),
+		name:       name,
+		cmd:        cmd,
+		guard:      newProcessGuard(cmd),
+		red:        red,
+		ctx:        ctx,
+		cancel:     cancel,
+		stdin:      stdin,
+		outR:       outR,
+		errR:       errR,
+		writeQ:     make(chan *writeReq, writeQueueSize),
+		pending:    map[string]chan message{},
+		doneCh:     make(chan struct{}),
+		exited:     make(chan struct{}),
+		readDone:   make(chan struct{}),
+		stderrDone: make(chan struct{}),
 	}
-	go t.readStderr(stderr)
-	go t.readLoop(stdout)
+	go t.writeLoop()
+	go t.readStderr(errR)
+	go t.readLoop(outR)
 	go func() {
 		waitErr := cmd.Wait()
 		close(t.exited)
 		if waitErr == nil {
 			waitErr = errors.New("process exited")
 		}
+		// Let the reader hand over whatever the server wrote before exiting,
+		// so a response sitting in the pipe wins over the failure.
+		select {
+		case <-t.readDone:
+		case <-time.After(250 * time.Millisecond):
+		}
 		t.fail(fmt.Errorf("server process ended: %w", waitErr))
 	}()
 	return t, nil
 }
 
+// readStderr drains the child's stderr for its whole life, keeping a bounded
+// tail of bounded lines. It never stops early: a child blocked on a full
+// stderr pipe would hang.
 func (t *stdioTransport) readStderr(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 4096), 1<<20)
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
+	defer close(t.stderrDone)
+	reader := bufio.NewReaderSize(r, 4096)
+	var line []byte
+	truncated := false
+	flush := func() {
+		text := strings.TrimRight(string(line), "\r")
+		if truncated {
+			text += "…[line truncated]"
+		}
+		line, truncated = nil, false
 		t.stderrMu.Lock()
-		t.stderr = append(t.stderr, line)
+		t.stderr = append(t.stderr, text)
 		if len(t.stderr) > stderrTailLines {
 			t.stderr = t.stderr[len(t.stderr)-stderrTailLines:]
 		}
 		t.stderrMu.Unlock()
 	}
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if room := maxStderrLine - len(line); len(chunk) > room {
+			if room > 0 {
+				line = append(line, chunk[:room]...)
+			}
+			truncated = true
+		} else {
+			line = append(line, chunk...)
+		}
+		if err != nil {
+			if len(line) > 0 || truncated {
+				flush()
+			}
+			return
+		}
+		if !isPrefix {
+			flush()
+		}
+	}
 }
 
-// stderrTail returns recent stderr output for diagnostics.
+// stderrTail returns recent stderr output, scrubbed for display.
 func (t *stdioTransport) stderrTail() string {
 	t.stderrMu.Lock()
-	defer t.stderrMu.Unlock()
-	return strings.Join(t.stderr, "\n")
+	lines := append([]string(nil), t.stderr...)
+	t.stderrMu.Unlock()
+	return t.red.scrub(strings.Join(lines, "\n"))
 }
 
 func (t *stdioTransport) readLoop(r io.Reader) {
+	defer close(t.readDone)
 	reader := bufio.NewReaderSize(r, 64*1024)
 	for {
 		line, err := readLine(reader, maxStdioFrame)
@@ -163,6 +257,17 @@ func (t *stdioTransport) readLoop(r io.Reader) {
 			// Non-JSON stdout lines (stray logging) are ignored.
 		}
 		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
+				// Output closed. If the process is gone the wait goroutine
+				// reports its exit status; otherwise give it a moment.
+				select {
+				case <-t.exited:
+					return
+				case <-t.doneCh:
+					return
+				case <-time.After(time.Second):
+				}
+			}
 			t.fail(fmt.Errorf("read server output: %w", err))
 			return
 		}
@@ -208,7 +313,9 @@ func (t *stdioTransport) dispatch(msg message) {
 				result, rpcErr = handler(msg)
 			}
 			if frame, err := encodeResponse(msg.ID, result, rpcErr); err == nil {
-				_ = t.write(frame)
+				ctx, cancel := context.WithTimeout(t.ctx, responseWriteTimeout)
+				defer cancel()
+				_ = t.write(ctx, frame)
 			}
 		}()
 		return
@@ -218,16 +325,55 @@ func (t *stdioTransport) dispatch(msg message) {
 	}
 }
 
-func (t *stdioTransport) write(frame []byte) error {
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
+// writeLoop owns all writes to the child's stdin. Callers never block on the
+// pipe themselves: they queue a frame and wait for the result or their
+// context, so a child that stops reading cannot wedge a request, a timeout, or
+// close().
+func (t *stdioTransport) writeLoop() {
+	for {
+		select {
+		case <-t.doneCh:
+			return
+		case req := <-t.writeQ:
+			if err := req.ctx.Err(); err != nil {
+				req.res <- err // never started: nothing partial on the wire
+				continue
+			}
+			_, err := t.stdin.Write(req.frame)
+			req.res <- err
+			if err != nil {
+				// A failed write may have left half a frame behind.
+				t.fail(fmt.Errorf("write to server: %w", err))
+				return
+			}
+		}
+	}
+}
+
+// write queues one frame (newline appended) and waits until it has been
+// written, ctx ends, or the connection fails.
+func (t *stdioTransport) write(ctx context.Context, frame []byte) error {
+	req := &writeReq{ctx: ctx, frame: append(append(make([]byte, 0, len(frame)+1), frame...), '\n'), res: make(chan error, 1)}
 	select {
+	case t.writeQ <- req:
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-t.doneCh:
 		return t.failure()
-	default:
 	}
-	_, err := t.stdin.Write(append(frame, '\n'))
-	return err
+	select {
+	case err := <-req.res:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.doneCh:
+		select {
+		case err := <-req.res:
+			return err
+		default:
+		}
+		return t.failure()
+	}
 }
 
 func (t *stdioTransport) request(ctx context.Context, id int64, method string, params any) (json.RawMessage, error) {
@@ -250,32 +396,60 @@ func (t *stdioTransport) request(ctx context.Context, id int64, method string, p
 		delete(t.pending, key)
 		t.mu.Unlock()
 	}
-	if err := t.write(frame); err != nil {
+	if err := t.write(ctx, frame); err != nil {
 		cleanup()
+		if ctx.Err() != nil {
+			t.cancelRequest(id, method, ctx.Err().Error())
+			return nil, ctx.Err()
+		}
 		return nil, err
+	}
+	result := func(msg message) (json.RawMessage, error) {
+		if msg.Error != nil {
+			return nil, t.red.scrubRPCError(msg.Error)
+		}
+		return msg.Result, nil
 	}
 	select {
 	case msg := <-ch:
-		if msg.Error != nil {
-			return nil, msg.Error
-		}
-		return msg.Result, nil
+		return result(msg)
 	case <-ctx.Done():
 		cleanup()
-		_ = t.notify(context.Background(), "notifications/cancelled", map[string]any{"requestId": id, "reason": ctx.Err().Error()})
+		t.cancelRequest(id, method, ctx.Err().Error())
 		return nil, ctx.Err()
 	case <-t.doneCh:
+		// A response that arrived together with the failure still counts.
+		select {
+		case msg := <-ch:
+			return result(msg)
+		default:
+		}
 		cleanup()
 		return nil, t.failure()
 	}
 }
 
-func (t *stdioTransport) notify(_ context.Context, method string, params any) error {
+// cancelRequest announces an abandoned request on a best-effort basis. It
+// never blocks the caller, is bounded by cancelNotifyTimeout, and dies with
+// the transport.
+func (t *stdioTransport) cancelRequest(id int64, method, reason string) {
+	if !shouldSendCancel(method) {
+		return
+	}
+	t.cancelsSent.Add(1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.ctx, cancelNotifyTimeout)
+		defer cancel()
+		_ = t.notify(ctx, "notifications/cancelled", map[string]any{"requestId": id, "reason": reason})
+	}()
+}
+
+func (t *stdioTransport) notify(ctx context.Context, method string, params any) error {
 	frame, err := encodeNotification(method, params)
 	if err != nil {
 		return err
 	}
-	return t.write(frame)
+	return t.write(ctx, frame)
 }
 
 func (t *stdioTransport) setHandler(h incomingHandler) {
@@ -303,31 +477,65 @@ func (t *stdioTransport) fail(err error) {
 		t.err = err
 	}
 	t.mu.Unlock()
-	t.closeOnce.Do(func() { close(t.doneCh) })
+	t.closeOnce.Do(func() {
+		t.cancel()
+		close(t.doneCh)
+	})
 }
 
-// close shuts the server down: close stdin (the MCP stdio shutdown signal),
-// wait briefly, then terminate the whole process group.
+func (t *stdioTransport) waitExit(d time.Duration) bool {
+	select {
+	case <-t.exited:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// close shuts the server down: close stdin (the MCP stdio shutdown signal)
+// without waiting behind any blocked write, wait briefly, then terminate the
+// process group. Descendants that outlive the direct child are signalled too.
 func (t *stdioTransport) close() error {
 	t.fail(errors.New("connection closed"))
-	t.writeMu.Lock()
-	_ = t.stdin.Close()
-	t.writeMu.Unlock()
+	_ = t.stdin.Close() // also unblocks a writer stuck on a full pipe
+	if !t.waitExit(500 * time.Millisecond) {
+		t.guard.terminate(false)
+		if !t.waitExit(1500 * time.Millisecond) {
+			t.guard.terminate(true)
+			t.waitExit(time.Second)
+		}
+	}
+	t.reapGroup()
+	// With the child gone its stderr hits EOF once buffered data is read; give
+	// the reader a moment so diagnostics are complete. A descendant holding the
+	// pipe open only costs the timeout.
 	select {
 	case <-t.exited:
-		return nil
-	case <-time.After(500 * time.Millisecond):
+		select {
+		case <-t.stderrDone:
+		case <-time.After(500 * time.Millisecond):
+		}
+	default:
 	}
-	terminateProcess(t.cmd, false)
-	select {
-	case <-t.exited:
-		return nil
-	case <-time.After(1500 * time.Millisecond):
-	}
-	terminateProcess(t.cmd, true)
-	select {
-	case <-t.exited:
-	case <-time.After(time.Second):
-	}
+	_ = t.outR.Close()
+	_ = t.errR.Close()
+	t.guard.release()
 	return nil
+}
+
+// reapGroup stops processes the direct child left behind. The process group
+// outlives its leader, so this is meaningful even after the leader has been
+// reaped (the group id cannot be reused while any member remains).
+func (t *stdioTransport) reapGroup() {
+	if !t.guard.alive() {
+		return
+	}
+	t.guard.terminate(false)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for t.guard.alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if t.guard.alive() {
+		t.guard.terminate(true)
+	}
 }

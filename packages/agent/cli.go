@@ -1005,6 +1005,19 @@ func runWithArgs(args Args, version string) error {
 		return err
 	}
 	ctx := context.Background()
+	if args.Mode != ModeInteractive && args.Mode != "" {
+		// Headless runs cancel on the first SIGINT/SIGTERM/SIGHUP so deferred
+		// cleanup (MCP server process groups, HTTP sessions) runs. The first
+		// signal restores default handling, so a second one still kills zut.
+		// The TUI keeps Ctrl+C as a key and has its own SIGTERM handler.
+		var stopSignals context.CancelFunc
+		ctx, stopSignals = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stopSignals()
+		go func() {
+			<-ctx.Done()
+			stopSignals()
+		}()
+	}
 	// MCP servers start once per process. Every later Resolve, including
 	// resident subagents, shares these connections through args.
 	stopMCP, err := startMCP(ctx, &args, version)
@@ -3083,6 +3096,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		// cleanup, so wait for reload and close the shared runtime explicitly.
 		<-reloadDone
 		_ = closeSubagentRuntimeFresh(runtime)
+		// MCP servers run in their own process groups; stop them too.
+		if args.mcpManager != nil {
+			_ = args.mcpManager.Close()
+		}
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
 		// flushed the only at-risk state (the session file) and stopped

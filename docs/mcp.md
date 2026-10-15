@@ -14,6 +14,12 @@ with the same name:
 | `$ZUT_HOME/mcp.json` | Global |
 | `<cwd>/.zut/mcp.json` | Project |
 
+> **Executable configuration.** zut starts every configured stdio command and
+> contacts every HTTP endpoint when it launches, before any model turn. There
+> is no trust prompt, `--no-yolo` does not gate startup, and servers are not
+> sandboxed. Review a repository's `.zut/mcp.json` before running zut in it, or
+> pass `--no-mcp`.
+
 The format matches Claude Desktop and Claude Code:
 
 ```json
@@ -84,8 +90,11 @@ startup errors.
 
 - Servers connect in parallel at startup. A failure is reported (stderr in
   headless modes, the startup panel in the TUI) and zut continues without that
-  server unless it is `required`. The next call to one of its tools retries the
-  connection; a crashed stdio server is restarted the same way.
+  server unless it is `required`. A server that failed at startup exposes no
+  tools for the rest of the run; fix it (`zut mcp status NAME`) and restart
+  zut. A server that started and later dropped (a crashed stdio process or an
+  expired HTTP session) reconnects on the next call to one of its tools; the
+  failed call itself is not retried.
 - zut negotiates protocol `2025-06-18` and accepts `2025-03-26` and
   `2024-11-05`. It answers `ping` and `roots/list` (the zut cwd) and follows
   `tools/list` pagination.
@@ -104,15 +113,21 @@ startup errors.
   `mcp_read_resource` tools are added.
 - Server-provided `instructions` are added to the system prompt, marked as
   server-provided. Treat MCP output as untrusted data.
-- Cancelling a turn sends `notifications/cancelled`. Exiting zut closes HTTP
-  sessions and stops stdio server process groups.
+- Cancelling a turn sends a best-effort `notifications/cancelled`. Exiting zut
+  closes HTTP sessions and stops stdio servers with their process group
+  (Unix) or job object (Windows). A descendant that starts its own session
+  (`setsid`) on Unix is not stopped.
+- Errors and status output strip terminal control sequences, URL credentials
+  and query strings, and configured `env`, header, and bearer-token values.
+  Secrets passed through `args` are not redacted.
 
 ## Tool selection and confirmation
 
 - `--no-mcp` skips MCP for one run. `--no-tools` also disables it.
 - With `--tools`, add `mcp` for every MCP tool, or list exact names such as
   `mcp__docs__search`.
-- Packaged agents (`zut run`) never start MCP servers.
+- Packaged agents (`zut run`), bot runs, and SDK runtimes never start MCP
+  servers.
 - `--no-yolo` confirmation covers MCP tools like any other tool.
 - Tool annotations such as `readOnlyHint` are hints from the server, not a
   security boundary.
@@ -122,9 +137,9 @@ startup errors.
 All agents in one zut process share the same MCP connections.
 
 - **Headless `--orchestrate`**: the manager-only orchestrator holds only MCP
-  tools annotated `readOnlyHint: true` plus the resource tools, for research.
-  Its workers receive every MCP tool, so actions that change external state
-  are delegated.
+  tools annotated `readOnlyHint: true` plus the resource tools, for research,
+  still limited by any `--tools` selection. Its workers receive every MCP tool,
+  so actions that change external state are delegated.
 - **Resident subagents** inherit MCP tools like other child-safe tools.
   `subagents.allowed_tools` and profile `tools:` lists accept `mcp` to grant
   every MCP tool, or exact `mcp__<server>__<tool>` names.

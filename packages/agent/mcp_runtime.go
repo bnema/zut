@@ -97,14 +97,10 @@ func addMCPTools(reg core.Registry, args Args) {
 	strictOrchestrator := args.Orchestrate && !args.ResidentChild
 	for _, tool := range args.mcpManager.Tools() {
 		name := tool.Name()
-		if _, exists := reg[name]; exists {
+		if _, exists := reg[name]; exists || !mcpToolSelected(args, name) {
 			continue
 		}
-		if strictOrchestrator {
-			if !mcp.IsReadOnlyTool(tool) {
-				continue
-			}
-		} else if !mcpToolSelected(args, name) {
+		if strictOrchestrator && !mcp.IsReadOnlyTool(tool) {
 			continue
 		}
 		reg[name] = tool
