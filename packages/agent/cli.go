@@ -930,7 +930,7 @@ func Run(rawArgs []string, version string) error {
 	// handling for the interactive modes below.
 	extCtx := context.Background()
 	stopExtContext := func() {}
-	if len(rawArgs) > 0 && rawArgs[0] == "ext" {
+	if len(rawArgs) > 0 && (rawArgs[0] == "ext" || rawArgs[0] == "mcp") {
 		extCtx, stopExtContext = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	}
 	defer stopExtContext()
@@ -941,6 +941,9 @@ func Run(rawArgs []string, version string) error {
 		return err
 	}
 	if handled, err := runExtCommand(extCtx, rawArgs, version); handled {
+		return err
+	}
+	if handled, err := runMCPCommand(extCtx, rawArgs, version, os.Stdout); handled {
 		return err
 	}
 	if handled, err := runUpdateCommand(rawArgs, version); handled {
@@ -1002,6 +1005,13 @@ func runWithArgs(args Args, version string) error {
 		return err
 	}
 	ctx := context.Background()
+	// MCP servers start once per process. Every later Resolve, including
+	// resident subagents, shares these connections through args.
+	stopMCP, err := startMCP(ctx, &args, version)
+	if err != nil {
+		return err
+	}
+	defer stopMCP()
 	switch args.Mode {
 	case ModePrint:
 		return runPrintMode(ctx, args, version)
@@ -2763,7 +2773,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		StartupAgentName:                  args.AgentName,
 		StartupContextPaths:               instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:             startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:            startupExtensionErrors,
+		StartupExtensionErrors:            append(startupExtensionErrors, args.mcpStartupErrors...),
 		StartupSkillNames:                 startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:         initialCfg.ShowInstructionsAtStartup,
 		ZutHome:                           ZutHome(),
@@ -2833,6 +2843,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		PersistedPlan:               persistedPlan,
 		InitialPlanSnapshots:        initialPlanSnapshots,
 		EnsureMission:               ensureMission,
+		MCPStatus:                   func() string { return mcpStatusText(args) },
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()

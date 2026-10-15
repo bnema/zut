@@ -330,6 +330,10 @@ type InteractiveConfig struct {
 	// no session is open.
 	CurrentSessionPath func() string
 
+	// MCPStatus renders configured MCP server status for /mcp. nil means
+	// MCP status is unavailable in this host.
+	MCPStatus func() string
+
 	// FlushSession writes any in-memory agent messages to the
 	// session file that haven't been persisted yet. Called by
 	// /session export right before reading the file so the

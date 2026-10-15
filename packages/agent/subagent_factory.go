@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -349,6 +350,11 @@ func residentChildRegistry(catalogue core.Registry, names []string) (core.Regist
 			return nil, fmt.Errorf("resident child tool %q is not allowed", name)
 		}
 		tool, ok := catalogue[name]
+		if !ok && mcp.IsMCPToolName(name) {
+			// An external MCP server can be unavailable after a restart; the
+			// child resumes without that tool instead of failing entirely.
+			continue
+		}
 		if !ok {
 			return nil, fmt.Errorf("resident child declares unavailable tool %q", name)
 		}

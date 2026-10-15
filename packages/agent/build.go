@@ -926,6 +926,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(false)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
 	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
+	addMCPTools(reg, args)
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
 
@@ -968,6 +969,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	if skillAddendum != "" {
 		append_ = append(append_, skillAddendum)
+	}
+	if mcpAddendum := mcpSystemAddendum(reg, args); mcpAddendum != "" {
+		append_ = append(append_, mcpAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
 	primaryInteractive := interactiveMode && !args.ResidentChild

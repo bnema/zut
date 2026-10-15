@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
@@ -60,7 +61,15 @@ type Args struct {
 	CWD     string
 	NoTools bool
 	NoLSP   bool
-	Tools   []string
+	// NoMCP skips MCP server startup for this run.
+	NoMCP bool
+	// mcpManager holds the process-wide MCP connections. Resolve adds its
+	// tools; resident children inherit the pointer and share connections.
+	mcpManager *mcp.Manager
+	// mcpStartupErrors are non-fatal MCP startup failures shown by
+	// interactive mode (other modes print them to stderr).
+	mcpStartupErrors []string
+	Tools            []string
 	// ToolsSet distinguishes an omitted --tools flag from an explicitly
 	// supplied empty list. Other built-in tools intentionally retain their
 	// historical empty-list behavior; web search uses this provenance as a
@@ -196,6 +205,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.DisableRepetitionGuard = true
 		case "--no-lsp":
 			a.NoLSP = true
+		case "--no-mcp":
+			a.NoMCP = true
 		case "--list-models":
 			a.ListModels = true
 		case "--experimental-oauth":
@@ -475,7 +486,8 @@ func PrintHelp(version string) {
 		row{"--no-tools", "disable all tools"},
 		row{"--no-repetition-guard", "disable repeated-content loop detection for intentional polling"},
 		row{"--no-lsp", "disable the built-in LSP/linter tool"},
-		row{"--tools csv", "only enable listed tools (include lsp and web_search explicitly; web_search enables public-web navigation; the subagent tool accepts subagent:<action>)"},
+		row{"--no-mcp", "do not start configured MCP servers"},
+		row{"--tools csv", "only enable listed tools (include lsp, mcp, and web_search explicitly; web_search enables public-web navigation; the subagent tool accepts subagent:<action>)"},
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zut run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},
