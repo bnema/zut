@@ -345,6 +345,20 @@ func TestMCPCommandListRedactsAndKeepsDisabledEntries(t *testing.T) {
 	}
 }
 
+func TestRedactURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://example.test/mcp":                                   "https://example.test/mcp",
+		"https://u:p@example.test/mcp?key=s":                         "https://*****@example.test/mcp?*****",
+		"https://${U}:${P}@example.test/mcp?key=literal-secret#frag": "https://*****@example.test/mcp?*****",
+		"${BASE}/mcp?token=literal-secret":                           "${BASE}/mcp?*****",
+		"https://example.test/a@b":                                   "https://example.test/a@b",
+	} {
+		if got := redactURL(in); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMCPCommandFailsOnMalformedConfig(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("ZUT_HOME", root)

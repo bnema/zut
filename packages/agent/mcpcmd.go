@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -144,13 +143,7 @@ func mcpList(out io.Writer, cwd string, args []string) error {
 // values, URL credentials and query strings. Arguments are shown as written
 // in the file (${VAR} references stay unexpanded).
 func redactServer(srv mcp.ServerConfig) mcp.ServerConfig {
-	if u, err := url.Parse(srv.URL); err == nil && (u.User != nil || u.RawQuery != "") {
-		u.User = nil
-		if u.RawQuery != "" {
-			u.RawQuery = "*****"
-		}
-		srv.URL = u.String()
-	}
+	srv.URL = redactURL(srv.URL)
 	hide := func(m map[string]string) map[string]string {
 		if len(m) == 0 {
 			return m
@@ -164,6 +157,27 @@ func redactServer(srv mcp.ServerConfig) mcp.ServerConfig {
 	srv.Env = hide(srv.Env)
 	srv.Headers = hide(srv.Headers)
 	return srv
+}
+
+// redactURL hides userinfo, query, and fragment with string operations so an
+// unexpanded ${VAR} template that url.Parse rejects cannot fail open.
+func redactURL(raw string) string {
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i] + "?*****"
+	}
+	schemeEnd := strings.Index(raw, "://")
+	start := 0
+	if schemeEnd >= 0 {
+		start = schemeEnd + 3
+	}
+	authorityEnd := len(raw)
+	if i := strings.IndexByte(raw[start:], '/'); i >= 0 {
+		authorityEnd = start + i
+	}
+	if at := strings.LastIndexByte(raw[start:authorityEnd], '@'); at >= 0 {
+		raw = raw[:start] + "*****@" + raw[start+at+1:]
+	}
+	return raw
 }
 
 func mcpGet(out io.Writer, cwd string, args []string) error {

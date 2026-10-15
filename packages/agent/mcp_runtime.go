@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/core"
@@ -65,6 +67,33 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 	args.mcpManager = manager
 	reportMCPStartup(*args)
 	return func() { _ = manager.Close() }, nil
+}
+
+// exitAfterMCPCleanupOnSignal keeps the default "terminate on signal"
+// behavior of headless modes while closing MCP servers first. Default
+// handling is restored before cleanup, so a second signal still kills zut
+// immediately. The returned func uninstalls the handler.
+func exitAfterMCPCleanupOnSignal(manager *mcp.Manager) func() {
+	sigCh := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			signal.Stop(sigCh)
+			_ = manager.Close()
+			code := 1
+			if s, ok := sig.(syscall.Signal); ok {
+				code = 128 + int(s)
+			}
+			os.Exit(code)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sigCh)
+		close(done)
+	}
 }
 
 // reportMCPStartup prints startup failures for non-interactive modes. The

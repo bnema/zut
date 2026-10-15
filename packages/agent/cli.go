@@ -1005,19 +1005,6 @@ func runWithArgs(args Args, version string) error {
 		return err
 	}
 	ctx := context.Background()
-	if args.Mode != ModeInteractive && args.Mode != "" {
-		// Headless runs cancel on the first SIGINT/SIGTERM/SIGHUP so deferred
-		// cleanup (MCP server process groups, HTTP sessions) runs. The first
-		// signal restores default handling, so a second one still kills zut.
-		// The TUI keeps Ctrl+C as a key and has its own SIGTERM handler.
-		var stopSignals context.CancelFunc
-		ctx, stopSignals = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-		defer stopSignals()
-		go func() {
-			<-ctx.Done()
-			stopSignals()
-		}()
-	}
 	// MCP servers start once per process. Every later Resolve, including
 	// resident subagents, shares these connections through args.
 	stopMCP, err := startMCP(ctx, &args, version)
@@ -1025,6 +1012,12 @@ func runWithArgs(args Args, version string) error {
 		return err
 	}
 	defer stopMCP()
+	if args.mcpManager != nil && args.Mode != ModeInteractive && args.Mode != "" && !args.Orchestrate {
+		// Plain headless modes terminate on signals. Stop MCP servers first so
+		// their process groups and HTTP sessions do not outlive zut. The TUI
+		// and --orchestrate own their signal handling and cancel gracefully.
+		defer exitAfterMCPCleanupOnSignal(args.mcpManager)()
+	}
 	switch args.Mode {
 	case ModePrint:
 		return runPrintMode(ctx, args, version)
