@@ -163,6 +163,15 @@ func (r *redactor) scrub(s string) string {
 	return scrubURLs(s)
 }
 
+// overlap is how many extra bytes to read past a display limit so a secret
+// straddling the limit is captured whole. It is bounded by maxStderrOverlap.
+func (r *redactor) overlap() int {
+	if r == nil {
+		return 0
+	}
+	return min(r.maxLen, maxStderrOverlap)
+}
+
 // redact replaces configured secret values. A nil redactor changes nothing.
 func (r *redactor) redact(s string) string {
 	if r == nil {

@@ -111,6 +111,13 @@ func (b *textBudget) take(s string) string {
 	return s[:keep] + fmt.Sprintf("\n... [truncated at %d bytes]", maxResultTextBytes)
 }
 
+// forceTruncate ends the budget now and returns the truncation marker.
+func (b *textBudget) forceTruncate() string {
+	b.used = maxResultTextBytes
+	b.truncated = true
+	return fmt.Sprintf("\n... [truncated at %d bytes]", maxResultTextBytes)
+}
+
 func convertCallResult(result CallResult) core.ToolResult {
 	out := core.ToolResult{IsError: result.IsError}
 	budget := &textBudget{}
@@ -359,6 +366,9 @@ func (t *listResourcesTool) Execute(ctx context.Context, args json.RawMessage, _
 type budgetedText struct {
 	b      strings.Builder
 	budget textBudget
+	// clipped is set by field when it shortened a string; the next write then
+	// ends the output with the truncation marker.
+	clipped bool
 }
 
 func (t *budgetedText) full() bool { return t.budget.truncated }
@@ -368,9 +378,15 @@ func (t *budgetedText) remaining() int { return max(0, maxResultTextBytes-t.budg
 
 // field prepares one server-supplied string for output: it is cut to the
 // remaining budget first (so a multi-megabyte description is never fully
-// processed) and then stripped of control sequences and line breaks.
+// processed) and then stripped of control sequences and line breaks. When the
+// cut removes anything, the next write is marked truncated even if rounding to
+// a rune boundary left the text within budget.
 func (t *budgetedText) field(s string) string {
-	return sanitizeText(clipUTF8(s, t.remaining()+1), false)
+	clipped := clipUTF8(s, t.remaining()+1)
+	if len(clipped) < len(s) {
+		t.clipped = true
+	}
+	return sanitizeText(clipped, false)
 }
 
 // clipUTF8 shortens s to at most n bytes without splitting a rune.
@@ -389,6 +405,10 @@ func (t *budgetedText) write(s string) {
 		return
 	}
 	t.b.WriteString(t.budget.take(s))
+	if t.clipped && !t.budget.truncated {
+		t.b.WriteString(t.budget.forceTruncate())
+	}
+	t.clipped = false
 }
 
 func (t *budgetedText) printf(format string, args ...any) {

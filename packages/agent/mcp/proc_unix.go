@@ -19,17 +19,33 @@ func isolateProcess(cmd *exec.Cmd) {
 
 // processGuard owns the process group of one stdio server.
 //
-// A numeric process-group id is only safe to signal while the group still has
-// members: once the last member is gone the kernel may hand the number to an
-// unrelated process. The guard therefore (a) cleans the group exactly once,
-// (b) forgets the id as soon as the group is observed empty or cleaned, and
-// (c) is cleaned as soon as the direct child is reaped, so no stale id stays
-// signalable for the life of the transport.
+// A process-group id may be reused by an unrelated process as soon as no
+// process uses the number any more. A group stays in use while ANY member
+// exists, and that includes a zombie: the leader's pid (which is the pgid) is
+// not freed until the leader is reaped. So the guard keeps the leader
+// unreaped, as a zombie, until it has cleaned the group, wherever the platform
+// can wait for a child without reaping it (waitLeaderExited; Linux). Only then
+// is the leader reaped by cmd.Wait.
+//
+// Where that is not available (darwin, the BSDs) cleanup runs after the leader
+// was reaped; the id is then only guaranteed to be ours while other group
+// members live, which is the best that can be done and is documented as a
+// residual race. In every case the guard
+//
+//	(a) cleans the group exactly once,
+//	(b) forgets the id as soon as the group is observed empty or cleaned,
+//	(c) is cleaned as soon as the direct child exits, so no stale id stays
+//	    signalable for the life of the transport.
 type processGuard struct {
-	mu   sync.Mutex
-	pgid int // 0 once cleaned up or observed gone
-	proc *os.Process
-	kill func(pid int, sig syscall.Signal) error // syscall.Kill; replaced in tests
+	mu     sync.Mutex
+	pgid   int // 0 once cleaned up or observed gone
+	leader int // pid of the group leader (== original pgid)
+	proc   *os.Process
+	kill   func(pid int, sig syscall.Signal) error // syscall.Kill; replaced in tests
+	// zombie is set once the leader has exited but not been reaped. A probe
+	// with signal 0 cannot tell an empty group from one whose only member is
+	// that zombie, so liveness is then read from the process table.
+	zombie bool
 
 	once sync.Once
 }
@@ -39,9 +55,26 @@ func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) {
 	g := &processGuard{kill: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }}
 	if cmd != nil && cmd.Process != nil {
 		g.pgid = cmd.Process.Pid
+		g.leader = cmd.Process.Pid
 		g.proc = cmd.Process
 	}
 	return g, nil
+}
+
+// awaitLeaderExit blocks until the group leader has exited, without reaping
+// it. It reports false when the platform cannot do that, in which case it
+// returns immediately and the caller must Wait first.
+func (g *processGuard) awaitLeaderExit() bool {
+	if g == nil || g.leader == 0 {
+		return false
+	}
+	if !waitLeaderExited(g.leader) {
+		return false
+	}
+	g.mu.Lock()
+	g.zombie = true
+	g.mu.Unlock()
+	return true
 }
 
 // terminate signals the whole group, including descendants that outlive the
@@ -80,6 +113,14 @@ func (g *processGuard) alive() bool {
 	defer g.mu.Unlock()
 	if g.pgid == 0 {
 		return false
+	}
+	if g.zombie {
+		if live, known := liveGroupMembers(g.pgid); known {
+			if !live {
+				g.pgid = 0
+			}
+			return live
+		}
 	}
 	err := g.kill(-g.pgid, 0)
 	if errors.Is(err, syscall.ESRCH) {

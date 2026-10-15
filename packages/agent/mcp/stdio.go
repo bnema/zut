@@ -56,6 +56,10 @@ var defaultEnvVars = func() []string {
 	}
 }()
 
+// beforeReapHook, when set (tests), runs after the group was cleaned and
+// before the leader is reaped.
+var beforeReapHook atomic.Pointer[func(pid int)]
+
 // writeReq is one frame queued for the writer goroutine.
 type writeReq struct {
 	ctx   context.Context
@@ -105,6 +109,11 @@ type stdioTransport struct {
 	// cancelsSent counts notifications/cancelled sends started (diagnostics
 	// and tests).
 	cancelsSent atomic.Int64
+	// Test hooks for the writer (nil in production): hookDequeued runs when the
+	// writer takes a frame off the queue, hookSkipped after it claimed a frame
+	// whose context had ended and before it reports that to the caller.
+	hookDequeued func()
+	hookSkipped  func()
 	// writesStarted counts frames the writer has begun writing (diagnostics
 	// and tests).
 	writesStarted atomic.Int64
@@ -201,6 +210,16 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 	go t.readStderr(errR)
 	go t.readLoop(outR)
 	go func() {
+		// Wait for the leader to exit WITHOUT reaping it, clean the group
+		// while the leader is a zombie (its pid, the pgid, cannot be reused
+		// yet), and only then reap it.
+		leaderGone := t.guard.awaitLeaderExit()
+		if leaderGone {
+			t.guard.cleanup()
+			if h := beforeReapHook.Load(); h != nil {
+				(*h)(cmd.Process.Pid)
+			}
+		}
 		waitErr := cmd.Wait()
 		close(t.exited)
 		if waitErr == nil {
@@ -213,9 +232,10 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 		case <-time.After(250 * time.Millisecond):
 		}
 		t.fail(fmt.Errorf("server process ended: %w", waitErr))
-		// The leader is gone: stop whatever it left behind, once, while the
-		// process-group id is still guaranteed to belong to our group.
-		t.guard.cleanup()
+		if !leaderGone {
+			// No wait-without-reap on this platform: clean up after the fact.
+			t.guard.cleanup()
+		}
 	}()
 	return t, nil
 }
@@ -377,7 +397,13 @@ func (t *stdioTransport) writeLoop() {
 		case <-t.doneCh:
 			return
 		case req := <-t.writeQ:
+			if t.hookDequeued != nil {
+				t.hookDequeued()
+			}
 			if err := req.ctx.Err(); err != nil && req.state.CompareAndSwap(reqQueued, reqSkipped) {
+				if t.hookSkipped != nil {
+					t.hookSkipped()
+				}
 				req.res <- err // never started: nothing partial on the wire
 				continue
 			}
@@ -425,6 +451,12 @@ func (t *stdioTransport) writeFrame(ctx context.Context, frame []byte) (sent boo
 		return req.state.Load() == reqWriting, err
 	case <-ctx.Done():
 		if req.state.CompareAndSwap(reqQueued, reqSkipped) {
+			return false, ctx.Err()
+		}
+		if req.state.Load() == reqSkipped {
+			// The writer already withdrew the frame itself (its context had
+			// ended when it was dequeued): nothing was written, so the
+			// transport is untouched.
 			return false, ctx.Err()
 		}
 		select {

@@ -144,8 +144,11 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return nil, t.statusFailure(req, resp.StatusCode, snippet)
+		// Read past the display limit by the longest secret's length, so a
+		// secret straddling the cut is seen whole and can be redacted.
+		limit := maxErrorBody + t.red.overlap()
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)))
+		return nil, t.statusFailure(req, resp.StatusCode, snippet, len(snippet) >= limit)
 	}
 	return resp, nil
 }
@@ -154,8 +157,8 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 // request that carried a session id means the server forgot the session
 // (expired or restarted): the transport becomes unusable so the manager
 // reconnects with a fresh initialize. The failed call is not replayed.
-func (t *httpTransport) statusFailure(req *http.Request, status int, body []byte) error {
-	err := t.red.statusError(status, body)
+func (t *httpTransport) statusFailure(req *http.Request, status int, body []byte, truncated bool) error {
+	err := t.red.statusErrorBody(status, body, truncated)
 	if status == http.StatusNotFound && req.Header.Get(headerSessionID) != "" {
 		err = fmt.Errorf("mcp session expired: %w", err)
 		t.mu.Lock()
@@ -187,17 +190,31 @@ func httpStatusError(status int, body []byte) error {
 	return (*redactor)(nil).statusError(status, body)
 }
 
-// statusError builds an HTTPStatusError whose body is redacted, stripped of
-// terminal control sequences, and shortened for display.
+// statusError builds an HTTPStatusError from a complete body.
 func (r *redactor) statusError(status int, body []byte) error {
-	// Redact before truncating so a secret cut at the limit is not half shown.
-	text := strings.TrimSpace(r.scrubOneLine(string(body)))
-	if len(text) > 300 {
-		cut := 300
+	return r.statusErrorBody(status, body, false)
+}
+
+// maxStatusBodyDisplay is how much of an error body is shown.
+const maxStatusBodyDisplay = 300
+
+// statusErrorBody builds an HTTPStatusError whose body is redacted, stripped of
+// terminal control sequences, and shortened for display. truncated says the
+// body was cut by the reader at an arbitrary byte, so it may end inside a
+// secret; whatever fragment of one remains at the very end is removed. The
+// final display cut gets the same protection.
+func (r *redactor) statusErrorBody(status int, body []byte, truncated bool) error {
+	text := r.scrubOneLine(string(body))
+	if truncated {
+		text = r.trimPartialSecret(text)
+	}
+	text = strings.TrimSpace(text)
+	if len(text) > maxStatusBodyDisplay {
+		cut := maxStatusBodyDisplay
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		text = text[:cut] + "…"
+		text = r.trimPartialSecret(text[:cut]) + "…"
 	}
 	return &HTTPStatusError{Status: status, Body: text}
 }

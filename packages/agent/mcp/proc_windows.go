@@ -112,6 +112,11 @@ func resumeProcess(pid uint32) error {
 	return nil
 }
 
+// awaitLeaderExit is not needed on Windows: the Job Object, not a reusable
+// numeric id, identifies the group. It reports false so the caller waits for
+// the process first.
+func (g *processGuard) awaitLeaderExit() bool { return false }
+
 // terminate kills every process in the job. Windows has no graceful group
 // signal, so force is ignored.
 func (g *processGuard) terminate(_ bool) {
