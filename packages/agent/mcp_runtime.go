@@ -191,7 +191,8 @@ func mcpSystemAddendum(reg core.Registry, args Args) string {
 			break
 		}
 	}
-	if !has && !(args.Orchestrate && !args.ResidentChild) {
+	strictOrchestrator := args.Orchestrate && !args.ResidentChild
+	if !has && !strictOrchestrator {
 		return ""
 	}
 	addendum := args.mcpManager.SystemPromptAddendum()
