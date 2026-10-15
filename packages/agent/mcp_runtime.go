@@ -58,7 +58,7 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, mcpSignals...)
-	failures, requiredErr, sig := startMCPInterruptible(ctx, manager, sigCh)
+	failures, sig, requiredErr := startMCPInterruptible(ctx, manager, sigCh)
 	signal.Stop(sigCh)
 	if sig != nil {
 		// Interrupted during startup: no mode owns signals yet, so stop the
@@ -94,7 +94,7 @@ func signalExitCode(sig os.Signal) int {
 // startMCPInterruptible runs manager.Start and cancels the handshakes when a
 // signal arrives on sigCh, waiting until every connection attempt has closed
 // its transport. It returns the signal that interrupted startup, if any.
-func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-chan os.Signal) ([]error, error, os.Signal) {
+func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-chan os.Signal) ([]error, os.Signal, error) {
 	startCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type result struct {
@@ -108,11 +108,11 @@ func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-ch
 	}()
 	select {
 	case r := <-done:
-		return r.failures, r.required, nil
+		return r.failures, nil, r.required
 	case sig := <-sigCh:
 		cancel()
 		<-done
-		return nil, nil, sig
+		return nil, sig, nil
 	}
 }
 

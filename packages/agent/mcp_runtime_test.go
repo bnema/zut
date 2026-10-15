@@ -417,7 +417,7 @@ func TestStartMCPInterruptibleCancelsHandshake(t *testing.T) {
 	sigCh := make(chan os.Signal, 1)
 	result := make(chan os.Signal, 1)
 	go func() {
-		_, _, sig := startMCPInterruptible(context.Background(), manager, sigCh)
+		_, sig, _ := startMCPInterruptible(context.Background(), manager, sigCh)
 		result <- sig
 	}()
 	<-reached
