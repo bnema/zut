@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -283,35 +284,35 @@ func (t *listResourcesTool) Execute(ctx context.Context, args json.RawMessage, _
 		}
 		client, cfg, err := t.manager.client(ctx, server)
 		if err != nil {
-			out.printf("## %s\nunavailable: %s\n\n", sanitizeText(server, false), sanitizeText(firstLine(err.Error()), false))
+			out.printf("## %s\nunavailable: %s\n\n", out.field(server), out.field(firstLine(err.Error())))
 			continue
 		}
 		if !client.Info().HasResources {
 			if in.Server != "" {
-				out.printf("## %s\nthis server does not offer resources\n\n", sanitizeText(server, false))
+				out.printf("## %s\nthis server does not offer resources\n\n", out.field(server))
 			}
 			continue
 		}
 		reqCtx, cancel := withTimeout(ctx, cfg.ToolTimeout())
 		resources, rErr := client.ListResources(reqCtx)
-		out.printf("## %s\n", sanitizeText(server, false))
+		out.printf("## %s\n", out.field(server))
 		if rErr != nil {
-			out.printf("resources error: %s\n", sanitizeText(rErr.Error(), false))
+			out.printf("resources error: %s\n", out.field(rErr.Error()))
 		}
 		for _, r := range resources {
 			if out.full() {
 				break
 			}
 			var line strings.Builder
-			fmt.Fprintf(&line, "- %s", sanitizeText(r.URI, false))
+			fmt.Fprintf(&line, "- %s", out.field(r.URI))
 			if name := firstNonEmpty(r.Title, r.Name); name != "" {
-				fmt.Fprintf(&line, " — %s", sanitizeText(name, false))
+				fmt.Fprintf(&line, " — %s", out.field(name))
 			}
 			if r.MimeType != "" {
-				fmt.Fprintf(&line, " (%s)", sanitizeText(r.MimeType, false))
+				fmt.Fprintf(&line, " (%s)", out.field(r.MimeType))
 			}
 			if r.Description != "" {
-				fmt.Fprintf(&line, ": %s", sanitizeText(r.Description, false))
+				fmt.Fprintf(&line, ": %s", out.field(r.Description))
 			}
 			line.WriteByte('\n')
 			out.write(line.String())
@@ -324,19 +325,19 @@ func (t *listResourcesTool) Execute(ctx context.Context, args json.RawMessage, _
 		}
 		cancel()
 		if tErr != nil && !isMethodNotFound(tErr) {
-			out.printf("templates error: %s\n", sanitizeText(tErr.Error(), false))
+			out.printf("templates error: %s\n", out.field(tErr.Error()))
 		}
 		for _, tpl := range templates {
 			if out.full() {
 				break
 			}
 			var line strings.Builder
-			fmt.Fprintf(&line, "- template %s", sanitizeText(tpl.URITemplate, false))
+			fmt.Fprintf(&line, "- template %s", out.field(tpl.URITemplate))
 			if name := firstNonEmpty(tpl.Title, tpl.Name); name != "" {
-				fmt.Fprintf(&line, " — %s", sanitizeText(name, false))
+				fmt.Fprintf(&line, " — %s", out.field(name))
 			}
 			if tpl.Description != "" {
-				fmt.Fprintf(&line, ": %s", sanitizeText(tpl.Description, false))
+				fmt.Fprintf(&line, ": %s", out.field(tpl.Description))
 			}
 			line.WriteByte('\n')
 			out.write(line.String())
@@ -361,6 +362,27 @@ type budgetedText struct {
 }
 
 func (t *budgetedText) full() bool { return t.budget.truncated }
+
+// remaining is how many more bytes of text fit.
+func (t *budgetedText) remaining() int { return max(0, maxResultTextBytes-t.budget.used) }
+
+// field prepares one server-supplied string for output: it is cut to the
+// remaining budget first (so a multi-megabyte description is never fully
+// processed) and then stripped of control sequences and line breaks.
+func (t *budgetedText) field(s string) string {
+	return sanitizeText(clipUTF8(s, t.remaining()+1), false)
+}
+
+// clipUTF8 shortens s to at most n bytes without splitting a rune.
+func clipUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
 
 func (t *budgetedText) write(s string) {
 	if t.budget.truncated {

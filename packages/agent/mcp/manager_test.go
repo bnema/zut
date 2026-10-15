@@ -160,14 +160,14 @@ func TestManagerStdioToolsAndDescriptions(t *testing.T) {
 	}
 
 	text := FormatStatus(m.Status())
-	if !strings.Contains(text, "fake (stdio): connected, 17 tools, resources") {
+	if !strings.Contains(text, "fake (stdio): connected, 18 tools, resources") {
 		t.Errorf("FormatStatus = %q", text)
 	}
 	if FormatStatus(nil) != "no MCP servers configured" {
 		t.Error("empty FormatStatus")
 	}
 	add := m.SystemPromptAddendum()
-	for _, want := range []string{"[mcp_servers]", "fake: 17 tools", "mcp__fake__<tool>", "Be nice"} {
+	for _, want := range []string{"[mcp_servers]", "fake: 18 tools", "mcp__fake__<tool>", "Be nice"} {
 		if !strings.Contains(add, want) {
 			t.Errorf("addendum missing %q:\n%s", want, add)
 		}

@@ -558,20 +558,30 @@ func TestStdioCancelNotificationRules(t *testing.T) {
 	if got := st.cancelsSent.Load(); got != 0 {
 		t.Errorf("notifications/cancelled sent for initialize (%d)", got)
 	}
-	// Any other method is announced exactly once, without blocking the caller.
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	cancel2()
+}
+
+func TestStdioCancelNotificationForSentRequest(t *testing.T) {
+	c, events := connectFake(t, nil)
+	st := c.t.(*stdioTransport)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.CallTool(ctx, "slow", []byte(`{}`))
+		done <- err
+	}()
+	waitEvent(t, events, "slow-started")
 	start := time.Now()
-	_, err = st.request(ctx2, 2, "tools/call", map[string]any{"name": "slow", "arguments": map[string]any{}})
-	if !errors.Is(err, context.Canceled) {
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 	if time.Since(start) > time.Second {
 		t.Error("caller delayed by the cancel notification")
 	}
 	if got := st.cancelsSent.Load(); got != 1 {
-		t.Errorf("cancel count for tools/call = %d, want 1", got)
+		t.Errorf("cancel count = %d, want 1", got)
 	}
+	waitEvent(t, events, "cancelled:")
 }
 
 func TestHTTPInitializeNotCancelledOnTimeout(t *testing.T) {

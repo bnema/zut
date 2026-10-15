@@ -95,7 +95,8 @@ func (t *httpTransport) newRequest(ctx context.Context, method string, body []by
 	}
 	req, err := http.NewRequestWithContext(ctx, method, t.url, reader)
 	if err != nil {
-		return nil, err
+		// url parse errors quote the whole URL, query token included.
+		return nil, t.red.scrubError(err)
 	}
 	for k, v := range t.headers {
 		req.Header.Set(k, v)

@@ -29,7 +29,7 @@ import (
 const fakeServerEnv = "ZUT_MCP_FAKE_SERVER"
 
 // fakeToolCount is the number of tools the fake server lists in total.
-const fakeToolCount = 17
+const fakeToolCount = 18
 
 var fakeImageBytes = []byte("\x89PNG\r\n\x1a\nfake-image-bytes")
 
@@ -58,7 +58,10 @@ type fakeBackend struct {
 	extraTool   atomic.Bool
 	// manyResources makes resources/list return this many long entries.
 	manyResources int
-	events        string
+	// hugeDescription, when > 0, gives the first resource a description of
+	// that many bytes.
+	hugeDescription int
+	events          string
 }
 
 func fakeBackendFromEnv() *fakeBackend {
@@ -70,6 +73,9 @@ func fakeBackendFromEnv() *fakeBackend {
 	}
 	if n, err := strconv.Atoi(os.Getenv("FAKE_MANY_RESOURCES")); err == nil {
 		b.manyResources = n
+	}
+	if n, err := strconv.Atoi(os.Getenv("FAKE_HUGE_DESC")); err == nil {
+		b.hugeDescription = n
 	}
 	return b
 }
@@ -118,6 +124,7 @@ func (b *fakeBackend) toolPage(cursor string) map[string]any {
 		fakeToolDef("spawn", "Start a descendant process and return its pid", false),
 		fakeToolDef("stall", "Stop reading stdin", false),
 		fakeToolDef("stderr_flood", "Write a huge stderr line", false),
+		fakeToolDef("stderr_secret", "Write a stderr line with FAKE_SECRET straddling byte 4096", false),
 		fakeToolDef("cwd", "Return the server working directory", false),
 	}
 	if b.extraTool.Load() {
@@ -211,6 +218,11 @@ func (b *fakeBackend) handle(method string, params json.RawMessage) (any, *RPCEr
 			return nil, notFound
 		}
 		fakeEvent(b.events, "list-resources")
+		if b.hugeDescription > 0 {
+			return map[string]any{"resources": []any{map[string]any{
+				"uri": "mem://huge", "name": "huge", "description": strings.Repeat("h", b.hugeDescription),
+			}, map[string]any{"uri": "mem://after", "name": "after"}}}, nil
+		}
 		if b.manyResources > 0 {
 			list := make([]any, 0, b.manyResources)
 			for i := 0; i < b.manyResources; i++ {
@@ -366,6 +378,13 @@ func runFakeStdioServer() {
 					return
 				}
 				respond(msg.ID, fakeCallResult(fakeText(strconv.Itoa(child.Process.Pid))), nil)
+				return
+			case "stderr_secret":
+				secret := os.Getenv("FAKE_SECRET")
+				pad := 4096 - len(secret)/2
+				fmt.Fprintln(os.Stderr, strings.Repeat("x", pad)+secret+strings.Repeat("y", 200))
+				fmt.Fprintln(os.Stderr, "after-secret")
+				respond(msg.ID, fakeCallResult(fakeText("written")), nil)
 				return
 			case "stderr_flood":
 				os.Stderr.WriteString(strings.Repeat("x", 3<<20) + "\n")

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -24,6 +25,9 @@ const (
 // A nil *redactor still strips URLs' credentials and control characters.
 type redactor struct {
 	secrets []string
+	// maxLen is the length of the longest secret, used to size the overlap
+	// when long lines are cut for display.
+	maxLen int
 }
 
 // newRedactor collects the secret-bearing values of one server configuration:
@@ -37,6 +41,12 @@ func newRedactor(cfg ServerConfig) *redactor {
 			return
 		}
 		set[v] = true
+		// The control-stripped form too: text is sanitized before it is
+		// matched, so a secret that itself contains escape bytes must match
+		// in its sanitized shape.
+		if clean := sanitizeText(v, true); len(clean) >= minSecretLen {
+			set[clean] = true
+		}
 		// "Bearer abc123" is also worth redacting as just "abc123".
 		if strings.ContainsAny(v, " \t") {
 			for _, field := range strings.Fields(v) {
@@ -75,6 +85,7 @@ func newRedactor(cfg ServerConfig) *redactor {
 	r := &redactor{}
 	for v := range set {
 		r.secrets = append(r.secrets, v)
+		r.maxLen = max(r.maxLen, len(v))
 	}
 	// Longest first so a secret containing another is replaced whole.
 	sort.Slice(r.secrets, func(i, j int) bool {
@@ -86,30 +97,52 @@ func newRedactor(cfg ServerConfig) *redactor {
 	return r
 }
 
-// urlSecrets returns the userinfo password/user and query values of raw.
+// urlSecrets returns the secret-bearing parts of raw: userinfo (user and
+// password) and query values, both as written and percent-decoded. It splits
+// the text itself instead of requiring url.Parse to succeed, because the URLs
+// that matter most here are the malformed ones that fail to parse.
 func urlSecrets(raw string) []string {
+	var out []string
+	add := func(v string) {
+		if v == "" {
+			return
+		}
+		out = append(out, v)
+		if d, err := url.PathUnescape(v); err == nil && d != v {
+			out = append(out, d)
+		}
+		if d, err := url.QueryUnescape(v); err == nil && d != v {
+			out = append(out, d)
+		}
+	}
 	rest := raw
 	if i := strings.Index(rest, "://"); i >= 0 {
 		rest = rest[i+3:]
 	}
-	var out []string
 	authority := rest
 	if i := strings.IndexAny(authority, "/?#"); i >= 0 {
 		authority = authority[:i]
 	}
 	if i := strings.LastIndex(authority, "@"); i >= 0 {
-		for _, part := range strings.SplitN(authority[:i], ":", 2) {
-			out = append(out, part)
-		}
+		user, pass, _ := strings.Cut(authority[:i], ":")
+		add(user)
+		add(pass)
 	}
 	if i := strings.Index(rest, "?"); i >= 0 {
 		query := rest[i+1:]
 		if j := strings.Index(query, "#"); j >= 0 {
 			query = query[:j]
 		}
-		for _, pair := range strings.Split(query, "&") {
+		for _, pair := range strings.FieldsFunc(query, func(r rune) bool { return r == '&' || r == ';' }) {
 			if _, v, ok := strings.Cut(pair, "="); ok {
-				out = append(out, v)
+				add(v)
+			}
+		}
+		if values, err := url.ParseQuery(query); err == nil {
+			for _, vs := range values {
+				for _, v := range vs {
+					add(v)
+				}
 			}
 		}
 	}
@@ -122,13 +155,43 @@ func (r *redactor) scrub(s string) string {
 	if s == "" {
 		return s
 	}
-	if r != nil {
-		for _, secret := range r.secrets {
-			s = strings.ReplaceAll(s, secret, redactedMarker)
+	// Redact, strip control sequences, then redact again: a secret that has
+	// escape bytes inserted into it only becomes matchable once they are gone.
+	s = r.redact(s)
+	s = sanitizeText(s, true)
+	s = r.redact(s)
+	return scrubURLs(s)
+}
+
+// redact replaces configured secret values. A nil redactor changes nothing.
+func (r *redactor) redact(s string) string {
+	if r == nil {
+		return s
+	}
+	for _, secret := range r.secrets {
+		s = strings.ReplaceAll(s, secret, redactedMarker)
+	}
+	return s
+}
+
+// trimPartialSecret removes a trailing fragment that is a proper prefix of a
+// secret. It is for text that was cut at an arbitrary byte: a secret that
+// straddles the cut cannot be matched as a whole, and its prefix must not
+// survive either.
+func (r *redactor) trimPartialSecret(s string) string {
+	if r == nil {
+		return s
+	}
+	drop := 0
+	for _, secret := range r.secrets {
+		for k := min(len(secret)-1, len(s)); k > drop; k-- {
+			if strings.HasSuffix(s, secret[:k]) {
+				drop = k
+				break
+			}
 		}
 	}
-	s = scrubURLs(s)
-	return sanitizeText(s, true)
+	return s[:len(s)-drop]
 }
 
 // scrubOneLine is scrub with newlines collapsed to spaces.

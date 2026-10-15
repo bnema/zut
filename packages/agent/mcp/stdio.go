@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // maxStdioFrame bounds one newline-delimited JSON-RPC message from a server.
@@ -26,6 +27,9 @@ const (
 	// maxStderrLine truncates one retained stderr line; the rest of a longer
 	// line is still drained from the pipe, just not kept.
 	maxStderrLine = 4096
+	// maxStderrOverlap caps how far past maxStderrLine raw bytes are kept so
+	// a straddling secret can still be redacted.
+	maxStderrOverlap = 64 << 10
 	// writeQueueSize bounds frames waiting for the writer goroutine.
 	writeQueueSize = 64
 	// responseWriteTimeout bounds answering one server-initiated request.
@@ -57,7 +61,16 @@ type writeReq struct {
 	ctx   context.Context
 	frame []byte
 	res   chan error
+	state atomic.Int32 // reqQueued, reqWriting, or reqSkipped
 }
+
+// A queued frame is claimed exactly once: by the writer (it will be written)
+// or by its caller (it will never be written).
+const (
+	reqQueued int32 = iota
+	reqWriting
+	reqSkipped
+)
 
 type stdioTransport struct {
 	name  string
@@ -92,6 +105,9 @@ type stdioTransport struct {
 	// cancelsSent counts notifications/cancelled sends started (diagnostics
 	// and tests).
 	cancelsSent atomic.Int64
+	// writesStarted counts frames the writer has begun writing (diagnostics
+	// and tests).
+	writesStarted atomic.Int64
 }
 
 // buildStdioEnv returns the restricted child environment.
@@ -153,11 +169,21 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 	}
 	outW.Close()
 	errW.Close()
+	guard, err := newProcessGuard(cmd)
+	if err != nil {
+		// Fail closed: never run a server that cannot be contained.
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		outR.Close()
+		errR.Close()
+		return nil, fmt.Errorf("start %s: %w", cfg.Command, red.scrubError(err))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &stdioTransport{
 		name:       name,
 		cmd:        cmd,
-		guard:      newProcessGuard(cmd),
+		guard:      guard,
 		red:        red,
 		ctx:        ctx,
 		cancel:     cancel,
@@ -187,6 +213,9 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 		case <-time.After(250 * time.Millisecond):
 		}
 		t.fail(fmt.Errorf("server process ended: %w", waitErr))
+		// The leader is gone: stop whatever it left behind, once, while the
+		// process-group id is still guaranteed to belong to our group.
+		t.guard.cleanup()
 	}()
 	return t, nil
 }
@@ -194,15 +223,28 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 // readStderr drains the child's stderr for its whole life, keeping a bounded
 // tail of bounded lines. It never stops early: a child blocked on a full
 // stderr pipe would hang.
+//
+// Redaction happens on the complete line before it is shortened for display.
+// For a line longer than the display limit the raw prefix is kept
+// maxSecretLen bytes past the cut, so a secret that straddles the cut is
+// matched whole; what remains of one anyway is trimmed afterwards.
 func (t *stdioTransport) readStderr(r io.Reader) {
 	defer close(t.stderrDone)
 	reader := bufio.NewReaderSize(r, 4096)
+	keep := maxStderrLine + min(t.red.maxLen, maxStderrOverlap)
 	var line []byte
 	truncated := false
 	flush := func() {
-		text := strings.TrimRight(string(line), "\r")
-		if truncated {
-			text += "…[line truncated]"
+		text := t.red.scrub(strings.TrimRight(string(line), "\r"))
+		if len(text) > maxStderrLine || truncated {
+			if len(text) > maxStderrLine {
+				cut := maxStderrLine
+				for cut > 0 && !utf8.RuneStart(text[cut]) {
+					cut--
+				}
+				text = text[:cut]
+			}
+			text = t.red.trimPartialSecret(text) + "…[line truncated]"
 		}
 		line, truncated = nil, false
 		t.stderrMu.Lock()
@@ -214,7 +256,7 @@ func (t *stdioTransport) readStderr(r io.Reader) {
 	}
 	for {
 		chunk, isPrefix, err := reader.ReadLine()
-		if room := maxStderrLine - len(line); len(chunk) > room {
+		if room := keep - len(line); len(chunk) > room {
 			if room > 0 {
 				line = append(line, chunk[:room]...)
 			}
@@ -335,10 +377,14 @@ func (t *stdioTransport) writeLoop() {
 		case <-t.doneCh:
 			return
 		case req := <-t.writeQ:
-			if err := req.ctx.Err(); err != nil {
+			if err := req.ctx.Err(); err != nil && req.state.CompareAndSwap(reqQueued, reqSkipped) {
 				req.res <- err // never started: nothing partial on the wire
 				continue
 			}
+			if !req.state.CompareAndSwap(reqQueued, reqWriting) {
+				continue // the caller gave up before we started
+			}
+			t.writesStarted.Add(1)
 			_, err := t.stdin.Write(req.frame)
 			req.res <- err
 			if err != nil {
@@ -353,26 +399,49 @@ func (t *stdioTransport) writeLoop() {
 // write queues one frame (newline appended) and waits until it has been
 // written, ctx ends, or the connection fails.
 func (t *stdioTransport) write(ctx context.Context, frame []byte) error {
+	_, err := t.writeFrame(ctx, frame)
+	return err
+}
+
+// writeFrame is write that also reports whether any byte of the frame may
+// have reached the server. When ctx ends:
+//   - a frame the writer has not started is withdrawn and never written, and
+//     the transport stays usable;
+//   - a frame whose write is already in progress cannot be withdrawn (part of
+//     it may be on the wire and the rest could still be flushed later), so the
+//     transport is failed and stdin closed. The manager reconnects on the next
+//     call and the abandoned frame can never complete.
+func (t *stdioTransport) writeFrame(ctx context.Context, frame []byte) (sent bool, err error) {
 	req := &writeReq{ctx: ctx, frame: append(append(make([]byte, 0, len(frame)+1), frame...), '\n'), res: make(chan error, 1)}
 	select {
 	case t.writeQ <- req:
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-t.doneCh:
-		return t.failure()
+		return false, t.failure()
 	}
 	select {
 	case err := <-req.res:
-		return err
+		return req.state.Load() == reqWriting, err
 	case <-ctx.Done():
-		return ctx.Err()
+		if req.state.CompareAndSwap(reqQueued, reqSkipped) {
+			return false, ctx.Err()
+		}
+		select {
+		case err := <-req.res:
+			return req.state.Load() == reqWriting, err
+		default:
+		}
+		t.fail(fmt.Errorf("write to server interrupted: %w", ctx.Err()))
+		_ = t.stdin.Close() // unblocks the stuck write
+		return true, ctx.Err()
 	case <-t.doneCh:
 		select {
 		case err := <-req.res:
-			return err
+			return req.state.Load() == reqWriting, err
 		default:
 		}
-		return t.failure()
+		return req.state.Load() == reqWriting, t.failure()
 	}
 }
 
@@ -396,10 +465,12 @@ func (t *stdioTransport) request(ctx context.Context, id int64, method string, p
 		delete(t.pending, key)
 		t.mu.Unlock()
 	}
-	if err := t.write(ctx, frame); err != nil {
+	if sent, err := t.writeFrame(ctx, frame); err != nil {
 		cleanup()
 		if ctx.Err() != nil {
-			t.cancelRequest(id, method, ctx.Err().Error())
+			if sent {
+				t.cancelRequest(id, method, ctx.Err().Error())
+			}
 			return nil, ctx.Err()
 		}
 		return nil, err
@@ -494,7 +565,8 @@ func (t *stdioTransport) waitExit(d time.Duration) bool {
 
 // close shuts the server down: close stdin (the MCP stdio shutdown signal)
 // without waiting behind any blocked write, wait briefly, then terminate the
-// process group. Descendants that outlive the direct child are signalled too.
+// process group. Group cleanup is one-shot and also runs when the direct
+// child exits on its own, so repeated or late calls never signal a stale id.
 func (t *stdioTransport) close() error {
 	t.fail(errors.New("connection closed"))
 	_ = t.stdin.Close() // also unblocks a writer stuck on a full pipe
@@ -505,7 +577,7 @@ func (t *stdioTransport) close() error {
 			t.waitExit(time.Second)
 		}
 	}
-	t.reapGroup()
+	t.guard.cleanup()
 	// With the child gone its stderr hits EOF once buffered data is read; give
 	// the reader a moment so diagnostics are complete. A descendant holding the
 	// pipe open only costs the timeout.
@@ -519,23 +591,5 @@ func (t *stdioTransport) close() error {
 	}
 	_ = t.outR.Close()
 	_ = t.errR.Close()
-	t.guard.release()
 	return nil
-}
-
-// reapGroup stops processes the direct child left behind. The process group
-// outlives its leader, so this is meaningful even after the leader has been
-// reaped (the group id cannot be reused while any member remains).
-func (t *stdioTransport) reapGroup() {
-	if !t.guard.alive() {
-		return
-	}
-	t.guard.terminate(false)
-	deadline := time.Now().Add(300 * time.Millisecond)
-	for t.guard.alive() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if t.guard.alive() {
-		t.guard.terminate(true)
-	}
 }
