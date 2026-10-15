@@ -3,12 +3,15 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/core"
 )
 
 // Regression tests for the second review round.
@@ -82,18 +85,37 @@ func TestStdioQueuedFrameIsWithdrawnButStartedWriteFailsTransport(t *testing.T) 
 }
 
 func TestManagerReconnectsAfterInterruptedWrite(t *testing.T) {
-	m, events := startFake(t, nil, func(c *ServerConfig) { c.ToolTimeoutSec = 0.4 })
+	// Cancellation is driven by the test, not by toolTimeoutSec: a timer could
+	// fire before the 4 MiB frame is even queued on a slow (-race) runner, and
+	// a withdrawn frame correctly leaves the transport up.
+	m, events := startFake(t, nil, nil)
+	st := m.servers["fake"].live().t.(*stdioTransport)
 	// Park the server: the call is delivered, then it stops reading stdin.
-	if res := execTool(t, findTool(t, m, "mcp__fake__stall"), `{}`); !res.IsError {
-		t.Fatalf("stall result = %q", resultText(res))
-	}
+	// The stall call stays pending (no cancel notification is queued) and
+	// ends when the transport fails.
+	stall, echo := findTool(t, m, "mcp__fake__stall"), findTool(t, m, "mcp__fake__echo")
+	stallDone := make(chan struct{})
+	go func() {
+		defer close(stallDone)
+		_, _ = stall.Execute(context.Background(), json.RawMessage(`{}`), nil)
+	}()
 	waitEvent(t, events, "stalled")
-	// A request too large for the pipe times out mid-write.
-	big := `{"text":"` + strings.Repeat("a", 4<<20) + `"}`
-	if res := execTool(t, findTool(t, m, "mcp__fake__echo"), big); !res.IsError {
+	// A request too large for the pipe is cancelled once its write started.
+	started := st.writesStarted.Load()
+	bigCtx, bigCancel := context.WithCancel(context.Background())
+	bigDone := make(chan core.ToolResult, 1)
+	go func() {
+		big := `{"text":"` + strings.Repeat("a", 4<<20) + `"}`
+		res, _ := echo.Execute(bigCtx, json.RawMessage(big), nil)
+		bigDone <- res
+	}()
+	eventually(t, "the big frame write to start", func() bool { return st.writesStarted.Load() > started })
+	bigCancel()
+	if res := <-bigDone; !res.IsError {
 		t.Fatalf("big call result = %q", resultText(res))
 	}
 	eventually(t, "status to show the dropped connection", func() bool { return !m.Status()[0].Connected })
+	<-stallDone
 	// The next call starts a fresh server and works.
 	if got := resultText(execTool(t, findTool(t, m, "mcp__fake__echo"), `{"text":"again"}`)); got != "echo: again" {
 		t.Fatalf("after reconnect = %q", got)
