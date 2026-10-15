@@ -46,7 +46,9 @@ that are also available in the resolved child runtime; parent-only scheduling
 and extension tools are never inherited. Names unavailable to the child
 (including host-only extensions) and tools denied by `subagents.allowed_tools`
 are omitted from an explicit list; they never grant the child additional
-access. `model`, `provider`, `thinking`,
+access. `mcp` in `tools` or `subagents.allowed_tools` selects every MCP tool;
+under headless `--orchestrate`, workers receive MCP tools the manager-only
+parent does not hold (see [mcp.md](mcp.md)). `model`, `provider`, `thinking`,
 the prompt mode, project/skill inheritance, and `fastMode` are resolved before
 the child is accepted. Spawn-level model, provider, reasoning, and fast-mode
 values take precedence where supplied.

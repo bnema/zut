@@ -48,6 +48,7 @@ func slashCommandCancelsTurn(cmd string) bool {
 var slashCatalog = []slashCommand{
 	{Name: "/help", Desc: "show key bindings and commands"},
 	{Name: "/info", Desc: "show the current session's details and file path"},
+	{Name: "/mcp", Desc: "show MCP server status"},
 	{Name: "/login", Desc: "log in via api key or subscription"},
 	{Name: "/logout", Desc: "clear a provider's credentials"},
 	{Name: "/model", Desc: "pick a model (or /model <id>)"},

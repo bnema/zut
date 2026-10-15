@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -370,10 +371,22 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		}
 		allTools = append(allTools, name)
 	}
+	// A strict orchestrator holds only read-only MCP tools; its workers own
+	// MCP actions, so they receive every MCP tool of the shared manager.
+	if rt.args.Orchestrate {
+		for _, name := range childMCPTools(resolved.ToolRegistry) {
+			if _, inParent := catalogue[name]; !inParent {
+				allTools = append(allTools, name)
+			}
+		}
+	}
 	sort.Strings(allTools)
 	permitted := func(name string) bool {
 		if tools.IsWebCapabilityName(name) {
 			return policy.AllowsTool("web_search")
+		}
+		if mcp.IsMCPToolName(name) && policy.AllowsTool(mcpToolSelector) {
+			return true
 		}
 		return policy.AllowsTool(name)
 	}
@@ -388,6 +401,14 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		childTools, err = subagents.ResolveProfileTools(request.Profile, allTools, permitted)
 		if err != nil {
 			return subagents.ResidentChildSpec{}, err
+		}
+		// A profile may name "mcp" to receive every permitted MCP tool.
+		if toolListContains(request.Profile.Tools, mcpToolSelector) {
+			for _, name := range allTools {
+				if mcp.IsMCPToolName(name) && permitted(name) && !toolListContains(childTools, name) {
+					childTools = append(childTools, name)
+				}
+			}
 		}
 	}
 	childTools = expandWebCapabilityTools(childTools, allTools, permitted)

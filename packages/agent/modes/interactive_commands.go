@@ -282,6 +282,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Unlock()
 	case "/info":
 		i.showSessionInfo()
+	case "/mcp":
+		i.showMCPStatus()
 	case "/login":
 		i.dialog.Open(i.cfg.ZutHome)
 	case "/logout":

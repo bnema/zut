@@ -12,6 +12,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - seventeen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
+- native MCP client for stdio and streamable HTTP servers, shared by the primary agent, orchestrator, and subagents; see [docs/mcp.md](docs/mcp.md).
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. Interactive tools can wait for user input without a reply deadline and support cooperative cancellation; headless hosts reject them. See [docs/extensions.md](docs/extensions.md).
 - user and extension themes via JSON; see [docs/themes.md](docs/themes.md).
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
@@ -339,6 +340,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls; when a model profile is active, save the preference to that profile. |
 | `/orchestrator` | Toggle proactive subagent delegation. When disabled, subagent tools remain available for explicit delegation. |
+| `/mcp` | Show MCP server connection state, tool counts, and startup errors; see [docs/mcp.md](docs/mcp.md). |
 | `/goal <objective>` | Start an autonomous interactive-session mission. Use `/goal` for status, `/goal history` for prior goals, and `/goal pause`, `resume`, or `clear` for control. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session. The picker opens in this-directory scope; press `Tab` for all sessions in the active namespace, or `/` to search user/assistant text. It omits branches created only for tree navigation. |

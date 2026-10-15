@@ -930,7 +930,7 @@ func Run(rawArgs []string, version string) error {
 	// handling for the interactive modes below.
 	extCtx := context.Background()
 	stopExtContext := func() {}
-	if len(rawArgs) > 0 && rawArgs[0] == "ext" {
+	if len(rawArgs) > 0 && (rawArgs[0] == "ext" || rawArgs[0] == "mcp") {
 		extCtx, stopExtContext = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	}
 	defer stopExtContext()
@@ -941,6 +941,9 @@ func Run(rawArgs []string, version string) error {
 		return err
 	}
 	if handled, err := runExtCommand(extCtx, rawArgs, version); handled {
+		return err
+	}
+	if handled, err := runMCPCommand(extCtx, rawArgs, version, os.Stdout); handled {
 		return err
 	}
 	if handled, err := runUpdateCommand(rawArgs, version); handled {
@@ -1002,6 +1005,19 @@ func runWithArgs(args Args, version string) error {
 		return err
 	}
 	ctx := context.Background()
+	// MCP servers start once per process. Every later Resolve, including
+	// resident subagents, shares these connections through args.
+	stopMCP, err := startMCP(ctx, &args, version)
+	if err != nil {
+		return err
+	}
+	defer stopMCP()
+	if args.mcpManager != nil && args.Mode != ModeInteractive && args.Mode != "" && !args.Orchestrate {
+		// Plain headless modes terminate on signals. Stop MCP servers first so
+		// their process groups and HTTP sessions do not outlive zut. The TUI
+		// and --orchestrate own their signal handling and cancel gracefully.
+		defer exitAfterMCPCleanupOnSignal(args.mcpManager)()
+	}
 	switch args.Mode {
 	case ModePrint:
 		return runPrintMode(ctx, args, version)
@@ -2763,7 +2779,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		StartupAgentName:                  args.AgentName,
 		StartupContextPaths:               instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:             startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:            startupExtensionErrors,
+		StartupExtensionErrors:            append(startupExtensionErrors, args.mcpStartupErrors...),
 		StartupSkillNames:                 startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:         initialCfg.ShowInstructionsAtStartup,
 		ZutHome:                           ZutHome(),
@@ -2833,6 +2849,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		PersistedPlan:               persistedPlan,
 		InitialPlanSnapshots:        initialPlanSnapshots,
 		EnsureMission:               ensureMission,
+		MCPStatus:                   func() string { return mcpStatusText(args) },
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()
@@ -3072,6 +3089,10 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		// cleanup, so wait for reload and close the shared runtime explicitly.
 		<-reloadDone
 		_ = closeSubagentRuntimeFresh(runtime)
+		// MCP servers run in their own process groups; stop them too.
+		if args.mcpManager != nil {
+			_ = args.mcpManager.Close()
+		}
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
 		// flushed the only at-risk state (the session file) and stopped
@@ -3225,14 +3246,40 @@ func combinePromptInput(stdin, positional string) string {
 }
 
 func readAllStdin() (string, error) {
-	fi, err := os.Stdin.Stat()
+	return readAllPipe(os.Stdin)
+}
+
+// readAllPipe reads f to EOF unless it is a terminal.
+func readAllPipe(f *os.File) (string, error) {
+	fi, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
 	if (fi.Mode() & os.ModeCharDevice) != 0 {
 		return "", nil
 	}
-	return readAllStdinFrom(os.Stdin)
+	return readAllStdinFrom(f)
+}
+
+// readAllStdinContext is readAllStdin that returns ctx.Err() when ctx ends
+// first. The abandoned read finishes or dies with the process.
+func readAllStdinContext(ctx context.Context) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	done := make(chan result, 1)
+	stdin := os.Stdin
+	go func() {
+		text, err := readAllPipe(stdin)
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func readAllStdinFrom(r io.Reader) (string, error) {
