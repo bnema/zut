@@ -5,6 +5,8 @@ package mcp
 import (
 	"os"
 	"strconv"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -108,4 +110,31 @@ func TestStdioGroupCleanedBeforeLeaderIsReaped(t *testing.T) {
 		_, err := os.Stat("/proc/" + strconv.Itoa(leader))
 		return os.IsNotExist(err)
 	})
+}
+
+// While the leader is an unreaped zombie the pgid is reserved, so cleanup must
+// end with a group SIGKILL even when the (non-atomic) /proc scan sees no live
+// member: a descendant may have forked between the scan and its end.
+func TestReservedGroupIsKilledDespiteEmptyScan(t *testing.T) {
+	var mu sync.Mutex
+	var sigs []syscall.Signal
+	g := &processGuard{pgid: 1 << 30, leader: 1 << 30, zombie: true,
+		kill: func(pid int, sig syscall.Signal) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if pid != -(1 << 30) {
+				t.Errorf("signal to %d, want group", pid)
+			}
+			sigs = append(sigs, sig)
+			return nil
+		}}
+	g.cleanup()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sigs) == 0 || sigs[len(sigs)-1] != syscall.SIGKILL {
+		t.Fatalf("signals = %v, want a final group SIGKILL", sigs)
+	}
+	if g.pgid != 0 {
+		t.Error("pgid retained after cleanup")
+	}
 }

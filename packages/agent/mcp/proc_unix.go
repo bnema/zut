@@ -42,9 +42,9 @@ type processGuard struct {
 	leader int // pid of the group leader (== original pgid)
 	proc   *os.Process
 	kill   func(pid int, sig syscall.Signal) error // syscall.Kill; replaced in tests
-	// zombie is set once the leader has exited but not been reaped. A probe
-	// with signal 0 cannot tell an empty group from one whose only member is
-	// that zombie, so liveness is then read from the process table.
+	// zombie is set once the leader has exited but not been reaped. The pgid
+	// is then reserved, so cleanup always ends with a group SIGKILL; the
+	// process table is read only to end the SIGTERM grace period early.
 	zombie bool
 
 	once sync.Once
@@ -115,12 +115,10 @@ func (g *processGuard) alive() bool {
 		return false
 	}
 	if g.zombie {
-		if live, known := liveGroupMembers(g.pgid); known {
-			if !live {
-				g.pgid = 0
-			}
-			return live
-		}
+		// A signal-0 probe would see the zombie leader. The /proc scan is
+		// advisory only (not an atomic snapshot), so it never clears pgid.
+		live, known := liveGroupMembers(g.pgid)
+		return live || !known
 	}
 	err := g.kill(-g.pgid, 0)
 	if errors.Is(err, syscall.ESRCH) {
@@ -144,6 +142,18 @@ func (g *processGuard) cleanup() {
 			g.proc = nil
 			g.mu.Unlock()
 		}()
+		g.mu.Lock()
+		reserved := g.zombie
+		g.mu.Unlock()
+		if reserved {
+			// The unreaped leader keeps the pgid ours: give members a grace
+			// period, then kill the group unconditionally. The kernel delivers
+			// a group signal to every member, including ones forked meanwhile.
+			g.terminate(false)
+			g.waitGone(300 * time.Millisecond)
+			g.terminate(true)
+			return
+		}
 		if !g.alive() {
 			return
 		}

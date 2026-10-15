@@ -26,7 +26,8 @@ func waitLeaderExited(pid int) bool {
 }
 
 // liveGroupMembers reports whether any non-zombie process is in process group
-// pgid, reading /proc. known is false when /proc cannot be read.
+// pgid, reading /proc. known is false when /proc or a member's stat cannot be
+// read. The scan is not atomic, so callers use it only as a hint.
 func liveGroupMembers(pgid int) (live, known bool) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -39,8 +40,11 @@ func liveGroupMembers(pgid int) (live, known bool) {
 		}
 		sawProc = true
 		raw, err := os.ReadFile("/proc/" + e.Name() + "/stat")
-		if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ESRCH) {
 			continue // exited meanwhile
+		}
+		if err != nil {
+			return false, false
 		}
 		state, group, ok := parseProcStat(string(raw))
 		if !ok || group != pgid || state == 'Z' || state == 'X' {
