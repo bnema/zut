@@ -35,6 +35,12 @@ type orchestratedModeHooks struct {
 func runOrchestratedMode(parentCtx context.Context, args Args, version string, hooks orchestratedModeHooks) (runErr error) {
 	ctx, stopSignal := signal.NotifyContext(parentCtx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopSignal()
+	// After the first signal cancels ctx, restore default handling so a
+	// second signal terminates a run whose cleanup is stuck.
+	go func() {
+		<-ctx.Done()
+		stopSignal()
+	}()
 
 	if args.NoYolo {
 		fmt.Fprintf(os.Stderr, "warning: --no-yolo has no effect in %s mode (no interactive prompt available); tools will run without confirmation\n", hooks.promptLabel)
@@ -49,7 +55,7 @@ func runOrchestratedMode(parentCtx context.Context, args Args, version string, h
 	}
 	prompt := args.Prompt
 	if prompt == "" {
-		piped, readErr := readAllStdin()
+		piped, readErr := readAllStdinContext(ctx)
 		if readErr != nil {
 			return fmt.Errorf("read %s prompt from stdin: %w", hooks.promptLabel, readErr)
 		}

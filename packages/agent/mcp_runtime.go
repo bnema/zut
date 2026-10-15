@@ -56,7 +56,17 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 	}
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
-	failures, requiredErr := manager.Start(ctx)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, mcpSignals...)
+	failures, requiredErr, sig := startMCPInterruptible(ctx, manager, sigCh)
+	signal.Stop(sigCh)
+	if sig != nil {
+		// Interrupted during startup: no mode owns signals yet, so stop the
+		// servers already launched and terminate like an unhandled signal.
+		_ = manager.Close()
+		mcpSignalExit(signalExitCode(sig))
+		return noop, fmt.Errorf("mcp startup interrupted by %v", sig)
+	}
 	for _, err := range failures {
 		args.mcpStartupErrors = append(args.mcpStartupErrors, err.Error())
 	}
@@ -69,6 +79,43 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 	return func() { _ = manager.Close() }, nil
 }
 
+var mcpSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
+// mcpSignalExit terminates the process after a signal; tests replace it.
+var mcpSignalExit = os.Exit
+
+func signalExitCode(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 1
+}
+
+// startMCPInterruptible runs manager.Start and cancels the handshakes when a
+// signal arrives on sigCh, waiting until every connection attempt has closed
+// its transport. It returns the signal that interrupted startup, if any.
+func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-chan os.Signal) ([]error, error, os.Signal) {
+	startCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		failures []error
+		required error
+	}
+	done := make(chan result, 1)
+	go func() {
+		failures, required := manager.Start(startCtx)
+		done <- result{failures, required}
+	}()
+	select {
+	case r := <-done:
+		return r.failures, r.required, nil
+	case sig := <-sigCh:
+		cancel()
+		<-done
+		return nil, nil, sig
+	}
+}
+
 // exitAfterMCPCleanupOnSignal keeps the default "terminate on signal"
 // behavior of headless modes while closing MCP servers first. Default
 // handling is restored before cleanup, so a second signal still kills zut
@@ -76,17 +123,13 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 func exitAfterMCPCleanupOnSignal(manager *mcp.Manager) func() {
 	sigCh := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigCh, mcpSignals...)
 	go func() {
 		select {
 		case sig := <-sigCh:
 			signal.Stop(sigCh)
 			_ = manager.Close()
-			code := 1
-			if s, ok := sig.(syscall.Signal); ok {
-				code = 128 + int(s)
-			}
-			os.Exit(code)
+			mcpSignalExit(signalExitCode(sig))
 		case <-done:
 		}
 	}()

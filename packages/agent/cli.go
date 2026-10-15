@@ -3246,14 +3246,40 @@ func combinePromptInput(stdin, positional string) string {
 }
 
 func readAllStdin() (string, error) {
-	fi, err := os.Stdin.Stat()
+	return readAllPipe(os.Stdin)
+}
+
+// readAllPipe reads f to EOF unless it is a terminal.
+func readAllPipe(f *os.File) (string, error) {
+	fi, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
 	if (fi.Mode() & os.ModeCharDevice) != 0 {
 		return "", nil
 	}
-	return readAllStdinFrom(os.Stdin)
+	return readAllStdinFrom(f)
+}
+
+// readAllStdinContext is readAllStdin that returns ctx.Err() when ctx ends
+// first. The abandoned read finishes or dies with the process.
+func readAllStdinContext(ctx context.Context) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	done := make(chan result, 1)
+	stdin := os.Stdin
+	go func() {
+		text, err := readAllPipe(stdin)
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func readAllStdinFrom(r io.Reader) (string, error) {

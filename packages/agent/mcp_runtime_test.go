@@ -391,3 +391,38 @@ func keys(reg core.Registry) []string {
 	slices.Sort(out)
 	return out
 }
+
+// A signal during the MCP handshake must cancel startup (not wait for the
+// startup timeout) so the caller can close the servers already launched.
+func TestStartMCPInterruptibleCancelsHandshake(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+		// Stall every request until the client gives up or the test ends.
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	cfg := mcp.Config{Servers: map[string]mcp.ServerConfig{"slow": {Type: "http", URL: srv.URL}}}
+	manager := mcp.NewManager(cfg, t.TempDir(), mcp.ClientInfo{Name: "zut"}, srv.Client())
+	t.Cleanup(func() { _ = manager.Close() })
+
+	sigCh := make(chan os.Signal, 1)
+	result := make(chan os.Signal, 1)
+	go func() {
+		_, _, sig := startMCPInterruptible(context.Background(), manager, sigCh)
+		result <- sig
+	}()
+	<-reached
+	sigCh <- os.Interrupt
+	if sig := <-result; sig != os.Interrupt {
+		t.Fatalf("signal = %v, want interrupt", sig)
+	}
+}
