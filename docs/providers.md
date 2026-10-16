@@ -91,6 +91,12 @@ OAuth tokens are stored in `$ZUT_HOME/auth.json` and refreshed when refresh is
 available.
 
 Anthropic offers browser callback and copy-code login as separate choices.
+With Anthropic OAuth, MCP resource helpers use Claude Code wire names while
+zut retains `mcp_list_resources` and `mcp_read_resource` in tools and sessions.
+API-key requests retain the zut names. OAuth acceptance and billing remain
+controlled by Anthropic; a successful request does not guarantee subscription
+coverage.
+
 Browser login for Anthropic and OpenAI Codex also accepts a pasted callback URL
 or code using the same authorization transaction; it does not start a second
 login. A supplied state must match the pending transaction. Escape cancels the
