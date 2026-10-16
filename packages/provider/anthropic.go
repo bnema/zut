@@ -38,16 +38,19 @@ const (
 	claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
-// Claude Code's canonical tool casing. When running under OAuth we must
-// advertise tool names that match this list (case-insensitive lookup),
-// because Anthropic's backend cross-checks them.
+// Claude Code's canonical tool names. OAuth requests use these wire aliases;
+// local registry and session names remain unchanged. In particular, sending
+// the resource helpers as mcp_list_resources or mcp_read_resource triggers
+// Anthropic's third-party extra-usage rejection even with valid OAuth.
 var claudeCodeToolNames = map[string]string{
-	"read":  "Read",
-	"write": "Write",
-	"edit":  "Edit",
-	"bash":  "Bash",
-	"grep":  "Grep",
-	"glob":  "Glob",
+	"read":               "Read",
+	"write":              "Write",
+	"edit":               "Edit",
+	"bash":               "Bash",
+	"grep":               "Grep",
+	"glob":               "Glob",
+	"mcp_list_resources": "ListMcpResourcesTool",
+	"mcp_read_resource":  "ReadMcpResourceTool",
 }
 
 func toClaudeCodeToolName(name string) string {
@@ -60,7 +63,7 @@ func toClaudeCodeToolName(name string) string {
 func fromClaudeCodeToolName(name string, tools []Tool) string {
 	lower := strings.ToLower(name)
 	for _, t := range tools {
-		if strings.ToLower(t.Name) == lower {
+		if strings.ToLower(toClaudeCodeToolName(t.Name)) == lower {
 			return t.Name
 		}
 	}
