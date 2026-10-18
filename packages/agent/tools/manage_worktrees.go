@@ -49,9 +49,14 @@ type manageWorktreesPlan struct {
 	// into is the requested merge target; empty means the current HEAD.
 	into         string
 	deleteBranch bool
-	selected     []managedWorktree
-	all          []managedWorktree
-	text         string
+	// intoCommit and intoRef pin the resolved merge target so a target that
+	// moves between preview and execute is detected. intoRef is the symbolic
+	// full name (empty for a commit or detached HEAD).
+	intoCommit string
+	intoRef    string
+	selected   []managedWorktree
+	all        []managedWorktree
+	text       string
 }
 
 type manageWorktreesPreview struct {
@@ -104,8 +109,13 @@ func (t *ManageWorktreesTool) Execute(ctx context.Context, raw json.RawMessage, 
 	}
 	var removed, deleted []string
 	var branchErrs []string
+	// summary reports progress made so far; it is attached to every failure
+	// return so a partial cleanup is never silently dropped.
 	summary := func() string {
 		var parts []string
+		if len(branchErrs) > 0 {
+			parts = append(parts, strings.Join(branchErrs, "; "))
+		}
 		if len(removed) > 0 {
 			parts = append(parts, "removed worktrees: "+strings.Join(removed, ", "))
 		}
@@ -140,7 +150,7 @@ func (t *ManageWorktreesTool) Execute(ctx context.Context, raw json.RawMessage, 
 	}
 	_, _ = manageWorktreesGit(ctx, plan.repoRoot, "worktree", "prune")
 	if len(branchErrs) > 0 {
-		return core.ToolResult{}, fmt.Errorf("manage_worktrees: %s (worktrees were removed; the listed branches were kept)%s", strings.Join(branchErrs, "; "), summary())
+		return core.ToolResult{}, fmt.Errorf("manage_worktrees: worktrees were removed but some branches were kept%s", summary())
 	}
 	result := manageWorktreesResult(plan, "removed")
 	if len(deleted) > 0 {
@@ -150,23 +160,62 @@ func (t *ManageWorktreesTool) Execute(ctx context.Context, raw json.RawMessage, 
 		}
 		result.Content = []provider.Content{provider.TextBlock{Text: text}}
 	}
-	details := result.Details.(map[string]any)
-	details["removed"] = removed
-	details["deleted_branches"] = deleted
+	if details, ok := result.Details.(map[string]any); ok {
+		details["removed"] = removed
+		details["deleted_branches"] = deleted
+	}
 	return result, nil
 }
 
 // deleteMergedBranch deletes refs/heads/<branch> only while it still points at
-// head, so a branch that moved after inspection is never discarded.
+// head, is a plain (non-symbolic) ref, and is not checked out in any worktree.
+// The checks run immediately before deletion because state can change after
+// planning and after the worktree was removed.
 func deleteMergedBranch(ctx context.Context, repoRoot, branch, head string) error {
 	if branch == "" || head == "" {
 		return errors.New("branch or inspected commit is unknown")
 	}
-	_, err := manageWorktreesGit(ctx, repoRoot, "update-ref", "-d", "refs/heads/"+branch, head)
+	ref := "refs/heads/" + branch
+	// A symbolic branch ref would make update-ref delete its target.
+	if _, err := manageWorktreesGit(ctx, repoRoot, "symbolic-ref", "-q", ref); err == nil {
+		return errors.New("branch ref is symbolic and was kept")
+	} else if createWorktreeGitExitCode(err) != 1 {
+		return fmt.Errorf("inspect branch ref: %w", err)
+	}
+	where, err := branchCheckedOutAt(ctx, repoRoot, ref)
 	if err != nil {
+		return err
+	}
+	if where != "" {
+		return fmt.Errorf("branch is checked out in %q", filepath.ToSlash(where))
+	}
+	if _, err := manageWorktreesGit(ctx, repoRoot, "update-ref", "--no-deref", "-d", ref, head); err != nil {
 		return fmt.Errorf("branch changed since inspection or cannot be deleted: %w", err)
 	}
 	return nil
+}
+
+// branchCheckedOutAt returns the path of a worktree (primary included) that has
+// ref checked out, or "" when none does.
+func branchCheckedOutAt(ctx context.Context, repoRoot, ref string) (string, error) {
+	output, err := manageWorktreesGit(ctx, repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("list worktrees: %w", err)
+	}
+	for _, block := range strings.Split(strings.TrimSpace(output), "\n\n") {
+		path, checkedOut := "", false
+		for _, line := range strings.Split(block, "\n") {
+			if strings.HasPrefix(line, "worktree ") {
+				path = strings.TrimPrefix(line, "worktree ")
+			} else if line == "branch "+ref {
+				checkedOut = true
+			}
+		}
+		if checkedOut {
+			return path, nil
+		}
+	}
+	return "", nil
 }
 
 func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (manageWorktreesPlan, error) {
@@ -228,7 +277,7 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 	if err != nil {
 		return manageWorktreesPlan{}, err
 	}
-	plan := manageWorktreesPlan{repoRoot: repoRoot, action: args.Action, into: into, deleteBranch: args.DeleteBranch, all: items}
+	plan := manageWorktreesPlan{repoRoot: repoRoot, action: args.Action, into: into, intoCommit: intoCommit, intoRef: intoRef, deleteBranch: args.DeleteBranch, all: items}
 	if args.Action == "cleanup" {
 		if len(args.Paths) == 0 {
 			return manageWorktreesPlan{}, errors.New("manage_worktrees: cleanup requires at least one explicit path")
@@ -266,6 +315,24 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 			}
 		}
 		if args.DeleteBranch {
+			// Deleting a branch writes to Git ref storage, which lives outside the
+			// worktree path. Require write access to it and fail closed. Jail mode
+			// is a guardrail, not a sandbox: it cannot stop git from touching refs
+			// once permitted, so this only enforces the declared scopes.
+			commonDir, err := manageWorktreesGit(ctx, repoRoot, "rev-parse", "--git-common-dir")
+			if err != nil {
+				return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: resolve git directory: %w", err)
+			}
+			if !filepath.IsAbs(commonDir) {
+				commonDir = filepath.Join(repoRoot, commonDir)
+			}
+			commonDir, err = canonical(commonDir)
+			if err != nil {
+				return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: resolve git directory: %w", err)
+			}
+			if err := t.Sandbox.CheckWritePath(commonDir); err != nil {
+				return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: %w", err)
+			}
 			for _, item := range plan.selected {
 				if intoRef == "refs/heads/"+item.Branch {
 					return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: branch %q is the merge target and cannot be deleted", item.Branch)
@@ -441,7 +508,7 @@ func manageWorktreesResult(plan manageWorktreesPlan, state string) core.ToolResu
 }
 
 func sameManageWorktreesPlan(a, b manageWorktreesPlan) bool {
-	if a.repoRoot != b.repoRoot || a.action != b.action || a.into != b.into || a.deleteBranch != b.deleteBranch || a.text != b.text || len(a.selected) != len(b.selected) || len(a.all) != len(b.all) {
+	if a.repoRoot != b.repoRoot || a.action != b.action || a.into != b.into || a.intoCommit != b.intoCommit || a.intoRef != b.intoRef || a.deleteBranch != b.deleteBranch || a.text != b.text || len(a.selected) != len(b.selected) || len(a.all) != len(b.all) {
 		return false
 	}
 	for index := range a.selected {
