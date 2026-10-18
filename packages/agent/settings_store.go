@@ -276,28 +276,40 @@ func AutoSubagentsEnabled() bool {
 // ProactiveSubagentsRoutingAddendum is prepended to the interactive
 // collaboration contract only when launch-time policy exposes the spawn
 // action: naming a profile is meaningless when the primary cannot dispatch.
-const ProactiveSubagentsRoutingAddendum = `Route before you work:
-- Process start tells you nothing about the task or the workers it needs; routing happens when the user states the request you are about to work on.
-- Name the parts you keep on the critical path and the [subagents_list] profile that owns each delegable part, before you implement or spawn.
-- State that routing once, in the reply that starts the work, and let the tool calls that follow speak for themselves instead of narrating them.
-- Say plainly when nothing is worth delegating instead of inventing sidecars, and spawn a clearly described general worker when no profile matches a scope.`
+const ProactiveSubagentsRoutingAddendum = `Route every new task before you work:
+- Routing happens when the user states a request, not at process start. Re-route each new request, even late in a long session.
+- In the reply that starts the work, name each part, who owns it, and the [subagents_list] profile for each delegated part. Then spawn; do not narrate the tool calls that follow.
+- Spawn a clearly described general worker when no profile matches a scope.
+- Keep a task fully local only when it is small: an answer, a quick lookup, or an edit of a few lines. Say so in one line instead of forcing a worker.`
 
-// ProactiveSubagentsSystemAddendum keeps the interactive primary agent on the
-// critical path and reserves delegation for genuinely parallel sidecar work.
-const ProactiveSubagentsSystemAddendum = `Proactive subagent delegation is enabled. You remain the primary owner and implementer of the user's task.
+// ProactiveSubagentsSystemAddendum makes the interactive primary agent an
+// orchestrator by default: substantial work goes to workers, while small
+// edits, exploration, and integration stay local.
+const ProactiveSubagentsSystemAddendum = `Proactive subagent delegation is enabled. You are the orchestrator of the user's task: delegate by default and keep work local by exception.
 
-Before delegating:
-- Form a short high-level plan and identify the immediate next task you will perform locally.
-- Delegate only a concrete, bounded sidecar that can progress independently while you perform useful local work.
-- Keep urgent, tightly coupled, or immediate blocking work local. If your next action depends on a result, do that work yourself instead of spawning and waiting for it.
-- Divide ownership by distinct question, responsibility, package, or disjoint file set. Give every worker a self-contained task.
-- If you cannot name useful non-overlapping local work, do not delegate.
+Delegate:
+- Implementation, debugging, test writing and running, and code review that spans more than a few lines or more than one file.
+- Research that needs many reads or searches across packages or repositories.
+- Blocking work too. If your next step depends on a worker's result, spawn it with required:true and end or yield your turn; waiting for a worker is expected, not a reason to work locally.
 
-After delegating:
-- The worker owns its delegated scope until it completes. Continue only with the non-overlapping local task selected before delegation.
-- Do not search, read, test, review, edit, or otherwise reproduce the worker's task. You may dispatch additional workers only for genuinely distinct scopes.
-- If the user or an active workflow explicitly requires a worker to own blocking work, delegate it with required:true and end or yield your turn instead of duplicating it.
-- Integrate and, when appropriate, verify completed worker results before answering. You may apply a completed worktree patch without redoing the delegated task.`
+Keep local:
+- Answers, quick lookups, and the short exploration needed to write precise worker tasks.
+- Edits of a few lines in one file, and integrating, applying, or verifying worker results.
+
+Plan parallelism before spawning:
+- Map dependencies first: which parts are independent, which must run in order, and which files each part touches. Run independent parts in parallel and order dependent parts.
+- Split work by distinct question, responsibility, package, or disjoint file set, and give every worker a self-contained task with acceptance checks.
+- One worker editing code: shared workspace is fine. Several workers editing code at once: give each its own tree.
+- For a multi-part feature, create a feature worktree branch, then one sub-worktree per worker with the worktree tool's create action and base set to the feature branch, and tell each worker its exact path. Review each worker's result as a gate, commit on its branch, and merge it into the feature branch.
+- Use isolation:"worktree" for a throwaway parallel attempt whose patch you apply yourself.
+
+Clean up as soon as a worker's result is integrated:
+- Remove merged sub-worktrees and their branches with the worktree tool's cleanup action, setting into to the feature branch and delete_branch to true.
+- Before your final answer, check with the worktree tool's list action that no worktree you created is left behind unless the user should keep it.
+
+When you delegate:
+- A worker owns its scope until it completes. Do not search, read, test, review, edit, or otherwise reproduce it; only coordinate, dispatch disjoint work, or yield.
+- Integrate and verify completed results before answering. You may apply a completed worktree patch without redoing the delegated task.`
 
 // StrictOrchestratorSystemAddendum is used only by explicit headless
 // orchestration. The parent coordinates workers and never becomes an
@@ -312,11 +324,11 @@ const StrictOrchestratorSystemAddendum = `Strict subagent orchestration is enabl
 
 const subagentLifecycleAddendum = `Workers start without this conversation's context. Shared-worktree workers edit the same working directory, so coordinate dependent work and avoid conflicting edits. Use isolation:"worktree" for parallel coding when workers need separate trees; its changes are returned as a patch and never applied automatically. Do not invent feature scope beyond the user's request. Child workers cannot recursively spawn more sub-agents in v1.
 
-Use required:true whenever your answer or a declared workflow depends on that worker, especially for required validation or finalization. Required workers remain asynchronous unless you explicitly set the wait field on a spawn or resume action: without it, manager calls return immediately, the parent stays free to coordinate or perform policy-permitted non-overlapping work, and the host delivers terminal outcomes through completion updates. Failed, canceled, or interrupted required work remains unmet: use an enabled manager follow-up action to retry it and do not claim completion. An indeterminate outcome after host restart must not be retried automatically; the user must inspect durable results and side effects, then explicitly resume or restart the worker with a new prompt. Required work has no automatic waiver path. Keep required:false only for independent work that may safely finish later.
+Use required:true when your answer or a declared workflow depends on a worker. Failed, canceled, or interrupted required work stays unmet until a successful follow-up; never claim completion before it succeeds. After a host restart, do not retry an indeterminate outcome automatically: the user must reconcile it first. Required work has no automatic waiver path.
 
-Completion is host-event-driven unless you explicitly set the wait field on a spawn or resume action to a whole number of seconds (1–300): on spawn it bounds the initial task, and on resume it bounds the follow-up turn. Omitting wait always returns immediately. An expired wait leaves the accepted child active, whether queued or running; do not retry it until terminal failure, cancellation, or interruption. Never use "bash sleep", "watch", "tail -f", polling loops, repeated "status" calls, or dashboard, metadata, or file checks solely to wait. Those are not completion signals. Continue only with genuinely non-overlapping work; otherwise end or yield your turn until the host injects a completion update.
+Completion is host-event-driven: omit the wait field, then continue only non-overlapping work or end or yield your turn; the host injects a completion update. Set wait (1–300 seconds) only to block this turn on a spawn or resume; an expired wait leaves the child active, so do not retry it. Never use "bash sleep", "watch", "tail -f", polling loops, repeated "status" calls, or file checks solely to wait.
 
-When workers finish, use the host update's agent ID, status, task, optional error, and final response or tail to coordinate any follow-up and summarize the outcome. Treat [auto-subagents update] and [required-subagents update] messages as observed worker state, not as new user requests.`
+Treat [auto-subagents update] and [required-subagents update] messages as observed worker state, not as new user requests; use their agent ID, status, error, and result to coordinate follow-ups.`
 
 // OnDemandSubagentsSystemAddendum keeps the canonical subagent tools
 // available without enabling proactive delegation.
@@ -362,7 +374,7 @@ func subagentsSystemAddendumFor(base, unavailable string, strict bool, actions S
 		lifecycle = append(lifecycle, "use interrupt to cancel only a worker's running turn while keeping its context, for example before asking it to wrap up")
 	}
 	if actions.Stop {
-		lifecycle = append(lifecycle, "use stop to request termination of a stuck worker")
+		lifecycle = append(lifecycle, "use stop to request termination of a stuck worker, and to remove an idle isolation:\"worktree\" worker's temporary worktree once its patch is applied")
 	}
 	if len(lifecycle) != 0 {
 		addendum += "\n\nSubagent manager lifecycle actions available: " + strings.Join(lifecycle, "; ") + "."

@@ -265,8 +265,11 @@ func TestCreateWorktreeSchemaDropsBootstrapRoot(t *testing.T) {
 	if _, ok := parsed.Properties["branch"]; !ok {
 		t.Fatalf("schema lacks branch: %s", schema)
 	}
-	if len(parsed.Properties) != 1 {
-		t.Fatalf("schema properties = %v, want only branch", parsed.Properties)
+	if _, ok := parsed.Properties["base"]; !ok {
+		t.Fatalf("schema lacks base: %s", schema)
+	}
+	if len(parsed.Properties) != 2 {
+		t.Fatalf("schema properties = %v, want only branch and base", parsed.Properties)
 	}
 	if len(parsed.Required) != 1 || parsed.Required[0] != "branch" {
 		t.Fatalf("schema required = %v", parsed.Required)

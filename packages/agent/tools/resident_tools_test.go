@@ -108,7 +108,7 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 
 func TestSubagentSpawnGuidanceRequiresIndependentOwnership(t *testing.T) {
 	facade := &SubagentTool{}
-	for _, want := range []string{"independent sidecar", "keep immediate blockers local", "never duplicate it in the parent", "end or yield the parent turn"} {
+	for _, want := range []string{"self-contained task", "never duplicate it in the parent", "end or yield the parent turn"} {
 		if got := facade.Description(); !strings.Contains(got, want) {
 			t.Fatalf("description missing %q: %s", want, got)
 		}

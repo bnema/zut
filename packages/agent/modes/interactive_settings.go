@@ -284,7 +284,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:      "auto_subagents_enabled",
 			label:    "proactive delegation",
-			desc:     "delegate independent sidecar work while keeping the critical path local",
+			desc:     "delegate substantial work to subagents; keep small edits local",
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,
