@@ -46,6 +46,7 @@ type CreateWorktreeTool struct {
 
 type createWorktreeArgs struct {
 	Branch string `json:"branch"`
+	Base   string `json:"base,omitempty"`
 }
 
 const createWorktreeSchema = `{
@@ -54,6 +55,10 @@ const createWorktreeSchema = `{
     "branch":{
       "type":"string",
       "description":"Name of the new Git branch."
+    },
+    "base":{
+      "type":"string",
+      "description":"Branch name, tag, or commit to start the new branch from. Defaults to the current HEAD. Use a feature branch to create a sub-worktree based on it."
     }
   },
   "required":["branch"]
@@ -152,7 +157,8 @@ func (t *CreateWorktreeTool) planForExecute(ctx context.Context, raw json.RawMes
 type createWorktreePlan struct {
 	repoRoot     string
 	branch       string
-	base         string
+	base         string // resolved commit
+	baseRef      string // requested base ref; empty for the current HEAD
 	worktreeRoot string
 	worktreePath string
 	rootSource   string
@@ -206,9 +212,16 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 	if branch != branchInput {
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: invalid branch %q", branchInput)
 	}
-	base, err := createWorktreeGitOutput(ctx, repoRoot, "rev-parse", "--verify", "HEAD^{commit}")
+	baseRef := strings.TrimSpace(args.Base)
+	if strings.HasPrefix(baseRef, "-") {
+		return createWorktreePlan{}, fmt.Errorf("create_worktree: invalid base %q", baseRef)
+	}
+	base, err := resolveWorktreeCommit(ctx, repoRoot, baseRef)
 	if err != nil {
-		return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve current commit: %w", err)
+		if baseRef == "" {
+			return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve current commit: %w", err)
+		}
+		return createWorktreePlan{}, fmt.Errorf("create_worktree: invalid base %q: %w", baseRef, err)
 	}
 	commonDir, err := createWorktreeGitOutput(ctx, repoRoot, "rev-parse", "--git-common-dir")
 	if err != nil {
@@ -283,11 +296,16 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 
 	displayRoot := filepath.ToSlash(worktreeRoot)
 	displayPath := filepath.ToSlash(worktreePath)
-	previewText := fmt.Sprintf("create worktree\nbranch: %s\nbase: %s\nworktree root: %s\nroot source: %s\npath: %s\n", branch, base, displayRoot, rootSource, displayPath)
+	baseDisplay := base
+	if baseRef != "" {
+		baseDisplay = fmt.Sprintf("%s (%s)", baseRef, base)
+	}
+	previewText := fmt.Sprintf("create worktree\nbranch: %s\nbase: %s\nworktree root: %s\nroot source: %s\npath: %s\n", branch, baseDisplay, displayRoot, rootSource, displayPath)
 	return createWorktreePlan{
 		repoRoot:     repoRoot,
 		branch:       branch,
 		base:         base,
+		baseRef:      baseRef,
 		worktreeRoot: worktreeRoot,
 		worktreePath: worktreePath,
 		rootSource:   rootSource,
@@ -299,6 +317,7 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 				"state":         "ready",
 				"branch":        branch,
 				"base":          base,
+				"base_ref":      baseRef,
 				"worktree_root": displayRoot,
 				"root_source":   rootSource,
 				"repo_id":       repoID,
@@ -306,6 +325,15 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 			},
 		},
 	}, nil
+}
+
+// resolveWorktreeCommit resolves ref (HEAD when empty) to a commit id. Callers
+// must reject refs that begin with "-" first so a ref cannot become an option.
+func resolveWorktreeCommit(ctx context.Context, repoRoot, ref string) (string, error) {
+	if ref == "" {
+		ref = "HEAD"
+	}
+	return createWorktreeGitOutput(ctx, repoRoot, "rev-parse", "--verify", ref+"^{commit}")
 }
 
 func (t *CreateWorktreeTool) defaultRoot() (string, error) {
@@ -449,6 +477,7 @@ func sameCreateWorktreePlan(a, b createWorktreePlan) bool {
 	return a.repoRoot == b.repoRoot &&
 		a.branch == b.branch &&
 		a.base == b.base &&
+		a.baseRef == b.baseRef &&
 		a.worktreeRoot == b.worktreeRoot &&
 		a.worktreePath == b.worktreePath &&
 		a.rootSource == b.rootSource &&
@@ -548,7 +577,7 @@ func createWorktreeBranchExists(ctx context.Context, repoRoot, branch string) (b
 }
 
 func createWorktreeGitRef(ctx context.Context, repoRoot, ref string) (string, bool, error) {
-	output, err := createWorktreeGitOutput(ctx, repoRoot, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	output, err := createWorktreeGitOutput(ctx, repoRoot, "rev-parse", "--verify", ref+"^{commit}")
 	if err == nil {
 		return output, true, nil
 	}
