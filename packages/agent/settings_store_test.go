@@ -70,13 +70,20 @@ func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 
 func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
 	proactive := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
-	for _, want := range []string{"primary owner and implementer", "immediate next task you will perform locally", "If you cannot name useful non-overlapping local work, do not delegate", "Do not search, read, test, review, edit"} {
+	for _, want := range []string{"delegate by default and keep work local by exception", "spawn it with required:true and end or yield your turn", "Edits of a few lines in one file", "Do not search, read, test, review, edit", "Map dependencies first", "base set to the feature branch", "Review each worker's result as a gate", "into to the feature branch and delete_branch to true", "no worktree you created is left behind"} {
 		if !strings.Contains(proactive, want) {
 			t.Fatalf("proactive addendum missing %q:\n%s", want, proactive)
 		}
 	}
 	if strings.Contains(proactive, "not an implementer") {
 		t.Fatalf("proactive addendum retained strict orchestrator contract:\n%s", proactive)
+	}
+	// These lines vetoed delegation whenever the next step depended on a
+	// result, which made the primary implement nearly every task itself.
+	for _, unwanted := range []string{"primary owner and implementer", "do that work yourself instead of spawning", "do not delegate"} {
+		if strings.Contains(proactive, unwanted) {
+			t.Fatalf("proactive addendum kept delegation veto %q:\n%s", unwanted, proactive)
+		}
 	}
 
 	strict := StrictOrchestratorSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
@@ -90,11 +97,11 @@ func TestSubagentPoliciesSeparateProactiveAndStrictOwnership(t *testing.T) {
 func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing.T) {
 	proactive := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
 	for _, want := range []string{
-		"Route before you work:",
-		"routing happens when the user states the request you are about to work on",
-		"the [subagents_list] profile that owns each delegable part",
-		"let the tool calls that follow speak for themselves",
-		"Say plainly when nothing is worth delegating",
+		"Route every new task before you work:",
+		"Re-route each new request, even late in a long session",
+		"the [subagents_list] profile for each delegated part",
+		"do not narrate the tool calls that follow",
+		"Keep a task fully local only when it is small",
 	} {
 		if !strings.Contains(proactive, want) {
 			t.Fatalf("proactive addendum missing %q:\n%s", want, proactive)
@@ -115,7 +122,7 @@ func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ProactiveSubagentsSystemAddendumFor(SubagentActions{Spawn: false, Stop: tc.stop, Resume: tc.resume})
-			for _, unwanted := range []string{"Route before you work:", "[subagents_list]", "spawn a clearly described general worker"} {
+			for _, unwanted := range []string{"Route every new task before you work:", "[subagents_list]", "Spawn a clearly described general worker"} {
 				if strings.Contains(got, unwanted) {
 					t.Fatalf("spawn-withheld addendum kept %q:\n%s", unwanted, got)
 				}
@@ -138,7 +145,7 @@ func TestProactiveAddendumRoutesBeforeWorkOnlyWhenSpawningIsAvailable(t *testing
 	// Routing is the interactive collaboration step; the headless strict
 	// contract divides scopes itself and must not inherit it.
 	strict := StrictOrchestratorSystemAddendumFor(SubagentActions{Spawn: true, Stop: false, Resume: false})
-	if strings.Contains(strict, "Route before you work:") || strings.Contains(strict, "[subagents_list]") {
+	if strings.Contains(strict, "Route every new task before you work:") || strings.Contains(strict, "[subagents_list]") {
 		t.Fatalf("strict orchestrator inherited interactive routing guidance:\n%s", strict)
 	}
 }

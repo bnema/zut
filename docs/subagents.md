@@ -189,23 +189,31 @@ retries it automatically.
 
 ## Delegation ownership
 
-Interactive proactive delegation keeps the primary agent on the critical path.
-Process start says nothing about the task, and the workers it needs only become
-knowable once the user states the request. Routing therefore happens then: the
-reply that starts the work names the parts the primary keeps on the critical
-path and the profile that owns each delegable part, before it implements or
-spawns anything. It states plainly when nothing is worth delegating rather than
-forcing a worker. The routing guidance is part of the prompt only when
-launch-time policy exposes the spawn action.
-Before spawning, it selects useful local work and delegates only a concrete,
-bounded sidecar with a non-overlapping question, responsibility, package, or
-file set. Immediate blockers and tightly coupled work stay local. While a child
-is active, it owns that scope; the primary continues only its preselected
-independent work instead of repeating the investigation, review, testing, or
-implementation. If an explicit user request or active workflow hands blocking
-work to a child, the primary yields for the completion update. Once a worktree
-child succeeds, the primary may apply and verify its captured patch without
-redoing the delegated task.
+Interactive proactive delegation makes the primary agent an orchestrator that
+delegates by default. Implementation, debugging, testing, review, and broad
+research go to workers; answers, quick lookups, edits of a few lines, and
+integration of worker results stay local. Blocking work is delegated too: the
+primary spawns it with `required: true` and yields for the completion update.
+
+Routing happens for each new request, not at process start: the reply that
+starts the work names each part, its owner, and the profile for each delegated
+part. The routing guidance is part of the prompt only when launch-time policy
+exposes the spawn action.
+
+Before spawning, the primary maps dependencies, runs independent parts in
+parallel, and gives every worker a self-contained task with a disjoint scope.
+For a multi-part feature it creates a feature worktree branch, then one
+sub-worktree per worker with `worktree` `create` and `base` set to the feature
+branch. It reviews each result, commits on the sub-branch, and merges it into
+the feature branch. It then removes merged sub-worktrees and their branches
+with `worktree` `cleanup`, `into` set to the feature branch and
+`delete_branch: true`, and checks with `list` that none are left behind.
+
+While a child is active, it owns that scope; the primary does not repeat its
+investigation, review, testing, or implementation. Once an
+`isolation: "worktree"` child succeeds, the primary may apply and verify its
+captured patch without redoing the task, then stop the idle child so its
+temporary worktree is removed.
 
 Explicit headless `--orchestrate` remains manager-only. Its primary divides the
 request into disjoint worker scopes, coordinates active children, and yields
