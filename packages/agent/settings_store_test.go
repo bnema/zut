@@ -8,7 +8,7 @@ import (
 func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
 	// Substrings that identify the lifecycle action guidance.
 	const (
-		stopAction      = "use stop to request termination of a stuck worker"
+		stopAction      = "use stop to request termination of a stuck worker, and to remove an idle isolation:\"worktree\" worker's temporary worktree"
 		resumeAction    = "use resume with an agent id and follow-up prompt"
 		interruptAction = "use interrupt to cancel only a worker's running turn"
 		noSpawnNotice   = "Spawning new workers is unavailable"

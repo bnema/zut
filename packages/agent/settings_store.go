@@ -305,7 +305,6 @@ Plan parallelism before spawning:
 
 Clean up as soon as a worker's result is integrated:
 - Remove merged sub-worktrees and their branches with the worktree tool's cleanup action, setting into to the feature branch and delete_branch to true.
-- Stop idle isolation:"worktree" workers once their patch is applied so their temporary worktree is removed.
 - Before your final answer, check with the worktree tool's list action that no worktree you created is left behind unless the user should keep it.
 
 When you delegate:
@@ -375,7 +374,7 @@ func subagentsSystemAddendumFor(base, unavailable string, strict bool, actions S
 		lifecycle = append(lifecycle, "use interrupt to cancel only a worker's running turn while keeping its context, for example before asking it to wrap up")
 	}
 	if actions.Stop {
-		lifecycle = append(lifecycle, "use stop to request termination of a stuck worker")
+		lifecycle = append(lifecycle, "use stop to request termination of a stuck worker, and to remove an idle isolation:\"worktree\" worker's temporary worktree once its patch is applied")
 	}
 	if len(lifecycle) != 0 {
 		addendum += "\n\nSubagent manager lifecycle actions available: " + strings.Join(lifecycle, "; ") + "."
