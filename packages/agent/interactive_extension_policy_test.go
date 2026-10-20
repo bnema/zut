@@ -8,6 +8,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
 
@@ -53,5 +54,19 @@ func TestResidentRegistryRejectsInteractiveExtensionTools(t *testing.T) {
 	tool := extensions.NewTool(nil, extensions.ToolInfo{Name: "ask_user", Interactive: true, Schema: json.RawMessage(`{"type":"object"}`)})
 	if _, err := residentChildRegistry(core.Registry{"ask_user": tool}, []string{"ask_user"}); err == nil || !strings.Contains(err.Error(), "interactive") {
 		t.Fatalf("resident registry accepted interactive tool: %v", err)
+	}
+}
+
+func TestNativeQuestionsExcludedFromBackgroundRegistries(t *testing.T) {
+	tool := &tools.AskUserQuestionTool{}
+	if !extensions.IsInteractiveTool(tool) {
+		t.Fatal("native question tool is not interactive")
+	}
+	reg := core.Registry{tool.Name(): tool}
+	if _, ok := scheduledSessionRegistry(core.Registry{tool.Name(): tool})[tool.Name()]; ok {
+		t.Fatal("scheduled registry retained questions")
+	}
+	if _, err := residentChildRegistry(reg, []string{tool.Name()}); err == nil || !strings.Contains(err.Error(), "interactive") {
+		t.Fatalf("resident registry: %v", err)
 	}
 }

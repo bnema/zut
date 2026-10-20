@@ -1657,6 +1657,18 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	// host after constructing it below so startup alerts can be buffered.
 	var iv *modes.Interactive
 	extHooks := &interactiveExtHooks{}
+	attachQuestionAsker := func(reg core.Registry) {
+		if tool, ok := reg[tools.AskUserQuestionToolName].(*tools.AskUserQuestionTool); ok {
+			tool.Asker = func() tools.QuestionAsker {
+				host := extHooks.iv()
+				if host == nil {
+					return nil
+				}
+				return host
+			}
+		}
+	}
+	attachQuestionAsker(r.ToolRegistry)
 	extMgr := extensions.New(ZutHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	var startupExtensionErrors []string
 	// --ext paths first so they win against installed extensions of
@@ -1747,8 +1759,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		_ = closeSubagentRuntimeFresh(runtime)
 	}()
 
-	prepareInteractiveRegistry := runtime.PrepareRegistry
-	prepareResolvedInteractiveRegistry := runtime.PrepareResolvedRegistry
+	prepareInteractiveRegistry := func(reg core.Registry) core.Registry {
+		attachQuestionAsker(reg)
+		return runtime.PrepareRegistry(reg)
+	}
+	prepareResolvedInteractiveRegistry := func(reg core.Registry, policy subagents.WebSearchPolicy) {
+		attachQuestionAsker(reg)
+		runtime.PrepareResolvedRegistry(reg, policy)
+	}
 	prepareResolvedInteractiveRegistry(r.ToolRegistry, r.WebSearchPolicy)
 	initialWebSearchPolicy := webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry)
 	webSearchGuard.setAvailable(initialWebSearchPolicy == subagents.WebSearchAllow)
@@ -1783,7 +1801,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			if len(r.ModifiedArgs) > 0 && json.Valid(r.ModifiedArgs) {
 				effectiveArgs = r.ModifiedArgs
 			}
-			if confirmGate != nil {
+			if confirmGate != nil && call.Name != tools.AskUserQuestionToolName {
 				var content strings.Builder
 				// The remembered "always allow" grant is keyed by tool name,
 				// or a finer per-action key when the tool asks for one (the

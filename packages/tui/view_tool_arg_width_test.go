@@ -74,3 +74,9 @@ func TestShortArgsGlobShowsPatternAndDir(t *testing.T) {
 		t.Fatalf("ShortArgs glob with dot dir = %q, want bare pattern", got)
 	}
 }
+
+func TestQuestionToolSummary(t *testing.T) {
+	if got := ShortArgs("ask_user_question", json.RawMessage(`{"questions":[{}, {}, {}]}`)); got != "· 3 questions" {
+		t.Fatalf("summary: %q", got)
+	}
+}

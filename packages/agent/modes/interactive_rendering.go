@@ -464,6 +464,9 @@ func (i *Interactive) redraw() {
 	var dialog []string
 	var dialogID string
 	switch {
+	case i.questionDialog.Active() && !i.confirmDialog.Active():
+		dialogID = "questions"
+		dialog = i.questionDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.dialog.Active():
 		dialogID = "login"
 		dialog = i.dialog.Render(i.cfg.Theme, dialogWidth)
@@ -537,8 +540,9 @@ func (i *Interactive) redraw() {
 	dialogTitle := floatingOverlayTitle(dialogID)
 	dialogRemovedTopRows := 0
 	if len(dialog) > 0 {
-		// The error viewer budgets every content row for its scroll viewport.
-		if dialogID != "rescue-error" {
+		// The error viewer budgets every content row for its scroll viewport;
+		// the question dialog places its own spacing rows.
+		if dialogID != "rescue-error" && dialogID != "questions" {
 			dialog = padDialogFrame(dialog)
 		}
 		frameTitle, body, removedTopRows := floatingDialogBody(dialog)

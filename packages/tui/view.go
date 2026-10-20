@@ -2757,6 +2757,11 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 		}
 		return s
 	}
+	if tool == "ask_user_question" {
+		if qs, ok := x["questions"].([]any); ok {
+			return fmt.Sprintf("· %d questions", len(qs))
+		}
+	}
 	var primary string
 	// Glob leads with its pattern; every other tool keeps the legacy
 	// path-first shape so tools carrying both (e.g. ast's pattern+path)

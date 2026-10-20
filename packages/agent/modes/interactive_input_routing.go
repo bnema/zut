@@ -127,6 +127,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	if i.questionDialog.Active() && !i.confirmDialog.Active() {
+		i.questionDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
 	if i.dialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.dialog.Close()

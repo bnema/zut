@@ -11,6 +11,7 @@ import (
 // 400. Every built-in schema must keep a plain object root.
 func TestToolSchemasAnthropicCompatible(t *testing.T) {
 	schemas := map[string]json.RawMessage{
+		"ask_user_question":   (&AskUserQuestionTool{}).Schema(),
 		"ast":                 (&ASTTool{}).Schema(),
 		"bash":                (&BashTool{}).Schema(),
 		"create_worktree":     (&CreateWorktreeTool{}).Schema(),
