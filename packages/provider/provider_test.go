@@ -556,11 +556,16 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 
 func anthropicStreamUsage(t *testing.T, messageStart string) Usage {
 	t.Helper()
+	return anthropicStreamUsageWithDelta(t, messageStart, `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`)
+}
+
+func anthropicStreamUsageWithDelta(t *testing.T, messageStart, messageDelta string) Usage {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("event: message_start\ndata: " + messageStart + "\n\n" +
-			"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+			"event: message_delta\ndata: " + messageDelta + "\n\n" +
 			"event: message_stop\ndata: {}\n\n"))
 	}))
 	defer srv.Close()
@@ -593,6 +598,25 @@ func TestAnthropicStreamKnownCacheMissReportsZeroRatio(t *testing.T) {
 	usage := anthropicStreamUsage(t, `{"message":{"usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`)
 	if ratio, ok := usage.CacheHitRatio(); !ok || ratio != 0 {
 		t.Fatalf("cache hit ratio = %v, %v, want 0, true", ratio, ok)
+	}
+}
+
+func TestAnthropicStreamCacheFieldsInDeltaOnly(t *testing.T) {
+	start := `{"message":{"usage":{"input_tokens":100,"output_tokens":0}}}`
+	for _, tc := range []struct {
+		name  string
+		delta string
+		want  float64
+	}{
+		{"known miss", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`, 0},
+		{"hit", `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_read_input_tokens":300,"cache_creation_input_tokens":0}}`, 0.75},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := anthropicStreamUsageWithDelta(t, start, tc.delta)
+			if ratio, ok := usage.CacheHitRatio(); !ok || math.Abs(ratio-tc.want) > 1e-9 {
+				t.Fatalf("cache hit ratio = %v, %v, want %v, true", ratio, ok, tc.want)
+			}
+		})
 	}
 }
 

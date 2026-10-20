@@ -854,11 +854,11 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				if m.Usage.OutputTokens > 0 {
 					usage.OutputTokens = m.Usage.OutputTokens
 				}
-				if r := m.Usage.CacheReadInputTokens; r != nil && *r > 0 {
+				if r := m.Usage.CacheReadInputTokens; r != nil {
 					usage.CacheReadTokens = *r
 					cacheReported = true
 				}
-				if w := m.Usage.CacheCreationInputTokens; w != nil && *w > 0 {
+				if w := m.Usage.CacheCreationInputTokens; w != nil {
 					usage.CacheWriteTokens = *w
 					cacheReported = true
 				}
