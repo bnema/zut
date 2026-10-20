@@ -666,8 +666,12 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 		blockOrder []int // insertion order of indexes
 		activeIdx  = -1
 		usage      Usage
-		stop       = StopEnd
-		finalErr   error
+		// cacheReported is set once the stream carries explicit cache
+		// usage fields, so the cache hit ratio is only reported when the
+		// endpoint measured it (some Anthropic-compatible APIs omit them).
+		cacheReported bool
+		stop          = StopEnd
+		finalErr      error
 	)
 	_ = activeIdx // read-only indicator used for legacy parity
 
@@ -700,6 +704,10 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 	}
 
 	sendDone := func() {
+		if cacheReported {
+			usage.CacheMeasuredPromptTokens = usage.PromptTokens()
+			usage.CacheMeasuredReadTokens = usage.CacheReadTokens
+		}
 		usage.CostUSD = ComputeCost(model, usage)
 		out <- EventUsage{Usage: usage}
 		out <- EventDone{Stop: stop, Err: finalErr, Message: assembleMsg()}
@@ -800,10 +808,10 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				var m struct {
 					Message struct {
 						Usage struct {
-							InputTokens              int `json:"input_tokens"`
-							OutputTokens             int `json:"output_tokens"`
-							CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-							CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+							InputTokens              int  `json:"input_tokens"`
+							OutputTokens             int  `json:"output_tokens"`
+							CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+							CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 						} `json:"usage"`
 					} `json:"message"`
 				}
@@ -814,18 +822,26 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				// which can be 50-70% of cost.
 				usage.InputTokens = m.Message.Usage.InputTokens
 				usage.OutputTokens = m.Message.Usage.OutputTokens
-				usage.CacheReadTokens = m.Message.Usage.CacheReadInputTokens
-				usage.CacheWriteTokens = m.Message.Usage.CacheCreationInputTokens
+				usage.CacheReadTokens = 0
+				usage.CacheWriteTokens = 0
+				if r := m.Message.Usage.CacheReadInputTokens; r != nil {
+					usage.CacheReadTokens = *r
+					cacheReported = true
+				}
+				if w := m.Message.Usage.CacheCreationInputTokens; w != nil {
+					usage.CacheWriteTokens = *w
+					cacheReported = true
+				}
 			case "message_delta":
 				var m struct {
 					Delta struct {
 						StopReason string `json:"stop_reason"`
 					} `json:"delta"`
 					Usage struct {
-						InputTokens              int `json:"input_tokens"`
-						OutputTokens             int `json:"output_tokens"`
-						CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-						CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+						InputTokens              int  `json:"input_tokens"`
+						OutputTokens             int  `json:"output_tokens"`
+						CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+						CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 					} `json:"usage"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &m)
@@ -838,11 +854,13 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				if m.Usage.OutputTokens > 0 {
 					usage.OutputTokens = m.Usage.OutputTokens
 				}
-				if m.Usage.CacheReadInputTokens > 0 {
-					usage.CacheReadTokens = m.Usage.CacheReadInputTokens
+				if r := m.Usage.CacheReadInputTokens; r != nil {
+					usage.CacheReadTokens = *r
+					cacheReported = true
 				}
-				if m.Usage.CacheCreationInputTokens > 0 {
-					usage.CacheWriteTokens = m.Usage.CacheCreationInputTokens
+				if w := m.Usage.CacheCreationInputTokens; w != nil {
+					usage.CacheWriteTokens = *w
+					cacheReported = true
 				}
 				switch m.Delta.StopReason {
 				case "end_turn", "stop_sequence":
