@@ -128,6 +128,33 @@ func TestFirstRealPromptSetsAndPersistsTerminalTitle(t *testing.T) {
 	}
 }
 
+func TestClearResetsTerminalTitleAndRegeneratesOnNextPrompt(t *testing.T) {
+	term := &alertTestTerminal{}
+	client := &interactiveTitleClient{title: "Fix login retries"}
+	ag := core.NewAgent(client, "test-model", "", nil)
+	i := NewInteractive(InteractiveConfig{Agent: ag, Terminal: term})
+	i.markInteractiveStarted()
+
+	i.Submit("Please fix login retries")
+	waitInteractiveIdle(t, i)
+	waitInteractiveTitle(t, i, "Fix login retries")
+
+	i.runSlash(context.Background(), "/clear")
+	if got := term.String(); !strings.HasSuffix(got, "\x1b]0;zut\x07") {
+		t.Fatalf("terminal title output after /clear = %q, want neutral title last", got)
+	}
+
+	client.mu.Lock()
+	client.title = "Add dark theme"
+	client.mu.Unlock()
+	i.Submit("Please add a dark theme")
+	waitInteractiveIdle(t, i)
+	waitInteractiveTitle(t, i, "Add dark theme")
+	if got := term.String(); !strings.HasSuffix(got, "\x1b]0;zut: Add dark theme\x07") {
+		t.Fatalf("terminal title output = %q, want new title last", got)
+	}
+}
+
 func TestTitleFailureFallsBackWithoutFailingMainTurn(t *testing.T) {
 	term := &alertTestTerminal{}
 	client := &interactiveTitleClient{titleErr: errors.New("title provider unavailable")}

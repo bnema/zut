@@ -254,11 +254,16 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.planTotal = 0
 		i.planRevision++
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
+		// A cleared conversation starts over with a fresh terminal title.
+		titleCancel := i.resetSessionTitleLocked()
 		i.view.InvalidateRenderCache()
 		// A cleared conversation gets its pinned skills again.
 		i.armSkillPinsLocked(pinFetch)
 		i.mu.Unlock()
 		pinDone()
+		if titleCancel != nil {
+			titleCancel()
+		}
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
 		}

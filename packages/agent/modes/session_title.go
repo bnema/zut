@@ -211,6 +211,17 @@ func (i *Interactive) restoreFailedSessionTitle() {
 
 func (i *Interactive) resetSessionTitleForFreshBranch() {
 	i.mu.Lock()
+	cancel := i.resetSessionTitleLocked()
+	i.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// resetSessionTitleLocked drops the current title, shows the neutral terminal
+// title, and lets the next real prompt generate a new one. Callers hold i.mu
+// and must call the returned cancel func (if any) after unlocking.
+func (i *Interactive) resetSessionTitleLocked() context.CancelFunc {
 	cancel := i.titleCancel
 	i.titleCancel = nil
 	i.titleVersion++
@@ -219,10 +230,7 @@ func (i *Interactive) resetSessionTitleForFreshBranch() {
 	i.titleGenerationStarted = false
 	i.firstRealPrompt = ""
 	i.writeTerminalTitleLocked("")
-	i.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
+	return cancel
 }
 
 func (i *Interactive) agentMessagesLocked() []provider.Message {
