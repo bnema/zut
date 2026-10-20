@@ -203,13 +203,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.cfg.Provider = provider
 	i.cfg.Model = model
 	i.cfg.detachMismatchedModelProfile()
-	titleCancel := i.titleCancel
-	i.titleCancel = nil
-	i.titleVersion++
-	i.sessionTitle = ""
-	i.titleRealPromptSeen = false
-	i.titleGenerationStarted = false
-	i.writeTerminalTitleLocked("")
+	titleCancel := i.resetSessionTitleLocked()
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.stream.Reset()
