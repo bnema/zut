@@ -554,6 +554,55 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
+func anthropicStreamUsage(t *testing.T, messageStart string) Usage {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: message_start\ndata: " + messageStart + "\n\n" +
+			"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+			"event: message_stop\ndata: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	evs, err := NewAnthropic("x", srv.URL).Stream(context.Background(), Request{Model: "claude-sonnet-4-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usage Usage
+	for ev := range evs {
+		if e, ok := ev.(EventUsage); ok {
+			usage = e.Usage
+		}
+	}
+	return usage
+}
+
+func TestAnthropicStreamReportsCacheHitRatio(t *testing.T) {
+	usage := anthropicStreamUsage(t, `{"message":{"usage":{"input_tokens":20,"output_tokens":0,"cache_read_input_tokens":900,"cache_creation_input_tokens":80}}}`)
+	if usage.CacheReadTokens != 900 || usage.CacheWriteTokens != 80 {
+		t.Fatalf("cache tokens = R%d W%d, want R900 W80", usage.CacheReadTokens, usage.CacheWriteTokens)
+	}
+	ratio, ok := usage.CacheHitRatio()
+	if !ok || math.Abs(ratio-0.9) > 1e-9 {
+		t.Fatalf("cache hit ratio = %v, %v, want 0.9, true", ratio, ok)
+	}
+}
+
+func TestAnthropicStreamKnownCacheMissReportsZeroRatio(t *testing.T) {
+	usage := anthropicStreamUsage(t, `{"message":{"usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`)
+	if ratio, ok := usage.CacheHitRatio(); !ok || ratio != 0 {
+		t.Fatalf("cache hit ratio = %v, %v, want 0, true", ratio, ok)
+	}
+}
+
+func TestAnthropicStreamWithoutCacheFieldsLeavesRatioUnknown(t *testing.T) {
+	usage := anthropicStreamUsage(t, `{"message":{"usage":{"input_tokens":100,"output_tokens":0}}}`)
+	if ratio, ok := usage.CacheHitRatio(); ok {
+		t.Fatalf("cache hit ratio = %v, true, want unknown", ratio)
+	}
+}
+
 func TestClaudeOpus5Catalog(t *testing.T) {
 	m, err := FindModel("anthropic", "claude-opus-5")
 	if err != nil {
