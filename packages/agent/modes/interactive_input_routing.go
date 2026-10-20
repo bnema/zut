@@ -57,6 +57,7 @@ func (i *Interactive) confirmChildActive() bool {
 func (i *Interactive) confirmChildActiveLocked() bool {
 	return len(i.helpBlock) > 0 ||
 		len(i.extNotes) > 0 ||
+		i.questionDialog.Active() ||
 		i.dialog.Active() ||
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||

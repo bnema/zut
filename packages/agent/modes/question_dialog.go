@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -124,11 +125,16 @@ func (d *questionDialog) HandleKey(k tui.Key) {
 			runes := []rune(s.text)
 			if len(runes) > 0 {
 				s.text = string(runes[:len(runes)-1])
+				s.answered = false
 			}
 		case tui.KeyRune:
-			s.text += string(k.Rune)
+			s.text += strings.NewReplacer("\r", " ", "\n", " ").Replace(string(k.Rune))
+			s.answered = false
 		case tui.KeyPaste:
-			s.text += k.Paste
+			s.text += strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(k.Paste)
+			if k.Paste != "" {
+				s.answered = false
+			}
 		}
 		return
 	}
@@ -150,6 +156,7 @@ func (d *questionDialog) HandleKey(k tui.Key) {
 			s.cursor = n
 			if q.MultiSelect {
 				s.checked[n] = !s.checked[n]
+				s.answered = false
 				return
 			}
 			k.Kind = tui.KeyEnter
@@ -157,6 +164,7 @@ func (d *questionDialog) HandleKey(k tui.Key) {
 	}
 	if k.Kind == tui.KeyRune && k.Rune == ' ' && q.MultiSelect && s.cursor < len(q.Options) {
 		s.checked[s.cursor] = !s.checked[s.cursor]
+		s.answered = false
 		return
 	}
 	if k.Kind != tui.KeyEnter {
@@ -198,12 +206,24 @@ func (d *questionDialog) Render(th tui.Theme, width int) []string {
 		title += " · " + q.Header
 	}
 	lines := []string{frameHeader(th, title, width)}
-	add := func(text string) { lines = append(lines, tui.WrapANSILine(text, width)...) }
+	// Like wrapDialogTextRows, split logical lines before wrapping, but keep
+	// this dialog's unindented layout. Style physical rows after wrapping.
+	addRows := func(text string, focused bool) {
+		for _, line := range strings.Split(text, "\n") {
+			for _, row := range tui.WrapANSILine(line, width) {
+				if focused {
+					row = th.PadHighlight(stripANSIBytes(row), width)
+				}
+				lines = append(lines, row)
+			}
+		}
+	}
+	add := func(text string) { addRows(text, false) }
 	add(q.Question)
 	lines = append(lines, "")
 	footer := th.FGColor(th.Muted, "↑/↓ j/k move · 1–9 pick · Space toggle · Enter confirm · ←/Shift+Tab back · Tab next · Esc decline")
 	if s.editing {
-		add("> " + s.text + "▏")
+		addRows("> "+s.text+"▏", true)
 		footer = th.FGColor(th.Muted, "Enter submit · Esc back/cancel · Shift+Tab previous")
 	} else {
 		for n := 0; n <= len(q.Options); n++ {
@@ -225,7 +245,7 @@ func (d *questionDialog) Render(th tui.Theme, width int) []string {
 			if n == s.cursor {
 				prefix = "› "
 			}
-			add(prefix + label)
+			addRows(prefix+label, n == s.cursor)
 		}
 	}
 	if r.hint != "" {
@@ -237,7 +257,9 @@ func (d *questionDialog) Render(th tui.Theme, width int) []string {
 	// Frame helpers may retain their minimum decoration width. Wrap these too.
 	var out []string
 	for _, line := range lines {
-		out = append(out, tui.WrapANSILine(line, width)...)
+		for _, logical := range strings.Split(line, "\n") {
+			out = append(out, tui.WrapANSILine(logical, width)...)
+		}
 	}
 	return out
 }
@@ -248,7 +270,7 @@ func (i *Interactive) AskQuestions(ctx context.Context, qs []tools.Question) ([]
 		return nil, err
 	}
 	r := i.questionDialog.Enqueue(qs)
-	i.scheduleMainAlert("waiting for answers")
+	i.Alert("", extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "waiting for answers"})
 	i.invalidate()
 	defer func() { i.questionDialog.Remove(r); i.invalidate() }()
 	select {
