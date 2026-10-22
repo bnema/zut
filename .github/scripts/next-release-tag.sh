@@ -19,7 +19,10 @@ fi
 
 minor=false
 patch=false
+# A here-string, not a process substitution: the ermite runner has no /dev/fd.
+commits=$(git rev-list "$range")
 while IFS= read -r commit; do
+	[ -n "$commit" ] || continue
 	subject=$(git log -1 --format=%s "$commit")
 	body=$(git log -1 --format=%b "$commit")
 
@@ -39,7 +42,7 @@ while IFS= read -r commit; do
 		docs|test|style) ;;
 		*) ;;
 	esac
-done < <(git rev-list "$range")
+done <<<"$commits"
 
 if [ "$minor" != true ] && [ "$patch" != true ]; then
 	exit 0
