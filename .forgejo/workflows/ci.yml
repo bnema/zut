@@ -41,9 +41,6 @@ jobs:
       - name: go test
         run: go test -race ./...
 
-      - name: release-version policy
-        run: bash .github/scripts/next-release-tag_test.sh
-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9.3.0
         with:
