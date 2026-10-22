@@ -147,13 +147,15 @@ If a validation command cannot pass because of an unrelated repository or enviro
 
 ## Releases
 
-The maintainer publishes a release by pushing a signed version tag to the forge:
+Every morning at 07:00 Europe/Paris, the release workflow on git.bnema.dev tags `main` when its unreleased conventional commits call for a release (`.github/scripts/next-release-tag.sh`: `feat` or a breaking change bumps the minor version, `fix`, `perf`, `refactor`, `build`, `chore` and `ci` the patch). It then runs GoReleaser and publishes the archives and `checksums.txt`. Put `[release=skip]` in the latest commit message to skip a morning. Run it now with `ermite workflow run zut release.yml`.
+
+The maintainer can also publish by pushing a signed version tag:
 
 ```sh
 git tag -s vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
 ```
 
-The tag triggers the release workflow, which runs GoReleaser and publishes the archives and `checksums.txt` on git.bnema.dev. The GitHub mirror receives the same tag and publishes a copy, because installed `zut update` builds read releases from GitHub only.
+The GitHub mirror receives the tags and publishes a copy, because installed `zut update` builds read releases from GitHub only.
 
 ## Pull request shape
 

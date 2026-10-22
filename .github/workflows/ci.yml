@@ -50,6 +50,10 @@ jobs:
 
       # Keep Linux-only quality checks in the Ubuntu test job so CI needs
       # only the three platform runners.
+      - name: release-version policy
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .github/scripts/next-release-tag_test.sh
+
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
         uses: golangci/golangci-lint-action@v9.3.0

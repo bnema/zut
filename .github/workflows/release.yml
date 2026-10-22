@@ -1,23 +1,84 @@
 name: release
 
-# Pushing a v* tag publishes the release. This workflow intentionally runs on
-# both ermite (publishes to git.bnema.dev) and the GitHub mirror (publishes a
-# copy on github.com, because installed `zut update` only reads GitHub).
+# Every morning at 07:00 Europe/Paris, ermite tags main when its unreleased
+# conventional commits call for a release, then publishes it in the same run (a
+# tag pushed with the job token starts no run). A v* tag pushed by hand also
+# publishes. The GitHub mirror never tags: it receives the forge's tags and
+# publishes a copy, because installed `zut update` only reads GitHub.
 on:
+  schedule:
+    - cron: "0 7 * * *"
+      timezone: Europe/Paris
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  tag:
+    if: github.event_name != 'push' && github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: main
+
+      - name: Compute the next release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git log -1 --format=%B | grep -Fq '[release=skip]'; then
+            echo "The latest commit requested that the release be skipped."
+            exit 0
+          fi
+          tag=$(bash .github/scripts/next-release-tag.sh)
+          if [ -z "$tag" ]; then
+            echo "No releasable conventional commits for this run."
+            exit 0
+          fi
+          echo "Releasing $tag from $(git rev-parse --short HEAD)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push the tag
+        if: steps.version.outputs.tag != ''
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # A retry finds the tag already on HEAD: it is published again as is.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "release $TAG"
+          git push origin "refs/tags/$TAG"
+
   release:
+    needs: tag
+    # A pushed tag publishes on ermite and on the mirror (the tag job is
+    # skipped there); a scheduled or dispatched run publishes what it tagged.
+    if: >-
+      !cancelled() && needs.tag.result != 'failure' &&
+      (github.event_name == 'push' || needs.tag.outputs.tag != '')
     runs-on: ubuntu-latest
     steps:
       - name: Check out the tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.tag.outputs.tag && format('refs/tags/{0}', needs.tag.outputs.tag) || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
