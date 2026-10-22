@@ -1,9 +1,18 @@
-# GoReleaser config — builds cross-platform binaries and GitHub Release
-# artifacts for zut. The release workflow creates conventional-commit-based
-# v0.x tags, then invokes GoReleaser for that immutable tag.
+# GoReleaser config — builds cross-platform binaries and release artifacts
+# for zut. The release workflow runs GoReleaser when a v* tag is pushed.
 version: 2
 
 project_name: zut
+
+# Releases are published on ermite. In CI the runner sets GITHUB_API_URL and
+# GITHUB_SERVER_URL to an address the job can reach; the public URLs are the
+# fallback for a local run. The release workflow also runs on the GitHub
+# mirror, so `zut update` in older builds, which only reads GitHub, still
+# updates: there GoReleaser keeps its github.com defaults.
+github_urls:
+  api: '{{ if eq (index .Env "GITHUB_SERVER_URL") "https://github.com" }}https://api.github.com{{ else }}{{ or (index .Env "GITHUB_API_URL") "https://git.bnema.dev/-/github/api" }}{{ end }}/'
+  upload: '{{ if eq (index .Env "GITHUB_SERVER_URL") "https://github.com" }}https://uploads.github.com{{ else }}{{ or (index .Env "GITHUB_API_URL") "https://git.bnema.dev/-/github/api" }}/uploads{{ end }}/'
+  download: '{{ or (index .Env "GITHUB_SERVER_URL") "https://git.bnema.dev" }}/'
 
 before:
   hooks:
@@ -54,7 +63,7 @@ git:
 
 changelog:
   sort: asc
-  use: github
+  use: git
   filters:
     # Styling-only commits are neither releasable nor useful release notes.
     exclude:
@@ -93,7 +102,7 @@ release:
     Install with:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
+    curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash
     ```
 
     Or download a binary below, verify it with `checksums.txt`, and add it to your `$PATH`.

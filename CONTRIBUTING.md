@@ -145,6 +145,16 @@ Documentation-only pull requests do not need the Go suite unless they modify exe
 
 If a validation command cannot pass because of an unrelated repository or environment problem, describe the exact command and failure in the pull request. Do not silently omit it.
 
+## Releases
+
+The maintainer publishes a release by pushing a signed version tag to the forge:
+
+```sh
+git tag -s vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
+```
+
+The tag triggers the release workflow, which runs GoReleaser and publishes the archives and `checksums.txt` on git.bnema.dev. The GitHub mirror receives the same tag and publishes a copy, because installed `zut update` builds read releases from GitHub only.
+
 ## Pull request shape
 
 Open the pull request against `main` and include:

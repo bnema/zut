@@ -1,81 +1,34 @@
 name: release
 
-# Once each morning, create at most one tag for the unreleased conventional
-# commits on main. GitHub schedules in UTC, so both possible UTC offsets are
-# triggered and the first step keeps only the 07:00 Europe/Paris run.
+# Pushing a v* tag publishes the release. This workflow intentionally runs on
+# both ermite (publishes to git.bnema.dev) and the GitHub mirror (publishes a
+# copy on github.com, because installed `zut update` only reads GitHub).
 on:
-  schedule:
-    - cron: "0 5,6 * * *"
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write
 
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
-  tag:
+  release:
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Check the Paris release time
-        id: release-time
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          TZ: Europe/Paris
-        run: |
-          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$(date +%H)" = 07 ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out main
-        if: steps.release-time.outputs.run == 'true'
+      - name: Check out the tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          fetch-tags: true
-          ref: main
 
-      - name: Compute the next release tag
-        if: steps.release-time.outputs.run == 'true'
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git log -1 --format=%B | grep -Fq '[release=skip]'; then
-            echo "The latest commit requested that the release be skipped."
-            exit 0
-          fi
-          tag=$(bash .github/scripts/next-release-tag.sh)
-          if [ -z "$tag" ]; then
-            echo "No releasable conventional commits for this run."
-            exit 0
-          fi
-          echo "Releasing $tag from $(git rev-parse --short HEAD)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
 
-      - name: Create and push the tag
-        if: steps.version.outputs.tag != ''
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
         env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "release $TAG"
-          git push origin "$TAG"
-
-  release:
-    needs: tag
-    if: needs.tag.outputs.tag != ''
-    permissions:
-      contents: write
-    uses: bnema/gh-actions/.github/workflows/go-release.yml@main
-    with:
-      go-version: "1.26"
-      # The reusable workflow fetches tags before this command, ensuring
-      # GoReleaser produces artifacts and notes for the newly created tag.
-      pre-command: git checkout --detach "${{ needs.tag.outputs.tag }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

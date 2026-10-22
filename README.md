@@ -25,19 +25,19 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 ### One-liner (macOS, Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
+curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash
 ```
 
-Detects your OS and architecture, downloads the latest release from GitHub, verifies the SHA-256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin`, whichever is writable first. Pass a version or prefix to pin:
+Detects your OS and architecture, downloads the latest release from git.bnema.dev, verifies the SHA-256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin`, whichever is writable first. Pass a version or prefix to pin:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.1.0 ~/bin
+curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash -s -- v0.1.0 ~/bin
 ```
 
 ### One-liner (Windows, PowerShell)
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
+iwr -useb https://git.bnema.dev/zut/raw/main/install.ps1 | iex
 ```
 
 Drops `zut.exe` into `$HOME\bin` and adds it to the user PATH if missing. Open a fresh terminal afterwards.
@@ -67,7 +67,7 @@ development build.
 
 ### Prebuilt binaries
 
-Every release on the [releases page](https://github.com/bnema/zut/releases) ships archives for Linux, macOS, and Windows on amd64 and arm64 (except windows/arm64), plus a `checksums.txt` file. Download, verify, `chmod +x`, and drop on your `$PATH`.
+Every release on the [releases page](https://git.bnema.dev/zut/releases) ships archives for Linux, macOS, and Windows on amd64 and arm64 (except windows/arm64), plus a `checksums.txt` file. Download, verify, `chmod +x`, and drop on your `$PATH`.
 
 ## Authenticate
 

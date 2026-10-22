@@ -3,8 +3,8 @@
 # zut installer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.1.0 ~/bin
+#   curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash
+#   curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash -s -- v0.1.0 ~/bin
 #
 # Positional arguments:
 #   $1  version    — release tag (e.g. v0.1.0). Defaults to "latest".
@@ -16,19 +16,15 @@
 # Environment overrides:
 #   ZUT_VERSION    same as $1
 #   ZUT_PREFIX     same as $2
-#   GITHUB_TOKEN   personal access token — required while the repo is
-#                  private, ignored once it goes public. Must have at
-#                  least `contents:read` scope on the zut repository.
 #
 # The script detects your OS and architecture, downloads the matching
-# archive from the GitHub release, verifies the sha256 against the
+# archive from the forge release, verifies the sha256 against the
 # release's checksums.txt, extracts the binary, and moves it into the
 # prefix directory. No sudo unless you explicitly pick a prefix that
 # needs it.
 
 set -euo pipefail
 
-OWNER="bnema"
 REPO="zut"
 BINARY="zut"
 
@@ -41,22 +37,6 @@ die()  { printf "\033[31merror:\033[0m %s\n" "$*" >&2; exit 1; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
-
-# CURL_AUTH is prepended to every curl invocation so private-repo
-# downloads work while $GITHUB_TOKEN is set. Empty array when the repo
-# is public.
-#
-# Note the "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" pattern at every call
-# site: bash 3.2 (the default /bin/bash on macOS) treats an
-# unquoted empty-array expansion as an unbound variable under
-# `set -u` and aborts with "CURL_AUTH[@]: unbound variable". The
-# guard expands to nothing when the array is empty and to the
-# array's contents when it isn't. Bash 4+ doesn't need this, but
-# the installer's primary audience is `curl | bash` on macOS.
-CURL_AUTH=()
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  CURL_AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
-fi
 
 # ---- detect OS + arch ----
 
@@ -81,18 +61,12 @@ esac
 # ---- resolve version ----
 
 if [ "$VERSION" = "latest" ]; then
-  # Private-repo friendly: hit the api, grab tag_name. Falls back to
-  # following the /releases/latest redirect on public repos.
-  if [ ${#CURL_AUTH[@]} -gt 0 ]; then
-    VERSION=$(curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" \
-      "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" \
-      | sed -nE 's/.*"tag_name": *"([^"]+)".*/\1/p' | head -n1)
-  else
-    VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-      "https://github.com/${OWNER}/${REPO}/releases/latest" \
-      | sed -E 's|.*/tag/([^/]+).*|\1|')
-  fi
-  [ -n "$VERSION" ] || die "could not resolve latest version (set GITHUB_TOKEN if the repo is private)"
+  # The forge answers /releases/latest with a redirect to
+  # /releases/tag/<tag>; read the tag from the final URL.
+  VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    "https://git.bnema.dev/${REPO}/releases/latest" \
+    | sed -E 's|.*/tag/([^/]+).*|\1|')
+  [ -n "$VERSION" ] || die "could not resolve latest version"
 fi
 
 case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
@@ -126,7 +100,7 @@ mkdir -p "$PREFIX"
 # ---- download + verify + extract ----
 
 ARCHIVE="${BINARY}_${VER_NUM}_${OS}_${ARCH}.tar.gz"
-BASE_URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}"
+BASE_URL="https://git.bnema.dev/${REPO}/releases/download/${VERSION}"
 ARCHIVE_URL="${BASE_URL}/${ARCHIVE}"
 CHECKSUMS_URL="${BASE_URL}/checksums.txt"
 
@@ -134,11 +108,11 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 msg "downloading ${ARCHIVE}"
-curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
-  || die "download failed: $ARCHIVE_URL (set GITHUB_TOKEN if the repo is private)"
+curl -fsSL -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
+  || die "download failed: $ARCHIVE_URL"
 
 msg "verifying checksum"
-curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
+curl -fsSL -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
   || die "download failed: $CHECKSUMS_URL"
 
 expected=$(grep " ${ARCHIVE}\$" "$TMP/checksums.txt" | awk '{print $1}' || true)

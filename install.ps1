@@ -1,23 +1,18 @@
 # zut installer for Windows (PowerShell).
 #
 # Usage (in PowerShell):
-#   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
+#   iwr -useb https://git.bnema.dev/zut/raw/main/install.ps1 | iex
 #
 # Or with arguments:
 #   $env:ZUT_VERSION = "v0.1.0"
 #   $env:ZUT_PREFIX  = "$HOME\bin"
-#   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
+#   iwr -useb https://git.bnema.dev/zut/raw/main/install.ps1 | iex
 #
-# Detects architecture, downloads the matching .zip from the GitHub
+# Detects architecture, downloads the matching .zip from the forge
 # release, verifies the sha256 against checksums.txt, extracts zut.exe,
 # and moves it into $ZUT_PREFIX (defaults to $HOME\bin, added to PATH
 # via the User environment if missing).
 #
-# $env:GITHUB_TOKEN is optional for the public repo. Set it to a PAT
-# with `contents:read` scope if you hit GitHub API rate limits (or if
-# you are installing from a private fork); the script then uses it for
-# the version lookup and every download.
-
 
 [CmdletBinding()]
 param(
@@ -30,11 +25,6 @@ $ErrorActionPreference = "Stop"
 $owner  = "bnema"
 $repo   = "zut"
 $binary = "zut"
-
-# Build Authorization header list once; used on every HTTP call so the
-# script works against private repos when $env:GITHUB_TOKEN is set.
-$headers = @{}
-if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
 
 if (-not $Version) { $Version = "latest" }
 if (-not $Prefix)  { $Prefix  = Join-Path $HOME "bin" }
@@ -60,7 +50,7 @@ if ($arch -eq "arm64") {
 
 # ---- resolve version ----
 #
-# Resolve "latest" through the GitHub releases API. This works the same
+# Resolve "latest" through the forge's GitHub-compatible releases API. This works the same
 # on Windows PowerShell 5.1 and PowerShell 7+, unlike scraping the
 # /releases/latest redirect target: on PS7 the final URL lives at
 # $resp.BaseResponse.RequestMessage.RequestUri while on PS5.1 it is
@@ -69,12 +59,8 @@ if ($arch -eq "arm64") {
 # to scrape.
 
 if ($Version -eq "latest") {
-  $apiUrl = "https://api.github.com/repos/$owner/$repo/releases/latest"
-  # GitHub's API wants a User-Agent; Invoke-RestMethod sets one, but be
-  # explicit so corporate proxies that strip it don't trip a 403.
-  $apiHeaders = @{} + $headers
-  if (-not $apiHeaders.ContainsKey("User-Agent")) { $apiHeaders["User-Agent"] = "zut-installer" }
-  $apiHeaders["Accept"] = "application/vnd.github+json"
+  $apiUrl = "https://git.bnema.dev/-/github/api/repos/$owner/$repo/releases/latest"
+  $apiHeaders = @{ "User-Agent" = "zut-installer"; "Accept" = "application/json" }
 
   try {
     $api = Invoke-RestMethod -UseBasicParsing -Headers $apiHeaders -Uri $apiUrl
@@ -84,7 +70,7 @@ if ($Version -eq "latest") {
     if ($status -eq 404) {
       Die "no published release found for $owner/$repo (the repo may have no releases yet)"
     } elseif ($status -eq 401 -or $status -eq 403) {
-      Die "GitHub API request was rejected ($status). If the repo is private, set `$env:GITHUB_TOKEN to a PAT with contents:read; otherwise you may be rate-limited (try again later or set `$env:GITHUB_TOKEN)."
+      Die "forge API request was rejected ($status); try again later"
     } else {
       Die "could not resolve latest version: $($_.Exception.Message)"
     }
@@ -92,7 +78,7 @@ if ($Version -eq "latest") {
 
   $Version = $api.tag_name
   if (-not $Version) {
-    Die "could not resolve latest version: GitHub API returned no tag_name for $owner/$repo"
+    Die "could not resolve latest version: forge API returned no tag_name for $owner/$repo"
   }
 }
 
@@ -102,7 +88,7 @@ $verNum = $Version.TrimStart("v")
 # ---- download + verify + extract ----
 
 $archive     = "${binary}_${verNum}_windows_${arch}.zip"
-$baseUrl     = "https://github.com/$owner/$repo/releases/download/$Version"
+$baseUrl     = "https://git.bnema.dev/$repo/releases/download/$Version"
 $archiveUrl  = "$baseUrl/$archive"
 $checksumUrl = "$baseUrl/checksums.txt"
 
@@ -110,11 +96,11 @@ $tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("zut-install-" +
 
 try {
   Msg "downloading $archive"
-  Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $archiveUrl -OutFile (Join-Path $tmp $archive)
+  Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile (Join-Path $tmp $archive)
 
   Msg "verifying checksum"
   $checksumFile = Join-Path $tmp "checksums.txt"
-  Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $checksumUrl -OutFile $checksumFile
+  Invoke-WebRequest -UseBasicParsing -Uri $checksumUrl -OutFile $checksumFile
   $expected = Get-Content -LiteralPath $checksumFile | ForEach-Object {
     $line = $_.Trim()
     if ($line) {
