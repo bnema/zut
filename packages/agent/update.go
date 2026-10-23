@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,7 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// updateCheckTTL is how often we hit the GitHub API to look for a new
+// updateCheckTTL is how often we query the release APIs to look for a new
 // release. Half a day is frequent enough to notice the same day a
 // release ships without spamming the API on every zut launch.
 const updateCheckTTL = 12 * time.Hour
@@ -22,10 +21,6 @@ const updateCheckTTL = 12 * time.Hour
 // version. Writes a JSON blob with the last observed latest tag and
 // when we checked, so we can skip the network call on most launches.
 const updateCheckFile = "update-check.json"
-
-// githubReleasesAPI is the REST endpoint we query. Using the API (not
-// the HTML redirect) because the JSON response is stable and small.
-const githubReleasesAPI = "https://api.github.com/repos/bnema/zut/releases/latest"
 
 const devVersionNotice = "dev version detected; skipping update check"
 
@@ -79,7 +74,7 @@ func CheckForUpdate(ctx context.Context, zutHome, currentVersion string) UpdateI
 		// date" (Latest <= Current) we re-check anyway so a
 		// release published after the last launch is picked up
 		// without waiting out the full TTL. The API call is a
-		// single 4s request; cheap to do on every up-to-date
+		// bounded release lookup; cheap to do on every up-to-date
 		// launch, and skips entirely for the common "installed a
 		// new version, cache reports update available" path.
 		if time.Since(c.CheckedAt) < updateCheckTTL && c.CurrentAt == currentVersion {
@@ -116,7 +111,7 @@ func CheckForUpdateAsync(zutHome, currentVersion string) <-chan UpdateInfo {
 	ch := make(chan UpdateInfo, 1)
 	go func() {
 		defer close(ch)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		ch <- CheckForUpdate(ctx, zutHome, currentVersion)
 	}()
@@ -160,37 +155,10 @@ func normalizedVersion(v string) string {
 	return v
 }
 
-// fetchLatestRelease queries the GitHub API for the latest published
-// release. Honours $GITHUB_TOKEN for private repos.
+// fetchLatestRelease uses ermite first, then the GitHub mirror.
 func fetchLatestRelease(ctx context.Context) (tag, url string, err error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", githubReleasesAPI, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("accept", "application/vnd.github+json")
-	req.Header.Set("x-github-api-version", "2022-11-28")
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("authorization", "Bearer "+tok)
-	}
-
-	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", "", fmt.Errorf("github api %d", resp.StatusCode)
-	}
-
-	var body struct {
-		TagName string `json:"tag_name"`
-		HTMLURL string `json:"html_url"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", "", err
-	}
-	return body.TagName, body.HTMLURL, nil
+	release, err := fetchRelease(ctx, "latest")
+	return release.TagName, release.HTMLURL, err
 }
 
 // readUpdateCache loads the last check result. Returns ok=false on

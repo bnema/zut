@@ -2,16 +2,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // ChangelogInfo is what FetchChangelog returns. Body is the markdown
-// from the GitHub release page; URL points back to that page so the
+// from the release page; URL points back to that page so the
 // dialog can offer "open in browser".
 type ChangelogInfo struct {
 	Version string
@@ -19,12 +16,12 @@ type ChangelogInfo struct {
 	URL     string
 }
 
-// FetchChangelog hits the GitHub releases API for the given version
+// FetchChangelog queries ermite, falling back to GitHub, for the given version
 // (must already include the leading "v") and returns the release
 // notes body. Returns an empty ChangelogInfo on any failure or when
 // the body is empty; the caller treats either as "skip silently".
 //
-// Honours $GITHUB_TOKEN for private-repo access. Times out at 4s so
+// Honours $GITHUB_TOKEN for private-repo access. Times out at 10s so
 // startup never blocks on a flaky network.
 // semverOnly strips commit hash and date suffixes from version strings
 // like "0.1.12 (25b2bd4, 2026-04-25T09:25:45Z)" to get just "0.1.12".
@@ -45,33 +42,8 @@ func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) 
 	if !strings.HasPrefix(tag, "v") {
 		tag = "v" + tag
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/bnema/zut/releases/tags/%s", tag)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	body, err := fetchRelease(ctx, "tags/"+url.PathEscape(tag))
 	if err != nil {
-		return ChangelogInfo{}, err
-	}
-	req.Header.Set("accept", "application/vnd.github+json")
-	req.Header.Set("x-github-api-version", "2022-11-28")
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("authorization", "Bearer "+tok)
-	}
-
-	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ChangelogInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return ChangelogInfo{}, fmt.Errorf("github api %d", resp.StatusCode)
-	}
-
-	var body struct {
-		TagName string `json:"tag_name"`
-		HTMLURL string `json:"html_url"`
-		Body    string `json:"body"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return ChangelogInfo{}, err
 	}
 	body.Body = strings.TrimSpace(body.Body)
@@ -142,7 +114,7 @@ func FetchChangelogAsync(version string) <-chan ChangelogInfo {
 	ch := make(chan ChangelogInfo, 1)
 	go func() {
 		defer close(ch)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		info, _ := FetchChangelog(ctx, version)
 		ch <- info

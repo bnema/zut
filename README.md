@@ -48,7 +48,7 @@ Drops `zut.exe` into `$HOME\bin` and adds it to the user PATH if missing. Open a
 go install github.com/bnema/zut/cmd/zut@latest
 ```
 
-The installed binary reports the tagged module version and supports `zut update`.
+The installed binary reports the tagged module version and supports `zut update`. Update checks and changelogs read ermite (`git.bnema.dev`) first, falling back to GitHub on API failures. Archives and checksums are downloaded from the answering source, pinned to the release tag; initial download URLs must use HTTPS on `git.bnema.dev` or `github.com`. Redirects may also use GitHub’s `objects.githubusercontent.com` and `release-assets.githubusercontent.com` CDN hosts, without forwarding the GitHub token. Release JSON and checksums are each limited to 1 MiB.
 
 ### From source
 
@@ -210,7 +210,7 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 
 ## Changelog on update
 
-The first time you launch a newer zut binary, the TUI shows the GitHub release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). Development builds (`0.0.0-dev`) skip both the update and changelog requests and print `dev version detected; skipping update check`. For release builds, the fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
+The first time you launch a newer zut binary, the TUI shows the release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). Development builds (`0.0.0-dev`) skip both the update and changelog requests and print `dev version detected; skipping update check`. For release builds, the fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
 
 ## Usage
 

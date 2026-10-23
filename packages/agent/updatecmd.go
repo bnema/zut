@@ -24,7 +24,7 @@ import (
 //
 // The command:
 //
-//  1. Resolves the latest release tag via the GitHub API (same code
+//  1. Resolves the latest release tag via ermite, falling back to GitHub (same code
 //     path the in-TUI update banner uses, so we never disagree about
 //     "what is latest").
 //  2. Picks the asset matching the current GOOS/GOARCH using the
@@ -36,7 +36,7 @@ import (
 //
 // Refuses to operate on development builds because there is no meaningful
 // "is newer" comparison and we'd happily downgrade a freshly-compiled local
-// binary back to whatever's on GitHub.
+// binary back to the latest published release.
 func runUpdateCommand(rawArgs []string, version string) (handled bool, err error) {
 	if len(rawArgs) == 0 || rawArgs[0] != "update" {
 		return false, nil
@@ -109,7 +109,7 @@ func runUpdateCheck(version string) error {
 // runUpdate is the meat of `zut update`.
 func runUpdate(version string) error {
 	if isDevVersion(version) {
-		return errors.New(devVersionNotice + "; `zut update` is disabled. Build a release tag or download from https://github.com/bnema/zut/releases")
+		return errors.New(devVersionNotice + "; `zut update` is disabled. Build a release tag or download from https://git.bnema.dev/zut/releases")
 	}
 	current := versionOnly(version)
 
@@ -117,7 +117,8 @@ func runUpdate(version string) error {
 	defer cancel()
 
 	fmt.Println("zut update: querying latest release...")
-	tag, releaseURL, err := fetchLatestRelease(ctx)
+	release, err := fetchRelease(ctx, "latest")
+	tag, releaseURL := release.TagName, release.HTMLURL
 	if err != nil {
 		return fmt.Errorf("query latest release: %w", err)
 	}
@@ -137,14 +138,7 @@ func runUpdate(version string) error {
 	}
 	fmt.Printf("zut update: target asset %s\n", assetName)
 
-	// We assume the standard GoReleaser layout: assets live under
-	//   https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
-	base := strings.TrimSuffix(releaseURL, "/")
-	// releaseURL points at /releases/tag/<tag>; flip it to /releases/download/<tag>
-	base = strings.Replace(base, "/releases/tag/", "/releases/download/", 1)
-
-	assetURL := base + "/" + assetName
-	sumsURL := base + "/checksums.txt"
+	assetURL, sumsURL := release.downloadURLs(assetName)
 
 	tmp, err := os.MkdirTemp("", "zut-update-")
 	if err != nil {
@@ -257,14 +251,21 @@ func releaseAssetName(version string) (name, format string, err error) {
 // downloadFile fetches url to dst, streaming through io.Copy so big
 // archives don't balloon memory.
 func downloadFile(ctx context.Context, url, dst string) error {
+	if err := validateDownloadURL(url); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-		req.Header.Set("authorization", "Bearer "+tok)
-	}
-	client := &http.Client{Timeout: 90 * time.Second}
+	setDownloadAuthorization(req)
+	client := &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		setDownloadAuthorization(req)
+		return validateDownloadRedirect(req.URL.String())
+	}}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -278,8 +279,16 @@ func downloadFile(ctx context.Context, url, dst string) error {
 		return err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	var reader io.Reader = resp.Body
+	if strings.HasSuffix(req.URL.EscapedPath(), "/checksums.txt") {
+		reader = io.LimitReader(resp.Body, checksumLimit+1)
+	}
+	n, err := io.Copy(f, reader)
+	if err != nil {
 		return err
+	}
+	if strings.HasSuffix(req.URL.EscapedPath(), "/checksums.txt") && n > checksumLimit {
+		return errors.New("checksums.txt exceeds size limit")
 	}
 	return nil
 }
