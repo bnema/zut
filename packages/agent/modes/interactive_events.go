@@ -177,6 +177,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 					i.goalStatus = core.GoalActive
 				}
 			} else if i.goalStatus == core.GoalActive {
+				i.alertGoalTransitionLocked(i.goalStatus, update.Status)
 				i.goalStatus = update.Status
 				// Paused and terminal goals must not inherit an Esc-armed return.
 				if update.Status == core.GoalPaused || update.Status == core.GoalDone || update.Status == core.GoalBlocked {
@@ -376,6 +377,7 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 		}) {
 			return core.ConfirmDecision{Allow: false, Reason: "side-chat tool call canceled"}
 		}
+		i.alertNeedsInput(alertAwaitingConfirmation)
 		i.invalidate()
 		return <-resp
 	}
@@ -393,6 +395,7 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 		preview:  call.Summary,
 		resp:     resp,
 	})
+	i.alertNeedsInput(alertAwaitingConfirmation)
 	i.invalidate()
 	return <-resp
 }

@@ -499,15 +499,22 @@ func (i *Interactive) RefreshGoal() {
 		i.setGoalStatus(nil)
 		return
 	}
-	i.setGoalStatus(i.cfg.CurrentGoal())
+	i.setGoalStatusWithAlert(i.cfg.CurrentGoal(), false)
 }
 
 func (i *Interactive) setGoalStatus(goal *core.SessionGoal) {
+	i.setGoalStatusWithAlert(goal, true)
+}
+
+func (i *Interactive) setGoalStatusWithAlert(goal *core.SessionGoal, notify bool) {
 	status := core.GoalStatus("")
 	if goal != nil {
 		status = goal.Status
 	}
 	i.mu.Lock()
+	if notify {
+		i.alertGoalTransitionLocked(i.goalStatus, status)
+	}
 	i.goalStatus = status
 	i.mu.Unlock()
 	i.invalidate()

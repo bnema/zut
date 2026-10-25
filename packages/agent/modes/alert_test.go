@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -9,8 +10,10 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extproto"
+	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/auth"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -211,7 +214,7 @@ func TestMainAlertReasonPolicy(t *testing.T) {
 		rescue     bool
 		recovering bool
 		auto       bool
-		want       string
+		want       alertReason
 	}{
 		{name: "normal", ctx: context.Background(), stop: provider.StopEnd, want: "agent_done"},
 		{name: "length", ctx: context.Background(), stop: provider.StopLength, want: "response_truncated"},
@@ -256,5 +259,158 @@ func TestTerminalAlertsSettingDefaultsEnabledAndToggles(t *testing.T) {
 	i.applySettingToggle("terminal_alerts_enabled", true)
 	if i.cfg.TerminalAlertsEnabled == nil || !*i.cfg.TerminalAlertsEnabled {
 		t.Fatal("terminal alerts setting did not re-enable")
+	}
+}
+
+func TestConfirmationAlertsAtEnqueue(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, side := range []bool{false, true} {
+			term := &alertTestTerminal{}
+			i := &Interactive{cfg: InteractiveConfig{Terminal: term, TerminalAlertsEnabled: &enabled}, confirmDialog: newConfirmDialog(), dirty: make(chan struct{}, 1)}
+			call := core.ToolCallConfirmation{ID: "call", Name: "bash"}
+			if side {
+				i.btwDialog = &btwDialog{active: true, generation: 1, turns: []btwTurn{{Tools: []tui.ToolCallView{{ID: "call", Name: "bash"}}}}}
+				call.Origin = btwOrigin(1)
+			}
+			done := make(chan core.ConfirmDecision, 1)
+			go func() { done <- i.ConfirmToolCall(call) }()
+			<-i.dirty
+			want := ""
+			if enabled {
+				want = "\a"
+			}
+			if got := term.String(); got != want {
+				t.Fatalf("enabled=%v side=%v: %q, want %q", enabled, side, got, want)
+			}
+			i.confirmDialog.CancelAll("test")
+			<-done
+			if side {
+				call.Origin = btwOrigin(2)
+				if i.ConfirmToolCall(call).Allow {
+					t.Fatal("stale request allowed")
+				}
+				if term.String() != want {
+					t.Fatal("stale request rang")
+				}
+			}
+		}
+	}
+}
+
+func TestGoalTransitionAlerts(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
+			for _, tool := range []bool{true, false} {
+				term := &alertTestTerminal{}
+				i := &Interactive{cfg: InteractiveConfig{Terminal: term, TerminalAlertsEnabled: &enabled}, goalStatus: core.GoalActive}
+				apply := func() {
+					if tool {
+						i.handleEvent(core.EvToolResult{Result: core.ToolResult{Details: toolspkg.GoalUpdate{Status: status, Reason: "needs help"}}})
+					} else {
+						i.setGoalStatus(&core.SessionGoal{Status: status})
+					}
+				}
+				apply()
+				apply() // repeated status is not another transition
+				want := ""
+				if enabled {
+					want = "\a"
+				}
+				if term.String() != want {
+					t.Fatalf("status=%s tool=%v enabled=%v: %q", status, tool, enabled, term.String())
+				}
+			}
+		}
+	}
+}
+
+func TestLoginActionAlertDeduplicated(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, manual := range []bool{true, false} {
+			term := &alertTestTerminal{}
+			i := &Interactive{cfg: InteractiveConfig{Terminal: term, TerminalAlertsEnabled: &enabled}, dialog: &loginDialog{step: loginStepWaiting}}
+			i.showLoginAction(manual, "https://example.test/login")
+			i.handleAuthEvent(auth.Event{Kind: "started", URL: "https://example.test/login"})
+			i.dialog.Render(tui.Theme{}, 80)
+			i.dialog.Render(tui.Theme{}, 80)
+			i.dialog.Close()
+			i.showLoginAction(manual, "https://example.test/other")
+			want := ""
+			if enabled {
+				want = "\a"
+			}
+			if term.String() != want {
+				t.Fatalf("manual=%v enabled=%v: %q", manual, enabled, term.String())
+			}
+		}
+	}
+}
+
+func TestLoadedGoalsDoNotAlert(t *testing.T) {
+	for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
+		term := &alertTestTerminal{}
+		i := &Interactive{cfg: InteractiveConfig{Terminal: term, CurrentGoal: func() *core.SessionGoal { return &core.SessionGoal{Status: status} }}, goalStatus: core.GoalActive}
+		i.RefreshGoal()
+		if term.String() != "" {
+			t.Fatal("loading a session rang")
+		}
+	}
+}
+
+// Reuse the scripted two-request client, but return a goal transition from
+// its tool so the real /btw agent sink must route an EvToolResult.
+type alertGoalTool struct {
+	btwEchoTool
+	status core.GoalStatus
+}
+
+func (t *alertGoalTool) Execute(context.Context, json.RawMessage, func(string)) (core.ToolResult, error) {
+	return core.ToolResult{Details: toolspkg.GoalUpdate{Status: t.status, Reason: "needs help"}}, nil
+}
+
+func TestBtwGoalUpdateDoesNotAlertMainSession(t *testing.T) {
+	for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
+		term := &alertTestTerminal{}
+		client := &btwToolTestClient{done: make(chan struct{})}
+		ag := core.NewAgent(client, "test-model", "", core.Registry{"echo": &alertGoalTool{status: status}})
+		i := NewInteractive(InteractiveConfig{Agent: ag, Terminal: term, CWD: t.TempDir(), Theme: tui.Dark})
+		i.goalStatus = core.GoalActive
+		i.openBtwDialog([]string{"update goal"})
+		timeout := time.NewTimer(5 * time.Second)
+		defer timeout.Stop()
+		for i.btwDialog.Loading() {
+			select {
+			case <-i.dirty:
+			case <-timeout.C:
+				t.Fatal("side-chat turn did not complete")
+			}
+		}
+		i.btwDialog.mu.Lock()
+		tools := i.btwDialog.turns[0].Tools
+		if len(tools) != 1 || !tools[0].Done || tools[0].Error {
+			t.Errorf("side-chat tool did not complete: %+v", tools)
+		}
+		i.btwDialog.mu.Unlock()
+		i.mu.Lock()
+		gotStatus := i.goalStatus
+		i.mu.Unlock()
+		if gotStatus != core.GoalActive {
+			t.Fatalf("main goal changed to %s", gotStatus)
+		}
+		if term.String() != "" {
+			t.Fatalf("side-chat goal rang: %q", term.String())
+		}
+	}
+}
+
+func TestGoalAlertDeduplicatedAcrossEntryPoints(t *testing.T) {
+	for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
+		term := &alertTestTerminal{}
+		i := &Interactive{cfg: InteractiveConfig{Terminal: term}, goalStatus: core.GoalActive}
+		i.handleEvent(core.EvToolResult{Result: core.ToolResult{Details: toolspkg.GoalUpdate{Status: status, Reason: "needs help"}}})
+		i.setGoalStatus(&core.SessionGoal{Status: status})
+		if term.String() != "\a" {
+			t.Fatalf("mixed entry points emitted %q", term.String())
+		}
 	}
 }

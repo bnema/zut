@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -270,7 +269,7 @@ func (i *Interactive) AskQuestions(ctx context.Context, qs []tools.Question) ([]
 		return nil, err
 	}
 	r := i.questionDialog.Enqueue(qs)
-	i.Alert("", extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "waiting for answers"})
+	i.alertNeedsInput(alertAwaitingAnswers)
 	i.invalidate()
 	defer func() { i.questionDialog.Remove(r); i.invalidate() }()
 	select {

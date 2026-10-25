@@ -4,8 +4,49 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
 )
+
+// alertReason names the event, independently of the terminal's bell policy.
+type alertReason string
+
+const (
+	alertAgentDone            alertReason = "agent_done"
+	alertAgentError           alertReason = "agent_error"
+	alertResponseTruncated    alertReason = "response_truncated"
+	alertRescueRequired       alertReason = "rescue_required"
+	alertAwaitingConfirmation alertReason = "awaiting_confirmation"
+	alertAwaitingAnswers      alertReason = "waiting for answers"
+	alertGoalBlocked          alertReason = "goal_blocked"
+	alertGoalPaused           alertReason = "goal_paused"
+	alertLoginAction          alertReason = "login_action"
+)
+
+// alertNeedsInput emits immediately, even while the agent is busy.
+func (i *Interactive) alertNeedsInput(reason alertReason) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.alertNeedsInputLocked(reason)
+}
+
+// alertNeedsInputLocked shares the renderer's terminal output boundary.
+func (i *Interactive) alertNeedsInputLocked(reason alertReason) {
+	i.emitAlertLocked(extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: string(reason)})
+}
+
+// alertGoalTransitionLocked ignores loaded statuses and repeated updates.
+func (i *Interactive) alertGoalTransitionLocked(previous, next core.GoalStatus) {
+	if previous != core.GoalActive {
+		return
+	}
+	switch next {
+	case core.GoalBlocked:
+		i.alertNeedsInputLocked(alertGoalBlocked)
+	case core.GoalPaused:
+		i.alertNeedsInputLocked(alertGoalPaused)
+	}
+}
 
 // Notify is the manager's NotifyFromExt entry point.
 func (i *Interactive) Notify(extName, level, message string) {
@@ -38,12 +79,12 @@ func (i *Interactive) emitAlertLocked(alert extproto.AlertRequest) {
 // scheduleMainAlert defers a main-session alert until the next redraw
 // commits the final frame. Keeping this deferred even when no paced text is
 // pending avoids racing the pacer's final state transition.
-func (i *Interactive) scheduleMainAlert(reason string) {
+func (i *Interactive) scheduleMainAlert(reason alertReason) {
 	if reason == "" {
 		return
 	}
 	i.mu.Lock()
-	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}
+	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: string(reason)}
 	i.mu.Unlock()
 	i.invalidate()
 }

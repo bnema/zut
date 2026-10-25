@@ -546,23 +546,23 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 	}()
 }
-func mainAlertReason(ctx context.Context, err, turnErr error, stop provider.StopReason, awaitingPre, hasNext, rescue, recovering, autoCompacting bool) string {
+func mainAlertReason(ctx context.Context, err, turnErr error, stop provider.StopReason, awaitingPre, hasNext, rescue, recovering, autoCompacting bool) alertReason {
 	if awaitingPre || ctx.Err() != nil || hasNext || recovering || autoCompacting {
 		return ""
 	}
 	if rescue {
-		return "rescue_required"
+		return alertRescueRequired
 	}
 	if stop == provider.StopAborted {
 		return ""
 	}
 	if err != nil || turnErr != nil || stop == provider.StopError {
-		return "agent_error"
+		return alertAgentError
 	}
 	if stop == provider.StopLength {
-		return "response_truncated"
+		return alertResponseTruncated
 	}
-	return "agent_done"
+	return alertAgentDone
 }
 func (i *Interactive) openRescueDialog(activeProvider, failedProvider, failedModel, reason, prompt string, images []provider.ImageBlock) {
 	if i.rescueDialog == nil {

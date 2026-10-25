@@ -839,7 +839,7 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.ShowWaiting(url)
+	i.showLoginAction(false, url)
 }
 func (i *Interactive) startOAuthFlow(provider string) {
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
@@ -853,7 +853,7 @@ func (i *Interactive) startOAuthFlow(provider string) {
 			i.dialog.ShowResult(false, err.Error())
 			return
 		}
-		i.dialog.ShowWaiting(loginURL)
+		i.showLoginAction(false, loginURL)
 		return
 	}
 	// One browser transaction: the callback server and the pasted-code path
@@ -863,7 +863,7 @@ func (i *Interactive) startOAuthFlow(provider string) {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.ShowWaiting(loginURL)
+	i.showLoginAction(false, loginURL)
 }
 func (i *Interactive) startManualOAuthFlow(provider string) {
 	if i.cfg.AuthManager == nil {
@@ -875,7 +875,7 @@ func (i *Interactive) startManualOAuthFlow(provider string) {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.ShowPasteCode(url)
+	i.showLoginAction(true, url)
 	i.invalidate()
 }
 func (i *Interactive) submitManualOAuthCode(code string) {
@@ -889,7 +889,9 @@ func (i *Interactive) submitManualOAuthCode(code string) {
 			// whatever login is current now.
 			return
 		}
+		i.mu.Lock()
 		i.dialog.ShowResult(false, err.Error())
+		i.mu.Unlock()
 		i.invalidate()
 	}()
 }
@@ -1346,10 +1348,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	switch ev.Kind {
 	case "started":
 		// The manual flow already shows its own URL in the paste-code step.
-		if i.dialog.step == loginStepPasteCode && i.dialog.url == ev.URL {
-			return
-		}
-		i.dialog.ShowWaiting(ev.URL)
+		i.showLoginAction(false, ev.URL)
 	case "browser_open":
 		// no-op
 	case "error":
@@ -1403,5 +1402,33 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.persistCompactHandoff(nil)
 		}
 		i.dialog.ShowResult(true, "")
+	}
+}
+
+// showLoginAction deduplicates the start-flow return and its queued auth event.
+// Hold i.mu across dialog reads, transitions, and output: the renderer and
+// asynchronous OAuth completion also access the dialog under this mutex.
+func (i *Interactive) showLoginAction(manual bool, url string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if !i.dialog.Active() {
+		return
+	}
+	// A queued started event must not replace the manual code-entry prompt.
+	if !manual && i.dialog.step == loginStepPasteCode && i.dialog.url == url {
+		return
+	}
+	step := loginStepWaiting
+	if manual {
+		step = loginStepPasteCode
+	}
+	fresh := i.dialog.url != url || i.dialog.step != step
+	if manual {
+		i.dialog.ShowPasteCode(url)
+	} else {
+		i.dialog.ShowWaiting(url)
+	}
+	if fresh && url != "" {
+		i.alertNeedsInputLocked(alertLoginAction)
 	}
 }
