@@ -133,15 +133,20 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.dialog.Active() {
+	i.mu.Lock()
+	loginActive := i.dialog.Active()
+	var loginAction loginDialogAction
+	if loginActive {
 		if k.Kind == tui.KeyCtrlC {
 			i.dialog.Close()
-			if i.cfg.AuthManager != nil {
-				i.cfg.AuthManager.CancelOAuth()
-			}
-			return false
+			loginAction.Close = true
+		} else {
+			loginAction = i.dialog.HandleKey(k)
 		}
-		act := i.dialog.HandleKey(k)
+	}
+	i.mu.Unlock()
+	if loginActive {
+		act := loginAction
 		if act.Close && i.cfg.AuthManager != nil {
 			i.cfg.AuthManager.CancelOAuth()
 		}

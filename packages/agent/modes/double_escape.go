@@ -74,7 +74,10 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 	if i.ed == nil {
 		return true
 	}
-	if i.dialog != nil && i.dialog.Active() ||
+	i.mu.Lock()
+	loginActive := i.dialog != nil && i.dialog.Active()
+	i.mu.Unlock()
+	if loginActive ||
 		i.modelDialog != nil && i.modelDialog.Active() ||
 		i.llamaDialog != nil && i.llamaDialog.Active() ||
 		i.rescueDialog != nil && i.rescueDialog.Active() ||

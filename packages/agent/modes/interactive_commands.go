@@ -290,7 +290,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/mcp":
 		i.showMCPStatus()
 	case "/login":
+		i.mu.Lock()
 		i.dialog.Open(i.cfg.ZutHome)
+		i.mu.Unlock()
 	case "/logout":
 		if len(parts) >= 2 {
 			// Explicit target: /logout anthropic | openai | all
@@ -812,11 +814,11 @@ func providerSetupInfo(provider string) (string, []string, bool) {
 }
 func (i *Interactive) saveLlamaCPPLogin(baseURL, apiKey string) {
 	if i.cfg.AuthManager == nil || i.cfg.AuthManager.Store() == nil {
-		i.dialog.ShowResult(false, "auth store is unavailable")
+		i.showLoginResult(false, "auth store is unavailable")
 		return
 	}
 	if err := i.cfg.AuthManager.Store().SetEndpointCredential(provider.LlamaCPPProviderID, baseURL, apiKey); err != nil {
-		i.dialog.ShowResult(false, err.Error())
+		i.showLoginResult(false, err.Error())
 		return
 	}
 	i.mu.Lock()
@@ -824,11 +826,13 @@ func (i *Interactive) saveLlamaCPPLogin(baseURL, apiKey string) {
 	i.statusErr = ""
 	i.statusOK = "configured llama.cpp router"
 	i.mu.Unlock()
-	i.dialog.ShowResult(true, "")
+	i.showLoginResult(true, "")
 }
 func (i *Interactive) startAPIKeyFlow(provider string) {
 	if title, lines, ok := providerSetupInfo(provider); ok {
+		i.mu.Lock()
 		i.dialog.ShowInfo(title, lines)
+		i.mu.Unlock()
 		return
 	}
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
@@ -836,7 +840,7 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 	}
 	url, err := i.cfg.AuthManager.StartAPIKey(provider)
 	if err != nil {
-		i.dialog.ShowResult(false, err.Error())
+		i.showLoginResult(false, err.Error())
 		return
 	}
 	i.showLoginAction(false, url)
@@ -850,7 +854,7 @@ func (i *Interactive) startOAuthFlow(provider string) {
 	if provider == "kimi" || provider == "xai" || provider == "github-copilot" {
 		loginURL, err := i.cfg.AuthManager.StartOAuth(provider)
 		if err != nil {
-			i.dialog.ShowResult(false, err.Error())
+			i.showLoginResult(false, err.Error())
 			return
 		}
 		i.showLoginAction(false, loginURL)
@@ -860,7 +864,7 @@ func (i *Interactive) startOAuthFlow(provider string) {
 	// share the same PKCE verifier and state inside the auth manager.
 	loginURL, err := i.cfg.AuthManager.StartOAuth(provider)
 	if err != nil {
-		i.dialog.ShowResult(false, err.Error())
+		i.showLoginResult(false, err.Error())
 		return
 	}
 	i.showLoginAction(false, loginURL)
@@ -872,7 +876,7 @@ func (i *Interactive) startManualOAuthFlow(provider string) {
 	i.cfg.AuthManager.CancelOAuth()
 	url, err := i.cfg.AuthManager.StartManualOAuth(provider)
 	if err != nil {
-		i.dialog.ShowResult(false, err.Error())
+		i.showLoginResult(false, err.Error())
 		return
 	}
 	i.showLoginAction(true, url)
@@ -889,9 +893,7 @@ func (i *Interactive) submitManualOAuthCode(code string) {
 			// whatever login is current now.
 			return
 		}
-		i.mu.Lock()
-		i.dialog.ShowResult(false, err.Error())
-		i.mu.Unlock()
+		i.showLoginResult(false, err.Error())
 		i.invalidate()
 	}()
 }
@@ -1352,7 +1354,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "browser_open":
 		// no-op
 	case "error":
-		i.dialog.ShowResult(false, ev.Message)
+		i.showLoginResult(false, ev.Message)
 	case "success":
 		// Keep the credential-driven resolve and its final replacement in the
 		// same transition as settings/session changes. Otherwise a build that
@@ -1395,13 +1397,13 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			buildAndCommitLogin()
 		}
 		if buildErr != nil {
-			i.dialog.ShowResult(false, buildErr.Error())
+			i.showLoginResult(false, buildErr.Error())
 			return
 		}
 		if clearHandoff {
 			i.persistCompactHandoff(nil)
 		}
-		i.dialog.ShowResult(true, "")
+		i.showLoginResult(true, "")
 	}
 }
 
@@ -1431,4 +1433,11 @@ func (i *Interactive) showLoginAction(manual bool, url string) {
 	if fresh && url != "" {
 		i.alertNeedsInputLocked(alertLoginAction)
 	}
+}
+
+// showLoginResult synchronizes completion and error updates with rendering.
+func (i *Interactive) showLoginResult(success bool, message string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.dialog.ShowResult(success, message)
 }
