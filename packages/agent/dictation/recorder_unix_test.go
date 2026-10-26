@@ -58,6 +58,24 @@ func finished(t *testing.T, r *Recording) {
 	}
 }
 
+// pw-record exits with status 1 after SIGINT even though the WAV is complete.
+func TestStopAcceptsNonZeroExitAfterInterrupt(t *testing.T) {
+	opts := fake(t, strings.Replace(capturing, "trap 'exit 0' INT", "trap 'exit 1' INT", 1))
+	r, err := Start(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Cancel)
+	ready(t, r)
+	result, err := r.Stop()
+	if err != nil {
+		t.Fatalf("stop after interrupt: %v", err)
+	}
+	if err := result.Cleanup(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStop(t *testing.T) {
 	r, err := Start(context.Background(), fake(t, capturing))
 	if err != nil {

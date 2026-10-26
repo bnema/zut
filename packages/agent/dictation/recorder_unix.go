@@ -14,13 +14,13 @@ func killTree(cmd *exec.Cmd) { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKIL
 func graceful(cmd *exec.Cmd, _ io.Writer, _ string) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
 }
-func expectedStop(err error, name string) bool {
+
+// expectedStop accepts any exit after a requested SIGINT: recorders disagree
+// on the status they report (pw-record exits 1, ffmpeg 255, others die from
+// the signal). The output file checks decide whether the recording is usable.
+func expectedStop(err error, _ string) bool {
 	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		status, ok := exit.Sys().(syscall.WaitStatus)
-		return (ok && status.Signaled() && status.Signal() == syscall.SIGINT) || (name == "ffmpeg" && exit.ExitCode() == 255)
-	}
-	return false
+	return errors.As(err, &exit)
 }
 
 type processGuard struct{ cmd *exec.Cmd }
