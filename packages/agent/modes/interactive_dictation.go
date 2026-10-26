@@ -22,7 +22,6 @@ type DictationRecording interface {
 	Stop() (dictation.Result, error)
 	Cancel()
 	Done() <-chan struct{}
-	Elapsed() time.Duration
 }
 
 type DictationConfig struct {
@@ -157,13 +156,13 @@ func (i *Interactive) refreshDictation() {
 				continue
 			}
 			i.dictation.cancel()
-			<-i.dictation.done
+			i.trackDictationCleanupLocked(i.dictation.done)
 			i.dictation = interactiveDictation{}
 			if event.err != nil {
 				i.statusErr = dictationError(event.err)
 				i.statusOK = ""
 			} else {
-				text := strings.TrimSpace(event.text)
+				text := strings.TrimSpace(tui.SanitizePlainText(event.text))
 				if text == "" {
 					i.statusErr = "No speech detected"
 				} else {
@@ -185,12 +184,39 @@ func (i *Interactive) cancelDictation() {
 	i.mu.Lock()
 	state := i.dictation
 	i.dictation = interactiveDictation{}
+	if state.done != nil {
+		i.trackDictationCleanupLocked(state.done)
+	}
 	i.mu.Unlock()
 	if state.cancel != nil {
 		state.cancel()
-		<-state.done
 	}
 	i.invalidate()
+}
+
+// trackDictationCleanupLocked retains only workers still cleaning up.
+func (i *Interactive) trackDictationCleanupLocked(done <-chan struct{}) {
+	pending := i.pendingDictation[:0]
+	for _, ch := range i.pendingDictation {
+		select {
+		case <-ch:
+		default:
+			pending = append(pending, ch)
+		}
+	}
+	i.pendingDictation = append(pending, done)
+}
+
+// shutdownDictation joins cleanup only on Run exit, never on the UI loop.
+func (i *Interactive) shutdownDictation() {
+	i.cancelDictation()
+	i.mu.Lock()
+	pending := i.pendingDictation
+	i.pendingDictation = nil
+	i.mu.Unlock()
+	for _, done := range pending {
+		<-done
+	}
 }
 
 func dictationError(err error) string {

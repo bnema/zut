@@ -22,19 +22,27 @@ func (f dictationTranscribeFunc) Transcribe(ctx context.Context, a provider.Audi
 }
 
 type fakeDictationRecording struct {
-	result   dictation.Result
-	done     chan struct{}
-	canceled chan struct{}
-	once     sync.Once
-	err      error
+	result         dictation.Result
+	done           chan struct{}
+	canceled       chan struct{}
+	once           sync.Once
+	err            error
+	cleanupEntered chan struct{}
+	cleanupRelease <-chan struct{}
 }
 
 func (r *fakeDictationRecording) Stop() (dictation.Result, error) { return r.result, r.err }
 func (r *fakeDictationRecording) Cancel() {
-	r.once.Do(func() { _ = r.result.Cleanup(); close(r.canceled) })
+	r.once.Do(func() {
+		if r.cleanupEntered != nil {
+			close(r.cleanupEntered)
+			<-r.cleanupRelease
+		}
+		_ = r.result.Cleanup()
+		close(r.canceled)
+	})
 }
-func (r *fakeDictationRecording) Done() <-chan struct{}  { return r.done }
-func (r *fakeDictationRecording) Elapsed() time.Duration { return 7 * time.Second }
+func (r *fakeDictationRecording) Done() <-chan struct{} { return r.done }
 
 var dictationToggle = tui.Key{Kind: tui.KeyRune, Rune: 'v', Alt: true}
 
@@ -53,7 +61,7 @@ func dictationHarness(t *testing.T, transcribe dictationTranscribeFunc) (*Intera
 		close(started)
 		return r, nil
 	}}})
-	t.Cleanup(i.cancelDictation)
+	t.Cleanup(i.shutdownDictation)
 	return i, r, started
 }
 func waitDictation(t *testing.T, ch <-chan struct{}) {
@@ -257,4 +265,83 @@ func TestDictationOverlayAndIndicator(t *testing.T) {
 		t.Fatal("missing spinner")
 	}
 	i.dictation = interactiveDictation{}
+}
+
+func TestDictationSanitizeTranscript(t *testing.T) {
+	for _, text := range []string{"\x1b]52;c;ZXZpbA==\x07hello", "\x1b[31m\x07"} {
+		i, _, started := dictationHarness(t, func(context.Context, provider.AudioInput) (string, error) { return text, nil })
+		i.handleKey(context.Background(), dictationToggle)
+		waitDictation(t, started)
+		i.handleKey(context.Background(), dictationToggle)
+		finishDictation(t, i)
+		if strings.HasSuffix(text, "hello") {
+			if i.ed.Value() != "hello" {
+				t.Fatal(i.ed.Value())
+			}
+		} else if i.statusErr != "No speech detected" {
+			t.Fatal(i.statusErr)
+		}
+	}
+}
+
+func TestDictationEscapeDoesNotWaitForCleanup(t *testing.T) {
+	i, r, started := dictationHarness(t, func(context.Context, provider.AudioInput) (string, error) { return "", nil })
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	r.cleanupEntered = make(chan struct{})
+	r.cleanupRelease = release
+	i.handleKey(context.Background(), dictationToggle)
+	waitDictation(t, started)
+	escaped := make(chan struct{})
+	go func() { i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); close(escaped) }()
+	waitDictation(t, escaped)
+	waitDictation(t, r.cleanupEntered)
+	// A second recording can start while the first worker is still in Cancel.
+	secondStarted := make(chan struct{})
+	second := &fakeDictationRecording{done: make(chan struct{}), canceled: make(chan struct{})}
+	i.cfg.Dictation.Start = func(context.Context, dictation.Options) (DictationRecording, error) {
+		close(secondStarted)
+		return second, nil
+	}
+	i.handleKey(context.Background(), dictationToggle)
+	waitDictation(t, secondStarted)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exited := make(chan struct{})
+	go func() { _ = i.Run(ctx); close(exited) }()
+	waitDictation(t, second.canceled)
+	select {
+	case <-exited:
+		t.Fatal("Run returned before pending cleanup")
+	default:
+	}
+	unblock()
+	waitDictation(t, exited)
+}
+
+func TestDictationRefreshDoesNotWaitForCleanup(t *testing.T) {
+	i, r, started := dictationHarness(t, func(context.Context, provider.AudioInput) (string, error) { return "hello", nil })
+	release := make(chan struct{})
+	defer close(release)
+	r.cleanupEntered = make(chan struct{})
+	r.cleanupRelease = release
+	i.handleKey(context.Background(), dictationToggle)
+	waitDictation(t, started)
+	i.handleKey(context.Background(), dictationToggle)
+	waitDictation(t, r.cleanupEntered)
+	refreshed := make(chan struct{})
+	go func() { i.refreshDictation(); close(refreshed) }()
+	waitDictation(t, refreshed)
+	if i.ed.Value() != "hello" || i.dictation.phase != "" {
+		t.Fatal("terminal event not applied")
+	}
+	// The render mutex is available even though the worker is still cleaning up.
+	i.mu.Lock()
+	pending := len(i.pendingDictation)
+	i.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("pending workers = %d, want 1", pending)
+	}
 }

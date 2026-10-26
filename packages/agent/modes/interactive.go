@@ -744,6 +744,7 @@ type Interactive struct {
 	cumUsage           provider.Usage
 	codexUsage         codexUsageState
 	dictation          interactiveDictation
+	pendingDictation   []<-chan struct{}
 	lastCtxInput       int // input_tokens of the most recent turn — approximates current context size
 	busy               bool
 	ctrlCExit          bool
@@ -1229,7 +1230,7 @@ func (i *Interactive) setResidentChildMouseReporting(enabled bool) {
 
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
-	defer i.cancelDictation()
+	defer i.shutdownDictation()
 	i.mu.Lock()
 	i.runCtx = ctx
 	i.mu.Unlock()

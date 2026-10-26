@@ -88,7 +88,10 @@ func (t *ChatGPTTranscriber) Transcribe(ctx context.Context, audio AudioInput) (
 	// the HTTP transport has not yet started consuming the request body.
 	stop := context.AfterFunc(ctx, func() { reader.CloseWithError(ctx.Err()) })
 	defer stop()
+	writerDone := make(chan struct{})
+	defer func() { _ = reader.Close(); <-writerDone }()
 	go func() {
+		defer close(writerDone)
 		header := make(textproto.MIMEHeader)
 		header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": audio.Filename}))
 		header.Set("Content-Type", audio.MIMEType)

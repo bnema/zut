@@ -164,3 +164,49 @@ func TestTranscribeRedirect(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+type transcribeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f transcribeRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type unreadTranscribeAudio struct{}
+
+func (unreadTranscribeAudio) Read([]byte) (int, error) {
+	panic("audio must not be read before the multipart header is consumed")
+}
+
+func TestTranscribeCancelBeforeBodyConsumed(t *testing.T) {
+	entered := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transcriber := &ChatGPTTranscriber{
+		Credentials: func(context.Context) (string, string, error) { return "synthetic-token", "", nil },
+		Client: &http.Client{Transport: transcribeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			defer r.Body.Close()
+			close(entered)
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		})},
+	}
+	returned := make(chan error, 1)
+	go func() {
+		_, err := transcriber.Transcribe(ctx, AudioInput{Filename: "audio.wav", MIMEType: "audio/wav", Reader: unreadTranscribeAudio{}})
+		returned <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("transport not entered")
+	}
+	cancel()
+	// Transcribe joins its multipart writer before returning, so this also proves
+	// that the writer blocked on the unread header has exited.
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancellation did not release multipart writer")
+	}
+}

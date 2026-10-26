@@ -144,3 +144,28 @@ func skipStringEscape(s string, i int) int {
 	}
 	return len(s)
 }
+
+// SanitizePlainText removes terminal escapes, controls, invalid UTF-8, and
+// invisible format characters from untrusted editor text. LF is preserved;
+// tabs become one space, independent of the insertion column.
+func SanitizePlainText(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			i = skipEscapeSequence(s, i)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		switch {
+		case r == '\n':
+			b.WriteByte('\n')
+		case r == '\t':
+			b.WriteByte(' ')
+		case r == utf8.RuneError && size == 1, unicode.IsControl(r), unicode.Is(unicode.Cf, r):
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
