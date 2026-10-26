@@ -1,0 +1,166 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func transcriptionClient(srv *httptest.Server, account string) *ChatGPTTranscriber {
+	return &ChatGPTTranscriber{Client: srv.Client(), BaseURL: srv.URL + "/backend-api", Credentials: func(context.Context) (string, string, error) { return "synthetic-token", account, nil }}
+}
+func transcriptionAudio(language string) AudioInput {
+	return AudioInput{Filename: "audio.webm", MIMEType: "audio/webm", Reader: strings.NewReader("synthetic-audio"), Language: language}
+}
+
+func TestTranscribeMultipart(t *testing.T) {
+	for _, language := range []string{"", "fr"} {
+		t.Run("language="+language, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" || r.URL.Path != "/backend-api/transcribe" {
+					t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("Authorization") != "Bearer synthetic-token" || r.Header.Get("ChatGPT-Account-Id") != "synthetic-account" || r.Header.Get("User-Agent") != "codex-cli" {
+					t.Error("incorrect headers")
+				}
+				mr, err := r.MultipartReader()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				part, err := mr.NextPart()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				data, err := io.ReadAll(part)
+				if err != nil || part.FormName() != "file" || part.FileName() != "audio.webm" || part.Header.Get("Content-Type") != "audio/webm" || string(data) != "synthetic-audio" {
+					t.Error("incorrect audio part")
+				}
+				part, err = mr.NextPart()
+				if language != "" {
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					data, err = io.ReadAll(part)
+					if err != nil || part.FormName() != "language" || string(data) != language {
+						t.Error("incorrect language")
+					}
+					_, err = mr.NextPart()
+				}
+				if err != io.EOF {
+					t.Errorf("unexpected extra part: %v", err)
+				}
+				fmt.Fprint(w, `{"text":"  hello world\n", "asset_ttl":"30d"}`)
+			}))
+			defer srv.Close()
+			text, err := transcriptionClient(srv, "synthetic-account").Transcribe(context.Background(), transcriptionAudio(language))
+			if err != nil || text != "hello world" {
+				t.Fatalf("text=%q err=%v", text, err)
+			}
+		})
+	}
+}
+
+func TestTranscribeResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		body     string
+		sentinel error
+	}{
+		{"unauthorized", 401, "private-response", ErrTranscribeUnauthorized},
+		{"forbidden", 403, "private-response", ErrTranscribeUnauthorized},
+		{"server", 500, "private-response", nil},
+		{"empty", 200, `{"text":" \n "}`, ErrTranscribeEmpty},
+		{"invalid", 200, "private-response", nil},
+		{"oversized", 200, strings.Repeat("x", (1<<20)+1), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, present := r.Header["Chatgpt-Account-Id"]; present {
+					t.Error("unexpected account header")
+				}
+				io.Copy(io.Discard, r.Body)
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+			_, err := transcriptionClient(srv, "").Transcribe(context.Background(), transcriptionAudio(""))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if tc.sentinel != nil && !errors.Is(err, tc.sentinel) {
+				t.Fatalf("error=%v", err)
+			}
+			if tc.status != 200 && !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
+				t.Fatalf("missing status: %v", err)
+			}
+			for _, secret := range []string{"private-response", "synthetic-token", "synthetic-audio"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatal("sensitive error")
+				}
+			}
+		})
+	}
+}
+
+func TestTranscribeCredentials(t *testing.T) {
+	want := errors.New("credential source failed")
+	client := &ChatGPTTranscriber{Credentials: func(context.Context) (string, string, error) { return "", "", want }}
+	_, err := client.Transcribe(context.Background(), transcriptionAudio(""))
+	if !errors.Is(err, want) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestTranscribeCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		close(started)
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := transcriptionClient(srv, "").Transcribe(ctx, transcriptionAudio("")); done <- err }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation ignored")
+	}
+}
+
+func TestTranscribeRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("redirect followed") }))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	_, err := transcriptionClient(srv, "synthetic-account").Transcribe(context.Background(), transcriptionAudio(""))
+	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("error=%v", err)
+	}
+}
