@@ -8,6 +8,8 @@ func TestSanitizePlainText(t *testing.T) {
 		{"\x1b]52;c;ZXZpbA==\x1b\\hello", "hello"},
 		{"\x1b[31mhello\x1b[0m", "hello"},
 		{"hello\x1b", "hello"},
+		{"\x1bPq#0;2;0;0;0\x1b\\hello", "hello"},
+		{"line one\r\nline two", "line one\nline two"},
 		{"a\x07\x9b\u009b\x7f\x00\xff\u202eb", "ab"},
 		{"été français\n中文 😀\toui", "été français\n中文 😀 oui"},
 	} {
