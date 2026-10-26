@@ -21,7 +21,7 @@ func TestDictationCredentials(t *testing.T) {
 	t.Setenv("OPENAI_CODEX_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "synthetic-api-key")
 	if _, _, err := dictationCredentials(context.Background()); !errors.Is(err, modes.ErrDictationLogin) {
-		t.Fatal(err)
+		t.Fatal("accepted API key without ChatGPT login", err)
 	}
 	store := AuthStoreFor()
 	if err := store.SetOAuth("openai", auth.OAuthToken{AccessToken: "synthetic-old", RefreshToken: "synthetic-refresh", AccountID: "synthetic-account", Expiry: time.Now().Add(-time.Hour)}); err != nil {
@@ -45,9 +45,11 @@ func TestDictationCredentials(t *testing.T) {
 	if saved.AccountID != "synthetic-account" || saved.RefreshToken != "synthetic-refresh" {
 		t.Fatal("lost account or refresh token")
 	}
+	// An API key in the environment must not hide the stored ChatGPT login.
 	t.Setenv("OPENAI_CODEX_API_KEY", "synthetic-shadow")
-	if _, _, err := dictationCredentials(context.Background()); !errors.Is(err, modes.ErrDictationLogin) {
-		t.Fatal("accepted API key", err)
+	token, account, err = dictationCredentials(context.Background())
+	if err != nil || token != "synthetic-new" || account != "synthetic-account" {
+		t.Fatalf("API key shadowed OAuth: account=%q err=%v", account, err)
 	}
 }
 func TestDictationSettings(t *testing.T) {

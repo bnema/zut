@@ -25,12 +25,17 @@ func validateDictationSettings(s *DictationSettings) error {
 	return nil
 }
 
+// dictationCredentials reads the stored ChatGPT OAuth login directly: the
+// transcription endpoint rejects API keys, so env API keys must not shadow it.
 func dictationCredentials(ctx context.Context) (string, string, error) {
-	token, method, accountID, err := resolveCredentialFull(ctx, "openai-codex", "", apiKeyCommandSkip)
-	if err != nil || method != "oauth" || token == "" {
+	tok := loadOAuthToken("openai")
+	if tok == nil || tok.AccessToken == "" {
 		return "", "", modes.ErrDictationLogin
 	}
-	return token, accountID, nil
+	// A failed refresh returns the stale token; the endpoint then answers 401,
+	// which the UI reports as an expired login.
+	tok, _ = refreshIfExpiredContext(ctx, "openai", tok)
+	return tok.AccessToken, tok.AccountID, nil
 }
 
 func interactiveDictationConfig(s *DictationSettings) modes.DictationConfig {

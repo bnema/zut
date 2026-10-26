@@ -134,7 +134,7 @@ func runDictation(ctx context.Context, cfg DictationConfig, stop <-chan struct{}
 	}
 	f, err := os.Open(audio.Path)
 	if err != nil {
-		events <- dictationEvent{err: errors.New("Could not read dictation audio")}
+		events <- dictationEvent{err: errors.New("dictation: could not read recorded audio")}
 		return
 	}
 	defer f.Close()
