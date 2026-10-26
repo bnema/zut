@@ -22,3 +22,9 @@ func expectedStop(err error, name string) bool {
 	}
 	return false
 }
+
+type processGuard struct{ cmd *exec.Cmd }
+
+func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) { return &processGuard{cmd}, nil }
+func (g *processGuard) terminate(_ bool)                   { killTree(g.cmd) }
+func (g *processGuard) cleanup()                           { killTree(g.cmd) }

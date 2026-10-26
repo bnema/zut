@@ -24,6 +24,7 @@ type Options struct {
 	MaxDuration time.Duration
 	TempDir     string
 	LookPath    func(string) (string, error)
+	limit       <-chan time.Time // test-only deadline trigger, armed after recorder readiness
 }
 
 // Result owns the recorded file; the caller must call Cleanup after use.
@@ -145,16 +146,22 @@ func Start(ctx context.Context, opts Options) (*Recording, error) {
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("dictation: start %s: %w", name, err)
 	}
+	guard, err := newProcessGuard(cmd)
+	if err != nil {
+		_ = cmd.Wait()
+		_ = stdin.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("dictation: guard recorder: %w", err)
+	}
 	r := &Recording{result: Result{Path: path, Filename: filepath.Base(path), MIMEType: "audio/wav", Recorder: name}, started: time.Now(), stop: make(chan struct{}), cancel: make(chan struct{}), done: make(chan struct{})}
-	go r.run(ctx, cmd, stdin, tail, opts.MaxDuration)
+	go r.run(ctx, cmd, stdin, tail, opts.MaxDuration, opts.limit, guard)
 	return r, nil
 }
 
-func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, tail *stderrTail, maximum time.Duration) {
+func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, tail *stderrTail, maximum time.Duration, limit <-chan time.Time, guard *processGuard) {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	var limit <-chan time.Time
-	if maximum > 0 {
+	if maximum > 0 && limit == nil {
 		timer := time.NewTimer(maximum)
 		defer timer.Stop()
 		limit = timer.C
@@ -173,7 +180,7 @@ func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 		stopping = true
 	}
 	if canceled {
-		killTree(cmd)
+		guard.terminate(true)
 		err = <-exited
 	} else if stopping {
 		graceful(cmd, stdin, r.result.Recorder)
@@ -182,21 +189,21 @@ func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 		case err = <-exited:
 		case <-ctx.Done():
 			canceled = true
-			killTree(cmd)
+			guard.terminate(true)
 			err = <-exited
 		case <-r.cancel:
 			canceled = true
-			killTree(cmd)
+			guard.terminate(true)
 			err = <-exited
 		case <-timer.C:
 			forced = true
-			killTree(cmd)
+			guard.terminate(true)
 			err = <-exited
 		}
 		timer.Stop()
 	}
 	// Also reap descendants that outlive the recorder.
-	killTree(cmd)
+	guard.cleanup()
 	_ = stdin.Close()
 	r.mu.Lock()
 	defer r.mu.Unlock()

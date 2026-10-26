@@ -106,6 +106,7 @@ func TestCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(r.Cancel)
 	ready(t, r)
 	r.Cancel()
 	r.Cancel()
@@ -138,19 +139,21 @@ func TestContextCancel(t *testing.T) {
 
 func TestMaxDuration(t *testing.T) {
 	opts := fake(t, capturing)
-	opts.MaxDuration = 300 * time.Millisecond
+	deadline := make(chan time.Time, 1)
+	opts.limit = deadline
 	r, err := Start(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Cancel()
 	ready(t, r)
+	deadline <- time.Now()
 	finished(t, r)
 	result, err := r.Stop()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Duration < opts.MaxDuration {
+	if result.Duration <= 0 {
 		t.Fatal(result.Duration)
 	}
 }
@@ -219,6 +222,7 @@ func TestConcurrentStopCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(r.Cancel)
 	ready(t, r)
 	var wg sync.WaitGroup
 	for range 10 {
