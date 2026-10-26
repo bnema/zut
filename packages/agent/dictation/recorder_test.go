@@ -23,10 +23,8 @@ func TestDetection(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error")
 				}
-				for _, s := range all {
-					if !strings.Contains(err.Error(), s) {
-						t.Fatal(err)
-					}
+				if !errors.Is(err, ErrNoRecorder) {
+					t.Fatal(err)
 				}
 				return
 			}

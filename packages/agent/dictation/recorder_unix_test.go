@@ -252,3 +252,17 @@ func TestConcurrentStopCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLevelEndsWithRecording(t *testing.T) {
+	r, err := Start(context.Background(), fake(t, capturing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, r)
+	r.Cancel()
+	for j := 0; j < 100; j++ {
+		if r.Level() != 0 {
+			t.Fatal(r.Level())
+		}
+	}
+}

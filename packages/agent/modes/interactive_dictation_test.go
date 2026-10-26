@@ -31,6 +31,8 @@ type fakeDictationRecording struct {
 	cleanupRelease <-chan struct{}
 }
 
+func (r *fakeDictationRecording) Level() float64                  { return 0.7 }
+func (r *fakeDictationRecording) Recorder() string                { return "pw-record" }
 func (r *fakeDictationRecording) Stop() (dictation.Result, error) { return r.result, r.err }
 func (r *fakeDictationRecording) Cancel() {
 	r.once.Do(func() {
@@ -54,7 +56,7 @@ func dictationHarness(t *testing.T, transcribe dictationTranscribeFunc) (*Intera
 	}
 	r := &fakeDictationRecording{result: dictation.Result{Path: path, Filename: "audio.wav", MIMEType: "audio/wav"}, done: make(chan struct{}), canceled: make(chan struct{})}
 	started := make(chan struct{})
-	i := NewInteractive(InteractiveConfig{Terminal: &cleanupTestTerminal{}, Theme: tui.Dark, Dictation: DictationConfig{Transcriber: transcribe, Language: "fr", Start: func(ctx context.Context, o dictation.Options) (DictationRecording, error) {
+	i := NewInteractive(InteractiveConfig{Terminal: &cleanupTestTerminal{}, Theme: tui.Dark, Dictation: DictationConfig{Service: "ChatGPT", Transcriber: transcribe, Language: "fr", Start: func(ctx context.Context, o dictation.Options) (DictationRecording, error) {
 		if o.MaxDuration != 10*time.Minute {
 			t.Error("missing default duration")
 		}
@@ -211,11 +213,11 @@ func TestDictationErrors(t *testing.T) {
 	}
 	t.Run("start", func(t *testing.T) {
 		i := NewInteractive(InteractiveConfig{Dictation: DictationConfig{Transcriber: dictationTranscribeFunc(nil), Start: func(context.Context, dictation.Options) (DictationRecording, error) {
-			return nil, errors.New("dictation: no recorder found")
+			return nil, dictation.ErrNoRecorder
 		}}})
 		i.handleKey(context.Background(), dictationToggle)
 		finishDictation(t, i)
-		if i.statusErr != "dictation: no recorder found" {
+		if i.statusErr != "No recorder found: install pw-record, parecord or ffmpeg" {
 			t.Fatal(i.statusErr)
 		}
 	})
@@ -224,12 +226,12 @@ func TestDictationErrors(t *testing.T) {
 			t.Error("transcribed failed recorder")
 			return "", nil
 		})
-		r.err = errors.New("dictation: recorder failed")
+		r.err = &dictation.RecorderError{Recorder: "pw-record"}
 		i.handleKey(context.Background(), dictationToggle)
 		waitDictation(t, started)
 		close(r.done)
 		finishDictation(t, i)
-		if i.statusErr != "dictation: recorder failed" {
+		if i.statusErr != "Recording failed (pw-record)" {
 			t.Fatal(i.statusErr)
 		}
 	})
@@ -247,8 +249,8 @@ func TestDictationOverlayAndIndicator(t *testing.T) {
 	lines := i.dictationIndicatorLocked(80)
 	frame := strings.Join(lines, "")
 	now = now.Add(480 * time.Millisecond)
-	if strings.Join(i.dictationIndicatorLocked(80), "") == frame {
-		t.Fatal("recording dot did not blink")
+	if strings.Join(i.dictationIndicatorLocked(80), "") != frame {
+		t.Fatal("recording dot changed")
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "REC 00:07") {
 		t.Fatal(lines)
@@ -261,7 +263,7 @@ func TestDictationOverlayAndIndicator(t *testing.T) {
 		}
 	}
 	i.dictation.phase = "transcribing"
-	if !strings.Contains(i.dictationIndicatorLocked(80)[0], "Transcribing…") {
+	if !strings.Contains(i.dictationIndicatorLocked(80)[0], "Transcribing 0 s") {
 		t.Fatal("missing spinner")
 	}
 	i.dictation = interactiveDictation{}
@@ -343,5 +345,64 @@ func TestDictationRefreshDoesNotWaitForCleanup(t *testing.T) {
 	i.mu.Unlock()
 	if pending != 1 {
 		t.Fatalf("pending workers = %d, want 1", pending)
+	}
+}
+
+func TestDictationStructuredErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{dictation.ErrNoRecorder, "No recorder found: install pw-record, parecord or ffmpeg"},
+		{dictation.ErrOutputPlaceholder, "dictation.recorder needs an {output} placeholder"},
+		{dictation.ErrTooLittleAudio, "Recording too short or microphone silent"},
+		{dictation.ErrFinalize, "Recording could not be finalized"},
+		{&dictation.RecorderError{Recorder: "pw-record"}, "Recording failed (pw-record)"},
+		{&dictation.RecorderError{Recorder: "pw-record", Hint: "device unavailable"}, "Recording failed (pw-record): device unavailable"},
+		{&provider.TranscribeHTTPError{StatusCode: 500}, "ChatGPT transcription failed (HTTP 500)"},
+		{provider.ErrTranscribeNetwork, "ChatGPT transcription failed: network error"},
+		{provider.ErrTranscribeResponse, "ChatGPT transcription failed: unexpected response"},
+		{context.DeadlineExceeded, "Transcription timed out"},
+	} {
+		if got := dictationError(tc.err, "ChatGPT"); got != tc.want {
+			t.Errorf("%v: %q", tc.err, got)
+		}
+	}
+}
+
+func TestDictationIndicatorMetadata(t *testing.T) {
+	i, r, _ := dictationHarness(t, func(context.Context, provider.AudioInput) (string, error) { return "", nil })
+	now := time.Unix(100, 0)
+	i.clock = func() time.Time { return now }
+	i.dictation = interactiveDictation{phase: "recording", started: now.Add(-7 * time.Second), recording: r, history: []rune("▁▂▅▇▅▃▁▁")}
+	full := stripANSIBytes(i.dictationIndicatorLocked(100)[0])
+	if full != "● REC 00:07 · pw-record ▁▂▅▇▅▃▁▁  Alt+V stop · Esc cancel" {
+		t.Fatal(full)
+	}
+	narrow := stripANSIBytes(i.dictationIndicatorLocked(35)[0])
+	if strings.Contains(narrow, "Alt+V") || !strings.Contains(narrow, "▁▂") {
+		t.Fatal(narrow)
+	}
+	narrow = stripANSIBytes(i.dictationIndicatorLocked(23)[0])
+	if strings.Contains(narrow, "▁") {
+		t.Fatal(narrow)
+	}
+	i.dictation.phase = "transcribing"
+	i.dictation.audio.Duration = 7 * time.Second
+	i.dictation.size = 224 * 1024
+	if got := stripANSIBytes(i.dictationIndicatorLocked(100)[0]); !strings.Contains(got, " Transcribing 7 s · 224 KB → ChatGPT") {
+		t.Fatal(got)
+	}
+	i.dictation = interactiveDictation{}
+}
+
+func TestDictationSuccessStatus(t *testing.T) {
+	i, _, started := dictationHarness(t, func(context.Context, provider.AudioInput) (string, error) { return "hello world", nil })
+	i.handleKey(context.Background(), dictationToggle)
+	waitDictation(t, started)
+	i.handleKey(context.Background(), dictationToggle)
+	finishDictation(t, i)
+	if i.statusOK != "2 words · ChatGPT · 0.0 s" || i.statusErr != "" {
+		t.Fatal(i.statusOK, i.statusErr)
 	}
 }

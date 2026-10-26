@@ -917,7 +917,7 @@ In the main chat, `ctrl+v` checks the system clipboard for an image before falli
 
 ## Dictation
 
-Press `Alt+V` in the editor to record from the microphone, then `Alt+V` again to stop and transcribe. `Esc` cancels a recording and uploads nothing. While recording, `● REC mm:ss` appears below the editor; `Transcribing…` shows during upload. The transcript is inserted at the cursor and is not submitted. Dictation works with any active model or provider.
+Press `Alt+V` in the editor to record from the microphone, then `Alt+V` again to stop and transcribe. `Esc` cancels a recording and uploads nothing. While recording, a static red `● REC mm:ss` shows the recorder name and live microphone levels below the editor. During upload, a spinner shows audio duration, file size, and service; after insertion, a brief status shows word count, service, and transcription time. The transcript is inserted at the cursor and is not submitted. Dictation works with any active model or provider.
 
 **Requirements.** A ChatGPT login: the same `/login` OpenAI/ChatGPT OAuth used by the `openai-codex` provider. An API key does not work. Without a valid login zut reports `Dictation needs a ChatGPT login (/login)` or `ChatGPT login expired, run /login`; silent recordings report `No speech detected`.
 

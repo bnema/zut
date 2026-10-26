@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -47,6 +48,7 @@ func (r Result) Cleanup() error {
 
 // Recording supervises one recorder. All its methods are safe concurrently.
 type Recording struct {
+	level      atomic.Uint64
 	mu         sync.Mutex
 	result     Result
 	err        error
@@ -74,7 +76,7 @@ func command(opts Options, output, platform string) ([]string, string, error) {
 			argv[i] = strings.ReplaceAll(arg, "{output}", output)
 		}
 		if !found {
-			return nil, "", errors.New("dictation command requires an {output} placeholder")
+			return nil, "", ErrOutputPlaceholder
 		}
 		return argv, filepath.Base(argv[0]), nil
 	}
@@ -105,7 +107,7 @@ func command(opts Options, output, platform string) ([]string, string, error) {
 		}
 		return argv, name, nil
 	}
-	return nil, "", errors.New("dictation: no recorder found on PATH (tried pw-record, parecord, ffmpeg)")
+	return nil, "", ErrNoRecorder
 }
 
 // Start creates a private temporary WAV and starts a recorder without waiting
@@ -144,7 +146,7 @@ func Start(ctx context.Context, opts Options) (*Recording, error) {
 	if err = cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = os.Remove(path)
-		return nil, fmt.Errorf("dictation: start %s: %w", name, err)
+		return nil, &RecorderError{Recorder: name}
 	}
 	guard, err := newProcessGuard(cmd)
 	if err != nil {
@@ -166,18 +168,27 @@ func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 		defer timer.Stop()
 		limit = timer.C
 	}
+	meter := time.NewTicker(100 * time.Millisecond)
+	defer meter.Stop()
 	var err error
 	canceled, stopping, forced := false, false, false
-	select {
-	case err = <-exited:
-	case <-ctx.Done():
-		canceled = true
-	case <-r.cancel:
-		canceled = true
-	case <-r.stop:
-		stopping = true
-	case <-limit:
-		stopping = true
+waiting:
+	for {
+		select {
+		case <-meter.C:
+			r.sampleLevel()
+			continue
+		case err = <-exited:
+		case <-ctx.Done():
+			canceled = true
+		case <-r.cancel:
+			canceled = true
+		case <-r.stop:
+			stopping = true
+		case <-limit:
+			stopping = true
+		}
+		break waiting
 	}
 	if canceled {
 		guard.terminate(true)
@@ -215,21 +226,21 @@ func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 		info, statErr := os.Stat(r.result.Path)
 		switch {
 		case forced:
-			r.err = errors.New("dictation: recorder did not stop gracefully")
+			r.err = ErrFinalize
 		case err != nil && !(stopping && expectedStop(err, r.result.Recorder)):
-			r.err = fmt.Errorf("dictation: %s failed: %w", r.result.Recorder, err)
+			r.err = &RecorderError{Recorder: r.result.Recorder, Hint: tail.String()}
 		case statErr != nil:
 			r.err = statErr
 		case info.Size() < 1024:
-			r.err = errors.New("dictation: recorder produced too little audio (less than 1 KB)")
+			r.err = ErrTooLittleAudio
+		case !stopping:
+			r.err = &RecorderError{Recorder: r.result.Recorder, Hint: tail.String()}
 		}
 	}
 	if r.err != nil {
-		if diagnostic := tail.String(); diagnostic != "" {
-			r.err = fmt.Errorf("%w: %s", r.err, diagnostic)
-		}
 		_ = r.result.Cleanup()
 	}
+	r.level.Store(0)
 	close(r.done)
 }
 

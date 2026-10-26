@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"strings"
@@ -18,6 +19,17 @@ var ErrTranscribeUnauthorized = errors.New("transcribe: unauthorized")
 
 // ErrTranscribeEmpty indicates that no speech text was returned.
 var ErrTranscribeEmpty = errors.New("transcribe: empty text")
+
+// ErrTranscribeNetwork indicates transport failure without exposing request details.
+var ErrTranscribeNetwork = errors.New("transcription network error")
+
+// ErrTranscribeResponse indicates an unreadable or malformed response.
+var ErrTranscribeResponse = errors.New("unexpected transcription response")
+
+// TranscribeHTTPError contains only the HTTP status, never a response body.
+type TranscribeHTTPError struct{ StatusCode int }
+
+func (e *TranscribeHTTPError) Error() string { return fmt.Sprintf("transcribe: HTTP %d", e.StatusCode) }
 
 // AudioInput describes an audio upload. Reader must return promptly (or be
 // independently cancelable); Transcribe does not close caller-owned readers.
@@ -118,27 +130,31 @@ func (t *ChatGPTTranscriber) Transcribe(ctx context.Context, audio AudioInput) (
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", errors.New("transcribe: request failed")
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return "", context.DeadlineExceeded
+		}
+		return "", ErrTranscribeNetwork
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return "", fmt.Errorf("%w: HTTP %d", ErrTranscribeUnauthorized, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("transcribe: HTTP %d", resp.StatusCode)
+		return "", &TranscribeHTTPError{StatusCode: resp.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
 	if err != nil || len(body) > 1<<20 {
-		return "", errors.New("transcribe: unreadable or oversized response")
+		return "", ErrTranscribeResponse
 	}
 	var payload struct {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return "", errors.New("transcribe: invalid response")
+		return "", ErrTranscribeResponse
 	}
 	text := strings.TrimSpace(payload.Text)
 	if text == "" {

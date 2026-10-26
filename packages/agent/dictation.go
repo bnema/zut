@@ -40,6 +40,7 @@ func dictationCredentials(ctx context.Context) (string, string, error) {
 
 func interactiveDictationConfig(s *DictationSettings) modes.DictationConfig {
 	cfg := modes.DictationConfig{
+		Service:     "ChatGPT",
 		Transcriber: &provider.ChatGPTTranscriber{Credentials: dictationCredentials},
 		Recorder:    dictation.Options{MaxDuration: 600 * time.Second},
 	}

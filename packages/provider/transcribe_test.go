@@ -80,8 +80,8 @@ func TestTranscribeResponses(t *testing.T) {
 		{"forbidden", 403, "private-response", ErrTranscribeUnauthorized},
 		{"server", 500, "private-response", nil},
 		{"empty", 200, `{"text":" \n "}`, ErrTranscribeEmpty},
-		{"invalid", 200, "private-response", nil},
-		{"oversized", 200, strings.Repeat("x", (1<<20)+1), nil},
+		{"invalid", 200, "private-response", ErrTranscribeResponse},
+		{"oversized", 200, strings.Repeat("x", (1<<20)+1), ErrTranscribeResponse},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +99,12 @@ func TestTranscribeResponses(t *testing.T) {
 			}
 			if tc.sentinel != nil && !errors.Is(err, tc.sentinel) {
 				t.Fatalf("error=%v", err)
+			}
+			if tc.status == 500 {
+				var status *TranscribeHTTPError
+				if !errors.As(err, &status) || status.StatusCode != 500 {
+					t.Fatalf("missing typed status: %v", err)
+				}
 			}
 			if tc.status != 200 && !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
 				t.Fatalf("missing status: %v", err)
@@ -208,5 +214,18 @@ func TestTranscribeCancelBeforeBodyConsumed(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancellation did not release multipart writer")
+	}
+}
+
+func TestTranscribeTransportErrors(t *testing.T) {
+	for _, tc := range []struct{ cause, errorType error }{
+		{errors.New("private transport details"), ErrTranscribeNetwork},
+		{context.DeadlineExceeded, context.DeadlineExceeded},
+	} {
+		client := &ChatGPTTranscriber{Credentials: func(context.Context) (string, string, error) { return "synthetic-token", "", nil }, Client: &http.Client{Transport: transcribeRoundTripFunc(func(*http.Request) (*http.Response, error) { return nil, tc.cause })}}
+		_, err := client.Transcribe(context.Background(), transcriptionAudio(""))
+		if !errors.Is(err, tc.errorType) || strings.Contains(err.Error(), "private") {
+			t.Fatalf("%v", err)
+		}
 	}
 }
