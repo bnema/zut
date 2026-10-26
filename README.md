@@ -485,6 +485,8 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **color theme** — `auto` follows the terminal foreground, background, ANSI palette, color depth, and supported live appearance changes. Choose fixed dark/light palettes or JSON overlays discovered under `$ZUT_HOME/themes` and loaded extensions. Active custom files reload safely; invalid edits retain the last valid appearance and persistent deletion resets to auto. See [docs/themes.md](docs/themes.md).
 - **model profiles** — nine favorites containing a provider, model, reasoning level, and fast-mode preference. `enter` on a slot opens the `/model` picker; `left`/`right` chooses that favorite's reasoning without changing the live model. `enter` saves the assignment; `backspace` clears it. Editing the active slot immediately applies and saves its new model and reasoning. `/fast` while a profile is active applies and saves that profile's fast-mode preference. Assigning other slots does not change the live model. Clearing the active slot detaches it for this run without changing the live model. See [Model profiles](#model-profiles).
 
+Dictation (`Alt+V`) is configured only through the `dictation` object in `config.json` (`recorder`, `max_seconds`, `language`) and has no `/settings` row. See [Dictation](#dictation).
+
 ### Model profiles
 
 Press `Ctrl+1` ... `Ctrl+9` from the editor, or run `/profile 1` ... `/profile 9`:
@@ -913,6 +915,32 @@ A model installed through Ollama is kept in Ollama's internal storage and is not
 
 In the main chat, `ctrl+v` checks the system clipboard for an image before falling back to text. A pasted image appears as a `[clipboard image #N]` marker and is attached when you submit the prompt; `esc` or `ctrl+c` clears pending image markers with the rest of the input. Wayland image paste uses `wl-paste` from `wl-clipboard`; X11 image paste uses `xclip` when available. Clipboard images larger than 32 MiB are ignored and use the normal text-paste fallback.
 
+## Dictation
+
+Press `Alt+V` in the editor to record from the microphone, then `Alt+V` again to stop and transcribe. `Esc` cancels a recording and uploads nothing. While recording, `● REC mm:ss` appears below the editor; `Transcribing…` shows during upload. The transcript is inserted at the cursor and is not submitted. Dictation works with any active model or provider.
+
+**Requirements.** A ChatGPT login: the same `/login` OpenAI/ChatGPT OAuth used by the `openai-codex` provider. An API key does not work. Without a valid login zut reports `Dictation needs a ChatGPT login (/login)` or `ChatGPT login expired, run /login`; silent recordings report `No speech detected`.
+
+**Recorder.** zut uses the first of `pw-record`, `parecord`, or `ffmpeg` found on `PATH` (`ffmpeg` reads PulseAudio on Linux and AVFoundation `:0` on macOS). Windows has no auto-detection: set `dictation.recorder` to an `ffmpeg` DirectShow command such as `["ffmpeg", "-loglevel", "error", "-f", "dshow", "-i", "audio=Microphone (device name)", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", "{output}"]`, without `-nostdin` so it can be stopped gracefully.
+
+**Configuration.** All keys are optional, in `$ZUT_HOME/config.json`:
+
+```json
+{
+  "dictation": {
+    "recorder": ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--container", "wav", "{output}"],
+    "max_seconds": 600,
+    "language": "fr"
+  }
+}
+```
+
+- `recorder`: command argv (no shell) containing the `{output}` placeholder; it must write a WAV file.
+- `max_seconds`: recording is stopped and transcribed automatically after this many seconds. Default `600`, allowed `1`–`1800`; any other value makes config loading fail.
+- `language`: ISO-639-1 hint such as `fr`. Omit it to auto-detect.
+
+**Privacy and limitations.** Audio is recorded to a private temporary WAV (16 kHz, mono) and deleted after transcription. It is uploaded to ChatGPT's private, undocumented dictation endpoint (`chatgpt.com/backend-api/transcribe`), which may change or stop working without notice. OpenAI retains uploaded audio (reportedly 30 days).
+
 ## Inline images
 
 When a tool returns an image (for example `read` on a PNG), zut renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZUT_INLINE_IMAGES` env var:
@@ -1022,6 +1050,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, worktree, grep, glob, lsp, and web_search outputs over ~12 lines). |
 | `ctrl+r` | Cycle through the reasoning levels supported by the active model. The selected level applies to subsequent model calls and persists to `config.json`. |
 | `ctrl+1` ... `ctrl+9` | Activate a persistent model + reasoning + fast-mode profile; empty slots open the model picker. French AZERTY Ctrl + top-row symbols also work when forwarded by the terminal. Rejected while a turn is running. See [Model profiles](#model-profiles); `/profile N` is the terminal-independent fallback. |
+| `alt+v` | Start dictation; press again to stop and transcribe. `esc` cancels a recording. Requires a ChatGPT login. See [Dictation](#dictation). |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
 ### File picker (`@`)
