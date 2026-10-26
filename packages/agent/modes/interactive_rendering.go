@@ -770,6 +770,7 @@ func (i *Interactive) redraw() {
 			aboveInput = append(aboveInput, workingLines...)
 		}
 		var belowInput []string
+		belowInput = append(belowInput, i.dictationIndicatorLocked(mainCols)...)
 		// Background resident work belongs directly below the editor. It is
 		// deliberately independent of the main turn's busy/status placement.
 		belowInput = append(belowInput, residentSubagentLines...)

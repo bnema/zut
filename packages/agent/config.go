@@ -44,11 +44,12 @@ type GoalsConfig struct {
 
 // Config is the persisted user configuration.
 type Config struct {
-	Provider    string   `json:"provider"`
-	Model       string   `json:"model"`
-	Reasoning   string   `json:"reasoning"`
-	Temperature *float32 `json:"temperature,omitempty"`
-	Theme       string   `json:"theme"`
+	Dictation   *DictationSettings `json:"dictation,omitempty"`
+	Provider    string             `json:"provider"`
+	Model       string             `json:"model"`
+	Reasoning   string             `json:"reasoning"`
+	Temperature *float32           `json:"temperature,omitempty"`
+	Theme       string             `json:"theme"`
 
 	// FastMode requests OpenAI's fast service tier. Off by default;
 	// nil/missing means disabled. An active model profile supplies its
@@ -316,6 +317,9 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("parse config: %w", err)
 	}
+	if err := validateDictationSettings(c.Dictation); err != nil {
+		return c, err
+	}
 	if err := validateSubagentConfig(c.Subagents); err != nil {
 		return c, err
 	}
@@ -374,6 +378,9 @@ func validateSubagentConfig(cfg SubagentsConfig) error {
 
 // SaveConfig writes the config file, creating parent dirs.
 func SaveConfig(c Config) error {
+	if err := validateDictationSettings(c.Dictation); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(ZutHome(), 0o755); err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 // helpKeyRows is the list of keybindings shown by /help.
 var helpKeyRows = [][2]string{
 	{"enter", "submit the current input"},
+	{"alt+v", "start dictation / stop and transcribe; Esc cancels recording"},
 	{"shift+enter / alt+enter", "insert a newline"},
 	{"tab", "complete the highlighted slash command; next model profile when idle"},
 	{"shift+tab", "previous model profile"},

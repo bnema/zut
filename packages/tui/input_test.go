@@ -77,6 +77,15 @@ func TestReaderParsesRawCtrlVAsClipboardPaste(t *testing.T) {
 	}
 }
 
+func TestReaderParsesAltVDictation(t *testing.T) {
+	for _, sequence := range []string{"\x1bv", "\x1bV", "\x1b[118;3u", "\x1b[86;4u", "\x1b[27;3;118~", "\x1b[27;4;86~"} {
+		k := readKey(t, sequence)
+		if k.Kind != KeyRune || (k.Rune != 'v' && k.Rune != 'V') || !k.Alt {
+			t.Fatalf("Read %q = %+v, want Alt+V", sequence, k)
+		}
+	}
+}
+
 func TestReaderParsesRawAltC(t *testing.T) {
 	k := readKey(t, "\x1bc")
 	if k.Kind != KeyRune || k.Rune != 'c' || !k.Alt {

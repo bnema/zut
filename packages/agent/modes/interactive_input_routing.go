@@ -94,6 +94,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if k, ok = i.prepareInputKey(k); !ok {
 		return false
 	}
+	if i.handleDictationKey(ctx, k) {
+		return false
+	}
 
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
 

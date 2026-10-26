@@ -2743,6 +2743,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
+		Dictation:                         interactiveDictationConfig(initialCfg.Dictation),
 		Terminal:                          term,
 		Theme:                             theme,
 		InlineImagesEnabled:               initialCfg.InlineImagesEnabled,

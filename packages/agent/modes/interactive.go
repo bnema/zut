@@ -23,6 +23,7 @@ import (
 
 // InteractiveConfig configures the interactive loop.
 type InteractiveConfig struct {
+	Dictation       DictationConfig
 	Terminal        tui.Terminal
 	Theme           tui.Theme
 	Model           string
@@ -742,6 +743,7 @@ type Interactive struct {
 	sessionInfoBlocks  []sessionInfoBlock
 	cumUsage           provider.Usage
 	codexUsage         codexUsageState
+	dictation          interactiveDictation
 	lastCtxInput       int // input_tokens of the most recent turn — approximates current context size
 	busy               bool
 	ctrlCExit          bool
@@ -1227,6 +1229,7 @@ func (i *Interactive) setResidentChildMouseReporting(enabled bool) {
 
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
+	defer i.cancelDictation()
 	i.mu.Lock()
 	i.runCtx = ctx
 	i.mu.Unlock()
@@ -1649,6 +1652,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case <-tick.C:
 			now := time.Now()
 			i.refreshCodexUsage(ctx, now)
+			i.refreshDictation()
 			if !appearanceDeadline.IsZero() && !now.Before(appearanceDeadline) {
 				appearanceParser.SetPendingColors(false)
 				appearanceParser.SetPendingScheme(false)
@@ -1684,10 +1688,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 			//
 			i.mu.Lock()
 			busy := i.busy
+			dictating := i.dictation.phase != ""
 			sessionLoading := i.sessionDialog.Loading()
 			sessionSearching := i.sessionDialog.SearchLoading()
 			i.mu.Unlock()
-			if busy || sessionLoading || sessionSearching || i.btwDialog.Loading() || i.residentAnimating.Load() {
+			if busy || dictating || sessionLoading || sessionSearching || i.btwDialog.Loading() || i.residentAnimating.Load() {
 				requestRedraw()
 			}
 		}
