@@ -240,7 +240,7 @@ waiting:
 		switch {
 		case forced:
 			r.err = ErrFinalize
-		case err != nil && !(stopping && expectedStop(err, r.result.Recorder)):
+		case err != nil && (!stopping || !expectedStop(err, r.result.Recorder)):
 			r.err = &RecorderError{Recorder: r.result.Recorder, Hint: tail.String()}
 		case statErr != nil:
 			r.err = statErr
