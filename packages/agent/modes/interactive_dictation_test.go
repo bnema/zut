@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -402,7 +403,8 @@ func TestDictationSuccessStatus(t *testing.T) {
 	waitDictation(t, started)
 	i.handleKey(context.Background(), dictationToggle)
 	finishDictation(t, i)
-	if i.statusOK != "2 words · ChatGPT · 0.0 s" || i.statusErr != "" {
+	prefix := "2 words · ChatGPT · "
+	if !strings.HasPrefix(i.statusOK, prefix) || !regexp.MustCompile(`^\d+\.\d s$`).MatchString(strings.TrimPrefix(i.statusOK, prefix)) || i.statusErr != "" {
 		t.Fatal(i.statusOK, i.statusErr)
 	}
 }

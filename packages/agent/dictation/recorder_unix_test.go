@@ -4,10 +4,13 @@ package dictation
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -254,15 +257,70 @@ func TestConcurrentStopCancel(t *testing.T) {
 }
 
 func TestLevelEndsWithRecording(t *testing.T) {
-	r, err := Start(context.Background(), fake(t, capturing))
+	loud := strings.Replace(capturing, "dd if=/dev/zero bs=2048 count=1 >> \"$1\" 2>/dev/null", "i=0; while [ $i -lt 1024 ]; do printf '\\377\\177\\000\\200'; i=$((i+1)); done >> \"$1\"", 1)
+	r, err := Start(context.Background(), fake(t, loud))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(r.Cancel)
 	ready(t, r)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for r.Level() == 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("recorder never sampled nonzero PCM")
+		case <-r.Done():
+			t.Fatal("recorder exited before sampling")
+		case <-tick.C:
+		}
+	}
 	r.Cancel()
+	finished(t, r)
 	for j := 0; j < 100; j++ {
 		if r.Level() != 0 {
 			t.Fatal(r.Level())
 		}
+	}
+}
+
+func TestCrashBeforeRequestedStop(t *testing.T) {
+	for _, automatic := range []bool{false, true} {
+		t.Run(fmt.Sprint("limit=", automatic), func(t *testing.T) {
+			fifo := filepath.Join(t.TempDir(), "release")
+			if err := syscall.Mkfifo(fifo, 0600); err != nil {
+				t.Fatal(err)
+			}
+			opts := fake(t, "dd if=/dev/zero bs=2048 count=1 > \"$1\" 2>/dev/null\nread release < '"+fifo+"'\nexit 7\n")
+			opts.beforeStop = func(exited chan error) {
+				f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+				if err != nil {
+					panic(err)
+				}
+				_, _ = f.WriteString("exit\n")
+				_ = f.Close()
+				// Wait has completed; leave its result queued for the supervisor check.
+				exit := <-exited
+				exited <- exit
+			}
+			limit := make(chan time.Time, 1)
+			opts.limit = limit
+			r, err := Start(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(r.Cancel)
+			if automatic {
+				limit <- time.Now()
+				finished(t, r)
+			}
+			_, err = r.Stop()
+			var recorderErr *RecorderError
+			if !errors.As(err, &recorderErr) {
+				t.Fatalf("expected RecorderError, got %v", err)
+			}
+		})
 	}
 }

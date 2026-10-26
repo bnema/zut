@@ -26,6 +26,7 @@ type Options struct {
 	TempDir     string
 	LookPath    func(string) (string, error)
 	limit       <-chan time.Time // test-only deadline trigger, armed after recorder readiness
+	beforeStop  func(chan error) // test-only synchronization before requested-stop classification
 }
 
 // Result owns the recorded file; the caller must call Cleanup after use.
@@ -156,11 +157,11 @@ func Start(ctx context.Context, opts Options) (*Recording, error) {
 		return nil, fmt.Errorf("dictation: guard recorder: %w", err)
 	}
 	r := &Recording{result: Result{Path: path, Filename: filepath.Base(path), MIMEType: "audio/wav", Recorder: name}, started: time.Now(), stop: make(chan struct{}), cancel: make(chan struct{}), done: make(chan struct{})}
-	go r.run(ctx, cmd, stdin, tail, opts.MaxDuration, opts.limit, guard)
+	go r.run(ctx, cmd, stdin, tail, opts.MaxDuration, opts.limit, guard, opts.beforeStop)
 	return r, nil
 }
 
-func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, tail *stderrTail, maximum time.Duration, limit <-chan time.Time, guard *processGuard) {
+func (r *Recording) run(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, tail *stderrTail, maximum time.Duration, limit <-chan time.Time, guard *processGuard, beforeStop func(chan error)) {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	if maximum > 0 && limit == nil {
@@ -189,6 +190,18 @@ waiting:
 			stopping = true
 		}
 		break waiting
+	}
+	if stopping {
+		if beforeStop != nil {
+			beforeStop(exited)
+		}
+		// An exit already queued before the stop signal is unsolicited, even if
+		// select chose the simultaneously ready stop or duration channel.
+		select {
+		case err = <-exited:
+			stopping = false
+		default:
+		}
 	}
 	if canceled {
 		guard.terminate(true)

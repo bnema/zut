@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +228,37 @@ func TestTranscribeTransportErrors(t *testing.T) {
 		if !errors.Is(err, tc.errorType) || strings.Contains(err.Error(), "private") {
 			t.Fatalf("%v", err)
 		}
+	}
+}
+
+type transcribeErrorReader struct{ err error }
+
+func (r transcribeErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestTranscribeBodyReadTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		cause, want error
+	}{
+		{"timeout", os.ErrDeadlineExceeded, context.DeadlineExceeded},
+		{"response", errors.New("private read details"), ErrTranscribeResponse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			client := &ChatGPTTranscriber{
+				Credentials: func(context.Context) (string, string, error) { return "synthetic-token", "", nil },
+				Client: &http.Client{Transport: transcribeRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					defer r.Body.Close()
+					if _, err := io.Copy(io.Discard, r.Body); err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(transcribeErrorReader{tc.cause}), Header: make(http.Header)}, nil
+				})},
+			}
+			_, err := client.Transcribe(ctx, transcriptionAudio(""))
+			if !errors.Is(err, tc.want) || ctx.Err() != nil {
+				t.Fatalf("error=%v context=%v", err, ctx.Err())
+			}
+		})
 	}
 }

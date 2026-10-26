@@ -147,6 +147,10 @@ func (t *ChatGPTTranscriber) Transcribe(ctx context.Context, audio AudioInput) (
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "", context.DeadlineExceeded
+	}
 	if err != nil || len(body) > 1<<20 {
 		return "", ErrTranscribeResponse
 	}
