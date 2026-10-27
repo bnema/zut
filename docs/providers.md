@@ -107,8 +107,7 @@ standalone manual-code login.
 
 Copilot uses the account's short-lived inference token. Claude models use the
 Anthropic Messages API with Copilot Bearer authentication, without Claude Code
-identity headers. Newer GPT, Grok, and MAI models use Responses; older GPT-4 and
-Grok Code models remain on Chat Completions. Gemini and Kimi use Chat Completions
+identity headers. Newer GPT, Grok, and MAI models use Responses; Gemini and Kimi use Chat Completions
 without `reasoning_effort`. Requests carry user/agent initiator metadata and an
 image request header when appropriate.
 
@@ -135,6 +134,17 @@ Sol, and Luna use Responses and support native `max` reasoning.
 The October 2026 models.dev refresh adds Haiku 5.5, Gemini 4 Argon, GPT-5.4
 nano, GPT-6.1 Sol/Terra, and Grok 4.7. New snapshot-only rows use zero token
 prices (subscription billing is plan-specific); existing token prices are retained.
+
+Models absent from both models.dev and the upstream catalog are removed:
+`claude-opus-4.5`, `claude-opus-4.6`, `claude-sonnet-4.5`, `gemini-2.5-pro`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`, `gpt-4.1`, `gpt-4o`, `gpt-5.2`, `gpt-5.2-codex`, `grok-code-fast-1`.
+
+Source disagreements remain **uncertain** and are retained: Sonnet 4.6 is
+models.dev-only; Opus 4.8 Fast is upstream-only. models.dev marks Opus 4.7,
+Gemini 3.5/3.6/3.7 Flash, GPT-5 mini, GPT-5.4/5.4 mini/5.5, and Kimi K2.7
+Code deprecated, but upstream still lists them. The already-retired MAI-Code-1
+picker remains excluded (upstream still lists it; models.dev does not).
+Account discovery remains the final picker filter; user overrides can supply
+metadata for retired models needed by existing sessions.
 
 ## API-key providers
 

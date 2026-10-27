@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -55,30 +54,14 @@ func TestCopilotCatalogCoversPublicChatModels(t *testing.T) {
 	}
 }
 
-func TestCopilotCatalogKeepsPreviouslySupportedIDsAndExcludesUtilityModels(t *testing.T) {
-	// Rows that shipped before the catalog refresh stay selectable until
-	// retirement is verified; account availability hides unavailable ones.
-	kept := map[string]string{
-		"claude-opus-4.5": APIAnthropicMessages, "claude-opus-4.6": APIAnthropicMessages,
-		"claude-sonnet-4.5": APIAnthropicMessages, "claude-sonnet-4.6": APIAnthropicMessages,
-		"gemini-2.5-pro": APICompletions, "gemini-3-flash-preview": APICompletions, "gemini-3.1-pro-preview": APICompletions,
-		"gpt-4.1": APICompletions, "gpt-4o": APICompletions, "grok-code-fast-1": APICompletions,
-		"gpt-5.2": APIResponses, "gpt-5.2-codex": APIResponses,
+func TestCopilotCatalogKeepsUncertainSonnet46(t *testing.T) {
+	m, err := FindModel(ProviderGitHubCopilot, "claude-sonnet-4.6")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for id, api := range kept {
-		m, err := FindModel("github-copilot", id)
-		if err != nil {
-			t.Errorf("previously supported Copilot model %q dropped: %v", id, err)
-			continue
-		}
-		if m.API != api {
-			t.Errorf("%s API = %q, want %q", id, m.API, api)
-		}
-		if (strings.HasSuffix(id, "-4.5") || strings.HasSuffix(id, "-4.6")) && (m.AdaptiveThinking || usesAdaptiveThinking(m)) {
-			t.Errorf("%s must not use adaptive thinking", id)
-		}
+	if m.API != APIAnthropicMessages || m.AdaptiveThinking || usesAdaptiveThinking(m) {
+		t.Fatalf("unexpected legacy metadata: %+v", m)
 	}
-
 }
 
 func TestConfigureCopilotModelAdaptiveDefaultsFollowKnownFamilies(t *testing.T) {

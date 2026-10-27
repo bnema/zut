@@ -29,3 +29,11 @@ func TestCopilotOctoberCatalogAdditions(t *testing.T) {
 		})
 	}
 }
+
+func TestCopilotCatalogDropsModelsAbsentFromBothSources(t *testing.T) {
+	for _, id := range []string{"claude-opus-4.5", "claude-opus-4.6", "claude-sonnet-4.5", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gpt-4.1", "gpt-4o", "gpt-5.2", "gpt-5.2-codex", "grok-code-fast-1"} {
+		if _, err := FindModel(ProviderGitHubCopilot, id); err == nil {
+			t.Errorf("retired model %s retained", id)
+		}
+	}
+}
