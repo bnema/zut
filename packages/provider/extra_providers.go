@@ -353,7 +353,8 @@ func NewCloudflareAIGateway(apiKey, baseURL string) Client {
 // access enabled; zut trades it for a short-lived Copilot token on
 // every inference request (cached in memory until ~5min before expiry).
 //
-// Wire format: OpenAI Chat Completions. Copilot-specific headers
+// Wire formats: Anthropic Messages, OpenAI Responses, and Chat Completions,
+// selected by model family. Copilot-specific headers
 // (X-Initiator, Openai-Intent, Editor-Version, Editor-Plugin-Version,
 // Copilot-Integration-Id, User-Agent) are added by the refresh
 // transport. The model id passes through unchanged.

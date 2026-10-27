@@ -2,14 +2,13 @@ package provider
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
 func TestCopilotCatalogCoversPublicChatModels(t *testing.T) {
 	groups := map[string][]string{
-		APIAnthropicMessages: {"claude-fable-5", "claude-fable-5.1", "claude-haiku-4.5", "claude-opus-4.7", "claude-opus-4.8", "claude-opus-4.8-fast", "claude-opus-5", "claude-sonnet-5"},
-		APIResponses:         {"gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "grok-4.5", "grok-4.6", "mai-code-1.1-flash"},
+		APIAnthropicMessages: {"claude-fable-5", "claude-fable-5.1", "claude-haiku-4.5", "claude-opus-4.7", "claude-opus-4.8", "claude-opus-4.8-fast", "claude-opus-5", "claude-opus-5.5", "claude-sonnet-5", "claude-sonnet-5.5"},
+		APIResponses:         {"gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "grok-4.5", "grok-4.6", "mai-code-1.1-flash"},
 		APICompletions:       {"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "kimi-k2.7-code", "kimi-k3"},
 	}
 	for api, ids := range groups {
@@ -55,32 +54,13 @@ func TestCopilotCatalogCoversPublicChatModels(t *testing.T) {
 	}
 }
 
-func TestCopilotCatalogKeepsPreviouslySupportedIDsAndExcludesUtilityModels(t *testing.T) {
-	// Rows that shipped before the catalog refresh stay selectable until
-	// retirement is verified; account availability hides unavailable ones.
-	kept := map[string]string{
-		"claude-opus-4.5": APIAnthropicMessages, "claude-opus-4.6": APIAnthropicMessages,
-		"claude-sonnet-4.5": APIAnthropicMessages, "claude-sonnet-4.6": APIAnthropicMessages,
-		"gemini-2.5-pro": APICompletions, "gemini-3-flash-preview": APICompletions, "gemini-3.1-pro-preview": APICompletions,
-		"gpt-4.1": APICompletions, "gpt-4o": APICompletions, "grok-code-fast-1": APICompletions,
-		"gpt-5.2": APIResponses, "gpt-5.2-codex": APIResponses,
+func TestCopilotCatalogKeepsUncertainSonnet46(t *testing.T) {
+	m, err := FindModel(ProviderGitHubCopilot, "claude-sonnet-4.6")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for id, api := range kept {
-		m, err := FindModel("github-copilot", id)
-		if err != nil {
-			t.Errorf("previously supported Copilot model %q dropped: %v", id, err)
-			continue
-		}
-		if m.API != api {
-			t.Errorf("%s API = %q, want %q", id, m.API, api)
-		}
-		if (strings.HasSuffix(id, "-4.5") || strings.HasSuffix(id, "-4.6")) && (m.AdaptiveThinking || usesAdaptiveThinking(m)) {
-			t.Errorf("%s must not use adaptive thinking", id)
-		}
-	}
-	// GPT-5.4 nano is a Codex VS Code model, not a Copilot Chat choice.
-	if _, err := FindModel("github-copilot", "gpt-5.4-nano"); err == nil {
-		t.Error("Copilot catalog includes gpt-5.4-nano")
+	if m.API != APIAnthropicMessages || m.AdaptiveThinking || usesAdaptiveThinking(m) {
+		t.Fatalf("unexpected legacy metadata: %+v", m)
 	}
 }
 

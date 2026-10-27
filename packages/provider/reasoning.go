@@ -13,7 +13,7 @@ func AvailableReasoningLevels(model Model) []string {
 		return defaults
 	}
 
-	available := map[string]bool{"": true}
+	available := map[string]bool{"": containsReasoningLevel(defaults, "")}
 	for _, level := range reasoningLevelOrder[1:] {
 		if !containsReasoningLevel(defaults, level) {
 			if _, overridden := model.ReasoningLevelMap[level]; !overridden {
@@ -29,8 +29,8 @@ func AvailableReasoningLevels(model Model) []string {
 		}
 	}
 
-	levels := []string{""}
-	for _, level := range reasoningLevelOrder[1:] {
+	levels := []string{}
+	for _, level := range reasoningLevelOrder {
 		if available[level] {
 			levels = append(levels, level)
 		}
@@ -44,6 +44,10 @@ func defaultReasoningLevels(model Model) []string {
 	}
 
 	id := strings.ToLower(model.ID)
+	// Opus and Sonnet 5.5 always use adaptive thinking, including at lowest effort.
+	if id == "claude-opus-5-5" || id == "claude-opus-5.5" || id == "claude-sonnet-5-5" || id == "claude-sonnet-5.5" {
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	}
 	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
 		if strings.Contains(id, "-pro") {
 			return []string{"", "low", "high"}
@@ -125,15 +129,21 @@ func ClampReasoningForModel(model Model, level string) string {
 }
 
 func nearestReasoningLevel(available []string, requested string) string {
-	if requested == "" || len(available) == 1 {
+	if len(available) == 0 {
 		return ""
+	}
+	if requested == "" || len(available) == 1 {
+		return available[0]
 	}
 	requestedRank := reasoningLevelRank(requested)
 	if requestedRank == 0 {
-		return ""
+		return available[0]
 	}
-	best, bestDistance := available[1], len(reasoningLevelOrder)
-	for _, candidate := range available[1:] {
+	best, bestDistance := available[0], len(reasoningLevelOrder)
+	for _, candidate := range available {
+		if candidate == "" {
+			continue
+		}
 		distance := reasoningLevelRank(candidate) - requestedRank
 		if distance < 0 {
 			distance = -distance

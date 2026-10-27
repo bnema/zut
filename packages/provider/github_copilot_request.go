@@ -114,7 +114,7 @@ func configureCopilotModel(m *Model) {
 }
 
 func usesExplicitThinkingBudget(id string) bool {
-	if strings.HasPrefix(id, "claude-haiku-") {
+	if strings.HasPrefix(id, "claude-haiku-4") {
 		return true
 	}
 	// Claude 4 through 4.6 predate adaptive thinking (4.7 is the first).
