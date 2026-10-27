@@ -20,7 +20,11 @@ func TestOpus55CatalogAndThinking(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if m.ContextWindow != 1000000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
+			wantContext := 1000000
+			if tc.provider == "anthropic" {
+				wantContext = 500000
+			}
+			if m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
 				t.Fatalf("unexpected capabilities: %+v", m)
 			}
 			if m.PriceInput != 4 || m.PriceOutput != 20 || m.PriceCacheRead != 0.2 || m.PriceCacheWrite != 5 {

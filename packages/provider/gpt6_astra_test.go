@@ -32,7 +32,10 @@ func TestGPT6SolAndLunaCatalog(t *testing.T) {
 				if name == "github-copilot" {
 					wantContext = 1000000
 				}
-				if m.API != APIResponses || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
+				if name == "openai" || name == "openai-responses" || name == "openai-codex" {
+					wantContext = openAIContextWindowTarget
+				}
+				if (m.API != APIResponses && name != "openai-codex") || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
 					t.Fatalf("unexpected model capabilities: %+v", m)
 				}
 				if m.PriceInput != model.input || m.PriceOutput != model.output || m.PriceCacheRead != model.cacheRead || m.PriceCacheWrite != model.cacheWrite {
@@ -53,9 +56,9 @@ func TestGPT6SolAndLunaCatalog(t *testing.T) {
 func TestGPT6SolAndLunaResponsesReasoning(t *testing.T) {
 	copilot := NewGithubCopilotClient("test-token").(*copilotClient).router
 	clients := map[string]*codexClient{
-		"openai":           NewOpenAIResponsesNamed("test-token", "", "openai").(*renamedClient).inner.(*codexClient),
-		"openai-responses": NewOpenAIResponsesNamed("test-token", "", "openai-responses").(*renamedClient).inner.(*codexClient),
-		"openai-codex":     NewOpenAICodex("test-token", "test-account", "").(*codexClient),
+		"openai":           NewOpenAIResponsesNamed("test-token", "", "openai").(*renamedClient).inner.(*responsesWebSocketClient).http,
+		"openai-responses": NewOpenAIResponsesNamed("test-token", "", "openai-responses").(*renamedClient).inner.(*responsesWebSocketClient).http,
+		"openai-codex":     NewOpenAICodex("test-token", "test-account", "").(*responsesWebSocketClient).http,
 		"github-copilot":   copilot.byAPI[APIResponses].(*codexClient),
 	}
 	for name, client := range clients {
@@ -104,7 +107,10 @@ func TestGPT6AstraCatalog(t *testing.T) {
 			if name == "github-copilot" {
 				wantContext = 1050000
 			}
-			if m.API != APIResponses || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
+			if name == "openai" || name == "openai-responses" || name == "openai-codex" {
+				wantContext = openAIContextWindowTarget
+			}
+			if (m.API != APIResponses && name != "openai-codex") || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
 				t.Fatalf("unexpected model capabilities: %+v", m)
 			}
 			if m.PriceInput != 10 || m.PriceOutput != 50 || m.PriceCacheRead != 1 || m.PriceCacheWrite != 12.5 {
@@ -124,9 +130,9 @@ func TestGPT6AstraCatalog(t *testing.T) {
 func TestGPT6AstraResponsesReasoning(t *testing.T) {
 	copilot := NewGithubCopilotClient("test-token").(*copilotClient).router
 	clients := map[string]*codexClient{
-		"openai":           NewOpenAIResponsesNamed("test-token", "", "openai").(*renamedClient).inner.(*codexClient),
-		"openai-responses": NewOpenAIResponsesNamed("test-token", "", "openai-responses").(*renamedClient).inner.(*codexClient),
-		"openai-codex":     NewOpenAICodex("test-token", "test-account", "").(*codexClient),
+		"openai":           NewOpenAIResponsesNamed("test-token", "", "openai").(*renamedClient).inner.(*responsesWebSocketClient).http,
+		"openai-responses": NewOpenAIResponsesNamed("test-token", "", "openai-responses").(*renamedClient).inner.(*responsesWebSocketClient).http,
+		"openai-codex":     NewOpenAICodex("test-token", "test-account", "").(*responsesWebSocketClient).http,
 		"github-copilot":   copilot.byAPI[APIResponses].(*codexClient),
 	}
 	for name, client := range clients {
