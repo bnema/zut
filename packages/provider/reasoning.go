@@ -44,8 +44,8 @@ func defaultReasoningLevels(model Model) []string {
 	}
 
 	id := strings.ToLower(model.ID)
-	// Opus 5.5 always uses adaptive thinking, including at its lowest effort.
-	if id == "claude-opus-5-5" || id == "claude-opus-5.5" {
+	// Opus and Sonnet 5.5 always use adaptive thinking, including at lowest effort.
+	if id == "claude-opus-5-5" || id == "claude-opus-5.5" || id == "claude-sonnet-5-5" || id == "claude-sonnet-5.5" {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
 	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {

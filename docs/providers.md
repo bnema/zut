@@ -128,6 +128,10 @@ and Chat Completions respectively. Claude 4.5/4.6 rows use explicit thinking
 budgets. The retired
 `mai-code-1-flash-picker` is not in the static catalog; `mai-code-1.1-flash` is.
 
+Copilot also includes `claude-opus-5.5` and `claude-sonnet-5.5`, both with
+adaptive thinking that remains enabled at the lowest effort. GPT-6 Astra,
+Sol, and Luna use Responses and support native `max` reasoning.
+
 ## API-key providers
 
 These providers can use environment variables. Simple API-key providers can

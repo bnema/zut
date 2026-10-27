@@ -32,7 +32,7 @@ func TestGPT6SolAndLunaCatalog(t *testing.T) {
 				if name == "github-copilot" {
 					wantContext = 1000000
 				}
-				if name == "openai" || name == "openai-responses" || name == "openai-codex" {
+				if name == "openai-codex" {
 					wantContext = openAIContextWindowTarget
 				}
 				if (m.API != APIResponses && name != "openai-codex") || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
@@ -107,7 +107,7 @@ func TestGPT6AstraCatalog(t *testing.T) {
 			if name == "github-copilot" {
 				wantContext = 1050000
 			}
-			if name == "openai" || name == "openai-responses" || name == "openai-codex" {
+			if name == "openai" || name == "openai-codex" {
 				wantContext = openAIContextWindowTarget
 			}
 			if (m.API != APIResponses && name != "openai-codex") || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
