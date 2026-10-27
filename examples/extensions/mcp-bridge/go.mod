@@ -1,6 +1,6 @@
 module github.com/bnema/zut/examples/extensions/mcp-bridge
 
-go 1.26
+go 1.27
 
 replace github.com/bnema/zut => ../../..
 
