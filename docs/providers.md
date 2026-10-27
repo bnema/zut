@@ -132,6 +132,10 @@ Copilot also includes `claude-opus-5.5` and `claude-sonnet-5.5`, both with
 adaptive thinking that remains enabled at the lowest effort. GPT-6 Astra,
 Sol, and Luna use Responses and support native `max` reasoning.
 
+The October 2026 models.dev refresh adds Haiku 5.5, Gemini 4 Argon, GPT-5.4
+nano, GPT-6.1 Sol/Terra, and Grok 4.7. New snapshot-only rows use zero token
+prices (subscription billing is plan-specific); existing token prices are retained.
+
 ## API-key providers
 
 These providers can use environment variables. Simple API-key providers can

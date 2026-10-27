@@ -148,6 +148,12 @@ var builtinCatalog = []Model{
 	{Provider: "fireworks", ID: "accounts/fireworks/routers/glm-5p1-fast", DisplayName: "GLM 5.1 Fast", ContextWindow: 202800, MaxOutput: 131072, Reasoning: true, PriceInput: 2.8, PriceOutput: 8.8, PriceCacheRead: 0.52, BaseURL: "https://api.fireworks.ai/inference"},
 	{Provider: "fireworks", ID: "accounts/fireworks/routers/kimi-k2p6-turbo", DisplayName: "Kimi K2.6 Turbo", ContextWindow: 262000, MaxOutput: 262000, Reasoning: true, PriceInput: 2, PriceOutput: 8, PriceCacheRead: 0.3, BaseURL: "https://api.fireworks.ai/inference"},
 	// ----- github-copilot -----
+	{Provider: "github-copilot", ID: "claude-haiku-5.5", DisplayName: "Claude Haiku 5.5", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gemini-4-argon", DisplayName: "Gemini 4 Argon", ContextWindow: 1048576, MaxOutput: 65536, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-5.4-nano", DisplayName: "GPT-5.4 nano", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", ContextWindow: 1050000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra", ContextWindow: 1050000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
+	{Provider: "github-copilot", ID: "grok-4.7", DisplayName: "Grok 4.7", ContextWindow: 500000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
 	// Copilot model metadata follows the upstream catalog; availability is
 	// filtered at runtime using the account's inference model list.
 	{Provider: "github-copilot", ID: "claude-fable-5", DisplayName: "Claude Fable 5", ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true, PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5, BaseURL: "https://api.individual.githubcopilot.com"},

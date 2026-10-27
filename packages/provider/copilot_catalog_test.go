@@ -78,10 +78,7 @@ func TestCopilotCatalogKeepsPreviouslySupportedIDsAndExcludesUtilityModels(t *te
 			t.Errorf("%s must not use adaptive thinking", id)
 		}
 	}
-	// GPT-5.4 nano is a Codex VS Code model, not a Copilot Chat choice.
-	if _, err := FindModel("github-copilot", "gpt-5.4-nano"); err == nil {
-		t.Error("Copilot catalog includes gpt-5.4-nano")
-	}
+
 }
 
 func TestConfigureCopilotModelAdaptiveDefaultsFollowKnownFamilies(t *testing.T) {
