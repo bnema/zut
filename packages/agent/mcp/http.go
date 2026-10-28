@@ -247,7 +247,8 @@ func (t *httpTransport) request(ctx context.Context, id int64, method string, pa
 	if err != nil {
 		if ctx.Err() != nil {
 			t.cancelRequest(id, method, ctx.Err().Error())
-			return nil, ctx.Err()
+			// Preserve the operation cause (notably credential contention).
+			return nil, err
 		}
 		if t.ctx.Err() != nil {
 			return nil, t.failure()
@@ -542,7 +543,7 @@ func (t *httpTransport) close() error {
 	t.deleted = true
 	t.mu.Unlock()
 	if send {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 		// Built like every other request so it carries the protocol version
 		// and configured headers as well as the session id.

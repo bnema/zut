@@ -177,3 +177,16 @@ All agents in one zut process share the same MCP connections.
   every MCP tool, or exact `mcp__<server>__<tool>` names.
 - A resumed child whose MCP server is no longer configured continues without
   that tool.
+
+Credential-lock waits are cancellable and limited to two seconds (or the caller's
+shorter deadline). A busy store reports that MCP credentials are locked by another
+zut process rather than waiting indefinitely. Login keeps the complete authorization
+URL for the browser, but redacts nonstandard endpoint query values in terminal output;
+when redacted, the printed URL is incomplete and the browser must be used.
+
+Servers start concurrently within their `startupTimeoutSec` budget (default 30
+seconds). Failure cleanup has at most two seconds of additional grace: stdio
+children that do not exit are forcibly killed, stderr draining is bounded, and
+HTTP session deletion is best effort. A failed optional server contributes no
+tools; a failed `required` server still aborts startup with its named error.
+Startup never opens an OAuth browser flow; use `zut mcp login NAME` explicitly.

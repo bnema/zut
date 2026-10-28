@@ -34,7 +34,7 @@ func HTTPClient(base *http.Client, store Store, raw, name string) *http.Client {
 func (t *transport) token(ctx context.Context, rejected string, force bool) (Entry, error) {
 	lock := keyLock(t.store.Path + t.key)
 	if err := lock.acquire(ctx); err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("mcp credentials locked by another zut process: %w", err)
 	}
 	defer lock.release()
 	// Read only after taking the cross-process lock. A waiter uses a token

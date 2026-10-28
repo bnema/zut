@@ -370,7 +370,7 @@ func mcpAuth(ctx context.Context, out io.Writer, cwd, action string, args []stri
 	if action == "login" {
 		err = oauth.Login(ctx, store, srv.URL, mcpCommandStderr, nil)
 	} else {
-		err = store.Set(key, nil)
+		err = store.Set(ctx, key, nil)
 	}
 	if err != nil {
 		return err

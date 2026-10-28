@@ -123,7 +123,7 @@ func TestRefreshRetryReplaysPOSTAndMCPHeaders(t *testing.T) {
 	})
 	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 	key := srv.URL + "/mcp"
-	if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL + "/token"}); err != nil {
+	if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL + "/token"}); err != nil {
 		t.Fatal(err)
 	}
 	req, _ := http.NewRequest("POST", key, strings.NewReader(`{"method":"tools/call"}`))
@@ -176,7 +176,7 @@ func TestStoreHelperProcess(t *testing.T) {
 	if os.Getenv("ZUT_OAUTH_DELETE") != "1" {
 		e = &Entry{AccessToken: "helper"}
 	}
-	if err := s.Set(os.Getenv("ZUT_OAUTH_KEY"), e); err != nil {
+	if err := s.Set(context.Background(), os.Getenv("ZUT_OAUTH_KEY"), e); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -257,7 +257,7 @@ func TestRefreshVersusCrossProcessLogout(t *testing.T) {
 	defer srv.Close()
 	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 	key := srv.URL + "/mcp"
-	if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), Resource: key, TokenEndpoint: srv.URL}); err != nil {
+	if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), Resource: key, TokenEndpoint: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -294,7 +294,7 @@ func TestCrossProcessRefreshUsesNewerToken(t *testing.T) {
 	defer srv.Close()
 	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 	key := srv.URL + "/mcp"
-	if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL}); err != nil {
+	if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -323,7 +323,7 @@ func TestRefreshFailurePreservesCauseAndClassifiesGuidance(t *testing.T) {
 		http.DefaultTransport = failingTransport{underlying}
 		s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 		key := "https://example.invalid/mcp"
-		if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: "https://example.invalid/token"}); err != nil {
+		if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: "https://example.invalid/token"}); err != nil {
 			t.Fatal(err)
 		}
 		_, err := HTTPClient(nil, s, key, "test").Get(key)
@@ -343,7 +343,7 @@ func TestRefreshFailurePreservesCauseAndClassifiesGuidance(t *testing.T) {
 		}))
 		s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
 		key := srv.URL + "/mcp"
-		if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: srv.URL}); err != nil {
+		if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: srv.URL}); err != nil {
 			t.Fatal(err)
 		}
 		_, err := HTTPClient(nil, s, key, "test").Get(key)

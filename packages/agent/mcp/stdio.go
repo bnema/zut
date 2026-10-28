@@ -60,6 +60,9 @@ var defaultEnvVars = func() []string {
 // before the leader is reaped.
 var beforeReapHook atomic.Pointer[func(pid int)]
 
+// afterReapHook observes completed Wait calls in lifecycle regression tests.
+var afterReapHook atomic.Pointer[func(pid int)]
+
 // writeReq is one frame queued for the writer goroutine.
 type writeReq struct {
 	ctx   context.Context
@@ -223,6 +226,9 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 			}
 		}
 		waitErr := cmd.Wait()
+		if h := afterReapHook.Load(); h != nil {
+			(*h)(cmd.Process.Pid)
+		}
 		close(t.exited)
 		if waitErr == nil {
 			waitErr = errors.New("process exited")
@@ -597,11 +603,11 @@ func (t *stdioTransport) waitExit(d time.Duration) bool {
 func (t *stdioTransport) close() error {
 	t.fail(errors.New("connection closed"))
 	_ = t.stdin.Close() // also unblocks a writer stuck on a full pipe
-	if !t.waitExit(500 * time.Millisecond) {
+	if !t.waitExit(100 * time.Millisecond) {
 		t.guard.terminate(false)
-		if !t.waitExit(1500 * time.Millisecond) {
+		if !t.waitExit(300 * time.Millisecond) {
 			t.guard.terminate(true)
-			t.waitExit(time.Second)
+			t.waitExit(500 * time.Millisecond)
 		}
 	}
 	t.guard.cleanup()
@@ -612,7 +618,7 @@ func (t *stdioTransport) close() error {
 	case <-t.exited:
 		select {
 		case <-t.stderrDone:
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 		}
 	default:
 	}

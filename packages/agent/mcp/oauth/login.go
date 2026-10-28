@@ -277,7 +277,11 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 		q.Set("scope", e.Scope)
 	}
 	authorize.RawQuery = q.Encode()
-	fmt.Fprintln(stderr, "Open this URL to sign in:", authorize.String())
+	display, redacted := displayAuthorizeURL(authorize)
+	fmt.Fprintln(stderr, "Open this URL to sign in:", display)
+	if redacted {
+		fmt.Fprintln(stderr, "This printed URL is incomplete (redacted); use the browser to sign in.")
+	}
 	if opener == nil {
 		opener = auth.OpenBrowser
 	}
@@ -302,6 +306,24 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	defer unlock()
 	return store.set(key, &e)
 }
+
+// displayAuthorizeURL never exposes metadata-supplied nonstandard query values.
+func displayAuthorizeURL(authorize *url.URL) (string, bool) {
+	display := *authorize
+	q := display.Query()
+	redacted := false
+	for key := range q {
+		switch key {
+		case "response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method", "resource":
+		default:
+			q.Set(key, "REDACTED")
+			redacted = true
+		}
+	}
+	display.RawQuery = q.Encode()
+	return display.String(), redacted
+}
+
 func exchange(ctx context.Context, c *http.Client, e *Entry, values url.Values) error {
 	values.Set("client_id", e.ClientID)
 	values.Set("resource", e.Resource)

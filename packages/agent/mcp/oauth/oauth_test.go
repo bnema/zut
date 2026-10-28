@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -25,7 +26,7 @@ func TestStorageAndPolicy(t *testing.T) {
 	if err != nil || key != "https://example.com/mcp" {
 		t.Fatal(key, err)
 	}
-	if err = s.Set(key, &Entry{AccessToken: "synthetic"}); err != nil {
+	if err = s.Set(context.Background(), key, &Entry{AccessToken: "synthetic"}); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
@@ -52,7 +53,7 @@ func TestStorageAndPolicy(t *testing.T) {
 			t.Fatal("accepted unsafe URL")
 		}
 	}
-	if err = s.Set(key, nil); err != nil {
+	if err = s.Set(context.Background(), key, nil); err != nil {
 		t.Fatal(err)
 	}
 	e, err := s.Get(key)
@@ -148,7 +149,11 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 					}
 					return err
 				}
-				err := Login(context.Background(), store, base+"/mcp", io.Discard, opener)
+				var display bytes.Buffer
+				err := Login(context.Background(), store, base+"/mcp", &display, opener)
+				if strings.Contains(display.String(), "example") || !strings.Contains(display.String(), "incomplete") {
+					t.Fatalf("unsafe display: %s", display.String())
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -165,7 +170,7 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 						t.Error("login holds per-key lock during browser interaction")
 					}
 					// A successful explicit login recreates credentials after a concurrent logout.
-					if err := store.Set(base+"/mcp", nil); err != nil {
+					if err := store.Set(context.Background(), base+"/mcp", nil); err != nil {
 						return err
 					}
 					return opener(raw)
@@ -217,7 +222,7 @@ func TestRefreshAndRetry(t *testing.T) {
 			if expired {
 				e.Expiry = time.Now().Add(-time.Hour)
 			}
-			if err := s.Set(e.Resource, &e); err != nil {
+			if err := s.Set(context.Background(), e.Resource, &e); err != nil {
 				t.Fatal(err)
 			}
 			c := HTTPClient(nil, s, e.Resource, "test")
@@ -273,7 +278,7 @@ func TestCrossOriginAndRetryLimit(t *testing.T) {
 	})
 	s := Store{Path: filepath.Join(t.TempDir(), "mcp-auth.json")}
 	key := srv.URL + "/mcp"
-	if err := s.Set(key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL + "/token"}); err != nil {
+	if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Resource: key, TokenEndpoint: srv.URL + "/token"}); err != nil {
 		t.Fatal(err)
 	}
 	c := HTTPClient(nil, s, key, "test")
@@ -296,5 +301,64 @@ func TestCrossOriginAndRetryLimit(t *testing.T) {
 	_, err = c.Get(key + "/denied")
 	if err == nil || !strings.Contains(err.Error(), "zut mcp login test") || calls.Load() != 2 || refreshes.Load() != 1 {
 		t.Fatal(err, calls.Load(), refreshes.Load())
+	}
+}
+
+func TestLogoutHeldCredentialLock(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	unlock, err := s.lock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Set(ctx, "https://example.invalid/mcp", nil) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "locked by another zut process") {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("logout blocked")
+	}
+}
+
+func TestHangingRefreshHonorsContext(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	s := Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+	key := srv.URL + "/mcp"
+	if err := s.Set(context.Background(), key, &Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", key, nil)
+	done := make(chan error, 1)
+	go func() { _, err := HTTPClient(nil, s, key, "test").Do(req); done <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("token endpoint not reached")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh blocked")
 	}
 }

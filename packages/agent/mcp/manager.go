@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/mcp/oauth"
 )
@@ -109,7 +110,18 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	if c := s.live(); c != nil {
 		return c, nil
 	}
-	s.connectMu.Lock()
+	startCtx, cancel := withTimeout(ctx, s.cfg.StartupTimeout())
+	defer cancel()
+	// Contending reconnects must respect their own startup/caller budget.
+	for !s.connectMu.TryLock() {
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-startCtx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("mcp server %q: waiting for connection: %w", s.name, startCtx.Err())
+		case <-timer.C:
+		}
+	}
 	defer s.connectMu.Unlock()
 	if c := s.live(); c != nil {
 		return c, nil // another caller reconnected while we waited
@@ -136,8 +148,6 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	if closed {
 		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
 	}
-	startCtx, cancel := withTimeout(ctx, s.cfg.StartupTimeout())
-	defer cancel()
 	// The refresher exists before the handshake so a list_changed notification
 	// that arrives while the first listing is in flight is remembered, and
 	// the listing is repeated once the client is published.
@@ -157,7 +167,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	if err != nil {
 		refresher.stop()
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start", s.cfg.StartupTimeout())
+			err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start: %w", s.cfg.StartupTimeout(), err)
 		}
 		err = fmt.Errorf("mcp server %q: %w", s.name, err)
 		s.mu.Lock()

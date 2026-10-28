@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path"
@@ -117,8 +118,8 @@ func (s Store) get(ctx context.Context, key string) (Entry, error) {
 	m, err := s.load()
 	return m[key], err
 }
-func (s Store) Set(key string, e *Entry) error {
-	unlock, err := s.lock(context.Background())
+func (s Store) Set(ctx context.Context, key string, e *Entry) error {
+	unlock, err := s.lock(ctx)
 	if err != nil {
 		return err
 	}
@@ -169,6 +170,9 @@ func (s Store) set(key string, e *Entry) error {
 
 // lock uses a stable sidecar inode: the credential file itself is atomically replaced.
 func (s Store) lock(ctx context.Context) (func(), error) {
+	// Bound callers without a deadline too, including standalone logout.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
 		return nil, safeError("create MCP credential directory failed", err)
 	}
@@ -183,7 +187,7 @@ func (s Store) lock(ctx context.Context) (func(), error) {
 	for {
 		if err = ctx.Err(); err != nil {
 			f.Close()
-			return nil, err
+			return nil, fmt.Errorf("mcp credentials locked by another zut process: %w", err)
 		}
 		acquired, lockErr := tryFileLock(f)
 		if lockErr != nil {
@@ -198,7 +202,7 @@ func (s Store) lock(ctx context.Context) (func(), error) {
 		case <-ctx.Done():
 			timer.Stop()
 			f.Close()
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("mcp credentials locked by another zut process: %w", ctx.Err())
 		case <-timer.C:
 		}
 	}

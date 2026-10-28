@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/bnema/zut/packages/agent/mcp/oauth"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -669,5 +672,142 @@ func TestManagerStartAfterClose(t *testing.T) {
 	}
 	if _, err := os.Stat(events); err == nil {
 		t.Error("a closed manager must not spawn the server")
+	}
+}
+
+func TestManagerHungHTTPDoesNotPreventHealthyServer(t *testing.T) {
+	hung := newHTTPFake(false)
+	hung.hangInit = true
+	bad := httpServerConfig(hung.start(t))
+	bad.StartupTimeoutSec = 0.05
+	healthy := newHTTPFake(false)
+	good := httpServerConfig(healthy.start(t))
+	m := NewManager(Config{Servers: map[string]ServerConfig{"hung": bad, "healthy": good}}, "", ClientInfo{}, nil)
+	defer m.Close()
+	done := make(chan []error, 1)
+	go func() { failures, _ := m.Start(context.Background()); done <- failures }()
+	select {
+	case failures := <-done:
+		if len(failures) != 1 || !strings.Contains(failures[0].Error(), "hung") {
+			t.Fatalf("failures = %v", failures)
+		}
+		if len(m.ServerTools("healthy")) == 0 {
+			t.Fatal("healthy server did not load")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup blocked")
+	}
+}
+
+func TestManagerHungStdioIsKilledAndHealthyLoads(t *testing.T) {
+	bad, _ := fakeStdioConfig(t, map[string]string{"FAKE_HANG_INIT": "1"})
+	bad.StartupTimeoutSec = 0.2
+	good, _ := fakeStdioConfig(t, nil)
+	reaped := make(chan int, 4)
+	hook := func(pid int) { reaped <- pid }
+	afterReapHook.Store(&hook)
+	defer afterReapHook.Store(nil)
+	m := NewManager(Config{Servers: map[string]ServerConfig{"hung": bad, "healthy": good}}, "", ClientInfo{}, nil)
+	defer m.Close()
+	done := make(chan []error, 1)
+	go func() { failures, _ := m.Start(context.Background()); done <- failures }()
+	select {
+	case failures := <-done:
+		if len(failures) != 1 || !strings.Contains(failures[0].Error(), "hung") {
+			t.Fatalf("failures = %v", failures)
+		}
+		if len(m.ServerTools("healthy")) == 0 {
+			t.Fatal("healthy server did not load")
+		}
+	case <-time.After(bad.StartupTimeout() + 2*time.Second):
+		t.Fatal("startup exceeded cleanup slack")
+	}
+	{
+		select {
+		case <-reaped:
+		case <-time.After(time.Second):
+			t.Fatal("hung child was not reaped")
+		}
+	}
+}
+
+func TestManagerStartupRefreshAndLockFailures(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(strconv.FormatBool(held), func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(entered)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer token.Close()
+			defer func() {
+				if release != nil {
+					close(release)
+				}
+			}()
+			badFake := newHTTPFake(false)
+			bad := httpServerConfig(badFake.start(t))
+			bad.StartupTimeoutSec = 0.1
+			goodFake := newHTTPFake(false)
+			good := httpServerConfig(goodFake.start(t))
+			good.Headers = map[string]string{"Authorization": "Bearer explicit"}
+			store := oauth.Store{Path: filepath.Join(t.TempDir(), "auth.json")}
+			if err := store.Set(context.Background(), bad.URL, &oauth.Entry{AccessToken: "old", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour), TokenEndpoint: token.URL}); err != nil {
+				t.Fatal(err)
+			}
+			if held {
+				req, _ := http.NewRequest("GET", bad.URL, nil)
+				holder := make(chan struct{})
+				go func() {
+					resp, _ := oauth.HTTPClient(nil, store, bad.URL, "holder").Do(req)
+					if resp != nil {
+						resp.Body.Close()
+					}
+					close(holder)
+				}()
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("holder did not acquire lock")
+				}
+				defer func() { close(release); <-holder; release = nil }()
+			}
+			m := NewManager(Config{Servers: map[string]ServerConfig{"bad": bad, "healthy": good}}, "", ClientInfo{}, nil)
+			m.SetAuthPath(store.Path)
+			defer m.Close()
+			done := make(chan []error, 1)
+			go func() { failures, _ := m.Start(context.Background()); done <- failures }()
+			select {
+			case failures := <-done:
+				if len(failures) != 1 || !strings.Contains(failures[0].Error(), "bad") {
+					t.Fatalf("failures = %v", failures)
+				}
+				if held && !strings.Contains(failures[0].Error(), "locked by another zut process") {
+					t.Fatalf("missing lock cause: %v", failures)
+				}
+				if len(m.ServerTools("healthy")) == 0 {
+					t.Fatal("healthy server did not load")
+				}
+			case <-time.After(bad.StartupTimeout() + 2*time.Second):
+				t.Fatal("startup exceeded bound")
+			}
+		})
+	}
+}
+
+func TestReconnectWaitHonorsContext(t *testing.T) {
+	m := NewManager(Config{Servers: map[string]ServerConfig{"busy": {Command: "unused"}}}, "", ClientInfo{}, nil)
+	s := m.servers["busy"]
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := m.connect(ctx, s)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("connect = %v", err)
 	}
 }

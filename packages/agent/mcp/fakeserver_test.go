@@ -332,6 +332,11 @@ func runFakeStdioServer() {
 		}()
 
 		if msg.Method == "initialize" {
+			if os.Getenv("FAKE_HANG_INIT") == "1" {
+				signal.Ignore(syscall.SIGTERM)
+				// Keep the leader alive even after stdin closes; only forced kill ends it.
+				select {}
+			}
 			if line := os.Getenv("FAKE_STDERR_LINE"); line != "" {
 				if data, err := os.ReadFile(line); err == nil {
 					fmt.Fprintln(os.Stderr, string(data))
