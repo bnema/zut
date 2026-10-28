@@ -384,7 +384,7 @@ func (m *Manager) Close() error {
 	m.closed = true
 	output := m.stderrOutput
 	m.mu.Unlock()
-	defer output.stop()
+	defer output.shutdown()
 	var wg sync.WaitGroup
 	for _, name := range m.order {
 		s := m.servers[name]

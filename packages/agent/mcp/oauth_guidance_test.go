@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -239,4 +240,38 @@ func TestBlockedStderrDoesNotBlockShutdown(t *testing.T) {
 	managerClosed := make(chan struct{})
 	go func() { _ = m.Close(); close(managerClosed) }()
 	await(managerClosed, "manager close")
+}
+
+func TestManagerCloseDrainsLiveStderr(t *testing.T) {
+	var b liveTestBuffer
+	m := NewManager(Config{}, "", ClientInfo{}, nil)
+	m.SetStderrWriter(&b)
+	t.Cleanup(func() { _ = m.Close() })
+	output := m.stderrOutput
+	sink := &stderrSink{output: output, prefix: "mcp[test]: "}
+	var want strings.Builder
+	// Fewer than the queue capacity: no line should be dropped even when the
+	// worker has not been scheduled before Close.
+	for i := 0; i < 200; i++ {
+		text := fmt.Sprintf("line %d", i)
+		sink.line(text)
+		fmt.Fprintf(&want, "mcp[test]: %s\n", text)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != want.String() {
+		t.Fatalf("incomplete or reordered output after Close: %q", got)
+	}
+	// done proves the healthy writer has exited, not merely that it happened
+	// to have flushed all lines when the buffer was inspected.
+	select {
+	case <-output.done:
+	default:
+		t.Fatal("writer still running after Close")
+	}
+	sink.line("late line")
+	if got := b.String(); got != want.String() {
+		t.Fatal("write after Close")
+	}
 }

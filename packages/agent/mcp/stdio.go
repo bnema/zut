@@ -665,22 +665,25 @@ func (t *stdioTransport) displayLine(text string, truncated bool) string {
 
 // liveStderrWriter bounds queued diagnostics and isolates pipe draining and
 // shutdown from a slow destination. A blocked Write cannot be cancelled through
-// io.Writer; stop deliberately does not wait for that goroutine.
+// io.Writer; shutdown waits only a bounded time for queued output to drain.
 type liveStderrWriter struct {
-	mu    sync.Mutex
-	lines chan string
-	off   bool
+	mu        sync.Mutex
+	lines     chan string
+	done      chan struct{}
+	abort     chan struct{}
+	abortOnce sync.Once
+	closed    bool
 }
 
 func newLiveStderrWriter(w io.Writer) *liveStderrWriter {
-	output := &liveStderrWriter{lines: make(chan string, 256)}
+	output := &liveStderrWriter{lines: make(chan string, 256), done: make(chan struct{}), abort: make(chan struct{})}
 	go func() {
+		defer close(output.done)
 		for line := range output.lines {
-			output.mu.Lock()
-			off := output.off
-			output.mu.Unlock()
-			if off {
+			select {
+			case <-output.abort:
 				return
+			default:
 			}
 			_, _ = io.WriteString(w, line)
 		}
@@ -691,7 +694,7 @@ func newLiveStderrWriter(w io.Writer) *liveStderrWriter {
 func (w *liveStderrWriter) enqueue(line string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.off {
+	if w.closed {
 		return
 	}
 	select {
@@ -706,8 +709,25 @@ func (w *liveStderrWriter) stop() {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.off {
-		w.off = true
+	if !w.closed {
+		w.closed = true
 		close(w.lines)
+	}
+}
+
+// shutdown stops accepting lines and allows healthy destinations to drain.
+// After 500ms it abandons queued lines; a stalled destination may leave one
+// outstanding Write that completes after Manager.Close returns.
+func (w *liveStderrWriter) shutdown() {
+	if w == nil {
+		return
+	}
+	w.stop()
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-w.done:
+	case <-timer.C:
+		w.abortOnce.Do(func() { close(w.abort) })
 	}
 }
