@@ -372,7 +372,7 @@ func (r *redactor) scrubLive(s string) string {
 	s = r.redact(s)
 	s = sanitizeText(s, true)
 	s = r.redact(s)
-	return scrubURLsLive(s)
+	return r.scrubURLsLive(s)
 }
 
 func isAuthorizationRequestURL(raw string) bool {
@@ -384,20 +384,34 @@ func isAuthorizationRequestURL(raw string) bool {
 	if err != nil || q.Get("response_type") == "" || q.Get("client_id") == "" {
 		return false
 	}
-	for _, key := range []string{"code", "access_token", "refresh_token", "id_token", "client_secret", "token", "password"} {
-		if q.Has(key) {
+	for key := range q {
+		switch key {
+		case "response_type", "client_id", "redirect_uri", "scope", "state", "code_challenge", "code_challenge_method", "resource", "nonce", "prompt", "response_mode", "audience":
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-func scrubURLsLive(s string) string {
+func (r *redactor) scrubURLsLive(s string) string {
 	return urlInText.ReplaceAllStringFunc(s, func(raw string) string {
 		if !isAuthorizationRequestURL(raw) {
 			return stripURL(raw)
 		}
 		u, _ := url.Parse(raw)
+		// Path and query values are decoded by net/url. Raw-text redaction
+		// alone cannot catch configured secrets hidden by percent encoding.
+		if r.redact(u.Path) != u.Path {
+			return stripURL(raw)
+		}
+		for _, values := range u.Query() {
+			for _, value := range values {
+				if r.redact(value) != value {
+					return stripURL(raw)
+				}
+			}
+		}
 		u.User = nil
 		u.Fragment = ""
 		u.RawFragment = ""

@@ -624,8 +624,8 @@ func (t *stdioTransport) close() error {
 
 // stderrSink serializes live output across servers and fences writes on close.
 type stderrSink struct {
-	mu     *sync.Mutex
-	w      io.Writer
+	mu     sync.Mutex
+	output *liveStderrWriter
 	prefix string
 	off    bool
 }
@@ -636,10 +636,10 @@ func (s *stderrSink) line(text string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.off || s.w == nil {
+	if s.off || s.output == nil {
 		return
 	}
-	fmt.Fprintf(s.w, "%s%s\n", s.prefix, text)
+	s.output.enqueue(s.prefix + text + "\n")
 }
 func (s *stderrSink) stop() {
 	if s == nil {
@@ -661,4 +661,53 @@ func (t *stdioTransport) displayLine(text string, truncated bool) string {
 		text = t.red.trimPartialSecret(text) + "…[line truncated]"
 	}
 	return text
+}
+
+// liveStderrWriter bounds queued diagnostics and isolates pipe draining and
+// shutdown from a slow destination. A blocked Write cannot be cancelled through
+// io.Writer; stop deliberately does not wait for that goroutine.
+type liveStderrWriter struct {
+	mu    sync.Mutex
+	lines chan string
+	off   bool
+}
+
+func newLiveStderrWriter(w io.Writer) *liveStderrWriter {
+	output := &liveStderrWriter{lines: make(chan string, 256)}
+	go func() {
+		for line := range output.lines {
+			output.mu.Lock()
+			off := output.off
+			output.mu.Unlock()
+			if off {
+				return
+			}
+			_, _ = io.WriteString(w, line)
+		}
+	}()
+	return output
+}
+
+func (w *liveStderrWriter) enqueue(line string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.off {
+		return
+	}
+	select {
+	case w.lines <- line:
+	default:
+	} // diagnostics are best effort
+}
+
+func (w *liveStderrWriter) stop() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.off {
+		w.off = true
+		close(w.lines)
+	}
 }

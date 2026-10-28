@@ -70,9 +70,15 @@ func TestManagerHTTPOAuthChallenge(t *testing.T) {
 
 func TestScrubLiveKeepsAuthorizationRequestQuery(t *testing.T) {
 	const auth = "https://example.invalid/auth?response_type=code&client_id=client&state=state"
-	r := newRedactor(ServerConfig{Env: map[string]string{"SECRET": "synthetic-secret"}})
+	r := newRedactor(ServerConfig{Env: map[string]string{"SECRET": "synthetic-secret", "ENCODED_SECRET": "synthetic+secret"}})
 	for _, tt := range []struct{ name, in, want string }{
 		{"authorization", auth, auth},
+		{"id token hint", auth + "&id_token_hint=JWT", "https://example.invalid/auth"},
+		{"unknown parameter", auth + "&unknown=value", "https://example.invalid/auth"},
+		{"authorization api key", auth + "&api_key=private", "https://example.invalid/auth"},
+		{"encoded query secret", auth + "&scope=prefixsynthetic%2BsecretSuffix", "https://example.invalid/auth"},
+		{"encoded path secret", "https://example.invalid/synthetic%2Bsecret?response_type=code&client_id=client", "https://example.invalid/synthetic%2Bsecret"},
+		{"Notion bridge", "https://example.invalid/auth?response_type=code&client_id=client&code_challenge=challenge&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A3334%2Foauth%2Fcallback&state=random&scope=read&resource=https%3A%2F%2Fmcp.notion.com%2Fmcp", "https://example.invalid/auth?response_type=code&client_id=client&code_challenge=challenge&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A3334%2Foauth%2Fcallback&state=random&scope=read&resource=https%3A%2F%2Fmcp.notion.com%2Fmcp"},
 		{"userinfo fragment", "https://user:pass@example.invalid/auth?response_type=code&client_id=client#fragment", "https://example.invalid/auth?response_type=code&client_id=client"},
 		{"callback", "https://example.invalid/callback?code=private", "https://example.invalid/callback"},
 		{"access token", auth + "&access_token=private", "https://example.invalid/auth"},
@@ -106,7 +112,9 @@ func (b *liveTestBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); ret
 func TestStderrSinkStreamsAndStopsOnClose(t *testing.T) {
 	cfg, _ := fakeStdioConfig(t, nil)
 	var b liveTestBuffer
-	sink := &stderrSink{mu: &sync.Mutex{}, w: &b, prefix: "mcp[test]: "}
+	output := newLiveStderrWriter(&b)
+	t.Cleanup(output.stop)
+	sink := &stderrSink{output: output, prefix: "mcp[test]: "}
 	st, err := startStdio("test", cfg, "", sink)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +126,7 @@ func TestStderrSinkStreamsAndStopsOnClose(t *testing.T) {
 	if err := st.close(); err != nil {
 		t.Fatal(err)
 	}
+	waitForLiveText(t, &b, "mcp[test]: after failure\n")
 	before := b.String()
 	sink.line("after close")
 	if b.String() != before || !strings.Contains(before, "mcp[test]: after failure\n") {
@@ -160,4 +169,74 @@ func TestManagerStreamsStderrBeforeInitialize(t *testing.T) {
 		t.Fatal("initialize already finished")
 	default:
 	}
+}
+
+func waitForLiveText(t *testing.T, b *liveTestBuffer, text string) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for !strings.Contains(b.String(), text) {
+		select {
+		case <-deadline.C:
+			t.Fatalf("missing %q in %q", text, b.String())
+		case <-tick.C:
+		}
+	}
+}
+
+type stalledStderrWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *stalledStderrWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+func TestBlockedStderrDoesNotBlockShutdown(t *testing.T) {
+	w := &stalledStderrWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	// Release only after the assertions, to avoid leaking the deliberately
+	// stalled goroutine without using the release to make shutdown succeed.
+	t.Cleanup(func() { close(w.release) })
+	cfg, _ := fakeStdioConfig(t, nil)
+	m := NewManager(Config{Servers: map[string]ServerConfig{"test": cfg}}, "", ClientInfo{}, nil)
+	m.SetStderrWriter(w)
+	t.Cleanup(func() { _ = m.Close() })
+	if failures, _ := m.Start(context.Background()); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	st := m.servers["test"].client.t.(*stdioTransport)
+	st.live.line("block destination")
+	select {
+	case <-w.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("writer not entered")
+	}
+	drained := make(chan struct{})
+	go func() {
+		for i := 0; i < 1024; i++ {
+			st.live.line("overflow")
+		}
+		close(drained)
+	}()
+	await := func(done <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Fatalf("%s blocked on stderr", what)
+		}
+	}
+	await(drained, "enqueue")
+	transportClosed := make(chan struct{})
+	go func() { _ = st.close(); close(transportClosed) }()
+	await(transportClosed, "transport close")
+	managerClosed := make(chan struct{})
+	go func() { _ = m.Close(); close(managerClosed) }()
+	await(managerClosed, "manager close")
 }

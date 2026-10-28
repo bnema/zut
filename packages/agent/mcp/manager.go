@@ -46,10 +46,9 @@ type Manager struct {
 	servers map[string]*serverEntry
 	order   []string
 
-	mu             sync.Mutex
-	closed         bool
-	stderrWriter   io.Writer
-	stderrWriterMu *sync.Mutex
+	mu           sync.Mutex
+	closed       bool
+	stderrOutput *liveStderrWriter
 }
 
 // NewManager builds a manager for an already loaded configuration.
@@ -124,8 +123,8 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	m.mu.Lock()
 	closed := m.closed
 	var sink *stderrSink
-	if m.stderrWriter != nil {
-		sink = &stderrSink{mu: m.stderrWriterMu, w: m.stderrWriter, prefix: "mcp[" + sanitizeText(s.name, false) + "]: "}
+	if m.stderrOutput != nil {
+		sink = &stderrSink{output: m.stderrOutput, prefix: "mcp[" + sanitizeText(s.name, false) + "]: "}
 	}
 	m.mu.Unlock()
 	if closed {
@@ -383,7 +382,9 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	output := m.stderrOutput
 	m.mu.Unlock()
+	defer output.stop()
 	var wg sync.WaitGroup
 	for _, name := range m.order {
 		s := m.servers[name]
@@ -442,8 +443,9 @@ func firstLine(s string) string {
 func (m *Manager) SetStderrWriter(w io.Writer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.stderrWriter = w
-	if m.stderrWriterMu == nil {
-		m.stderrWriterMu = &sync.Mutex{}
+	m.stderrOutput.stop()
+	m.stderrOutput = nil
+	if !m.closed && w != nil {
+		m.stderrOutput = newLiveStderrWriter(w)
 	}
 }
