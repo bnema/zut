@@ -160,6 +160,7 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 func (t *httpTransport) statusFailure(req *http.Request, status int, headers http.Header, body []byte, truncated bool) error {
 	he := t.red.statusErrorBody(status, body, truncated).(*HTTPStatusError)
 	he.OAuth = isOAuthChallenge(headers)
+	he.Name = t.name
 	var err error = he
 	if status == http.StatusNotFound && req.Header.Get(headerSessionID) != "" {
 		err = fmt.Errorf("mcp session expired: %w", err)
@@ -174,6 +175,7 @@ func (t *httpTransport) statusFailure(req *http.Request, status int, headers htt
 // HTTPStatusError reports a non-success HTTP status from a server.
 type HTTPStatusError struct {
 	Status int
+	Name   string
 	OAuth  bool
 	Body   string
 }
@@ -182,7 +184,11 @@ func (e *HTTPStatusError) Error() string {
 	msg := fmt.Sprintf("http %d %s", e.Status, http.StatusText(e.Status))
 	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
 		if e.OAuth {
-			msg += " (server requires OAuth sign-in, which zut does not support; connect through a stdio bridge such as mcp-remote, or set an access token with bearerTokenEnvVar; see docs/mcp.md)"
+			name := e.Name
+			if name == "" {
+				name = "NAME"
+			}
+			msg += fmt.Sprintf(" (server requires OAuth sign-in; run zut mcp login %s; explicit headers or bearerTokenEnvVar take precedence)", name)
 		} else {
 			msg += " (check headers, envHeaders, or bearerTokenEnvVar)"
 		}

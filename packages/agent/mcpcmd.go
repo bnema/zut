@@ -8,11 +8,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/mcp"
+	"github.com/bnema/zut/packages/agent/mcp/oauth"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -31,6 +33,8 @@ func runMCPCommand(ctx context.Context, rawArgs []string, version string, out io
 	cwd, _ := os.Getwd()
 	rest := rawArgs[2:]
 	switch rawArgs[1] {
+	case "login", "logout":
+		return true, mcpAuth(ctx, out, cwd, rawArgs[1], rest)
 	case "list", "ls":
 		return true, mcpList(out, cwd, rest)
 	case "get":
@@ -53,6 +57,8 @@ func runMCPCommand(ctx context.Context, rawArgs []string, version string, out io
 func printMCPHelp(out io.Writer) {
 	fmt.Fprint(out, `zut mcp: manage MCP servers
 
+  zut mcp login NAME                       sign in to an HTTP server
+  zut mcp logout NAME                      remove stored OAuth credentials
   zut mcp list [--json]                     list configured servers
   zut mcp get NAME [--json]                 show one server (secret values hidden)
   zut mcp add NAME [--project] [opts] -- COMMAND [ARGS...]
@@ -344,6 +350,39 @@ func mcpRemove(out io.Writer, cwd string, args []string) error {
 	return nil
 }
 
+func mcpAuth(ctx context.Context, out io.Writer, cwd, action string, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: zut mcp %s NAME", action)
+	}
+	cfg, _ := mcp.LoadConfig(ZutHome(), cwd)
+	srv, ok := cfg.Servers[args[0]]
+	if !ok {
+		return fmt.Errorf("mcp server %q is not configured, disabled, or invalid", args[0])
+	}
+	if srv.Kind() != "http" {
+		return errors.New("OAuth login/logout requires an HTTP MCP server")
+	}
+	key, err := oauth.Canonical(srv.URL)
+	if err != nil {
+		return err
+	}
+	store := oauth.Store{Path: filepath.Join(ZutHome(), "mcp-auth.json")}
+	if action == "login" {
+		err = oauth.Login(ctx, store, srv.URL, mcpCommandStderr, nil)
+	} else {
+		err = store.Set(key, nil)
+	}
+	if err != nil {
+		return err
+	}
+	if action == "login" {
+		fmt.Fprintf(out, "signed in to mcp server %q\n", args[0])
+	} else {
+		fmt.Fprintf(out, "logged out of mcp server %q (no stored credentials remain)\n", args[0])
+	}
+	return nil
+}
+
 func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []string) error {
 	cfg, errs := mcp.LoadConfig(ZutHome(), cwd)
 	for _, err := range errs {
@@ -358,6 +397,7 @@ func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []str
 	}
 	manager := mcp.NewManager(cfg, cwd, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	defer manager.Close()
+	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
 	manager.SetStderrWriter(mcpCommandStderr)
 	failures, _ := manager.Start(ctx)
 	fmt.Fprintln(out, mcp.FormatStatus(manager.Status()))

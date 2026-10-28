@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/bnema/zut/packages/agent/mcp/oauth"
 )
 
 // ServerStatus is a snapshot of one configured server.
@@ -42,6 +44,7 @@ type Manager struct {
 	cwd        string
 	info       ClientInfo
 	httpClient *http.Client
+	authPath   string
 
 	servers map[string]*serverEntry
 	order   []string
@@ -60,6 +63,9 @@ func NewManager(cfg Config, cwd string, info ClientInfo, httpClient *http.Client
 	}
 	return m
 }
+
+// SetAuthPath enables stored OAuth credentials before Start is called.
+func (m *Manager) SetAuthPath(path string) { m.authPath = path }
 
 // Empty reports whether no servers are configured.
 func (m *Manager) Empty() bool { return m == nil || len(m.order) == 0 }
@@ -136,7 +142,11 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	// that arrives while the first listing is in flight is remembered, and
 	// the listing is repeated once the client is published.
 	refresher := newToolRefresher()
-	client, err := connectWith(startCtx, s.name, s.cfg, m.cwd, m.info, m.httpClient, refresher.notify, sink)
+	httpClient := m.httpClient
+	if m.authPath != "" && s.cfg.Kind() == "http" {
+		httpClient = oauth.HTTPClient(httpClient, oauth.Store{Path: m.authPath}, s.cfg.URL, s.name)
+	}
+	client, err := connectWith(startCtx, s.name, s.cfg, m.cwd, m.info, httpClient, refresher.notify, sink)
 	var tools []Tool
 	if err == nil {
 		tools, err = client.ListTools(startCtx)

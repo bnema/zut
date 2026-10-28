@@ -69,21 +69,28 @@ HTTP endpoint or a stdio command.
 
 ### Authentication
 
-zut has no built-in OAuth sign-in. OAuth servers return 401, and zut reports
-when the server advertises an OAuth requirement.
+For an HTTP server that supports OAuth discovery and dynamic client registration:
 
-- Use an access token through `bearerTokenEnvVar`, `envHeaders`, or `headers`.
-- Or connect through a stdio bridge such as `mcp-remote`:
+```sh
+zut mcp login NAME
+zut mcp status NAME
+zut mcp logout NAME
+```
 
-  ```sh
-  zut mcp add notion --startup-timeout 180 -- npx -y mcp-remote https://mcp.notion.com/mcp
-  zut mcp status notion
-  ```
+Login opens the browser and prints the sign-in URL on stderr for manual use.
+It uses authorization code with PKCE and a temporary loopback callback, with a
+five-minute timeout. Servers without dynamic registration need a stored client
+registration. Login/logout do not apply to stdio servers.
 
-  The sign-in URL is printed live on stderr as `mcp[notion]: …`. Open it
-  manually if no browser launches. The restricted child environment omits
-  `DISPLAY` and `WAYLAND_DISPLAY`; use `--env-var` to pass them through if
-  needed. Later starts reuse mcp-remote's cached token.
+Credentials live in `$ZUT_HOME/mcp-auth.json` (0600, atomically written), keyed
+by server URL rather than name. Changing the URL requires another login.
+Tokens are restricted to the server origin and path subtree, use HTTPS
+(loopback HTTP is allowed), and refresh before expiry or once after a 401.
+Logout removes the local entry; it does not revoke tokens at the server.
+
+Explicit `bearerTokenEnvVar`, `envHeaders` Authorization, or `headers`
+Authorization takes precedence over stored OAuth. A stdio bridge such as
+`mcp-remote` remains an alternative for servers with other login requirements.
 
 ## Managing servers
 

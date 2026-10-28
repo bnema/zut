@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -56,6 +57,7 @@ func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
 	}
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
+	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, mcpSignals...)
 	failures, sig, requiredErr := startMCPInterruptible(ctx, manager, sigCh)
