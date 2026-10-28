@@ -332,6 +332,11 @@ func runFakeStdioServer() {
 		}()
 
 		if msg.Method == "initialize" {
+			if line := os.Getenv("FAKE_STDERR_LINE"); line != "" {
+				if data, err := os.ReadFile(line); err == nil {
+					fmt.Fprintln(os.Stderr, string(data))
+				}
+			}
 			if ms, _ := time.ParseDuration(os.Getenv("FAKE_INIT_DELAY_MS") + "ms"); ms > 0 {
 				time.Sleep(ms)
 			}
@@ -546,6 +551,7 @@ type httpFake struct {
 	backend   *fakeBackend
 	sse       bool
 	wantAuth  string
+	challenge string
 	sessionID string
 
 	// expireNextCall makes the next tools/call that carries a session id
@@ -608,6 +614,7 @@ func (f *httpFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.records = append(f.records, rec)
 		f.mu.Unlock()
+		w.Header().Set("WWW-Authenticate", f.challenge)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

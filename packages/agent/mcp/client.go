@@ -126,13 +126,13 @@ type ClientInfo struct {
 
 // Connect starts the transport for cfg and performs the initialize handshake.
 func Connect(ctx context.Context, name string, cfg ServerConfig, cwd string, info ClientInfo, httpClient *http.Client) (*Client, error) {
-	return connectWith(ctx, name, cfg, cwd, info, httpClient, nil)
+	return connectWith(ctx, name, cfg, cwd, info, httpClient, nil, nil)
 }
 
 // connectWith is Connect with the tools/list_changed callback installed before
 // the handshake starts, so a notification sent right after initialize is not
 // lost.
-func connectWith(ctx context.Context, name string, cfg ServerConfig, cwd string, info ClientInfo, httpClient *http.Client, onToolsChanged func()) (*Client, error) {
+func connectWith(ctx context.Context, name string, cfg ServerConfig, cwd string, info ClientInfo, httpClient *http.Client, onToolsChanged func(), sink *stderrSink) (*Client, error) {
 	var (
 		t   transport
 		err error
@@ -140,7 +140,7 @@ func connectWith(ctx context.Context, name string, cfg ServerConfig, cwd string,
 	switch cfg.Kind() {
 	case "stdio":
 		var st *stdioTransport
-		st, err = startStdio(name, cfg, cwd)
+		st, err = startStdio(name, cfg, cwd, sink)
 		if err == nil {
 			t = st
 		}

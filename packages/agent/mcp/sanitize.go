@@ -366,3 +366,41 @@ func skipControlString(s string, i int) int {
 	}
 	return i
 }
+
+// scrubLive preserves usable authorization-request URLs only for live stderr.
+func (r *redactor) scrubLive(s string) string {
+	s = r.redact(s)
+	s = sanitizeText(s, true)
+	s = r.redact(s)
+	return scrubURLsLive(s)
+}
+
+func isAuthorizationRequestURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil || q.Get("response_type") == "" || q.Get("client_id") == "" {
+		return false
+	}
+	for _, key := range []string{"code", "access_token", "refresh_token", "id_token", "client_secret", "token", "password"} {
+		if q.Has(key) {
+			return false
+		}
+	}
+	return true
+}
+
+func scrubURLsLive(s string) string {
+	return urlInText.ReplaceAllStringFunc(s, func(raw string) string {
+		if !isAuthorizationRequestURL(raw) {
+			return stripURL(raw)
+		}
+		u, _ := url.Parse(raw)
+		u.User = nil
+		u.Fragment = ""
+		u.RawFragment = ""
+		return u.String()
+	})
+}

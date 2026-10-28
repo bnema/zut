@@ -91,7 +91,7 @@ func TestGuardNoSignalWhenAlreadyEmpty(t *testing.T) {
 
 func TestStdioRepeatedCloseDoesNotSignalAgain(t *testing.T) {
 	cfg, _ := fakeStdioConfig(t, nil)
-	st, err := startStdio("x", cfg, "")
+	st, err := startStdio("x", cfg, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

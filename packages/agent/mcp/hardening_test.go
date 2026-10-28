@@ -545,7 +545,7 @@ func TestStdioStderrFloodDoesNotBlockChild(t *testing.T) {
 func TestStdioCancelNotificationRules(t *testing.T) {
 	// initialize never answers within the deadline.
 	cfg, _ := fakeStdioConfig(t, map[string]string{"FAKE_INIT_DELAY_MS": "5000"})
-	st, err := startStdio("x", cfg, "")
+	st, err := startStdio("x", cfg, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

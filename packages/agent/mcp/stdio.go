@@ -81,6 +81,7 @@ type stdioTransport struct {
 	cmd   *exec.Cmd
 	guard *processGuard
 	red   *redactor
+	live  *stderrSink
 
 	// ctx spans the transport's lifetime; it is cancelled when the
 	// connection fails or closes and bounds every background send.
@@ -137,7 +138,7 @@ func buildStdioEnv(cfg ServerConfig) []string {
 	return out
 }
 
-func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, error) {
+func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*stdioTransport, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = buildStdioEnv(cfg)
 	dir := cwd
@@ -194,6 +195,7 @@ func startStdio(name string, cfg ServerConfig, cwd string) (*stdioTransport, err
 		cmd:        cmd,
 		guard:      guard,
 		red:        red,
+		live:       sink,
 		ctx:        ctx,
 		cancel:     cancel,
 		stdin:      stdin,
@@ -255,17 +257,9 @@ func (t *stdioTransport) readStderr(r io.Reader) {
 	var line []byte
 	truncated := false
 	flush := func() {
-		text := t.red.scrub(strings.TrimRight(string(line), "\r"))
-		if len(text) > maxStderrLine || truncated {
-			if len(text) > maxStderrLine {
-				cut := maxStderrLine
-				for cut > 0 && !utf8.RuneStart(text[cut]) {
-					cut--
-				}
-				text = text[:cut]
-			}
-			text = t.red.trimPartialSecret(text) + "…[line truncated]"
-		}
+		raw := strings.TrimRight(string(line), "\r")
+		text := t.displayLine(t.red.scrub(raw), truncated)
+		live := t.displayLine(t.red.scrubLive(raw), truncated)
 		line, truncated = nil, false
 		t.stderrMu.Lock()
 		t.stderr = append(t.stderr, text)
@@ -273,6 +267,7 @@ func (t *stdioTransport) readStderr(r io.Reader) {
 			t.stderr = t.stderr[len(t.stderr)-stderrTailLines:]
 		}
 		t.stderrMu.Unlock()
+		t.live.line(live)
 	}
 	for {
 		chunk, isPrefix, err := reader.ReadLine()
@@ -623,5 +618,47 @@ func (t *stdioTransport) close() error {
 	}
 	_ = t.outR.Close()
 	_ = t.errR.Close()
+	t.live.stop()
 	return nil
+}
+
+// stderrSink serializes live output across servers and fences writes on close.
+type stderrSink struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	prefix string
+	off    bool
+}
+
+func (s *stderrSink) line(text string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.off || s.w == nil {
+		return
+	}
+	fmt.Fprintf(s.w, "%s%s\n", s.prefix, text)
+}
+func (s *stderrSink) stop() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.off = true
+}
+func (t *stdioTransport) displayLine(text string, truncated bool) string {
+	if len(text) > maxStderrLine || truncated {
+		if len(text) > maxStderrLine {
+			cut := maxStderrLine
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+			text = text[:cut]
+		}
+		text = t.red.trimPartialSecret(text) + "…[line truncated]"
+	}
+	return text
 }

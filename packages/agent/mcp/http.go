@@ -148,7 +148,7 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 		// secret straddling the cut is seen whole and can be redacted.
 		limit := maxErrorBody + t.red.overlap()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)))
-		return nil, t.statusFailure(req, resp.StatusCode, snippet, len(snippet) >= limit)
+		return nil, t.statusFailure(req, resp.StatusCode, resp.Header, snippet, len(snippet) >= limit)
 	}
 	return resp, nil
 }
@@ -157,8 +157,10 @@ func (t *httpTransport) post(ctx context.Context, frame []byte) (*http.Response,
 // request that carried a session id means the server forgot the session
 // (expired or restarted): the transport becomes unusable so the manager
 // reconnects with a fresh initialize. The failed call is not replayed.
-func (t *httpTransport) statusFailure(req *http.Request, status int, body []byte, truncated bool) error {
-	err := t.red.statusErrorBody(status, body, truncated)
+func (t *httpTransport) statusFailure(req *http.Request, status int, headers http.Header, body []byte, truncated bool) error {
+	he := t.red.statusErrorBody(status, body, truncated).(*HTTPStatusError)
+	he.OAuth = isOAuthChallenge(headers)
+	var err error = he
 	if status == http.StatusNotFound && req.Header.Get(headerSessionID) != "" {
 		err = fmt.Errorf("mcp session expired: %w", err)
 		t.mu.Lock()
@@ -172,13 +174,18 @@ func (t *httpTransport) statusFailure(req *http.Request, status int, body []byte
 // HTTPStatusError reports a non-success HTTP status from a server.
 type HTTPStatusError struct {
 	Status int
+	OAuth  bool
 	Body   string
 }
 
 func (e *HTTPStatusError) Error() string {
 	msg := fmt.Sprintf("http %d %s", e.Status, http.StatusText(e.Status))
 	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
-		msg += " (check headers, envHeaders, or bearerTokenEnvVar)"
+		if e.OAuth {
+			msg += " (server requires OAuth sign-in, which zut does not support; connect through a stdio bridge such as mcp-remote, or set an access token with bearerTokenEnvVar; see docs/mcp.md)"
+		} else {
+			msg += " (check headers, envHeaders, or bearerTokenEnvVar)"
+		}
 	}
 	if e.Body != "" {
 		msg += ": " + e.Body
@@ -540,4 +547,13 @@ func (t *httpTransport) close() error {
 		}
 	}
 	return nil
+}
+
+func isOAuthChallenge(h http.Header) bool {
+	for _, v := range h.Values("WWW-Authenticate") {
+		if strings.Contains(strings.ToLower(v), "resource_metadata=") {
+			return true
+		}
+	}
+	return false
 }

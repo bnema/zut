@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -45,8 +46,10 @@ type Manager struct {
 	servers map[string]*serverEntry
 	order   []string
 
-	mu     sync.Mutex
-	closed bool
+	mu             sync.Mutex
+	closed         bool
+	stderrWriter   io.Writer
+	stderrWriterMu *sync.Mutex
 }
 
 // NewManager builds a manager for an already loaded configuration.
@@ -120,6 +123,10 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	}
 	m.mu.Lock()
 	closed := m.closed
+	var sink *stderrSink
+	if m.stderrWriter != nil {
+		sink = &stderrSink{mu: m.stderrWriterMu, w: m.stderrWriter, prefix: "mcp[" + sanitizeText(s.name, false) + "]: "}
+	}
 	m.mu.Unlock()
 	if closed {
 		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
@@ -130,7 +137,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	// that arrives while the first listing is in flight is remembered, and
 	// the listing is repeated once the client is published.
 	refresher := newToolRefresher()
-	client, err := connectWith(startCtx, s.name, s.cfg, m.cwd, m.info, m.httpClient, refresher.notify)
+	client, err := connectWith(startCtx, s.name, s.cfg, m.cwd, m.info, m.httpClient, refresher.notify, sink)
 	var tools []Tool
 	if err == nil {
 		tools, err = client.ListTools(startCtx)
@@ -429,4 +436,14 @@ func FormatStatus(statuses []ServerStatus) string {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
+}
+
+// SetStderrWriter enables live stdio server diagnostics. Call before Start.
+func (m *Manager) SetStderrWriter(w io.Writer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stderrWriter = w
+	if m.stderrWriterMu == nil {
+		m.stderrWriterMu = &sync.Mutex{}
+	}
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+var mcpCommandStderr io.Writer = os.Stderr
+
 // runMCPCommand dispatches `zut mcp ...`. It returns handled=false when
 // rawArgs does not start with "mcp".
 func runMCPCommand(ctx context.Context, rawArgs []string, version string, out io.Writer) (bool, error) {
@@ -58,7 +60,7 @@ func printMCPHelp(out io.Writer) {
   zut mcp add NAME [--project] --url URL [opts]
                                             add a streamable HTTP server
   zut mcp remove NAME [--project]           remove a server
-  zut mcp status [NAME]                     connect and list tools
+  zut mcp status [NAME]                     connect and list tools (server stderr is shown live)
 
 add options:
   --env KEY=VALUE            stdio environment variable (repeatable)
@@ -345,7 +347,7 @@ func mcpRemove(out io.Writer, cwd string, args []string) error {
 func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []string) error {
 	cfg, errs := mcp.LoadConfig(ZutHome(), cwd)
 	for _, err := range errs {
-		fmt.Fprintln(os.Stderr, "mcp config error:", err)
+		fmt.Fprintln(mcpCommandStderr, "mcp config error:", err)
 	}
 	if len(args) > 0 {
 		srv, ok := cfg.Servers[args[0]]
@@ -356,6 +358,7 @@ func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []str
 	}
 	manager := mcp.NewManager(cfg, cwd, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	defer manager.Close()
+	manager.SetStderrWriter(mcpCommandStderr)
 	failures, _ := manager.Start(ctx)
 	fmt.Fprintln(out, mcp.FormatStatus(manager.Status()))
 	// Names come from the registry builder so collision suffixes match what

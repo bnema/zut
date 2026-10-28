@@ -12,7 +12,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - eighteen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, ask_user_question, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
-- native MCP client for stdio and streamable HTTP servers, shared by the primary agent, orchestrator, and subagents; see [docs/mcp.md](docs/mcp.md).
+- native MCP client for stdio and streamable HTTP servers, shared by the primary agent, orchestrator, and subagents; no built-in OAuth—use a stdio bridge like mcp-remote; see [docs/mcp.md](docs/mcp.md).
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. Interactive tools can wait for user input without a reply deadline and support cooperative cancellation; headless hosts reject them. See [docs/extensions.md](docs/extensions.md).
 - user and extension themes via JSON; see [docs/themes.md](docs/themes.md).
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).

@@ -65,8 +65,25 @@ Stdio servers receive a minimal environment: common variables such as `PATH`,
 Provider API keys and other host variables are not inherited.
 
 The legacy HTTP+SSE transport is not supported; use the server's streamable
-HTTP endpoint or a stdio command. OAuth login is not built in; use a token
-through `bearerTokenEnvVar`, `envHeaders`, or `headers`.
+HTTP endpoint or a stdio command.
+
+### Authentication
+
+zut has no built-in OAuth sign-in. OAuth servers return 401, and zut reports
+when the server advertises an OAuth requirement.
+
+- Use an access token through `bearerTokenEnvVar`, `envHeaders`, or `headers`.
+- Or connect through a stdio bridge such as `mcp-remote`:
+
+  ```sh
+  zut mcp add notion --startup-timeout 180 -- npx -y mcp-remote https://mcp.notion.com/mcp
+  zut mcp status notion
+  ```
+
+  The sign-in URL is printed live on stderr as `mcp[notion]: …`. Open it
+  manually if no browser launches. The restricted child environment omits
+  `DISPLAY` and `WAYLAND_DISPLAY`; use `--env-var` to pass them through if
+  needed. Later starts reuse mcp-remote's cached token.
 
 ## Managing servers
 
@@ -119,7 +136,8 @@ startup errors.
   (`setsid`) on Unix is not stopped.
 - Errors and status output strip terminal control sequences, URL credentials
   and query strings, and configured `env`, header, and bearer-token values.
-  Secrets passed through `args` are not redacted.
+  Live stderr from `zut mcp status` keeps the query of OAuth authorization-request
+  URLs. Secrets passed through `args` are not redacted.
 
 ## Tool selection and confirmation
 
