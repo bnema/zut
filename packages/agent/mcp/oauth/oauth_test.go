@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -65,7 +66,7 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 		for _, badState := range []bool{false, true} {
 			t.Run(strings.Join([]string{map[bool]string{false: "fallback", true: "header"}[header], map[bool]string{false: "valid", true: "state-mismatch"}[badState]}, "/"), func(t *testing.T) {
 				var base, challenge string
-				var registrations atomic.Int32
+				var registrations, exchanges atomic.Int32
 				mux := http.NewServeMux()
 				srv := httptest.NewServer(mux)
 				defer srv.Close()
@@ -82,7 +83,7 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 				mux.HandleFunc("/metadata", resource)
 				mux.HandleFunc("/.well-known/oauth-protected-resource", resource)
 				mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
-					json.NewEncoder(w).Encode(map[string]string{"issuer": base, "authorization_endpoint": base + "/authorize", "token_endpoint": base + "/token", "registration_endpoint": base + "/register"})
+					json.NewEncoder(w).Encode(map[string]string{"issuer": base, "authorization_endpoint": base + "/authorize?audience=example", "token_endpoint": base + "/token", "registration_endpoint": base + "/register"})
 				})
 				mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
 					registrations.Add(1)
@@ -94,19 +95,34 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 					if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge || r.Form.Get("resource") != base+"/mcp" {
 						t.Error("PKCE or resource mismatch")
 					}
-					json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-access", "refresh_token": "synthetic-refresh", "token_type": "Bearer", "expires_in": 3600})
+					if exchanges.Add(1) == 1 {
+						json.NewEncoder(w).Encode(map[string]any{"access_token": "synthetic-access", "refresh_token": "synthetic-refresh", "token_type": "Bearer", "expires_in": 3600})
+					} else {
+						json.NewEncoder(w).Encode(map[string]any{"access_token": "account-b", "token_type": "Bearer"})
+					}
 				})
 				store := Store{Path: filepath.Join(t.TempDir(), "mcp-auth.json")}
 				opener := func(raw string) error {
 					u, _ := url.Parse(raw)
 					q := u.Query()
 					challenge = q.Get("code_challenge")
-					if q.Get("code_challenge_method") != "S256" || q.Get("resource") != base+"/mcp" {
+					if q.Get("audience") != "example" || q.Get("code_challenge_method") != "S256" || q.Get("resource") != base+"/mcp" {
 						t.Error("authorization parameters")
 					}
 					callback, _ := url.Parse(q.Get("redirect_uri"))
 					v := callback.Query()
 					v.Set("code", "synthetic-code")
+					if badState {
+						callback.RawQuery = v.Encode()
+						resp, err := http.Get(callback.String())
+						if err != nil {
+							return err
+						}
+						resp.Body.Close()
+						if resp.StatusCode != http.StatusBadRequest {
+							t.Error("missing state accepted")
+						}
+					}
 					v.Set("state", q.Get("state"))
 					if badState {
 						v.Set("state", "wrong")
@@ -115,16 +131,24 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 					resp, err := http.Get(callback.String())
 					if err == nil {
 						resp.Body.Close()
+						if badState && resp.StatusCode != http.StatusBadRequest {
+							t.Error("invalid state accepted")
+						}
+					}
+					if err != nil {
+						return err
+					}
+					if badState {
+						v.Set("state", q.Get("state"))
+						callback.RawQuery = v.Encode()
+						resp, err = http.Get(callback.String())
+						if err == nil {
+							resp.Body.Close()
+						}
 					}
 					return err
 				}
 				err := Login(context.Background(), store, base+"/mcp", io.Discard, opener)
-				if badState {
-					if err == nil || !strings.Contains(err.Error(), "state mismatch") {
-						t.Fatal(err)
-					}
-					return
-				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -132,11 +156,35 @@ func TestLoginDiscoveryPKCE(t *testing.T) {
 				if err != nil || e.AccessToken != "synthetic-access" || registrations.Load() != 1 {
 					t.Fatal("missing credentials")
 				}
-				if err := Login(context.Background(), store, base+"/mcp", io.Discard, opener); err != nil {
+				secondOpener := func(raw string) error {
+					lock := keyLock(store.Path + base + "/mcp")
+					select {
+					case lock <- struct{}{}:
+						lock.release()
+					default:
+						t.Error("login holds per-key lock during browser interaction")
+					}
+					// A successful explicit login recreates credentials after a concurrent logout.
+					if err := store.Set(base+"/mcp", nil); err != nil {
+						return err
+					}
+					return opener(raw)
+				}
+				if err := Login(context.Background(), store, base+"/mcp", io.Discard, secondOpener); err != nil {
 					t.Fatal(err)
 				}
 				if registrations.Load() != 1 {
 					t.Fatal("registration not reused")
+				}
+				e, err = store.Get(base + "/mcp")
+				if err != nil || e.AccessToken != "account-b" || e.RefreshToken != "" || e.ClientID != "synthetic-client" {
+					t.Fatal("explicit account switch did not win logout or retained old refresh token", err)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				err = Login(ctx, store, base+"/mcp", io.Discard, func(string) error { cancel(); return nil })
+				if !errors.Is(err, context.Canceled) {
+					t.Fatal("callback cancellation lost cause", err)
 				}
 			})
 		}
@@ -217,7 +265,7 @@ func TestCrossOriginAndRetryLimit(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, other.URL, 302) })
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, other.URL, http.StatusFound) })
 	mux.HandleFunc("/mcp/denied", func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(401) })
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		refreshes.Add(1)

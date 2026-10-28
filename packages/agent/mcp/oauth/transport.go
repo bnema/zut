@@ -33,11 +33,24 @@ func HTTPClient(base *http.Client, store Store, raw, name string) *http.Client {
 }
 func (t *transport) token(ctx context.Context, rejected string, force bool) (Entry, error) {
 	lock := keyLock(t.store.Path + t.key)
-	lock.Lock()
-	defer lock.Unlock()
-	e, err := t.store.Get(t.key)
+	if err := lock.acquire(ctx); err != nil {
+		return Entry{}, err
+	}
+	defer lock.release()
+	// Read only after taking the cross-process lock. A waiter uses a token
+	// already refreshed by another process rather than exchanging it again.
+	unlock, err := t.store.lock(ctx)
 	if err != nil {
-		return e, err
+		return Entry{}, err
+	}
+	defer unlock()
+	entries, err := t.store.load()
+	if err != nil {
+		return Entry{}, err
+	}
+	e := entries[t.key]
+	if err := ctx.Err(); err != nil {
+		return Entry{}, err
 	}
 	if e.AccessToken == "" {
 		return e, nil
@@ -49,13 +62,23 @@ func (t *transport) token(ctx context.Context, rejected string, force bool) (Ent
 		return e, nil
 	}
 	if e.RefreshToken == "" {
-		return e, errors.New("OAuth refresh unavailable")
+		return e, errCredentials
 	}
+	original := e
 	if err := exchange(ctx, Client(nil), &e, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {e.RefreshToken}}); err != nil {
 		return Entry{}, err
 	}
-	return e, t.store.Set(t.key, &e)
+	entries, err = t.store.load()
+	if err != nil {
+		return Entry{}, err
+	}
+	current, exists := entries[t.key]
+	if !exists || current.AccessToken != original.AccessToken || current.RefreshToken != original.RefreshToken {
+		return current, nil
+	}
+	return e, t.store.set(t.key, &e)
 }
+
 func (t *transport) guidance() error {
 	return fmt.Errorf("MCP authentication required; run zut mcp login %s", t.name)
 }
@@ -65,7 +88,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	e, err := t.token(req.Context(), "", false)
 	if err != nil {
-		return nil, t.guidance()
+		return nil, t.authError(err)
 	}
 	send := func(e Entry, retry bool) (*http.Response, error) {
 		clone := req.Clone(req.Context())
@@ -76,7 +99,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			var err error
 			clone.Body, err = req.GetBody()
 			if err != nil {
-				return nil, errors.New("MCP OAuth request replay failed")
+				return nil, safeError("MCP OAuth request replay failed", err)
 			}
 		}
 		if e.AccessToken != "" {
@@ -84,7 +107,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		resp, err := t.base.RoundTrip(clone)
 		if err != nil {
-			return nil, errors.New("MCP HTTP request failed")
+			return nil, safeError("MCP HTTP request failed", err)
 		}
 		if e.AccessToken != "" && resp.StatusCode >= 300 {
 			resp.Body.Close()
@@ -105,7 +128,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, t.guidance()
 	}
 	refreshed, err := t.token(req.Context(), e.AccessToken, true)
-	if err != nil || refreshed.AccessToken == "" {
+	if err != nil {
+		return nil, t.authError(err)
+	}
+	if refreshed.AccessToken == "" {
 		return nil, t.guidance()
 	}
 	resp, err = send(refreshed, true)
@@ -114,4 +140,11 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, t.guidance()
 	}
 	return resp, err
+}
+
+func (t *transport) authError(err error) error {
+	if errors.Is(err, errCredentials) {
+		return safeError(t.guidance().Error(), err)
+	}
+	return err
 }

@@ -2,6 +2,7 @@
 package oauth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -61,13 +62,30 @@ func Allows(key, target string) bool {
 	return a.Scheme == b.Scheme && a.Host == b.Host && (path.Clean(b.Path) == path.Clean(a.Path) || strings.HasPrefix(path.Clean(b.Path), strings.TrimRight(path.Clean(a.Path), "/")+"/"))
 }
 
-var fileMu sync.Mutex
 var keys sync.Map
 
-func keyLock(key string) *sync.Mutex {
-	v, _ := keys.LoadOrStore(key, &sync.Mutex{})
-	return v.(*sync.Mutex)
+type semaphore chan struct{}
+
+func keyLock(key string) semaphore {
+	v, _ := keys.LoadOrStore(key, make(semaphore, 1))
+	return v.(semaphore)
 }
+func (s semaphore) acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case s <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-s
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (s semaphore) release() { <-s }
 
 // Store uses atomic, private files. Each update reloads existing entries.
 type Store struct{ Path string }
@@ -79,25 +97,37 @@ func (s Store) load() (map[string]Entry, error) {
 		return m, nil
 	}
 	if err != nil {
-		return nil, errors.New("read MCP credentials failed")
+		return nil, safeError("read MCP credentials failed", err)
 	}
-	if json.Unmarshal(b, &m) != nil {
-		return nil, errors.New("invalid MCP credentials file")
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, safeError("invalid MCP credentials file", err)
 	}
 	if m == nil {
 		m = map[string]Entry{}
 	}
 	return m, nil
 }
-func (s Store) Get(key string) (Entry, error) {
-	fileMu.Lock()
-	defer fileMu.Unlock()
+func (s Store) Get(key string) (Entry, error) { return s.get(context.Background(), key) }
+func (s Store) get(ctx context.Context, key string) (Entry, error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
 	m, err := s.load()
 	return m[key], err
 }
 func (s Store) Set(key string, e *Entry) error {
-	fileMu.Lock()
-	defer fileMu.Unlock()
+	unlock, err := s.lock(context.Background())
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.set(key, e)
+}
+
+// set requires the store file lock and reloads unrelated entries before writing.
+func (s Store) set(key string, e *Entry) error {
 	m, err := s.load()
 	if err != nil {
 		return err
@@ -108,18 +138,18 @@ func (s Store) Set(key string, e *Entry) error {
 		m[key] = *e
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
-		return errors.New("create MCP credential directory failed")
+		return safeError("create MCP credential directory failed", err)
 	}
 	if err := os.Chmod(filepath.Dir(s.Path), 0700); err != nil {
-		return errors.New("secure MCP credential directory failed")
+		return safeError("secure MCP credential directory failed", err)
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		return errors.New("encode MCP credentials failed")
+		return safeError("encode MCP credentials failed", err)
 	}
 	f, err := os.CreateTemp(filepath.Dir(s.Path), ".mcp-auth-*")
 	if err != nil {
-		return errors.New("create MCP credential file failed")
+		return safeError("create MCP credential file failed", err)
 	}
 	defer os.Remove(f.Name())
 	if err = f.Chmod(0600); err == nil {
@@ -132,7 +162,44 @@ func (s Store) Set(key string, e *Entry) error {
 		err = os.Rename(f.Name(), s.Path)
 	}
 	if err != nil {
-		return errors.New("save MCP credentials failed")
+		return safeError("save MCP credentials failed", err)
 	}
 	return nil
+}
+
+// lock uses a stable sidecar inode: the credential file itself is atomically replaced.
+func (s Store) lock(ctx context.Context) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
+		return nil, safeError("create MCP credential directory failed", err)
+	}
+	f, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, safeError("open MCP credential lock failed", err)
+	}
+	if err = f.Chmod(0600); err != nil {
+		f.Close()
+		return nil, safeError("secure MCP credential lock failed", err)
+	}
+	for {
+		if err = ctx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		acquired, lockErr := tryFileLock(f)
+		if lockErr != nil {
+			f.Close()
+			return nil, safeError("lock MCP credentials failed", lockErr)
+		}
+		if acquired {
+			return func() { unlockFile(f); f.Close() }, nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			f.Close()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

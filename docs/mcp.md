@@ -79,14 +79,21 @@ zut mcp logout NAME
 
 Login opens the browser and prints the sign-in URL on stderr for manual use.
 It uses authorization code with PKCE and a temporary loopback callback, with a
-five-minute timeout. Servers without dynamic registration need a stored client
-registration. Login/logout do not apply to stdio servers.
+five-minute timeout. Invalid callback state receives HTTP 400 without ending login.
+Discovery tries path-specific protected-resource metadata before the root endpoint
+unless the server supplies a metadata challenge. Servers without dynamic
+registration need a stored client registration. Login/logout do not apply to stdio servers.
 
 Credentials live in `$ZUT_HOME/mcp-auth.json` (0600, atomically written), keyed
 by server URL rather than name. Changing the URL requires another login.
 Tokens are restricted to the server origin and path subtree, use HTTPS
 (loopback HTTP is allowed), and refresh before expiry or once after a 401.
 Logout removes the local entry; it does not revoke tokens at the server.
+A private `mcp-auth.json.lock` coordinates credential updates across processes.
+Logout removes credentials after any in-flight refresh completes; refresh does not
+recreate a removed entry. A successfully completed explicit login replaces the
+entry, including after a concurrent logout. Login only retains refresh tokens
+returned for that login; refresh exchanges may retain the existing refresh token.
 
 Explicit `bearerTokenEnvVar`, `envHeaders` Authorization, or `headers`
 Authorization takes precedence over stored OAuth. A stdio bridge such as

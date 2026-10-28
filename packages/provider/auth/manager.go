@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -574,16 +573,7 @@ func (m *Manager) maybeOpen(u string) {
 	if !m.openBrowser {
 		return
 	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", u)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	default:
-		cmd = exec.Command("xdg-open", u)
-	}
-	_ = cmd.Start()
+	_ = OpenBrowser(u)
 	m.emit(Event{Kind: "browser_open", URL: u})
 }
 

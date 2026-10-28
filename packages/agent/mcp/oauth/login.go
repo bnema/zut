@@ -13,10 +13,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/bnema/zut/packages/provider/auth"
 )
 
 type metadata struct {
@@ -54,21 +54,28 @@ func jsonRequest(ctx context.Context, c *http.Client, method, endpoint, contentT
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return errors.New("invalid OAuth endpoint")
+		return safeError("invalid OAuth endpoint", err)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.Do(req)
 	if err != nil {
-		return errors.New("OAuth endpoint request failed")
+		return safeError("OAuth endpoint request failed", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body)
+		if resp.StatusCode == http.StatusUnauthorized || body.Error == "invalid_grant" {
+			return errCredentials
+		}
 		return fmt.Errorf("OAuth endpoint returned HTTP %d", resp.StatusCode)
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dst) != nil {
-		return errors.New("invalid OAuth endpoint response")
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dst); err != nil {
+		return safeError("invalid OAuth endpoint response", err)
 	}
 	return nil
 }
@@ -76,10 +83,12 @@ func discover(ctx context.Context, c *http.Client, key string) (metadata, error)
 	var m metadata
 	u, _ := url.Parse(key)
 	endpoint := u.Scheme + "://" + u.Host + "/.well-known/oauth-protected-resource"
+	rootEndpoint := endpoint
+	challenged := false
 	req, _ := http.NewRequestWithContext(ctx, "GET", key, nil)
 	resp, err := c.Do(req)
 	if err != nil {
-		return m, errors.New("MCP OAuth discovery probe failed")
+		return m, safeError("MCP OAuth discovery probe failed", err)
 	}
 	resp.Body.Close()
 	for _, challenge := range resp.Header.Values("WWW-Authenticate") {
@@ -87,6 +96,7 @@ func discover(ctx context.Context, c *http.Client, key string) (metadata, error)
 		for _, part := range strings.Split(challenge, ",") {
 			if i := strings.Index(strings.ToLower(part), "resource_metadata="); i >= 0 {
 				endpoint = strings.Trim(strings.TrimSpace(part[i+len("resource_metadata="):]), "\"")
+				challenged = true
 			}
 		}
 	}
@@ -95,8 +105,16 @@ func discover(ctx context.Context, c *http.Client, key string) (metadata, error)
 		Servers  []string `json:"authorization_servers"`
 		Scopes   []string `json:"scopes_supported"`
 	}
+	if !challenged && strings.Trim(u.Path, "/") != "" {
+		endpoint += "/" + strings.TrimLeft(u.EscapedPath(), "/")
+	}
 	if err := jsonRequest(ctx, c, "GET", endpoint, "", nil, &resource); err != nil {
-		return m, err
+		if challenged || endpoint == rootEndpoint {
+			return m, err
+		}
+		if err = jsonRequest(ctx, c, "GET", rootEndpoint, "", nil, &resource); err != nil {
+			return m, err
+		}
 	}
 	canonical, err := Canonical(resource.Resource)
 	if err != nil || canonical != key {
@@ -118,7 +136,7 @@ func discover(ctx context.Context, c *http.Client, key string) (metadata, error)
 		}
 	}
 	if err != nil {
-		return m, errors.New("OAuth authorization server discovery failed")
+		return m, safeError("OAuth authorization server discovery failed", err)
 	}
 	got, err := Canonical(m.Issuer)
 	if err != nil || got != issuer {
@@ -140,28 +158,14 @@ func discover(ctx context.Context, c *http.Client, key string) (metadata, error)
 func random() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", errors.New("OAuth randomness unavailable")
+		return "", safeError("OAuth randomness unavailable", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// OpenBrowser starts the platform browser without passing through a shell.
-func OpenBrowser(raw string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", raw)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", raw)
-	default:
-		cmd = exec.Command("xdg-open", raw)
-	}
-	if err := cmd.Start(); err != nil {
-		return errors.New("browser unavailable")
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
-}
+// OpenBrowser starts the system browser using the shared authentication opener.
+// Kept here for callers of the MCP OAuth package.
+func OpenBrowser(raw string) error { return auth.OpenBrowser(raw) }
 
 // Login runs an authorization-code flow. The opener is injectable for local tests.
 func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opener func(string) error) error {
@@ -176,16 +180,13 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	if err != nil {
 		return err
 	}
-	lock := keyLock(store.Path + key)
-	lock.Lock()
-	defer lock.Unlock()
-	e, err := store.Get(key)
+	e, err := store.get(ctx, key)
 	if err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		return errors.New("OAuth callback listener failed")
+		return safeError("OAuth callback listener failed", err)
 	}
 	defer listener.Close()
 	redirect := "http://" + listener.Addr().String() + "/callback"
@@ -198,7 +199,7 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 		}
 		listener, err = net.Listen("tcp4", callback.Host)
 		if err != nil {
-			return errors.New("registered OAuth callback port unavailable")
+			return safeError("registered OAuth callback port unavailable", err)
 		}
 		defer listener.Close()
 		redirect = e.RedirectURI
@@ -245,7 +246,8 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		result := callbackResult{}
 		if r.URL.Query().Get("state") != state {
-			result.err = errors.New("OAuth state mismatch")
+			http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+			return
 		} else if r.URL.Query().Get("error") != "" {
 			result.err = errors.New("OAuth authorization denied")
 		} else {
@@ -266,9 +268,8 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	defer server.Close()
 	go func() { _ = server.Serve(listener) }()
 	authorize, _ := url.Parse(m.AuthorizationEndpoint)
-	// Do not echo arbitrary metadata query parameters (which may contain secrets).
-	authorize.RawQuery, authorize.Fragment = "", ""
-	q := url.Values{}
+	authorize.Fragment = ""
+	q := authorize.Query()
 	for k, v := range map[string]string{"response_type": "code", "client_id": e.ClientID, "redirect_uri": redirect, "state": state, "code_challenge": base64.RawURLEncoding.EncodeToString(sum[:]), "code_challenge_method": "S256", "resource": key} {
 		q.Set(k, v)
 	}
@@ -278,13 +279,13 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	authorize.RawQuery = q.Encode()
 	fmt.Fprintln(stderr, "Open this URL to sign in:", authorize.String())
 	if opener == nil {
-		opener = OpenBrowser
+		opener = auth.OpenBrowser
 	}
 	_ = opener(authorize.String())
 	var result callbackResult
 	select {
 	case <-ctx.Done():
-		return errors.New("OAuth login cancelled or timed out")
+		return safeError("OAuth login cancelled or timed out", ctx.Err())
 	case result = <-done:
 	}
 	if result.err != nil {
@@ -294,7 +295,12 @@ func Login(ctx context.Context, store Store, raw string, stderr io.Writer, opene
 	if err := exchange(ctx, c, &e, values); err != nil {
 		return err
 	}
-	return store.Set(key, &e)
+	unlock, err := store.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return store.set(key, &e)
 }
 func exchange(ctx context.Context, c *http.Client, e *Entry, values url.Values) error {
 	values.Set("client_id", e.ClientID)
@@ -316,7 +322,7 @@ func exchange(ctx context.Context, c *http.Client, e *Entry, values url.Values) 
 		return errors.New("OAuth server returned an invalid bearer token")
 	}
 	e.AccessToken, e.TokenType = token.Access, token.Type
-	if token.Refresh != "" {
+	if token.Refresh != "" || values.Get("grant_type") != "refresh_token" {
 		e.RefreshToken = token.Refresh
 	}
 	if token.Scope != "" {
