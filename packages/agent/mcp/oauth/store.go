@@ -37,7 +37,8 @@ func Canonical(raw string) (string, error) {
 		return "", errors.New("invalid OAuth URL")
 	}
 	host := strings.ToLower(u.Hostname())
-	if u.Scheme != "https" && !(u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return "", errors.New("OAuth requires HTTPS (except loopback HTTP)")
 	}
 	u.Host = strings.ToLower(u.Host)
