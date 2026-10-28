@@ -162,7 +162,7 @@ func connectWith(ctx context.Context, name string, cfg ServerConfig, cwd string,
 		// Close first: it reaps the process and waits for stderr to drain, so
 		// the tail is complete (a server that fails fast writes its reason
 		// to stderr just before exiting).
-		_ = t.close()
+		_ = closeStartupTransport(t)
 		tail := ""
 		if st, ok := t.(*stdioTransport); ok {
 			tail = st.stderrTail()
@@ -237,6 +237,13 @@ func (c *Client) Done() <-chan struct{} { return c.t.done() }
 
 // Close ends the session and stops a stdio server process.
 func (c *Client) Close() error { return c.t.close() }
+
+func closeStartupTransport(t transport) error {
+	if st, ok := t.(*stdioTransport); ok {
+		return st.closeStartup()
+	}
+	return t.close()
+}
 
 // SetToolsChanged installs the tools/list_changed callback.
 func (c *Client) SetToolsChanged(fn func()) {

@@ -161,7 +161,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	if err == nil {
 		tools, err = client.ListTools(startCtx)
 		if err != nil {
-			_ = client.Close()
+			_ = closeStartupTransport(client.t)
 		}
 	}
 	if err != nil {
@@ -181,7 +181,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 		m.mu.Unlock()
 		// Close ran during the handshake; do not leak the new process.
 		refresher.stop()
-		_ = client.Close()
+		_ = closeStartupTransport(client.t)
 		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
 	}
 	s.mu.Lock()

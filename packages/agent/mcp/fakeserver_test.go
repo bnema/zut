@@ -472,6 +472,13 @@ func runFakeStdioServer() {
 		}
 	}
 	fakeEvent(events, "stdin-closed")
+	if endpoint := os.Getenv("FAKE_EOF_CLEANUP_URL"); endpoint != "" {
+		resp, err := http.Get(endpoint)
+		if err == nil {
+			resp.Body.Close()
+			fakeEvent(events, "cleanup-complete")
+		}
+	}
 }
 
 // fakeStdioConfig returns a ServerConfig that launches the fake stdio server

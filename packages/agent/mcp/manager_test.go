@@ -811,3 +811,62 @@ func TestReconnectWaitHonorsContext(t *testing.T) {
 		t.Fatalf("connect = %v", err)
 	}
 }
+
+func TestNormalCloseAllowsEOFCleanup(t *testing.T) {
+	for _, managerClose := range []bool{false, true} {
+		t.Run(strconv.FormatBool(managerClose), func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(entered)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			cfg, events := fakeStdioConfig(t, map[string]string{"FAKE_EOF_CLEANUP_URL": srv.URL})
+			m, failures, err := startManager(t, map[string]ServerConfig{"cleanup": cfg}, "")
+			if err != nil || len(failures) != 0 {
+				t.Fatalf("startup: %v %v", failures, err)
+			}
+			c := m.servers["cleanup"].live()
+			done := make(chan error, 1)
+			go func() {
+				if managerClose {
+					done <- m.Close()
+				} else {
+					done <- c.Close()
+				}
+			}()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("cleanup did not begin")
+			}
+			// Hold cleanup beyond the failed-startup EOF grace, using a deadline
+			// rather than sleep-based synchronization. Normal close must still wait.
+			timer := time.NewTimer(200 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case err := <-done:
+				t.Fatalf("close interrupted cleanup: %v", err)
+			}
+			release <- struct{}{}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("close blocked")
+			}
+			data, err := os.ReadFile(events)
+			if err != nil || !strings.Contains(string(data), "cleanup-complete") {
+				t.Fatalf("cleanup incomplete: %s (%v)", data, err)
+			}
+		})
+	}
+}

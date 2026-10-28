@@ -601,13 +601,23 @@ func (t *stdioTransport) waitExit(d time.Duration) bool {
 // process group. Group cleanup is one-shot and also runs when the direct
 // child exits on its own, so repeated or late calls never signal a stale id.
 func (t *stdioTransport) close() error {
+	return t.closeWithGrace(500*time.Millisecond, 1500*time.Millisecond, time.Second, 500*time.Millisecond)
+}
+
+// closeStartup bounds failed-handshake cleanup without shortening the grace
+// available to a successfully started server during normal shutdown.
+func (t *stdioTransport) closeStartup() error {
+	return t.closeWithGrace(100*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond, 100*time.Millisecond)
+}
+
+func (t *stdioTransport) closeWithGrace(eofGrace, termGrace, killGrace, drainGrace time.Duration) error {
 	t.fail(errors.New("connection closed"))
 	_ = t.stdin.Close() // also unblocks a writer stuck on a full pipe
-	if !t.waitExit(100 * time.Millisecond) {
+	if !t.waitExit(eofGrace) {
 		t.guard.terminate(false)
-		if !t.waitExit(300 * time.Millisecond) {
+		if !t.waitExit(termGrace) {
 			t.guard.terminate(true)
-			t.waitExit(500 * time.Millisecond)
+			t.waitExit(killGrace)
 		}
 	}
 	t.guard.cleanup()
@@ -618,7 +628,7 @@ func (t *stdioTransport) close() error {
 	case <-t.exited:
 		select {
 		case <-t.stderrDone:
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(drainGrace):
 		}
 	default:
 	}
