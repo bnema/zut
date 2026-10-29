@@ -187,6 +187,7 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	ag := c.turn.agent
 	if !continuing {
 		ag.ResetRepetitionGuard()
+		c.applyScheduledGuard(ag, in.Origin)
 		if transform := c.deps.FirstPromptTransform; transform != nil && !in.HostEvent && in.Origin == InputOriginUser {
 			c.deps.FirstPromptTransform = nil
 			in.Text = transform(in.Text)
@@ -238,6 +239,7 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 }
 func (c *Controller) finishTurn(ctx context.Context, err error) {
 	origin := c.turn.live.Origin
+	c.restoreScheduledGuard()
 	failed := c.turn.input
 	c.turn.input = nil
 	// The final assistant message lives in Messages; idle has no live turn.
