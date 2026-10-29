@@ -217,7 +217,7 @@ func TestConnExactFrameBoundary(t *testing.T) {
 			c := daemonproto.NewConn(a, daemonproto.Options{MaxFrame: limit, OnNotification: func(daemonproto.Notification) { received <- struct{}{} }})
 			done := make(chan error, 1)
 			go func() { done <- c.Serve(context.Background()) }()
-			go func() { _, _ = b.Write([]byte(frame + "\n")); b.Close() }()
+			go func(w net.Conn) { _, _ = w.Write([]byte(frame + "\n")); w.Close() }(b)
 			select {
 			case err := <-done:
 				if size == limit {
@@ -238,11 +238,11 @@ func TestConnExactFrameBoundary(t *testing.T) {
 			c.Close()
 			b.Close()
 			// Verify the same boundary on the outbound path.
-			a, b = net.Pipe()
-			c = daemonproto.NewConn(a, daemonproto.Options{MaxFrame: limit})
+			oa, ob := net.Pipe()
+			oc := daemonproto.NewConn(oa, daemonproto.Options{MaxFrame: limit})
 			read := make(chan string, 1)
-			go func() { line, _ := bufio.NewReader(b).ReadString('\n'); read <- line }()
-			err := c.Notify(json.RawMessage(frame))
+			go func(r net.Conn) { line, _ := bufio.NewReader(r).ReadString('\n'); read <- line }(ob)
+			err := oc.Notify(json.RawMessage(frame))
 			if size == limit {
 				if err != nil {
 					t.Fatal(err)
@@ -258,8 +258,8 @@ func TestConnExactFrameBoundary(t *testing.T) {
 			} else if !errors.Is(err, daemonproto.ErrFrameTooLarge) {
 				t.Fatal(err)
 			}
-			c.Close()
-			b.Close()
+			oc.Close()
+			ob.Close()
 			if size > limit {
 				select {
 				case <-read:
