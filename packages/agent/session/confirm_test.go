@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"github.com/bnema/zut/packages/agent/tools"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -71,4 +73,111 @@ func TestConfirmAwaitPendingDetached(t *testing.T) {
 	c := NewController(ctx, Deps{})
 	_, err := c.awaitPending(ctx, PendingRequest{Kind: "rescue"})
 	require.ErrorIs(t, err, ErrNotAttached)
+}
+
+func TestConfirmQuestionsRescueConcurrent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := NewController(ctx, Deps{})
+	require.NoError(t, c.call(ctx, func() { c.attach = AttachStateAttached }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	const count = 20
+	results := make(chan error, count)
+	for i := 0; i < count; i++ {
+		go func() {
+			_, err := c.awaitPending(ctx, PendingRequest{Kind: "rescue", Rescue: &RescueOptions{Candidates: []string{"p/m"}}})
+			results <- err
+		}()
+	}
+	for n := 0; n < count; {
+		ev := <-events
+		if ev.Kind != EvPending {
+			continue
+		}
+		p := ev.Data.(PendingEvent).Pending
+		require.NoError(t, c.AnswerQuestion(ctx, p.ID, nil))
+		n++
+	}
+	for i := 0; i < count; i++ {
+		require.NoError(t, <-results)
+	}
+	qctx, qcancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { _, err := c.questionAsker().AskQuestions(qctx, nil); done <- err }()
+	for {
+		if (<-events).Kind == EvPending {
+			break
+		}
+	}
+	qcancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.NoError(t, c.call(ctx, func() { c.attach = AttachStateDetached }))
+	_, err = c.questionAsker().AskQuestions(ctx, nil)
+	require.EqualError(t, err, detachedQuestionReason)
+}
+func TestConfirmRestoredOwnershipAndSendBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store, err := NewFileDeferredStore(t.TempDir(), "restore")
+	require.NoError(t, err)
+	require.NoError(t, store.Append(DeferredAction{ID: "old", Tool: "bash", Summary: "hi", Questions: []tools.Question{{Question: "original"}}}))
+	c := NewController(ctx, Deps{DeferredStore: store})
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Deferred, 1)
+	snap.Deferred[0].Questions[0].Question = "changed"
+	snap, err = c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "original", snap.Deferred[0].Questions[0].Question)
+	c.confirmer().ConfirmToolCall(core.ToolCallConfirmation{Name: "bash"})
+	require.NotEqual(t, "old", store.List()[1].ID)
+	turn := newMockturnSeam(t)
+	turn.EXPECT().turnInfo().Return(turnInfoProjection{})
+	turn.EXPECT().isBusy().Return(false)
+	turn.EXPECT().turnOrigin().Return(InputOrigin("")).Maybe()
+	turn.EXPECT().startTurn(Input{Origin: InputOriginUser, Text: "The user reviewed a previously denied action and approves it: bash — hi. Retry it if still relevant."}).Return(nil).Once()
+	require.NoError(t, c.call(ctx, func() { c.turnSeam = turn }))
+	require.NoError(t, c.ResolveDeferred(ctx, "old", "send_to_agent"))
+}
+
+// ConfirmTestSetup exposes the private cluster only to external generated-mock tests.
+func ConfirmTestSetup(ctx context.Context, deps Deps, attached bool) (*Controller, core.Confirmer) {
+	c := NewController(ctx, deps)
+	if attached {
+		_ = c.call(ctx, func() { c.attach = AttachStateAttached })
+	}
+	return c, c.confirmer().(core.Confirmer)
+}
+
+func TestConfirmQuestionAnswerAndDetach(t *testing.T) {
+	for _, detach := range []bool{false, true} {
+		t.Run(strconv.FormatBool(detach), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			c := NewController(ctx, Deps{})
+			require.NoError(t, c.call(ctx, func() { c.attach = AttachStateAttached }))
+			events, err := c.Subscribe(ctx, 0)
+			require.NoError(t, err)
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.questionAsker().AskQuestions(ctx, []tools.Question{{Question: "choose"}})
+				done <- err
+			}()
+			p := (<-events).Data.(PendingEvent).Pending
+			snap, err := c.Snapshot(ctx)
+			require.NoError(t, err)
+			snap.Pending[0].Questions[0].Question = "mutated"
+			snap, err = c.Snapshot(ctx)
+			require.NoError(t, err)
+			require.Equal(t, "choose", snap.Pending[0].Questions[0].Question)
+			if detach {
+				require.NoError(t, c.call(ctx, func() { c.attach = AttachStateDetached; c.denyAllPending("detached") }))
+				require.EqualError(t, <-done, detachedQuestionReason)
+			} else {
+				require.NoError(t, c.AnswerQuestion(ctx, p.ID, nil))
+				require.NoError(t, <-done)
+			}
+		})
+	}
 }

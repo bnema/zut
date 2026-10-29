@@ -69,7 +69,7 @@ func (s *FileDeferredStore) Append(d DeferredAction) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	s.actions = append(s.actions, d)
+	s.actions = append(s.actions, confirmCopy(d))
 	return nil
 }
 

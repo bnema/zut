@@ -110,6 +110,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	c.settingsSeam = c
 	c.interSeam = c
 	c.residentSeam.residentsInit()
+	c.initConfirm()
 	c.updateInfo()
 	go func() {
 		defer close(c.done)

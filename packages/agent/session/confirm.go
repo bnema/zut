@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -30,15 +32,35 @@ type confirmState struct {
 	deferred []DeferredAction
 }
 
+// initConfirm hydrates review state before the first actor projection.
+func (c *Controller) initConfirm() {
+	if c.deps.DeferredStore != nil {
+		c.confirm.deferred = confirmCopy(c.deps.DeferredStore.List())
+	}
+}
+
+// confirmCopy keeps request, event and snapshot payloads independently owned.
+func confirmCopy[T any](v T) T {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	var out T
+	if err = json.Unmarshal(b, &out); err != nil {
+		panic(err)
+	}
+	return out
+}
 func (s *confirmState) snapshotInto(out *Snapshot) {
 	for _, p := range s.pending {
-		out.Pending = append(out.Pending, p.request)
+		out.Pending = append(out.Pending, confirmCopy(p.request))
 	}
-	out.Deferred = append([]DeferredAction(nil), s.deferred...)
+	out.Deferred = confirmCopy(s.deferred)
 }
 
 // registerPending runs on the actor; callers wait outside it.
 func (c *Controller) registerPending(req PendingRequest) *pendingEntry {
+	req = confirmCopy(req)
 	c.confirm.next++
 	if req.ID == "" {
 		req.ID = "pending-" + strconv.FormatUint(c.confirm.next, 10)
@@ -49,7 +71,7 @@ func (c *Controller) registerPending(req PendingRequest) *pendingEntry {
 		c.confirm.pending = make(map[string]*pendingEntry)
 	}
 	c.confirm.pending[req.ID] = p
-	c.publish(EvPending, PendingEvent{Pending: req})
+	c.publish(EvPending, PendingEvent{Pending: confirmCopy(req)})
 	return p
 }
 func (c *Controller) finishPending(id string, result pendingResult) {
@@ -101,7 +123,7 @@ func (c *Controller) AnswerQuestion(ctx context.Context, id string, answers []to
 			result = ErrUnknownRequest
 			return
 		}
-		c.finishPending(id, pendingResult{answers: answers})
+		c.finishPending(id, pendingResult{answers: confirmCopy(answers)})
 	})
 	if err != nil {
 		return err
@@ -205,18 +227,22 @@ func (c *Controller) denyAllPending(reason string) {
 }
 func (c *Controller) recordDeferred(req PendingRequest) {
 	c.confirm.next++
-	d := DeferredAction{ID: "deferred-" + strconv.FormatUint(c.confirm.next, 10), Kind: req.Kind, Questions: req.Questions, At: c.deps.Clock()}
+	// Random IDs remain unique across daemon restarts and independent stores.
+	d := DeferredAction{ID: "deferred-" + rand.Text(), Kind: req.Kind, Questions: confirmCopy(req.Questions), At: c.deps.Clock()}
 	if req.Confirm != nil {
 		d.Tool = req.Confirm.Name
 		d.Summary = req.Confirm.Summary
 	}
 	if c.deps.DeferredStore != nil {
-		if err := c.deps.DeferredStore.Append(d); err != nil && c.deps.Logger != nil {
-			c.deps.Logger.Error("persist deferred action", "error", err)
+		if err := c.deps.DeferredStore.Append(d); err != nil {
+			c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "Could not persist deferred action; retained in memory for review."}})
+			if c.deps.Logger != nil {
+				c.deps.Logger.Error("persist deferred action", "error", err)
+			}
 		}
 	}
 	c.confirm.deferred = append(c.confirm.deferred, d)
-	c.publish(EvDeferred, DeferredEvent{Deferred: d})
+	c.publish(EvDeferred, DeferredEvent{Deferred: confirmCopy(d)})
 }
 
 // ResolveDeferred dismisses an action or queues explicit user approval for retry.
@@ -228,9 +254,6 @@ func (c *Controller) ResolveDeferred(ctx context.Context, id, action string) err
 			return
 		}
 		list := c.confirm.deferred
-		if c.deps.DeferredStore != nil {
-			list = c.deps.DeferredStore.List()
-		}
 		for _, d := range list {
 			if d.ID != id {
 				continue
@@ -244,9 +267,11 @@ func (c *Controller) ResolveDeferred(ctx context.Context, id, action string) err
 				}
 			}
 			if c.deps.DeferredStore != nil {
-				if result = c.deps.DeferredStore.Remove(id); result != nil {
+				if result = c.deps.DeferredStore.Remove(id); result != nil && !errors.Is(result, ErrUnknownRequest) {
+					c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "Could not remove deferred action from storage."}})
 					return
 				}
+				result = nil
 			}
 			for i, v := range c.confirm.deferred {
 				if v.ID == id {
