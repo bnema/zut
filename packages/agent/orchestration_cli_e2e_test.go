@@ -58,7 +58,7 @@ func TestOrchestratedCLITwoDelegationWavesAcrossHeadlessModes(t *testing.T) {
 			}
 			args = append(args, "delegate two waves")
 			cmd := exec.Command(binary, args...)
-			cmd.Env = orchestrationCLIEnv(binary, home)
+			cmd.Env = orchestrationCLIEnv(t, binary, home)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
@@ -103,7 +103,7 @@ func TestOrchestratedCLICancellation(t *testing.T) {
 	defer close(releaseWorker)
 
 	cmd := exec.Command(binary, "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "cancel")
-	cmd.Env = orchestrationCLIEnv(binary, t.TempDir())
+	cmd.Env = orchestrationCLIEnv(t, binary, t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -161,7 +161,7 @@ func TestOrchestratedCLIParentFailure(t *testing.T) {
 		server := newFailingProvider()
 		defer server.Close()
 		cmd := exec.Command(binary, "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "fail")
-		cmd.Env = orchestrationCLIEnv(binary, t.TempDir())
+		cmd.Env = orchestrationCLIEnv(t, binary, t.TempDir())
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -403,10 +403,20 @@ func assertJSONOrchestrationWaves(t *testing.T, events []map[string]any) {
 	}
 }
 
-func orchestrationCLIEnv(binary, home string) []string {
+// orchestrationCLIEnv isolates a zut subprocess: its own ZUT_HOME and a short
+// private daemon socket, so a test never reaches the user's runtime dir. The
+// daemon the run may spawn is stopped at cleanup.
+func orchestrationCLIEnv(t *testing.T, binary, home string) []string {
+	t.Helper()
 	// Restrict PATH so spawned workers resolve the same freshly built test
 	// binary instead of any installed zut executable on the host.
-	return append(os.Environ(), "ZUT_HOME="+home, "PATH="+filepath.Dir(binary))
+	env := append(os.Environ(), "ZUT_HOME="+home, "ZUT_DAEMON_SOCKET="+daemonTestSocket(t), "PATH="+filepath.Dir(binary))
+	t.Cleanup(func() {
+		stop := exec.Command(binary, "daemon", "stop")
+		stop.Env = env
+		_ = stop.Run()
+	})
+	return env
 }
 
 func buildOrchestrationCLI(t *testing.T) string {
