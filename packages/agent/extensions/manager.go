@@ -707,12 +707,12 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	execPath, err = execpath.Resolve(execPath, childCWD, m.spawnEnv)
 	if err != nil {
 		_ = logFile.Close()
-		return err
+		return fmt.Errorf("extension %s: %w", ext.Manifest.Name, err)
 	}
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
 	if m.spawnEnv != nil {
-		// Session lookup already produced a concrete file; discard any
-		// re-resolution os/exec did with process PATHEXT.
+		// Session lookup already produced a concrete absolute file, so
+		// os/exec re-resolution is a no-op; pin it explicitly anyway.
 		cmd.Path, cmd.Err = execPath, nil
 	}
 	cmd.Dir = childCWD

@@ -82,11 +82,9 @@ func resolve(windows bool, name, cwd string, env []string, isExecutable func(str
 }
 
 // pathExts normalizes a PATHEXT value like os/exec: lowercased, empty entries
-// dropped, and a leading dot added where missing.
+// dropped, a leading dot added where missing, and Go's default list used
+// when nothing remains.
 func pathExts(value string) []string {
-	if value == "" {
-		return []string{".com", ".exe", ".bat", ".cmd"}
-	}
 	var exts []string
 	for _, e := range strings.Split(strings.ToLower(value), ";") {
 		if e == "" {
@@ -96,6 +94,9 @@ func pathExts(value string) []string {
 			e = "." + e
 		}
 		exts = append(exts, e)
+	}
+	if len(exts) == 0 {
+		return []string{".com", ".exe", ".bat", ".cmd"}
 	}
 	return exts
 }

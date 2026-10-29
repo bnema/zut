@@ -107,4 +107,9 @@ func TestWindowsRules(t *testing.T) {
 	if got := pathExts("EXE;;cmd"); strings.Join(got, ",") != ".exe,.cmd" {
 		t.Errorf("pathExts = %v", got)
 	}
+	for _, v := range []string{"", ";;"} {
+		if got := pathExts(v); strings.Join(got, ",") != ".com,.exe,.bat,.cmd" {
+			t.Errorf("pathExts(%q) = %v", v, got)
+		}
+	}
 }

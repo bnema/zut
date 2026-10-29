@@ -169,8 +169,8 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 	if cfg.BaseEnv == nil {
 		cmd = exec.Command(command, cfg.Args...)
 	} else {
-		// Session lookup already produced a concrete file; build the Cmd
-		// directly so os/exec cannot re-resolve it with process PATHEXT.
+		// Session lookup already produced a concrete absolute file, so any
+		// os/exec re-resolution is a no-op; build the Cmd directly anyway.
 		cmd = &exec.Cmd{Path: command, Args: append([]string{cfg.Command}, cfg.Args...)}
 	}
 	cmd.Env = buildStdioEnv(cfg)

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 type rpcError struct {
@@ -642,23 +644,11 @@ func ResolveCommand(cwd, command string, base ...[]string) (string, error) {
 		}
 	}
 	if len(base) > 0 && base[0] != nil {
-		for _, item := range base[0] {
-			k, v, ok := strings.Cut(item, "=")
-			if !ok || !strings.EqualFold(k, "PATH") {
-				continue
-			}
-			for _, dir := range filepath.SplitList(v) {
-				if !filepath.IsAbs(dir) {
-					dir = filepath.Join(cwd, dir)
-				}
-				for _, path := range executableVariants(filepath.Join(dir, command)) {
-					if isRunnable(path) {
-						return path, nil
-					}
-				}
-			}
+		path, err := execpath.Resolve(command, cwd, base[0])
+		if err != nil {
+			return "", fmt.Errorf("command %q not found in session PATH: %w", command, err)
 		}
-		return "", fmt.Errorf("command %q not found in session PATH", command)
+		return path, nil
 	}
 	if path, err := exec.LookPath(command); err == nil {
 		return path, nil
