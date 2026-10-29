@@ -60,14 +60,24 @@ func startKeyedPortDialogs(t *testing.T) (*sessionmocks.MockPort, chan session.E
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	require.Eventually(t, cond, 5*time.Second, 10*time.Millisecond, "timed out waiting for %s", what)
+}
+
+// loopBarrier pushes a sentinel through the Run loop and waits for it, so
+// every loop call queued before it has run.
+func loopBarrier(t *testing.T, i *Interactive) {
+	t.Helper()
+	ran := make(chan struct{})
+	select {
+	case i.loopCalls <- func() { close(ran) }:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop barrier not accepted")
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop barrier not run")
+	}
 }
 
 func TestInteractivePortConfirmDialogAnswersThroughPort(t *testing.T) {
