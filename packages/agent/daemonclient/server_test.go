@@ -25,14 +25,17 @@ type miniDaemon struct {
 	stopped  chan struct{}
 	stopOnce sync.Once
 
-	mu       sync.Mutex
-	seq      uint64
-	floor    uint64 // oldest retained seq is floor+1
-	events   []session.Event
-	attached map[*daemonproto.Conn]bool
-	conns    map[*daemonproto.Conn]bool
-	calls    []daemonproto.PortRequest
-	wg       sync.WaitGroup
+	mu        sync.Mutex
+	seq       uint64
+	floor     uint64 // oldest retained seq is floor+1
+	events    []session.Event
+	attached  map[*daemonproto.Conn]bool
+	conns     map[*daemonproto.Conn]bool
+	calls     []daemonproto.PortRequest
+	types     []string
+	attachErr error
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 func startMiniDaemon(path, version string, protocol int) (*miniDaemon, error) {
@@ -76,6 +79,9 @@ func (d *miniDaemon) accept() {
 }
 
 func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any, error) {
+	d.mu.Lock()
+	d.types = append(d.types, r.Type)
+	d.mu.Unlock()
 	switch r.Type {
 	case "hello":
 		return daemonproto.HelloData{ProtocolVersion: d.protocol, DaemonVersion: d.version}, nil
@@ -86,7 +92,10 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		if a.AfterSeq < d.floor {
+		if d.attachErr != nil {
+			return nil, d.attachErr
+		}
+		if a.AfterSeq < d.floor || a.AfterSeq > d.seq {
 			return nil, session.ErrSeqTooOld
 		}
 		for _, ev := range d.events {
@@ -189,16 +198,42 @@ func (d *miniDaemon) portCalls() []daemonproto.PortRequest {
 }
 
 func (d *miniDaemon) close() {
-	_ = d.ln.Close()
-	d.dropConns()
-	d.wg.Wait()
+	d.closeOnce.Do(func() {
+		_ = d.ln.Close()
+		d.dropConns()
+		d.wg.Wait()
+	})
+}
+
+// count returns how many requests of type typ were received.
+func (d *miniDaemon) count(typ string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, t := range d.types {
+		if t == typ {
+			n++
+		}
+	}
+	return n
+}
+
+func (d *miniDaemon) setAttachErr(err error) {
+	d.mu.Lock()
+	d.attachErr = err
+	d.mu.Unlock()
 }
 
 // runChildDaemon is the TestMain entry when re-executed as a spawned daemon.
 func runChildDaemon(mode string) int {
-	if mode == "fail" {
+	switch mode {
+	case "fail":
 		_, _ = os.Stderr.WriteString("synthetic daemon startup failure\n")
 		return 3
+	case "loser":
+		// Lost the start race: another daemon will own the socket.
+		_, _ = os.Stderr.WriteString("loser exiting\n")
+		return 0
 	}
 	d, err := startMiniDaemon(os.Getenv("ZUT_DAEMON_SOCKET"), "child-version", daemonproto.ProtocolVersion)
 	if err != nil {
@@ -226,10 +261,15 @@ func shortSocket(t *testing.T) string {
 func newDaemon(t *testing.T, version string, protocol int) (*miniDaemon, string) {
 	t.Helper()
 	path := shortSocket(t)
+	return newDaemonAt(t, path, version, protocol), path
+}
+
+func newDaemonAt(t *testing.T, path, version string, protocol int) *miniDaemon {
+	t.Helper()
 	d, err := startMiniDaemon(path, version, protocol)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(d.close)
-	return d, path
+	return d
 }

@@ -58,6 +58,16 @@ func TestRingSeqTooOld(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestSubscribeAheadOfSeqIsTooOld(t *testing.T) {
+	c, ctx := newTestController(t)
+	emit(t, c, ctx, 2)
+	if _, err := c.Subscribe(ctx, 500); !errors.Is(err, ErrSeqTooOld) {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := c.Subscribe(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestRingByteLimit(t *testing.T) {
 	r := new(eventRing)
 	r.append(Event{Seq: 1, Kind: EvTitle, Data: TitleEvent{Title: strings.Repeat("x", eventRingBytes/2)}})

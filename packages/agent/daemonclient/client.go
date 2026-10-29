@@ -76,6 +76,9 @@ func Dial(ctx context.Context, socketPath string, opts Options) (*Client, error)
 // connect dials, starts the read loop and runs hello. Caller holds c.dialMu
 // (not c.mu: the read loop needs c.mu to route notifications).
 func (c *Client) connect(ctx context.Context) (*daemonproto.Conn, error) {
+	if err := checkSocketPath(c.path); err != nil {
+		return nil, err
+	}
 	var d net.Dialer
 	nc, err := d.DialContext(ctx, "unix", c.path)
 	if err != nil {

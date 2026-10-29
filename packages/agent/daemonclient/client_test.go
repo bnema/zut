@@ -159,6 +159,86 @@ func TestSubscribeSeqTooOldAfterReconnectEmitsMessagesReplaced(t *testing.T) {
 	require.Equal(t, session.TitleEvent{Title: "4"}, ev.Data)
 }
 
+func TestSubscribeDaemonRestartSeqResetEmitsMessagesReplaced(t *testing.T) {
+	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	for _, title := range []string{"1", "2", "3"} {
+		d.publish(title)
+	}
+	c := dial(t, path, Options{ClientVersion: "v"})
+	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
+	require.NoError(t, err)
+	recvSeqs(t, ch, 3)
+
+	d.close() // daemon restart: sequence numbering starts over
+	d2 := newDaemonAt(t, path, "v", daemonproto.ProtocolVersion)
+	d2.publish("r1")
+	ev := recvSeqs(t, ch, 1)[0]
+	require.Equal(t, session.EvMessagesReplaced, ev.Kind)
+	require.Equal(t, uint64(1), ev.Seq)
+	d2.publish("r2")
+	ev = recvSeqs(t, ch, 1)[0]
+	require.Equal(t, uint64(2), ev.Seq)
+	require.Equal(t, session.TitleEvent{Title: "r2"}, ev.Data)
+}
+
+func TestSubscribeRefusedReattachIsTerminal(t *testing.T) {
+	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "v"})
+	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
+	require.NoError(t, err)
+	d.setAttachErr(session.ErrBusy)
+	d.dropConns()
+	var last session.Event
+	for ev := range ch {
+		last = ev
+	}
+	require.Equal(t, session.EvClosed, last.Kind)
+	require.Contains(t, last.Data.(session.ClosedEvent).Reason, session.ErrBusy.Error())
+	require.Equal(t, 2, d.count("attach"), "refusal must not be retried")
+}
+
+func TestSubscribeCancelDetachesControllingPort(t *testing.T) {
+	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "v"})
+	ctx, cancel := context.WithCancel(testCtx(t))
+	ch, err := c.Port("s1", true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	cancel()
+	for range ch {
+	}
+	require.Eventually(t, func() bool { return d.count("detach") == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	ctx2, cancel2 := context.WithCancel(testCtx(t))
+	ch, err = c.Port("s1", false).Subscribe(ctx2, 0)
+	require.NoError(t, err)
+	cancel2()
+	for range ch {
+	}
+	require.NoError(t, c.Disconnect())
+	require.Equal(t, 1, d.count("detach"))
+}
+
+func TestSubscribeAfterDisconnectFails(t *testing.T) {
+	_, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "v"})
+	require.NoError(t, c.Disconnect())
+	_, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
+	require.ErrorIs(t, err, daemonproto.ErrClosed)
+}
+
+func TestSocketPathLengthLimit(t *testing.T) {
+	long := "/" + strings.Repeat("a", 110)
+	require.ErrorContains(t, checkSocketPathFor("darwin", long[:104]), "ZUT_DAEMON_SOCKET")
+	require.NoError(t, checkSocketPathFor("darwin", long[:103]))
+	require.ErrorContains(t, checkSocketPathFor("linux", long[:108]), "ZUT_DAEMON_SOCKET")
+	require.NoError(t, checkSocketPathFor("linux", long[:107]))
+	require.NoError(t, checkSocketPathFor("windows", long))
+	_, err := Dial(testCtx(t), long, Options{})
+	if os.PathSeparator == '/' {
+		require.ErrorContains(t, err, "ZUT_DAEMON_SOCKET")
+	}
+}
+
 func TestSubscribeInitialSeqTooOldIsReturned(t *testing.T) {
 	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
 	d.publish("1")
@@ -226,13 +306,38 @@ func TestEnsureDaemonSpawnFailureReportsLogTail(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	env := append(os.Environ(), "ZUT_TEST_DAEMON=fail")
-	start := time.Now()
 	_, err = EnsureDaemon(testCtx(t), EnsureOptions{SocketPath: path, Home: home, Env: env, Executable: exe})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "synthetic daemon startup failure")
-	require.Contains(t, err.Error(), "exited during startup")
-	require.Less(t, time.Since(start), spawnDeadline)
+	require.Contains(t, err.Error(), "did not start within")
+	require.Contains(t, err.Error(), "exit status 3")
 	require.True(t, strings.Contains(err.Error(), LogPath(home)))
+}
+
+func TestEnsureDaemonLoserExitsWinnerListensLate(t *testing.T) {
+	path := shortSocket(t)
+	home := t.TempDir()
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	env := append(os.Environ(), "ZUT_TEST_DAEMON=loser")
+	type result struct {
+		c   *Client
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		c, err := EnsureDaemon(testCtx(t), EnsureOptions{Options: Options{ClientVersion: "v"}, SocketPath: path, Home: home, Env: env, Executable: exe})
+		res <- result{c, err}
+	}()
+	// Start the winner only once the spawned loser has run and exited.
+	require.Eventually(t, func() bool {
+		b, _ := os.ReadFile(LogPath(home))
+		return strings.Contains(string(b), "loser exiting")
+	}, 4*time.Second, 10*time.Millisecond)
+	newDaemonAt(t, path, "v", daemonproto.ProtocolVersion)
+	r := <-res
+	require.NoError(t, r.err)
+	require.NoError(t, r.c.Disconnect())
 }
 
 func TestSocketPathResolution(t *testing.T) {

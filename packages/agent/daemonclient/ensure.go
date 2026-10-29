@@ -3,14 +3,12 @@ package daemonclient
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/detach"
@@ -48,7 +46,9 @@ func LogPath(home string) string { return filepath.Join(home, "logs", "daemon.lo
 // EnsureDaemon dials the daemon, spawning `<exe> daemon run` detached when no
 // daemon listens (socket missing or connection refused). The child's
 // stdout/stderr go to $ZUT_HOME/logs/daemon.log. Dialing is retried with
-// 50→400 ms backoff for up to 5 s; failure reports the log tail.
+// 50→400 ms backoff for up to 5 s, even if the child exits early (another
+// daemon may win the start race). On success the child is released; on
+// timeout it is killed and its exit status and the log tail are reported.
 func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 	getenv := opts.Getenv
 	if getenv == nil {
@@ -71,37 +71,40 @@ func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	exited := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(exited) }()
 	ctx, cancel := context.WithTimeout(ctx, spawnDeadline)
 	defer cancel()
 	delay := pollMin
 	for {
+		// The child may exit early because another daemon won the start
+		// race; keep polling until the deadline either way.
 		c, err = Dial(ctx, path, opts.Options)
-		if err == nil || !absent(err) && ctx.Err() == nil {
-			return c, err
+		if err == nil {
+			_ = cmd.Process.Release()
+			return c, nil
+		}
+		if !absent(err) && ctx.Err() == nil {
+			_ = cmd.Process.Release()
+			return nil, err
 		}
 		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return nil, spawnError(fmt.Errorf("zut daemon did not start within %s: %w", spawnDeadline, err), logPath)
-		case <-exited:
-			t.Stop()
-			if c, err = Dial(context.WithoutCancel(ctx), path, opts.Options); err == nil {
-				// The child exited because another daemon won the start race.
-				return c, nil
-			}
-			return nil, spawnError(fmt.Errorf("zut daemon exited during startup: %s", cmd.ProcessState), logPath)
+			return nil, spawnError(fmt.Errorf("zut daemon did not start within %s (%s): %w", spawnDeadline, reap(cmd), err), logPath)
 		case <-t.C:
 		}
 		delay = min(delay*2, pollMax)
 	}
 }
 
-// absent reports dial errors meaning nothing listens on the socket.
-func absent(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
+// reap stops a child that never became reachable and reports its status.
+// Wait runs only here, inside the startup window, after Kill guarantees exit.
+func reap(cmd *exec.Cmd) string {
+	_ = cmd.Process.Kill()
+	if err := cmd.Wait(); err != nil {
+		return "child " + err.Error()
+	}
+	return "child " + cmd.ProcessState.String()
 }
 
 func spawn(opts EnsureOptions, logPath string) (*exec.Cmd, error) {

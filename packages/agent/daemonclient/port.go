@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -27,6 +28,9 @@ const (
 
 // infoTimeout bounds the Info fallback request when nothing is cached.
 const infoTimeout = 2 * time.Second
+
+// detachTimeout bounds the best-effort detach sent when a stream's ctx ends.
+const detachTimeout = 2 * time.Second
 
 var _ session.Port = (*RemotePort)(nil)
 
@@ -89,12 +93,15 @@ func (p *RemotePort) Snapshot(ctx context.Context) (session.Snapshot, error) {
 	return s, err
 }
 
-// Subscribe attaches and streams events after afterSeq. An initial
-// ErrSeqTooOld is returned. After transport loss it redials and re-attaches
-// after the last delivered Seq, so no event is skipped or repeated; if the
-// daemon no longer retains it, a synthetic EvMessagesReplaced (Seq = the
-// fresh snapshot Seq the stream resumes after) tells the consumer to refetch.
-// detached_by_other, closed and slow-consumer endings close the channel.
+// Subscribe attaches and streams events after afterSeq. ctx scopes the
+// stream: when it ends the channel closes and, for a controlling port, a
+// best-effort detach is sent. An initial ErrSeqTooOld is returned. After
+// transport loss it redials and re-attaches after the last delivered Seq, so
+// no event is skipped or repeated; if the daemon no longer retains it (or its
+// sequence restarted), a synthetic EvMessagesReplaced (Seq = the fresh
+// snapshot Seq the stream resumes after) tells the consumer to refetch.
+// detached_by_other, closed, slow-consumer and refused re-attach endings
+// close the channel after a final event.
 func (p *RemotePort) Subscribe(ctx context.Context, afterSeq uint64) (<-chan session.Event, error) {
 	s := &subscription{port: p, last: afterSeq, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{})}
 	c := p.c
@@ -103,17 +110,21 @@ func (p *RemotePort) Subscribe(ctx context.Context, afterSeq uint64) (<-chan ses
 		return nil, err
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, daemonproto.ErrClosed
+	}
 	if old := c.subs[p.id]; old != nil {
 		defer old.finish(nil)
 	}
 	c.subs[p.id] = s
+	c.routines.Add(1)
 	c.mu.Unlock()
 	if err := s.attach(ctx, conn); err != nil {
-		c.dropSub(s)
 		s.finish(nil)
+		c.routines.Done()
 		return nil, err
 	}
-	c.routines.Add(1)
 	go func() {
 		defer c.routines.Done()
 		s.supervise(ctx, conn)
@@ -230,15 +241,21 @@ func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error
 }
 
 // reattach resumes after the last delivered Seq, or after a fresh snapshot
-// with a synthetic EvMessagesReplaced when that Seq is no longer retained.
+// with a synthetic EvMessagesReplaced when that Seq is no longer retained or
+// the daemon's sequence restarted below it.
 func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) error {
-	err := s.attach(ctx, conn)
-	if !errors.Is(err, session.ErrSeqTooOld) {
-		return err
-	}
 	var snap session.Snapshot
 	if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 		return err
+	}
+	if snap.Seq >= s.lastSeq() {
+		err := s.attach(ctx, conn)
+		if !errors.Is(err, session.ErrSeqTooOld) {
+			return err
+		}
+		if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	if s.done {
@@ -256,12 +273,20 @@ func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) err
 	return s.attach(ctx, conn)
 }
 
+// transient reports transport-level failures worth redialing for.
+func transient(err error) bool {
+	var ne net.Error
+	return errors.Is(err, daemonproto.ErrClosed) || errors.As(err, &ne) || absent(err)
+}
+
 // supervise ends the stream on ctx and reconnects after transport loss.
+// Any non-transport failure (the daemon answered and refused) is terminal.
 func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 	defer s.finish(nil)
 	for {
 		select {
 		case <-ctx.Done():
+			s.detachOnCancel()
 			return
 		case <-s.stop:
 			return
@@ -277,19 +302,22 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 					break
 				}
 			}
-			var re *daemonproto.RemoteError
-			if errors.As(err, &re) || errors.Is(err, session.ErrClosed) || errors.Is(err, session.ErrUnknownRequest) {
-				// The daemon answered but refused: the session is gone.
-				s.finish(&session.Event{Seq: s.lastSeq(), Session: s.port.id, At: time.Now(), Kind: session.EvClosed, Data: session.ClosedEvent{Reason: err.Error()}})
+			if ctx.Err() != nil {
+				s.detachOnCancel()
 				return
 			}
-			if errors.Is(err, daemonproto.ErrClosed) && s.port.c.isClosed() {
+			if s.port.c.isClosed() {
+				return
+			}
+			if !transient(err) {
+				s.finish(&session.Event{Seq: s.lastSeq(), Session: s.port.id, At: time.Now(), Kind: session.EvClosed, Data: session.ClosedEvent{Reason: err.Error()}})
 				return
 			}
 			t := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				t.Stop()
+				s.detachOnCancel()
 				return
 			case <-s.stop:
 				t.Stop()
@@ -299,6 +327,18 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 			delay = min(delay*2, reconnectMax)
 		}
 	}
+}
+
+// detachOnCancel releases control when a controlling stream's ctx ends.
+// It is best effort and bounded; Disconnect cancels it.
+func (s *subscription) detachOnCancel() {
+	c := s.port.c
+	if !s.port.controlling || c.isClosed() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, detachTimeout)
+	defer cancel()
+	_ = c.Detach(ctx, s.port.id)
 }
 
 func (c *Client) isClosed() bool {

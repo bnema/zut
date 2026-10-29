@@ -1,6 +1,7 @@
 package daemonclient
 
 import (
+	"fmt"
 	"path/filepath"
 	"runtime"
 )
@@ -77,4 +78,22 @@ func windowsJoin(parts ...string) string {
 		out += p
 	}
 	return out
+}
+
+// checkSocketPath rejects paths longer than the platform's sun_path allows
+// (104 bytes on darwin/BSD, 108 elsewhere, both including the NUL).
+func checkSocketPath(path string) error { return checkSocketPathFor(runtime.GOOS, path) }
+
+func checkSocketPathFor(goos, path string) error {
+	limit := 108
+	switch goos {
+	case "windows":
+		return nil
+	case "darwin", "ios", "freebsd", "openbsd", "netbsd", "dragonfly":
+		limit = 104
+	}
+	if len(path) >= limit {
+		return fmt.Errorf("daemon socket path %q is %d bytes, over the %s limit of %d; set ZUT_DAEMON_SOCKET to a shorter path", path, len(path), goos, limit-1)
+	}
+	return nil
 }
