@@ -757,6 +757,11 @@ type Interactive struct {
 	sessionGen uint64
 	// sessionResults delivers async daemon call results to the Run loop.
 	sessionResults chan sessionResult
+	// loopCalls carries editor mutations from goroutines that do not own
+	// i.ed (extension inserts) to the Run loop. Bounded: senders fail fast
+	// when it is full instead of blocking.
+	loopCalls chan func()
+
 	// sessionTimeout bounds async daemon calls (default 10s).
 	sessionTimeout time.Duration
 
@@ -1162,6 +1167,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		port:              cfg.Port,
 		client:            cfg.Client,
 		sessionResults:    make(chan sessionResult, 4),
+		loopCalls:         make(chan func(), loopCallsCap),
 		sessionTimeout:    defaultSessionTimeout,
 		terminalProfile:   profile,
 		activeThemeSource: source,
@@ -1609,6 +1615,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case fn := <-i.loopCalls:
+			fn()
 		case res := <-i.sessionResults:
 			if i.applySessionResult(ctx, res) {
 				return nil
