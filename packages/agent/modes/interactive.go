@@ -749,6 +749,16 @@ type Interactive struct {
 	events       <-chan session.Event
 	subCancel    context.CancelFunc
 	exitNotice   string
+	// lastSeq is the newest applied event Seq; replayed events at or below
+	// it (already covered by a snapshot) are dropped.
+	lastSeq uint64
+	// sessionGen changes whenever the attached session is replaced, so an
+	// async snapshot/attach result started for an older one is discarded.
+	sessionGen uint64
+	// sessionResults delivers async daemon call results to the Run loop.
+	sessionResults chan sessionResult
+	// sessionTimeout bounds async daemon calls (default 10s).
+	sessionTimeout time.Duration
 
 	terminalProfile   tui.TerminalProfile
 	activeThemeSource *tui.ThemeSource
@@ -1144,6 +1154,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		cfg:               cfg,
 		port:              cfg.Port,
 		client:            cfg.Client,
+		sessionResults:    make(chan sessionResult, 4),
+		sessionTimeout:    defaultSessionTimeout,
 		terminalProfile:   profile,
 		activeThemeSource: source,
 		themeWatchEvents:  make(chan themeWatchEvent, 8),
@@ -1585,6 +1597,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case res := <-i.sessionResults:
+			if i.applySessionResult(ctx, res) {
+				return nil
+			}
 		case ev, ok := <-sessionEvents:
 			if !ok {
 				if ctx.Err() != nil {

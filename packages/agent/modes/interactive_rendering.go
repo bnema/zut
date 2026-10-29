@@ -41,7 +41,14 @@ func (i *Interactive) cachedChatLocked(cols int) []string {
 	if i.chatCacheValid && i.chatCacheKey == key {
 		return append([]string(nil), i.chatCache...)
 	}
+	rev := i.renderRevision.Load()
 	chat := i.buildChatLocked(cols)
+	if i.renderRevision.Load() != rev {
+		// State changed while the transcript rendered outside mu; caching
+		// these rows under the new key would pin a stale frame.
+		i.chatCacheValid = false
+		return chat
+	}
 	key = i.chatCacheKeyLocked(cols)
 	i.chatCache = append(i.chatCache[:0], chat...)
 	i.chatCacheKey = key

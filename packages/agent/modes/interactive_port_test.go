@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -37,10 +38,13 @@ type portRun struct {
 	done   chan error
 }
 
-func startPortInteractive(t *testing.T, port session.Port, client SessionClient) *portRun {
+func startPortInteractive(t *testing.T, port session.Port, client SessionClient, configure ...func(*Interactive)) *portRun {
 	t.Helper()
 	term := &alertTestTerminal{}
 	i := NewInteractive(InteractiveConfig{Terminal: term, Port: port, Client: client})
+	for _, fn := range configure {
+		fn(i)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &portRun{term: term, i: i, cancel: cancel, done: make(chan error, 1)}
 	go func() { r.done <- i.Run(ctx) }()
@@ -64,7 +68,10 @@ func (r *portRun) waitOutput(t *testing.T, want string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("terminal never showed %q\noutput: %q", want, stripANSIBytes(r.term.String()))
+	r.i.mu.Lock()
+	state := fmt.Sprintf("msgs=%d lastSeq=%d gen=%d view=%d", len(r.i.portMsgs), r.i.lastSeq, r.i.sessionGen, len(r.i.view.Messages))
+	r.i.mu.Unlock()
+	t.Fatalf("terminal never showed %q (%s)\noutput: %q", want, state, stripANSIBytes(r.term.String()))
 }
 
 func (r *portRun) waitExit(t *testing.T) error {
@@ -215,6 +222,62 @@ func TestInteractivePortSuccessorReattach(t *testing.T) {
 	select {
 	case err := <-r.done:
 		t.Fatalf("Run exited after successor reattach: %v", err)
+	default:
+	}
+}
+
+func TestInteractivePortDropsEventsCoveredBySnapshot(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	events := make(chan session.Event, 8)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1"}, Seq: 1}, nil).Once()
+	expectPortSubscribe(port, events, nil)
+	covered := portUserMessage("coveredmessage")
+	resnapped := make(chan struct{})
+	port.EXPECT().Snapshot(mock.Anything).RunAndReturn(func(context.Context) (session.Snapshot, error) {
+		close(resnapped)
+		return session.Snapshot{Info: session.Info{ID: "s1"}, Seq: 3, Messages: []provider.Message{covered}}, nil
+	}).Once()
+
+	r := startPortInteractive(t, port, nil)
+	events <- session.Event{Seq: 2, Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
+	<-resnapped
+	r.waitOutput(t, "coveredmessage")
+	// Seq 3 is already part of the snapshot; Seq 4 is new.
+	events <- session.Event{Seq: 3, Kind: session.EvAgent, Agent: core.EvUserMessage{Message: covered}}
+	events <- session.Event{Seq: 4, Kind: session.EvAgent, Agent: core.EvUserMessage{Message: portUserMessage("newmessage")}}
+	r.waitOutput(t, "newmessage")
+
+	r.i.mu.Lock()
+	defer r.i.mu.Unlock()
+	require.Len(t, r.i.portMsgs, 2, "replayed Seq 3 must not duplicate the snapshot message")
+	require.Equal(t, uint64(4), r.i.lastSeq)
+}
+
+func TestInteractivePortBlockingSnapshotKeepsLoopResponsive(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	events := make(chan session.Event, 8)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1"}, Seq: 1}, nil).Once()
+	expectPortSubscribe(port, events, nil)
+	release := make(chan struct{})
+	port.EXPECT().Snapshot(mock.Anything).RunAndReturn(func(ctx context.Context) (session.Snapshot, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		<-ctx.Done() // the bounded call times out
+		return session.Snapshot{}, ctx.Err()
+	}).Once()
+
+	r := startPortInteractive(t, port, nil, func(i *Interactive) { i.sessionTimeout = 300 * time.Millisecond })
+	events <- session.Event{Seq: 2, Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
+	// While Snapshot blocks, the loop must still apply events and render.
+	events <- session.Event{Seq: 3, Kind: session.EvNote, Data: session.NoteEvent{Note: session.Note{Level: "info", Text: "loopstillalive"}}}
+	r.waitOutput(t, "loopstillalive")
+	close(release)
+	r.waitOutput(t, "session snapshot: context deadline exceeded")
+	select {
+	case err := <-r.done:
+		t.Fatalf("Run exited on snapshot timeout: %v", err)
 	default:
 	}
 }

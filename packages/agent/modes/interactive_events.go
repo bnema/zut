@@ -526,6 +526,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	if snap.Info.ID != "" {
 		i.sessionID = session.ID(snap.Info.ID)
 	}
+	i.lastSeq = snap.Seq
 	i.portMsgs = append([]provider.Message(nil), snap.Messages...)
 	i.portRev++
 	i.portToolMsg = nil
@@ -708,6 +709,16 @@ func (i *Interactive) applyPortAgentTranscriptLocked(ev core.AgentEvent) {
 // handleSessionEvent applies one daemon event. done reports that Run must
 // return (nil error): the session was taken over or closed without successor.
 func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) (done bool) {
+	// Seq 0 marks client-synthesized terminal events; never drop those.
+	if ev.Seq != 0 {
+		i.mu.Lock()
+		if ev.Seq <= i.lastSeq {
+			i.mu.Unlock()
+			return false
+		}
+		i.lastSeq = ev.Seq
+		i.mu.Unlock()
+	}
 	switch ev.Kind {
 	case session.EvAgent:
 		if ev.Agent == nil {
@@ -719,9 +730,7 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 		i.handleEventForPresentation(ev.Agent)
 		return false
 	case session.EvMessagesReplaced:
-		if err := i.resnapshot(ctx); err != nil {
-			i.ReportError(err)
-		}
+		i.resnapshot(ctx)
 		return false
 	case session.EvAttach:
 		a, _ := ev.Data.(session.AttachEvent)
@@ -841,28 +850,69 @@ func (i *Interactive) applySessionViewEventLocked(ev session.Event) {
 	}
 }
 
-// resnapshot refetches the full state after the daemon replaced messages
-// (compaction, fork, clear). The subscription continues: events after the
-// replace are already queued behind it and the snapshot reflects them at
-// most up to their Seq, so it only re-renders from authoritative state.
-func (i *Interactive) resnapshot(ctx context.Context) error {
-	i.mu.Lock()
-	port := i.port
-	i.mu.Unlock()
-	snap, err := port.Snapshot(ctx)
-	if err != nil {
-		return fmt.Errorf("session snapshot: %w", err)
+// defaultSessionTimeout bounds async daemon calls made from the Run loop.
+const defaultSessionTimeout = 10 * time.Second
+
+type sessionResultKind uint8
+
+const (
+	sessionResultResnapshot sessionResultKind = iota
+	sessionResultSuccessor
+)
+
+// sessionResult is the outcome of an async daemon call, applied by the Run
+// loop only when gen still matches the attached session.
+type sessionResult struct {
+	kind   sessionResultKind
+	gen    uint64
+	id     session.ID
+	port   session.Port
+	snap   session.Snapshot
+	events <-chan session.Event
+	cancel context.CancelFunc
+	err    error
+}
+
+func (i *Interactive) sessionCallTimeout() time.Duration {
+	if i.sessionTimeout > 0 {
+		return i.sessionTimeout
 	}
+	return defaultSessionTimeout
+}
+
+func (i *Interactive) deliverSessionResult(ctx context.Context, res sessionResult) {
+	select {
+	case i.sessionResults <- res:
+	case <-ctx.Done():
+		if res.cancel != nil {
+			res.cancel()
+		}
+	}
+}
+
+// resnapshot refetches the full state after the daemon replaced messages
+// (compaction, fork, clear) without blocking the Run loop. The live
+// subscription continues; events the snapshot already covers are dropped by
+// Seq once it is applied.
+func (i *Interactive) resnapshot(ctx context.Context) {
 	i.mu.Lock()
-	i.hydrateLocked(snap)
+	port, gen := i.port, i.sessionGen
 	i.mu.Unlock()
-	i.scrollToBottom()
-	i.invalidate()
-	return nil
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			err = fmt.Errorf("session snapshot: %w", err)
+		}
+		i.deliverSessionResult(ctx, sessionResult{kind: sessionResultResnapshot, gen: gen, snap: snap, err: err})
+	}()
 }
 
 // reattachSuccessor follows /clear (D9): the daemon closed this session and
-// created successor; attach to it and rehydrate from scratch.
+// created successor. The old stream is dropped at once; attach, snapshot and
+// subscribe run off the Run loop and are applied by applySessionResult.
 func (i *Interactive) reattachSuccessor(ctx context.Context, successor session.ID) error {
 	i.mu.Lock()
 	client := i.client
@@ -870,18 +920,96 @@ func (i *Interactive) reattachSuccessor(ctx context.Context, successor session.I
 	if client == nil {
 		return errors.New("no session client")
 	}
-	port, err := client.Attach(ctx, successor)
-	if err != nil {
-		return fmt.Errorf("attach %s: %w", successor, err)
-	}
-	return i.SwitchSession(ctx, successor, port)
+	i.stopSubscription()
+	i.mu.Lock()
+	gen := i.sessionGen
+	i.mu.Unlock()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		res := sessionResult{kind: sessionResultSuccessor, gen: gen, id: successor}
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		port, err := client.Attach(callCtx, successor)
+		if err != nil {
+			res.err = fmt.Errorf("attach %s: %w", successor, err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			res.err = fmt.Errorf("session snapshot: %w", err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		// The stream outlives the bounded call: scope it to the Run ctx.
+		subCtx, subCancel := context.WithCancel(ctx)
+		events, err := port.Subscribe(subCtx, snap.Seq)
+		if err != nil {
+			subCancel()
+			res.err = fmt.Errorf("session subscribe: %w", err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		res.port, res.snap, res.events, res.cancel = port, snap, events, subCancel
+		i.deliverSessionResult(ctx, res)
+	}()
+	return nil
 }
 
-// SwitchSession replaces the attached session with port (successor reattach,
-// /sessions live pick, /fork) and rehydrates the view.
+// applySessionResult applies an async result on the Run loop. done reports
+// that Run must end (successor reattach failed).
+func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult) (done bool) {
+	i.mu.Lock()
+	if res.gen != i.sessionGen {
+		i.mu.Unlock()
+		if res.cancel != nil {
+			res.cancel()
+		}
+		return false
+	}
+	switch res.kind {
+	case sessionResultResnapshot:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+		} else if res.snap.Seq < i.lastSeq {
+			// Newer events were applied while the call ran; this snapshot
+			// would roll them back. Fetch a fresh one instead.
+			i.mu.Unlock()
+			i.resnapshot(ctx)
+			return false
+		} else {
+			i.hydrateLocked(res.snap)
+		}
+	case sessionResultSuccessor:
+		if res.err != nil {
+			i.exitNotice = "session closed; reattach failed: " + res.err.Error()
+			i.mu.Unlock()
+			return true
+		}
+		i.sessionGen++
+		if i.subCancel != nil {
+			i.subCancel()
+		}
+		i.port, i.sessionID = res.port, res.id
+		i.subCancel, i.events = res.cancel, res.events
+		i.extNotes = nil
+		i.statusErr, i.statusOK = "", ""
+		i.hydrateLocked(res.snap)
+	}
+	i.mu.Unlock()
+	i.scrollToBottom()
+	i.invalidate()
+	return false
+}
+
+// SwitchSession replaces the attached session with port (/sessions live
+// pick, /fork) and rehydrates the view. Pending async results for the old
+// session are discarded. session.Port has no Detach; releasing the old
+// session is the caller's job (cfg.Detach / SessionClient).
 func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port session.Port) error {
 	i.stopSubscription()
 	i.mu.Lock()
+	i.sessionGen++
 	i.port = port
 	i.sessionID = id
 	i.extNotes = nil
