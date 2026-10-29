@@ -376,3 +376,63 @@ func sessionTreeDraft(msg provider.Message, fallback string) (string, []clipboar
 	}
 	return text.String(), images
 }
+
+// portCloseReasonUserExit is the Close reason sent for /exit. The session
+// package exports no constant for it; the daemon tests use the same literal.
+const portCloseReasonUserExit = "user_exit"
+
+// portDetach releases the daemon session without closing it and reports
+// that Run must end. Port mode only.
+func (i *Interactive) portDetach() bool {
+	if i.cfg.Detach != nil {
+		i.cfg.Detach()
+	}
+	i.mu.Lock()
+	id := i.sessionID
+	i.exitNotice = fmt.Sprintf("detached from %s — reattach: zut attach %s", id, id)
+	i.mu.Unlock()
+	return true
+}
+
+// portExit closes the daemon session off the Run loop. Run ends when the
+// sessionResultExit result arrives without error; a failure keeps the TUI
+// open and shows the error.
+func (i *Interactive) portExit(ctx context.Context) {
+	i.mu.Lock()
+	client, id, gen := i.client, i.sessionID, i.sessionGen
+	i.mu.Unlock()
+	if client == nil {
+		i.ReportError(fmt.Errorf("exit: no session client"))
+		return
+	}
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		err := client.Close(callCtx, id, portCloseReasonUserExit)
+		if err != nil {
+			err = fmt.Errorf("close %s: %w", id, err)
+		}
+		i.deliverSessionResult(ctx, sessionResult{kind: sessionResultExit, gen: gen, id: id, err: err})
+	}()
+}
+
+// portClear asks the daemon to clear the session. The successor reattach
+// happens on EvClosed{Successor}; only errors are surfaced here.
+func (i *Interactive) portClear(ctx context.Context) {
+	i.mu.Lock()
+	client, id := i.client, i.sessionID
+	i.mu.Unlock()
+	if client == nil {
+		i.ReportError(fmt.Errorf("clear: no session client"))
+		return
+	}
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if _, err := client.Clear(callCtx, id); err != nil {
+			i.ReportError(fmt.Errorf("clear %s: %w", id, err))
+		}
+	}()
+}

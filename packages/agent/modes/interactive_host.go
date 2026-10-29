@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -51,8 +52,13 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 		}
 		i.startTurn(i.runCtx, resp.Prompt)
 	case "insert":
-		i.ed.Insert(resp.Insert)
-		i.invalidate()
+		if err := i.queueEditorInsert(resp.Insert); err != nil {
+			i.mu.Lock()
+			i.statusErr = "extension /" + name + ": " + err.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
+			i.invalidate()
+		}
 	case "display":
 		i.appendExtensionNote(name, resp.Display, "info")
 	case "noop", "":
@@ -416,9 +422,34 @@ func (i *Interactive) CancelTurn() {
 		}
 	}
 }
+
+// Insert is the extension host hook. It may be called from any goroutine,
+// so the edit is applied on the Run loop. The HostHooks contract has no
+// error return; a full queue is reported in the status line instead.
 func (i *Interactive) Insert(text string) {
-	i.ed.Insert(text)
-	i.invalidate()
+	if err := i.queueEditorInsert(text); err != nil {
+		i.ReportError(fmt.Errorf("extension insert: %w", err))
+	}
+}
+
+// loopCallsCap bounds pending off-loop editor mutations.
+const loopCallsCap = 32
+
+// errLoopCallsFull is returned when the Run loop has too many pending calls.
+var errLoopCallsFull = errors.New("input loop busy, insert dropped")
+
+// queueEditorInsert schedules text to be inserted at the cursor by the Run
+// loop, which owns i.ed. It never blocks.
+func (i *Interactive) queueEditorInsert(text string) error {
+	select {
+	case i.loopCalls <- func() {
+		i.ed.Insert(text)
+		i.invalidate()
+	}:
+		return nil
+	default:
+		return errLoopCallsFull
+	}
 }
 func (i *Interactive) Display(extName, text string) {
 	i.appendExtensionNote(extName, text, "info")

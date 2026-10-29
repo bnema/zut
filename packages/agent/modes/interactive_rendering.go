@@ -448,6 +448,79 @@ func (i *Interactive) scrollToBottom() {
 	i.mu.Unlock()
 	i.invalidate()
 }
+
+// applyEditorPrompt sets the input prompt for the configured input style.
+func (i *Interactive) applyEditorPrompt(ed *tui.Editor) {
+	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
+	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
+		ed.Prompt = ""
+	} else {
+		ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
+	}
+}
+
+// publishEditorView runs on the Run goroutine, which owns i.ed. It applies
+// the prompt, refreshes the editor's render width (Up/Down navigation walks
+// the same wrapped layout the user sees), and publishes a copy under i.mu
+// for the render goroutine, so redraw never reads the live editor.
+func (i *Interactive) publishEditorView() {
+	if i.ed == nil {
+		return
+	}
+	i.mu.Lock()
+	i.applyEditorPrompt(i.ed)
+	cols := i.lastCols()
+	i.mu.Unlock()
+	i.ed.Render(cols)
+	view := i.ed.Clone()
+	input := view.Value()
+	i.mu.Lock()
+	i.edView = view
+	i.refreshSuggesterLocked(input)
+	if i.suggest.Active(input) {
+		// Render on the input loop too: it records the matches and cursor
+		// that Up/Down/Tab/Enter navigate.
+		i.suggest.Render(input, i.cfg.Theme, cols)
+	}
+	i.suggestView = i.suggest.Clone()
+	i.mu.Unlock()
+}
+
+// refreshSuggesterLocked feeds the current sandbox, router and extension
+// state into the slash suggester and refreshes skills on the first frame of
+// a /skill: session. Callers hold i.mu and own i.suggest (the Run goroutine,
+// or a direct redraw without a Run loop).
+func (i *Interactive) refreshSuggesterLocked(currentInput string) {
+	i.suggest.SetJailed(i.cfg.Sandbox.Locked())
+	i.suggest.SetLlamaConfigured(i.llamaConfigured)
+	if i.cfg.Extensions != nil {
+		catalog := i.cfg.Extensions.Commands()
+		extra := make([]slashCommand, 0, len(catalog))
+		for _, c := range catalog {
+			// The popup renders extension commands under a dedicated
+			// "── extensions ───" divider, so the description doesn't
+			// need to repeat the source. If the description is empty,
+			// fall back to the extension name so the row isn't blank.
+			desc := c.Description
+			if strings.TrimSpace(desc) == "" {
+				desc = "(" + c.Extension + ")"
+			}
+			extra = append(extra, slashCommand{
+				Name: "/" + c.Name,
+				Desc: desc,
+			})
+		}
+		i.suggest.SetExtra(extra)
+	}
+	if i.suggest.SkillInputStarted(currentInput) {
+		var list []*skills.Skill
+		if i.cfg.SkillSnapshot != nil {
+			list = i.cfg.SkillSnapshot()
+		}
+		i.suggest.SetSkills(list)
+	}
+}
+
 func (i *Interactive) redraw() {
 	i.mu.Lock()
 	renderRevision := i.renderRevision.Load()
@@ -570,36 +643,20 @@ func (i *Interactive) redraw() {
 	// when the editor starts with "/" and no dialog is already open.
 	// Feed extension-registered commands into the suggester first so
 	// they show up in tab-complete + the popup alongside the built-ins.
-	i.suggest.SetJailed(i.cfg.Sandbox.Locked())
-	i.suggest.SetLlamaConfigured(i.llamaConfigured)
-	if i.cfg.Extensions != nil {
-		catalog := i.cfg.Extensions.Commands()
-		extra := make([]slashCommand, 0, len(catalog))
-		for _, c := range catalog {
-			// The popup renders extension commands under a dedicated
-			// "── extensions ───" divider, so the description doesn't
-			// need to repeat the source. If the description is empty,
-			// fall back to the extension name so the row isn't blank.
-			desc := c.Description
-			if strings.TrimSpace(desc) == "" {
-				desc = "(" + c.Extension + ")"
-			}
-			extra = append(extra, slashCommand{
-				Name: "/" + c.Name,
-				Desc: desc,
-			})
-		}
-		i.suggest.SetExtra(extra)
+	var currentInput string
+	suggester := i.suggestView
+	if i.edView != nil {
+		currentInput = i.edView.Value()
+	} else {
+		// Direct redraw without a Run loop (tests): refresh the live
+		// suggester on this goroutine.
+		currentInput = i.ed.Value()
+		i.refreshSuggesterLocked(currentInput)
+	}
+	if suggester == nil {
+		suggester = i.suggest
 	}
 	var suggest []string
-	currentInput := i.ed.Value()
-	if i.suggest.SkillInputStarted(currentInput) {
-		var list []*skills.Skill
-		if i.cfg.SkillSnapshot != nil {
-			list = i.cfg.SkillSnapshot()
-		}
-		i.suggest.SetSkills(list)
-	}
 	// Slash popup renders even while the agent is busy so the user
 	// can queue a destructive command (/clear, /compact, /logout,
 	// /model) or a read-only one (/help, /jump, /sessions, etc.)
@@ -608,8 +665,8 @@ func (i *Interactive) redraw() {
 	// ones run immediately, destructive ones cancel the turn first.
 	i.fileSuggest.SetCWD(i.cfg.CWD)
 	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActiveLocked())
-	if mainInputFocused && i.suggest.Active(currentInput) {
-		suggest = i.suggest.Render(currentInput, i.cfg.Theme, mainCols)
+	if mainInputFocused && suggester.Active(currentInput) {
+		suggest = suggester.Render(currentInput, i.cfg.Theme, mainCols)
 	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
 		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, mainCols)
 	}
@@ -695,12 +752,14 @@ func (i *Interactive) redraw() {
 		Cols:           mainCols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
-	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
-		i.ed.Prompt = ""
-	} else {
-		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
+	ed := i.edView
+	if ed == nil {
+		// Direct redraw without a Run loop (tests): nothing publishes a
+		// view, so render the live editor on this goroutine.
+		i.applyEditorPrompt(i.ed)
+		ed = i.ed
 	}
-	edLines, curR, curC := i.ed.Render(mainCols)
+	edLines, curR, curC := ed.Render(mainCols)
 	// Floating independent views no longer replace the main bottom band: the
 	// underlying chat, status, and editor keep updating behind the pane.
 	residentViewActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
