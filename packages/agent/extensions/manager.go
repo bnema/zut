@@ -710,6 +710,11 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
+	if m.spawnEnv != nil {
+		// Session lookup already produced a concrete file; discard any
+		// re-resolution os/exec did with process PATHEXT.
+		cmd.Path, cmd.Err = execPath, nil
+	}
 	cmd.Dir = childCWD
 	cmd.Env = m.spawnEnv
 	cmd.Stderr = logFile
