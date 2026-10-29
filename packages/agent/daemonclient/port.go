@@ -347,6 +347,12 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 					err = s.reattach(ctx, next)
 					if err == nil {
 						conn = next
+						// The reconnect re-attached after the last Seq, so a
+						// drop signalled before the close is already handled.
+						select {
+						case <-s.resub:
+						default:
+						}
 						break
 					}
 				}
