@@ -41,7 +41,10 @@ func TestDaemonSessionClientAttachReturnsPort(t *testing.T) {
 	_, err = p.Subscribe(ctx, 0)
 	require.NoError(t, err)
 
-	_, err = a.Attach(ctx, session.ID("nope"))
+	// A bad id errors through the caller's Snapshot.
+	bad, err := a.Attach(ctx, session.ID("nope"))
+	require.NoError(t, err)
+	_, err = bad.Snapshot(ctx)
 	require.Error(t, err)
 }
 
@@ -60,10 +63,16 @@ func TestResolveAttachTarget(t *testing.T) {
 		require.NoError(t, err, arg)
 		require.Equal(t, want, got, arg)
 	}
-	for _, arg := range []string{"ab", "fix", "zzz"} {
+	for arg, want := range map[string]error{"ab": errSessionAmbiguous, "fix": errSessionAmbiguous, "zzz": errSessionNotFound} {
 		_, err := resolveAttachTarget(list, arg)
-		require.Error(t, err, arg)
+		require.ErrorIs(t, err, want, arg)
 	}
+	_, err = resolveAttachTarget(list, "ab")
+	require.EqualError(t, err, `session prefix "ab" is ambiguous: abc123, abd456`)
+	_, err = resolveAttachTarget(list, "fix")
+	require.EqualError(t, err, `session title prefix "fix" is ambiguous: abc123, abd456`)
+	_, err = resolveAttachTarget(list, "zzz")
+	require.EqualError(t, err, `no open session matches "zzz"`)
 
 	got, err := latestDetachedInCWD(list, "/w")
 	require.NoError(t, err)

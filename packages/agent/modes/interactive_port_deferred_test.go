@@ -78,12 +78,12 @@ func TestInteractivePortDeferredDialogEscKeepsPending(t *testing.T) {
 	require.False(t, r.i.deferredDialog.Active())
 	require.Len(t, r.i.DeferredActions(), 2)
 	// The mock fails the test on any unexpected ResolveDeferred call.
-	time.Sleep(50 * time.Millisecond)
+	loopBarrier(t, r.i)
 }
 
 func TestInteractivePortDeferredDialogEmptyStaysClosed(t *testing.T) {
 	_, r := startDeferredPort(t, nil)
 	waitFor(t, "attached", func() bool { return r.i.SessionID() == "s1" })
-	time.Sleep(50 * time.Millisecond)
+	loopBarrier(t, r.i)
 	require.False(t, r.i.deferredDialog.Active())
 }

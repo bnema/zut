@@ -25,6 +25,13 @@ type sessionsRun struct {
 // closes when s1's subscription ctx ends (the old session is released).
 func startSessionsPort(t *testing.T, client SessionClient, msgs ...provider.Message) *sessionsRun {
 	t.Helper()
+	return startSessionsPortDetach(t, client, nil, msgs...)
+}
+
+// startSessionsPortDetach is startSessionsPort with a Detach hook that
+// receives the Interactive, as runTUIWithClient wires it.
+func startSessionsPortDetach(t *testing.T, client SessionClient, detach func(*Interactive), msgs ...provider.Message) *sessionsRun {
+	t.Helper()
 	port := sessionmocks.NewMockPort(t)
 	r := &sessionsRun{events: make(chan session.Event, 4), cancel: make(chan struct{})}
 	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", CWD: "/w", SessionPath: "/w/s1.jsonl", Run: session.RunStateIdle}, Messages: msgs}, nil).Once()
@@ -33,7 +40,11 @@ func startSessionsPort(t *testing.T, client SessionClient, msgs ...provider.Mess
 		return r.events, nil
 	}).Once()
 	r.term = &keyTerminal{in: make(chan byte, 64)}
-	r.i = NewInteractive(InteractiveConfig{Terminal: r.term, Port: port, Client: client, SessionsRoot: t.TempDir(), CWD: "/w"})
+	cfg := InteractiveConfig{Terminal: r.term, Port: port, Client: client, SessionsRoot: t.TempDir(), CWD: "/w"}
+	if detach != nil {
+		cfg.Detach = func() { detach(r.i) }
+	}
+	r.i = NewInteractive(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.i.Run(ctx) }()
@@ -153,5 +164,32 @@ func TestPortSessionsSwitchErrorKeepsSessionWithNote(t *testing.T) {
 	case <-r.cancel:
 		t.Fatal("old session released after a failed switch")
 	default:
+	}
+}
+
+// A switch whose Attach succeeds but whose Snapshot fails must leave the TUI
+// on s1, so the Detach hook (which asks SessionID) releases s1, not s2.
+func TestPortSessionsFailedSwitchDetachReleasesOriginal(t *testing.T) {
+	client := newMockSessionClient(t)
+	client.EXPECT().List(mock.Anything).Return(liveInfos(), nil).Once()
+	s2 := sessionmocks.NewMockPort(t)
+	s2.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{}, errors.New("gone")).Once()
+	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(s2, nil).Once()
+	released := make(chan session.ID, 1)
+	r := startSessionsPortDetach(t, client, func(i *Interactive) { released <- i.SessionID() })
+	r.term.send("/sessions\r")
+	r.waitDialogLive(t, 2)
+	r.term.send("\x1b[B\r")
+	require.Eventually(t, func() bool {
+		r.i.mu.Lock()
+		defer r.i.mu.Unlock()
+		return strings.Contains(r.i.statusErr, "gone")
+	}, 5*time.Second, 10*time.Millisecond)
+	r.term.send("/detach\r")
+	select {
+	case id := <-released:
+		require.Equal(t, session.ID("s1"), id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("detach hook not called")
 	}
 }
