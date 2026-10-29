@@ -26,6 +26,7 @@ type extState struct {
 	dispatcherDone chan struct{}
 	overload       string
 	lastOverload   time.Time
+	clock          func() time.Time
 	chrome         ExtChrome
 	notes          []ownedExtNote
 	alertOwner     string
@@ -104,13 +105,14 @@ func (h extHooks) admit(owner string, fn func()) {
 
 // markOverload requires mu. A single slot bounds reporting even under floods.
 func (s *extState) markOverload(owner string) {
-	if s.overload == "" && time.Since(s.lastOverload) >= time.Second {
+	if s.overload == "" && s.clock().Sub(s.lastOverload) >= time.Second {
 		s.overload = owner
 	}
 }
 func (c *Controller) extInit(parent context.Context) {
 	s := &c.ext
 	s.wake = make(chan struct{}, 1)
+	s.clock = c.deps.Clock
 	s.domainJobs = make(chan func(context.Context, Port) error, 64)
 	s.dispatcherDone = make(chan struct{})
 	s.ctx, s.cancel = context.WithCancel(parent)
@@ -169,7 +171,7 @@ func (c *Controller) extDrain() {
 	owner := s.overload
 	s.overload = ""
 	if owner != "" {
-		s.lastOverload = time.Now()
+		s.lastOverload = s.clock()
 	}
 	s.mu.Unlock()
 	for _, job := range jobs {
@@ -205,12 +207,23 @@ func (h extHooks) domain(fn func(context.Context, Port) error) {
 		}
 	}
 }
+
+// maxExtNotes bounds retained extension notes per session; oldest drop first.
+const maxExtNotes = 200
+
+func (h extHooks) appendNote(n ownedExtNote) {
+	notes := append(h.c.ext.notes, n)
+	if len(notes) > maxExtNotes {
+		notes = append([]ownedExtNote(nil), notes[len(notes)-maxExtNotes:]...)
+	}
+	h.c.ext.notes = notes
+}
 func (h extHooks) note(owner, level, text string, prefix bool) {
 	if prefix {
 		text = "[" + owner + "] " + text
 	}
 	n := Note{Level: level, Text: text}
-	h.c.ext.notes = append(h.c.ext.notes, ownedExtNote{owner, n})
+	h.appendNote(ownedExtNote{owner, n})
 	h.c.publish(EvNote, NoteEvent{Note: n})
 }
 func (h extHooks) chrome() {
@@ -227,7 +240,7 @@ func (h extHooks) Display(ext, text string) {
 		return
 	}
 	h.admit(ext, func() {
-		h.c.ext.notes = append(h.c.ext.notes, ownedExtNote{ext, Note{Level: "info", Text: "[" + ext + "] " + text}})
+		h.appendNote(ownedExtNote{ext, Note{Level: "info", Text: "[" + ext + "] " + text}})
 		h.c.publish(EvExtDisplay, ExtDisplayEvent{Ext: ext, Text: text})
 	})
 }

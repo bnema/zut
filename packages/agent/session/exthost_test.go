@@ -164,20 +164,6 @@ func TestExtensionDetachedDelegation(t *testing.T) {
 	}
 }
 
-func waitClosed(t *testing.T, ch <-chan struct{}) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ch:
-			return
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-	t.Fatal("extension dispatcher goroutine still running")
-}
-
 func TestExtensionDomainSaturation(t *testing.T) {
 	c, ctx := extController(t, session.Deps{})
 	p := sessionmocks.NewMockPort(t)
@@ -187,8 +173,11 @@ func TestExtensionDomainSaturation(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var ran atomic.Int32
+	all := make(chan struct{})
 	p.EXPECT().Compact(mock.Anything).RunAndReturn(func(context.Context) error {
-		ran.Add(1)
+		if ran.Add(1) == 65 {
+			close(all)
+		}
 		select {
 		case <-started:
 		default:
@@ -214,7 +203,11 @@ func TestExtensionDomainSaturation(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, snap.Notes, 1)
 				// Let the 64 queued compacts drain so mock expectations hold.
-				require.Eventually(t, func() bool { return ran.Load() == 65 }, 5*time.Second, time.Millisecond)
+				select {
+				case <-all:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
 				return
 			}
 		case <-ctx.Done():
@@ -242,7 +235,9 @@ func TestExtensionShutdownCancelsRunningDomainOp(t *testing.T) {
 	h.SubmitSlash("/compact")
 	<-started
 	h.SubmitSlash("/goal pending") // accepted but must never run
-	time.Sleep(10 * time.Millisecond)
+	n, err := session.ExtDomainQueueLen(ctx, c)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
 	stop()
 	<-c.Done()
 	select {
@@ -250,7 +245,11 @@ func TestExtensionShutdownCancelsRunningDomainOp(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("running domain op not cancelled")
 	}
-	waitClosed(t, session.ExtDispatcherDone(c))
+	select {
+	case <-session.ExtDispatcherDone(c):
+	case <-ctx.Done():
+		t.Fatal("extension dispatcher goroutine still running")
+	}
 	h.SubmitSlash("/compact")
 	h.Notify("a", "info", "after")
 	session.ExtShutdown(c) // idempotent

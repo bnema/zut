@@ -5,6 +5,8 @@ import (
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/stretchr/testify/require"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -53,7 +55,7 @@ func TestExtensionHooksFromActor(t *testing.T) {
 // SetExtensionTestPort injects the existing generated Port mock without an
 // import cycle between internal tests and sessionmocks.
 func SetExtensionTestPort(c *Controller, ctx context.Context, p Port) error {
-	return c.call(ctx, func() { c.ext.port = p })
+	return c.call(ctx, func() { c.ext.mu.Lock(); c.ext.port = p; c.ext.mu.Unlock() })
 }
 func TestExtensionPanelEventIsolation(t *testing.T) {
 	c, ctx := newTestController(t)
@@ -91,6 +93,14 @@ func TestExtensionPanelEventIsolation(t *testing.T) {
 // that need the generated Port mock.
 func ExtShutdown(c *Controller)                       { c.extShutdown() }
 func ExtDispatcherDone(c *Controller) <-chan struct{} { return c.ext.dispatcherDone }
+
+// ExtDomainQueueLen reads the accepted-but-unrun domain queue on the actor,
+// after the actor has drained every hook admitted before the call.
+func ExtDomainQueueLen(ctx context.Context, c *Controller) (int, error) {
+	var n int
+	err := c.call(ctx, func() { n = len(c.ext.domainJobs) })
+	return n, err
+}
 
 func TestExtensionMailboxOverflowReportsOnce(t *testing.T) {
 	c, ctx := newTestController(t)
@@ -163,8 +173,73 @@ func TestExtensionUnknownSlashThenClearNotes(t *testing.T) {
 	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Empty(t, snap.Notes)
-	time.Sleep(20 * time.Millisecond)
-	snap, err = c.Snapshot(ctx)
+}
+
+func TestExtensionNotesCapped(t *testing.T) {
+	c, ctx := newTestController(t)
+	h := c.ExtensionHooks()
+	for i := 0; i < 150; i++ {
+		h.Notify("a", "info", strconv.Itoa(i))
+		h.Display("b", strconv.Itoa(i))
+	}
+	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
-	require.Empty(t, snap.Notes)
+	require.Len(t, snap.Notes, maxExtNotes)
+	require.Equal(t, "[a] 50", snap.Notes[0].Text)
+	require.Equal(t, "[b] 149", snap.Notes[len(snap.Notes)-1].Text)
+}
+
+func TestExtensionOverloadDuringDrainReportedOnNextWake(t *testing.T) {
+	c, ctx := newTestController(t)
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	h := extHooks{c}
+	h.admit("x", func() {
+		for i := 0; i < 1025; i++ {
+			h.ClearWidget("x", "none")
+		}
+	})
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == EvNote {
+				require.Equal(t, Note{Level: "error", Text: "extension x overloaded: hook dropped"}, ev.Data.(NoteEvent).Note)
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestExtensionOverloadRateLimited(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	var now atomic.Int64
+	now.Store(time.Unix(1000, 0).UnixNano())
+	c := NewController(ctx, Deps{Clock: func() time.Time { return time.Unix(0, now.Load()) }})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	h := c.ExtensionHooks()
+	flood := func() {
+		release := make(chan struct{})
+		blocked := make(chan struct{})
+		require.NoError(t, c.post(ctx, func() { close(blocked); <-release }))
+		<-blocked
+		for i := 0; i < 1025; i++ {
+			h.ClearWidget("x", "none")
+		}
+		close(release)
+	}
+	overloads := func() int {
+		snap, err := c.Snapshot(ctx)
+		require.NoError(t, err)
+		return len(snap.Notes)
+	}
+	flood()
+	require.Equal(t, 1, overloads())
+	now.Add(int64(999 * time.Millisecond))
+	flood()
+	require.Equal(t, 1, overloads())
+	now.Add(int64(time.Millisecond))
+	flood()
+	require.Equal(t, 2, overloads())
 }

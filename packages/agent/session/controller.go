@@ -124,7 +124,6 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 		for {
 			select {
 			case <-ctx.Done():
-				c.extShutdown()
 				return
 			case <-c.ext.wake:
 				c.extDrain()
