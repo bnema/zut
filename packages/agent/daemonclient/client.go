@@ -226,6 +226,13 @@ func (c *Client) Clear(ctx context.Context, id session.ID) (session.Info, error)
 	return info, err
 }
 
+// TelegramBridge turns the daemon-side Telegram mirror for id on or off.
+func (c *Client) TelegramBridge(ctx context.Context, id session.ID, on bool) (daemonproto.TelegramBridgeData, error) {
+	var out daemonproto.TelegramBridgeData
+	err := c.call(ctx, daemonproto.TelegramBridgeRequest{Type: "telegram_bridge", Session: id, On: on}, &out)
+	return out, err
+}
+
 // List returns every open session.
 func (c *Client) List(ctx context.Context) ([]session.Info, error) {
 	var out []session.Info

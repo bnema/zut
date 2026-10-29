@@ -44,6 +44,14 @@ func (a *daemonSessionClient) Close(ctx context.Context, id session.ID, reason s
 	return a.c.Close(ctx, id, reason)
 }
 
+func (a *daemonSessionClient) TelegramBridge(ctx context.Context, sessionID string, on bool) (modes.TelegramBridgeStatus, error) {
+	d, err := a.c.TelegramBridge(ctx, session.ID(sessionID), on)
+	if err != nil {
+		return modes.TelegramBridgeStatus{}, err
+	}
+	return modes.TelegramBridgeStatus{Active: d.Active, Session: d.Session, Username: d.Username, PairedUserID: d.PairedUserID}, nil
+}
+
 func (a *daemonSessionClient) List(ctx context.Context) ([]session.Info, error) {
 	return a.c.List(ctx)
 }
