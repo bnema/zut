@@ -122,6 +122,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 		for {
 			select {
 			case <-ctx.Done():
+				c.residentsShutdown()
 				return
 			case fn := <-c.loop:
 				fn()

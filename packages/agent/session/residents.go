@@ -19,7 +19,12 @@ type residentState struct {
 	tasks       map[string]string
 	inboxMu     sync.Mutex
 	inbox       []func()
+	dirty       bool
+	closed      bool
 	wake        chan struct{}
+	// stopDispatcher cancels a pending actor post; dispatcherDone joins it.
+	stopDispatcher context.CancelFunc
+	dispatcherDone chan struct{}
 }
 
 func (s *residentState) snapshotInto(out *Snapshot) {}
@@ -78,21 +83,72 @@ func (c *Controller) residentsRunEnded() {
 	c.res.deliver(c.res.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions)
 }
 
-// postResident queues observer work without waiting for the actor. A single
-// dispatcher preserves callback order, including acceptance before completion.
-// The mutex also serializes tracker acceptance and shutdown checks.
-func (c *Controller) postResident(fn func()) bool {
-	select {
-	case <-c.done:
+// residentMailboxCap bounds accepted-but-undelivered observer work. Update
+// notifications take no slot; they coalesce into one dirty flag.
+const residentMailboxCap = 256
+
+// postResidentLocked queues observer work without waiting for the actor. The
+// caller holds inboxMu, which serializes admission with residentsShutdown.
+// A single dispatcher preserves order, including acceptance before completion.
+func (c *Controller) postResidentLocked(fn func()) bool {
+	s := &c.res
+	if s.closed || len(s.inbox) >= residentMailboxCap {
 		return false
-	default:
 	}
-	c.res.inbox = append(c.res.inbox, fn)
-	select {
-	case c.res.wake <- struct{}{}:
-	default:
-	}
+	s.inbox = append(s.inbox, fn)
+	s.wakeLocked()
 	return true
+}
+
+func (s *residentState) wakeLocked() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// runPending runs on the actor. Work stays queued until the actor takes it, so
+// an abandoned post never loses accepted completions.
+func (s *residentState) runPending() {
+	for {
+		s.inboxMu.Lock()
+		items, dirty := s.inbox, s.dirty
+		s.inbox, s.dirty = nil, false
+		s.inboxMu.Unlock()
+		if len(items) == 0 && !dirty {
+			return
+		}
+		for _, fn := range items {
+			fn()
+		}
+		if dirty {
+			s.controller.publish(EvInfo, InfoEvent{Info: s.controller.residentInfo()})
+		}
+	}
+}
+
+// residentsShutdown runs on the actor before its loop exits. It closes
+// admission (later callbacks return false), joins the dispatcher, and drains
+// accepted work into the host queue so each accepted completion is delivered
+// exactly once. It is idempotent.
+func (c *Controller) residentsShutdown() {
+	s := &c.res
+	if s.dispatcherDone == nil {
+		return
+	}
+	s.inboxMu.Lock()
+	already := s.closed
+	s.closed = true
+	s.inboxMu.Unlock()
+	if already {
+		return
+	}
+	s.stopDispatcher()
+	<-s.dispatcherDone
+	s.runPending()
+	s.inboxMu.Lock()
+	s.inbox, s.dirty = nil, false
+	s.inboxMu.Unlock()
 }
 
 func (s *residentState) deliver(actions []orchestration.Action) {
@@ -117,26 +173,22 @@ func (c *Controller) residentsInit() {
 	s.specs = make(map[string]subagents.ResidentChildSpec)
 	s.tasks = make(map[string]string)
 	s.wake = make(chan struct{}, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	s.stopDispatcher = stop
+	s.dispatcherDone = make(chan struct{})
+	// The dispatcher only posts; it never waits for the actor to run the work.
 	go func() {
+		defer close(s.dispatcherDone)
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-c.done:
 				return
 			case <-s.wake:
 			}
-			for {
-				s.inboxMu.Lock()
-				if len(s.inbox) == 0 {
-					s.inboxMu.Unlock()
-					break
-				}
-				fn := s.inbox[0]
-				s.inbox[0] = nil
-				s.inbox = s.inbox[1:]
-				s.inboxMu.Unlock()
-				if c.call(context.Background(), fn) != nil {
-					return
-				}
+			if c.post(ctx, s.runPending) != nil {
+				return
 			}
 		}
 	}()
@@ -147,10 +199,21 @@ func (c *Controller) residentsInit() {
 	m.SetAcceptedObserver(func(spec subagents.ResidentChildSpec, turnID, prompt string) {
 		s.inboxMu.Lock()
 		defer s.inboxMu.Unlock()
+		if s.closed {
+			return
+		}
+		if len(s.inbox) >= residentMailboxCap {
+			// Leaving the turn untracked makes its completion return false, so
+			// the manager keeps ownership of that result.
+			if c.deps.Logger != nil {
+				c.deps.Logger.Warn("resident mailbox full; acceptance not tracked", "child", spec.ID, "turn", turnID)
+			}
+			return
+		}
 		if !s.tracker.TrackResident(spec.ID, turnID) {
 			return
 		}
-		c.postResident(func() {
+		c.postResidentLocked(func() {
 			if _, exists := s.specs[spec.ID]; !exists {
 				s.specs[spec.ID] = spec
 				line, _, _ := strings.Cut(prompt, "\n")
@@ -173,16 +236,14 @@ func (c *Controller) residentsInit() {
 	m.SetCompletionObserver(func(completion subagents.ResidentCompletion) bool {
 		s.inboxMu.Lock()
 		defer s.inboxMu.Unlock()
-		select {
-		case <-c.done:
+		if s.closed || len(s.inbox) >= residentMailboxCap {
 			return false
-		default:
 		}
 		if !s.tracker.Report(completion.Completion()) {
 			return false
 		}
 		batch, _ := s.tracker.WaitReady(context.Background())
-		return c.postResident(func() {
+		return c.postResidentLocked(func() {
 			for _, item := range batch {
 				s.deliver(s.coordinator.Apply(orchestration.Event{Kind: orchestration.EventWorkerFinished, WorkerID: item.AgentID + "\x00" + item.TurnID, Completion: item}).Actions)
 			}
@@ -192,7 +253,10 @@ func (c *Controller) residentsInit() {
 	m.SetUpdateObserver(func(string) {
 		s.inboxMu.Lock()
 		defer s.inboxMu.Unlock()
-		c.postResident(func() { c.publish(EvInfo, InfoEvent{Info: c.residentInfo()}) })
+		if !s.closed {
+			s.dirty = true
+			s.wakeLocked()
+		}
 	})
 }
 
