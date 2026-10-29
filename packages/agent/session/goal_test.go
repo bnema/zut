@@ -80,3 +80,8 @@ func GoalTestScheduleCount(t *testing.T, host ScheduleHost) int {
 	require.NoError(t, c.call(ctx, func() { c.deps.Scheduler = host; count = c.scheduleCount() }))
 	return count
 }
+
+// GoalTestObserve delivers a result on the actor as the turn cluster does.
+func GoalTestObserve(t *testing.T, c *Controller, result core.ToolResult) {
+	require.NoError(t, c.call(context.Background(), func() { c.goal.observe(core.EvToolResult{Result: result}) }))
+}

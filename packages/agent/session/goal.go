@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/google/uuid"
@@ -24,6 +25,38 @@ type goalState struct {
 	plan                              map[string]core.PlanUpdate
 }
 
+// initGoal seeds projections before the actor accepts commands. Assembly supplies
+// InitialPlanSnapshots using core.PlanUpdateSnapshots on the full transcript,
+// never on the resumed agent's potentially trimmed message window.
+func (c *Controller) initGoal() {
+	c.goal.controller = c
+	if c.deps.SessionStore != nil {
+		c.goal.plan = clonePlan(c.deps.SessionStore.InitialPlanSnapshots())
+	}
+}
+func (c *Controller) goalProjection() (*GoalSummary, *PlanStepSummary) {
+	var summary *GoalSummary
+	if g := c.currentGoal(); g != nil {
+		summary = &GoalSummary{Objective: g.Objective, Status: string(g.Status)}
+	}
+	if c.deps.SessionStore != nil {
+		steps := c.deps.SessionStore.CurrentPlan()
+		for idx, step := range steps {
+			if step.Status == core.PlanInProgress {
+				return summary, &PlanStepSummary{Index: idx + 1, Total: len(steps), Text: step.Step}
+			}
+		}
+	}
+	return summary, nil
+}
+func (c *Controller) publishGoal() {
+	g := c.currentGoal()
+	status := ""
+	if g != nil {
+		status = string(g.Status)
+	}
+	c.publish(EvGoal, GoalEvent{Goal: g, Status: status})
+}
 func cloneGoal(g *core.SessionGoal) *core.SessionGoal {
 	if g == nil {
 		return nil
@@ -77,11 +110,7 @@ func (c *Controller) saveGoal(g *core.SessionGoal, runtime bool) error {
 	if err != nil {
 		return err
 	}
-	status := ""
-	if g != nil {
-		status = string(g.Status)
-	}
-	c.publish(EvGoal, GoalEvent{Goal: cloneGoal(g), Status: status})
+	c.publishGoal()
 	return nil
 }
 
@@ -192,7 +221,15 @@ func (c *Controller) goalAfterTurn(end core.EvTurnEnd) {
 			g.TokensUsed += run.tokens
 			runtime := true
 			if g.Status == core.GoalActive {
-				if g.TokenBudget != nil && g.TokensUsed >= *g.TokenBudget {
+				if terminalGoalError(end) {
+					// A failed continuation cannot make progress by rescheduling itself.
+					g.Status = core.GoalBlocked
+					if errors.Is(end.Err, core.ErrRepetitiveLoop) {
+						g.Status = core.GoalStalled
+					}
+					g.Reason = end.Err.Error()
+					runtime = false
+				} else if g.TokenBudget != nil && g.TokensUsed >= *g.TokenBudget {
 					g.Status = core.GoalBudgetLimited
 					g.Reason = "configured token budget exhausted"
 					runtime = false
@@ -223,6 +260,9 @@ func (c *Controller) goalAfterTurn(end core.EvTurnEnd) {
 		c.goalError(err)
 	}
 }
+func terminalGoalError(end core.EvTurnEnd) bool {
+	return end.Err != nil && !errors.Is(end.Err, context.Canceled) && end.Stop != provider.StopAborted
+}
 func (c *Controller) goalError(err error) {
 	c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: err.Error()}})
 }
@@ -232,6 +272,17 @@ func (c *Controller) goalIdle() bool {
 }
 func (s *goalState) observe(ev core.AgentEvent) {
 	switch e := ev.(type) {
+	case core.EvToolResult:
+		if _, ok := tools.GoalUpdateFromResult(e.Result); ok && s.controller != nil {
+			c := s.controller
+			g := c.currentGoal()
+			if g == nil || g.Status != core.GoalActive || g.ID != s.interruptedID || g.MissionID != s.interruptedMission {
+				s.armed = false
+				s.returning = false
+			}
+			c.publishGoal()
+		}
+
 	case core.EvUsage:
 		if s.run != nil {
 			for _, n := range []int{e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.CacheReadTokens, e.Usage.CacheWriteTokens} {

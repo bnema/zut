@@ -109,6 +109,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	c.compactSeam = c
 	c.settingsSeam = c
 	c.interSeam = c
+	c.initGoal()
 	c.residentSeam.residentsInit()
 	c.updateInfo()
 	go func() {
@@ -212,6 +213,7 @@ func (c *Controller) updateInfo() {
 	if c.deps.SessionStore != nil {
 		info.SessionPath = c.deps.SessionStore.CurrentSessionPath()
 	}
+	info.Goal, info.PlanStep = c.goalProjection()
 	c.info.Store(info)
 }
 

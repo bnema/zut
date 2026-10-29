@@ -362,6 +362,52 @@ func (_c *MockSessionStore_FlushSession_Call) RunAndReturn(run func()) *MockSess
 	return _c
 }
 
+// InitialPlanSnapshots provides a mock function for the type MockSessionStore
+func (_mock *MockSessionStore) InitialPlanSnapshots() map[string]core.PlanUpdate {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for InitialPlanSnapshots")
+	}
+
+	var r0 map[string]core.PlanUpdate
+	if returnFunc, ok := ret.Get(0).(func() map[string]core.PlanUpdate); ok {
+		r0 = returnFunc()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(map[string]core.PlanUpdate)
+		}
+	}
+	return r0
+}
+
+// MockSessionStore_InitialPlanSnapshots_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'InitialPlanSnapshots'
+type MockSessionStore_InitialPlanSnapshots_Call struct {
+	*mock.Call
+}
+
+// InitialPlanSnapshots is a helper method to define mock.On call
+func (_e *MockSessionStore_Expecter) InitialPlanSnapshots() *MockSessionStore_InitialPlanSnapshots_Call {
+	return &MockSessionStore_InitialPlanSnapshots_Call{Call: _e.mock.On("InitialPlanSnapshots")}
+}
+
+func (_c *MockSessionStore_InitialPlanSnapshots_Call) Run(run func()) *MockSessionStore_InitialPlanSnapshots_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *MockSessionStore_InitialPlanSnapshots_Call) Return(stringToPlanUpdate map[string]core.PlanUpdate) *MockSessionStore_InitialPlanSnapshots_Call {
+	_c.Call.Return(stringToPlanUpdate)
+	return _c
+}
+
+func (_c *MockSessionStore_InitialPlanSnapshots_Call) RunAndReturn(run func() map[string]core.PlanUpdate) *MockSessionStore_InitialPlanSnapshots_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // LoadSession provides a mock function for the type MockSessionStore
 func (_mock *MockSessionStore) LoadSession(path string) error {
 	ret := _mock.Called(path)
