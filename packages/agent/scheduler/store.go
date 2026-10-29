@@ -11,6 +11,7 @@ import (
 
 // Store persists complete task snapshots. The engine serializes calls. Save
 // must atomically replace the snapshot or leave the previous snapshot intact.
+// Errors after replacement must wrap CommittedError so memory is not rolled back.
 type Store interface {
 	Load() ([]Task, error)
 	Save([]Task) error
@@ -63,8 +64,18 @@ func (s FileStore) Save(tasks []Task) error {
 	if err != nil {
 		return fmt.Errorf("save schedules: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return &CommittedError{Err: fmt.Errorf("sync schedules directory: %w", err)}
+	}
 	return nil
 }
+
+// CommittedError means replacement succeeded but durability could not be confirmed.
+// The engine retains the new snapshot and reports the underlying error.
+type CommittedError struct{ Err error }
+
+func (e *CommittedError) Error() string { return e.Err.Error() }
+func (e *CommittedError) Unwrap() error { return e.Err }
 
 // NewPersistentEngine restores schedules with deadlines strictly after now.
 // No queued/running state survives restart and missed occurrences are skipped.
@@ -84,8 +95,8 @@ func NewPersistentEngine(now func() time.Time, store Store) (*Engine, error) {
 // Named IANA zones retain DST rules. Custom fixed zones retain the offset
 // captured in TimezoneOffset, since time.Location is not JSON serializable.
 func (e *Engine) Load() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
 	if e.store == nil {
 		return nil
 	}
@@ -117,58 +128,65 @@ func (e *Engine) Load() error {
 		task.queued, task.running = false, false
 		restored[task.ID] = task
 	}
-	old := e.tasks
-	e.tasks = restored
-	if err := e.persistLocked(); err != nil {
-		e.tasks = old
-		return err
-	}
-	return nil
+	return e.saveSnapshot(restored, false)
 }
 
 // Err reports the most recent persistence failure (nil after a successful save).
-// Cancel retains the task and returns false on save failure. Completion keeps
-// its updated in-memory state, and Run returns the failure to its host.
+// Cancel returns false on save failure, retaining the task unless the error
+// indicates replacement already committed. Completion keeps its updated
+// in-memory state, and Run returns the failure to its host.
 func (e *Engine) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.persistErr
 }
 
-func (e *Engine) persistLocked() error {
-	if e.store == nil {
-		return nil
+// update serializes candidate snapshots without exposing them until Save returns.
+// Dispatch also holds persistMu, so it cannot claim a task during a transaction.
+func (e *Engine) update(keepOnError bool, change func(map[string]Task)) error {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	e.mu.Lock()
+	candidate := make(map[string]Task, len(e.tasks))
+	for id, task := range e.tasks {
+		candidate[id] = task
 	}
-	tasks := make([]Task, 0, len(e.tasks))
-	for _, task := range e.tasks {
-		tasks = append(tasks, task)
-	}
-	sortTasks(tasks)
-	e.persistErr = e.store.Save(tasks)
-	return e.persistErr
+	change(candidate)
+	e.mu.Unlock()
+	return e.saveSnapshot(candidate, keepOnError)
 }
 
-// CancelSession removes all tasks owned by a closing session, atomically. A
-// failed save leaves all tasks in place and returns an error to the host.
-func (e *Engine) CancelSession(sessionID string) error {
+// saveSnapshot requires persistMu, but never holds mu during store I/O.
+func (e *Engine) saveSnapshot(candidate map[string]Task, keepOnError bool) error {
+	var err error
+	if e.store != nil {
+		tasks := make([]Task, 0, len(candidate))
+		for _, task := range candidate {
+			tasks = append(tasks, task)
+		}
+		sortTasks(tasks)
+		err = e.store.Save(tasks)
+	}
+	var committed *CommittedError
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	removed := make(map[string]Task)
-	for id, task := range e.tasks {
-		if task.SessionID == sessionID {
-			removed[id] = task
-			delete(e.tasks, id)
-		}
+	if err == nil || keepOnError || errors.As(err, &committed) {
+		e.tasks = candidate
 	}
-	if len(removed) == 0 {
-		return nil
-	}
-	if err := e.persistLocked(); err != nil {
-		for id, task := range removed {
-			e.tasks[id] = task
-		}
-		return err
-	}
+	e.persistErr = err
+	e.mu.Unlock()
+	// Centralized wake covers failed Add/Cancel as well as completion and Load.
 	e.signalWake()
-	return nil
+	return err
+}
+
+// CancelSession removes every task for a closing session. Already running
+// callbacks are not interrupted; their completion cannot resurrect removed tasks.
+func (e *Engine) CancelSession(sessionID string) error {
+	return e.update(false, func(tasks map[string]Task) {
+		for id, task := range tasks {
+			if task.SessionID == sessionID {
+				delete(tasks, id)
+			}
+		}
+	})
 }

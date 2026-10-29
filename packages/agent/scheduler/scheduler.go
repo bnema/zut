@@ -45,6 +45,7 @@ type NewTaskInput struct {
 // the lock, allowing independent session tasks to progress concurrently; the
 // host remains responsible for serializing work for one session.
 type Engine struct {
+	persistMu  sync.Mutex // Acquired before mu by mutations and dispatch.
 	mu         sync.Mutex
 	now        func() time.Time
 	tasks      map[string]Task
@@ -100,37 +101,25 @@ func (e *Engine) Add(input NewTaskInput) (Task, error) {
 		NextRun:        next,
 		schedule:       schedule,
 	}
-	e.mu.Lock()
-	e.tasks[task.ID] = task
-	if err := e.persistLocked(); err != nil {
-		delete(e.tasks, task.ID)
-		e.mu.Unlock()
+	err = e.update(false, func(tasks map[string]Task) { tasks[task.ID] = task })
+	if err != nil {
 		return Task{}, err
 	}
-	e.mu.Unlock()
-	e.signalWake()
 	return task, nil
 }
 
-// Cancel removes a scheduled task. It returns false when the ID is unknown.
+// Cancel removes a scheduled task. It returns false for unknown IDs or save
+// failures; Err reports persistence failures. Post-rename failures retain removal.
 func (e *Engine) Cancel(id string) bool {
 	if e == nil {
 		return false
 	}
-	e.mu.Lock()
-	task, ok := e.tasks[id]
-	if ok {
-		delete(e.tasks, id)
-		if err := e.persistLocked(); err != nil {
-			e.tasks[id] = task
-			ok = false
-		}
-	}
-	e.mu.Unlock()
-	if ok {
-		e.signalWake()
-	}
-	return ok
+	found := false
+	err := e.update(false, func(tasks map[string]Task) {
+		_, found = tasks[id]
+		delete(tasks, id)
+	})
+	return found && err == nil
 }
 
 // Get returns a task snapshot by ID.
@@ -236,6 +225,8 @@ func (e *Engine) dispatchDue(ctx context.Context, now time.Time, executor func(c
 }
 
 func (e *Engine) takeDue(now time.Time) []Task {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	due := make([]Task, 0)
@@ -261,16 +252,19 @@ func (e *Engine) dispatchTask(ctx context.Context, queued Task, executor func(co
 		e.releaseQueued(queued.ID, queued.NextRun)
 		return
 	}
+	e.persistMu.Lock()
 	e.mu.Lock()
 	task, ok := e.tasks[queued.ID]
 	if !ok || !task.queued || !task.NextRun.Equal(queued.NextRun) {
 		e.mu.Unlock()
+		e.persistMu.Unlock()
 		return // cancelled or superseded before it was claimed
 	}
 	task.queued = false
 	task.running = true
 	e.tasks[task.ID] = task
 	e.mu.Unlock()
+	e.persistMu.Unlock()
 	if ctx.Err() != nil {
 		e.finish(task.ID, task.NextRun, ctx.Err())
 		return
@@ -280,6 +274,8 @@ func (e *Engine) dispatchTask(ctx context.Context, queued Task, executor func(co
 }
 
 func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
 	e.mu.Lock()
 	task, ok := e.tasks[id]
 	if !ok || !task.queued || !task.NextRun.Equal(scheduledFor) {
@@ -293,32 +289,26 @@ func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
 }
 
 func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
-	e.mu.Lock()
-	task, ok := e.tasks[id]
-	if !ok || !task.NextRun.Equal(scheduledFor) {
-		e.mu.Unlock()
-		return // cancelled or replaced while the executor ran
-	}
-	task.running = false
-	task.LastRun = scheduledFor
-	task.RunCount++
-	if err != nil {
-		task.LastError = err.Error()
-	} else {
+	_ = e.update(true, func(tasks map[string]Task) {
+		task, ok := tasks[id]
+		if !ok || !task.NextRun.Equal(scheduledFor) {
+			return
+		}
+		task.running = false
+		task.LastRun = scheduledFor
+		task.RunCount++
 		task.LastError = ""
-	}
-	// Calculate from completion time, rather than repeatedly from the prior
-	// deadline, so a sleeping machine or a slow task never creates a burst of
-	// stale catch-up executions.
-	task.NextRun = task.schedule.Next(e.now())
-	if task.NextRun.IsZero() {
-		delete(e.tasks, id)
-	} else {
-		e.tasks[id] = task
-	}
-	_ = e.persistLocked() // Run observes failures after the wake below.
-	e.mu.Unlock()
-	e.signalWake()
+		if err != nil {
+			task.LastError = err.Error()
+		}
+		// Skip stale occurrences after a slow execution.
+		task.NextRun = task.schedule.Next(e.now())
+		if task.NextRun.IsZero() {
+			delete(tasks, id)
+		} else {
+			tasks[id] = task
+		}
+	})
 }
 
 func (e *Engine) nextRun() (time.Time, bool) {
