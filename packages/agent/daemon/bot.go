@@ -166,6 +166,17 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 	if err := host.CheckBot(kind); err != nil {
 		return daemonproto.BotStatusData{}, err
 	}
+	// Hold a shutdown token for the whole start so a start racing shutdown
+	// finishes its cleanup (session close, bot record) before shutdown
+	// returns.
+	d.mu.Lock()
+	if d.ctx == nil || d.stopping {
+		d.mu.Unlock()
+		return daemonproto.BotStatusData{}, ErrStopping
+	}
+	d.wg.Add(1)
+	d.mu.Unlock()
+	defer d.wg.Done()
 	st := d.bots()
 	st.mu.Lock()
 	if st.services[kind] != nil {
@@ -197,8 +208,9 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 		release()
 		// The session was created for this bot; do not leak it into a
 		// stopping daemon (shutdown keeps it in state.json otherwise).
-		d.closeBotSession(e.id)
+		// Forget the record first so the closed session is never reused.
 		d.saveBotRecord(kind, "")
+		d.closeBotSession(e.id)
 		return daemonproto.BotStatusData{}, ErrStopping
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
