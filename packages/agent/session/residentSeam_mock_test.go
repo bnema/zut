@@ -123,6 +123,72 @@ func (_c *mockresidentSeam_residentsInit_Call) RunAndReturn(run func()) *mockres
 	return _c
 }
 
+// residentsRunEnded provides a mock function for the type mockresidentSeam
+func (_mock *mockresidentSeam) residentsRunEnded() {
+	_mock.Called()
+	return
+}
+
+// mockresidentSeam_residentsRunEnded_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'residentsRunEnded'
+type mockresidentSeam_residentsRunEnded_Call struct {
+	*mock.Call
+}
+
+// residentsRunEnded is a helper method to define mock.On call
+func (_e *mockresidentSeam_Expecter) residentsRunEnded() *mockresidentSeam_residentsRunEnded_Call {
+	return &mockresidentSeam_residentsRunEnded_Call{Call: _e.mock.On("residentsRunEnded")}
+}
+
+func (_c *mockresidentSeam_residentsRunEnded_Call) Run(run func()) *mockresidentSeam_residentsRunEnded_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockresidentSeam_residentsRunEnded_Call) Return() *mockresidentSeam_residentsRunEnded_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockresidentSeam_residentsRunEnded_Call) RunAndReturn(run func()) *mockresidentSeam_residentsRunEnded_Call {
+	_c.Run(run)
+	return _c
+}
+
+// residentsRunStarted provides a mock function for the type mockresidentSeam
+func (_mock *mockresidentSeam) residentsRunStarted() {
+	_mock.Called()
+	return
+}
+
+// mockresidentSeam_residentsRunStarted_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'residentsRunStarted'
+type mockresidentSeam_residentsRunStarted_Call struct {
+	*mock.Call
+}
+
+// residentsRunStarted is a helper method to define mock.On call
+func (_e *mockresidentSeam_Expecter) residentsRunStarted() *mockresidentSeam_residentsRunStarted_Call {
+	return &mockresidentSeam_residentsRunStarted_Call{Call: _e.mock.On("residentsRunStarted")}
+}
+
+func (_c *mockresidentSeam_residentsRunStarted_Call) Run(run func()) *mockresidentSeam_residentsRunStarted_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockresidentSeam_residentsRunStarted_Call) Return() *mockresidentSeam_residentsRunStarted_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockresidentSeam_residentsRunStarted_Call) RunAndReturn(run func()) *mockresidentSeam_residentsRunStarted_Call {
+	_c.Run(run)
+	return _c
+}
+
 // residentsRunning provides a mock function for the type mockresidentSeam
 func (_mock *mockresidentSeam) residentsRunning() bool {
 	ret := _mock.Called()
