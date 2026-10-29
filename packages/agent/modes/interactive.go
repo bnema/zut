@@ -770,7 +770,10 @@ type Interactive struct {
 	// Only the Run goroutine publishes it (publishEditorView); ed itself
 	// stays owned by the Run goroutine.
 	edView *tui.Editor
-	rend   *tui.Renderer
+	// suggestView is the slash suggester copy redraw renders, published
+	// with edView; i.suggest itself is owned by the Run goroutine.
+	suggestView *slashSuggester
+	rend        *tui.Renderer
 
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,

@@ -554,3 +554,11 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 // Reset puts the cursor back to the first match. Call this whenever the
 // input changes in a way that reshapes the match list.
 func (s *slashSuggester) Reset() { s.cursor = 0 }
+
+// Clone returns a copy the render goroutine can use while the input loop
+// keeps the original. Slices are replaced, never mutated in place, so a
+// shallow copy is independent.
+func (s *slashSuggester) Clone() *slashSuggester {
+	c := *s
+	return &c
+}
