@@ -77,11 +77,11 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	var extra []core.Tool
 	if f.engine != nil {
 		deps.Scheduler = sessionSchedule{engine: f.engine, id: string(opts.ID)}
-		if scheduleToolAllowed(spec.Args) {
+		if daemonToolAllowed(spec.Args, tools.ScheduleToolName) {
 			extra = append(extra, &tools.ScheduleTool{Engine: f.engine, SessionID: func() string { return string(opts.ID) }, Location: func() *time.Location { return time.Local }})
 		}
 	}
-	if f.dir != nil && sessionsToolAllowed(spec.Args) {
+	if f.dir != nil && daemonToolAllowed(spec.Args, tools.SessionsToolName) {
 		extra = append(extra, &tools.SessionsTool{Directory: sessionDirectory{dir: f.dir, from: opts.ID}})
 	}
 	if len(extra) > 0 {
@@ -212,22 +212,15 @@ func (h *factoryHandle) watch() {
 	}
 }
 
-// scheduleToolAllowed mirrors runInteractive's schedulerAllowed rule.
-func scheduleToolAllowed(raw []string) bool {
+// daemonToolAllowed mirrors runInteractive's schedulerAllowed rule for a
+// daemon-scoped tool: off with --no-tools or an explicit --tools list that
+// omits name.
+func daemonToolAllowed(raw []string, name string) bool {
 	args, err := ParseArgs(raw)
 	if err != nil {
 		return false
 	}
-	return !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, tools.ScheduleToolName))
-}
-
-// sessionsToolAllowed applies the schedule tool's rule to the sessions tool.
-func sessionsToolAllowed(raw []string) bool {
-	args, err := ParseArgs(raw)
-	if err != nil {
-		return false
-	}
-	return !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, tools.SessionsToolName))
+	return !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, name))
 }
 
 // extraToolsAgentBuilder installs the daemon-scoped tools (schedule,
@@ -321,10 +314,10 @@ func (d sessionDirectory) Send(ctx context.Context, to, text string) error {
 func renderSessionTree(tree session.Tree, self session.ID) string {
 	var b strings.Builder
 	for _, ws := range tree.Workspaces {
-		fmt.Fprintf(&b, "%s\n", ws.RepoRoot)
+		fmt.Fprintf(&b, "%s\n", tools.SanitizeSessionText(ws.RepoRoot))
 		for _, node := range ws.Sessions {
 			info := node.Info
-			title := info.Title
+			title := tools.SanitizeSessionText(info.Title)
 			if title == "" {
 				title = "(untitled)"
 			}
@@ -332,15 +325,15 @@ func renderSessionTree(tree session.Tree, self session.ID) string {
 			if session.ID(info.ID) == self {
 				mark = " (this session)"
 			}
-			fmt.Fprintf(&b, "  %s %s [%s, %s, %s]%s\n", info.ID, title, info.Attach, info.Run, info.Activity.Kind, mark)
+			fmt.Fprintf(&b, "  %s %s [%s, %s, %s]%s\n", info.ID, title, info.Attach, info.Run, tools.SanitizeSessionText(info.Activity.Kind), mark)
 			if info.PlanStep != nil {
-				fmt.Fprintf(&b, "    plan step %d/%d: %s\n", info.PlanStep.Index, info.PlanStep.Total, info.PlanStep.Text)
+				fmt.Fprintf(&b, "    plan step %d/%d: %s\n", info.PlanStep.Index, info.PlanStep.Total, tools.SanitizeSessionText(info.PlanStep.Text))
 			}
 			if info.Goal != nil {
-				fmt.Fprintf(&b, "    goal (%s): %s\n", info.Goal.Status, info.Goal.Objective)
+				fmt.Fprintf(&b, "    goal (%s): %s\n", tools.SanitizeSessionText(info.Goal.Status), tools.SanitizeSessionText(info.Goal.Objective))
 			}
 			for _, r := range node.Residents {
-				fmt.Fprintf(&b, "    resident %s %s [%s]: %s\n", r.ID, r.Profile, r.State, r.Task)
+				fmt.Fprintf(&b, "    resident %s %s [%s]: %s\n", tools.SanitizeSessionText(r.ID), tools.SanitizeSessionText(r.Profile), tools.SanitizeSessionText(r.State), tools.SanitizeSessionText(r.Task))
 			}
 		}
 	}

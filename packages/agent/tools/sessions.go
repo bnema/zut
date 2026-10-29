@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -141,7 +142,8 @@ func (t *SessionsTool) send(ctx context.Context, to, text string) (core.ToolResu
 }
 
 // resolveSessionTarget matches an exact ID, then a unique ID prefix, then a
-// unique exact title.
+// unique exact title. A unique ID prefix that is also the exact title of a
+// different session is ambiguous.
 func resolveSessionTarget(entries []SessionEntry, to string) (SessionEntry, error) {
 	for _, e := range entries {
 		if e.ID == to {
@@ -154,17 +156,22 @@ func resolveSessionTarget(entries []SessionEntry, to string) (SessionEntry, erro
 			prefix = append(prefix, e)
 		}
 	}
-	if len(prefix) == 1 {
-		return prefix[0], nil
-	}
-	if len(prefix) > 1 {
-		return SessionEntry{}, fmt.Errorf("session prefix %q is ambiguous: %s", to, joinSessionIDs(prefix))
-	}
 	var titled []SessionEntry
 	for _, e := range entries {
 		if e.Title != "" && e.Title == to {
 			titled = append(titled, e)
 		}
+	}
+	if len(prefix) > 1 {
+		return SessionEntry{}, fmt.Errorf("session prefix %q is ambiguous: %s", to, joinSessionIDs(prefix))
+	}
+	if len(prefix) == 1 {
+		for _, e := range titled {
+			if e.ID != prefix[0].ID {
+				return SessionEntry{}, fmt.Errorf("%q is ambiguous: ID prefix of %s and title of %s", to, prefix[0].ID, e.ID)
+			}
+		}
+		return prefix[0], nil
 	}
 	switch len(titled) {
 	case 1:
@@ -193,13 +200,24 @@ func formatSessionEntries(entries []SessionEntry) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		title := e.Title
+		title := SanitizeSessionText(e.Title)
 		if title == "" {
 			title = "(untitled)"
 		}
-		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  %s  %s", e.ID, orDash(e.Attach), orDash(e.Run), orDash(e.Activity), orDash(e.Model), orDash(e.CWD), title)
+		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  %s  %s", e.ID, orDash(e.Attach), orDash(e.Run), orDash(e.Activity), orDash(SanitizeSessionText(e.Model)), orDash(SanitizeSessionText(e.CWD)), title)
 	}
 	return b.String()
+}
+
+// SanitizeSessionText replaces control characters, including newlines, with
+// spaces so a session-supplied field cannot fake extra lines in a listing.
+func SanitizeSessionText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func orDash(s string) string {

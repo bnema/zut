@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +55,7 @@ func TestSessionsDirectoryAdapterListAndTree(t *testing.T) {
 	dir.EXPECT().Tree(mock.Anything).Return(session.Tree{Workspaces: []session.WorkspaceNode{{RepoRoot: "/r", Sessions: []session.SessionNode{
 		{Info: info, Residents: []session.ResidentSummary{{ID: "c1", Profile: "worker", State: "running", Task: "fix"}}},
 		{Info: other},
+		{Info: session.Info{ID: "s3", Title: "x\n  s9 fake [attached, idle, idle]", Attach: session.AttachStateDetached, Run: session.RunStateIdle, Activity: session.Activity{Kind: "idle"}}},
 	}}}}).Once()
 	adapter := sessionDirectory{dir: dir, from: "s1"}
 	entries, err := adapter.List(context.Background())
@@ -66,13 +68,15 @@ func TestSessionsDirectoryAdapterListAndTree(t *testing.T) {
 		"    plan step 2/3: test\n"+
 		"    goal (active): ship\n"+
 		"    resident c1 worker [running]: fix\n"+
-		"  s2 (untitled) [detached, idle, idle]", tree)
+		"  s2 (untitled) [detached, idle, idle]\n"+
+		"  s3 x   s9 fake [attached, idle, idle] [detached, idle, idle]", tree)
+	require.Len(t, strings.Split(tree, "\n"), 7, "a title must not add lines")
 }
 
 // sessionsCallProvider answers a request offering the sessions tool with one
 // sessions call, and every other request (tool result follow-up, side
 // requests such as titles) with a final message.
-func sessionsCallProvider(t *testing.T, arguments string) *httptest.Server {
+func sessionsCallProvider(t *testing.T, arguments func() string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -81,7 +85,7 @@ func sessionsCallProvider(t *testing.T, arguments string) *httptest.Server {
 		if bytes.Contains(body, []byte(`"name":"sessions"`)) && !bytes.Contains(body, []byte(`"role":"tool"`)) {
 			chunk = map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls",
 				"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call-1", "type": "function",
-					"function": map[string]string{"name": tools.SessionsToolName, "arguments": arguments}}}}}}}
+					"function": map[string]string{"name": tools.SessionsToolName, "arguments": arguments()}}}}}}}
 		}
 		chunk["usage"] = map[string]int{"prompt_tokens": 8, "completion_tokens": 2}
 		data, _ := json.Marshal(chunk)
@@ -89,6 +93,31 @@ func sessionsCallProvider(t *testing.T, arguments string) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+func staticArgs(raw []byte) func() string { return func() string { return string(raw) } }
+
+// waitSessionsToolResult polls id's transcript for the sessions tool result.
+// A pending confirmation means the --no-yolo gate caught the call, so it fails
+// at once instead of waiting for the bound.
+func waitSessionsToolResult(t *testing.T, ctx context.Context, c *daemonclient.Client, id session.ID) (string, bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if out, isErr, ok := sessionsToolResult(ctx, c, id); ok {
+			return out, isErr
+		}
+		if snap, err := c.Port(id, false).Snapshot(ctx); err == nil {
+			for _, p := range snap.Pending {
+				if p.Kind == "confirm" && p.Confirm != nil && p.Confirm.Name == tools.SessionsToolName {
+					t.Fatalf("session %s: sessions tool call is waiting for confirmation; it must be exempt from the --no-yolo gate", id)
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session %s: no sessions tool result within 10s", id)
+	return "", false
 }
 
 // sessionsToolResult returns the text of the sessions tool result in id's transcript.
@@ -142,18 +171,16 @@ func TestDaemonFactorySessionsToolSend(t *testing.T) {
 	b, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: env, Args: sessionAssemblyArgs(sessionAssemblyProvider(t))})
 	require.NoError(t, err)
 	sendArgs, _ := json.Marshal(map[string]string{"action": "send", "to": b.ID[:8], "text": "ping from A"})
-	a, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: env, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, string(sendArgs))), "--no-yolo")})
+	a, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: env, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, staticArgs(sendArgs))), "--no-yolo")})
 	require.NoError(t, err)
-	detached, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: env, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, string(sendArgs))), "--no-yolo")})
+	detached, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: env, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, staticArgs(sendArgs))), "--no-yolo")})
 	require.NoError(t, err)
 
 	idA := session.ID(a.ID)
 	_, err = c.Attach(ctx, idA, 0, true)
 	require.NoError(t, err)
 	submitAndWait(t, ctx, c, idA)
-	var out string
-	var isErr, ok bool
-	require.Eventually(t, func() bool { out, isErr, ok = sessionsToolResult(ctx, c, idA); return ok }, 20*time.Second, 20*time.Millisecond)
+	out, isErr := waitSessionsToolResult(t, ctx, c, idA)
 	require.False(t, isErr, out)
 	require.Equal(t, "message sent to session "+b.ID, out)
 
@@ -167,10 +194,48 @@ func TestDaemonFactorySessionsToolSend(t *testing.T) {
 	idC := session.ID(detached.ID)
 	// A non-controlling port submits without attaching, so C stays detached.
 	require.NoError(t, c.Port(idC, false).Submit(ctx, session.Input{Text: "hello", Origin: session.InputOriginUser}))
-	require.Eventually(t, func() bool { out, isErr, ok = sessionsToolResult(ctx, c, idC); return ok }, 20*time.Second, 20*time.Millisecond)
+	out, isErr = waitSessionsToolResult(t, ctx, c, idC)
 	snap, err := c.Port(idC, false).Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, session.AttachStateDetached, snap.Info.Attach)
 	require.True(t, isErr)
 	require.Equal(t, tools.ErrSenderDetached.Error(), out)
+}
+
+// TestDaemonFactorySessionsToolLoopGuard: B, attached, runs a turn started by
+// A's message and tries to answer through the sessions tool; the loop guard
+// refuses it, which also shows Info.CurrentOrigin is inter_session while that
+// turn's tools run.
+func TestDaemonFactorySessionsToolLoopGuard(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+
+	var replyArgs atomic.Value
+	replyArgs.Store("{}")
+	b, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, func() string { return replyArgs.Load().(string) })), "--no-yolo")})
+	require.NoError(t, err)
+	sendArgs, _ := json.Marshal(map[string]string{"action": "send", "to": b.ID, "text": "ping"})
+	a, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: append(sessionAssemblyArgs(sessionsCallProvider(t, staticArgs(sendArgs))), "--no-yolo")})
+	require.NoError(t, err)
+	reply, _ := json.Marshal(map[string]string{"action": "send", "to": a.ID, "text": "pong"})
+	replyArgs.Store(string(reply))
+
+	idA, idB := session.ID(a.ID), session.ID(b.ID)
+	_, err = c.Attach(ctx, idB, 0, true)
+	require.NoError(t, err)
+	_, err = c.Attach(ctx, idA, 0, true)
+	require.NoError(t, err)
+	require.NoError(t, c.Port(idA, true).Submit(ctx, session.Input{Text: "hello", Origin: session.InputOriginUser}))
+	out, isErr := waitSessionsToolResult(t, ctx, c, idA)
+	require.False(t, isErr, out)
+
+	out, isErr = waitSessionsToolResult(t, ctx, c, idB)
+	snap, err := c.Port(idB, false).Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, session.AttachStateAttached, snap.Info.Attach)
+	require.True(t, isErr, out)
+	require.Equal(t, tools.ErrSenderLoop.Error(), out)
+	require.False(t, transcriptContains(ctx, c, idA, "pong"))
 }
