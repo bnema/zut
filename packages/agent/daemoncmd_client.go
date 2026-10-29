@@ -169,6 +169,13 @@ func runKillCommand(args []string, stdout, stderr io.Writer) int {
 
 // resolveSessionID matches an exact ID, then a unique ID prefix, like the
 // sessions tool (titles are not accepted for kill).
+// Session ID resolution errors. Their text is spliced into the messages with
+// %w so callers can test them with errors.Is without changing the wording.
+var (
+	errSessionAmbiguous = errors.New("ambiguous")
+	errSessionNotFound  = errors.New("no open session matches")
+)
+
 func resolveSessionID(list []session.Info, arg string) (string, error) {
 	if arg == "" {
 		return "", errors.New("empty session ID")
@@ -184,12 +191,12 @@ func resolveSessionID(list []session.Info, arg string) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no open session matches %q", arg)
+		return "", fmt.Errorf("%w %q", errSessionNotFound, arg)
 	case 1:
 		return matches[0], nil
 	default:
 		sort.Strings(matches)
-		return "", fmt.Errorf("session prefix %q is ambiguous: %s", arg, strings.Join(matches, ", "))
+		return "", fmt.Errorf("session prefix %q is %w: %s", arg, errSessionAmbiguous, strings.Join(matches, ", "))
 	}
 }
 

@@ -222,7 +222,7 @@ func resolveAttachTarget(list []session.Info, arg string) (string, error) {
 	if idErr == nil {
 		return id, nil
 	}
-	if strings.Contains(idErr.Error(), "ambiguous") {
+	if errors.Is(idErr, errSessionAmbiguous) {
 		return "", idErr
 	}
 	var matches []string
@@ -233,12 +233,12 @@ func resolveAttachTarget(list []session.Info, arg string) (string, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no open session matches %q", arg)
+		return "", fmt.Errorf("%w %q", errSessionNotFound, arg)
 	case 1:
 		return matches[0], nil
 	default:
 		sort.Strings(matches)
-		return "", fmt.Errorf("session title prefix %q is ambiguous: %s", arg, strings.Join(matches, ", "))
+		return "", fmt.Errorf("session title prefix %q is %w: %s", arg, errSessionAmbiguous, strings.Join(matches, ", "))
 	}
 }
 
