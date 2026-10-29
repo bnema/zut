@@ -1,0 +1,173 @@
+# Local daemon protocol (version 1)
+
+The protocol uses UTF-8 NDJSON over a local AF_UNIX socket: one JSON object
+per line, no pretty-printing. Each request has an opaque string `id`; exactly
+one `result` echoes it. Notifications have no `id`. Unknown optional fields
+are ignored. Frame size is limited to 32 MiB by the transport implementation.
+This document specifies contracts; transport and lossless codecs belong to L11.
+
+## Connection and versions
+
+Socket: Linux `$XDG_RUNTIME_DIR/zut/daemon.sock`, falling back to
+`$ZUT_HOME/run/daemon.sock`; Windows `%LOCALAPPDATA%\zut\run\daemon.sock`.
+`ZUT_DAEMON_SOCKET` overrides it. Directory permissions are 0700, socket 0600
+where supported. There is no remote transport or multi-user access.
+
+Send `hello` first. A protocol-version mismatch is a hard error. A binary
+version mismatch prints `daemon is running zut <v>; run "zut daemon restart"`
+and continues. `client_kind` is `tui`, `headless`, `cli`, or `bot`.
+
+```json
+{"id":"1","type":"hello","protocol_version":1,"client_version":"0.0.0-dev","client_kind":"tui","pid":123}
+{"id":"1","type":"result","ok":true,"data":{"protocol_version":1,"daemon_version":"0.0.0-dev"}}
+```
+
+## Requests
+
+The examples show the exact frame layout. Session IDs and titles below are
+synthetic. `create.spec` is `session.CreateSpec`; `env` and `args` are captured
+by the creating client, never inherited from daemon process cwd/environment.
+Credentials are shared through the auth store, not sent through this protocol;
+clients must not place credential values in creation args or env.
+
+```json
+{"id":"2","type":"create","spec":{"cwd":"/workspace","env":[],"args":[],"resume_path":"","fork":null,"headless":false}}
+{"id":"3","type":"attach","session":"s1","after_seq":0,"controlling":true}
+{"id":"4","type":"detach","session":"s1"}
+{"id":"5","type":"close","session":"s1","reason":"user_exit"}
+{"id":"6","type":"clear","session":"s1"}
+{"id":"7","type":"list"}
+{"id":"8","type":"tree"}
+{"id":"9","type":"snapshot","session":"s1"}
+{"id":"10","type":"port","session":"s1","method":"submit","params":{"in":{"text":"hello","images":[],"mode":"auto","origin":"user","from":null}}}
+{"id":"11","type":"daemon_stop","graceful_ms":2000}
+{"id":"12","type":"daemon_status"}
+```
+
+A fork uses `"fork":{"parent_path":"/sessions/parent.jsonl","up_to_message":3,"hidden":false}`.
+`up_to_message` counts message rows copied, matching `core.BranchSession` and
+`BranchSessionHidden`, not a zero-based message index. Root/cwd/version come
+from creation and assembly dependencies.
+
+`attach` replays events strictly after `after_seq` before live delivery.
+A sequence outside retention fails with `event sequence too old`; fetch a
+snapshot and attach after its `seq`. Retention is 8192 events or 16 MiB,
+whichever limit is reached first. A new controlling attach detaches the old
+controller. Non-controlling subscribers do not take control.
+
+## Results
+
+```json
+{"id":"4","type":"result","ok":true}
+{"id":"3","type":"result","ok":false,"error":"event sequence too old"}
+{"id":"12","type":"result","ok":true,"data":{"pid":123,"version":"0.0.0-dev","uptime_ms":1000,"sessions":1}}
+```
+
+`error` and `data` are optional. Errors are diagnostic strings, never serialized
+Go error objects. Result data contracts:
+
+| Request | Successful `data` |
+| --- | --- |
+| hello | `HelloData`: `protocol_version`, `daemon_version` |
+| create | `session.Info` for the new session |
+| attach | `session.Info` for the attached session |
+| detach, close, daemon_stop | omitted |
+| clear | `session.Info` for the successor |
+| list | array of `session.Info` |
+| tree | `session.Tree` (`workspaces` → `repo_root`, `sessions` → `info`, `residents`) |
+| snapshot | `session.Snapshot` |
+| port | method return value, or omitted for error-only methods |
+| daemon_status | `DaemonStatusData`: `pid`, `version`, `uptime_ms`, `sessions` |
+
+## Port dispatch
+
+Method names are snake_case. `params` is an object keyed by the Go argument
+names below (snake_case); context is transport-owned and never serialized.
+Payload fields use the snake_case JSON tags in `session`.
+
+| Method | Params | Successful data |
+| --- | --- | --- |
+| info | `{}` | Info |
+| snapshot | `{}` | Snapshot |
+| subscribe | `{"after_seq":0}` | omitted; subsequent event notifications |
+| submit | `{"in":Input}` | omitted |
+| abort, compact, reload_extensions, reload_credentials | `{}` | omitted |
+| cancel_queued | `{"id":"q1"}` | omitted |
+| slide_back_queued | `{}` | Input |
+| answer_confirmation | `{"req_id":"r1","decision":ConfirmDecision}` | omitted |
+| answer_question | `{"req_id":"r1","answers":[QuestionAnswer]}` | omitted |
+| resolve_deferred | `{"id":"d1","action":"dismiss"}` | omitted |
+| set_model | `{"provider_name":"provider","model":"model"}` | omitted |
+| set_reasoning | `{"level":"high"}` | omitted |
+| set_fast_mode, set_jail | `{"enabled":true}` | omitted |
+| apply_profile | `{"n":1}` | omitted |
+| apply_settings | `{"patch":SettingsPatch}` | omitted |
+| set_goal | `{"command":{"op":"set","objective":"task"}}` | omitted |
+| change_cwd | `{"path":"/workspace"}` | omitted |
+| set_title | `{"title":"task"}` | omitted |
+| toggle_skill_pin | `{"name":"skill","global":false}` | omitted |
+| invoke_extension_command | `{"name":"command","args":"text"}` | omitted |
+| extension_panel_input | `{"ext":"extension","panel_id":"panel","key":{"type":"panel_key","panel_id":"panel","key":"enter","text":""}}` | omitted |
+| resident_action | `{"command":{"op":"stop","child_id":"child","prompt":""}}` | omitted |
+| sessions_query | `{}` | Tree |
+
+Types from `core`, `tools`, and `provider` retain their existing JSON field
+spelling; the lossless codecs preserve interface-valued content. The panel key
+is the existing `extproto.PanelKeyFromHost` (no additional key type).
+`SettingsPatch` omits orchestration: `Args.Orchestrate` is launch-only through
+`CreateSpec.Args`. Nil setting pointers mean unchanged. `GoalCommand.op` is
+`set|pause|resume|clear|complete`; deferred action is `dismiss|send_to_agent`;
+resident operation is `stop|interrupt|resume`.
+
+## Notifications and event payloads
+
+```json
+{"type":"event","session":"s1","seq":42,"kind":"title","data":{"title":"task"}}
+{"type":"detached_by_other","session":"s1"}
+{"type":"closed","session":"s1","successor":"s2"}
+```
+
+`successor` is omitted when there is none. `/clear` closes the old session and
+creates a successor with the same launch configuration; its old transcript
+remains resumable. A slow consumer receives a final `attach` event with
+`{"state":"detached","reason":"slow_consumer"}` and its subscription closes.
+That final event is subscriber-local, using the sequence of the event that could
+not be delivered; authoritative replay still contains the original event.
+
+Go event constants and payload types have distinct names to avoid namespace
+collisions. `Event.Data` carries the following concrete payloads:
+
+| Kind / Go constant | Payload type | `data` fields |
+| --- | --- | --- |
+| agent / EvAgent | core.AgentEvent in Event.Agent | existing `modes.EventToJSON` shapes, extended losslessly by the agent-event codec |
+| info / EvInfo | InfoEvent | info |
+| queue / EvQueue | QueueEvent | queue |
+| pending / EvPending | PendingEvent | pending |
+| pending_resolved / EvPendingResolved | PendingResolvedEvent | id, outcome |
+| deferred / EvDeferred | DeferredEvent | deferred |
+| note / EvNote | NoteEvent | note (level, text) |
+| ext_chrome / EvExtChrome | ExtChromeEvent | ext_chrome |
+| ext_panel / EvExtPanel | ExtPanelEvent | op (`open|update|close`), panel |
+| ext_alert / EvExtAlert | ExtAlertEvent | alert |
+| ext_display / EvExtDisplay | ExtDisplayEvent | ext, text |
+| ext_insert / EvExtInsert | ExtInsertEvent | text |
+| plan / EvPlan | PlanEvent | plan (map of core.PlanUpdate) |
+| goal / EvGoal | GoalEvent | goal, status |
+| title / EvTitle | TitleEvent | title |
+| compaction / EvCompaction | CompactionEvent | phase (`start|done|failed`), summary |
+| messages_replaced / EvMessagesReplaced | MessagesReplacedEvent | none; refetch Snapshot |
+| inter_session / EvInterSession | InterSessionEvent | from, text |
+| attach / EvAttach | AttachEvent | state, reason |
+| closed / EvClosed | ClosedEvent | reason, successor |
+
+`ExtStatus` and `ExtWidget` mirror the existing interactive extension chrome;
+`ExtPanel` associates `ext` with `spec` (`extproto.PanelSpec`). Notes contain
+`level` and `text`. Pending rescue options contain `error` and `candidates`
+(`provider/model` strings). Confirmation/question details retain existing core
+and tools types. Session attach state is always `attached` or `detached`.
+
+Detached confirmation/question requests are denied and recorded for review;
+client disconnect or detach resolves already pending requests the same way.
+Inter-session sending requires an attached sender whose current input origin is
+not `inter_session`. Listing and tree queries are always allowed. Restart restores
+open sessions idle and marks interrupted turns; no core JSONL format changes.
