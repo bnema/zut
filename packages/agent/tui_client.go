@@ -8,7 +8,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemonclient"
@@ -21,13 +20,10 @@ import (
 const detachDeadline = 2 * time.Second
 
 // daemonSessionClient adapts daemonclient.Client to modes.SessionClient.
-// It remembers the last attached session so Detach releases the right one
-// after /clear or a /sessions switch.
+// Detach goes through detacher, which asks the TUI which session it holds,
+// so a switch that failed after Attach never releases the wrong session.
 type daemonSessionClient struct {
 	c *daemonclient.Client
-
-	mu      sync.Mutex
-	current session.ID
 }
 
 var _ modes.SessionClient = (*daemonSessionClient)(nil)
@@ -61,30 +57,24 @@ func (a *daemonSessionClient) Create(ctx context.Context, spec session.CreateSpe
 }
 
 // Attach returns a controlling RemotePort for id. Control is taken when the
-// TUI subscribes (RemotePort.Subscribe sends the controlling attach), so the
-// id is only validated here through a snapshot.
-func (a *daemonSessionClient) Attach(ctx context.Context, id session.ID) (session.Port, error) {
-	p := a.c.Port(id, true)
-	if _, err := p.Snapshot(ctx); err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	a.current = id
-	a.mu.Unlock()
-	return p, nil
+// TUI subscribes (RemotePort.Subscribe sends the controlling attach). The id
+// is validated by the caller's Snapshot (Interactive.Run, /sessions switch), which errors for an unknown session.
+func (a *daemonSessionClient) Attach(_ context.Context, id session.ID) (session.Port, error) {
+	return a.c.Port(id, true), nil
 }
 
-// detach releases control of the currently attached session.
-func (a *daemonSessionClient) detach() {
-	a.mu.Lock()
-	id := a.current
-	a.mu.Unlock()
-	if id == "" {
-		return
+// detacher returns a Detach hook that releases the session held reports,
+// i.e. the session the TUI actually committed to.
+func (a *daemonSessionClient) detacher(held func() session.ID) func() {
+	return func() {
+		id := held()
+		if id == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), detachDeadline)
+		defer cancel()
+		_ = a.c.Detach(ctx, id)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), detachDeadline)
-	defer cancel()
-	_ = a.c.Detach(ctx, id)
 }
 
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
@@ -120,8 +110,11 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 		return 1
 	}
 	cfg := tuiClientConfig(out)
-	cfg.Port, cfg.Client, cfg.Detach = port, client, client.detach
-	if err := modes.NewInteractive(cfg).Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	var ui *modes.Interactive
+	cfg.Port, cfg.Client = port, client
+	cfg.Detach = client.detacher(func() session.ID { return ui.SessionID() })
+	ui = modes.NewInteractive(cfg)
+	if err := ui.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(out, err)
 		return 1
 	}

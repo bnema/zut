@@ -41,7 +41,10 @@ func TestDaemonSessionClientAttachReturnsPort(t *testing.T) {
 	_, err = p.Subscribe(ctx, 0)
 	require.NoError(t, err)
 
-	_, err = a.Attach(ctx, session.ID("nope"))
+	// A bad id errors through the caller's Snapshot.
+	bad, err := a.Attach(ctx, session.ID("nope"))
+	require.NoError(t, err)
+	_, err = bad.Snapshot(ctx)
 	require.Error(t, err)
 }
 
