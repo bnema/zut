@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,35 +65,48 @@ func TestResidentShutdownDrainsAcceptedCompletion(t *testing.T) {
 	require.False(t, c.res.dirty)
 }
 
-func TestResidentMailboxBoundedAndUpdatesCoalesce(t *testing.T) {
+// Tracked work is never refused for capacity: a burst of acceptances while the
+// actor is stalled is all tracked, and every completion is delivered once the
+// actor resumes. Updates coalesce into one dirty flag.
+func TestResidentBurstAdmittedAndUpdatesCoalesce(t *testing.T) {
+	const burst = 300
 	c, _, obs, delivered, gate := newGatedResidentController(t)
 	release := gate()
-	for n := 0; n < residentMailboxCap; n++ {
+	for n := 0; n < burst; n++ {
 		obs.accepted(subagents.ResidentChildSpec{ID: "c" + strconv.Itoa(n)}, "turn", "task")
 	}
 	for n := 0; n < 1000; n++ {
 		obs.update("c0")
 	}
 	c.res.inboxMu.Lock()
-	require.Len(t, c.res.inbox, residentMailboxCap)
+	require.Len(t, c.res.inbox, burst)
 	require.True(t, c.res.dirty)
 	c.res.inboxMu.Unlock()
-	// Overflowing acceptance stays untracked; overflowing completion is refused.
-	obs.accepted(subagents.ResidentChildSpec{ID: "overflow"}, "turn", "task")
-	require.True(t, c.res.tracker.TrackResident("overflow", "turn"))
-	require.False(t, obs.completed(subagents.ResidentCompletion{ChildID: "c1", TurnID: "turn", Summary: "done"}))
-	release()
-	require.Eventually(t, func() bool {
-		c.res.inboxMu.Lock()
-		defer c.res.inboxMu.Unlock()
-		return len(c.res.inbox) == 0 && !c.res.dirty
-	}, 5*time.Second, time.Millisecond)
-	// The refused completion is retryable once capacity returns.
-	require.True(t, obs.completed(subagents.ResidentCompletion{ChildID: "c1", TurnID: "turn", Summary: "done"}))
-	select {
-	case in := <-delivered:
-		require.Contains(t, in.Text, "done")
-	case <-time.After(5 * time.Second):
-		t.Fatal("completion not delivered")
+	for n := 0; n < burst; n++ {
+		id := "c" + strconv.Itoa(n)
+		require.False(t, c.res.tracker.TrackResident(id, "turn"), "acceptance %s not tracked", id)
+		require.True(t, obs.completed(subagents.ResidentCompletion{ChildID: id, TurnID: "turn", Summary: "done-" + id}))
 	}
+	release()
+	seen := map[string]bool{}
+	var last Input
+	deadline := time.After(5 * time.Second)
+	for len(seen) < burst {
+		select {
+		case in := <-delivered:
+			last = in
+			for _, line := range strings.Split(in.Text, "\n") {
+				if id, ok := strings.CutPrefix(line, "- "); ok {
+					id, _, _ = strings.Cut(id, ":")
+					require.False(t, seen[id], "duplicate delivery for %s", id)
+					seen[id] = true
+				}
+			}
+		case <-deadline:
+			t.Fatalf("delivered %d of %d", len(seen), burst)
+		}
+	}
+	// Every registered worker finished, so none remains active.
+	require.NotContains(t, last.Text, "Still running")
+	require.NoError(t, c.call(context.Background(), func() { require.False(t, c.res.coordinator.HasPendingWorkers()) }))
 }

@@ -83,16 +83,18 @@ func (c *Controller) residentsRunEnded() {
 	c.res.deliver(c.res.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions)
 }
 
-// residentMailboxCap bounds accepted-but-undelivered observer work. Update
-// notifications take no slot; they coalesce into one dirty flag.
-const residentMailboxCap = 256
+// The mailbox has no numeric cap: it holds only acceptances and completions of
+// tracked turns, both bounded by the residents the manager spawned (one
+// completion per tracked turn; duplicates are rejected by the tracker). Updates
+// carry no state and coalesce into one dirty flag. Refusing a tracked item
+// would lose an async result the manager never retries.
 
 // postResidentLocked queues observer work without waiting for the actor. The
 // caller holds inboxMu, which serializes admission with residentsShutdown.
 // A single dispatcher preserves order, including acceptance before completion.
 func (c *Controller) postResidentLocked(fn func()) bool {
 	s := &c.res
-	if s.closed || len(s.inbox) >= residentMailboxCap {
+	if s.closed {
 		return false
 	}
 	s.inbox = append(s.inbox, fn)
@@ -202,14 +204,6 @@ func (c *Controller) residentsInit() {
 		if s.closed {
 			return
 		}
-		if len(s.inbox) >= residentMailboxCap {
-			// Leaving the turn untracked makes its completion return false, so
-			// the manager keeps ownership of that result.
-			if c.deps.Logger != nil {
-				c.deps.Logger.Warn("resident mailbox full; acceptance not tracked", "child", spec.ID, "turn", turnID)
-			}
-			return
-		}
 		if !s.tracker.TrackResident(spec.ID, turnID) {
 			return
 		}
@@ -236,7 +230,7 @@ func (c *Controller) residentsInit() {
 	m.SetCompletionObserver(func(completion subagents.ResidentCompletion) bool {
 		s.inboxMu.Lock()
 		defer s.inboxMu.Unlock()
-		if s.closed || len(s.inbox) >= residentMailboxCap {
+		if s.closed {
 			return false
 		}
 		if !s.tracker.Report(completion.Completion()) {
