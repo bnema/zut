@@ -117,6 +117,7 @@ type LiveTool struct {
 
 // Input is a terminal-free session contract payload.
 type Input struct {
+	Hidden []provider.Message `json:"hidden,omitempty"`
 	// HostEvent is queued as core.QueuedMessage.HostEvent by the turn cluster.
 	HostEvent bool                  `json:"host_event,omitempty"`
 	Text      string                `json:"text"`

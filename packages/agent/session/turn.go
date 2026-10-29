@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
@@ -130,6 +131,17 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	}
 	if !continuing {
 		c.goalSeam.goalBeforeTurn(&in)
+		// Mirror the baseline goal reassessment path: append text as user context
+		// with the hidden-message metadata before Prompt adds the visible input.
+		for _, message := range in.Hidden {
+			var text strings.Builder
+			for _, content := range message.Content {
+				if block, ok := content.(provider.TextBlock); ok {
+					text.WriteString(block.Text)
+				}
+			}
+			c.turn.agent.AppendUserContext(text.String(), message.Meta)
+		}
 	}
 	ag := c.turn.agent
 	if !continuing {

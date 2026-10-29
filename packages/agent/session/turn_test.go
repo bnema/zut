@@ -328,3 +328,43 @@ func TestTurnAgentOwnership(t *testing.T) {
 		require.Nil(t, c.currentAgent())
 	}))
 }
+
+func TestTurnGoalHiddenBeforePrompt(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	goal := newMockgoalSeam(t)
+	goal.EXPECT().goalBeforeTurn(mock.Anything).RunAndReturn(func(in *Input) {
+		in.Hidden = append(in.Hidden, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hidden reassessment"}}, Meta: map[string]string{"goal_interrupt_reassess": "true"}})
+	}).Once()
+	goal.EXPECT().goalAfterTurn(mock.Anything).Return().Once()
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("test").Maybe()
+	response := make(chan provider.Event, 2)
+	response <- provider.EventTextDelta{Delta: "answer"}
+	response <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer"}}}}
+	close(response)
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		require.GreaterOrEqual(t, len(req.Messages), 2)
+		require.Equal(t, "hidden reassessment", req.Messages[0].Content[len(req.Messages[0].Content)-1].(provider.TextBlock).Text)
+		require.Equal(t, "true", req.Messages[0].Meta["goal_interrupt_reassess"])
+		require.Equal(t, "visible prompt", req.Messages[1].Content[len(req.Messages[1].Content)-1].(provider.TextBlock).Text)
+		return response, nil
+	}).Once()
+	ag := core.NewAgent(client, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.goalSeam = goal }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Submit(ctx, Input{Text: "visible prompt"}))
+	for {
+		select {
+		case e := <-events:
+			if e.Kind == EvInfo && e.Data.(InfoEvent).Info.Run == RunStateIdle {
+				// Barrier includes goalAfterTurn, which follows idle publication.
+				require.NoError(t, c.call(ctx, func() {}))
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
