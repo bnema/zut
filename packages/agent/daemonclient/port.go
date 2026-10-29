@@ -20,6 +20,11 @@ import (
 // EvAttach{detached, "slow_consumer"} event instead of blocking the read loop.
 const SubscriberBuffer = 256
 
+// maxSlowResubscribes bounds consecutive re-attaches after daemon-side
+// slow_consumer drops with no delivered progress in between; one more such
+// drop ends the stream with a final slow_consumer event.
+const maxSlowResubscribes = 3
+
 // Reconnect backoff bounds for subscriptions after transport loss.
 const (
 	reconnectMin = 50 * time.Millisecond
@@ -100,10 +105,12 @@ func (p *RemotePort) Snapshot(ctx context.Context) (session.Snapshot, error) {
 // no event is skipped or repeated; if the daemon no longer retains it (or its
 // sequence restarted), a synthetic EvMessagesReplaced (Seq = the fresh
 // snapshot Seq the stream resumes after) tells the consumer to refetch.
-// detached_by_other, closed, slow-consumer and refused re-attach endings
-// close the channel after a final event.
+// A daemon-side slow_consumer drop re-attaches the same way (bounded by
+// maxSlowResubscribes without progress). detached_by_other, closed, local
+// slow-consumer overflow and refused re-attach endings close the channel
+// after a final event.
 func (p *RemotePort) Subscribe(ctx context.Context, afterSeq uint64) (<-chan session.Event, error) {
-	s := &subscription{port: p, last: afterSeq, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{})}
+	s := &subscription{port: p, last: afterSeq, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
 	c := p.c
 	conn, err := c.conn(ctx)
 	if err != nil {
@@ -176,13 +183,27 @@ type subscription struct {
 	out  chan session.Event
 	done bool
 	stop chan struct{}
+	// resub asks supervise to re-attach after the daemon dropped this
+	// subscriber as a slow consumer.
+	resub chan struct{}
 }
 
-// deliver forwards ev unless already delivered, ending slow consumers.
+// deliver forwards ev unless already delivered, ending slow consumers. A
+// slow_consumer detach received from the daemon is not forwarded: it only
+// means the daemon dropped the subscriber, so supervise re-attaches. A full
+// local out buffer is the client's own overflow and stays final.
 func (s *subscription) deliver(ev session.Event) {
 	s.mu.Lock()
 	if s.done || ev.Seq <= s.last {
 		s.mu.Unlock()
+		return
+	}
+	if isSlowConsumer(ev) {
+		s.mu.Unlock()
+		select {
+		case s.resub <- struct{}{}:
+		default:
+		}
 		return
 	}
 	if len(s.out) >= cap(s.out)-1 {
@@ -192,7 +213,7 @@ func (s *subscription) deliver(ev session.Event) {
 	}
 	s.last = ev.Seq
 	s.out <- ev
-	terminal := ev.Kind == session.EvClosed || ev.Kind == session.EvAttach && isFinalAttach(ev)
+	terminal := ev.Kind == session.EvClosed
 	s.mu.Unlock()
 	if info, ok := ev.Data.(session.InfoEvent); ok {
 		s.port.setInfo(info.Info)
@@ -202,9 +223,23 @@ func (s *subscription) deliver(ev session.Event) {
 	}
 }
 
-func isFinalAttach(ev session.Event) bool {
+func isSlowConsumer(ev session.Event) bool {
 	a, ok := ev.Data.(session.AttachEvent)
-	return ok && a.Reason == "slow_consumer"
+	return ev.Kind == session.EvAttach && ok && a.Reason == "slow_consumer"
+}
+
+// slowResubscribeAllowed reports whether a daemon slow_consumer drop may be
+// retried. progressAt is the last Seq seen at the previous drop and stalls
+// counts consecutive drops without delivered progress since then.
+func (s *subscription) slowResubscribeAllowed(progressAt *uint64, stalls *int) bool {
+	cur := s.lastSeq()
+	if cur > *progressAt {
+		*stalls = 0
+	} else {
+		*stalls++
+	}
+	*progressAt = cur
+	return *stalls <= maxSlowResubscribes
 }
 
 // finish closes the stream once, after an optional final event. The extra
@@ -279,27 +314,41 @@ func transient(err error) bool {
 	return errors.Is(err, daemonproto.ErrClosed) || errors.As(err, &ne) || absent(err)
 }
 
-// supervise ends the stream on ctx and reconnects after transport loss.
-// Any non-transport failure (the daemon answered and refused) is terminal.
+// supervise ends the stream on ctx, reconnects after transport loss and
+// re-attaches after a daemon-side slow_consumer drop. Any non-transport
+// failure (the daemon answered and refused) is terminal.
 func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 	defer s.finish(nil)
+	progressAt, stalls := s.lastSeq(), 0
 	for {
+		var err error
 		select {
 		case <-ctx.Done():
 			s.detachOnCancel()
 			return
 		case <-s.stop:
 			return
+		case <-s.resub:
+			if !s.slowResubscribeAllowed(&progressAt, &stalls) {
+				s.finish(&session.Event{Seq: s.lastSeq(), Session: s.port.id, At: time.Now(), Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
+				return
+			}
+			if err = s.reattach(ctx, conn); err == nil {
+				continue
+			}
 		case <-conn.Done():
 		}
 		delay := reconnectMin
 		for {
-			next, err := s.port.c.conn(ctx)
-			if err == nil {
-				err = s.reattach(ctx, next)
+			if err == nil || transient(err) {
+				var next *daemonproto.Conn
+				next, err = s.port.c.conn(ctx)
 				if err == nil {
-					conn = next
-					break
+					err = s.reattach(ctx, next)
+					if err == nil {
+						conn = next
+						break
+					}
 				}
 			}
 			if ctx.Err() != nil {

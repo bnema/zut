@@ -34,6 +34,8 @@ type miniDaemon struct {
 	calls     []daemonproto.PortRequest
 	types     []string
 	attachErr error
+	attaches  []daemonproto.AttachRequest
+	onAttach  chan struct{} // optional; signaled after each successful attach
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 }
@@ -106,6 +108,10 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 			}
 		}
 		d.attached[conn] = true
+		d.attaches = append(d.attaches, a)
+		if d.onAttach != nil {
+			d.onAttach <- struct{}{}
+		}
 		return session.Info{ID: string(a.Session), Attach: session.AttachStateAttached}, nil
 	case "snapshot":
 		d.mu.Lock()
@@ -162,6 +168,33 @@ func (d *miniDaemon) publish(title string) uint64 {
 		_ = d.notify(c, ev)
 	}
 	return d.seq
+}
+
+// dropSlowConsumer mimics the session controller dropping a full subscriber
+// while publishing title: the event is retained, but every attached
+// connection instead gets a final detached/slow_consumer event carrying its
+// Seq and loses its subscription. Connections stay open. An empty title
+// drops without publishing (the drop event carries the next, unused Seq),
+// so a re-attach makes no progress.
+func (d *miniDaemon) dropSlowConsumer(title string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	seq := d.seq + 1
+	if title != "" {
+		d.seq = seq
+		d.events = append(d.events, session.Event{Seq: seq, Session: "s1", Kind: session.EvTitle, Data: session.TitleEvent{Title: title}})
+	}
+	drop := session.Event{Seq: seq, Session: "s1", Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}}
+	for c := range d.attached {
+		delete(d.attached, c)
+		_ = d.notify(c, drop)
+	}
+}
+
+func (d *miniDaemon) attachRequests() []daemonproto.AttachRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]daemonproto.AttachRequest(nil), d.attaches...)
 }
 
 // trim drops retained events up to and including seq.
