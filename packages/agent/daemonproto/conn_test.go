@@ -1,6 +1,7 @@
 package daemonproto_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/provider"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -168,5 +170,154 @@ func TestConnServeCancellationAndMalformedFrames(t *testing.T) {
 	}
 	if err := c.Call(context.Background(), map[string]any{"type": "closed"}, nil); !errors.Is(err, daemonproto.ErrClosed) {
 		t.Fatal(err)
+	}
+}
+
+// Reading a prefix synchronizes with an active write, without a test transport.
+func TestConnPeerCloseDuringCallWrite(t *testing.T) {
+	for i := 0; i < 250; i++ {
+		a, b := net.Pipe()
+		c := daemonproto.NewConn(a, daemonproto.Options{})
+		result := make(chan error, 1)
+		go func() {
+			result <- c.Call(context.Background(), map[string]any{"type": "write", "payload": strings.Repeat("x", 4096)}, nil)
+		}()
+		var prefix [1]byte
+		if _, err := b.Read(prefix[:]); err != nil {
+			t.Fatal(err)
+		}
+		b.Close()
+		select {
+		case err := <-result:
+			if !errors.Is(err, daemonproto.ErrClosed) {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: Call blocked", i)
+		}
+		select {
+		case <-c.Done():
+		default:
+			t.Fatalf("iteration %d: connection not synchronously closed", i)
+		}
+		c.Close()
+	}
+}
+
+func TestConnExactFrameBoundary(t *testing.T) {
+	const limit = 128
+	for _, size := range []int{limit, limit + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			frame := `{"type":"note","padding":"` + strings.Repeat("x", size-len(`{"type":"note","padding":""}`)) + `"}`
+			if len(frame) != size {
+				t.Fatalf("fixture size %d", len(frame))
+			}
+			a, b := net.Pipe()
+			received := make(chan struct{}, 1)
+			c := daemonproto.NewConn(a, daemonproto.Options{MaxFrame: limit, OnNotification: func(daemonproto.Notification) { received <- struct{}{} }})
+			done := make(chan error, 1)
+			go func() { done <- c.Serve(context.Background()) }()
+			go func() { _, _ = b.Write([]byte(frame + "\n")); b.Close() }()
+			select {
+			case err := <-done:
+				if size == limit {
+					if !errors.Is(err, daemonproto.ErrClosed) {
+						t.Fatal(err)
+					}
+					select {
+					case <-received:
+					default:
+						t.Fatal("exact limit frame not dispatched")
+					}
+				} else if !errors.Is(err, daemonproto.ErrFrameTooLarge) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("read blocked")
+			}
+			c.Close()
+			b.Close()
+			// Verify the same boundary on the outbound path.
+			a, b = net.Pipe()
+			c = daemonproto.NewConn(a, daemonproto.Options{MaxFrame: limit})
+			read := make(chan string, 1)
+			go func() { line, _ := bufio.NewReader(b).ReadString('\n'); read <- line }()
+			err := c.Notify(json.RawMessage(frame))
+			if size == limit {
+				if err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case line := <-read:
+					if len(line) != limit+1 {
+						t.Fatalf("wire length %d", len(line))
+					}
+				case <-time.After(time.Second):
+					t.Fatal("write blocked")
+				}
+			} else if !errors.Is(err, daemonproto.ErrFrameTooLarge) {
+				t.Fatal(err)
+			}
+			c.Close()
+			b.Close()
+			if size > limit {
+				select {
+				case <-read:
+				case <-time.After(time.Second):
+					t.Fatal("reader did not exit")
+				}
+			}
+		})
+	}
+}
+
+func orderedWriterGoroutines() int {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return strings.Count(string(buf[:n]), "/internal/ndjson.(*OrderedPipe).run(")
+}
+
+func TestConnCloseCompletesWriterAndHandler(t *testing.T) {
+	baseline := orderedWriterGoroutines()
+	entered := make(chan struct{})
+	handlerDone := make(chan struct{})
+	c, s := servePair(t, daemonproto.Options{OnRequest: func(ctx context.Context, _ daemonproto.Request) (any, error) {
+		close(entered)
+		defer close(handlerDone)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}})
+	callDone := make(chan error, 1)
+	go func() { callDone <- c.Call(context.Background(), map[string]any{"type": "wait"}, nil) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	s.Close()
+	c.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		handlerExited := false
+		select {
+		case <-handlerDone:
+			handlerExited = true
+		default:
+		}
+		if handlerExited && orderedWriterGoroutines() <= baseline {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines did not exit: handler=%v writers=%d baseline=%d", handlerExited, orderedWriterGoroutines(), baseline)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, daemonproto.ErrClosed) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Call did not exit")
 	}
 }

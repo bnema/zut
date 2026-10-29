@@ -1,6 +1,7 @@
 package daemonproto
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -295,6 +296,11 @@ func hydrate(raw json.RawMessage, v reflect.Value) error {
 			}
 		}
 		return nil
+	case reflect.Interface:
+		// Untyped tool details must not round integer values through float64.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		return dec.Decode(v.Addr().Interface())
 	default:
 		return json.Unmarshal(raw, v.Addr().Interface())
 	}

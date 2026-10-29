@@ -104,12 +104,11 @@ func (c *Conn) write(ctx context.Context, frame any) error {
 	}
 	_, err = c.writer.WriteContext(ctx, append(b, '\n'), ndjson.WriteTimeout)
 	if err != nil {
-		select {
-		case <-c.done:
-			return ErrClosed
-		default:
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
 		}
-		return err
+		c.Close()
+		return ErrClosed
 	}
 	return nil
 }

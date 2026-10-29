@@ -133,3 +133,30 @@ func TestSnapshotResultCodec(t *testing.T) {
 		t.Fatalf("snapshot mismatch\n%#v\n%#v", want, got)
 	}
 }
+
+func TestToolResultDetailsExactLargeInteger(t *testing.T) {
+	const number = "9007199254740993"
+	ev := core.EvToolResult{ID: "call", Result: core.ToolResult{Details: map[string]any{"large": json.Number(number), "nested": []any{json.Number(number)}}}}
+	kind, raw, err := daemonproto.EncodeAgentEvent(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := daemonproto.DecodeAgentEvent(kind, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := got.(core.EvToolResult).Result.Details.(map[string]any)
+	if n, ok := details["large"].(json.Number); !ok || n.String() != number {
+		t.Fatalf("integer rounded: %#v", details["large"])
+	}
+	if n, ok := details["nested"].([]any)[0].(json.Number); !ok || n.String() != number {
+		t.Fatalf("nested integer rounded: %#v", details["nested"])
+	}
+	_, again, err := daemonproto.EncodeAgentEvent(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(again) {
+		t.Fatalf("round trip changed number:\n%s\n%s", raw, again)
+	}
+}
