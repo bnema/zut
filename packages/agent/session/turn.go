@@ -47,6 +47,11 @@ func cloneTurn(in LiveTurn) LiveTurn {
 
 // Submit starts idle work, queues busy work, or steers the running agent.
 // The request context governs command delivery only, never the agent lifetime.
+//
+// Input.Hidden messages are text-only: they become hidden user context through
+// core.Agent.AppendUserContext, so non-text blocks are skipped with an error
+// note. Steering cannot carry hidden context, so a busy steer with Hidden set
+// is queued instead.
 func (c *Controller) Submit(ctx context.Context, in Input) error {
 	var result error
 	err := c.call(ctx, func() {
@@ -57,7 +62,7 @@ func (c *Controller) Submit(ctx context.Context, in Input) error {
 			c.turn.projection.LastUserInputAt = c.deps.Clock()
 		}
 		if c.isBusy() {
-			if in.Mode == "steer" && c.turn.agent != nil {
+			if in.Mode == "steer" && c.turn.agent != nil && len(in.Hidden) == 0 {
 				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: in.HostEvent})
 			} else {
 				c.enqueue(in)
@@ -117,14 +122,18 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 func (c *Controller) publishQueue() {
 	c.publish(EvQueue, QueueEvent{Queue: append([]QueuedInput(nil), c.turn.queue...)})
 }
-func (c *Controller) publishTurnInfo()         { c.updateInfo(); c.publish(EvInfo, InfoEvent{Info: c.Info()}) }
+func (c *Controller) publishTurnInfo() { c.updateInfo(); c.publish(EvInfo, InfoEvent{Info: c.Info()}) }
+func (c *Controller) publishError(text string) {
+	c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: text}})
+}
 func (c *Controller) startTurn(in Input) error { return c.runTurn(in, false) }
 
 func (c *Controller) runTurn(in Input, continuing bool) error {
 	if c.isBusy() {
 		return ErrBusy
 	}
-	if c.compactSeam.maybeAutoCompact(in) {
+	// Baseline compacts only before fresh input, never between agent-queued messages.
+	if !continuing && c.compactSeam.maybeAutoCompact(in) {
 		return nil
 	}
 	if err := c.ensureAgent(); err != nil {
@@ -139,6 +148,8 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 			for _, content := range message.Content {
 				if block, ok := content.(provider.TextBlock); ok {
 					text.WriteString(block.Text)
+				} else {
+					c.publishError(fmt.Sprintf("hidden message: skipped non-text %T block", content))
 				}
 			}
 			c.turn.agent.AppendUserContext(text.String(), message.Meta)
@@ -168,7 +179,7 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 		}()
 		callbacks := c.newTurnCallbacks()
 		callbacks.push(func() { c.residentSeam.residentsRunStarted() })
-		sink := func(ev core.AgentEvent) { callbacks.push(func() { c.applyAgentEvent(ev) }) }
+		sink := func(ev core.AgentEvent) { callbacks.pushEvent(ev) }
 		var err error
 		if continuing {
 			err = ag.Continue(ctx, sink)
@@ -184,6 +195,9 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	return nil
 }
 func (c *Controller) finishTurn(ctx context.Context, err error) {
+	origin := c.turn.live.Origin
+	// The final assistant message lives in Messages; idle has no live turn.
+	c.turn.live = LiveTurn{}
 	c.turn.busy = false
 	c.turn.cancel = nil
 	c.turn.projection.Activity = Activity{Kind: "idle", Since: c.deps.Clock()}
@@ -198,9 +212,10 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		pending := c.turn.agent.DrainQueuedMessages()
 		host := c.turn.queue
 		c.turn.queue = nil
+		var explicit []core.QueuedMessage
 		for _, message := range pending {
 			if repetitive && !message.HostEvent {
-				c.enqueue(Input{Text: message.Text, Images: message.Images, Origin: "user"})
+				explicit = append(explicit, message)
 			} else if ctx.Err() == nil && message.HostEvent {
 				c.turn.agent.QueuePrompt(message)
 			}
@@ -221,6 +236,12 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: q.Input.Text, Images: q.Input.Images, HostEvent: true})
 			}
 		}
+		// Baseline order: surviving queued items first, then explicit prompts
+		// typed during the repetitive loop, with fresh identifiers.
+		for _, message := range explicit {
+			c.turn.next++
+			c.turn.queue = append(c.turn.queue, QueuedInput{ID: fmt.Sprint(c.turn.next), Input: Input{Text: message.Text, Images: message.Images, Origin: "user"}})
+		}
 		c.publishQueue()
 	}
 	c.publishTurnInfo()
@@ -236,13 +257,19 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
 		c.publishQueue()
 		if e := c.startTurn(next.Input); e != nil {
-			c.publish(EvNote, NoteEvent{Note: Note{Text: e.Error()}})
+			// Restore the item at its position so a failed start never loses input.
+			c.turn.queue = append(c.turn.queue[:index], append([]QueuedInput{next}, c.turn.queue[index:]...)...)
+			c.publishQueue()
+			c.publishError(e.Error())
 		}
 		return
 	}
 	if err == nil && ctx.Err() == nil && c.turn.agent.QueuedMessageCount() > 0 {
-		_ = c.runTurn(Input{Origin: c.turn.live.Origin}, true)
-		return
+		e := c.runTurn(Input{Origin: origin}, true)
+		if e == nil {
+			return
+		}
+		c.publishError(e.Error())
 	}
 	end := c.turn.end
 	if err != nil {
@@ -265,6 +292,7 @@ func (c *Controller) tool(id string) *LiveTool {
 	return &c.turn.live.Tools[len(c.turn.live.Tools)-1]
 }
 func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
+	before := c.turn.projection
 	switch e := ev.(type) {
 	case core.EvTurnEnd:
 		c.turn.end = e
@@ -274,7 +302,9 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 		c.turn.live.AssistantText = ""
 	case core.EvTextDelta:
 		c.turn.live.AssistantText += e.Delta
-		c.turn.projection.Activity = Activity{Kind: "streaming", Since: c.deps.Clock()}
+		if c.turn.projection.Activity.Kind != "streaming" {
+			c.turn.projection.Activity = Activity{Kind: "streaming", Since: c.deps.Clock()}
+		}
 	case core.EvToolUseStart:
 		t := c.tool(e.ID)
 		t.Name = e.Name
@@ -316,7 +346,14 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 	c.compact.observe(ev)
 	c.res.observe(ev)
 	c.publishAgent(ev)
-	c.publishTurnInfo()
+	if projectionChanged(before, c.turn.projection) {
+		c.publishTurnInfo()
+	}
+}
+
+// projectionChanged ignores activity timestamps so streaming does not flood EvInfo.
+func projectionChanged(a, b turnInfoProjection) bool {
+	return a.Activity.Kind != b.Activity.Kind || a.Activity.Tool != b.Activity.Tool || a.Usage != b.Usage || a.ContextUsed != b.ContextUsed || a.ContextMax != b.ContextMax
 }
 
 func (c *Controller) isBusy() bool { return c.turn.busy }
@@ -389,13 +426,24 @@ func (c *Controller) setAgent(ag *core.Agent) error {
 
 // turnCallbacks serializes run callbacks without waiting on the actor. In
 // particular, a reentrant sink called by actor-owned hooks cannot deadlock.
-// One worker preserves sink order and the final run boundary in the same FIFO.
+// One worker preserves sink order and the final run boundary in the same FIFO
+// and applies each pending batch in a single actor call. The sink never blocks;
+// past callbackMergeThreshold entries, consecutive text or tool-progress deltas
+// for the same target are merged so the backlog stays bounded without loss.
 type turnCallbacks struct {
 	mu       sync.Mutex
-	pending  []func()
+	pending  []turnCallback
 	wake     chan struct{}
 	finished chan struct{}
 }
+
+// turnCallback holds either an agent event or an actor function.
+type turnCallback struct {
+	ev core.AgentEvent
+	fn func()
+}
+
+const callbackMergeThreshold = 256
 
 func (c *Controller) newTurnCallbacks() *turnCallbacks {
 	q := &turnCallbacks{wake: make(chan struct{}, 1), finished: make(chan struct{})}
@@ -415,10 +463,16 @@ func (c *Controller) newTurnCallbacks() *turnCallbacks {
 					if len(batch) == 0 {
 						break
 					}
-					for _, fn := range batch {
-						if c.call(context.Background(), fn) != nil {
-							return
+					if c.call(context.Background(), func() {
+						for _, item := range batch {
+							if item.fn != nil {
+								item.fn()
+							} else {
+								c.applyAgentEvent(item.ev)
+							}
 						}
+					}) != nil {
+						return
 					}
 				}
 			}
@@ -426,9 +480,32 @@ func (c *Controller) newTurnCallbacks() *turnCallbacks {
 	}()
 	return q
 }
-func (q *turnCallbacks) push(fn func()) {
+func (q *turnCallbacks) push(fn func()) { q.add(turnCallback{fn: fn}) }
+func (q *turnCallbacks) pushEvent(ev core.AgentEvent) {
+	q.add(turnCallback{ev: ev})
+}
+func (q *turnCallbacks) add(item turnCallback) {
 	q.mu.Lock()
-	q.pending = append(q.pending, fn)
+	if n := len(q.pending); n >= callbackMergeThreshold && item.ev != nil {
+		last := &q.pending[n-1]
+		switch e := item.ev.(type) {
+		case core.EvTextDelta:
+			if prev, ok := last.ev.(core.EvTextDelta); ok {
+				prev.Delta += e.Delta
+				last.ev = prev
+				item = turnCallback{}
+			}
+		case core.EvToolProgress:
+			if prev, ok := last.ev.(core.EvToolProgress); ok && prev.ID == e.ID {
+				prev.Text += e.Text
+				last.ev = prev
+				item = turnCallback{}
+			}
+		}
+	}
+	if item.ev != nil || item.fn != nil {
+		q.pending = append(q.pending, item)
+	}
 	q.mu.Unlock()
 	select {
 	case q.wake <- struct{}{}:

@@ -3,9 +3,11 @@ package session
 import (
 	"context"
 	"errors"
-	"github.com/bnema/zut/packages/agent/tools"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
@@ -96,7 +98,10 @@ func TestTurnStreamAndQueue(t *testing.T) {
 	snap, err = c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Empty(t, snap.Queue)
-	require.Equal(t, "world", snap.Live.AssistantText)
+	require.Empty(t, snap.Live.AssistantText, "idle snapshot has no live turn")
+	require.Empty(t, snap.Live.Tools)
+	last := snap.Messages[len(snap.Messages)-1]
+	require.Equal(t, "world", last.Content[0].(provider.TextBlock).Text)
 	require.Equal(t, 12, snap.Info.ContextUsed)
 }
 func TestTurnQueueEditingAndAbort(t *testing.T) {
@@ -391,4 +396,208 @@ func TestTurnCallbacksReentrantAndOrdered(t *testing.T) {
 	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "onetwo", snap.Live.AssistantText)
+}
+
+func TestTurnCallbacksBoundedBurst(t *testing.T) {
+	c, ctx := newTestController(t)
+	gate := make(chan struct{})
+	require.NoError(t, c.post(ctx, func() { <-gate }))
+	q := c.newTurnCallbacks()
+	var want strings.Builder
+	maxPending := 0
+	for i := 0; i < 10000; i++ {
+		d := fmt.Sprint(i%10, ",")
+		want.WriteString(d)
+		q.pushEvent(core.EvTextDelta{Delta: d})
+		q.mu.Lock()
+		maxPending = max(maxPending, len(q.pending))
+		q.mu.Unlock()
+	}
+	require.LessOrEqual(t, maxPending, callbackMergeThreshold+1)
+	q.push(func() { close(q.finished) })
+	close(gate)
+	select {
+	case <-q.finished:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, want.String(), snap.Live.AssistantText)
+}
+
+func TestTurnInfoOnlyOnProjectionChange(t *testing.T) {
+	c, ctx := newTestController(t)
+	before, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.NoError(t, c.call(ctx, func() {
+		for i := 0; i < 1000; i++ {
+			c.applyAgentEvent(core.EvTextDelta{Delta: "x"})
+		}
+		c.applyAgentEvent(core.EvUsage{Usage: provider.Usage{InputTokens: 3}})
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	events, err := c.Subscribe(ctx, before.Seq)
+	require.NoError(t, err)
+	infos := 0
+	for seq := before.Seq; seq < snap.Seq; seq++ {
+		if (<-events).Kind == EvInfo {
+			infos++
+		}
+	}
+	require.Equal(t, 2, infos, "streaming start and usage only")
+}
+
+func idleWithQueue(t *testing.T, c *Controller, ctx context.Context, items ...Input) {
+	t.Helper()
+	require.NoError(t, c.call(ctx, func() {
+		c.turn.busy = true
+		for _, in := range items {
+			c.enqueue(in)
+		}
+	}))
+}
+
+func TestTurnQueuedStartFailureRestoresItem(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	// No agent and no builder: ensureAgent fails when the queued item starts.
+	idleWithQueue(t, c, ctx, Input{Text: "scheduled", Origin: "scheduler"}, Input{Text: "user", Origin: "user"})
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	var queue []QueuedInput
+	var note Note
+	require.NoError(t, c.call(ctx, func() {
+		c.finishTurn(context.Background(), nil)
+		queue = append(queue, c.turn.queue...)
+	}))
+	require.Len(t, queue, 2)
+	require.Equal(t, "user", queue[1].Input.Text)
+	for e := range events {
+		if e.Kind == EvNote {
+			note = e.Data.(NoteEvent).Note
+			break
+		}
+	}
+	require.Equal(t, "error", note.Level)
+	require.Contains(t, note.Text, "builder unavailable")
+}
+
+func TestTurnContinuingSkipsAutoCompact(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	compact := newMockcompactSeam(t)
+	compactCalls := 0
+	compact.EXPECT().maybeAutoCompact(mock.Anything).RunAndReturn(func(Input) bool { compactCalls++; return false }).Maybe()
+	goal := newMockgoalSeam(t)
+	goal.EXPECT().goalAfterTurn(mock.Anything).Return().Once()
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("test").Maybe()
+	response := make(chan provider.Event, 1)
+	response <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "ok"}}}}
+	close(response)
+	client.EXPECT().Stream(mock.Anything, mock.Anything).Return((<-chan provider.Event)(response), nil).Once()
+	ag := core.NewAgent(client, "test", "", nil)
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.call(ctx, func() {
+		c.compactSeam = compact
+		c.goalSeam = goal
+		c.turn.agent = ag
+		c.turn.busy = true
+		ag.QueuePrompt(core.QueuedMessage{Text: "agent queued"})
+		c.finishTurn(context.Background(), nil)
+	}))
+	idle := 0
+	for idle < 2 {
+		select {
+		case e := <-events:
+			if e.Kind == EvInfo && e.Data.(InfoEvent).Info.Run == RunStateIdle {
+				idle++
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	require.NoError(t, c.call(ctx, func() {}))
+	require.Zero(t, compactCalls)
+}
+
+func TestTurnRepetitionRebuildsQueueOnce(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	compact := newMockcompactSeam(t)
+	compact.EXPECT().maybeAutoCompact(mock.Anything).Return(true).Once()
+	ag := core.NewAgent(nil, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() {
+		c.compactSeam = compact
+		c.turn.agent = ag
+		c.turn.busy = true
+		c.enqueue(Input{Text: "existing-1", Origin: "user"})
+		c.enqueue(Input{Text: "existing-2", Origin: "user"})
+		ag.QueuePrompt(core.QueuedMessage{Text: "typed"})
+	}))
+	before, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	var queue []QueuedInput
+	require.NoError(t, c.call(ctx, func() {
+		c.finishTurn(context.Background(), core.ErrRepetitiveLoop)
+		queue = append(queue, c.turn.queue...)
+	}))
+	// existing-1 starts (compaction intercepts); remaining order is baseline.
+	require.Len(t, queue, 2)
+	require.Equal(t, "existing-2", queue[0].Input.Text)
+	require.Equal(t, "typed", queue[1].Input.Text)
+	require.Equal(t, "3", queue[1].ID, "pending prompts receive fresh IDs")
+	events, err := c.Subscribe(ctx, before.Seq)
+	require.NoError(t, err)
+	first := (<-events)
+	require.Equal(t, EvQueue, first.Kind)
+	texts := []string{}
+	for _, q := range first.Data.(QueueEvent).Queue {
+		texts = append(texts, q.Input.Text)
+	}
+	require.Equal(t, []string{"existing-1", "existing-2", "typed"}, texts)
+	require.NotEqual(t, EvQueue, (<-events).Kind, "rebuild publishes one queue event before info")
+}
+
+func TestTurnHiddenTextOnly(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	compact := newMockcompactSeam(t)
+	compact.EXPECT().maybeAutoCompact(mock.Anything).Return(false).Maybe()
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("test").Maybe()
+	stream := make(chan provider.Event)
+	started := make(chan struct{})
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		close(started)
+		return stream, nil
+	}).Once()
+	ag := core.NewAgent(client, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.compactSeam = compact }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	hidden := []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "ctx"}, provider.ImageBlock{}}}}
+	require.NoError(t, c.Submit(ctx, Input{Text: "go", Hidden: hidden}))
+	for e := range events {
+		if e.Kind == EvNote {
+			require.Equal(t, "error", e.Data.(NoteEvent).Note.Level)
+			require.Contains(t, e.Data.(NoteEvent).Note.Text, "non-text")
+			break
+		}
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	// A busy steer with hidden context is queued, not steered.
+	require.NoError(t, c.Submit(ctx, Input{Text: "steer", Mode: "steer", Hidden: hidden}))
+	require.Zero(t, ag.QueuedMessageCount())
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Queue, 1)
+	require.NoError(t, c.Abort(ctx))
 }

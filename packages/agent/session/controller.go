@@ -3,10 +3,11 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"github.com/bnema/zut/packages/core"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/bnema/zut/packages/core"
 )
 
 // EventRingSize bounds retained events in addition to the 16 MiB byte limit.
