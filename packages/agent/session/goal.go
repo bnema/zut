@@ -268,20 +268,30 @@ func (c *Controller) goalOnAbort() {
 	c.goal.returning = false
 }
 
-// goalBeforeTurn prefixes the reassessment instruction to the next user input.
-// Input has no hidden-message metadata counterpart, so the instruction travels
-// with the prompt rather than as a separately hidden transcript message.
+// goalBeforeTurn appends a hidden reassessment message before the next user
+// prompt without changing the visible user input.
 func (c *Controller) goalBeforeTurn(in *Input) {
 	c.goal.controller = c
 	if in == nil || in.Origin != InputOriginUser || !c.goal.armed {
 		return
 	}
 	g := c.currentGoal()
-	if g == nil || g.Status != core.GoalActive || g.ID != c.goal.interruptedID || g.MissionID != c.goal.interruptedMission {
+	if g == nil || g.Status != core.GoalActive || strings.TrimSpace(g.Objective) == "" || g.ID != c.goal.interruptedID || g.MissionID != c.goal.interruptedMission {
 		c.goal.armed = false
 		return
 	}
 	c.goal.armed = false
 	c.goal.returning = true
-	in.Text = "The previous turn was interrupted by the user; the autonomous goal below remains active. Handle the latest user message first. Classify it as changing, settling, blocking, or incidental to that goal. If it is incidental, answer it briefly and then continue the goal autonomously without waiting for the user to say continue. Call update_goal only for a genuine complete, blocked, or superseded transition.\n\nActive goal: " + g.Objective + "\n\n" + in.Text
+	text := "The previous turn was interrupted by the user; the autonomous goal below remains active. Handle the latest user message first. Classify it as changing, settling, blocking, or incidental to that goal. If it is incidental, answer it briefly and then continue the goal autonomously without waiting for the user to say continue. Call update_goal only for a genuine complete, blocked, or superseded transition.\n\nActive goal: " + g.Objective
+	if g.ID != "" {
+		text += " When superseding this goal, use goal_id " + g.ID + "."
+	}
+	if g.MissionID != "" {
+		text += " When setting a next goal, use mission_id " + g.MissionID + " and keep it within the same user mission."
+	}
+	in.Hidden = append(in.Hidden, provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: text}},
+		Meta:    map[string]string{"zut_goal_interrupt_reassess": "true"},
+	})
 }

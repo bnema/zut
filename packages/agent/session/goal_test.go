@@ -35,16 +35,18 @@ func GoalTestFinish(t *testing.T, c *Controller, tokens int, tool bool, end core
 		c.goalAfterTurn(end)
 	}))
 }
-func GoalTestInterrupt(t *testing.T, c *Controller) string {
-	var text string
+func GoalTestInterrupt(t *testing.T, c *Controller) Input {
+	var result Input
 	require.NoError(t, c.call(context.Background(), func() {
 		c.goalOnAbort()
 		c.goalAfterTurn(core.EvTurnEnd{Err: context.Canceled})
 		in := Input{Origin: InputOriginUser, Text: "latest question"}
 		c.goalBeforeTurn(&in)
-		text = in.Text
+		result = in
+		c.goalBeforeTurn(&in)
+		require.Len(t, in.Hidden, 1)
 	}))
-	return text
+	return result
 }
 func TestGoalPlanEvents(t *testing.T) {
 	c, ctx := newTestController(t)
