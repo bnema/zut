@@ -235,6 +235,14 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	rows, anchors := renderView.BuildWithAnchors(cols)
 	rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
 	i.mu.Lock()
+	if i.chatCacheKeyLocked(cols) != key {
+		// State changed while mu was released (e.g. a snapshot hydrate).
+		// Its own invalidate() may not have run yet, so the caller's
+		// renderRevision check would miss it and cache these stale rows
+		// under the new key. Mark the frame stale and schedule a repaint.
+		i.invalidate()
+		return rows
+	}
 	if i.view.MessagesRevision == renderView.MessagesRevision &&
 		i.view.RenderCacheRevision == renderView.RenderCacheRevision {
 		i.view.AdoptRenderCacheFrom(renderView)
