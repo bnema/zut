@@ -1033,6 +1033,10 @@ func (i *Interactive) cancelAndWaitForIdle() {
 	}
 }
 func (i *Interactive) openBtwDialog(args []string) {
+	if i.portMode.Load() {
+		i.openPortBtwDialog(args)
+		return
+	}
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -1056,6 +1060,40 @@ func (i *Interactive) openBtwDialog(args []string) {
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
 	i.btwDialog.Open(theme, ag, system, model, cwd, seed, compact, flatTools, lineInput, i.invalidate)
+	i.invalidate()
+}
+
+// openPortBtwDialog opens /btw on a headless fork of the attached daemon
+// session. The dialog creates and releases the fork off the render loop.
+func (i *Interactive) openPortBtwDialog(args []string) {
+	client := i.SessionClient()
+	if client == nil {
+		i.ReportError(errors.New("btw: no session client"))
+		return
+	}
+	info := i.SessionInfo()
+	parent := info.SessionPath
+	if parent == "" {
+		parent = i.currentSessionPath()
+	}
+	if parent == "" {
+		i.ReportError(errors.New("btw: no session file for the attached session"))
+		return
+	}
+	i.mu.Lock()
+	upTo := len(i.view.Messages)
+	theme := i.cfg.Theme
+	compact := i.compactModeEnabled()
+	flatTools := i.cfg.FlatTools
+	lineInput := tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines
+	i.mu.Unlock()
+	cwd := info.CWD
+	if cwd == "" {
+		cwd = i.cfg.CWD
+	}
+	spec := session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}, Headless: true}
+	seed := strings.TrimSpace(strings.Join(args, " "))
+	i.btwDialog.OpenPort(theme, client, spec, i.sessionCallTimeout(), cwd, seed, compact, flatTools, lineInput, i.invalidate)
 	i.invalidate()
 }
 func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
