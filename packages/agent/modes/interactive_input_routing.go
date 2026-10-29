@@ -547,6 +547,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		loadingSession := i.sessionLoading
 		i.mu.Unlock()
 		if loadingSession {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			i.markCtrlCExit()
 			return true
 		}
@@ -560,6 +563,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// ctrlCExitWindow quits.
 		if i.busy {
 			if i.ctrlCExitArmed() {
+				if i.port != nil {
+					return i.portDetach()
+				}
 				i.markCtrlCExit()
 				return true
 			}
@@ -593,6 +599,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		if i.ctrlCExitArmed() {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			i.markCtrlCExit()
 			return true
 		}
@@ -669,6 +678,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	case tui.KeyCtrlD:
 		if i.ed.IsEmpty() && !i.busy {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			return true
 		}
 	case tui.KeyCtrlL:

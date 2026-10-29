@@ -217,8 +217,20 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/goal":
 		i.runGoalCommand(ctx, cmd, parts)
 	case "/exit":
+		if i.port != nil {
+			i.portExit(ctx)
+			return false
+		}
 		return true
+	case "/detach":
+		if i.port != nil {
+			return i.portDetach()
+		}
 	case "/clear":
+		if i.port != nil {
+			i.portClear(ctx)
+			return false
+		}
 		// The bound session may still hold a plan core no longer has (a failed or
 		// skipped seed, a stray write). Read it before taking i.mu: the callback
 		// takes the host persistence lock, which must not nest under the mode

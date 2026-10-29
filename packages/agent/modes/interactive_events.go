@@ -858,6 +858,7 @@ type sessionResultKind uint8
 const (
 	sessionResultResnapshot sessionResultKind = iota
 	sessionResultSuccessor
+	sessionResultExit
 )
 
 // sessionResult is the outcome of an async daemon call, applied by the Run
@@ -995,6 +996,15 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.extNotes = nil
 		i.statusErr, i.statusOK = "", ""
 		i.hydrateLocked(res.snap)
+	case sessionResultExit:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		i.mu.Unlock()
+		return true
 	}
 	i.mu.Unlock()
 	i.scrollToBottom()
