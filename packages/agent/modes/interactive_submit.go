@@ -1,6 +1,12 @@
 package modes
 
-import "context"
+import (
+	"context"
+	"fmt"
+
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/provider"
+)
 
 // Submit feeds text through the agent loop as if the user had typed it.
 func (i *Interactive) Submit(text string) {
@@ -11,6 +17,10 @@ func (i *Interactive) Submit(text string) {
 	parent := i.runCtx
 	if parent == nil {
 		parent = context.Background()
+	}
+	if i.port != nil {
+		i.portSubmit(parent, text, nil)
+		return
 	}
 	i.mu.Lock()
 	awaitingStartupPre := i.awaitingStartupPre
@@ -64,4 +74,43 @@ func (i *Interactive) applyStartupPreResult(result startupPreResult) {
 	if i.ed.IsEmpty() {
 		i.ed.SetValue(result.deferred)
 	}
+}
+
+// portRunning reports whether the attached session is running a turn.
+func (i *Interactive) portRunning() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.portInfo.Run == session.RunStateRunning
+}
+
+// portSubmit sends a user prompt to the session port without blocking the
+// render loop. The resulting transcript arrives through session events.
+func (i *Interactive) portSubmit(ctx context.Context, text string, images []provider.ImageBlock) {
+	port := i.SessionPort()
+	in := session.Input{Text: text, Images: images, Mode: session.SubmitModeAuto, Origin: session.InputOriginUser}
+	go func() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+		defer cancel()
+		if err := port.Submit(callCtx, in); err != nil {
+			i.ReportError(fmt.Errorf("submit: %w", err))
+		}
+	}()
+}
+
+// portAbort asks the session port to abort the running turn off the render loop.
+func (i *Interactive) portAbort(ctx context.Context) {
+	port := i.SessionPort()
+	go func() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+		defer cancel()
+		if err := port.Abort(callCtx); err != nil {
+			i.ReportError(fmt.Errorf("abort: %w", err))
+		}
+	}()
 }

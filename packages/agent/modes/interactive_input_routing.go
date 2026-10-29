@@ -627,6 +627,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.invalidate()
 			return false
 		}
+		if i.port != nil {
+			if i.portRunning() {
+				i.portAbort(ctx)
+				return false
+			}
+			break
+		}
 		i.mu.Lock()
 		busyCancel := i.busy && i.cancelTurn != nil
 		cancelTurn := i.cancelTurn
@@ -930,6 +937,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return i.runSlash(ctx, text)
 		}
 
+		if i.port != nil {
+			clearSubmittedInput()
+			i.portSubmit(ctx, text, images)
+			return false
+		}
 		if i.agent == nil {
 			i.mu.Lock()
 			i.statusErr = "not logged in. type /login first."
