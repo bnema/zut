@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -36,6 +35,7 @@ func TestCompactionReplacesMessagesAndContinuesPrompt(t *testing.T) {
 	turn.EXPECT().currentAgent().Return(ag).Maybe()
 	continued := make(chan Input, 1)
 	turn.EXPECT().startTurn(next).RunAndReturn(func(in Input) error { continued <- in; return nil }).Once()
+	turn.EXPECT().drainQueued().Return().Once()
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
 	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
@@ -62,16 +62,6 @@ func TestCompactionReplacesMessagesAndContinuesPrompt(t *testing.T) {
 		}
 	}
 }
-func TestRescueDetachedFails(t *testing.T) {
-	c, ctx := newTestController(t)
-	lane9Turn(t, c, ctx)
-	confirm := newMockconfirmSeam(t)
-	confirm.EXPECT().awaitPending(mock.Anything, mock.MatchedBy(func(req PendingRequest) bool { return req.Kind == "rescue" && req.Rescue.Error == "overflow" })).Return(nil, ErrNotAttached).Once()
-
-	require.NoError(t, c.call(ctx, func() { c.confirmSeam = confirm }))
-	_, err := c.rescue(ctx, errors.New("overflow"))
-	require.ErrorIs(t, err, ErrNotAttached)
-}
 func TestCompactMissingAgent(t *testing.T) {
 	c, ctx := newTestController(t)
 	turn := lane9Turn(t, c, ctx)
@@ -88,6 +78,7 @@ func TestAutoCompactionPreservesPrompt(t *testing.T) {
 	in := Input{Text: "continue work", Origin: InputOriginResident}
 	done := make(chan struct{})
 	turn.EXPECT().startTurn(in).RunAndReturn(func(Input) error { close(done); return nil }).Once()
+	turn.EXPECT().drainQueued().Return().Once()
 	require.NoError(t, c.call(ctx, func() { require.True(t, c.maybeAutoCompact(in)) }))
 	select {
 	case <-done:

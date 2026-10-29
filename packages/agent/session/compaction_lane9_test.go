@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/bnema/zut/packages/agent/tools"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,6 +53,8 @@ func TestAbortCompactionFailsWithoutReplacingMessages(t *testing.T) {
 	ag := blockingAgent(t, started)
 	before := ag.Messages()
 	turn.EXPECT().currentAgent().Return(ag).Maybe()
+	// No pending prompt: abort only drains what was already queued.
+	turn.EXPECT().drainQueued().Return().Once()
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
 	require.NoError(t, c.Compact(ctx))
@@ -63,7 +66,7 @@ func TestAbortCompactionFailsWithoutReplacingMessages(t *testing.T) {
 	require.Equal(t, "failed", ev.Data.(CompactionEvent).Phase)
 	require.NoError(t, c.call(ctx, func() { require.False(t, c.compacting()) }))
 	require.Equal(t, before, ag.Messages())
-	// No note, no message replacement, no queued drain after an explicit abort.
+	// No note and no message replacement after an explicit abort.
 	select {
 	case ev := <-events:
 		t.Fatalf("unexpected event %s", ev.Kind)
@@ -90,6 +93,7 @@ func TestCompactBusyWhileCompacting(t *testing.T) {
 	turn := lane9Turn(t, c, ctx)
 	started := make(chan struct{})
 	turn.EXPECT().currentAgent().Return(blockingAgent(t, started)).Maybe()
+	turn.EXPECT().drainQueued().Return().Maybe()
 	require.NoError(t, c.Compact(ctx))
 	<-started
 	require.ErrorIs(t, c.Compact(ctx), ErrBusy)
@@ -97,19 +101,111 @@ func TestCompactBusyWhileCompacting(t *testing.T) {
 	require.NoError(t, c.call(ctx, c.abortCompaction))
 }
 
-func TestRescueTurnDetachedPublishesNote(t *testing.T) {
+// failingAgent's summary request fails immediately with a provider error.
+func failingAgent(t *testing.T) *core.Agent {
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	client.EXPECT().Stream(mock.Anything, mock.Anything).Return(nil, errors.New("boom")).Once()
+	ag := core.NewAgent(client, "model", "", nil)
+	for range 6 {
+		ag.AppendUserContext("original", nil)
+	}
+	return ag
+}
+
+func TestAbortCompactionRequeuesPromptAndDrains(t *testing.T) {
 	c, ctx := newTestController(t)
-	lane9Turn(t, c, ctx)
-	confirm := newMockconfirmSeam(t)
-	confirm.EXPECT().awaitPending(mock.Anything, mock.Anything).Return(nil, ErrNotAttached).Once()
+	turn := lane9Turn(t, c, ctx)
+	started := make(chan struct{})
+	turn.EXPECT().currentAgent().Return(blockingAgent(t, started)).Maybe()
+	next := Input{Text: "pending", Origin: InputOriginUser}
+	// The prompt rejoins the queue behind already-queued input, then the queue drains.
+	requeued := make(chan struct{})
+	turn.EXPECT().enqueue(next).RunAndReturn(func(Input) { close(requeued) }).Once()
+	drained := make(chan struct{})
+	turn.EXPECT().drainQueued().RunAndReturn(func() {
+		select {
+		case <-requeued:
+		default:
+			t.Error("drained before re-queueing the prompt")
+		}
+		close(drained)
+	}).Once()
+	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+	<-started
+	require.NoError(t, c.call(ctx, c.abortCompaction))
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func TestFailedCompactionStillSendsPromptThenDrains(t *testing.T) {
+	c, ctx := newTestController(t)
+	turn := lane9Turn(t, c, ctx)
+	turn.EXPECT().currentAgent().Return(failingAgent(t)).Maybe()
+	next := Input{Text: "pending", Origin: InputOriginUser}
+	sent := make(chan struct{})
+	turn.EXPECT().startTurn(next).RunAndReturn(func(Input) error {
+		require.True(t, c.compact.skipOnce, "prompt must bypass auto-compaction once")
+		close(sent)
+		return nil
+	}).Once()
+	drained := make(chan struct{})
+	turn.EXPECT().drainQueued().RunAndReturn(func() { <-sent; close(drained) }).Once()
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
-	require.NoError(t, c.call(ctx, func() {
-		c.confirmSeam = confirm
-		c.rescueTurn(errors.New("overflow"), Input{Text: "x"})
-	}))
-	ev := nextKinds(t, ctx, events, EvNote)
-	require.Contains(t, ev.Data.(NoteEvent).Note.Text, ErrNotAttached.Error())
+	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+	nextKinds(t, ctx, events, EvCompaction)
+	require.Equal(t, "failed", nextKinds(t, ctx, events, EvCompaction).Data.(CompactionEvent).Phase)
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func TestRescueWithoutBuilderSkipsPrompt(t *testing.T) {
+	c, ctx := newTestController(t)
+	lane9Turn(t, c, ctx)
+	// No awaitPending expectation: calling it fails the test.
+	confirm := newMockconfirmSeam(t)
+	require.NoError(t, c.call(ctx, func() { c.confirmSeam = confirm }))
+	cause := errors.New("overflow")
+	_, err := c.rescue(ctx, cause)
+	require.Same(t, cause, err)
+}
+
+func TestTitleGenerationCancelledOnClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cctx, stop := context.WithCancel(ctx)
+	c := NewController(cctx, Deps{})
+	turn := lane9Turn(t, c, ctx)
+	streaming := make(chan struct{})
+	var cancelled atomic.Bool
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(sctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+		close(streaming)
+		<-sctx.Done()
+		cancelled.Store(true)
+		return nil, sctx.Err()
+	}).Once()
+	turn.EXPECT().currentAgent().Return(core.NewAgent(client, "m", "", nil)).Maybe()
+	require.NoError(t, c.call(ctx, func() { c.maybeGenerateTitle(Input{Text: "hello", Origin: InputOriginUser}) }))
+	<-streaming
+	stop()
+	<-c.Done()
+	// Well under the 10s title timeout: only close-driven cancellation passes.
+	deadline := time.Now().Add(2 * time.Second)
+	for !cancelled.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("title generation not cancelled on close")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // Lane9Harness bridges external tests (which own sessionmocks for Deps, since
@@ -165,4 +261,19 @@ func (h *Lane9Harness) RescueTurn(t *testing.T, value string, retry Input) {
 		h.C.confirmSeam = confirm
 		h.C.rescueTurn(errors.New("rate limited"), retry)
 	}))
+}
+
+// SetConfirm installs a confirm seam whose awaitPending returns (answers, err).
+func (h *Lane9Harness) SetConfirm(t *testing.T, answers []tools.QuestionAnswer, err error) {
+	confirm := newMockconfirmSeam(t)
+	confirm.EXPECT().awaitPending(mock.Anything, mock.MatchedBy(func(r PendingRequest) bool { return r.Kind == "rescue" && r.Rescue != nil })).Return(answers, err).Once()
+	require.NoError(t, h.C.call(h.Ctx, func() { h.C.confirmSeam = confirm }))
+}
+
+// Rescue runs the shared rescue flow off the actor.
+func (h *Lane9Harness) Rescue(cause error) (*core.Agent, error) { return h.C.rescue(h.Ctx, cause) }
+
+// StartRescueTurn starts the turn rescue on the actor.
+func (h *Lane9Harness) StartRescueTurn(t *testing.T, cause error, retry Input) {
+	require.NoError(t, h.C.call(h.Ctx, func() { h.C.rescueTurn(cause, retry) }))
 }

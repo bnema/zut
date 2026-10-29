@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -173,4 +174,105 @@ func TestRescueFallbackAdoptsModelAndRetries(t *testing.T) {
 	require.Same(t, next, h.Agent(t))
 	require.Equal(t, old.Messages(), next.Messages())
 	require.Equal(t, "gpt", h.C.Info().Model)
+}
+
+func TestRescueDetachedFails(t *testing.T) {
+	h := session.NewLane9Harness(t, session.Deps{AgentBuilder: sessionmocks.NewMockAgentBuilder(t)}, opsAgent(t, "m"))
+	h.SetConfirm(t, nil, session.ErrNotAttached)
+	_, err := h.Rescue(errors.New("overflow"))
+	require.ErrorIs(t, err, session.ErrNotAttached)
+}
+
+func TestRescueTurnDetachedPublishesNote(t *testing.T) {
+	h := session.NewLane9Harness(t, session.Deps{AgentBuilder: sessionmocks.NewMockAgentBuilder(t)}, opsAgent(t, "m"))
+	h.SetConfirm(t, nil, session.ErrNotAttached)
+	events, err := h.C.Subscribe(h.Ctx, 0)
+	require.NoError(t, err)
+	h.StartRescueTurn(t, errors.New("overflow"), session.Input{Text: "x"})
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == session.EvNote {
+				require.Contains(t, ev.Data.(session.NoteEvent).Note.Text, session.ErrNotAttached.Error())
+				return
+			}
+		case <-h.Ctx.Done():
+			t.Fatal(h.Ctx.Err())
+		}
+	}
+}
+
+func waitInfo(t *testing.T, h *session.Lane9Harness, events <-chan session.Event) session.Info {
+	t.Helper()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == session.EvInfo {
+				return ev.Data.(session.InfoEvent).Info
+			}
+		case <-h.Ctx.Done():
+			t.Fatal(h.Ctx.Err())
+		}
+	}
+}
+
+func TestChangeCWDRefreshFailureStillApplied(t *testing.T) {
+	store := opsStore(t)
+	store.EXPECT().ChangeCWD("/base/child").Return(nil).Once()
+	refresh := sessionmocks.NewMockToolRefresher(t)
+	boom := errors.New("boom")
+	refresh.EXPECT().RefreshTools().Return(boom).Once()
+	h := session.NewLane9Harness(t, session.Deps{CWD: "/base", SessionStore: store, ToolRefresher: refresh}, opsAgent(t, "m"))
+	events, err := h.C.Subscribe(h.Ctx, 0)
+	require.NoError(t, err)
+	err = h.C.ChangeCWD(h.Ctx, "child")
+	require.ErrorIs(t, err, boom)
+	require.ErrorContains(t, err, "applied")
+	require.ErrorContains(t, err, "refresh tools")
+	require.Equal(t, "/base/child", waitInfo(t, h, events).CWD)
+}
+
+func TestSetJailRefreshFailureStillApplied(t *testing.T) {
+	settings := sessionmocks.NewMockSettingsStore(t)
+	settings.EXPECT().SetJailByDefault(true).Return(nil).Once()
+	refresh := sessionmocks.NewMockToolRefresher(t)
+	boom := errors.New("boom")
+	refresh.EXPECT().RefreshTools().Return(boom).Once()
+	jail := false
+	h := session.NewLane9Harness(t, session.Deps{SettingsStore: settings, ToolRefresher: refresh, JailByDefault: &jail}, opsAgent(t, "m"))
+	events, err := h.C.Subscribe(h.Ctx, 0)
+	require.NoError(t, err)
+	err = h.C.SetJail(h.Ctx, true)
+	require.ErrorIs(t, err, boom)
+	require.ErrorContains(t, err, "applied")
+	waitInfo(t, h, events)
+	require.True(t, jail)
+}
+
+func TestApplySettingsPartialStoreFailure(t *testing.T) {
+	settings := sessionmocks.NewMockSettingsStore(t)
+	settings.EXPECT().SetAutoSubagents(true).Return(nil).Once()
+	boom := errors.New("disk full")
+	settings.EXPECT().SetJailByDefault(true).Return(boom).Once()
+	auto, jail := false, false
+	h := session.NewLane9Harness(t, session.Deps{SettingsStore: settings, AutoSubagentsEnabled: &auto, JailByDefault: &jail}, opsAgent(t, "m"))
+	on := true
+	require.ErrorIs(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoSubagentsEnabled: &on, JailByDefault: &on}), boom)
+	// The persisted field is live; the failed one is untouched.
+	require.True(t, auto)
+	require.False(t, jail)
+}
+
+func TestApplySettingsRejectsUnsupportedThreshold(t *testing.T) {
+	threshold := 85
+	h := session.NewLane9Harness(t, session.Deps{AutoCompactThreshold: &threshold}, opsAgent(t, "m"))
+	for _, v := range []int{-1, 1, 50, 75, 100} {
+		err := h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoCompactThreshold: &v})
+		require.ErrorContains(t, err, "must be one of 0 (off), 70, 80, 85, 90, 95")
+	}
+	require.Equal(t, 85, threshold)
+	for _, v := range []int{0, 70, 80, 85, 90, 95} {
+		require.NoError(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoCompactThreshold: &v}))
+		require.Equal(t, v, threshold)
+	}
 }

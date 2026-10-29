@@ -28,9 +28,10 @@ func (c *Controller) settingsCall(ctx context.Context, fn func() error) error {
 			return
 		}
 		result = fn()
-		if result == nil {
-			c.publish(EvInfo, InfoEvent{Info: c.Info()})
-		}
+		// Ops may fail after partially applying state (store writes, tool
+		// refresh); Info always reflects what actually changed.
+		c.updateInfo()
+		c.publish(EvInfo, InfoEvent{Info: c.Info()})
 	})
 	if err != nil {
 		return err
@@ -135,32 +136,32 @@ func setSetting[T any](dst **T, src *T) {
 // ApplySettings changes only domain settings; orchestration remains launch-only.
 func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 	return c.settingsCall(ctx, func() error {
-		if p.AutoCompactThreshold != nil && (*p.AutoCompactThreshold < 0 || *p.AutoCompactThreshold > 100) {
-			return errors.New("auto compact threshold must be 0..100")
+		if p.AutoCompactThreshold != nil && !validCompactThreshold(*p.AutoCompactThreshold) {
+			return fmt.Errorf("auto compact threshold %d: must be one of 0 (off), 70, 80, 85, 90, 95", *p.AutoCompactThreshold)
 		}
 		if p.FastMode != nil {
 			if err := provider.ValidateFastMode(c.deps.Provider, *p.FastMode); err != nil {
 				return err
 			}
 		}
-		if c.deps.SettingsStore != nil {
-			if p.AutoSubagentsEnabled != nil {
-				if err := c.deps.SettingsStore.SetAutoSubagents(*p.AutoSubagentsEnabled); err != nil {
-					return err
-				}
-			}
-			if p.JailByDefault != nil {
-				if err := c.deps.SettingsStore.SetJailByDefault(*p.JailByDefault); err != nil {
-					return err
-				}
+		// Each persisted field updates memory right after its own write, so a
+		// later failure leaves memory matching the store.
+		if p.AutoSubagentsEnabled != nil && c.deps.SettingsStore != nil {
+			if err := c.deps.SettingsStore.SetAutoSubagents(*p.AutoSubagentsEnabled); err != nil {
+				return err
 			}
 		}
 		setSetting(&c.deps.AutoSubagentsEnabled, p.AutoSubagentsEnabled)
+		if p.JailByDefault != nil && c.deps.SettingsStore != nil {
+			if err := c.deps.SettingsStore.SetJailByDefault(*p.JailByDefault); err != nil {
+				return err
+			}
+		}
+		setSetting(&c.deps.JailByDefault, p.JailByDefault)
 		setSetting(&c.deps.WebSearchEnabled, p.WebSearchEnabled)
 		setSetting(&c.deps.LSPEnabled, p.LSPEnabled)
 		setSetting(&c.deps.SubagentLSPEnabled, p.SubagentLSPEnabled)
 		setSetting(&c.deps.AutoCompactThreshold, p.AutoCompactThreshold)
-		setSetting(&c.deps.JailByDefault, p.JailByDefault)
 		setSetting(&c.deps.FastMode, p.FastMode)
 		setSetting(&c.deps.GoalMaxTokenBudget, p.GoalMaxTokenBudget)
 		if p.FastMode != nil {
@@ -172,10 +173,27 @@ func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 			if p.WebSearchEnabled != nil {
 				c.deps.ToolRefresher.SetWebSearchAvailable(*p.WebSearchEnabled)
 			}
-			return c.deps.ToolRefresher.RefreshTools()
+			return refreshApplied(c.deps.ToolRefresher.RefreshTools())
 		}
 		return nil
 	})
+}
+
+// validCompactThreshold matches the levels maybeAutoCompact honours.
+func validCompactThreshold(v int) bool {
+	switch v {
+	case 0, 70, 80, 85, 90, 95:
+		return true
+	}
+	return false
+}
+
+// refreshApplied reports a refresh failure after the setting already changed.
+func refreshApplied(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("setting applied, but refresh tools: %w", err)
 }
 
 // ChangeCWD resolves relative paths against the session, never the process cwd.
@@ -196,7 +214,7 @@ func (c *Controller) ChangeCWD(ctx context.Context, path string) error {
 		}
 		c.deps.CWD = path
 		if c.deps.ToolRefresher != nil {
-			return c.deps.ToolRefresher.RefreshTools()
+			return refreshApplied(c.deps.ToolRefresher.RefreshTools())
 		}
 		return nil
 	})

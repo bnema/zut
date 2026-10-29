@@ -56,11 +56,8 @@ func (c *Controller) maybeAutoCompact(next Input) bool {
 	c.maybeGenerateTitle(next)
 	p := c.turnSeam.turnInfo()
 	threshold := 85
-	if c.deps.AutoCompactThreshold != nil {
-		switch *c.deps.AutoCompactThreshold {
-		case 0, 70, 80, 85, 90, 95:
-			threshold = *c.deps.AutoCompactThreshold
-		}
+	if c.deps.AutoCompactThreshold != nil && validCompactThreshold(*c.deps.AutoCompactThreshold) {
+		threshold = *c.deps.AutoCompactThreshold
 	}
 	if threshold == 0 || p.ContextMax <= 0 || p.ContextUsed*100 < p.ContextMax*threshold {
 		return false
@@ -123,34 +120,38 @@ func (c *Controller) beginCompact(next *Input) error {
 		_ = c.call(context.Background(), func() {
 			aborted := c.compact.aborted
 			c.compact.busy, c.compact.aborted, c.compact.cancel = false, false, nil
-			if aborted {
+			switch {
+			case aborted:
 				// A summary that won the race with cancellation is rolled back.
 				if err == nil {
 					target.RestoreMessages(before)
 				}
 				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
-				return
-			}
-			if err != nil {
-				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
-				c.compactNote(err)
+				// The user aborted compaction, not the prompt: keep it queued.
+				if next != nil {
+					c.turnSeam.enqueue(*next)
+				}
 				c.turnSeam.drainQueued()
 				return
+			case err != nil:
+				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
+				c.compactNote(err)
+			default:
+				if c.deps.SessionStore != nil {
+					c.deps.SessionStore.FlushSession()
+				}
+				c.publish(EvCompaction, CompactionEvent{Phase: "done", Summary: summary})
+				c.publish(EvMessagesReplaced, MessagesReplacedEvent{})
 			}
-			if c.deps.SessionStore != nil {
-				c.deps.SessionStore.FlushSession()
-			}
-			c.publish(EvCompaction, CompactionEvent{Phase: "done", Summary: summary})
-			c.publish(EvMessagesReplaced, MessagesReplacedEvent{})
+			// The triggering prompt survives success and failure alike.
 			if next != nil {
 				c.compact.skipOnce = true
 				if e := c.turnSeam.startTurn(*next); e != nil {
 					c.compact.skipOnce = false
 					c.compactNote(e)
-				} else {
-					return
 				}
 			}
+			// drainQueued starts queued input only when TURN is idle.
 			c.turnSeam.drainQueued()
 		})
 	}()
@@ -207,6 +208,10 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 	}); err != nil {
 		return nil, err
 	}
+	if builder == nil {
+		// Without a builder no answer can be adopted; do not prompt the client.
+		return nil, cause
+	}
 	answers, err := seam.awaitPending(ctx, req)
 	if err != nil {
 		return nil, err
@@ -221,9 +226,6 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 	p, m, ok := strings.Cut(value, "/")
 	if !ok || p == "" || m == "" {
 		return nil, errors.New("invalid rescue model")
-	}
-	if builder == nil {
-		return nil, cause
 	}
 	replacement, actualP, actualM, err := builder.BuildAgentForRescue(p, m)
 	if err != nil {
@@ -241,6 +243,7 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 		if c.deps.SessionStore != nil {
 			c.deps.SessionStore.PersistModel(actualP, actualM)
 		}
+		c.updateInfo()
 		c.publish(EvInfo, InfoEvent{Info: c.Info()})
 	}); e != nil {
 		return nil, e
@@ -265,6 +268,13 @@ func (c *Controller) maybeGenerateTitle(in Input) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		go func() {
+			select {
+			case <-c.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 		title, err := core.GenerateSessionTitle(ctx, client, model, in.Text)
 		if err != nil {
 			title = core.NormalizeSessionTitle(in.Text)
