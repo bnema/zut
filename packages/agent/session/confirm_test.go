@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/bnema/zut/packages/agent/tools"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,7 +99,7 @@ func TestConfirmQuestionsRescueConcurrent(t *testing.T) {
 			continue
 		}
 		p := ev.Data.(PendingEvent).Pending
-		require.NoError(t, c.AnswerQuestion(ctx, p.ID, nil))
+		require.NoError(t, c.AnswerQuestion(ctx, p.ID, []tools.QuestionAnswer{{Selected: []string{"p/m"}}}))
 		n++
 	}
 	for i := 0; i < count; i++ {
@@ -175,7 +178,7 @@ func TestConfirmQuestionAnswerAndDetach(t *testing.T) {
 				require.NoError(t, c.call(ctx, func() { c.attach = AttachStateDetached; c.denyAllPending("detached") }))
 				require.EqualError(t, <-done, detachedQuestionReason)
 			} else {
-				require.NoError(t, c.AnswerQuestion(ctx, p.ID, nil))
+				require.NoError(t, c.AnswerQuestion(ctx, p.ID, []tools.QuestionAnswer{{Custom: "x"}}))
 				require.NoError(t, <-done)
 			}
 		})
@@ -222,4 +225,23 @@ func ConfirmTestDispatch(t *testing.T, c *Controller) {
 	turn.EXPECT().turnInfo().Return(turnInfoProjection{})
 	turn.EXPECT().startTurn(Input{Origin: InputOriginUser, Text: "The user reviewed a previously denied action and approves it: bash — hi. Retry it if still relevant."}).Return(nil).Once()
 	require.NoError(t, c.call(context.Background(), func() { c.turnSeam = turn }))
+}
+
+func TestConfirmNilAnswerDeclinesQuestion(t *testing.T) {
+	c, ctx := newTestController(t)
+	require.NoError(t, c.call(ctx, func() { c.attach = AttachStateAttached }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	tool := &tools.AskUserQuestionTool{Asker: c.questionAsker}
+	done := make(chan core.ToolResult, 1)
+	go func() {
+		res, err := tool.Execute(ctx, json.RawMessage(`{"questions":[{"question":"choose"}]}`), nil)
+		assert.NoError(t, err)
+		done <- res
+	}()
+	p := (<-events).Data.(PendingEvent).Pending
+	require.NoError(t, c.AnswerQuestion(ctx, p.ID, nil))
+	res := <-done
+	require.False(t, res.IsError)
+	require.Equal(t, []provider.Content{provider.TextBlock{Text: "The user declined to answer the questions."}}, res.Content)
 }
