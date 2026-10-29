@@ -370,6 +370,7 @@ func (c *Controller) cancelTurn() {
 	}
 	c.confirmSeam.denyAllPending("turn cancelled")
 }
+func (c *Controller) drainQueued() {}
 
 // turnInfoProjection carries turn-owned activity and usage into the actor Info.
 type turnInfoProjection struct {
