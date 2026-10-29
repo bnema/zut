@@ -371,3 +371,75 @@ func (_c *mockSessionClient_List_Call) RunAndReturn(run func(ctx context.Context
 	_c.Call.Return(run)
 	return _c
 }
+
+// TelegramBridge provides a mock function for the type mockSessionClient
+func (_mock *mockSessionClient) TelegramBridge(ctx context.Context, sessionID string, on bool) (TelegramBridgeStatus, error) {
+	ret := _mock.Called(ctx, sessionID, on)
+
+	if len(ret) == 0 {
+		panic("no return value specified for TelegramBridge")
+	}
+
+	var r0 TelegramBridgeStatus
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, bool) (TelegramBridgeStatus, error)); ok {
+		return returnFunc(ctx, sessionID, on)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, bool) TelegramBridgeStatus); ok {
+		r0 = returnFunc(ctx, sessionID, on)
+	} else {
+		r0 = ret.Get(0).(TelegramBridgeStatus)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, bool) error); ok {
+		r1 = returnFunc(ctx, sessionID, on)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// mockSessionClient_TelegramBridge_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'TelegramBridge'
+type mockSessionClient_TelegramBridge_Call struct {
+	*mock.Call
+}
+
+// TelegramBridge is a helper method to define mock.On call
+//   - ctx context.Context
+//   - sessionID string
+//   - on bool
+func (_e *mockSessionClient_Expecter) TelegramBridge(ctx any, sessionID any, on any) *mockSessionClient_TelegramBridge_Call {
+	return &mockSessionClient_TelegramBridge_Call{Call: _e.mock.On("TelegramBridge", ctx, sessionID, on)}
+}
+
+func (_c *mockSessionClient_TelegramBridge_Call) Run(run func(ctx context.Context, sessionID string, on bool)) *mockSessionClient_TelegramBridge_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 bool
+		if args[2] != nil {
+			arg2 = args[2].(bool)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *mockSessionClient_TelegramBridge_Call) Return(telegramBridgeStatus TelegramBridgeStatus, err error) *mockSessionClient_TelegramBridge_Call {
+	_c.Call.Return(telegramBridgeStatus, err)
+	return _c
+}
+
+func (_c *mockSessionClient_TelegramBridge_Call) RunAndReturn(run func(ctx context.Context, sessionID string, on bool) (TelegramBridgeStatus, error)) *mockSessionClient_TelegramBridge_Call {
+	_c.Call.Return(run)
+	return _c
+}
