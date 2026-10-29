@@ -20,7 +20,8 @@ type turnSeam interface {
 	cancelTurn()
 }
 type confirmSeam interface {
-	// awaitPending registers and publishes a pending request, then waits for an
+	// awaitPending MUST be called OFF the actor loop: it blocks.
+	// It registers and publishes a pending request, then waits for an
 	// answer, detach or turn cancellation; detached requests return ErrNotAttached.
 	// The rescue cluster uses Kind "rescue" with an answer value "provider/model".
 	awaitPending(ctx context.Context, req PendingRequest) ([]tools.QuestionAnswer, error)
