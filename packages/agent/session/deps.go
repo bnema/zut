@@ -165,6 +165,9 @@ type Deps struct {
 	MaxSteps                                                       int
 	Version, ZutHome, SessionsRoot                                 string
 	NoYolo                                                         bool
+	// Headless marks a session created for a headless run (print, stream,
+	// json): it never generates a title, as the in-process headless modes.
+	Headless bool
 	// HeadlessOrchestrate marks a headless --orchestrate session: resident
 	// completions use HeadlessCompletionInstruction without a still-running list.
 	HeadlessOrchestrate                                                                             bool

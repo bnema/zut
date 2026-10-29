@@ -73,6 +73,7 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 	}
 	ok = true
 	deps := a.deps()
+	deps.Headless = spec.Headless
 	deps.HeadlessOrchestrate = spec.Headless && args.Orchestrate
 	return deps, a.cleanup, nil
 }
