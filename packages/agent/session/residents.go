@@ -110,11 +110,13 @@ func (s *residentState) wakeLocked() {
 }
 
 // runPending runs on the actor. Work stays queued until the actor takes it, so
-// an abandoned post never loses accepted completions.
+// an abandoned post never loses accepted completions. Delivered updates are
+// only enqueued; an idle manager has no turn end to drain them, so runPending
+// starts the queue itself unless the session is shutting down.
 func (s *residentState) runPending() {
 	for {
 		s.inboxMu.Lock()
-		items, dirty := s.inbox, s.dirty
+		items, dirty, closed := s.inbox, s.dirty, s.closed
 		s.inbox, s.dirty = nil, false
 		s.inboxMu.Unlock()
 		if len(items) == 0 && !dirty {
@@ -122,6 +124,9 @@ func (s *residentState) runPending() {
 		}
 		for _, fn := range items {
 			fn()
+		}
+		if len(items) > 0 && !closed {
+			s.controller.turnSeam.drainQueued()
 		}
 		if dirty {
 			s.controller.publish(EvInfo, InfoEvent{Info: s.controller.residentInfo()})

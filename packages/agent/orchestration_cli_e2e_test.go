@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,8 +58,7 @@ func TestOrchestratedCLITwoDelegationWavesAcrossHeadlessModes(t *testing.T) {
 				args = append(args, "--json")
 			}
 			args = append(args, "delegate two waves")
-			cmd := exec.Command(binary, args...)
-			cmd.Env = orchestrationCLIEnv(t, binary, home)
+			cmd := orchestrationCLICommand(t, binary, home, args...)
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
@@ -102,8 +102,7 @@ func TestOrchestratedCLICancellation(t *testing.T) {
 	defer server.Close()
 	defer close(releaseWorker)
 
-	cmd := exec.Command(binary, "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "cancel")
-	cmd.Env = orchestrationCLIEnv(t, binary, t.TempDir())
+	cmd := orchestrationCLICommand(t, binary, t.TempDir(), "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "cancel")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -160,8 +159,7 @@ func TestOrchestratedCLIParentFailure(t *testing.T) {
 	t.Run("failure-jsonl", func(t *testing.T) {
 		server := newFailingProvider()
 		defer server.Close()
-		cmd := exec.Command(binary, "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "fail")
-		cmd.Env = orchestrationCLIEnv(t, binary, t.TempDir())
+		cmd := orchestrationCLICommand(t, binary, t.TempDir(), "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "fail")
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -403,18 +401,75 @@ func assertJSONOrchestrationWaves(t *testing.T, events []map[string]any) {
 	}
 }
 
+// orchestrationCLICommand builds an isolated zut client command under a
+// context that expires before the test binary's -timeout: a hung client is
+// then killed, Run returns, and the test fails with its cleanups (daemon
+// teardown) still able to run. A -timeout panic would skip every t.Cleanup and
+// leak the detached daemon. The client spawns no other process; the daemon and
+// its workers are handled by orchestrationCLIEnv.
+func orchestrationCLICommand(t *testing.T, binary, home string, args ...string) *exec.Cmd {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), orchestrationCLITimeout(t))
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = orchestrationCLIEnv(t, binary, home)
+	cmd.Cancel = func() error {
+		// SIGQUIT makes the Go client exit with a goroutine dump on stderr;
+		// WaitDelay kills it if it does not.
+		if err := cmd.Process.Signal(syscall.SIGQUIT); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
+	t.Cleanup(func() {
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	return cmd
+}
+
+// orchestrationCLITimeout leaves a margin before the test deadline for the
+// kill, the failure report and daemon cleanup.
+func orchestrationCLITimeout(t *testing.T) time.Duration {
+	const fallback = 2 * time.Minute
+	deadline, ok := t.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline)
+	margin := min(remaining/5, 15*time.Second)
+	return max(remaining-margin, time.Second)
+}
+
 // orchestrationCLIEnv isolates a zut subprocess: its own ZUT_HOME and a short
 // private daemon socket, so a test never reaches the user's runtime dir. The
-// daemon the run may spawn is stopped at cleanup.
+// daemon the run may spawn is stopped at cleanup, and killed if it survives.
 func orchestrationCLIEnv(t *testing.T, binary, home string) []string {
 	t.Helper()
 	// Restrict PATH so spawned workers resolve the same freshly built test
 	// binary instead of any installed zut executable on the host.
 	env := append(os.Environ(), "ZUT_HOME="+home, "ZUT_DAEMON_SOCKET="+daemonTestSocket(t), "PATH="+filepath.Dir(binary))
 	t.Cleanup(func() {
-		stop := exec.Command(binary, "daemon", "stop")
+		// The daemon detaches from the client (its own session), so killing
+		// the client never reaches it: stop it, then kill it if it survived.
+		pid := readDaemonPID(home)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stop := exec.CommandContext(ctx, binary, "daemon", "stop")
 		stop.Env = env
 		_ = stop.Run()
+		if pid > 0 && pidAlive(pid) {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Kill()
+			}
+		}
+		if t.Failed() {
+			if log, err := os.ReadFile(filepath.Join(home, "logs", "daemon.log")); err == nil {
+				t.Logf("daemon log:\n%s", log)
+			}
+		}
 	})
 	return env
 }

@@ -34,6 +34,7 @@ func newGatedResidentController(t *testing.T) (*Controller, context.CancelFunc, 
 	turn.EXPECT().turnInfo().Return(turnInfoProjection{}).Maybe()
 	delivered := make(chan Input, 512)
 	turn.EXPECT().enqueue(mock.Anything).Run(func(in Input) { delivered <- in }).Maybe()
+	turn.EXPECT().drainQueued().Return().Maybe()
 	require.NoError(t, c.call(ctx, func() { c.turnSeam = turn }))
 	gate := func() func() {
 		entered, release := make(chan struct{}), make(chan struct{})
