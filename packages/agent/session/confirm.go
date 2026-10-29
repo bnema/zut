@@ -28,3 +28,11 @@ func (c *Controller) ResolveDeferred(ctx context.Context, id, action string) err
 func (c *Controller) confirmer() core.ToolCallConfirmer  { return nil }
 func (c *Controller) questionAsker() tools.QuestionAsker { return nil }
 func (c *Controller) denyAllPending(reason string)       {}
+
+// awaitPending is implemented by the confirm cluster: register the request,
+// publish EvPending and await AnswerQuestion, detach or turn cancellation.
+// Detached requests return ErrNotAttached immediately. The rescue cluster calls
+// it with Kind "rescue"; the answer value is "provider/model".
+func (c *Controller) awaitPending(ctx context.Context, req PendingRequest) ([]tools.QuestionAnswer, error) {
+	return nil, errors.New("unimplemented")
+}

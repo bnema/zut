@@ -117,11 +117,13 @@ type LiveTool struct {
 
 // Input is a terminal-free session contract payload.
 type Input struct {
-	Text   string                `json:"text"`
-	Images []provider.ImageBlock `json:"images"`
-	Mode   SubmitMode            `json:"mode"`
-	Origin InputOrigin           `json:"origin"`
-	From   *Sender               `json:"from"`
+	// HostEvent is queued as core.QueuedMessage.HostEvent by the turn cluster.
+	HostEvent bool                  `json:"host_event,omitempty"`
+	Text      string                `json:"text"`
+	Images    []provider.ImageBlock `json:"images"`
+	Mode      SubmitMode            `json:"mode"`
+	Origin    InputOrigin           `json:"origin"`
+	From      *Sender               `json:"from"`
 }
 
 // Sender is a terminal-free session contract payload.

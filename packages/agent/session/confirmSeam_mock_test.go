@@ -5,6 +5,8 @@
 package session
 
 import (
+	"context"
+
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	mock "github.com/stretchr/testify/mock"
@@ -44,6 +46,74 @@ type mockconfirmSeam_Expecter struct {
 
 func (_m *mockconfirmSeam) EXPECT() *mockconfirmSeam_Expecter {
 	return &mockconfirmSeam_Expecter{mock: &_m.Mock}
+}
+
+// awaitPending provides a mock function for the type mockconfirmSeam
+func (_mock *mockconfirmSeam) awaitPending(ctx context.Context, req PendingRequest) ([]tools.QuestionAnswer, error) {
+	ret := _mock.Called(ctx, req)
+
+	if len(ret) == 0 {
+		panic("no return value specified for awaitPending")
+	}
+
+	var r0 []tools.QuestionAnswer
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, PendingRequest) ([]tools.QuestionAnswer, error)); ok {
+		return returnFunc(ctx, req)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, PendingRequest) []tools.QuestionAnswer); ok {
+		r0 = returnFunc(ctx, req)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]tools.QuestionAnswer)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, PendingRequest) error); ok {
+		r1 = returnFunc(ctx, req)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// mockconfirmSeam_awaitPending_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'awaitPending'
+type mockconfirmSeam_awaitPending_Call struct {
+	*mock.Call
+}
+
+// awaitPending is a helper method to define mock.On call
+//   - ctx context.Context
+//   - req PendingRequest
+func (_e *mockconfirmSeam_Expecter) awaitPending(ctx any, req any) *mockconfirmSeam_awaitPending_Call {
+	return &mockconfirmSeam_awaitPending_Call{Call: _e.mock.On("awaitPending", ctx, req)}
+}
+
+func (_c *mockconfirmSeam_awaitPending_Call) Run(run func(ctx context.Context, req PendingRequest)) *mockconfirmSeam_awaitPending_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 PendingRequest
+		if args[1] != nil {
+			arg1 = args[1].(PendingRequest)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *mockconfirmSeam_awaitPending_Call) Return(questionAnswers []tools.QuestionAnswer, err error) *mockconfirmSeam_awaitPending_Call {
+	_c.Call.Return(questionAnswers, err)
+	return _c
+}
+
+func (_c *mockconfirmSeam_awaitPending_Call) RunAndReturn(run func(ctx context.Context, req PendingRequest) ([]tools.QuestionAnswer, error)) *mockconfirmSeam_awaitPending_Call {
+	_c.Call.Return(run)
+	return _c
 }
 
 // confirmer provides a mock function for the type mockconfirmSeam

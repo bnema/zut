@@ -85,6 +85,46 @@ func (_c *mockgoalSeam_goalAfterTurn_Call) RunAndReturn(run func(evTurnEnd core.
 	return _c
 }
 
+// goalBeforeTurn provides a mock function for the type mockgoalSeam
+func (_mock *mockgoalSeam) goalBeforeTurn(in *Input) {
+	_mock.Called(in)
+	return
+}
+
+// mockgoalSeam_goalBeforeTurn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'goalBeforeTurn'
+type mockgoalSeam_goalBeforeTurn_Call struct {
+	*mock.Call
+}
+
+// goalBeforeTurn is a helper method to define mock.On call
+//   - in *Input
+func (_e *mockgoalSeam_Expecter) goalBeforeTurn(in any) *mockgoalSeam_goalBeforeTurn_Call {
+	return &mockgoalSeam_goalBeforeTurn_Call{Call: _e.mock.On("goalBeforeTurn", in)}
+}
+
+func (_c *mockgoalSeam_goalBeforeTurn_Call) Run(run func(in *Input)) *mockgoalSeam_goalBeforeTurn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 *Input
+		if args[0] != nil {
+			arg0 = args[0].(*Input)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *mockgoalSeam_goalBeforeTurn_Call) Return() *mockgoalSeam_goalBeforeTurn_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockgoalSeam_goalBeforeTurn_Call) RunAndReturn(run func(in *Input)) *mockgoalSeam_goalBeforeTurn_Call {
+	_c.Run(run)
+	return _c
+}
+
 // goalIdle provides a mock function for the type mockgoalSeam
 func (_mock *mockgoalSeam) goalIdle() bool {
 	ret := _mock.Called()
@@ -126,5 +166,38 @@ func (_c *mockgoalSeam_goalIdle_Call) Return(b bool) *mockgoalSeam_goalIdle_Call
 
 func (_c *mockgoalSeam_goalIdle_Call) RunAndReturn(run func() bool) *mockgoalSeam_goalIdle_Call {
 	_c.Call.Return(run)
+	return _c
+}
+
+// goalOnAbort provides a mock function for the type mockgoalSeam
+func (_mock *mockgoalSeam) goalOnAbort() {
+	_mock.Called()
+	return
+}
+
+// mockgoalSeam_goalOnAbort_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'goalOnAbort'
+type mockgoalSeam_goalOnAbort_Call struct {
+	*mock.Call
+}
+
+// goalOnAbort is a helper method to define mock.On call
+func (_e *mockgoalSeam_Expecter) goalOnAbort() *mockgoalSeam_goalOnAbort_Call {
+	return &mockgoalSeam_goalOnAbort_Call{Call: _e.mock.On("goalOnAbort")}
+}
+
+func (_c *mockgoalSeam_goalOnAbort_Call) Run(run func()) *mockgoalSeam_goalOnAbort_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockgoalSeam_goalOnAbort_Call) Return() *mockgoalSeam_goalOnAbort_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockgoalSeam_goalOnAbort_Call) RunAndReturn(run func()) *mockgoalSeam_goalOnAbort_Call {
+	_c.Run(run)
 	return _c
 }

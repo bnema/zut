@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"time"
 )
 
 type turnState struct{}
@@ -35,3 +37,16 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 func (c *Controller) isBusy() bool            { return false }
 func (c *Controller) turnOrigin() InputOrigin { return "" }
 func (c *Controller) cancelTurn()             {}
+
+// turnInfoProjection carries turn-owned activity and usage into the actor Info.
+type turnInfoProjection struct {
+	Activity                Activity
+	Usage                   provider.Usage
+	ContextUsed, ContextMax int
+	LastUserInputAt         time.Time
+}
+
+// turnInfo is implemented by the turn cluster; the skeleton remains idle.
+func (c *Controller) turnInfo() turnInfoProjection {
+	return turnInfoProjection{Activity: Activity{Kind: "idle"}}
+}

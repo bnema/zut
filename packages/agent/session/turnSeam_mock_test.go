@@ -253,6 +253,50 @@ func (_c *mockturnSeam_startTurn_Call) RunAndReturn(run func(input Input) error)
 	return _c
 }
 
+// turnInfo provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) turnInfo() turnInfoProjection {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for turnInfo")
+	}
+
+	var r0 turnInfoProjection
+	if returnFunc, ok := ret.Get(0).(func() turnInfoProjection); ok {
+		r0 = returnFunc()
+	} else {
+		r0 = ret.Get(0).(turnInfoProjection)
+	}
+	return r0
+}
+
+// mockturnSeam_turnInfo_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'turnInfo'
+type mockturnSeam_turnInfo_Call struct {
+	*mock.Call
+}
+
+// turnInfo is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) turnInfo() *mockturnSeam_turnInfo_Call {
+	return &mockturnSeam_turnInfo_Call{Call: _e.mock.On("turnInfo")}
+}
+
+func (_c *mockturnSeam_turnInfo_Call) Run(run func()) *mockturnSeam_turnInfo_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_turnInfo_Call) Return(turnInfoProjectionMoqParam turnInfoProjection) *mockturnSeam_turnInfo_Call {
+	_c.Call.Return(turnInfoProjectionMoqParam)
+	return _c
+}
+
+func (_c *mockturnSeam_turnInfo_Call) RunAndReturn(run func() turnInfoProjection) *mockturnSeam_turnInfo_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // turnOrigin provides a mock function for the type mockturnSeam
 func (_mock *mockturnSeam) turnOrigin() InputOrigin {
 	ret := _mock.Called()

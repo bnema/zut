@@ -63,6 +63,10 @@ type ToolRefresher interface {
 
 // ExtensionHost is the domain-facing subset of the existing Manager.
 type ExtensionHost interface {
+	// EmitEvent forwards host lifecycle events to extensions.
+	EmitEvent(ev extproto.EventFromHost)
+	// Invoke executes an extension command with the existing manager contract.
+	Invoke(ctx context.Context, name, args string, timeout time.Duration) (extproto.CommandResponseFromExt, error)
 	HasCommand(name string) bool
 	CommandOwner(name string) string
 	InvokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error)
@@ -74,6 +78,12 @@ type ExtensionHost interface {
 
 // ResidentHost is the domain-facing subset of the existing ResidentManager.
 type ResidentHost interface {
+	// SetAcceptedObserver observes accepted resident input.
+	SetAcceptedObserver(observer func(subagents.ResidentChildSpec, string, string))
+	// SetCompletionObserver installs the completion delivery observer.
+	SetCompletionObserver(observer func(subagents.ResidentCompletion) bool)
+	// SetUpdateObserver observes resident projection changes.
+	SetUpdateObserver(observer func(string))
 	Snapshot() []subagents.ResidentSnapshot
 	RecentSnapshotPage(offset, limit int) ([]subagents.ResidentSnapshot, int)
 	Resume(ctx context.Context, childID, prompt string) error

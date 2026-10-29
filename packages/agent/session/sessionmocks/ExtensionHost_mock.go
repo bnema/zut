@@ -147,6 +147,46 @@ func (_c *MockExtensionHost_Commands_Call) RunAndReturn(run func() []extensions.
 	return _c
 }
 
+// EmitEvent provides a mock function for the type MockExtensionHost
+func (_mock *MockExtensionHost) EmitEvent(ev extproto.EventFromHost) {
+	_mock.Called(ev)
+	return
+}
+
+// MockExtensionHost_EmitEvent_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'EmitEvent'
+type MockExtensionHost_EmitEvent_Call struct {
+	*mock.Call
+}
+
+// EmitEvent is a helper method to define mock.On call
+//   - ev extproto.EventFromHost
+func (_e *MockExtensionHost_Expecter) EmitEvent(ev any) *MockExtensionHost_EmitEvent_Call {
+	return &MockExtensionHost_EmitEvent_Call{Call: _e.mock.On("EmitEvent", ev)}
+}
+
+func (_c *MockExtensionHost_EmitEvent_Call) Run(run func(ev extproto.EventFromHost)) *MockExtensionHost_EmitEvent_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 extproto.EventFromHost
+		if args[0] != nil {
+			arg0 = args[0].(extproto.EventFromHost)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockExtensionHost_EmitEvent_Call) Return() *MockExtensionHost_EmitEvent_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockExtensionHost_EmitEvent_Call) RunAndReturn(run func(ev extproto.EventFromHost)) *MockExtensionHost_EmitEvent_Call {
+	_c.Run(run)
+	return _c
+}
+
 // HasCommand provides a mock function for the type MockExtensionHost
 func (_mock *MockExtensionHost) HasCommand(name string) bool {
 	ret := _mock.Called(name)
@@ -194,6 +234,84 @@ func (_c *MockExtensionHost_HasCommand_Call) Return(b bool) *MockExtensionHost_H
 }
 
 func (_c *MockExtensionHost_HasCommand_Call) RunAndReturn(run func(name string) bool) *MockExtensionHost_HasCommand_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Invoke provides a mock function for the type MockExtensionHost
+func (_mock *MockExtensionHost) Invoke(ctx context.Context, name string, args string, timeout time.Duration) (extproto.CommandResponseFromExt, error) {
+	ret := _mock.Called(ctx, name, args, timeout)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Invoke")
+	}
+
+	var r0 extproto.CommandResponseFromExt
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, time.Duration) (extproto.CommandResponseFromExt, error)); ok {
+		return returnFunc(ctx, name, args, timeout)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, time.Duration) extproto.CommandResponseFromExt); ok {
+		r0 = returnFunc(ctx, name, args, timeout)
+	} else {
+		r0 = ret.Get(0).(extproto.CommandResponseFromExt)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string, time.Duration) error); ok {
+		r1 = returnFunc(ctx, name, args, timeout)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockExtensionHost_Invoke_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Invoke'
+type MockExtensionHost_Invoke_Call struct {
+	*mock.Call
+}
+
+// Invoke is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+//   - args string
+//   - timeout time.Duration
+func (_e *MockExtensionHost_Expecter) Invoke(ctx any, name any, args any, timeout any) *MockExtensionHost_Invoke_Call {
+	return &MockExtensionHost_Invoke_Call{Call: _e.mock.On("Invoke", ctx, name, args, timeout)}
+}
+
+func (_c *MockExtensionHost_Invoke_Call) Run(run func(ctx context.Context, name string, args string, timeout time.Duration)) *MockExtensionHost_Invoke_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 time.Duration
+		if args[3] != nil {
+			arg3 = args[3].(time.Duration)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockExtensionHost_Invoke_Call) Return(commandResponseFromExt extproto.CommandResponseFromExt, err error) *MockExtensionHost_Invoke_Call {
+	_c.Call.Return(commandResponseFromExt, err)
+	return _c
+}
+
+func (_c *MockExtensionHost_Invoke_Call) RunAndReturn(run func(ctx context.Context, name string, args string, timeout time.Duration) (extproto.CommandResponseFromExt, error)) *MockExtensionHost_Invoke_Call {
 	_c.Call.Return(run)
 	return _c
 }

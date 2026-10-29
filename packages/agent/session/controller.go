@@ -109,6 +109,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	c.compactSeam = c
 	c.settingsSeam = c
 	c.interSeam = c
+	c.residentSeam.residentsInit()
 	c.updateInfo()
 	go func() {
 		defer close(c.done)
@@ -192,6 +193,12 @@ func (c *Controller) updateInfo() {
 	}
 	if c.turnSeam != nil {
 		info.CurrentOrigin = c.turnSeam.turnOrigin()
+		projection := c.turnSeam.turnInfo()
+		info.Activity = projection.Activity
+		info.Usage = projection.Usage
+		info.ContextUsed = projection.ContextUsed
+		info.ContextMax = projection.ContextMax
+		info.LastUserInputAt = projection.LastUserInputAt
 	}
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()

@@ -17,3 +17,6 @@ func (c *Controller) ResidentAction(ctx context.Context, command ResidentCommand
 func (c *Controller) residentsRunning() bool               { return false }
 func (c *Controller) residentSummaries() []ResidentSummary { return nil }
 func (s *residentState) observe(ev core.AgentEvent)        {}
+
+// residentsInit wires resident observers; implemented by the residents cluster.
+func (c *Controller) residentsInit() {}

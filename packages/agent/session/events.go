@@ -117,7 +117,9 @@ type ExtDisplayEvent struct {
 
 // ExtInsertEvent is a terminal-free session contract payload.
 type ExtInsertEvent struct {
-	Text string `json:"text"`
+	// Submit asks the attached client to execute the inserted input.
+	Submit bool   `json:"submit,omitempty"`
+	Text   string `json:"text"`
 }
 
 // PlanEvent is a terminal-free session contract payload.

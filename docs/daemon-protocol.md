@@ -84,6 +84,11 @@ Go error objects. Result data contracts:
 Method names are snake_case. `params` is an object keyed by the Go argument
 names below (snake_case); context is transport-owned and never serialized.
 Payload fields use the snake_case JSON tags in `session`.
+`Input.host_event` is an optional boolean (default false); the turn cluster queues
+it as `core.QueuedMessage.HostEvent`. Other input fields are `text`, `images`,
+`mode`, `origin`, and `from`. `ExtInsertEvent.submit` is optional (default false);
+when true, the attached client executes the inserted input rather than only
+inserting it into the editor.
 
 | Method | Params | Successful data |
 | --- | --- | --- |
@@ -150,7 +155,7 @@ collisions. `Event.Data` carries the following concrete payloads:
 | ext_panel / EvExtPanel | ExtPanelEvent | op (`open|update|close`), panel |
 | ext_alert / EvExtAlert | ExtAlertEvent | alert |
 | ext_display / EvExtDisplay | ExtDisplayEvent | ext, text |
-| ext_insert / EvExtInsert | ExtInsertEvent | text |
+| ext_insert / EvExtInsert | ExtInsertEvent | text, optional submit |
 | plan / EvPlan | PlanEvent | plan (map of core.PlanUpdate) |
 | goal / EvGoal | GoalEvent | goal, status |
 | title / EvTitle | TitleEvent | title |

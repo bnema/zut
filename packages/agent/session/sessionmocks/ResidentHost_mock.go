@@ -394,6 +394,126 @@ func (_c *MockResidentHost_ResumeFollowUp_Call) RunAndReturn(run func(ctx contex
 	return _c
 }
 
+// SetAcceptedObserver provides a mock function for the type MockResidentHost
+func (_mock *MockResidentHost) SetAcceptedObserver(observer func(subagents.ResidentChildSpec, string, string)) {
+	_mock.Called(observer)
+	return
+}
+
+// MockResidentHost_SetAcceptedObserver_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAcceptedObserver'
+type MockResidentHost_SetAcceptedObserver_Call struct {
+	*mock.Call
+}
+
+// SetAcceptedObserver is a helper method to define mock.On call
+//   - observer func(subagents.ResidentChildSpec, string, string)
+func (_e *MockResidentHost_Expecter) SetAcceptedObserver(observer any) *MockResidentHost_SetAcceptedObserver_Call {
+	return &MockResidentHost_SetAcceptedObserver_Call{Call: _e.mock.On("SetAcceptedObserver", observer)}
+}
+
+func (_c *MockResidentHost_SetAcceptedObserver_Call) Run(run func(observer func(subagents.ResidentChildSpec, string, string))) *MockResidentHost_SetAcceptedObserver_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(subagents.ResidentChildSpec, string, string)
+		if args[0] != nil {
+			arg0 = args[0].(func(subagents.ResidentChildSpec, string, string))
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockResidentHost_SetAcceptedObserver_Call) Return() *MockResidentHost_SetAcceptedObserver_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockResidentHost_SetAcceptedObserver_Call) RunAndReturn(run func(observer func(subagents.ResidentChildSpec, string, string))) *MockResidentHost_SetAcceptedObserver_Call {
+	_c.Run(run)
+	return _c
+}
+
+// SetCompletionObserver provides a mock function for the type MockResidentHost
+func (_mock *MockResidentHost) SetCompletionObserver(observer func(subagents.ResidentCompletion) bool) {
+	_mock.Called(observer)
+	return
+}
+
+// MockResidentHost_SetCompletionObserver_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetCompletionObserver'
+type MockResidentHost_SetCompletionObserver_Call struct {
+	*mock.Call
+}
+
+// SetCompletionObserver is a helper method to define mock.On call
+//   - observer func(subagents.ResidentCompletion) bool
+func (_e *MockResidentHost_Expecter) SetCompletionObserver(observer any) *MockResidentHost_SetCompletionObserver_Call {
+	return &MockResidentHost_SetCompletionObserver_Call{Call: _e.mock.On("SetCompletionObserver", observer)}
+}
+
+func (_c *MockResidentHost_SetCompletionObserver_Call) Run(run func(observer func(subagents.ResidentCompletion) bool)) *MockResidentHost_SetCompletionObserver_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(subagents.ResidentCompletion) bool
+		if args[0] != nil {
+			arg0 = args[0].(func(subagents.ResidentCompletion) bool)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockResidentHost_SetCompletionObserver_Call) Return() *MockResidentHost_SetCompletionObserver_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockResidentHost_SetCompletionObserver_Call) RunAndReturn(run func(observer func(subagents.ResidentCompletion) bool)) *MockResidentHost_SetCompletionObserver_Call {
+	_c.Run(run)
+	return _c
+}
+
+// SetUpdateObserver provides a mock function for the type MockResidentHost
+func (_mock *MockResidentHost) SetUpdateObserver(observer func(string)) {
+	_mock.Called(observer)
+	return
+}
+
+// MockResidentHost_SetUpdateObserver_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetUpdateObserver'
+type MockResidentHost_SetUpdateObserver_Call struct {
+	*mock.Call
+}
+
+// SetUpdateObserver is a helper method to define mock.On call
+//   - observer func(string)
+func (_e *MockResidentHost_Expecter) SetUpdateObserver(observer any) *MockResidentHost_SetUpdateObserver_Call {
+	return &MockResidentHost_SetUpdateObserver_Call{Call: _e.mock.On("SetUpdateObserver", observer)}
+}
+
+func (_c *MockResidentHost_SetUpdateObserver_Call) Run(run func(observer func(string))) *MockResidentHost_SetUpdateObserver_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 func(string)
+		if args[0] != nil {
+			arg0 = args[0].(func(string))
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockResidentHost_SetUpdateObserver_Call) Return() *MockResidentHost_SetUpdateObserver_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockResidentHost_SetUpdateObserver_Call) RunAndReturn(run func(observer func(string))) *MockResidentHost_SetUpdateObserver_Call {
+	_c.Run(run)
+	return _c
+}
+
 // Snapshot provides a mock function for the type MockResidentHost
 func (_mock *MockResidentHost) Snapshot() []subagents.ResidentSnapshot {
 	ret := _mock.Called()
