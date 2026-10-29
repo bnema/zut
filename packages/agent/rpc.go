@@ -214,7 +214,7 @@ func (b *rpcBridge) pump(events <-chan session.Event, done chan struct{}) {
 			}
 		case session.EvExtAlert:
 			if a, ok := ev.Data.(session.ExtAlertEvent); ok {
-				b.write(map[string]any{"type": "ext_alert", "kind": a.Alert.Kind, "reason": a.Alert.Reason})
+				b.write(map[string]any{"type": "ext_alert", "extension": a.Ext, "kind": a.Alert.Kind, "reason": a.Alert.Reason})
 			}
 		case session.EvPending:
 			if p, ok := ev.Data.(session.PendingEvent); ok {
