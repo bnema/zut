@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"errors"
+	"github.com/bnema/zut/packages/agent/tools"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -163,4 +165,166 @@ func TestTurnSteerAndCancelProvider(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
+}
+
+func TestTurnAgentReplay(t *testing.T) {
+	c, ctx := newTestController(t)
+	require.NoError(t, c.call(ctx, func() {
+		c.applyAgentEvent(core.EvTextDelta{Delta: "a"})
+		c.applyAgentEvent(core.EvTextDelta{Delta: "b"})
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	ch, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	var text string
+	for seq := uint64(1); seq <= snap.Seq; seq++ {
+		select {
+		case e := <-ch:
+			require.Equal(t, seq, e.Seq)
+			if e.Kind == EvAgent {
+				text += e.Agent.(core.EvTextDelta).Delta
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	require.Equal(t, "ab", text)
+}
+
+func TestTurnAbortExecutingTool(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("test").Maybe()
+	stream := make(chan provider.Event, 1)
+	stream <- provider.EventDone{Stop: provider.StopToolUse, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "bash1", Name: "bash", Arguments: []byte(`{"command":"printf 'executing\\n'; sleep 5","timeout":6}`)}}}}
+	close(stream)
+	client.EXPECT().Stream(mock.Anything, mock.Anything).Return((<-chan provider.Event)(stream), nil).Once()
+	ag := core.NewAgent(client, "test", "", core.NewRegistry(&tools.BashTool{CWD: t.TempDir()}))
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Submit(ctx, Input{Text: "run tool"}))
+	for {
+		select {
+		case e := <-events:
+			if p, ok := e.Agent.(core.EvToolProgress); ok && p.Text != "" {
+				goto executing
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+executing:
+	require.NoError(t, c.Abort(ctx))
+	result := false
+	for {
+		select {
+		case e := <-events:
+			if _, ok := e.Agent.(core.EvToolResult); ok {
+				result = true
+			}
+			if e.Kind == EvInfo && e.Data.(InfoEvent).Info.Run == RunStateIdle {
+				require.True(t, result, "tool result must precede idle")
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestTurnFollowUpErrorPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		err                error
+		cancel             bool
+		wantUser, wantHost bool
+	}{
+		{name: "success", wantUser: true, wantHost: true},
+		{name: "provider_error", err: errors.New("provider failed"), wantHost: true},
+		{name: "cancelled", cancel: true},
+		{name: "repetition", err: core.ErrRepetitiveLoop, wantUser: true, wantHost: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ctx := newTestController(t)
+			turnSeams(t, c, ctx)
+			ag := core.NewAgent(nil, "test", "", nil)
+			// Prevent follow-up execution while inspecting the selected input and queues.
+			compact := newMockcompactSeam(t)
+			var selected Input
+			compact.EXPECT().maybeAutoCompact(mock.Anything).RunAndReturn(func(in Input) bool { selected = in; return true }).Maybe()
+			require.NoError(t, c.call(ctx, func() {
+				c.compactSeam = compact
+				c.turn.agent = ag
+				c.turn.busy = true
+				c.enqueue(Input{Text: "scheduled", Origin: "scheduler"})
+				c.enqueue(Input{Text: "user", Origin: "user"})
+				ag.QueuePrompt(core.QueuedMessage{Text: "host", HostEvent: true})
+				run, cancel := context.WithCancel(ctx)
+				defer cancel()
+				if tc.cancel {
+					cancel()
+				}
+				c.finishTurn(run, tc.err)
+			}))
+			if tc.wantUser {
+				require.Equal(t, "user", selected.Text)
+			} else {
+				require.Equal(t, "scheduled", selected.Text)
+			}
+			require.Equal(t, tc.wantHost, ag.QueuedMessageCount() > 0)
+		})
+	}
+}
+
+func TestTurnQueuedHostProvenance(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("test").Maybe()
+	response := make(chan provider.Event, 2)
+	response <- provider.EventTextDelta{Delta: "received"}
+	response <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "received"}}}}
+	close(response)
+	client.EXPECT().Stream(mock.Anything, mock.Anything).Return((<-chan provider.Event)(response), nil).Once()
+	ag := core.NewAgent(client, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Submit(ctx, Input{Text: "host report", HostEvent: true, Origin: "resident"}))
+	for {
+		select {
+		case e := <-events:
+			if e.Kind == EvInfo && e.Data.(InfoEvent).Info.Run == RunStateIdle {
+				messages := ag.Messages()
+				require.GreaterOrEqual(t, len(messages), 2)
+				require.Equal(t, "host report", messages[0].Content[0].(provider.TextBlock).Text)
+				require.Equal(t, "received", messages[len(messages)-1].Content[0].(provider.TextBlock).Text)
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestTurnAgentOwnership(t *testing.T) {
+	c, ctx := newTestController(t)
+	first := core.NewAgent(nil, "first", "", nil)
+	second := core.NewAgent(nil, "second", "", nil)
+	require.NoError(t, c.call(ctx, func() {
+		require.Nil(t, c.currentAgent(), "missing builder must not manufacture an agent")
+		require.NoError(t, c.setAgent(first))
+		require.Same(t, first, c.currentAgent(), "cached agent must not need a builder")
+		c.turn.busy = true
+		require.ErrorIs(t, c.setAgent(second), ErrBusy)
+		require.Same(t, first, c.currentAgent())
+		c.turn.busy = false
+		require.NoError(t, c.setAgent(second))
+		require.Same(t, second, c.currentAgent())
+		require.NoError(t, c.setAgent(nil))
+		require.Nil(t, c.currentAgent())
+	}))
 }

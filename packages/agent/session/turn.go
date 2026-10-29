@@ -125,18 +125,8 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	if c.compactSeam.maybeAutoCompact(in) {
 		return nil
 	}
-	if c.turn.agent == nil {
-		if c.deps.AgentBuilder == nil {
-			return errors.New("session agent builder unavailable")
-		}
-		ag, _, _, err := c.deps.AgentBuilder.BuildAgent()
-		if err != nil {
-			return err
-		}
-		if ag == nil {
-			return errors.New("session agent builder returned nil")
-		}
-		c.turn.agent = ag
+	if err := c.ensureAgent(); err != nil {
+		return err
 	}
 	if !continuing {
 		c.goalSeam.goalBeforeTurn(&in)
@@ -186,25 +176,50 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 	if c.deps.SessionStore != nil {
 		c.deps.SessionStore.FlushSession()
 	}
-	if ctx.Err() != nil || (err != nil && !errors.Is(err, core.ErrRepetitiveLoop)) {
-		kept := c.turn.queue[:0]
-		for _, q := range c.turn.queue {
-			if q.Input.Origin == "scheduler" {
-				kept = append(kept, q)
+	// Match interactive_turn: repetition stops autonomous work but preserves
+	// explicit prompts; ordinary errors preserve host reports without running
+	// them immediately; cancellation discards both. Scheduled work is separate.
+	repetitive := errors.Is(err, core.ErrRepetitiveLoop)
+	if repetitive || ctx.Err() != nil || err != nil {
+		pending := c.turn.agent.DrainQueuedMessages()
+		host := c.turn.queue
+		c.turn.queue = nil
+		for _, message := range pending {
+			if repetitive && !message.HostEvent {
+				c.enqueue(Input{Text: message.Text, Images: message.Images, Origin: "user"})
+			} else if ctx.Err() == nil && message.HostEvent {
+				c.turn.agent.QueuePrompt(message)
 			}
 		}
-		c.turn.queue = kept
-		for _, message := range c.turn.agent.DrainQueuedMessages() {
-			if errors.Is(err, core.ErrRepetitiveLoop) && !message.HostEvent {
-				c.enqueue(Input{Text: message.Text, Images: message.Images, Origin: "user"})
+		for _, q := range host {
+			switch {
+			case q.Input.Origin == "scheduler":
+				if !repetitive {
+					c.turn.queue = append(c.turn.queue, q)
+				}
+			case repetitive:
+				if q.Input.HostEvent {
+					c.turn.agent.QueuePrompt(core.QueuedMessage{Text: q.Input.Text, Images: q.Input.Images, HostEvent: true})
+				} else {
+					c.turn.queue = append(c.turn.queue, q)
+				}
+			case ctx.Err() == nil && q.Input.HostEvent:
+				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: q.Input.Text, Images: q.Input.Images, HostEvent: true})
 			}
 		}
 		c.publishQueue()
 	}
 	c.publishTurnInfo()
 	if len(c.turn.queue) > 0 {
-		next := c.turn.queue[0]
-		c.turn.queue = c.turn.queue[1:]
+		index := 0
+		for i, q := range c.turn.queue {
+			if q.Input.Origin != "scheduler" {
+				index = i
+				break
+			}
+		}
+		next := c.turn.queue[index]
+		c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
 		c.publishQueue()
 		if e := c.startTurn(next.Input); e != nil {
 			c.publish(EvNote, NoteEvent{Note: Note{Text: e.Error()}})
@@ -290,24 +305,6 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 	c.publishTurnInfo()
 }
 
-// publishAgent mirrors the actor broadcaster with the contract's Agent field;
-// publish accepts Data only, so agent events need this typed envelope.
-func (c *Controller) publishAgent(agent core.AgentEvent) {
-	c.seq++
-	ev := Event{Seq: c.seq, Session: c.id, At: c.deps.Clock(), Kind: EvAgent, Agent: agent}
-	c.ring.append(ev)
-	c.updateInfo()
-	for id, s := range c.subs {
-		if len(s.events) >= cap(s.events)-1 {
-			s.events <- Event{Seq: ev.Seq, Session: c.id, At: ev.At, Kind: EvAttach, Data: AttachEvent{State: AttachStateDetached, Reason: "slow_consumer"}}
-			close(s.events)
-			close(s.stop)
-			delete(c.subs, id)
-		} else {
-			s.events <- ev
-		}
-	}
-}
 func (c *Controller) isBusy() bool { return c.turn.busy }
 func (c *Controller) turnOrigin() InputOrigin {
 	if c.turn.busy {
@@ -337,4 +334,41 @@ func (c *Controller) turnInfo() turnInfoProjection {
 		p.Activity.Kind = "idle"
 	}
 	return p
+}
+
+// currentAgent returns the active agent, building it lazily on the actor. The
+// seam cannot return an error; a failed build returns nil and can be retried.
+// Turn startup uses ensureAgent directly to retain the builder's error.
+func (c *Controller) currentAgent() *core.Agent {
+	if c.ensureAgent() != nil {
+		return nil
+	}
+	return c.turn.agent
+}
+func (c *Controller) ensureAgent() error {
+	if c.turn.agent != nil {
+		return nil
+	}
+	if c.deps.AgentBuilder == nil {
+		return errors.New("session agent builder unavailable")
+	}
+	ag, _, _, err := c.deps.AgentBuilder.BuildAgent()
+	if err != nil {
+		return err
+	}
+	if ag == nil {
+		return errors.New("session agent builder returned nil")
+	}
+	c.turn.agent = ag
+	return nil
+}
+
+// setAgent changes the actor-owned agent only when execution has stopped.
+// A nil agent clears the cache so the next access rebuilds through AgentBuilder.
+func (c *Controller) setAgent(ag *core.Agent) error {
+	if c.isBusy() {
+		return ErrBusy
+	}
+	c.turn.agent = ag
+	return nil
 }

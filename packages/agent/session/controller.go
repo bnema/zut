@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"github.com/bnema/zut/packages/core"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -168,6 +169,10 @@ func (c *Controller) call(ctx context.Context, fn func()) error {
 func (c *Controller) publish(kind EventKind, data any) {
 	c.seq++
 	ev := Event{Seq: c.seq, Session: c.id, At: c.deps.Clock(), Kind: kind, Data: data}
+	if kind == EvAgent {
+		ev.Agent, _ = data.(core.AgentEvent)
+		ev.Data = nil
+	}
 	c.ring.append(ev)
 	c.updateInfo()
 	for id, s := range c.subs {
@@ -298,3 +303,6 @@ func (c *Controller) Subscribe(ctx context.Context, afterSeq uint64) (<-chan Eve
 
 // Done closes when the actor and its subscriptions have stopped.
 func (c *Controller) Done() <-chan struct{} { return c.done }
+
+// publishAgent routes core events through the shared sequence, ring and broadcaster.
+func (c *Controller) publishAgent(ev core.AgentEvent) { c.publish(EvAgent, ev) }

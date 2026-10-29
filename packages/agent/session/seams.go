@@ -10,6 +10,10 @@ import (
 
 // These actor-only seams preserve cluster ownership and permit generated mocks.
 type turnSeam interface {
+	// currentAgent lazily builds the active agent; actor-only, nil on build failure.
+	currentAgent() *core.Agent
+	// setAgent replaces the idle agent; actor-only.
+	setAgent(*core.Agent) error
 	startTurn(Input) error
 	enqueue(Input)
 	applyAgentEvent(core.AgentEvent)
