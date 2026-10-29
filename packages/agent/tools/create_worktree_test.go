@@ -242,7 +242,7 @@ func TestCreateWorktreeRequiresDefaultRoot(t *testing.T) {
 		t.Skip("git is required")
 	}
 	repo := initWorktreeTestRepo(t)
-	tool := &CreateWorktreeTool{CWD: repo, Sandbox: NewSandbox(repo)}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo)}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/no-default-root"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "default worktree root is not configured") {
@@ -251,7 +251,7 @@ func TestCreateWorktreeRequiresDefaultRoot(t *testing.T) {
 }
 
 func TestCreateWorktreeSchemaDropsBootstrapRoot(t *testing.T) {
-	schema := string((&CreateWorktreeTool{}).Schema())
+	schema := string((&CreateWorktreeTool{Env: os.Environ()}).Schema())
 	if strings.Contains(schema, "bootstrap_root") {
 		t.Fatalf("schema still exposes bootstrap_root:\n%s", schema)
 	}
@@ -338,7 +338,7 @@ func TestCreateWorktreeRejectsNonRepository(t *testing.T) {
 }
 
 func TestCreateWorktreeRequiresSandbox(t *testing.T) {
-	tool := &CreateWorktreeTool{CWD: t.TempDir(), DefaultRoot: filepath.Join(t.TempDir(), "worktrees")}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: t.TempDir(), DefaultRoot: filepath.Join(t.TempDir(), "worktrees")}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/no-sandbox"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "sandbox is required") {
@@ -410,7 +410,7 @@ func TestCreateWorktreeCleanupRemovesPartialCheckoutAndBranch(t *testing.T) {
 		worktreePath: worktreePath,
 	}
 
-	if err := plan.cleanupFailedCheckout(context.Background()); err != nil {
+	if err := plan.cleanupFailedCheckout(withToolEnv(context.Background(), os.Environ())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -547,7 +547,7 @@ func TestCreateWorktreeRespectsJail(t *testing.T) {
 	defaultRoot := filepath.Join(t.TempDir(), "worktrees")
 	sandbox := NewSandbox(nested)
 	sandbox.Lock()
-	tool := &CreateWorktreeTool{CWD: nested, Sandbox: sandbox, DefaultRoot: defaultRoot}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: nested, Sandbox: sandbox, DefaultRoot: defaultRoot}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/jailed"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "jailed:") {
@@ -584,7 +584,7 @@ func TestCreateWorktreeRejectsJailedAncestorBeforeGitDiscovery(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	sandbox := NewSandbox(nested)
 	sandbox.Lock()
-	tool := &CreateWorktreeTool{CWD: nested, Sandbox: sandbox, DefaultRoot: filepath.Join(t.TempDir(), "worktrees")}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: nested, Sandbox: sandbox, DefaultRoot: filepath.Join(t.TempDir(), "worktrees")}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/jailed-discovery"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "jailed:") {
@@ -606,7 +606,7 @@ func TestCreateWorktreeRequiresFilesystemPermissions(t *testing.T) {
 	permissions.Bash.Mode = "allowlist"
 	permissions.Bash.Allow = []string{"git"}
 	sandbox.SetPermissions(permissions)
-	tool := &CreateWorktreeTool{CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/restricted"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "no filesystem read permission") {
@@ -628,7 +628,7 @@ func TestCreateWorktreeRequiresGitBashPermission(t *testing.T) {
 	permissions.FS.Read = []string{repo}
 	permissions.FS.Write = []string{repo}
 	sandbox.SetPermissions(permissions)
-	tool := &CreateWorktreeTool{CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/no-git"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "no bash permission") {
@@ -652,7 +652,7 @@ func TestCreateWorktreeWritesOutsideDeclaredScopesAreDenied(t *testing.T) {
 	permissions.Bash.Mode = "allowlist"
 	permissions.Bash.Allow = []string{"git"}
 	sandbox.SetPermissions(permissions)
-	tool := &CreateWorktreeTool{CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
+	tool := &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: sandbox, DefaultRoot: defaultRoot}
 
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/out-of-scope"}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "outside declared scopes") {
@@ -699,7 +699,7 @@ func TestCreateWorktreeGitOutputKeepsStderrOutOfSuccessfulOutput(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	output, err := createWorktreeGitOutput(context.Background(), t.TempDir(), "status")
+	output, err := createWorktreeGitOutput(withToolEnv(context.Background(), os.Environ()), t.TempDir(), "status")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +726,7 @@ func TestCreateWorktreeGitCancelsDescendants(t *testing.T) {
 	cwd := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		_, err := createWorktreeGitOutput(ctx, cwd, "status")
+		_, err := createWorktreeGitOutput(withToolEnv(ctx, os.Environ()), cwd, "status")
 		done <- err
 	}()
 
@@ -780,7 +780,7 @@ func TestCreateWorktreeGitCancelsDescendants(t *testing.T) {
 
 func newCreateWorktreeTestTool(t *testing.T, cwd, defaultRoot string) *CreateWorktreeTool {
 	t.Helper()
-	return &CreateWorktreeTool{CWD: cwd, Sandbox: NewSandbox(cwd), DefaultRoot: defaultRoot}
+	return &CreateWorktreeTool{Env: os.Environ(), CWD: cwd, Sandbox: NewSandbox(cwd), DefaultRoot: defaultRoot}
 }
 
 func testWorktreeRepoID(t *testing.T, repo string) string {

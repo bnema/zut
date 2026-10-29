@@ -1463,7 +1463,7 @@ func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 				_ = f.Sync()
 			}
 		}
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		bash := &tools.BashTool{CWD: cwd, Env: os.Environ(), Sandbox: sandbox}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
 			return fmt.Errorf("zutfile entry.pre: %w", err)

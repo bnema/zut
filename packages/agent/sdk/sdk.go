@@ -27,6 +27,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -135,11 +137,16 @@ func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
 			break
 		}
 	}
+	cwd, err := sdkCWD(cfg.CWD)
+	if err != nil {
+		return nil, err
+	}
 	args := agent.Args{
+		Env:                    os.Environ(),
 		Mode:                   agent.ModeJSON, // headless
 		Provider:               cfg.Provider,
 		Model:                  cfg.Model,
-		CWD:                    cfg.CWD,
+		CWD:                    cwd,
 		APIKey:                 cfg.APIKey,
 		BaseURL:                cfg.BaseURL,
 		SystemPrompt:           cfg.SystemPrompt,
@@ -498,3 +505,23 @@ var ErrBusy = errors.New("sdk: runtime is busy")
 
 // ErrClosed is returned by methods on a Runtime after Close.
 var ErrClosed = errors.New("sdk: runtime is closed")
+
+// sdkCWD anchors the SDK session cwd at this client process: empty means the
+// process cwd and relative paths are made absolute before tools see them.
+func sdkCWD(cwd string) (string, error) {
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("sdk: resolve cwd: %w", err)
+		}
+		cwd = wd
+	}
+	if !filepath.IsAbs(cwd) {
+		abs, err := filepath.Abs(cwd)
+		if err != nil {
+			return "", fmt.Errorf("sdk: resolve cwd %q: %w", cwd, err)
+		}
+		cwd = abs
+	}
+	return cwd, nil
+}

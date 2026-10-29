@@ -31,7 +31,7 @@ func writeFakeInterpreter(t *testing.T, body string) string {
 
 func execPythonWith(t *testing.T, exe, code string, timeout int64, progress func(string)) (string, bool, map[string]any) {
 	t.Helper()
-	tool := &PythonTool{
+	tool := &PythonTool{Env: []string{},
 		CWD: t.TempDir(),
 		resolveHook: func(context.Context, string, string) (resolvedPython, error) {
 			return resolvedPython{Path: exe, Version: pythonVersion{Major: 3, Minor: 99, Micro: 0}}, nil
@@ -109,7 +109,7 @@ func TestPythonDescendantCannotRetainPipe(t *testing.T) {
 
 func TestPythonCancellationWhileSupplyingStdin(t *testing.T) {
 	exe := writeFakeInterpreter(t, "while IFS= read -r line; do sleep 0.2; echo \"$line\"; done")
-	tool := &PythonTool{
+	tool := &PythonTool{Env: []string{},
 		CWD: t.TempDir(),
 		resolveHook: func(context.Context, string, string) (resolvedPython, error) {
 			return resolvedPython{Path: exe, Version: pythonVersion{Major: 3}}, nil
@@ -148,7 +148,7 @@ func realPython3(t *testing.T) string {
 	if err != nil {
 		t.Skip("no python3 on PATH; resolver coverage does not require installed Python")
 	}
-	ver, err := probePythonVersion(context.Background(), path)
+	ver, err := probePythonVersion(context.Background(), path, t.TempDir(), os.Environ())
 	if err != nil || ver.Major != 3 {
 		t.Skipf("python3 probe failed (%v); skipping runtime checks", err)
 	}
@@ -158,7 +158,7 @@ func realPython3(t *testing.T) string {
 func TestPythonRealRunsInSessionCWD(t *testing.T) {
 	py := realPython3(t)
 	dir := t.TempDir()
-	tool := &PythonTool{CWD: dir, Interpreter: py}
+	tool := &PythonTool{Env: []string{}, CWD: dir, Interpreter: py}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"code":    "import os; print(os.getcwd())",
 		"timeout": 15,
@@ -181,7 +181,7 @@ func TestPythonRealRunsInSessionCWD(t *testing.T) {
 
 func TestPythonRealImportsAndMissingImport(t *testing.T) {
 	py := realPython3(t)
-	tool := &PythonTool{CWD: t.TempDir(), Interpreter: py}
+	tool := &PythonTool{Env: []string{}, CWD: t.TempDir(), Interpreter: py}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"code":    "import json; print('imports ok')",
 		"timeout": 15,
@@ -207,7 +207,7 @@ func TestPythonRealImportsAndMissingImport(t *testing.T) {
 
 func TestPythonRealNoStateBetweenCalls(t *testing.T) {
 	py := realPython3(t)
-	tool := &PythonTool{CWD: t.TempDir(), Interpreter: py}
+	tool := &PythonTool{Env: []string{}, CWD: t.TempDir(), Interpreter: py}
 	if _, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"code": "x_state_probe = 1", "timeout": 15}), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestPythonRealNoStateBetweenCalls(t *testing.T) {
 func TestPythonRealWrittenFilesPersist(t *testing.T) {
 	py := realPython3(t)
 	dir := t.TempDir()
-	tool := &PythonTool{CWD: dir, Interpreter: py}
+	tool := &PythonTool{Env: []string{}, CWD: dir, Interpreter: py}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"code":    "open('created.txt','w').write('hi')",
 		"timeout": 15,

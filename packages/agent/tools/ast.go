@@ -30,6 +30,7 @@ const (
 // ASTTool performs structural searches and rewrites through ast-grep.
 type ASTTool struct {
 	CWD            string
+	Env            []string
 	Sandbox        *Sandbox
 	LSP            *lsp.Manager
 	LSPDiagnostics bool
@@ -65,6 +66,9 @@ func (t *ASTTool) Description() string {
 func (t *ASTTool) Schema() json.RawMessage { return json.RawMessage(astSchema) }
 
 func (t *ASTTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
+	if err := requireSessionCWD("ast", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	args, err := parseASTArgs(raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -77,6 +81,9 @@ func (t *ASTTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolRe
 }
 
 func (t *ASTTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("ast", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	args, err := parseASTArgs(raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -218,6 +225,10 @@ func parseASTArgs(raw json.RawMessage) (astArgs, error) {
 }
 
 func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
+	if t.Env == nil {
+		return astPlan{}, fmt.Errorf("tool ast: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	if t.ReadOnly && args.Rewrite != "" {
 		return astPlan{}, fmt.Errorf("ast: rewrites are unavailable in read-only orchestration")
 	}
@@ -311,7 +322,7 @@ func (t *ASTTool) Available() bool {
 func (t *ASTTool) executable() (string, error) {
 	lookup := t.LookPath
 	if lookup == nil {
-		lookup = exec.LookPath
+		lookup = func(name string) (string, error) { return lookPathEnv(t.CWD, t.Env, name) }
 	}
 	if path, err := lookup("ast-grep"); err == nil && path != "" {
 		return path, nil
@@ -319,7 +330,10 @@ func (t *ASTTool) executable() (string, error) {
 	if path, err := lookup("sg"); err == nil && path != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		output, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+		cmd := exec.CommandContext(ctx, path, "--version")
+		cmd.Env = t.Env
+		cmd.Dir = t.CWD
+		output, err := cmd.CombinedOutput()
 		if err == nil && strings.Contains(strings.ToLower(string(output)), "ast-grep") {
 			return path, nil
 		}
@@ -340,6 +354,7 @@ type astRun struct {
 func runASTGrep(ctx context.Context, binary, dir string, commandArgs []string, rewrite bool) (astRun, error) {
 	cmd := exec.CommandContext(ctx, binary, commandArgs...)
 	cmd.Dir = dir
+	cmd.Env = toolEnv(ctx)
 	configureBashProcess(cmd, nil)
 	var stdout, stderr bytes.Buffer
 	capture := &limitedASTBuffer{buffer: &stdout, limit: maxASTCaptureBytes}
@@ -585,11 +600,10 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 
 func canonicalPath(cwd, path string) (string, error) {
 	path = resolvePath(cwd, path)
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
+	if cwd == "" {
+		return "", fmt.Errorf("tool ast: session cwd not set")
 	}
-	return filepath.Clean(absolute), nil
+	return filepath.Clean(path), nil
 }
 
 func boundASTText(text string) string {

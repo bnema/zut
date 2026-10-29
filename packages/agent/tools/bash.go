@@ -31,7 +31,9 @@ const (
 
 // BashTool runs a shell command in the agent's cwd.
 type BashTool struct {
-	CWD     string
+	CWD string
+	// Env is the explicit session environment; nil is invalid.
+	Env     []string
 	Sandbox *Sandbox
 }
 
@@ -43,7 +45,7 @@ type bashArgs struct {
 var bashSchema = fmt.Sprintf(`{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum command runtime in seconds."}},"required":["command","timeout"]}`, maxBashTimeoutSeconds)
 
 func (t *BashTool) Name() string            { return "bash" }
-func (t *BashTool) Description() string     { return shellDescription(currentShell()) }
+func (t *BashTool) Description() string     { return shellDescription(t.sessionShell()) }
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
 
 func bashTimeoutDuration(seconds int64) (time.Duration, error) {
@@ -54,6 +56,12 @@ func bashTimeoutDuration(seconds int64) (time.Duration, error) {
 }
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("bash", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool bash: session env not set")
+	}
 	var a bashArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
@@ -75,16 +83,20 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		return core.ToolResult{}, err
 	}
 	cwd := t.CWD
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := newShellCmd(runCtx, a.Command)
+	shell := resolveShell(runtime.GOOS, isExecutableFile, func(name string) (string, error) { return lookPathEnv(cwd, t.Env, name) })
+	if runtime.GOOS == "windows" {
+		path, err := lookPathEnv(cwd, t.Env, "cmd")
+		if err != nil {
+			return core.ToolResult{}, err
+		}
+		shell.path = path
+	}
+	cmd := exec.CommandContext(runCtx, shell.path, shell.flag, a.Command)
 	cmd.Dir = cwd
-	cmd.Env = os.Environ()
+	cmd.Env = t.Env
 
 	// Capture merged stdout+stderr with line-by-line streaming.
 	pr, pw := io.Pipe()
@@ -218,8 +230,20 @@ type shellCommand struct {
 	isBash bool
 }
 
-func currentShell() shellCommand {
-	return resolveShell(runtime.GOOS, isExecutableFile, exec.LookPath)
+// sessionShell resolves the shell from the session PATH. Without a session
+// env no PATH lookup happens; Execute rejects that case anyway.
+func (t *BashTool) sessionShell() shellCommand {
+	return t.sessionShellWith(isExecutableFile)
+}
+
+func (t *BashTool) sessionShellWith(executable func(string) bool) shellCommand {
+	lookup := func(name string) (string, error) {
+		return "", fmt.Errorf("executable %q: session env not set", name)
+	}
+	if t.Env != nil {
+		lookup = func(name string) (string, error) { return lookPathEnv(t.CWD, t.Env, name) }
+	}
+	return resolveShell(runtime.GOOS, executable, lookup)
 }
 
 func resolveShell(goos string, executable func(string) bool, lookPath func(string) (string, error)) shellCommand {
@@ -248,9 +272,4 @@ func shellDescription(shell shellCommand) string {
 		return fmt.Sprintf("Run a Bash command via %s -c. stdout+stderr merged.", shell.path)
 	}
 	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
-}
-
-func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	shell := currentShell()
-	return exec.CommandContext(ctx, shell.path, shell.flag, command)
 }

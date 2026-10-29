@@ -49,6 +49,9 @@ type editPlan struct {
 // diff without writing anything. The confirmation UI shows this result before
 // the user decides whether Execute may apply it.
 func (t *EditTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
+	if err := requireSessionCWD("edit", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	plan, err := t.plan(raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -57,6 +60,9 @@ func (t *EditTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolR
 }
 
 func (t *EditTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("edit", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	plan, err := t.plan(raw)
 	if err != nil {
 		return core.ToolResult{}, err

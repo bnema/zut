@@ -90,7 +90,7 @@ func TestWorktreeInventoryContextReportsRepositoryWorktrees(t *testing.T) {
 	gitTestOutput(t, repo, "branch", "merged")
 	gitTestOutput(t, repo, "worktree", "add", path, "merged")
 
-	contextText := WorktreeInventoryContext(context.Background(), repo)
+	contextText := WorktreeInventoryContext(context.Background(), repo, os.Environ())
 	wantPath, err := canonicalOrParent(path)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestManageWorktreesRejectsCleanupWithoutExplicitPaths(t *testing.T) {
 }
 
 func newManageWorktreesTestTool(cwd string) *ManageWorktreesTool {
-	return &ManageWorktreesTool{CWD: cwd, Sandbox: NewSandbox(cwd)}
+	return &ManageWorktreesTool{Env: os.Environ(), CWD: cwd, Sandbox: NewSandbox(cwd)}
 }
 
 // addMergedSideWorktree creates branch "side" at the primary HEAD in a new
@@ -165,7 +165,7 @@ func TestDeleteMergedBranchRefusesSymbolicRef(t *testing.T) {
 	gitTestOutput(t, repo, "branch", "side")
 	gitTestOutput(t, repo, "symbolic-ref", "refs/heads/side", "refs/heads/"+mainBranch)
 
-	err := deleteMergedBranch(context.Background(), repo, "side", head)
+	err := deleteMergedBranch(withToolEnv(context.Background(), os.Environ()), repo, "side", head)
 	if err == nil || !strings.Contains(err.Error(), "symbolic") {
 		t.Fatalf("error = %v, want symbolic-ref rejection", err)
 	}
@@ -244,7 +244,7 @@ func TestManageWorktreesDeleteBranchRequiresRefStorageWriteAccess(t *testing.T) 
 		p.FS.Write = write
 		sandbox := NewSandbox(repo)
 		sandbox.SetPermissions(&p)
-		return &ManageWorktreesTool{CWD: repo, Sandbox: sandbox}
+		return &ManageWorktreesTool{Env: os.Environ(), CWD: repo, Sandbox: sandbox}
 	}
 	args := mustJSON(t, map[string]any{"action": "cleanup", "paths": []string{path}, "delete_branch": true})
 

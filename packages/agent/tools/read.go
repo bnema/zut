@@ -42,6 +42,9 @@ func (t *ReadTool) Description() string {
 func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
 
 func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("read", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	var a readArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
@@ -172,19 +175,12 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 }
 
 func canonicalResourcePath(path string) string {
-	absolute, err := filepath.Abs(path)
-	if err == nil {
-		return filepath.Clean(absolute)
-	}
 	return filepath.Clean(path)
 }
 
 func resolvePath(cwd, p string) string {
 	if filepath.IsAbs(p) {
-		return p
-	}
-	if cwd == "" {
-		cwd, _ = os.Getwd()
+		return filepath.Clean(p)
 	}
 	return filepath.Join(cwd, p)
 }

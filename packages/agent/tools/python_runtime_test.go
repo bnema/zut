@@ -33,6 +33,7 @@ func volName(t *testing.T) string {
 func testPythonDeps() pythonResolveDeps {
 	return pythonResolveDeps{
 		GOOS: "linux",
+		Env:  []string{},
 		CWD:  "/session",
 		Getenv: func(string) string {
 			return ""
@@ -105,9 +106,9 @@ func TestResolveConfiguredPathHandling(t *testing.T) {
 	if got := resolveConfiguredPythonPath(spacedSession, filepath.Join("env dir", "py")); got != filepath.Join(spacedSession, "env dir", "py") {
 		t.Fatalf("spaces = %q", got)
 	}
-	// A relative session CWD is anchored to absolute once, so relative
-	// configured paths join the intended directory instead of stacking.
-	if got := resolveConfiguredPythonPath("project", filepath.Join("envs", "py", "bin", "python")); !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.Join("project", "envs", "py", "bin", "python")) {
+	// The client supplies an absolute session directory; configured paths
+	// join that directory instead of consulting process cwd.
+	if got := resolveConfiguredPythonPath(filepath.Join(session, "project"), filepath.Join("envs", "py", "bin", "python")); !filepath.IsAbs(got) || !strings.HasSuffix(got, filepath.Join("project", "envs", "py", "bin", "python")) {
 		t.Fatalf("relative cwd must absolutize: %q", got)
 	}
 }
@@ -306,7 +307,7 @@ func TestWindowsRejectsStoreAliasBothNames(t *testing.T) {
 	for _, name := range []string{"python3", "python"} {
 		deps := testPythonDeps()
 		deps.GOOS = "windows"
-		deps.CWD = `C:\proj`
+		deps.CWD = t.TempDir()
 		alias := `C:\Users\test\AppData\Local\Microsoft\WindowsApps\` + name + `.exe`
 		deps.LookPath = func(n string) (string, error) {
 			if n == name {
@@ -403,10 +404,7 @@ func TestResolvePathResultAbsolutized(t *testing.T) {
 	// session CWD, so resolution must anchor it: probing, classification,
 	// and execution must address the same executable.
 	rel := filepath.Join("rel", "bin", "python3")
-	wantAbs, err := filepath.Abs(rel)
-	if err != nil {
-		t.Fatal(err)
-	}
+	wantAbs := filepath.Join("/session", rel)
 	deps := testPythonDeps()
 	deps.LookPath = func(name string) (string, error) {
 		if name == "python3" {
@@ -435,7 +433,7 @@ func TestResolvePathResultAbsolutized(t *testing.T) {
 func TestPythonChildEnvKeepsHostOnUnix(t *testing.T) {
 	t.Setenv("ZUT_PYTHON_TEST_SENTINEL", "kept")
 	found := false
-	for _, kv := range pythonChildEnv() {
+	for _, kv := range pythonChildEnv(os.Environ()) {
 		if kv == "ZUT_PYTHON_TEST_SENTINEL=kept" {
 			found = true
 		}

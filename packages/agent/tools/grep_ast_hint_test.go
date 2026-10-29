@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestGrepAppendsASTHintOnlyWhenAvailable(t *testing.T) {
 		{"available", func() bool { return true }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tool := &GrepTool{CWD: root, ASTAvailable: tc.available, LookPath: lookupScripts(map[string]string{"rg": rg})}
+			tool := &GrepTool{Env: os.Environ(), CWD: root, ASTAvailable: tc.available, LookPath: lookupScripts(map[string]string{"rg": rg})}
 			result, err := tool.Execute(context.Background(), args, nil)
 			if err != nil {
 				t.Fatal(err)

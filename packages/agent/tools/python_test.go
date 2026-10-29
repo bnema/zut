@@ -20,7 +20,7 @@ func pythonArgsJSON(t *testing.T, code string, timeout int64) json.RawMessage {
 }
 
 func stubPythonTool(resolved resolvedPython, resolveErr error, outcome pythonExecOutcome, execErr error) *PythonTool {
-	return &PythonTool{
+	return &PythonTool{Env: []string{},
 		CWD: "/session",
 		resolveHook: func(context.Context, string, string) (resolvedPython, error) {
 			return resolved, resolveErr
@@ -41,7 +41,7 @@ func TestPythonSchemaRequiresCodeAndTimeout(t *testing.T) {
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
-	if err := json.Unmarshal((&PythonTool{}).Schema(), &schema); err != nil {
+	if err := json.Unmarshal((&PythonTool{Env: []string{}}).Schema(), &schema); err != nil {
 		t.Fatal(err)
 	}
 	timeout, ok := schema.Properties["timeout"]
@@ -58,8 +58,8 @@ func TestPythonSchemaRequiresCodeAndTimeout(t *testing.T) {
 	if !required["code"] || !required["timeout"] {
 		t.Fatalf("required = %v", schema.Required)
 	}
-	if (&PythonTool{}).Name() != "python" {
-		t.Fatalf("name = %q", (&PythonTool{}).Name())
+	if (&PythonTool{Env: []string{}}).Name() != "python" {
+		t.Fatalf("name = %q", (&PythonTool{Env: []string{}}).Name())
 	}
 }
 
@@ -102,7 +102,7 @@ func TestPythonDeniedNeverResolves(t *testing.T) {
 	resolveCalls := 0
 	execCalls := 0
 	mk := func(sandbox *Sandbox) *PythonTool {
-		return &PythonTool{
+		return &PythonTool{Env: []string{},
 			CWD:     "/session",
 			Sandbox: sandbox,
 			resolveHook: func(context.Context, string, string) (resolvedPython, error) {
@@ -141,7 +141,7 @@ func TestPythonDeniedNeverResolves(t *testing.T) {
 }
 
 func TestPythonMissingInterpreterActionable(t *testing.T) {
-	tool := &PythonTool{
+	tool := &PythonTool{Env: []string{},
 		CWD: "/session",
 		resolveHook: func(context.Context, string, string) (resolvedPython, error) {
 			return resolvedPython{}, missingPythonError()
@@ -302,7 +302,7 @@ func TestPythonTruncationMarkedWithFullOutput(t *testing.T) {
 func TestPythonProgressStreamsMergedOutput(t *testing.T) {
 	interp := resolvedPython{Path: "/py", Version: pythonVersion{Major: 3}}
 	var calls []string
-	tool := &PythonTool{
+	tool := &PythonTool{Env: []string{},
 		CWD: "/session",
 		resolveHook: func(context.Context, string, string) (resolvedPython, error) {
 			return interp, nil
@@ -373,7 +373,7 @@ func TestPythonTimeoutBounds(t *testing.T) {
 
 func TestPythonResolutionSharesTimeoutBudget(t *testing.T) {
 	interp := resolvedPython{Path: "/py", Version: pythonVersion{Major: 3}}
-	tool := &PythonTool{
+	tool := &PythonTool{Env: []string{},
 		CWD: "/session",
 		resolveHook: func(ctx context.Context, _ string, _ string) (resolvedPython, error) {
 			if _, ok := ctx.Deadline(); !ok {

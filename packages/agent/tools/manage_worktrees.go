@@ -17,7 +17,9 @@ import (
 // ManageWorktreesTool inventories repository worktrees and removes only clean,
 // merged, explicitly selected secondary worktrees.
 type ManageWorktreesTool struct {
-	CWD     string
+	CWD string
+	// Env is the explicit session environment; nil is invalid.
+	Env     []string
 	Sandbox *Sandbox
 
 	previewMu sync.Mutex
@@ -82,6 +84,13 @@ func (t *ManageWorktreesTool) Description() string {
 func (t *ManageWorktreesTool) Schema() json.RawMessage { return json.RawMessage(manageWorktreesSchema) }
 
 func (t *ManageWorktreesTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
+	if err := requireSessionCWD("manage_worktrees", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	plan, err := t.plan(ctx, raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -93,6 +102,13 @@ func (t *ManageWorktreesTool) Preview(ctx context.Context, raw json.RawMessage) 
 }
 
 func (t *ManageWorktreesTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("manage_worktrees", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	plan, err := t.plan(ctx, raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -219,6 +235,10 @@ func branchCheckedOutAt(ctx context.Context, repoRoot, ref string) (string, erro
 }
 
 func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (manageWorktreesPlan, error) {
+	if t.Env == nil {
+		return manageWorktreesPlan{}, fmt.Errorf("tool manage_worktrees: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	var args manageWorktreesArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return manageWorktreesPlan{}, fmt.Errorf("invalid args: %w", err)
@@ -234,11 +254,7 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 	}
 	cwd := t.CWD
 	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: working directory: %w", err)
-		}
+		return manageWorktreesPlan{}, fmt.Errorf("tool manage_worktrees: session cwd not set")
 	}
 	if err := t.Sandbox.CheckReadPath(cwd); err != nil {
 		return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: %w", err)
@@ -247,10 +263,7 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 	if err != nil {
 		return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: verify repository: %w", err)
 	}
-	repoRoot, err = filepath.Abs(repoRoot)
-	if err != nil {
-		return manageWorktreesPlan{}, err
-	}
+	repoRoot = filepath.Clean(resolvePath(cwd, repoRoot))
 	if err := t.Sandbox.CheckReadPath(repoRoot); err != nil {
 		return manageWorktreesPlan{}, fmt.Errorf("manage_worktrees: %w", err)
 	}
@@ -351,7 +364,11 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 
 // WorktreeInventoryContext returns a model-readable repository inventory. A
 // non-Git working directory has no inventory and is not an error.
-func WorktreeInventoryContext(ctx context.Context, cwd string) string {
+func WorktreeInventoryContext(ctx context.Context, cwd string, env []string) string {
+	if requireSessionCWD("worktree", cwd) != nil || env == nil {
+		return ""
+	}
+	ctx = withToolEnv(ctx, env)
 	root, err := manageWorktreesGit(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ""

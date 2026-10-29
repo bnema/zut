@@ -33,7 +33,9 @@ const (
 // environment. Zut never installs Python, packages, uv, or virtual
 // environments. Each call runs a fresh, stateless subprocess.
 type PythonTool struct {
-	CWD         string
+	CWD string
+	// Env is the explicit session environment; nil is invalid.
+	Env         []string
 	Sandbox     *Sandbox
 	Interpreter string
 
@@ -111,6 +113,12 @@ func pythonExecArgv(exe string) []string {
 }
 
 func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("python", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool python: session env not set")
+	}
 	var a pythonArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return protocolToolError(fmt.Sprintf("invalid args: %v", err))
@@ -136,10 +144,6 @@ func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress 
 		return core.ToolResult{}, denied("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
 	}
 	cwd := t.CWD
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-
 	// Resolution and execution share the caller's timeout budget.
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -189,14 +193,14 @@ func (t *PythonTool) resolve(ctx context.Context, cwd string) (resolvedPython, e
 	if t.resolveHook != nil {
 		return t.resolveHook(ctx, cwd, t.Interpreter)
 	}
-	return resolvePythonInterpreter(ctx, pythonResolveDeps{CWD: cwd, Configured: t.Interpreter})
+	return resolvePythonInterpreter(ctx, pythonResolveDeps{CWD: cwd, Env: t.Env, Configured: t.Interpreter})
 }
 
 func (t *PythonTool) run(runCtx, parentCtx context.Context, exe, code, cwd string, progress func(string)) (pythonExecOutcome, error) {
 	if t.execHook != nil {
 		return t.execHook(runCtx, exe, code, cwd, progress)
 	}
-	return runPythonProcess(runCtx, parentCtx, exe, code, cwd, progress)
+	return runPythonProcess(withToolEnv(runCtx, t.Env), parentCtx, exe, code, cwd, progress)
 }
 
 // runPythonProcess runs one fresh subprocess directly with code on stdin.
@@ -204,9 +208,12 @@ func (t *PythonTool) run(runCtx, parentCtx context.Context, exe, code, cwd strin
 // without claiming every detached descendant was terminated.
 func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, progress func(string)) (pythonExecOutcome, error) {
 	var outcome pythonExecOutcome
+	if toolEnv(runCtx) == nil {
+		return outcome, fmt.Errorf("tool python: session env not set")
+	}
 	cmd := exec.CommandContext(runCtx, exe, "-u", "-B", "-")
 	cmd.Dir = cwd
-	cmd.Env = pythonChildEnv()
+	cmd.Env = pythonChildEnv(toolEnv(runCtx))
 	cmd.Stdin = strings.NewReader(code)
 
 	pr, pw := io.Pipe()

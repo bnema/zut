@@ -67,8 +67,10 @@ type resolvedPython struct {
 // code fills them from the host; tests substitute fixtures. No
 // package-global mutable overrides.
 type pythonResolveDeps struct {
-	GOOS       string
-	CWD        string
+	GOOS string
+	CWD  string
+	// Env supplies interpreter discovery and child processes for this session.
+	Env        []string
 	Configured string
 	Getenv     func(string) string
 	LookPath   func(string) (string, error)
@@ -92,14 +94,14 @@ func (d *pythonResolveDeps) getenv(k string) string {
 	if d.Getenv != nil {
 		return d.Getenv(k)
 	}
-	return os.Getenv(k)
+	return envValue(d.Env, k)
 }
 
 func (d *pythonResolveDeps) lookPath(name string) (string, error) {
 	if d.LookPath != nil {
 		return d.LookPath(name)
 	}
-	return exec.LookPath(name)
+	return lookPathEnv(d.CWD, d.Env, name)
 }
 
 func (d *pythonResolveDeps) isFile(path string) bool {
@@ -121,7 +123,7 @@ func (d *pythonResolveDeps) probe(ctx context.Context, exe string) (pythonVersio
 	if d.Probe != nil {
 		return d.Probe(ctx, exe)
 	}
-	return probePythonVersion(ctx, exe)
+	return probePythonVersion(ctx, exe, d.CWD, d.Env)
 }
 
 func (d *pythonResolveDeps) layoutOK(exe string) bool {
@@ -133,8 +135,7 @@ func (d *pythonResolveDeps) layoutOK(exe string) bool {
 
 // resolveConfiguredPythonPath maps a configured python_interpreter value to
 // a filesystem path. Absolute paths are used directly; relative paths
-// resolve against the session CWD, which is anchored to absolute first so
-// a relative --cwd cannot stack (project/project/...). No PATH lookup, no
+// resolve against the absolute session CWD supplied by the client. No PATH lookup, no
 // shell expansion.
 func resolveConfiguredPythonPath(cwd, configured string) string {
 	if filepath.IsAbs(configured) {
@@ -144,17 +145,10 @@ func resolveConfiguredPythonPath(cwd, configured string) string {
 	return filepath.Join(cwd, filepath.FromSlash(configured))
 }
 
-// absPythonCWD anchors the session CWD to absolute once. Resolution and
-// execution both chdir into the session CWD, so every constructed
-// candidate must survive that chdir.
+// absPythonCWD cleans the client-supplied session directory without consulting
+// process cwd. Clients supply an absolute directory.
 func absPythonCWD(cwd string) string {
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-	if abs, err := filepath.Abs(cwd); err == nil {
-		return abs
-	}
-	return cwd
+	return filepath.Clean(cwd)
 }
 
 // pythonVenvCandidate builds the interpreter path inside an environment
@@ -171,6 +165,12 @@ func pythonVenvCandidate(cwd, root, goos string) string {
 
 // resolvePythonInterpreter implements the specified priority order.
 func resolvePythonInterpreter(ctx context.Context, deps pythonResolveDeps) (resolvedPython, error) {
+	if err := requireSessionCWD("python", deps.CWD); err != nil {
+		return resolvedPython{}, err
+	}
+	if deps.Env == nil {
+		return resolvedPython{}, fmt.Errorf("tool python: session env not set")
+	}
 	goos := deps.goos()
 	cwd := absPythonCWD(deps.CWD)
 
@@ -214,12 +214,9 @@ func resolvePythonInterpreter(ctx context.Context, deps pythonResolveDeps) (reso
 			continue
 		}
 		// A relative PATH entry can yield a relative interpreter path.
-		// The probe runs in the process directory while execution runs
-		// in the session CWD, so anchor it: probe, classification, and
+		// Anchor against the session CWD: probe, classification, and
 		// execution must all address the same validated executable.
-		if abs, absErr := filepath.Abs(path); absErr == nil {
-			path = abs
-		}
+		path = resolvePath(cwd, path)
 		if goos == "windows" {
 			if err := classifyWindowsCandidate(path, &deps); err != nil {
 				continue
@@ -332,7 +329,7 @@ func hasWindowsRuntimeLayout(exe string, isFile func(string) bool) bool {
 
 // probePythonVersion runs the isolated version probe, bounded by at most
 // five seconds and the remaining invocation deadline.
-func probePythonVersion(ctx context.Context, exe string) (pythonVersion, error) {
+func probePythonVersion(ctx context.Context, exe, cwd string, env []string) (pythonVersion, error) {
 	timeout := maxPythonProbeSeconds * time.Second
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
@@ -347,8 +344,8 @@ func probePythonVersion(ctx context.Context, exe string) (pythonVersion, error) 
 	defer cancel()
 
 	cmd := exec.CommandContext(probeCtx, exe, "-I", "-S", "-B", "-c", pythonProbeCode)
-	cmd.Env = pythonChildEnv()
-	cmd.Dir = ""
+	cmd.Env = pythonChildEnv(env)
+	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{W: &stdout, N: maxPythonProbeOutput}
 	cmd.Stderr = &limitedWriter{W: &stderr, N: maxPythonProbeOutput}
@@ -389,12 +386,12 @@ func probePythonVersion(ctx context.Context, exe string) (pythonVersion, error) 
 	return pythonVersion{Major: raw.Major, Minor: raw.Minor, Micro: raw.Micro, Executable: raw.Executable}, nil
 }
 
-// pythonChildEnv inherits the host environment consistently with Bash,
+// pythonChildEnv copies the explicit session environment,
 // except for Windows launcher-manager opt-ins, which are stripped as
 // defense in depth. Setting them to "0" is insufficient, so they are
 // removed entirely. PYTHON_MANAGER_AUTOMATIC_INSTALL is never trusted.
-func pythonChildEnv() []string {
-	env := os.Environ()
+func pythonChildEnv(base []string) []string {
+	env := append([]string{}, base...)
 	if runtime.GOOS != "windows" {
 		return env
 	}

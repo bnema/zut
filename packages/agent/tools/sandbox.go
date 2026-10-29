@@ -331,10 +331,10 @@ func expandHome(p string) string {
 
 // canonical returns an absolute, symlink-resolved path. Errors on missing files.
 func canonical(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("sandbox: absolute session path required")
 	}
+	abs := filepath.Clean(p)
 	return filepath.EvalSymlinks(abs)
 }
 
@@ -343,10 +343,10 @@ func canonical(p string) (string, error) {
 // remaining path components. This catches symlink-escapes in non-existent
 // subtrees (e.g. "new-file" inside a symlinked dir).
 func canonicalOrParent(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("sandbox: absolute session path required")
 	}
+	abs := filepath.Clean(p)
 	// If the full path exists, resolve it.
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved, nil
