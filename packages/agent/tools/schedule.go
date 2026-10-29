@@ -19,7 +19,7 @@ const scheduleToolSchema = `{"type":"object","properties":{"action":{"type":"str
 // ScheduleToolName is the stable built-in scheduler tool name.
 const ScheduleToolName = "schedule"
 
-// ScheduleTool manages process-lifetime scheduled follow-up prompts. Its
+// ScheduleTool manages scheduled follow-up prompts for open sessions. Its
 // host-provided session callback prevents an agent from selecting another
 // session as a task target.
 type ScheduleTool struct {
@@ -38,7 +38,7 @@ type scheduleToolArgs struct {
 func (t *ScheduleTool) Name() string { return ScheduleToolName }
 
 func (t *ScheduleTool) Description() string {
-	return "Create, list, or cancel in-process cron follow-ups for the current session. Scheduled work runs only while this zut process remains open."
+	return "Create, list, or cancel cron follow-ups for the current session. Scheduled work runs while the session is open, whether attached or detached."
 }
 
 func (t *ScheduleTool) Schema() json.RawMessage { return json.RawMessage(scheduleToolSchema) }
@@ -106,7 +106,12 @@ func (t *ScheduleTool) Execute(_ context.Context, raw json.RawMessage, _ func(st
 		if !ok || task.SessionID != t.SessionID() {
 			return scheduleToolError("scheduled task not found in this session"), nil
 		}
-		t.Engine.Cancel(args.ID)
+		if !t.Engine.Cancel(args.ID) {
+			if err := t.Engine.Err(); err != nil {
+				return scheduleToolError(err.Error()), nil
+			}
+			return scheduleToolError("scheduled task not found in this session"), nil
+		}
 		return scheduleToolResult("cancelled scheduled task " + args.ID)
 	default:
 		return scheduleToolError("action must be add, list, or cancel"), nil

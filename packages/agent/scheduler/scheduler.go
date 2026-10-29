@@ -11,20 +11,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// Task is one recurring prompt owned by a session branch. Tasks are kept only
-// in process memory; callers are responsible for stopping the engine with the
-// host process.
+// Task is one recurring prompt owned by a session branch. Persistent engines
+// retain metadata across restarts, but never restore in-flight execution.
 type Task struct {
 	ID        string
 	SessionID string
 	Cron      string
 	Timezone  string
-	Message   string
-	CreatedAt time.Time
-	NextRun   time.Time
-	LastRun   time.Time
-	RunCount  int
-	LastError string
+	// TimezoneOffset preserves custom fixed zones that have no IANA name.
+	TimezoneOffset int
+	Message        string
+	CreatedAt      time.Time
+	NextRun        time.Time
+	LastRun        time.Time
+	RunCount       int
+	LastError      string
 
 	schedule Cron
 	queued   bool
@@ -44,10 +45,12 @@ type NewTaskInput struct {
 // the lock, allowing independent session tasks to progress concurrently; the
 // host remains responsible for serializing work for one session.
 type Engine struct {
-	mu    sync.Mutex
-	now   func() time.Time
-	tasks map[string]Task
-	wake  chan struct{}
+	mu         sync.Mutex
+	now        func() time.Time
+	tasks      map[string]Task
+	wake       chan struct{}
+	store      Store
+	persistErr error
 }
 
 // NewEngine creates an empty scheduler. now is injectable for tests; nil uses
@@ -85,18 +88,25 @@ func (e *Engine) Add(input NewTaskInput) (Task, error) {
 	if next.IsZero() {
 		return Task{}, fmt.Errorf("cron has no occurrence in the next eight years")
 	}
+	_, offset := now.In(input.Location).Zone()
 	task := Task{
-		ID:        uuid.NewString(),
-		SessionID: input.SessionID,
-		Cron:      input.Cron,
-		Timezone:  input.Location.String(),
-		Message:   input.Message,
-		CreatedAt: now,
-		NextRun:   next,
-		schedule:  schedule,
+		TimezoneOffset: offset,
+		ID:             uuid.NewString(),
+		SessionID:      input.SessionID,
+		Cron:           input.Cron,
+		Timezone:       input.Location.String(),
+		Message:        input.Message,
+		CreatedAt:      now,
+		NextRun:        next,
+		schedule:       schedule,
 	}
 	e.mu.Lock()
 	e.tasks[task.ID] = task
+	if err := e.persistLocked(); err != nil {
+		delete(e.tasks, task.ID)
+		e.mu.Unlock()
+		return Task{}, err
+	}
 	e.mu.Unlock()
 	e.signalWake()
 	return task, nil
@@ -108,9 +118,13 @@ func (e *Engine) Cancel(id string) bool {
 		return false
 	}
 	e.mu.Lock()
-	_, ok := e.tasks[id]
+	task, ok := e.tasks[id]
 	if ok {
 		delete(e.tasks, id)
+		if err := e.persistLocked(); err != nil {
+			e.tasks[id] = task
+			ok = false
+		}
 	}
 	e.mu.Unlock()
 	if ok {
@@ -141,13 +155,17 @@ func (e *Engine) List() []Task {
 		tasks = append(tasks, task)
 	}
 	e.mu.Unlock()
+	sortTasks(tasks)
+	return tasks
+}
+
+func sortTasks(tasks []Task) {
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].NextRun.Equal(tasks[j].NextRun) {
 			return tasks[i].ID < tasks[j].ID
 		}
 		return tasks[i].NextRun.Before(tasks[j].NextRun)
 	})
-	return tasks
 }
 
 // Run waits for due tasks until ctx is cancelled. Each claimed task receives
@@ -161,6 +179,9 @@ func (e *Engine) Run(ctx context.Context, executor func(context.Context, Task) e
 		return fmt.Errorf("scheduler executor is required")
 	}
 	for {
+		if err := e.Err(); err != nil {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -295,6 +316,7 @@ func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
 	} else {
 		e.tasks[id] = task
 	}
+	_ = e.persistLocked() // Run observes failures after the wake below.
 	e.mu.Unlock()
 	e.signalWake()
 }
