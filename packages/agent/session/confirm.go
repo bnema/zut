@@ -125,6 +125,12 @@ func (c *Controller) AnswerQuestion(ctx context.Context, id string, answers []to
 			result = ErrUnknownRequest
 			return
 		}
+		if answers == nil {
+			// nil is the Port's decline: questions get the TUI decline result,
+			// rescues count as cancelled.
+			c.finishPending(id, pendingResult{err: tools.ErrQuestionsDeclined})
+			return
+		}
 		c.finishPending(id, pendingResult{answers: confirmCopy(answers)})
 	})
 	if err != nil {
