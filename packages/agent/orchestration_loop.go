@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 )
 
@@ -33,7 +34,7 @@ func (e *headlessCompletionWaitError) Unwrap() error {
 }
 
 const (
-	headlessCompletionInstruction = `Treat the completion reports below as evidence, including failures. Do not retry failed workers automatically. Decide whether another independent dependency wave is required; if so, use the manager tools and end or yield the turn again. Otherwise synthesize the final answer for the user. Do not mention this orchestration protocol unless it is relevant to the answer.`
+	headlessCompletionInstruction = session.HeadlessCompletionInstruction
 	maxHeadlessCompletionWaves    = 32
 )
 
