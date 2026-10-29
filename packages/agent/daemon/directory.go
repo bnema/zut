@@ -10,11 +10,6 @@ import (
 
 var _ session.Directory = (*Daemon)(nil)
 
-type delivery struct {
-	target *entry
-	in     session.Input
-}
-
 // List returns Info for every open session, ordered by ID.
 func (d *Daemon) List(context.Context) []session.Info {
 	es := d.entries()
@@ -76,25 +71,56 @@ func (d *Daemon) Send(ctx context.Context, from, to session.ID, text string) err
 		Origin: session.InputOriginInterSession,
 		From:   sender,
 	}
+	return d.enqueueDelivery(ctx, dst, in)
+}
+
+// enqueueDelivery queues in on the target's own bounded queue, starting its
+// worker lazily, so a stuck target cannot delay deliveries to other targets.
+func (d *Daemon) enqueueDelivery(ctx context.Context, dst *entry, in session.Input) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopping || d.ctx == nil || d.reg[dst.id] != dst {
+		return fmt.Errorf("target %s: %w", dst.id, ErrUnknownSession)
+	}
+	q := d.deliverers[dst.id]
+	if q == nil {
+		q = make(chan session.Input, deliveryQueueSize)
+		d.deliverers[dst.id] = q
+		d.goLoop(func(ctx context.Context) { d.deliveryWorker(ctx, dst, q) })
+	}
 	select {
-	case d.deliver <- delivery{target: dst, in: in}:
+	case q <- in:
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	default:
-		return fmt.Errorf("inter-session delivery queue full: %w", session.ErrBusy)
+		return fmt.Errorf("inter-session delivery queue for %s full: %w", dst.id, session.ErrBusy)
 	}
 }
 
-func (d *Daemon) deliveryLoop(ctx context.Context) {
+// deliveryWorker submits queued inputs to one target until the daemon stops
+// or the target ends; it unregisters its queue under d.mu before exiting so
+// no input is queued to a dead worker.
+func (d *Daemon) deliveryWorker(ctx context.Context, dst *entry, q chan session.Input) {
+	defer func() {
+		d.mu.Lock()
+		if d.deliverers[dst.id] == q {
+			delete(d.deliverers, dst.id)
+		}
+		d.mu.Unlock()
+	}()
+	done := dst.h.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case m := <-d.deliver:
+		case <-done:
+			return
+		case in := <-q:
 			sctx, cancel := context.WithTimeout(ctx, deliveryTimeout)
-			if err := m.target.h.Submit(sctx, m.in); err != nil {
-				d.log.Warn("inter-session delivery failed", "session", m.target.id, "err", err)
+			if err := dst.h.Submit(sctx, in); err != nil {
+				d.log.Warn("inter-session delivery failed", "session", dst.id, "err", err)
 			}
 			cancel()
 		}

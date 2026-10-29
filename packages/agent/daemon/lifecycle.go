@@ -31,10 +31,7 @@ const (
 	ReasonClientDisconnected = "client_disconnected"
 )
 
-const (
-	defaultStopTimeout = 10 * time.Second
-	deliveryTimeout    = 30 * time.Second
-)
+const defaultStopTimeout = 10 * time.Second
 
 // Options configures Run. Home and SocketPath are required.
 type Options struct {
@@ -94,28 +91,28 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	d.sessCtx, d.sessCancel = context.WithCancel(context.WithoutCancel(ctx))
 	d.started = time.Now()
 	d.mu.Unlock()
+	defer d.sessCancel()
 
 	if err := writePID(opts.Home); err != nil {
 		return err
 	}
 	defer os.Remove(pidPath(opts.Home))
-	ln, err := listenSocket(opts.SocketPath)
+	ln, err := listenSocket(opts.SocketPath, zutOwnedSocketDirs(opts.Home))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(opts.SocketPath)
+	defer ln.close()
 	d.log.Info("daemon started", "pid", os.Getpid(), "version", opts.Version)
 
 	d.restore()
 	d.goLoop(d.gcLoop)
-	d.goLoop(d.deliveryLoop)
 	d.goLoop(d.stateLoop)
 	d.goLoop(func(ctx context.Context) { d.acceptLoop(ctx, ln) })
 	if opts.Ready != nil {
 		close(opts.Ready)
 	}
 	<-runCtx.Done()
-	_ = ln.Close()
+	_ = ln.Listener.Close()
 	d.shutdown()
 	d.log.Info("daemon stopped")
 	return nil
@@ -280,15 +277,61 @@ func (d *Daemon) register(h session.Handle, s stateSession, lock *flock.Lock) er
 	e := &entry{id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
 	d.reg[id] = e
 	d.mu.Unlock()
-	done := h.Done()
-	d.goLoop(func(ctx context.Context) {
+	d.goLoop(func(ctx context.Context) { d.watch(ctx, e) })
+	return nil
+}
+
+// watch follows one session: run-state transitions in EvInfo mark state.json
+// dirty (GO-008), and the session ending on its own unregisters it. The
+// event channel is only read, never waited on from the session loop. If the
+// subscription is dropped (slow consumer) it resubscribes after the last
+// seen sequence; if that is too old the 15s refresh remains the backup.
+func (d *Daemon) watch(ctx context.Context, e *entry) {
+	done := e.h.Done()
+	running := e.h.Info().Run == session.RunStateRunning
+	var seq uint64
+	var events <-chan session.Event
+	subscribe := func() {
+		ch, err := e.h.Subscribe(ctx, seq)
+		if err != nil {
+			d.log.Debug("session watch subscribe", "session", e.id, "err", err)
+			events = nil
+			return
+		}
+		events = ch
+	}
+	subscribe()
+	for {
 		select {
 		case <-ctx.Done():
+			return
 		case <-done:
 			d.forget(e)
+			return
+		case ev, ok := <-events:
+			if !ok {
+				subscribe()
+				continue
+			}
+			seq = ev.Seq
+			if ev.Kind != session.EvInfo {
+				continue
+			}
+			var info session.Info
+			switch p := ev.Data.(type) {
+			case session.InfoEvent:
+				info = p.Info
+			case *session.InfoEvent:
+				info = p.Info
+			default:
+				continue
+			}
+			if now := info.Run == session.RunStateRunning; now != running {
+				running = now
+				d.markRunDirty()
+			}
 		}
-	})
-	return nil
+	}
 }
 
 // forget drops a session that ended on its own (for example /exit).
@@ -308,11 +351,11 @@ func (d *Daemon) forget(e *entry) {
 	delete(d.controller, e.id)
 	d.mu.Unlock()
 	_ = e.lock.Close()
+	d.persist()
 	if ctrl != nil {
 		ctrl.cancelSub(e.id)
 		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: e.id})
 	}
-	d.persist()
 }
 
 // attach subscribes c to id after afterSeq; a controlling attach replaces
@@ -413,11 +456,11 @@ func (d *Daemon) closeLocked(id session.ID, reason string, successor session.ID)
 	err := e.h.Close(ctx, reason)
 	cancel()
 	_ = e.lock.Close()
+	d.persist()
 	if ctrl != nil {
 		ctrl.cancelSub(id)
 		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor})
 	}
-	d.persist()
 	return err
 }
 

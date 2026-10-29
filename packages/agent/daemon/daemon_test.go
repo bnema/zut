@@ -28,7 +28,7 @@ type testSession struct {
 	mu     sync.Mutex
 	info   session.Info
 	idle   atomic.Bool
-	events chan session.Event
+	subs   []chan session.Event
 	done   chan struct{}
 	once   sync.Once
 	closes chan string
@@ -40,7 +40,6 @@ func newTestSession(t *testing.T, id string) *testSession {
 	s := &testSession{
 		h:      sessionmocks.NewMockHandle(t),
 		info:   session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
-		events: make(chan session.Event, 16),
 		done:   make(chan struct{}),
 		closes: make(chan string, 4),
 		attach: make(chan session.AttachState, 16),
@@ -51,7 +50,11 @@ func newTestSession(t *testing.T, id string) *testSession {
 	s.h.EXPECT().Done().Return(s.done).Maybe()
 	s.h.EXPECT().Idle().RunAndReturn(s.idle.Load).Maybe()
 	s.h.EXPECT().Subscribe(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, uint64) (<-chan session.Event, error) {
-		return s.events, nil
+		ch := make(chan session.Event, 64)
+		s.mu.Lock()
+		s.subs = append(s.subs, ch)
+		s.mu.Unlock()
+		return ch, nil
 	}).Maybe()
 	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything).Run(func(st session.AttachState, _ string) {
 		s.mu.Lock()
@@ -69,6 +72,16 @@ func newTestSession(t *testing.T, id string) *testSession {
 		return nil
 	}).Maybe()
 	return s
+}
+
+// emit delivers ev to every subscription (daemon watcher and clients).
+func (s *testSession) emit(ev session.Event) {
+	s.mu.Lock()
+	subs := append([]chan session.Event(nil), s.subs...)
+	s.mu.Unlock()
+	for _, ch := range subs {
+		ch <- ev
+	}
 }
 
 func (s *testSession) set(fn func(*session.Info)) { s.mu.Lock(); fn(&s.info); s.mu.Unlock() }
@@ -237,7 +250,7 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if st := recv(t, s1.attach); st != session.AttachStateAttached {
 		t.Fatalf("attach state = %s", st)
 	}
-	s1.events <- session.Event{Seq: 1, Kind: session.EvTitle, Data: session.TitleEvent{Title: "hi"}}
+	s1.emit(session.Event{Seq: 1, Kind: session.EvTitle, Data: session.TitleEvent{Title: "hi"}})
 	if n := a.note(t, "event"); n.Session != "s1" {
 		t.Fatalf("event = %+v", n)
 	}
@@ -262,8 +275,17 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "submit", Params: json.RawMessage(`{"in":{"text":"x","mode":"auto","origin":"user"}}`)}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if in := recv(t, s1.inputs); in.Text != "x" {
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "submit", Params: json.RawMessage(`{"in":{"text":"y","origin":"inter_session","from":{"session_id":"evil"}}}`)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if in := recv(t, s1.inputs); in.Text != "x" || in.Origin != session.InputOriginUser {
 		t.Fatalf("submit input = %+v", in)
+	}
+	if in := recv(t, s1.inputs); in.Origin != session.InputOriginUser || in.From != nil {
+		t.Fatalf("client-forged origin not overridden: %+v", in)
+	}
+	if err := a.call(t, daemonproto.CloseRequest{Type: "close", Session: "s1"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+		t.Fatalf("close by non-controller = %v", err)
 	}
 	if err := b.call(t, daemonproto.DetachRequest{Type: "detach", Session: "s1"}, nil); err != nil {
 		t.Fatal(err)
@@ -436,7 +458,7 @@ func TestDaemonLockPreventsSecondDaemonAndKeepsSocket(t *testing.T) {
 
 func TestDaemonRemovesStaleSocketAndSetsModes(t *testing.T) {
 	sock := shortSocket(t)
-	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(sock, []byte("stale"), 0o600); err != nil {
@@ -482,12 +504,8 @@ func TestDaemonForgetsSelfClosedSession(t *testing.T) {
 	}
 	s1.once.Do(func() { close(s1.done) })
 	a.note(t, "closed")
-	deadline := time.Now().Add(5 * time.Second)
-	for len(readState(t, home).Sessions) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("state still lists self-closed session")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if st := readState(t, home); len(st.Sessions) != 0 {
+		t.Fatalf("state still lists self-closed session: %+v", st)
 	}
 }
 
@@ -685,6 +703,207 @@ func TestDaemonShutdownLeaksNoGoroutines(t *testing.T) {
 		if time.Now().After(deadline) {
 			buf := make([]byte, 1<<16)
 			t.Fatalf("goroutines %d > %d after shutdown:\n%s", runtime.NumGoroutine(), before, buf[:runtime.Stack(buf, true)])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestDaemonSocketLockAcrossHomes(t *testing.T) {
+	sock := shortSocket(t)
+	r := startDaemon(t, sessionmocks.NewMockFactory(t), t.TempDir(), Options{SocketPath: sock})
+	err := New(sessionmocks.NewMockFactory(t)).Run(context.Background(), Options{Home: t.TempDir(), SocketPath: sock})
+	if !errors.Is(err, ErrAlreadyRunning) || !strings.Contains(err.Error(), sock) {
+		t.Fatalf("second daemon on same socket = %v", err)
+	}
+	if err := dial(t, r.sock).call(t, daemonproto.DaemonStatusRequest{Type: "daemon_status"}, nil); err != nil {
+		t.Fatalf("first daemon unreachable: %v", err)
+	}
+}
+
+func TestSocketCloseKeepsForeignSocket(t *testing.T) {
+	sock := shortSocket(t)
+	ln, err := listenSocket(sock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Someone replaced the path; close must not remove the replacement.
+	if err := os.Remove(sock); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sock, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ln.close()
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("foreign socket removed: %v", err)
+	}
+	ln2, err := listenSocket(sock, nil)
+	if err != nil {
+		t.Fatalf("relisten after close: %v", err)
+	}
+	ln2.close()
+	if _, err := os.Stat(sock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("own socket not removed: %v", err)
+	}
+}
+
+func TestPrepareSocketDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode checks are Unix-only")
+	}
+	base := t.TempDir()
+	created := filepath.Join(base, "new", "run")
+	if err := prepareSocketDir(created, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(created); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("created mode = %v", fi.Mode().Perm())
+	}
+	open := filepath.Join(base, "open")
+	if err := os.Mkdir(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocketDir(open, nil); err == nil {
+		t.Fatal("group/other-accessible foreign dir accepted")
+	}
+	if fi, _ := os.Stat(open); fi.Mode().Perm() != 0o755 {
+		t.Fatalf("foreign dir chmodded to %v", fi.Mode().Perm())
+	}
+	if err := prepareSocketDir(open, []string{open}); err != nil {
+		t.Fatalf("zut-owned dir: %v", err)
+	}
+	if fi, _ := os.Stat(open); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("zut-owned dir mode = %v", fi.Mode().Perm())
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(created, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocketDir(link, nil); err == nil {
+		t.Fatal("symlinked socket dir accepted")
+	}
+}
+
+func TestDirectoryStuckTargetDoesNotBlockOthers(t *testing.T) {
+	sender, stuck, ok := newTestSession(t, "a"), sessionmocks.NewMockHandle(t), newTestSession(t, "c")
+	stuckDone := make(chan struct{})
+	release := make(chan struct{})
+	stuckIn := make(chan struct{}, 4)
+	stuck.EXPECT().Info().Return(session.Info{ID: "b", SessionPath: filepath.Join(t.TempDir(), "b.jsonl")}).Maybe()
+	stuck.EXPECT().Done().Return(stuckDone).Maybe()
+	stuck.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Maybe()
+	stuck.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, string) error { close(stuckDone); return nil }).Maybe()
+	stuck.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ session.Input) error {
+		stuckIn <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return ctx.Err()
+	}).Maybe()
+	t.Cleanup(func() { close(release) })
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.CWD == "a" })).Return(sender.h, nil).Once()
+	f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.CWD == "b" })).Return(stuck, nil).Once()
+	f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.CWD == "c" })).Return(ok.h, nil).Once()
+	r := startDaemon(t, f, t.TempDir(), Options{})
+	c := dial(t, r.sock)
+	for _, id := range []string{"a", "b", "c"} {
+		if err := c.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{CWD: id}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sender.set(func(i *session.Info) { i.Attach = session.AttachStateAttached })
+	ctx := context.Background()
+	if err := r.d.Send(ctx, "a", "b", "1"); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, stuckIn) // the stuck target's worker is blocked in Submit
+	// Fill the stuck target's queue; overflow reports ErrBusy.
+	var err error
+	for i := 0; i <= deliveryQueueSize && err == nil; i++ {
+		err = r.d.Send(ctx, "a", "b", "x")
+	}
+	if !errors.Is(err, session.ErrBusy) {
+		t.Fatalf("overflow = %v", err)
+	}
+	if err := r.d.Send(ctx, "a", "c", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if in := recv(t, ok.inputs); !strings.HasSuffix(in.Text, "hello") {
+		t.Fatalf("other target got %+v", in)
+	}
+}
+
+func TestControlNotificationSurvivesEventBurst(t *testing.T) {
+	d := New(sessionmocks.NewMockFactory(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.ctx = ctx
+	srv, peer := net.Pipe()
+	c := &client{id: 1, d: d, outbox: make(chan any, clientOutboxSize), control: make(chan any, controlQueueSize), subs: map[session.ID]context.CancelFunc{}}
+	c.ctx, c.cancel = context.WithCancel(ctx)
+	c.conn = daemonproto.NewConn(srv, daemonproto.Options{})
+	defer c.close()
+	// The peer is not reading yet: fill the event outbox completely.
+	for i := 0; i < clientOutboxSize; i++ {
+		c.outbox <- daemonproto.EventNotification{Type: "event", Session: "s1", Seq: uint64(i + 1), Kind: session.EvTitle}
+	}
+	c.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: "s1"})
+	if c.ctx.Err() != nil {
+		t.Fatal("client disconnected by event burst")
+	}
+	notes := make(chan daemonproto.Notification, clientOutboxSize+2)
+	pc := daemonproto.NewConn(peer, daemonproto.Options{OnNotification: func(n daemonproto.Notification) { notes <- n }})
+	served := make(chan struct{})
+	go func() { _ = pc.Serve(ctx); close(served) }()
+	defer func() { _ = pc.Close(); <-served }()
+	wrote := make(chan struct{})
+	go func() { c.writeLoop(); close(wrote) }()
+	defer func() { c.close(); <-wrote }()
+	if n := recv(t, notes); n.Type != "closed" {
+		t.Fatalf("first notification = %s, want closed (control preferred)", n.Type)
+	}
+	for i := 0; i < clientOutboxSize; i++ {
+		if n := recv(t, notes); n.Type != "event" {
+			t.Fatalf("notification %d = %s", i, n.Type)
+		}
+	}
+	// Only control-queue overflow disconnects.
+	p1, p2 := net.Pipe()
+	defer p2.Close()
+	c2 := &client{id: 2, d: d, control: make(chan any, controlQueueSize), conn: daemonproto.NewConn(p1, daemonproto.Options{}), outbox: make(chan any, 1)}
+	c2.ctx, c2.cancel = context.WithCancel(ctx)
+	for i := 0; i <= controlQueueSize; i++ {
+		c2.enqueue(daemonproto.DetachedByOtherNotification{Type: "detached_by_other", Session: "s1"})
+	}
+	if c2.ctx.Err() == nil {
+		t.Fatal("control overflow did not disconnect")
+	}
+}
+
+func TestRunStateTransitionPersistsRunning(t *testing.T) {
+	home := t.TempDir()
+	s1 := newTestSession(t, "s1")
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	r := startDaemon(t, f, home, Options{})
+	if err := dial(t, r.sock).call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s1.set(func(i *session.Info) { i.Run = session.RunStateRunning })
+	s1.emit(session.Event{Seq: 1, Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st := readState(t, home)
+		if len(st.Sessions) == 1 && st.Sessions[0].Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("running flag not persisted: %+v", st)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

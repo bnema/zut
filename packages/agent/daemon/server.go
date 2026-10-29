@@ -8,12 +8,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/internal/flock"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -43,45 +45,151 @@ func DefaultSocketPath(home string) string {
 	return filepath.Join(home, "run", "daemon.sock")
 }
 
-// listenSocket creates the 0700 socket dir, removes a stale socket and
-// listens with mode 0600. Callers must hold the daemon lock.
-func listenSocket(path string) (net.Listener, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create socket dir: %w", err)
+// socketListener is a listening daemon socket guarded by `<socket>.lock`.
+type socketListener struct {
+	net.Listener
+	path string
+	lock *flock.Lock
+	info os.FileInfo // identity recorded right after Listen
+}
+
+// listenSocket prepares the socket dir (see prepareSocketDir), takes the
+// socket lock, and only then removes a stale socket, listens and chmods the
+// socket 0600. A busy socket lock means another daemon (possibly with a
+// different ZUT_HOME) serves this path.
+func listenSocket(path string, zutOwnedDirs []string) (*socketListener, error) {
+	if err := prepareSocketDir(filepath.Dir(path), zutOwnedDirs); err != nil {
+		return nil, err
 	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("chmod socket dir: %w", err)
-		}
+	lock, err := flock.TryLock(path + ".lock")
+	if errors.Is(err, flock.ErrBusy) {
+		return nil, fmt.Errorf("%w: socket %s is in use", ErrAlreadyRunning, path)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("lock daemon socket: %w", err)
+	}
+	fail := func(err error) (*socketListener, error) { _ = lock.Close(); return nil, err }
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("remove stale socket: %w", err)
+		return fail(fmt.Errorf("remove stale socket: %w", err))
 	}
 	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("listen daemon socket: %w", err)
+		return fail(fmt.Errorf("listen daemon socket: %w", err))
+	}
+	if ul, ok := ln.(*net.UnixListener); ok {
+		// Removal is done by close, only if the path is still our socket.
+		ul.SetUnlinkOnClose(false)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		_ = ln.Close()
+		return fail(fmt.Errorf("stat daemon socket: %w", err))
 	}
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(path, 0o600); err != nil {
 			_ = ln.Close()
-			return nil, fmt.Errorf("chmod daemon socket: %w", err)
+			return fail(fmt.Errorf("chmod daemon socket: %w", err))
 		}
 	}
-	return ln, nil
+	return &socketListener{Listener: ln, path: path, lock: lock, info: info}, nil
 }
 
-// client is one connected peer. Notifications go through a bounded outbox
-// drained by one writer goroutine; event forwarders block on it (session
-// rings drop slow consumers), daemon-originated notifications never block and
-// disconnect the client when the outbox is full.
+// close stops listening, removes the socket only if the path still refers to
+// the file created by this listener, then releases the socket lock.
+func (l *socketListener) close() {
+	_ = l.Listener.Close()
+	if cur, err := os.Lstat(l.path); err == nil && os.SameFile(cur, l.info) {
+		_ = os.Remove(l.path)
+	}
+	_ = l.lock.Close()
+}
+
+// prepareSocketDir creates dir 0700 when missing. An existing directory must
+// not be a symlink and, on Unix, must be owned by the current user; a
+// zut-owned default dir is tightened to 0700, any other dir with group/other
+// access is refused. Windows skips the ownership and mode checks.
+func prepareSocketDir(dir string, zutOwnedDirs []string) error {
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create socket dir: %w", err)
+		}
+		if runtime.GOOS != "windows" {
+			if err := os.Chmod(dir, 0o700); err != nil {
+				return fmt.Errorf("chmod socket dir: %w", err)
+			}
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat socket dir: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory", dir)
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if uid, ok := fileOwner(fi); ok && uid != os.Getuid() {
+		return fmt.Errorf("socket dir %s is not owned by the current user", dir)
+	}
+	if fi.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	clean := filepath.Clean(dir)
+	for _, owned := range zutOwnedDirs {
+		if owned != "" && filepath.Clean(owned) == clean {
+			if err := os.Chmod(dir, 0o700); err != nil {
+				return fmt.Errorf("chmod socket dir: %w", err)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("socket dir %s is accessible by group or others (mode %v)", dir, fi.Mode().Perm())
+}
+
+// fileOwner reads the Unix owner uid from FileInfo.Sys without build-tagged
+// files (syscall.Stat_t does not exist on Windows).
+func fileOwner(fi os.FileInfo) (int, bool) {
+	v := reflect.ValueOf(fi.Sys())
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return 0, false
+	}
+	f := v.FieldByName("Uid")
+	if !f.IsValid() || !f.CanUint() {
+		return 0, false
+	}
+	return int(f.Uint()), true
+}
+
+// zutOwnedSocketDirs lists the default socket directories that zut owns.
+func zutOwnedSocketDirs(home string) []string {
+	dirs := []string{filepath.Join(home, "run")}
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		dirs = append(dirs, filepath.Join(xdg, "zut"))
+	}
+	if la := os.Getenv("LOCALAPPDATA"); la != "" {
+		dirs = append(dirs, filepath.Join(la, "zut", "run"))
+	}
+	return dirs
+}
+
+// client is one connected peer. One writer goroutine drains two bounded
+// queues: control (closed, detached_by_other; cap controlQueueSize) is always
+// preferred, outbox carries session events. Event forwarders block on outbox
+// (session rings drop slow consumers); control notifications never block and
+// only an overflowing control queue disconnects the client.
 type client struct {
-	id     uint64
-	d      *Daemon
-	conn   *daemonproto.Conn
-	ctx    context.Context
-	cancel context.CancelFunc
-	outbox chan any
+	id      uint64
+	d       *Daemon
+	conn    *daemonproto.Conn
+	ctx     context.Context
+	cancel  context.CancelFunc
+	outbox  chan any
+	control chan any
 
 	mu   sync.Mutex
 	subs map[session.ID]context.CancelFunc
@@ -95,7 +203,7 @@ func (d *Daemon) newClient(nc net.Conn) *client {
 	}
 	d.nextClient++
 	ctx, cancel := context.WithCancel(d.ctx)
-	c := &client{id: d.nextClient, d: d, ctx: ctx, cancel: cancel, outbox: make(chan any, clientOutboxSize), subs: map[session.ID]context.CancelFunc{}}
+	c := &client{id: d.nextClient, d: d, ctx: ctx, cancel: cancel, outbox: make(chan any, clientOutboxSize), control: make(chan any, controlQueueSize), subs: map[session.ID]context.CancelFunc{}}
 	c.conn = daemonproto.NewConn(nc, daemonproto.Options{OnRequest: c.handle})
 	d.clients[c.id] = c
 	d.wg.Add(1)
@@ -113,28 +221,34 @@ func (c *client) close() {
 
 func (c *client) writeLoop() {
 	for {
+		var n any
 		select {
-		case <-c.ctx.Done():
-			return
-		case <-c.conn.Done():
-			c.cancel()
-			return
-		case n := <-c.outbox:
-			if err := c.conn.Notify(n); err != nil {
-				c.close()
+		case n = <-c.control:
+		default:
+			select {
+			case <-c.ctx.Done():
 				return
+			case <-c.conn.Done():
+				c.cancel()
+				return
+			case n = <-c.control:
+			case n = <-c.outbox:
 			}
+		}
+		if err := c.conn.Notify(n); err != nil {
+			c.close()
+			return
 		}
 	}
 }
 
-// enqueue queues a daemon-originated notification without blocking.
+// enqueue queues a daemon-originated control notification without blocking.
 func (c *client) enqueue(n any) {
 	select {
-	case c.outbox <- n:
+	case c.control <- n:
 	case <-c.ctx.Done():
 	default:
-		c.d.log.Warn("client outbox full; disconnecting", "client", c.id)
+		c.d.log.Warn("client control queue full; disconnecting", "client", c.id)
 		c.close()
 	}
 }
@@ -229,6 +343,9 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 	case "close":
 		req, err := decodeFrame[daemonproto.CloseRequest](r)
 		if err != nil {
+			return nil, err
+		}
+		if err := c.checkControl(req.Session); err != nil {
 			return nil, err
 		}
 		return nil, d.closeSession(req.Session, req.Reason)
@@ -349,7 +466,11 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 	}
 	switch req.Method {
 	case "submit":
-		return nil, h.Submit(ctx, p.In)
+		// Clients always submit as the user; inter_session origin and a
+		// sender are reserved for Directory.Send (D10 loop guard).
+		in := p.In
+		in.Origin, in.From = session.InputOriginUser, nil
+		return nil, h.Submit(ctx, in)
 	case "abort":
 		return nil, h.Abort(ctx)
 	case "compact":

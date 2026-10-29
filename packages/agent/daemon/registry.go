@@ -26,12 +26,18 @@ import (
 const (
 	// DefaultGCInterval is how often idle GC eligibility is evaluated.
 	DefaultGCInterval = 5 * time.Minute
-	// deliveryQueueSize bounds pending inter-session deliveries; Send fails
-	// with session.ErrBusy when it is full.
-	deliveryQueueSize = 64
-	// clientOutboxSize bounds daemon-originated notifications per client; a
-	// client that falls this far behind is disconnected.
+	// deliveryQueueSize bounds pending inter-session deliveries per target;
+	// Send fails with session.ErrBusy when the target's queue is full.
+	deliveryQueueSize = 16
+	// deliveryTimeout bounds one Submit to a target.
+	deliveryTimeout = 5 * time.Second
+	// clientOutboxSize bounds queued session events per client.
 	clientOutboxSize = 64
+	// controlQueueSize bounds queued control notifications per client; a
+	// client overflowing it is disconnected.
+	controlQueueSize = 8
+	// runPersistDebounce is the minimum spacing of run-state persists.
+	runPersistDebounce = time.Second
 	// stateRefreshInterval is how often running flags are re-persisted.
 	stateRefreshInterval = 15 * time.Second
 )
@@ -59,13 +65,15 @@ type Daemon struct {
 	// lastRunning is the persisted running set, refreshed by stateLoop.
 	lastRunning map[session.ID]bool
 
-	opts    Options
-	log     *slog.Logger
-	started time.Time
-	wg      sync.WaitGroup
-	ctx     context.Context // lifecycle context, set by Run
-	stop    context.CancelFunc
-	deliver chan delivery
+	opts       Options
+	log        *slog.Logger
+	started    time.Time
+	wg         sync.WaitGroup
+	ctx        context.Context // lifecycle context, set by Run
+	stop       context.CancelFunc
+	deliverers map[session.ID]chan session.Input
+	// runDirty signals a run-state transition to stateLoop (cap 1).
+	runDirty chan struct{}
 }
 
 type entry struct {
@@ -84,7 +92,8 @@ func New(factory session.Factory) *Daemon {
 		reg:        make(map[session.ID]*entry),
 		controller: make(map[session.ID]*client),
 		clients:    make(map[uint64]*client),
-		deliver:    make(chan delivery, deliveryQueueSize),
+		deliverers: make(map[session.ID]chan session.Input),
+		runDirty:   make(chan struct{}, 1),
 		log:        discardLogger(),
 	}
 }
@@ -128,21 +137,55 @@ func (d *Daemon) runningChanged() bool {
 	return false
 }
 
-// stateLoop refreshes the running flags in state.json so that a crash marks
-// in-flight turns interrupted on restore (D6).
+// markRunDirty asks stateLoop to persist a run-state transition. Never blocks.
+func (d *Daemon) markRunDirty() {
+	select {
+	case d.runDirty <- struct{}{}:
+	default:
+	}
+}
+
+// stateLoop persists running flags so that a crash marks in-flight turns
+// interrupted on restore (D6): on run-state transitions, at most once per
+// runPersistDebounce, and every stateRefreshInterval as a backup.
 func (d *Daemon) stateLoop(ctx context.Context) {
 	t := time.NewTicker(stateRefreshInterval)
 	defer t.Stop()
+	var last time.Time
+	var debounce *time.Timer
+	var debounceC <-chan time.Time
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
+	flush := func() {
+		d.opMu.Lock()
+		if !d.isStopping() && d.runningChanged() {
+			d.persist()
+		}
+		d.opMu.Unlock()
+		last = time.Now()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			d.opMu.Lock()
-			if !d.isStopping() && d.runningChanged() {
-				d.persist()
+			flush()
+		case <-d.runDirty:
+			if debounceC != nil {
+				continue // a flush is already scheduled
 			}
-			d.opMu.Unlock()
+			if wait := runPersistDebounce - time.Since(last); wait > 0 {
+				debounce = time.NewTimer(wait)
+				debounceC = debounce.C
+				continue
+			}
+			flush()
+		case <-debounceC:
+			debounceC = nil
+			flush()
 		}
 	}
 }
