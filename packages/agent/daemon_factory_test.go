@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -338,17 +339,11 @@ func TestDaemonRunCLIStatusStop(t *testing.T) {
 		require.NoError(t, err, "%v: %s", args, out)
 		return string(out)
 	}
-	// While the daemon starts it may hold the lock before its socket exists;
-	// status then fails with "lock held", so the poll tolerates errors.
+	// Before its socket exists the daemon reports "starting or stopping".
 	require.Eventually(t, func() bool {
-		cmd := exec.Command(binary, "daemon", "status")
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			require.Contains(t, string(out), "not reachable but lock held")
-			return false
-		}
-		return strings.Contains(string(out), "zut daemon: running")
+		out := zut("daemon", "status")
+		require.NotContains(t, out, "not reachable")
+		return strings.Contains(out, "zut daemon: running")
 	}, 10*time.Second, 50*time.Millisecond, "daemon did not report running")
 	status := zut("daemon", "status")
 	require.Contains(t, status, "sessions: 0")
@@ -446,4 +441,33 @@ func TestDaemonNotRunningClassification(t *testing.T) {
 	running, err = daemonNotRunning(syscall.ECONNREFUSED, home)
 	require.False(t, running)
 	require.ErrorContains(t, err, "not reachable but lock held")
+}
+
+func TestDaemonStatusProbeWithoutLock(t *testing.T) {
+	home := t.TempDir()
+	state, err := probeDaemonState(fs.ErrNotExist, home)
+	require.NoError(t, err)
+	require.Equal(t, "not running", state)
+
+	_, err = probeDaemonState(errors.New("permission denied"), home)
+	require.ErrorContains(t, err, "not reachable")
+
+	// A live pid with no socket: the daemon is starting or stopping.
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "daemon"), 0o700))
+	pidFile := filepath.Join(home, "daemon", "daemon.pid")
+	require.NoError(t, os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600))
+	state, err = probeDaemonState(syscall.ECONNREFUSED, home)
+	require.NoError(t, err)
+	require.Equal(t, "starting or stopping", state)
+
+	// A stale pid (a process that has exited) is not running.
+	exited := exec.Command(os.Args[0], "-test.run=^$")
+	require.NoError(t, exited.Run())
+	require.NoError(t, os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", exited.Process.Pid)), 0o600))
+	state, err = probeDaemonState(fs.ErrNotExist, home)
+	require.NoError(t, err)
+	require.Equal(t, "not running", state)
+
+	// Status never creates the daemon lock.
+	require.NoFileExists(t, filepath.Join(home, "daemon", "daemon.lock"))
 }

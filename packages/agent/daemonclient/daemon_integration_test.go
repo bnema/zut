@@ -40,7 +40,7 @@ func newScriptedSession(t *testing.T, id string) *scriptedSession {
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
 	s.h.EXPECT().Done().Return(s.done).Maybe()
 	s.h.EXPECT().Idle().Return(true).Maybe()
-	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything).Run(func(st session.AttachState, _ string) {
+	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, st session.AttachState, _ string) {
 		s.mu.Lock()
 		s.info.Attach = st
 		s.mu.Unlock()

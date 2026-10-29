@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -211,10 +213,11 @@ func daemonStatus(w io.Writer, version string) error {
 	defer cancel()
 	c, err := daemonClient(ctx, version)
 	if err != nil {
-		if running, rerr := daemonNotRunning(err, ZutHome()); !running {
-			return rerr
+		state, serr := probeDaemonState(err, ZutHome())
+		if serr != nil {
+			return serr
 		}
-		fmt.Fprintln(w, "zut daemon: not running")
+		fmt.Fprintln(w, "zut daemon: "+state)
 		return nil
 	}
 	defer c.Disconnect()
@@ -225,6 +228,33 @@ func daemonStatus(w io.Writer, version string) error {
 	fmt.Fprintf(w, "zut daemon: running\npid: %d\nversion: %s\nuptime: %s\nsessions: %d\n",
 		st.PID, st.Version, (time.Duration(st.UptimeMS) * time.Millisecond).Round(time.Second), st.Sessions)
 	return nil
+}
+
+// probeDaemonState classifies a failed status dial with one probe and no
+// lock acquisition (status never creates daemon.lock). Only "no socket" or
+// "connection refused" can mean not running; then a live process in
+// daemon.pid means the daemon is starting or stopping.
+func probeDaemonState(dialErr error, home string) (string, error) {
+	if !daemonAbsent(dialErr) {
+		return "", fmt.Errorf("zut daemon not reachable: %w", dialErr)
+	}
+	if pidAlive(readDaemonPID(home)) {
+		return "starting or stopping", nil
+	}
+	return "not running", nil
+}
+
+// readDaemonPID returns the pid recorded in $ZUT_HOME/daemon/daemon.pid, or 0.
+func readDaemonPID(home string) int {
+	b, err := os.ReadFile(filepath.Join(home, "daemon", "daemon.pid"))
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 // daemonLockGrace is how long an unreachable daemon may still hold its lock
