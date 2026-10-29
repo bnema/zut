@@ -32,6 +32,18 @@ type SessionClient interface {
 	List(ctx context.Context) ([]session.Info, error)
 	Create(ctx context.Context, spec session.CreateSpec) (session.Info, error)
 	Attach(ctx context.Context, id session.ID) (session.Port, error)
+	// TelegramBridge sends the daemon telegram_bridge request: on mirrors the
+	// paired Telegram DM into sessionID, off stops that mirror.
+	TelegramBridge(ctx context.Context, sessionID string, on bool) (TelegramBridgeStatus, error)
+}
+
+// TelegramBridgeStatus is the modes-local view of the daemon's
+// TelegramBridgeData result.
+type TelegramBridgeStatus struct {
+	Active       bool
+	Session      session.ID
+	Username     string
+	PairedUserID int64
 }
 
 // detachedByOtherNotice is printed after the terminal is restored when the
