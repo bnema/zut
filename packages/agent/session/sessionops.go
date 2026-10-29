@@ -38,13 +38,21 @@ type actorKey struct{}
 // whether the caller runs on the loop and must never wait on it.
 func (c *Controller) OnActor(ctx context.Context) bool {
 	owner, _ := ctx.Value(actorKey{}).(*Controller)
-	return owner == c
+	// A cancelled actor context outlived its Do call: not on the actor.
+	return owner == c && ctx.Err() == nil
 }
 
-// Do runs fn on the actor loop with an actor-marked context and waits for it.
-// Code inside fn may call Close(actx, …) without deadlocking.
+// Do runs fn on the actor loop and waits for it. fn receives an actor-marked
+// context, derived per call and cancelled when fn returns: Close(actx, …) and
+// SetAttach(actx, …) inside fn do not wait on the actor. actx must not escape
+// fn (stored or handed to goroutines); after fn returns it is cancelled and
+// only marks code that is no longer on the actor.
 func (c *Controller) Do(ctx context.Context, fn func(actx context.Context)) error {
-	return c.call(ctx, func() { fn(c.actorCtx) })
+	return c.call(ctx, func() {
+		actx, cancel := context.WithCancel(c.actorBase)
+		defer cancel()
+		fn(actx)
+	})
 }
 
 // Close ends the session: the running turn is cancelled and awaited (bounded),
@@ -88,34 +96,43 @@ func (c *Controller) closeOnActor() {
 	if c.turn.cancel != nil {
 		c.turn.cancel()
 	}
-	c.waitTurnGoroutine(turnStopTimeout)
+	c.abortCompaction()
+	c.waitBackground(turnStopTimeout)
 	c.publish(EvClosed, ClosedEvent{Reason: reason})
 	c.residentsShutdown()
 	c.extShutdown()
 }
 
-// waitTurnGoroutine waits, bounded, for the latest turn goroutine to return
-// after cancellation so assembly cleanup never races a running agent.
-func (c *Controller) waitTurnGoroutine(limit time.Duration) {
-	if c.turnDone == nil {
-		return
-	}
+// waitBackground waits, under one shared bound, for the latest turn and
+// compaction goroutines to return after cancellation so assembly cleanup
+// never races a running agent.
+func (c *Controller) waitBackground(limit time.Duration) {
 	t := time.NewTimer(limit)
 	defer t.Stop()
-	select {
-	case <-c.turnDone:
-	case <-t.C:
-		if c.deps.Logger != nil {
-			c.deps.Logger.Warn("turn did not stop before close", "session", c.id, "timeout", limit)
+	for name, done := range map[string]chan struct{}{"turn": c.turnDone, "compaction": c.compactDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-t.C:
+			if c.deps.Logger != nil {
+				c.deps.Logger.Warn(name+" did not stop before close", "session", c.id, "timeout", limit)
+			}
+			return
 		}
 	}
 }
 
 // SetAttach records the attach state (D2), publishes EvAttach and, on
-// detach, resolves pending requests as detached (D3). It posts to the actor
-// and waits; actor-side code uses setAttachOnActor.
-func (c *Controller) SetAttach(state AttachState, reason string) {
-	_ = c.call(context.Background(), func() { c.setAttachOnActor(state, reason) })
+// detach, resolves pending requests as detached (D3). With an actor context
+// (OnActor) it applies inline; otherwise it posts to the actor and waits.
+func (c *Controller) SetAttach(ctx context.Context, state AttachState, reason string) {
+	if c.OnActor(ctx) {
+		c.setAttachOnActor(state, reason)
+		return
+	}
+	_ = c.call(context.WithoutCancel(ctx), func() { c.setAttachOnActor(state, reason) })
 }
 
 // setAttachOnActor is the actor-only form of SetAttach.

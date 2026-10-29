@@ -97,14 +97,16 @@ type Controller struct {
 	compactSeam  compactSeam
 	settingsSeam settingsSeam
 	interSeam    interSeam
-	// actorCtx is handed to code running on the loop (see Do); it carries
-	// actorKey so Close can tell it must not wait on itself.
-	actorCtx context.Context
-	closeReq chan struct{}
+	// actorBase is the parent of every actor context handed out by Do; it
+	// carries actorKey so Close and SetAttach never wait on the actor.
+	actorBase context.Context
+	closeReq  chan struct{}
 	// turnDone closes when the latest turn goroutine returned (actor-owned).
-	turnDone  chan struct{}
-	closeOnce sync.Once
-	closeWhy  string
+	turnDone chan struct{}
+	// compactDone closes when the latest compaction goroutine returned.
+	compactDone chan struct{}
+	closeOnce   sync.Once
+	closeWhy    string
 }
 
 // Options configures NewControllerWithOptions.
@@ -140,7 +142,7 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 	}
 	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), closeReq: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: id, created: deps.Clock()}
 	c.ops.interrupted = opts.InterruptedTurn
-	c.actorCtx = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
+	c.actorBase = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
 	c.extInit(ctx)
 	c.turnSeam = c
 	c.confirmSeam = c

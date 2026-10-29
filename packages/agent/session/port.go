@@ -57,7 +57,7 @@ type Factory interface {
 // Handle extends the client port with daemon lifecycle operations.
 type Handle interface {
 	Port
-	SetAttach(state AttachState, reason string)
+	SetAttach(ctx context.Context, state AttachState, reason string)
 	Close(ctx context.Context, reason string) error
 	Idle() bool
 	Done() <-chan struct{}

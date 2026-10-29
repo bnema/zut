@@ -100,7 +100,10 @@ func (c *Controller) beginCompact(next *Input) error {
 	c.compact.busy, c.compact.aborted, c.compact.cancel = true, false, cancel
 	before := ag.Messages()
 	c.publish(EvCompaction, CompactionEvent{Phase: "start"})
+	compactDone := make(chan struct{})
+	c.compactDone = compactDone
 	go func() {
+		defer close(compactDone)
 		defer cancel()
 		go func() {
 			select {

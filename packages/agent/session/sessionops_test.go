@@ -31,11 +31,11 @@ func TestSetAttachPublishesAndUpdatesInfo(t *testing.T) {
 	c, ctx := newTestController(t)
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
-	c.SetAttach(AttachStateAttached, "")
+	c.SetAttach(ctx, AttachStateAttached, "")
 	require.Equal(t, AttachStateAttached, c.Info().Attach)
 	ev := nextEvent(t, ctx, events, EvAttach)
 	require.Equal(t, AttachEvent{State: AttachStateAttached}, ev.Data)
-	c.SetAttach(AttachStateDetached, "client_detached")
+	c.SetAttach(ctx, AttachStateDetached, "client_detached")
 	require.Equal(t, AttachStateDetached, c.Info().Attach)
 	ev = nextEvent(t, ctx, events, EvAttach)
 	require.Equal(t, AttachEvent{State: AttachStateDetached, Reason: "client_detached"}, ev.Data)
@@ -43,14 +43,14 @@ func TestSetAttachPublishesAndUpdatesInfo(t *testing.T) {
 
 func TestSetAttachDetachDeniesPendingConfirmation(t *testing.T) {
 	c, ctx := newTestController(t)
-	c.SetAttach(AttachStateAttached, "")
+	c.SetAttach(ctx, AttachStateAttached, "")
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
 	confirmer, _ := c.HookBindings()
 	decided := make(chan core.ConfirmDecision, 1)
 	go func() { decided <- confirmer.ConfirmToolCall(core.ToolCallConfirmation{Name: "bash", Summary: "rm"}) }()
 	nextEvent(t, ctx, events, EvPending)
-	c.SetAttach(AttachStateDetached, "client_disconnected")
+	c.SetAttach(ctx, AttachStateDetached, "client_disconnected")
 	select {
 	case d := <-decided:
 		require.False(t, d.Allow)
@@ -131,7 +131,7 @@ func TestDaemonContextEndClosesAsDaemonStop(t *testing.T) {
 	defer cancel()
 	life, stop := context.WithCancel(ctx)
 	c := NewController(life, Deps{})
-	c.SetAttach(AttachStateAttached, "")
+	c.SetAttach(ctx, AttachStateAttached, "")
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
 	confirmer, _ := c.HookBindings()
@@ -139,7 +139,7 @@ func TestDaemonContextEndClosesAsDaemonStop(t *testing.T) {
 	go func() { decided <- confirmer.ConfirmToolCall(core.ToolCallConfirmation{Name: "bash", Summary: "x"}) }()
 	nextEvent(t, ctx, events, EvPending)
 	// Detach so the pending request is recorded for review on close.
-	c.SetAttach(AttachStateDetached, "")
+	c.SetAttach(ctx, AttachStateDetached, "")
 	require.False(t, (<-decided).Allow)
 	nextEvent(t, ctx, events, EvDeferred)
 	go func() { decided <- confirmer.ConfirmToolCall(core.ToolCallConfirmation{Name: "bash", Summary: "y"}) }()
@@ -186,4 +186,35 @@ func TestDefaultIDsAreRandom(t *testing.T) {
 	b, _ := newTestController(t)
 	require.Len(t, a.Info().ID, 12)
 	require.NotEqual(t, a.Info().ID, b.Info().ID)
+}
+
+func TestSetAttachWithActorContext(t *testing.T) {
+	c, ctx := newTestController(t)
+	var escaped context.Context
+	require.NoError(t, c.Do(ctx, func(actx context.Context) {
+		c.SetAttach(actx, AttachStateAttached, "")
+		escaped = actx
+	}))
+	require.Equal(t, AttachStateAttached, c.Info().Attach)
+	// The actor context is cancelled once Do returns and no longer counts.
+	require.Error(t, escaped.Err())
+	require.False(t, c.OnActor(escaped))
+}
+
+func TestCloseDuringCompactionWaitsForIt(t *testing.T) {
+	c, ctx := newTestController(t)
+	started := make(chan struct{})
+	ag := blockingAgent(t, started)
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.settings.title = "t" }))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Compact(ctx))
+	<-started
+	require.NoError(t, c.Close(ctx, "user_exit"))
+	select {
+	case <-c.compactDone:
+	default:
+		t.Fatal("Close returned before the compaction goroutine finished")
+	}
+	nextEvent(t, ctx, events, EvClosed)
 }
