@@ -119,13 +119,33 @@ func (f *sessionFactory) runScheduler(ctx context.Context) error {
 func (f *sessionFactory) executeTask(ctx context.Context, task scheduler.Task) error {
 	h := f.lookup(session.ID(task.SessionID))
 	if h == nil {
-		if !f.stopping.Load() && ctx.Err() == nil {
+		if !f.stopping.Load() && ctx.Err() == nil && !f.registered(ctx, task.SessionID) {
 			f.engine.Cancel(task.ID)
 		}
 		return nil
 	}
 	return h.Submit(ctx, session.Input{Text: task.Message, Mode: session.SubmitModeQueue, Origin: session.InputOriginScheduler})
 }
+
+// registered reports whether the daemon still lists id. A client-requested
+// daemon_stop closes sessions while keeping them registered, so this guards
+// that path in addition to beginStop.
+func (f *sessionFactory) registered(ctx context.Context, id string) bool {
+	if f.dir == nil {
+		return false
+	}
+	for _, info := range f.dir.List(ctx) {
+		if info.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// beginStop marks the daemon as stopping: from now on a due task whose
+// session is gone keeps its schedule (sessions closing for a restart are
+// restored with their schedules, D6).
+func (f *sessionFactory) beginStop() { f.stopping.Store(true) }
 
 // wait blocks until every session watcher has run its cleanup.
 func (f *sessionFactory) wait() { f.wg.Wait() }
@@ -143,14 +163,15 @@ type factoryHandle struct {
 }
 
 // Close records the reason (deciding whether schedules survive) and closes
-// the controller; off the actor it waits for cleanup.
+// the controller. With an actor context (Controller.OnActor) it only requests
+// the close; otherwise it waits for cleanup.
 func (h *factoryHandle) Close(ctx context.Context, reason string) error {
 	h.reason.CompareAndSwap(nil, reason)
-	if reason == daemon.ReasonDaemonStop {
-		h.f.stopping.Store(true)
-	}
 	if err := h.Controller.Close(ctx, reason); err != nil {
 		return err
+	}
+	if h.Controller.OnActor(ctx) {
+		return nil
 	}
 	select {
 	case <-h.done:

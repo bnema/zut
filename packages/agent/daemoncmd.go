@@ -174,11 +174,23 @@ func (s *daemonServer) run(ctx context.Context) error {
 			s.factory.log.Error("scheduler stopped", "err", err)
 		}
 	}()
+	// A signal (ctx) is the daemon stop path owned here; a client
+	// daemon_stop is covered by sessionFactory.registered, since shutdown
+	// keeps sessions registered while closing them.
+	stopWatch := context.AfterFunc(ctx, s.factory.beginStop)
+	defer stopWatch()
 	runErr := s.daemon.Run(ctx, opts)
+	s.factory.beginStop()
 	stopSched()
 	<-schedDone
 	s.factory.wait()
 	return runErr
+}
+
+// stop begins a graceful daemon stop (as a signal would).
+func (s *daemonServer) stop() {
+	s.factory.beginStop()
+	s.daemon.Stop()
 }
 
 func runDaemonServer(ctx context.Context, o daemonServerOptions) error {
@@ -199,6 +211,9 @@ func daemonStatus(w io.Writer, version string) error {
 	defer cancel()
 	c, err := daemonClient(ctx, version)
 	if err != nil {
+		if running, rerr := daemonNotRunning(err, ZutHome()); !running {
+			return rerr
+		}
 		fmt.Fprintln(w, "zut daemon: not running")
 		return nil
 	}
@@ -210,6 +225,26 @@ func daemonStatus(w io.Writer, version string) error {
 	fmt.Fprintf(w, "zut daemon: running\npid: %d\nversion: %s\nuptime: %s\nsessions: %d\n",
 		st.PID, st.Version, (time.Duration(st.UptimeMS) * time.Millisecond).Round(time.Second), st.Sessions)
 	return nil
+}
+
+// daemonLockGrace is how long an unreachable daemon may still hold its lock
+// (e.g. it is starting up or shutting down) before it counts as wedged.
+const daemonLockGrace = 2 * time.Second
+
+// daemonNotRunning classifies a dial failure. Only "no socket" or "connection
+// refused" can mean not running, and then only once the daemon lock is free;
+// any other error, or a lock still held after daemonLockGrace, is reported as
+// an unreachable daemon. It returns (true, nil) when no daemon runs.
+func daemonNotRunning(dialErr error, home string) (bool, error) {
+	if !daemonAbsent(dialErr) {
+		return false, fmt.Errorf("zut daemon not reachable: %w", dialErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), daemonLockGrace)
+	defer cancel()
+	if err := waitDaemonLockFree(ctx, home); err != nil {
+		return false, fmt.Errorf("zut daemon not reachable but lock held (%s): %w", filepath.Join(home, "daemon", "daemon.lock"), dialErr)
+	}
+	return true, nil
 }
 
 func daemonStop(w io.Writer, version string) error {
@@ -232,6 +267,9 @@ func stopDaemon(version string) (bool, error) {
 	defer cancel()
 	c, err := daemonClient(ctx, version)
 	if err != nil {
+		if running, rerr := daemonNotRunning(err, ZutHome()); !running {
+			return false, rerr
+		}
 		return false, nil
 	}
 	err = c.Stop(ctx, daemonStopGrace)

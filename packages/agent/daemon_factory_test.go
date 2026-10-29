@@ -3,12 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,7 +60,7 @@ func startFactoryDaemon(t *testing.T, home, socket string) *testDaemon {
 
 func (td *testDaemon) stop() {
 	td.once.Do(func() {
-		td.server.daemon.Stop()
+		td.server.stop()
 		select {
 		case <-td.done:
 		case <-time.After(20 * time.Second):
@@ -335,8 +338,17 @@ func TestDaemonRunCLIStatusStop(t *testing.T) {
 		require.NoError(t, err, "%v: %s", args, out)
 		return string(out)
 	}
+	// While the daemon starts it may hold the lock before its socket exists;
+	// status then fails with "lock held", so the poll tolerates errors.
 	require.Eventually(t, func() bool {
-		return strings.Contains(zut("daemon", "status"), "zut daemon: running")
+		cmd := exec.Command(binary, "daemon", "status")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			require.Contains(t, string(out), "not reachable but lock held")
+			return false
+		}
+		return strings.Contains(string(out), "zut daemon: running")
 	}, 10*time.Second, 50*time.Millisecond, "daemon did not report running")
 	status := zut("daemon", "status")
 	require.Contains(t, status, "sessions: 0")
@@ -359,4 +371,79 @@ func TestDaemonRunCLIStatusStop(t *testing.T) {
 
 func schedulerInput(cron, msg string) scheduler.NewTaskInput {
 	return scheduler.NewTaskInput{Cron: cron, Message: msg, Location: time.UTC}
+}
+
+func TestDaemonFactoryHandleCloseFromActor(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+	info, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: sessionAssemblyArgs(server)})
+	require.NoError(t, err)
+	h := td.server.factory.lookup(session.ID(info.ID))
+	require.NotNil(t, h)
+	returned := make(chan error, 1)
+	go func() {
+		_ = h.Do(ctx, func(actx context.Context) { returned <- h.Close(actx, "user_exit") })
+	}()
+	select {
+	case err := <-returned:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("factoryHandle.Close blocked on the actor")
+	}
+	select {
+	case <-h.Done():
+	case <-ctx.Done():
+		t.Fatal("session did not finish after on-actor close")
+	}
+}
+
+func TestDaemonStopKeepsSchedulesForRestart(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	socket := daemonTestSocket(t)
+	td := startFactoryDaemon(t, home, socket)
+	c := dialTestDaemon(t, socket)
+	ctx := factoryTestCtx(t)
+	info, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: sessionAssemblyArgs(server)})
+	require.NoError(t, err)
+	task, err := sessionSchedule{engine: td.server.factory.engine, id: info.ID}.Add(schedulerInput("0 0 1 1 *", "later"))
+	require.NoError(t, err)
+	// A client daemon_stop (not a signal) must keep the schedule too.
+	require.NoError(t, c.Stop(ctx, 5*time.Second))
+	select {
+	case <-td.done:
+	case <-ctx.Done():
+		t.Fatal("daemon did not stop")
+	}
+	td.once.Do(func() {})
+	// A task firing for the now-closed session must not cancel it.
+	f := td.server.factory
+	require.Nil(t, f.lookup(session.ID(info.ID)))
+	require.NoError(t, f.executeTask(ctx, task))
+	require.Len(t, f.engine.List(), 1)
+	td2 := startFactoryDaemon(t, home, socket)
+	tasks := td2.server.factory.engine.List()
+	require.Len(t, tasks, 1)
+	require.Equal(t, info.ID, tasks[0].SessionID)
+}
+
+func TestDaemonNotRunningClassification(t *testing.T) {
+	home := t.TempDir()
+	running, err := daemonNotRunning(fs.ErrNotExist, home)
+	require.NoError(t, err)
+	require.True(t, running, "absent socket and free lock means not running")
+
+	running, err = daemonNotRunning(errors.New("permission denied"), home)
+	require.False(t, running)
+	require.ErrorContains(t, err, "not reachable")
+
+	lock, err := flock.TryLock(filepath.Join(home, "daemon", "daemon.lock"))
+	require.NoError(t, err)
+	defer lock.Close()
+	running, err = daemonNotRunning(syscall.ECONNREFUSED, home)
+	require.False(t, running)
+	require.ErrorContains(t, err, "not reachable but lock held")
 }
