@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -13,15 +14,15 @@ func TestToolSchemasAnthropicCompatible(t *testing.T) {
 	schemas := map[string]json.RawMessage{
 		"ask_user_question":   (&AskUserQuestionTool{}).Schema(),
 		"ast":                 (&ASTTool{}).Schema(),
-		"bash":                (&BashTool{}).Schema(),
-		"create_worktree":     (&CreateWorktreeTool{}).Schema(),
+		"bash":                (&BashTool{Env: []string{}}).Schema(),
+		"create_worktree":     (&CreateWorktreeTool{Env: os.Environ()}).Schema(),
 		"edit":                (&EditTool{}).Schema(),
 		"glob":                (&GlobTool{}).Schema(),
 		"grep":                (&GrepTool{}).Schema(),
 		"lsp":                 (&LSPTool{}).Schema(),
-		"manage_worktrees":    (&ManageWorktreesTool{}).Schema(),
+		"manage_worktrees":    (&ManageWorktreesTool{Env: os.Environ()}).Schema(),
 		"plan":                (&PlanTool{}).Schema(),
-		"python":              (&PythonTool{}).Schema(),
+		"python":              (&PythonTool{Env: []string{}}).Schema(),
 		"read":                (&ReadTool{}).Schema(),
 		"schedule":            (&ScheduleTool{}).Schema(),
 		"subagent":            (&SubagentTool{}).Schema(),

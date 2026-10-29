@@ -36,7 +36,9 @@ var createWorktreeOperationMu sync.Mutex
 // DefaultRoot. A local zut.worktrees.path Git configuration entry overrides
 // that root for the repository.
 type CreateWorktreeTool struct {
-	CWD         string
+	CWD string
+	// Env is the explicit session environment; nil is invalid.
+	Env         []string
 	Sandbox     *Sandbox
 	DefaultRoot string
 
@@ -73,6 +75,13 @@ func (t *CreateWorktreeTool) Schema() json.RawMessage { return json.RawMessage(c
 // Preview reports the checkout that Execute will produce without modifying the
 // repository or filesystem.
 func (t *CreateWorktreeTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
+	if t.CWD == "" {
+		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session cwd not set")
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	plan, err := t.plan(ctx, raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -84,6 +93,13 @@ func (t *CreateWorktreeTool) Preview(ctx context.Context, raw json.RawMessage) (
 }
 
 func (t *CreateWorktreeTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if t.CWD == "" {
+		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session cwd not set")
+	}
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	createWorktreeOperationMu.Lock()
 	defer createWorktreeOperationMu.Unlock()
 
@@ -100,7 +116,7 @@ func executeCreateWorktreePlan(ctx context.Context, plan createWorktreePlan, pro
 		return core.ToolResult{}, fmt.Errorf("create_worktree: inspect worktree directories: %w", err)
 	}
 	rollback := func(cause error) error {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := plan.cleanupFailedCheckout(cleanupCtx); err != nil {
 			cause = fmt.Errorf("%w; cleanup worktree: %v", cause, err)
@@ -168,6 +184,10 @@ type createWorktreePlan struct {
 }
 
 func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (createWorktreePlan, error) {
+	if t.Env == nil {
+		return createWorktreePlan{}, fmt.Errorf("tool create_worktree: session env not set")
+	}
+	ctx = withToolEnv(ctx, t.Env)
 	var args createWorktreeArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return createWorktreePlan{}, fmt.Errorf("invalid args: %w", err)
@@ -390,11 +410,7 @@ func worktreeRepoSlug(commonDir string) string {
 func (t *CreateWorktreeTool) accessibleCWD() (string, error) {
 	cwd := t.CWD
 	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("create_worktree: working directory: %w", err)
-		}
+		return "", fmt.Errorf("tool create_worktree: session cwd not set")
 	}
 	cwd, err := canonical(cwd)
 	if err != nil {
@@ -624,8 +640,16 @@ func createWorktreeGitExitCode(err error) int {
 
 func createWorktreeGitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-c", "core.hooksPath=" + os.DevNull, "-C", dir}, args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-	cmd.Env = createWorktreeGitEnv()
+	git := "git"
+	if env, ok := ctx.Value(toolEnvKey{}).([]string); ok {
+		var err error
+		git, err = sessionLookPath(dir, env, git)
+		if err != nil {
+			return "", err
+		}
+	}
+	cmd := exec.CommandContext(ctx, git, cmdArgs...)
+	cmd.Env = createWorktreeGitEnv(toolEnv(ctx))
 	setProcessGroup(cmd)
 
 	var stdout, output cappedGitOutput
@@ -688,9 +712,9 @@ func (b *cappedGitOutput) String() string {
 	return output
 }
 
-func createWorktreeGitEnv() []string {
-	env := make([]string, 0, len(os.Environ())+5)
-	for _, entry := range os.Environ() {
+func createWorktreeGitEnv(base []string) []string {
+	env := make([]string, 0, len(base)+5)
+	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS" {
 			continue

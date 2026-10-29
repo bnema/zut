@@ -16,8 +16,8 @@ func TestWorktreeToolDispatchesListAndCreate(t *testing.T) {
 	repo := initWorktreeTestRepo(t)
 	root := t.TempDir()
 	tool := &WorktreeTool{
-		Create: &CreateWorktreeTool{CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: root},
-		Manage: &ManageWorktreesTool{CWD: repo, Sandbox: NewSandbox(repo)},
+		Create: &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: root},
+		Manage: &ManageWorktreesTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo)},
 	}
 	if _, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"action": "list"}), nil); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestWorktreeToolDispatchesListAndCreate(t *testing.T) {
 }
 
 func TestWorktreeToolRequiresAction(t *testing.T) {
-	tool := &WorktreeTool{Create: &CreateWorktreeTool{}, Manage: &ManageWorktreesTool{}}
+	tool := &WorktreeTool{Create: &CreateWorktreeTool{Env: os.Environ()}, Manage: &ManageWorktreesTool{Env: os.Environ()}}
 	if _, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"branch": "missing-action"}), nil); err == nil {
 		t.Fatal("missing action was accepted")
 	}
@@ -48,8 +48,8 @@ func nestedWorktreeFixture(t *testing.T) (tool *WorktreeTool, repo, featPath, ap
 	repo = initWorktreeTestRepo(t)
 	root := t.TempDir()
 	tool = &WorktreeTool{
-		Create: &CreateWorktreeTool{CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: root},
-		Manage: &ManageWorktreesTool{CWD: repo, Sandbox: NewSandbox(repo)},
+		Create: &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: root},
+		Manage: &ManageWorktreesTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo)},
 	}
 	ctx := context.Background()
 	if _, err := tool.Execute(ctx, mustJSON(t, map[string]any{"action": "create", "branch": "feat/x"}), nil); err != nil {
@@ -96,7 +96,7 @@ func TestWorktreeToolRejectsInvalidBase(t *testing.T) {
 		t.Skip("git is required")
 	}
 	repo := initWorktreeTestRepo(t)
-	tool := &WorktreeTool{Create: &CreateWorktreeTool{CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: t.TempDir()}}
+	tool := &WorktreeTool{Create: &CreateWorktreeTool{Env: os.Environ(), CWD: repo, Sandbox: NewSandbox(repo), DefaultRoot: t.TempDir()}}
 	for _, base := range []string{"no-such-branch", "--output=/tmp/x", "-h"} {
 		_, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"action": "create", "branch": "feat/bad", "base": base}), nil)
 		if err == nil || !strings.HasPrefix(err.Error(), "worktree: ") || !strings.Contains(err.Error(), "invalid base") {

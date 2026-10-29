@@ -17,7 +17,7 @@ import (
 func TestBashTimeoutKillsDescendant(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
 	command := fmt.Sprintf("sleep 30 & child=$!; printf '%%s' \"$child\" > %s; wait", shellQuoteForTest(pidPath))
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"command": command,

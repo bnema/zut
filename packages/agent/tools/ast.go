@@ -585,11 +585,10 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 
 func canonicalPath(cwd, path string) (string, error) {
 	path = resolvePath(cwd, path)
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
+	if cwd == "" {
+		return "", fmt.Errorf("tool ast: session cwd not set")
 	}
-	return filepath.Clean(absolute), nil
+	return filepath.Clean(path), nil
 }
 
 func boundASTText(text string) string {

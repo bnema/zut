@@ -60,6 +60,9 @@ func (t *GrepTool) Schema() json.RawMessage { return json.RawMessage(grepSchema)
 // checked before the executable is selected or started, so a denied path
 // cannot be used to probe or read through the subprocess.
 func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if t.CWD == "" {
+		return core.ToolResult{}, fmt.Errorf("tool grep: session cwd not set")
+	}
 	return t.executeWithTimeout(ctx, raw, progress, grepInternalTimeout)
 }
 
@@ -88,10 +91,7 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 
 	root := filepath.Clean(resolvePath(t.CWD, args.Path))
 	if !filepath.IsAbs(root) {
-		root, err = filepath.Abs(root)
-		if err != nil {
-			return core.ToolResult{}, err
-		}
+		return core.ToolResult{}, fmt.Errorf("tool grep: session cwd not set")
 	}
 	if err := t.Sandbox.CheckReadPath(root); err != nil {
 		return core.ToolResult{}, err

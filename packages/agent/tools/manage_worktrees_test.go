@@ -138,7 +138,7 @@ func TestManageWorktreesRejectsCleanupWithoutExplicitPaths(t *testing.T) {
 }
 
 func newManageWorktreesTestTool(cwd string) *ManageWorktreesTool {
-	return &ManageWorktreesTool{CWD: cwd, Sandbox: NewSandbox(cwd)}
+	return &ManageWorktreesTool{Env: os.Environ(), CWD: cwd, Sandbox: NewSandbox(cwd)}
 }
 
 // addMergedSideWorktree creates branch "side" at the primary HEAD in a new
@@ -244,7 +244,7 @@ func TestManageWorktreesDeleteBranchRequiresRefStorageWriteAccess(t *testing.T) 
 		p.FS.Write = write
 		sandbox := NewSandbox(repo)
 		sandbox.SetPermissions(&p)
-		return &ManageWorktreesTool{CWD: repo, Sandbox: sandbox}
+		return &ManageWorktreesTool{Env: os.Environ(), CWD: repo, Sandbox: sandbox}
 	}
 	args := mustJSON(t, map[string]any{"action": "cleanup", "paths": []string{path}, "delete_branch": true})
 

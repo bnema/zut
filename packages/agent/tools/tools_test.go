@@ -403,7 +403,7 @@ func TestBashSchemaRequiresTimeoutInSeconds(t *testing.T) {
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
-	if err := json.Unmarshal((&BashTool{}).Schema(), &schema); err != nil {
+	if err := json.Unmarshal((&BashTool{Env: []string{}}).Schema(), &schema); err != nil {
 		t.Fatal(err)
 	}
 
@@ -475,7 +475,7 @@ func TestBashSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix shell only")
 	}
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "echo hi", "timeout": 1}), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -506,7 +506,7 @@ func TestBashSyntax(t *testing.T) {
 	if !currentShell().isBash {
 		t.Skip("bash is unavailable")
 	}
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"command": `items=(one two); [[ ${#items[@]} -eq 2 ]] && printf 'bash syntax works\n'`,
 		"timeout": 1,
@@ -524,7 +524,7 @@ func TestBashFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix shell only")
 	}
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	res, _ := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "false", "timeout": 1}), nil)
 	if !res.IsError {
 		t.Fatal("want error")
@@ -536,7 +536,7 @@ func TestBashFailure(t *testing.T) {
 }
 
 func TestBashRejectsInvalidTimeout(t *testing.T) {
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	tests := []struct {
 		name string
 		args map[string]any
@@ -570,7 +570,7 @@ func TestBashTimeoutCancelsCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix shell only")
 	}
-	tool := &BashTool{CWD: t.TempDir()}
+	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	start := time.Now()
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"command": "sleep 5",

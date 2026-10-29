@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -58,6 +59,8 @@ type Args struct {
 	Session         string
 	NoSess          bool
 
+	// Env is the client environment captured for this session.
+	Env     []string
 	CWD     string
 	NoTools bool
 	NoLSP   bool
@@ -349,8 +352,16 @@ func ParseArgs(in []string) (Args, error) {
 	if a.StatsPath != "" && a.Mode != ModePrint {
 		return a, fmt.Errorf("--stats requires -p or --print")
 	}
+	a.Env = os.Environ()
 	if a.CWD == "" {
 		a.CWD, _ = os.Getwd()
+	}
+	if !filepath.IsAbs(a.CWD) {
+		abs, err := filepath.Abs(a.CWD)
+		if err != nil {
+			return a, err
+		}
+		a.CWD = abs
 	}
 	return a, nil
 }

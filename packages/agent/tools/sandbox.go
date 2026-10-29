@@ -48,7 +48,7 @@ func (s *Sandbox) CheckPath(path string) error {
 	}
 	// Resolve the target to an absolute path. Walk up until we find an
 	// existing parent so symlinks inside nonexistent dirs are still caught.
-	target, err := canonicalOrParent(path)
+	target, err := canonicalOrParent(resolvePath(s.Root, path))
 	if err != nil {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
@@ -77,7 +77,7 @@ func (s *Sandbox) DisplayPath(abs, given string) string {
 	if err != nil {
 		return given
 	}
-	target, err := canonicalOrParent(abs)
+	target, err := canonicalOrParent(resolvePath(s.Root, abs))
 	if err != nil {
 		return given
 	}
@@ -331,10 +331,10 @@ func expandHome(p string) string {
 
 // canonical returns an absolute, symlink-resolved path. Errors on missing files.
 func canonical(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("sandbox: absolute session path required")
 	}
+	abs := filepath.Clean(p)
 	return filepath.EvalSymlinks(abs)
 }
 
@@ -343,10 +343,10 @@ func canonical(p string) (string, error) {
 // remaining path components. This catches symlink-escapes in non-existent
 // subtrees (e.g. "new-file" inside a symlinked dir).
 func canonicalOrParent(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("sandbox: absolute session path required")
 	}
+	abs := filepath.Clean(p)
 	// If the full path exists, resolve it.
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved, nil

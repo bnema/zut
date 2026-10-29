@@ -1427,10 +1427,10 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
 		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
-		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"bash":  &tools.BashTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		"worktree": &tools.WorktreeTool{
-			Create: &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox, DefaultRoot: filepath.Join(ZutHome(), "worktrees")},
-			Manage: &tools.ManageWorktreesTool{CWD: cwd, Sandbox: sandbox},
+			Create: &tools.CreateWorktreeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, DefaultRoot: filepath.Join(ZutHome(), "worktrees")},
+			Manage: &tools.ManageWorktreesTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		},
 		"grep":              &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
 		"glob":              &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
@@ -1446,6 +1446,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	}
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
+		lspTool.Env = args.Env
 		lspTool.Sandbox = sandbox
 		lspTool.LSPDiagnostics = diagnosticsOnEdit
 		all["lsp"] = lspTool
@@ -1518,7 +1519,7 @@ func maybeAddPythonTool(reg core.Registry, args Args, cwd string, sandbox *tools
 	if reg == nil || !pythonToolAllowed(args) {
 		return
 	}
-	reg["python"] = &tools.PythonTool{CWD: cwd, Sandbox: sandbox, Interpreter: interpreter}
+	reg["python"] = &tools.PythonTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: interpreter}
 }
 
 func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) bool {

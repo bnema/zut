@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -70,7 +71,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			"command": cmd,
 			"timeout": ShellEscapeTimeoutSeconds,
 		})
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		bash := &tools.BashTool{CWD: cwd, Env: os.Environ(), Sandbox: sandbox}
 		progress := func(chunk string) {
 			i.mu.Lock()
 			i.shellLive += chunk
