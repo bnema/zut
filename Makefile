@@ -89,7 +89,7 @@ release:
 	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-windows-amd64.exe" $(PKG)
 
 MOCKERY ?= $(HOME)/go/bin/mockery
-MOCK_PATHS := packages/agent/session/sessionmocks packages/provider/providermocks ':(glob)packages/agent/session/*_mock_test.go' packages/agent/tools/sessionDirectory_mock_test.go packages/agent/modes/sessionClient_mock_test.go
+MOCK_PATHS := packages/agent/session/sessionmocks packages/provider/providermocks ':(glob)packages/agent/session/*_mock_test.go' packages/agent/tools/sessionDirectory_mock_test.go packages/agent/modes/sessionClient_mock_test.go ':(glob)packages/agent/daemon/*_mock_test.go' ':(glob)packages/agent/modes/bot/*_mock_test.go'
 NEW_PACKAGES := packages/agent/session packages/agent/daemon packages/agent/daemonproto packages/agent/daemonclient packages/agent/internal
 # Remove only Mockery output, including mocks of deleted interfaces.
 mocks:

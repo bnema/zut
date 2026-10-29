@@ -23,7 +23,13 @@ type Config struct {
 	BotID         int64  `json:"bot_id,omitempty"`
 	AllowedUserID int64  `json:"allowed_user_id,omitempty"`
 	LastUpdateID  int64  `json:"last_update_id,omitempty"`
+	// APIBase overrides the Bot API server (self-hosted telegram-bot-api).
+	// Empty means DefaultAPIBase.
+	APIBase string `json:"api_base,omitempty"`
 }
+
+// NewClient returns a Bot API client for c's token and server.
+func (c Config) NewClient() *Client { return NewClientWithBase(c.BotToken, c.APIBase) }
 
 // ConfigPath returns the path to bot.json.
 func ConfigPath(zutHome string) string {
@@ -46,7 +52,7 @@ func LoadConfig(zutHome string) (Config, error) {
 	return c, nil
 }
 
-// SaveConfig writes bot.json atomically.
+// SaveConfig writes bot.json atomically with mode 0600.
 func SaveConfig(zutHome string, c Config) error {
 	if err := os.MkdirAll(zutHome, 0o755); err != nil {
 		return err
@@ -58,6 +64,11 @@ func SaveConfig(zutHome string, c Config) error {
 	path := ConfigPath(zutHome)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	// WriteFile keeps the mode of an existing temp file; force 0600.
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

@@ -127,6 +127,53 @@ is the existing `extproto.PanelKeyFromHost` (no additional key type).
 `set|pause|resume|clear|complete`; deferred action is `dismiss|send_to_agent`;
 resident operation is `stop|interrupt|resume`.
 
+## Bot services
+
+The daemon hosts protocol bots; `telegram` is the only kind. Requests never
+carry credentials: the daemon reads the bot token from `$ZUT_HOME/bot.json`
+(mode 0600) and never logs it. Bot diagnostics go to the daemon log.
+
+```json
+{"id":"20","type":"bot_start","spec":{"kind":"telegram","cwd":"/workspace","env":[],"args":["--model","m"]}}
+{"id":"21","type":"bot_stop","kind":"telegram"}
+{"id":"22","type":"bot_status","kind":"telegram"}
+{"id":"23","type":"telegram_bridge","session":"s1","on":true}
+```
+
+`bot_start` creates one headless session from `cwd`, `env` and `args` (as
+`create` would) and runs the bot against it inside the daemon. Each DM is
+submitted with origin `telegram`; the final assistant text of each run started
+from Telegram is sent back. The session appears in `list` and can be attached.
+A second `bot_start` for a running kind fails with `bot is already running`.
+An unconfigured bot fails before any session is created. If the bot session
+ends while the service runs (idle GC, `zut kill`), a new session replaces it.
+
+`bot_stop` stops the service and closes its session (reason `bot_stopped`);
+the session file stays resumable. Stopping a kind that is not running succeeds.
+
+Bot services are not restarted after a daemon restart. The bot session is
+restored idle like any other session, and the next `bot_start` reuses it
+(`$ZUT_HOME/daemon/bots.json` maps kind to session ID; no secrets).
+
+`telegram_bridge` with `on:true` mirrors the paired Telegram chat into an
+existing session: DMs are submitted with origin `telegram`, prompts typed by
+the user are sent as `you: <text>`, and each finished run's final assistant
+text is sent to the chat. It runs in the daemon and keeps working while the
+session is detached. Turning it on for another session moves it there.
+`on:false` stops it when it is bound to `session` (any session when `session`
+is empty). The bridge ends with its session or the daemon. A bridge and a bot
+service cannot poll the same bot: whichever starts second fails with
+`bot is already running`. Bridged and bot sessions get web search disabled
+(no confirmation surface in Telegram).
+
+| Request | Successful `data` |
+| --- | --- |
+| bot_start, bot_stop, bot_status | `BotStatusData`: `kind`, `running`, `session`, `started_at`, `username`, `paired_user_id`, `last_error` (why the service ended on its own), `bridge` (`TelegramBridgeData` when a bridge is active) |
+| telegram_bridge | `TelegramBridgeData`: `active`, `session`, `username`, `paired_user_id` |
+
+A daemon whose session factory does not host bots answers every bot request
+with `this daemon does not host bots`.
+
 ## Notifications and event payloads
 
 ```json

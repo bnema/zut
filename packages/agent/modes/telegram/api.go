@@ -71,17 +71,56 @@ type apiResponse[T any] struct {
 	Result      T      `json:"result"`
 }
 
-// Client is a minimal Telegram Bot API client.
+// DefaultAPIBase is the public Telegram Bot API endpoint.
+const DefaultAPIBase = "https://api.telegram.org"
+
+// Client is a minimal Telegram Bot API client. Errors it returns never
+// contain the bot token.
 type Client struct {
 	token string
+	base  string
 	http  *http.Client
 }
 
-func NewClient(token string) *Client {
-	return &Client{token: token, http: &http.Client{Timeout: 0}}
+// NewClient returns a client for the public Telegram Bot API.
+func NewClient(token string) *Client { return NewClientWithBase(token, "") }
+
+// NewClientWithBase returns a client for a Bot API server at base (for
+// example a self-hosted telegram-bot-api server). Empty base means
+// DefaultAPIBase.
+func NewClientWithBase(token, base string) *Client {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		base = DefaultAPIBase
+	}
+	return &Client{token: token, base: base, http: &http.Client{Timeout: 0}}
 }
 
-func (c *Client) baseURL() string { return "https://api.telegram.org/bot" + c.token }
+func (c *Client) apiBase() string {
+	if c.base == "" {
+		return DefaultAPIBase
+	}
+	return c.base
+}
+
+func (c *Client) baseURL() string { return c.apiBase() + "/bot" + c.token }
+
+// redactedError hides the bot token, which net/http embeds in URL errors.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// scrub removes the token from err's message while keeping it unwrappable.
+func (c *Client) scrub(err error) error {
+	if err == nil || c.token == "" || !strings.Contains(err.Error(), c.token) {
+		return err
+	}
+	return &redactedError{msg: strings.ReplaceAll(err.Error(), c.token, "<token>"), err: err}
+}
 
 // GetMe verifies the token and returns the bot's own User.
 func (c *Client) GetMe(ctx context.Context) (*User, error) {
@@ -185,12 +224,12 @@ func (c *Client) SendPhoto(ctx context.Context, chatID int64, path, caption stri
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL()+"/sendPhoto", &buf)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	req.Header.Set("content-type", w.FormDataContentType())
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -225,12 +264,12 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, path, caption s
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL()+"/sendDocument", &buf)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	req.Header.Set("content-type", w.FormDataContentType())
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -256,14 +295,14 @@ func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
 
 // DownloadFile downloads the file at filePath (from GetFile) into memory.
 func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, error) {
-	u := "https://api.telegram.org/file/bot" + c.token + "/" + filePath
+	u := c.apiBase() + "/file/bot" + c.token + "/" + filePath
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
-		return nil, err
+		return nil, c.scrub(err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, c.scrub(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -286,11 +325,11 @@ func (c *Client) call(ctx context.Context, endpoint string, body map[string]any,
 		}
 	}
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	defer resp.Body.Close()
 	// Telegram returns 200 with ok=false for logical errors; read either way.
@@ -298,7 +337,7 @@ func (c *Client) call(ctx context.Context, endpoint string, body map[string]any,
 	if len(respBody) == 0 {
 		return fmt.Errorf("%s: empty response (status %d)", endpoint, resp.StatusCode)
 	}
-	return json.Unmarshal(respBody, out)
+	return c.scrub(json.Unmarshal(respBody, out))
 }
 
 // small helpers kept here so api.go has no other deps.
