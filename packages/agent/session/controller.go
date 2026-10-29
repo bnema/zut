@@ -97,10 +97,12 @@ type Controller struct {
 	compactSeam  compactSeam
 	settingsSeam settingsSeam
 	interSeam    interSeam
-	// actorGID is the loop goroutine's ID, used only so Close and SetAttach
-	// never wait on the actor from the actor itself.
-	actorGID  atomic.Uint64
-	closeReq  chan struct{}
+	// actorCtx is handed to code running on the loop (see Do); it carries
+	// actorKey so Close can tell it must not wait on itself.
+	actorCtx context.Context
+	closeReq chan struct{}
+	// turnDone closes when the latest turn goroutine returned (actor-owned).
+	turnDone  chan struct{}
 	closeOnce sync.Once
 	closeWhy  string
 }
@@ -138,6 +140,7 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 	}
 	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), closeReq: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: id, created: deps.Clock()}
 	c.ops.interrupted = opts.InterruptedTurn
+	c.actorCtx = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
 	c.extInit(ctx)
 	c.turnSeam = c
 	c.confirmSeam = c
@@ -156,7 +159,6 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 		c.publish(EvNote, NoteEvent{Note: interruptedNote})
 	}
 	go func() {
-		c.actorGID.Store(goroutineID())
 		defer close(c.done)
 		defer c.extShutdown()
 		defer func() {
@@ -168,7 +170,10 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 		for {
 			select {
 			case <-ctx.Done():
-				c.residentsShutdown()
+				// The daemon context ending is a daemon stop: close the
+				// session properly (D3/D6) instead of just dropping it.
+				c.requestClose(closeReasonDaemonStop)
+				c.closeOnActor()
 				return
 			case <-c.closeReq:
 				c.closeOnActor()
@@ -190,12 +195,17 @@ func (c *Controller) post(ctx context.Context, fn func()) error {
 	select {
 	case <-c.done:
 		return ErrClosed
+	case <-c.closeReq:
+		return ErrClosed
 	default:
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.done:
+		return ErrClosed
+	case <-c.closeReq:
+		// The loop stops reading once close is requested; never block on it.
 		return ErrClosed
 	case c.loop <- fn:
 		return nil
@@ -267,6 +277,7 @@ func (c *Controller) updateInfo() {
 	if c.ops.interrupted {
 		if run != RunStateIdle {
 			c.ops.interrupted = false
+			c.ops.restoreNote = false
 		} else if info.Activity.Kind == "idle" || info.Activity.Kind == "" {
 			info.Activity = Activity{Kind: "interrupted"}
 		}

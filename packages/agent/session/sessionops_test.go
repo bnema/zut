@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/providermocks"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,9 +61,9 @@ func TestSetAttachDetachDeniesPendingConfirmation(t *testing.T) {
 	nextEvent(t, ctx, events, EvDeferred)
 }
 
-func TestSetAttachFromActorDoesNotDeadlock(t *testing.T) {
+func TestSetAttachOnActorForm(t *testing.T) {
 	c, ctx := newTestController(t)
-	require.NoError(t, c.call(ctx, func() { c.SetAttach(AttachStateAttached, "") }))
+	require.NoError(t, c.call(ctx, func() { c.setAttachOnActor(AttachStateAttached, "") }))
 	require.Equal(t, AttachStateAttached, c.Info().Attach)
 }
 
@@ -83,7 +86,12 @@ func TestClosePublishesClosedAndIsIdempotent(t *testing.T) {
 func TestCloseFromActorReturnsWithoutWaiting(t *testing.T) {
 	c, ctx := newTestController(t)
 	returned := make(chan error, 1)
-	require.NoError(t, c.post(ctx, func() { returned <- c.Close(context.Background(), "self") }))
+	go func() {
+		_ = c.Do(ctx, func(actx context.Context) {
+			require.True(t, c.OnActor(actx))
+			returned <- c.Close(actx, "self")
+		})
+	}()
 	select {
 	case err := <-returned:
 		require.NoError(t, err)
@@ -108,6 +116,69 @@ func TestOptionsPresetIDAndInterruptedTurn(t *testing.T) {
 	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Contains(t, snap.Notes, interruptedNote)
+	require.False(t, c.OnActor(ctx))
+
+	// A new turn clears both the interrupted activity and the restore note.
+	require.NoError(t, c.call(ctx, func() { c.turn.busy = true; c.updateInfo(); c.turn.busy = false; c.updateInfo() }))
+	require.NotEqual(t, "interrupted", c.Info().Activity.Kind)
+	snap, err = c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, snap.Notes, interruptedNote)
+}
+
+func TestDaemonContextEndClosesAsDaemonStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	life, stop := context.WithCancel(ctx)
+	c := NewController(life, Deps{})
+	c.SetAttach(AttachStateAttached, "")
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	confirmer, _ := c.HookBindings()
+	decided := make(chan core.ConfirmDecision, 1)
+	go func() { decided <- confirmer.ConfirmToolCall(core.ToolCallConfirmation{Name: "bash", Summary: "x"}) }()
+	nextEvent(t, ctx, events, EvPending)
+	// Detach so the pending request is recorded for review on close.
+	c.SetAttach(AttachStateDetached, "")
+	require.False(t, (<-decided).Allow)
+	nextEvent(t, ctx, events, EvDeferred)
+	go func() { decided <- confirmer.ConfirmToolCall(core.ToolCallConfirmation{Name: "bash", Summary: "y"}) }()
+	stop()
+	ev := nextEvent(t, ctx, events, EvClosed)
+	require.Equal(t, ClosedEvent{Reason: "daemon_stop"}, ev.Data)
+	<-c.Done()
+	require.False(t, (<-decided).Allow)
+}
+
+func TestCloseMidTurnWaitsForTurnGoroutine(t *testing.T) {
+	c, ctx := newTestController(t)
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(sctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+		close(started)
+		<-sctx.Done()
+		// The agent keeps going briefly after cancellation.
+		time.Sleep(50 * time.Millisecond)
+		close(returned)
+		return nil, sctx.Err()
+	}).Once()
+	// The agent may retry once more with the cancelled context.
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(sctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+		return nil, sctx.Err()
+	}).Maybe()
+	ag := core.NewAgent(client, "m", "", nil)
+	// A preset title keeps title generation (another Stream call) out of the test.
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.settings.title = "t" }))
+	require.NoError(t, c.Submit(ctx, Input{Text: "hi"}))
+	<-started
+	require.NoError(t, c.Close(ctx, "user_exit"))
+	select {
+	case <-returned:
+	default:
+		t.Fatalf("Close returned before the turn goroutine finished (turnDone set: %v)", c.turnDone != nil)
+	}
 }
 
 func TestDefaultIDsAreRandom(t *testing.T) {
