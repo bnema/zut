@@ -43,7 +43,7 @@ func TestRPCBridgeExtAlertIsJSONOnly(t *testing.T) {
 	var out bytes.Buffer
 	b := offlineBridge(&out, session.Info{})
 	events := make(chan session.Event, 1)
-	events <- session.Event{Kind: session.EvExtAlert, Data: session.ExtAlertEvent{Alert: extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "question_ready"}}}
+	events <- session.Event{Kind: session.EvExtAlert, Data: session.ExtAlertEvent{Ext: "notify", Alert: extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "question_ready"}}}
 	close(events)
 	done := make(chan struct{})
 	b.pump(events, done)
@@ -52,6 +52,7 @@ func TestRPCBridgeExtAlertIsJSONOnly(t *testing.T) {
 	frames := rpcFrames(t, out.String())
 	require.Len(t, frames, 1)
 	require.Equal(t, "ext_alert", frames[0]["type"])
+	require.Equal(t, "notify", frames[0]["extension"])
 	require.Equal(t, extproto.AlertKindBell, frames[0]["kind"])
 	require.Equal(t, "question_ready", frames[0]["reason"])
 }
