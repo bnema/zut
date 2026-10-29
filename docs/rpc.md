@@ -16,14 +16,16 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Process model
 
+- `zut rpc` is a client of the local zut daemon (started automatically if needed). The agent runs in one daemon session; the `zut rpc` process bridges this protocol to it.
 - One `zut rpc` process serves **one cwd, one model, one session**.
 - For multiple projects, spawn multiple processes.
 - Concurrency: at most one prompt or compact in flight at a time. A second one queues until the first finishes; aborting fires immediately.
-- The process exits when stdin closes.
+- The process exits when stdin closes, after in-flight work finishes. Ctrl+C aborts the running turn. On exit the daemon session is closed unless `--keep-session` is passed; a kept session stays in `zut ls` and can be reattached with `zut attach`.
+- `clear` moves the bridge to a fresh successor session transparently.
 
 ## Flags
 
-`zut rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
+`zut rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`, `--no-session`, `--keep-session`. `--no-yolo` has no effect (warning on stderr).
 
 RPC agents use the same resolved system-prompt policy as other modes. A custom `--system-prompt` replaces the built-in identity and docs guidance, while shared harness guidance and append addenda remain present. Shared guidance asks agents to verify changes with checks appropriate to their scope and report which checks ran and what remains unverified.
 
