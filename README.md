@@ -578,6 +578,7 @@ Limitations:
 
 - Bot services are not restarted after a daemon restart. Their session is restored idle; run `zut telegram-bot start` again to resume polling.
 - Autospawn on Windows is untested.
+- Access to the socket is controlled only by file permissions (a `0600` socket in a `0700` directory owned by you). The daemon does not check the connecting process's credentials, and on Windows those permission checks are skipped.
 
 ## Providers
 
