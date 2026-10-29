@@ -941,6 +941,7 @@ type Interactive struct {
 	skillsDialog            *skillsDialog
 	changelogDialog         *changelogDialog
 	questionDialog          *questionDialog
+	deferredDialog          deferredDialog
 	confirmDialog           *confirmDialog
 	logoutDialog            *logoutDialog
 	telegramDialog          *telegramDialog

@@ -546,6 +546,9 @@ func (i *Interactive) redraw() {
 	case i.questionDialog.Active() && !i.confirmDialog.Active():
 		dialogID = "questions"
 		dialog = i.questionDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.deferredDialog.Active() && !i.confirmDialog.Active():
+		dialogID = "deferred"
+		dialog = i.deferredDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.dialog.Active():
 		dialogID = "login"
 		dialog = i.dialog.Render(i.cfg.Theme, dialogWidth)

@@ -58,6 +58,7 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 	return len(i.helpBlock) > 0 ||
 		len(i.extNotes) > 0 ||
 		i.questionDialog.Active() ||
+		i.deferredDialog.Active() ||
 		i.dialog.Active() ||
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||
@@ -133,6 +134,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 	if i.questionDialog.Active() && !i.confirmDialog.Active() {
 		i.questionDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
+	if i.deferredDialog.Active() && !i.confirmDialog.Active() {
+		i.deferredDialog.HandleKey(k)
 		i.invalidate()
 		return false
 	}
