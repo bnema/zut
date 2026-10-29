@@ -153,9 +153,18 @@ func (c *Controller) residentsShutdown() {
 	s.inboxMu.Unlock()
 }
 
+// HeadlessCompletionInstruction is the parent instruction appended to
+// completion updates of headless --orchestrate sessions.
+const HeadlessCompletionInstruction = `Treat the completion reports below as evidence, including failures. Do not retry failed workers automatically. Decide whether another independent dependency wave is required; if so, use the manager tools and end or yield the turn again. Otherwise synthesize the final answer for the user. Do not mention this orchestration protocol unless it is relevant to the answer.`
+
 func (s *residentState) deliver(actions []orchestration.Action) {
 	for _, a := range actions {
 		if len(a.Completions) == 0 {
+			continue
+		}
+		if s.controller.deps.HeadlessOrchestrate {
+			// Mirrors the pre-daemon headless --orchestrate continuation.
+			s.controller.turnSeam.enqueue(Input{Origin: InputOriginResident, HostEvent: true, Text: subagents.FormatCompletionUpdate(a.Completions, HeadlessCompletionInstruction)})
 			continue
 		}
 		instruction := "Briefly summarise the collective outcome for the user. Reference the agents by id. If any failed, suggest a follow-up; otherwise confirm completion. Do not spawn new sub-agents unless the user asks."

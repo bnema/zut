@@ -1,0 +1,10 @@
+{"content":[{"text":"say hello","type":"text"}],"time":"<TIME>","type":"user_message"}
+{"step":1,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"delta":"hello from parity","type":"text_delta"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"input":8,"output":2,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"text":"hello from parity","type":"text"}],"time":"<TIME>","type":"assistant_message"}
+{"stop":"end","type":"turn_end"}
+{"type":"done"}

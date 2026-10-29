@@ -144,27 +144,30 @@ type QuickModelShortcut struct {
 // Replaceable callbacks are grouped into interfaces using their original method
 // names and types; Clock is the explicitly approved time source.
 type Deps struct {
-	AgentBuilder                                                                                    AgentBuilder
-	SessionStore                                                                                    SessionStore
-	ResidentBuilder                                                                                 ResidentBuilder
-	SkillStore                                                                                      SkillStore
-	ToolRefresher                                                                                   ToolRefresher
-	Extensions                                                                                      ExtensionHost
-	ResidentManager                                                                                 ResidentHost
-	ConfirmGate                                                                                     ConfirmGate
-	SettingsStore                                                                                   SettingsStore
-	AuthManager                                                                                     *auth.Manager
-	Directory                                                                                       Directory
-	Scheduler                                                                                       ScheduleHost
-	DeferredStore                                                                                   DeferredStore
-	Clock                                                                                           func() time.Time
-	Logger                                                                                          *slog.Logger
-	Env                                                                                             []string
-	QuickModelShortcuts                                                                             []QuickModelShortcut
-	Model, Provider, Reasoning, CWD, SystemPrompt, WritingGuidance                                  string
-	MaxSteps                                                                                        int
-	Version, ZutHome, SessionsRoot                                                                  string
-	NoYolo                                                                                          bool
+	AgentBuilder                                                   AgentBuilder
+	SessionStore                                                   SessionStore
+	ResidentBuilder                                                ResidentBuilder
+	SkillStore                                                     SkillStore
+	ToolRefresher                                                  ToolRefresher
+	Extensions                                                     ExtensionHost
+	ResidentManager                                                ResidentHost
+	ConfirmGate                                                    ConfirmGate
+	SettingsStore                                                  SettingsStore
+	AuthManager                                                    *auth.Manager
+	Directory                                                      Directory
+	Scheduler                                                      ScheduleHost
+	DeferredStore                                                  DeferredStore
+	Clock                                                          func() time.Time
+	Logger                                                         *slog.Logger
+	Env                                                            []string
+	QuickModelShortcuts                                            []QuickModelShortcut
+	Model, Provider, Reasoning, CWD, SystemPrompt, WritingGuidance string
+	MaxSteps                                                       int
+	Version, ZutHome, SessionsRoot                                 string
+	NoYolo                                                         bool
+	// HeadlessOrchestrate marks a headless --orchestrate session: resident
+	// completions use HeadlessCompletionInstruction without a still-running list.
+	HeadlessOrchestrate                                                                             bool
 	AutoCompactThreshold                                                                            *int
 	GoalMaxTokenBudget                                                                              *uint64
 	AutoSubagentsEnabled, WebSearchEnabled, LSPEnabled, SubagentLSPEnabled                          *bool

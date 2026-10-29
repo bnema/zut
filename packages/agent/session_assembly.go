@@ -72,7 +72,9 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 		return session.Deps{}, nil, err
 	}
 	ok = true
-	return a.deps(), a.cleanup, nil
+	deps := a.deps()
+	deps.HeadlessOrchestrate = spec.Headless && args.Orchestrate
+	return deps, a.cleanup, nil
 }
 
 // BindSessionHooks connects late-bound placeholders to the controller built
