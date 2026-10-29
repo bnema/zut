@@ -11,20 +11,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// Task is one recurring prompt owned by a session branch. Tasks are kept only
-// in process memory; callers are responsible for stopping the engine with the
-// host process.
+// Task is one recurring prompt owned by a session branch. Persistent engines
+// retain metadata across restarts, but never restore in-flight execution.
 type Task struct {
 	ID        string
 	SessionID string
 	Cron      string
 	Timezone  string
-	Message   string
-	CreatedAt time.Time
-	NextRun   time.Time
-	LastRun   time.Time
-	RunCount  int
-	LastError string
+	// TimezoneOffset preserves custom fixed zones that have no IANA name.
+	TimezoneOffset int
+	Message        string
+	CreatedAt      time.Time
+	NextRun        time.Time
+	LastRun        time.Time
+	RunCount       int
+	LastError      string
 
 	schedule Cron
 	queued   bool
@@ -44,10 +45,13 @@ type NewTaskInput struct {
 // the lock, allowing independent session tasks to progress concurrently; the
 // host remains responsible for serializing work for one session.
 type Engine struct {
-	mu    sync.Mutex
-	now   func() time.Time
-	tasks map[string]Task
-	wake  chan struct{}
+	persistMu  sync.Mutex // Acquired before mu by mutations and dispatch.
+	mu         sync.Mutex
+	now        func() time.Time
+	tasks      map[string]Task
+	wake       chan struct{}
+	store      Store
+	persistErr error
 }
 
 // NewEngine creates an empty scheduler. now is injectable for tests; nil uses
@@ -85,38 +89,37 @@ func (e *Engine) Add(input NewTaskInput) (Task, error) {
 	if next.IsZero() {
 		return Task{}, fmt.Errorf("cron has no occurrence in the next eight years")
 	}
+	_, offset := now.In(input.Location).Zone()
 	task := Task{
-		ID:        uuid.NewString(),
-		SessionID: input.SessionID,
-		Cron:      input.Cron,
-		Timezone:  input.Location.String(),
-		Message:   input.Message,
-		CreatedAt: now,
-		NextRun:   next,
-		schedule:  schedule,
+		TimezoneOffset: offset,
+		ID:             uuid.NewString(),
+		SessionID:      input.SessionID,
+		Cron:           input.Cron,
+		Timezone:       input.Location.String(),
+		Message:        input.Message,
+		CreatedAt:      now,
+		NextRun:        next,
+		schedule:       schedule,
 	}
-	e.mu.Lock()
-	e.tasks[task.ID] = task
-	e.mu.Unlock()
-	e.signalWake()
+	err = e.update(false, func(tasks map[string]Task) { tasks[task.ID] = task })
+	if err != nil {
+		return Task{}, err
+	}
 	return task, nil
 }
 
-// Cancel removes a scheduled task. It returns false when the ID is unknown.
+// Cancel removes a scheduled task. It returns false for unknown IDs or save
+// failures; Err reports persistence failures. Post-rename failures retain removal.
 func (e *Engine) Cancel(id string) bool {
 	if e == nil {
 		return false
 	}
-	e.mu.Lock()
-	_, ok := e.tasks[id]
-	if ok {
-		delete(e.tasks, id)
-	}
-	e.mu.Unlock()
-	if ok {
-		e.signalWake()
-	}
-	return ok
+	found := false
+	err := e.update(false, func(tasks map[string]Task) {
+		_, found = tasks[id]
+		delete(tasks, id)
+	})
+	return found && err == nil
 }
 
 // Get returns a task snapshot by ID.
@@ -141,13 +144,17 @@ func (e *Engine) List() []Task {
 		tasks = append(tasks, task)
 	}
 	e.mu.Unlock()
+	sortTasks(tasks)
+	return tasks
+}
+
+func sortTasks(tasks []Task) {
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].NextRun.Equal(tasks[j].NextRun) {
 			return tasks[i].ID < tasks[j].ID
 		}
 		return tasks[i].NextRun.Before(tasks[j].NextRun)
 	})
-	return tasks
 }
 
 // Run waits for due tasks until ctx is cancelled. Each claimed task receives
@@ -161,6 +168,9 @@ func (e *Engine) Run(ctx context.Context, executor func(context.Context, Task) e
 		return fmt.Errorf("scheduler executor is required")
 	}
 	for {
+		if err := e.Err(); err != nil {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -215,6 +225,8 @@ func (e *Engine) dispatchDue(ctx context.Context, now time.Time, executor func(c
 }
 
 func (e *Engine) takeDue(now time.Time) []Task {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	due := make([]Task, 0)
@@ -240,16 +252,19 @@ func (e *Engine) dispatchTask(ctx context.Context, queued Task, executor func(co
 		e.releaseQueued(queued.ID, queued.NextRun)
 		return
 	}
+	e.persistMu.Lock()
 	e.mu.Lock()
 	task, ok := e.tasks[queued.ID]
 	if !ok || !task.queued || !task.NextRun.Equal(queued.NextRun) {
 		e.mu.Unlock()
+		e.persistMu.Unlock()
 		return // cancelled or superseded before it was claimed
 	}
 	task.queued = false
 	task.running = true
 	e.tasks[task.ID] = task
 	e.mu.Unlock()
+	e.persistMu.Unlock()
 	if ctx.Err() != nil {
 		e.finish(task.ID, task.NextRun, ctx.Err())
 		return
@@ -259,6 +274,8 @@ func (e *Engine) dispatchTask(ctx context.Context, queued Task, executor func(co
 }
 
 func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
 	e.mu.Lock()
 	task, ok := e.tasks[id]
 	if !ok || !task.queued || !task.NextRun.Equal(scheduledFor) {
@@ -272,31 +289,26 @@ func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
 }
 
 func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
-	e.mu.Lock()
-	task, ok := e.tasks[id]
-	if !ok || !task.NextRun.Equal(scheduledFor) {
-		e.mu.Unlock()
-		return // cancelled or replaced while the executor ran
-	}
-	task.running = false
-	task.LastRun = scheduledFor
-	task.RunCount++
-	if err != nil {
-		task.LastError = err.Error()
-	} else {
+	_ = e.update(true, func(tasks map[string]Task) {
+		task, ok := tasks[id]
+		if !ok || !task.NextRun.Equal(scheduledFor) {
+			return
+		}
+		task.running = false
+		task.LastRun = scheduledFor
+		task.RunCount++
 		task.LastError = ""
-	}
-	// Calculate from completion time, rather than repeatedly from the prior
-	// deadline, so a sleeping machine or a slow task never creates a burst of
-	// stale catch-up executions.
-	task.NextRun = task.schedule.Next(e.now())
-	if task.NextRun.IsZero() {
-		delete(e.tasks, id)
-	} else {
-		e.tasks[id] = task
-	}
-	e.mu.Unlock()
-	e.signalWake()
+		if err != nil {
+			task.LastError = err.Error()
+		}
+		// Skip stale occurrences after a slow execution.
+		task.NextRun = task.schedule.Next(e.now())
+		if task.NextRun.IsZero() {
+			delete(tasks, id)
+		} else {
+			tasks[id] = task
+		}
+	})
 }
 
 func (e *Engine) nextRun() (time.Time, bool) {
