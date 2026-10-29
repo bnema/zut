@@ -14,13 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// keyTerminal feeds raw input bytes to the render loop.
-type keyTerminal struct {
+// dialogKeyTerminal feeds raw input bytes to the render loop.
+type dialogKeyTerminal struct {
 	alertTestTerminal
 	in chan byte
 }
 
-func (k *keyTerminal) ReadByte() (byte, error) { return <-k.in, nil }
+func (k *dialogKeyTerminal) ReadByte() (byte, error) { return <-k.in, nil }
 
 func startPortDialogs(t *testing.T) (*sessionmocks.MockPort, chan session.Event, *portRun) {
 	t.Helper()
@@ -42,7 +42,7 @@ func startKeyedPortDialogs(t *testing.T) (*sessionmocks.MockPort, chan session.E
 	events := make(chan session.Event, 8)
 	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}, Seq: 1}, nil).Once()
 	expectPortSubscribe(port, events, nil)
-	term := &keyTerminal{in: make(chan byte, 4)}
+	term := &dialogKeyTerminal{in: make(chan byte, 4)}
 	i := NewInteractive(InteractiveConfig{Terminal: term, Port: port})
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &portRun{term: &term.alertTestTerminal, i: i, cancel: cancel, done: make(chan error, 1)}
