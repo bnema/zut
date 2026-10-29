@@ -351,6 +351,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/reasoning":
 		i.openReasoningDialog()
 	case "/fast":
+		if i.SessionPort() != nil {
+			i.portToggleFastMode()
+			break
+		}
 		enabled := i.cfg.FastMode == nil || !*i.cfg.FastMode
 		i.applySettingToggle("fast_mode", enabled)
 	case "/orchestrator":
@@ -1206,6 +1210,10 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
+	if i.SessionPort() != nil {
+		i.portSetModel(prov, model)
+		return
+	}
 	i.swapModel(prov, model, i.cfg.BuildAgentFor, false)
 }
 func (i *Interactive) applyRescueModelSelection(prov, model string) {
