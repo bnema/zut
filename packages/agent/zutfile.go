@@ -183,13 +183,7 @@ func runLocalZutfile(ref string, args Args, version string) error {
 		args.Prompt = *zf.Manifest.Entry.DefaultPrompt
 	}
 	if dirExists(filepath.Join(zf.Dir, "skills")) {
-		old := os.Getenv("ZUT_AGENT_SKILLS")
-		v := filepath.Join(zf.Dir, "skills")
-		if old != "" {
-			v += string(os.PathListSeparator) + old
-		}
-		_ = os.Setenv("ZUT_AGENT_SKILLS", v)
-		defer os.Setenv("ZUT_AGENT_SKILLS", old)
+		args.ExtraSkillDirs = append([]string{filepath.Join(zf.Dir, "skills")}, args.ExtraSkillDirs...)
 	}
 	args.AgentName = zf.Manifest.Name
 	args.AgentDataDir = agentData

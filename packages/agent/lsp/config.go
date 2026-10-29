@@ -65,13 +65,17 @@ func BuiltinServers() []ServerConfig {
 // LoadConfig reads the global and project lsp.json files. Project files are
 // applied after the global file; within a project, lsp.json, .lsp.json, and
 // .zut/lsp.json are applied in that order. Missing files are harmless.
-func LoadConfig(cwd string) (Config, error) {
+// A supplied env selects session-local home paths and requires an absolute cwd.
+func LoadConfig(cwd string, env ...string) (Config, error) {
+	if env != nil && !filepath.IsAbs(cwd) {
+		return Config{}, fmt.Errorf("session workspace must be absolute: %q", cwd)
+	}
 	cwd, err := absDir(cwd)
 	if err != nil {
 		return Config{}, err
 	}
 	var files []string
-	if home := zutHome(); home != "" {
+	if home := zutHome(env...); home != "" {
 		files = append(files, filepath.Join(home, "lsp.json"))
 	}
 	files = append(files,
@@ -341,26 +345,39 @@ func absDir(cwd string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func zutHome() string {
-	if value := strings.TrimSpace(os.Getenv("ZUT_HOME")); value != "" {
+func zutHome(env ...string) string {
+	lookup := os.Getenv
+	home, _ := os.UserHomeDir()
+	if env != nil {
+		values := map[string]string{}
+		for _, item := range env {
+			if k, v, ok := strings.Cut(item, "="); ok {
+				values[k] = v
+			}
+		}
+		lookup = func(k string) string { return values[k] }
+		home = lookup("HOME")
+		if runtime.GOOS == "windows" {
+			home = lookup("USERPROFILE")
+		}
+	}
+	if value := strings.TrimSpace(lookup("ZUT_HOME")); value != "" {
 		return value
 	}
-	if value := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); value != "" {
+	if value := strings.TrimSpace(lookup("XDG_STATE_HOME")); value != "" {
 		return filepath.Join(value, "zut")
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		home, _ := os.UserHomeDir()
 		if home == "" {
 			return ""
 		}
 		return filepath.Join(home, "Library", "Application Support", "zut")
 	case "windows":
-		if value := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); value != "" {
+		if value := strings.TrimSpace(lookup("LOCALAPPDATA")); value != "" {
 			return filepath.Join(value, "zut")
 		}
 	}
-	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
 	}

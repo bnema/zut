@@ -58,6 +58,9 @@ type Args struct {
 	Session         string
 	NoSess          bool
 
+	// ExtraSkillDirs adds session-local packaged skill directories before user locations.
+	ExtraSkillDirs []string
+
 	CWD     string
 	NoTools bool
 	NoLSP   bool

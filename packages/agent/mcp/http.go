@@ -10,7 +10,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,12 +60,12 @@ func newHTTPTransport(name string, cfg ServerConfig, client *http.Client) (*http
 		headers[k] = v
 	}
 	for header, envName := range cfg.EnvHeaders {
-		if v, ok := os.LookupEnv(envName); ok && v != "" {
+		if v, ok := lookupBaseEnv(cfg.BaseEnv, envName); ok && v != "" {
 			headers[header] = v
 		}
 	}
 	if cfg.BearerTokenEnvVar != "" {
-		token, ok := os.LookupEnv(cfg.BearerTokenEnvVar)
+		token, ok := lookupBaseEnv(cfg.BaseEnv, cfg.BearerTokenEnvVar)
 		if !ok || strings.TrimSpace(token) == "" {
 			return nil, fmt.Errorf("bearer token variable %s is not set", cfg.BearerTokenEnvVar)
 		}

@@ -124,19 +124,20 @@ func VisibleSkills(in []*Skill) []*Skill {
 // the built-in once includeUser is true.
 //
 // Errors per skill are returned alongside the partial result so a
-// single broken file doesn't suppress the rest.
-func Discover(zutHome, cwd, userHome string, includeUser bool) ([]*Skill, []error) {
-	return DiscoverWithBundled(zutHome, cwd, userHome, includeUser, nil)
+// single broken file doesn't suppress the rest. Extra directories precede the
+// user-provided ZUT_AGENT_SKILLS environment and other user locations.
+func Discover(zutHome, cwd, userHome string, includeUser bool, extraDirs ...string) ([]*Skill, []error) {
+	return DiscoverWithBundled(zutHome, cwd, userHome, includeUser, nil, extraDirs...)
 }
 
 // DiscoverWithBundled merges normal user skills with extension-bundled skills
 // and built-ins. Precedence is user/project locations, then bundled skills in
 // declaration order, then built-ins. The first matching name wins.
-func DiscoverWithBundled(zutHome, cwd, userHome string, includeUser bool, bundled []BundledSkillDir) ([]*Skill, []error) {
+func DiscoverWithBundled(zutHome, cwd, userHome string, includeUser bool, bundled []BundledSkillDir, extraDirs ...string) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
 	if includeUser {
-		errs = append(errs, scanUserSkills(zutHome, cwd, userHome, seen)...)
+		errs = append(errs, scanUserSkills(zutHome, cwd, userHome, seen, extraDirs...)...)
 	}
 	for _, dir := range bundled {
 		errs = append(errs, scanBundledSkills(dir, seen)...)
@@ -307,9 +308,9 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 // alias ahead of the real tree, every resolved directory is scanned once so
 // link cycles terminate, and dangling or cyclic links are skipped. Skills
 // reached through a link keep the walked (link) path.
-func scanUserSkills(zutHome, cwd, userHome string, seen map[string]*Skill) []error {
+func scanUserSkills(zutHome, cwd, userHome string, seen map[string]*Skill, extraDirs ...string) []error {
 	var errs []error
-	for _, loc := range searchDirs(zutHome, cwd, userHome) {
+	for _, loc := range searchDirs(zutHome, cwd, userHome, extraDirs...) {
 		errs = append(errs, scanUserSkillDir(loc, seen)...)
 	}
 	return errs
@@ -606,13 +607,16 @@ type location struct {
 	label string
 }
 
-func searchDirs(zutHome, cwd, userHome string) []location {
+func searchDirs(zutHome, cwd, userHome string, extraDirs ...string) []location {
 	var out []location
 	add := func(dir, label string) {
 		if dir == "" {
 			return
 		}
 		out = append(out, location{dir: dir, label: label})
+	}
+	for _, dir := range extraDirs {
+		add(dir, "agent")
 	}
 	if extra := os.Getenv("ZUT_AGENT_SKILLS"); extra != "" {
 		for _, dir := range filepath.SplitList(extra) {

@@ -18,6 +18,8 @@ import (
 
 // ManagerOptions controls process and command timeouts.
 type ManagerOptions struct {
+	// Env is the session base environment; nil preserves process inheritance.
+	Env             []string
 	RequestTimeout  time.Duration
 	DiagnosticDelay time.Duration
 	LinterTimeout   time.Duration
@@ -79,6 +81,9 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 }
 
 func (m *Manager) workspace(cwd string) (*workspace, error) {
+	if m.options.Env != nil && !filepath.IsAbs(cwd) {
+		return nil, fmt.Errorf("session workspace must be absolute: %q", cwd)
+	}
 	cwd, err := absDir(cwd)
 	if err != nil {
 		return nil, err
@@ -93,7 +98,7 @@ func (m *Manager) workspace(cwd string) (*workspace, error) {
 		return value, nil
 	}
 	m.mu.Unlock()
-	config, err := LoadConfig(cwd)
+	config, err := LoadConfig(cwd, m.options.Env...)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +162,7 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 		m.mu.Unlock()
 		root := FindRoot(ws.cwd, spec.RootMarkers)
 		opts := ClientOptions{
+			Env:                   m.options.Env,
 			Settings:              wsSettings(m.options.Settings, spec.Settings),
 			InitializationOptions: spec.InitializationOptions,
 			OnDiagnostics:         func(diagnostics []Diagnostic) { m.storeDiagnostics(ws, spec.ID, diagnostics) },
@@ -546,7 +552,7 @@ func (m *Manager) Status(cwd, path string) ([]ServerStatus, error) {
 	resolveErrors := make(map[string]error, len(specs))
 	for _, spec := range specs {
 		roots[spec.ID] = displayWorkspacePath(ws.cwd, FindRoot(ws.cwd, spec.RootMarkers))
-		if _, resolveErr := ResolveCommand(ws.cwd, spec.Command); resolveErr != nil {
+		if _, resolveErr := ResolveCommand(ws.cwd, spec.Command, m.options.Env); resolveErr != nil {
 			resolveErrors[spec.ID] = resolveErr
 		}
 	}
@@ -720,7 +726,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		if spec.Kind != "cli" || spec.Disabled {
 			continue
 		}
-		command, resolveErr := ResolveCommand(ws.cwd, spec.Command)
+		command, resolveErr := ResolveCommand(ws.cwd, spec.Command, m.options.Env)
 		if resolveErr != nil {
 			m.mu.Lock()
 			ws.statuses[spec.ID] = "missing"
@@ -764,7 +770,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		cmd := exec.CommandContext(commandCtx, command, args...)
 		cmd.WaitDelay = 2 * time.Second
 		cmd.Dir = ws.cwd
-		cmd.Env = mergedEnvironment(spec.Env)
+		cmd.Env = mergedEnvironment(spec.Env, m.options.Env)
 		var stdout, stderr limitedBuffer
 		stdout.limit = 8 * 1024 * 1024
 		stderr.limit = 8 * 1024 * 1024

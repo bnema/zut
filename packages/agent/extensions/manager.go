@@ -241,6 +241,8 @@ type commandRegistration struct {
 // Manager owns every extension subprocess for the lifetime of zut.
 type Manager struct {
 	zutHome    string
+	spawnEnv   []string
+	spawnCWD   string
 	cwd        string
 	zutVersion string
 	provider   string
@@ -281,8 +283,8 @@ type sessionEventState struct {
 
 // New constructs an empty Manager. Call Discover to populate it from
 // the on-disk extension directories.
-func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks) *Manager {
-	return &Manager{
+func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks, options ...Option) *Manager {
+	m := &Manager{
 		zutHome:      zutHome,
 		cwd:          cwd,
 		zutVersion:   zutVersion,
@@ -293,7 +295,22 @@ func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks) *Man
 		commandIndex: map[string]commandRegistration{},
 		toolIndex:    map[string]*Extension{},
 	}
+	for _, option := range options {
+		option(m)
+	}
+	return m
 }
+
+// Option configures session-local child process settings.
+type Option func(*Manager)
+
+// WithEnv sets the child environment; an empty slice means no inherited variables.
+func WithEnv(env []string) Option {
+	return func(m *Manager) { m.spawnEnv = append([]string{}, env...) }
+}
+
+// WithCWD sets the child working directory instead of the extension install directory.
+func WithCWD(cwd string) Option { return func(m *Manager) { m.spawnCWD = cwd } }
 
 // Discover scans the global and project extension dirs and starts
 // every extension whose manifest is enabled. Spawns happen in
@@ -683,6 +700,10 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
 	cmd.Dir = ext.Dir
+	if m.spawnCWD != "" {
+		cmd.Dir = m.spawnCWD
+	}
+	cmd.Env = m.spawnEnv
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)
 

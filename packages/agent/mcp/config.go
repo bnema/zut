@@ -27,6 +27,8 @@ const (
 // ServerConfig describes one entry below "mcpServers". Field names follow the
 // Claude Desktop/Claude Code format; zut-specific options are additive.
 type ServerConfig struct {
+	// BaseEnv supplies the session environment; nil preserves process inheritance.
+	BaseEnv []string `json:"-"`
 	// Type selects the transport: "stdio" (default when command is set) or
 	// "http" (default when url is set). "streamable-http" is an alias of
 	// "http". "transport" is accepted as an alias key.
@@ -80,7 +82,7 @@ func ProjectConfigPath(cwd string) string { return filepath.Join(cwd, ".zut", "m
 // LoadConfig merges the global and project files (project wins per server),
 // expands ${VAR} references, and validates each server. Invalid servers are
 // dropped and reported; a malformed file is a fatal error for that file only.
-func LoadConfig(zutHome, cwd string) (Config, []error) {
+func LoadConfig(zutHome, cwd string, baseEnv ...[]string) (Config, []error) {
 	cfg := Config{Servers: map[string]ServerConfig{}}
 	var errs []error
 	paths := []string{}
@@ -104,6 +106,9 @@ func LoadConfig(zutHome, cwd string) (Config, []error) {
 	}
 	for _, name := range sortedNames(cfg.Servers) {
 		srv := cfg.Servers[name]
+		if len(baseEnv) > 0 {
+			srv.BaseEnv = append([]string{}, baseEnv[0]...)
+		}
 		if srv.Enabled != nil && !*srv.Enabled {
 			delete(cfg.Servers, name)
 			continue
@@ -261,7 +266,7 @@ func expandServerEnv(name string, srv *ServerConfig) error {
 	expand := func(field, value string) string {
 		return envReference.ReplaceAllStringFunc(value, func(ref string) string {
 			m := envReference.FindStringSubmatch(ref)
-			if v, ok := os.LookupEnv(m[1]); ok {
+			if v, ok := lookupBaseEnv(srv.BaseEnv, m[1]); ok {
 				return v
 			}
 			if m[2] != "" {
@@ -327,4 +332,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// lookupBaseEnv preserves process behavior only when no base was supplied.
+func lookupBaseEnv(base []string, key string) (string, bool) {
+	if base == nil {
+		return os.LookupEnv(key)
+	}
+	for i := len(base) - 1; i >= 0; i-- {
+		k, v, ok := strings.Cut(base[i], "=")
+		if ok && k == key {
+			return v, true
+		}
+	}
+	return "", false
 }
