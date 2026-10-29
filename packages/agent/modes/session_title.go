@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -243,6 +244,12 @@ func (i *Interactive) agentMessagesLocked() []provider.Message {
 func (i *Interactive) setManualSessionTitle(title string) {
 	title = core.NormalizeSessionTitle(title)
 	if title == "" {
+		return
+	}
+	if i.portMode.Load() {
+		i.portSettingsCall("title", func(ctx context.Context, port session.Port) error {
+			return port.SetTitle(ctx, title)
+		})
 		return
 	}
 	i.mu.Lock()

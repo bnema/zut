@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -393,6 +394,23 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/btw":
 		i.openBtwDialog(parts[1:])
 	case "/skills":
+		if i.portMode.Load() && len(parts) >= 3 && strings.EqualFold(parts[1], "pin") {
+			global := strings.EqualFold(parts[2], "--global")
+			name := strings.Join(parts[2:], " ")
+			if global {
+				name = strings.Join(parts[3:], " ")
+			}
+			if name == "" {
+				i.mu.Lock()
+				i.statusErr = "usage: /skills pin [--global] <name>"
+				i.mu.Unlock()
+				break
+			}
+			i.portSettingsCall("skill pin", func(ctx context.Context, port session.Port) error {
+				return port.ToggleSkillPin(ctx, name, global)
+			})
+			break
+		}
 		i.openSkillsDialog()
 	case "/compact":
 		i.runCompact(ctx, compactContinuationRequest{origin: compactOriginManual})
@@ -445,6 +463,24 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// The host's ChangeCWD hook handles validation, session
 		// close + reopen, agent rebuild, sandbox re-rooting, and
 		// re-jail-if-jailed semantics.
+		if i.portMode.Load() {
+			path := strings.TrimSpace(strings.TrimPrefix(cmd, parts[0]))
+			if path == "" {
+				i.mu.Lock()
+				i.statusErr = "/cd: missing path"
+				i.mu.Unlock()
+				break
+			}
+			if !filepath.IsAbs(path) {
+				if base := i.SessionInfo().CWD; base != "" {
+					path = filepath.Join(base, path)
+				}
+			}
+			i.portSettingsCall("/cd", func(ctx context.Context, port session.Port) error {
+				return port.ChangeCWD(ctx, path)
+			})
+			break
+		}
 		if i.cfg.ChangeCWD == nil {
 			i.mu.Lock()
 			i.statusErr = "/cd unavailable: host did not wire ChangeCWD"
@@ -482,6 +518,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.fileSuggest.SetCWD(i.cfg.CWD)
 		i.invalidate()
 	case "/jail":
+		if i.portMode.Load() {
+			i.portSettingsCall("/jail", func(ctx context.Context, port session.Port) error {
+				return port.SetJail(ctx, true)
+			})
+			break
+		}
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -494,6 +536,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "/unjail":
+		if i.portMode.Load() {
+			i.portSettingsCall("/unjail", func(ctx context.Context, port session.Port) error {
+				return port.SetJail(ctx, false)
+			})
+			break
+		}
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -506,6 +554,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "/reload-ext":
+		if i.portMode.Load() {
+			i.portSettingsCall("/reload-ext", func(ctx context.Context, port session.Port) error {
+				return port.ReloadExtensions(ctx)
+			})
+			break
+		}
 		i.runReloadExt(ctx)
 	case "/telegram", "/tg":
 		if len(parts) >= 2 {

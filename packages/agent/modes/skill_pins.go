@@ -1,9 +1,11 @@
 package modes
 
 import (
+	"context"
 	"slices"
 	"sync"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -407,6 +409,12 @@ func (i *Interactive) handleSkillPinKey(k tui.Key) bool {
 	i.mu.Unlock()
 	if !ok {
 		return false
+	}
+	if i.portMode.Load() {
+		i.portSettingsCall("skill pin", func(ctx context.Context, port session.Port) error {
+			return port.ToggleSkillPin(ctx, req.name, req.global)
+		})
+		return true
 	}
 	i.skillPins.ioMu.Lock()
 	defer i.skillPins.ioMu.Unlock()
