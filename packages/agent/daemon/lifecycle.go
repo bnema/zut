@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemonproto"
@@ -153,19 +154,27 @@ func (d *Daemon) shutdown() {
 		c.close()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d.stopTimeout())
+	// Close every session concurrently so the stop timeout bounds the whole
+	// shutdown rather than each session in turn.
+	var closing sync.WaitGroup
 	for _, e := range d.entries() {
 		d.mu.Lock()
 		controlled := d.controller[e.id] != nil
 		delete(d.controller, e.id)
 		d.mu.Unlock()
-		if controlled {
-			e.h.SetAttach(session.AttachStateDetached, ReasonDaemonStop)
-		}
-		if err := e.h.Close(ctx, ReasonDaemonStop); err != nil {
-			d.log.Warn("close session on stop", "session", e.id, "err", err)
-		}
-		_ = e.lock.Close()
+		closing.Add(1)
+		go func() {
+			defer closing.Done()
+			if controlled {
+				e.h.SetAttach(ctx, session.AttachStateDetached, ReasonDaemonStop)
+			}
+			if err := e.h.Close(ctx, ReasonDaemonStop); err != nil {
+				d.log.Warn("close session on stop", "session", e.id, "err", err)
+			}
+			_ = e.lock.Close()
+		}()
 	}
+	closing.Wait()
 	cancel()
 	d.sessCancel()
 	d.opMu.Unlock()
@@ -395,7 +404,7 @@ func (d *Daemon) takeControl(c *client, e *entry) {
 		prev.cancelSub(e.id)
 		prev.enqueue(daemonproto.DetachedByOtherNotification{Type: "detached_by_other", Session: e.id})
 	}
-	e.h.SetAttach(session.AttachStateAttached, "")
+	e.h.SetAttach(context.Background(), session.AttachStateAttached, "")
 }
 
 // detach releases control (if held by c) and ends c's subscription.
@@ -420,7 +429,7 @@ func (d *Daemon) releaseControl(c *client, e *entry, reason string) {
 	delete(d.controller, e.id)
 	e.detachedAt = d.now()
 	d.mu.Unlock()
-	e.h.SetAttach(session.AttachStateDetached, reason)
+	e.h.SetAttach(context.Background(), session.AttachStateDetached, reason)
 }
 
 // clientGone detaches every session controlled by a disconnected client.

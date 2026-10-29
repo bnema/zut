@@ -1112,8 +1112,8 @@ func (_c *MockHandle_SessionsQuery_Call) RunAndReturn(run func(ctx context.Conte
 }
 
 // SetAttach provides a mock function for the type MockHandle
-func (_mock *MockHandle) SetAttach(state session.AttachState, reason string) {
-	_mock.Called(state, reason)
+func (_mock *MockHandle) SetAttach(ctx context.Context, state session.AttachState, reason string) {
+	_mock.Called(ctx, state, reason)
 	return
 }
 
@@ -1123,25 +1123,31 @@ type MockHandle_SetAttach_Call struct {
 }
 
 // SetAttach is a helper method to define mock.On call
+//   - ctx context.Context
 //   - state session.AttachState
 //   - reason string
-func (_e *MockHandle_Expecter) SetAttach(state any, reason any) *MockHandle_SetAttach_Call {
-	return &MockHandle_SetAttach_Call{Call: _e.mock.On("SetAttach", state, reason)}
+func (_e *MockHandle_Expecter) SetAttach(ctx any, state any, reason any) *MockHandle_SetAttach_Call {
+	return &MockHandle_SetAttach_Call{Call: _e.mock.On("SetAttach", ctx, state, reason)}
 }
 
-func (_c *MockHandle_SetAttach_Call) Run(run func(state session.AttachState, reason string)) *MockHandle_SetAttach_Call {
+func (_c *MockHandle_SetAttach_Call) Run(run func(ctx context.Context, state session.AttachState, reason string)) *MockHandle_SetAttach_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 session.AttachState
+		var arg0 context.Context
 		if args[0] != nil {
-			arg0 = args[0].(session.AttachState)
+			arg0 = args[0].(context.Context)
 		}
-		var arg1 string
+		var arg1 session.AttachState
 		if args[1] != nil {
-			arg1 = args[1].(string)
+			arg1 = args[1].(session.AttachState)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
 		}
 		run(
 			arg0,
 			arg1,
+			arg2,
 		)
 	})
 	return _c
@@ -1152,7 +1158,7 @@ func (_c *MockHandle_SetAttach_Call) Return() *MockHandle_SetAttach_Call {
 	return _c
 }
 
-func (_c *MockHandle_SetAttach_Call) RunAndReturn(run func(state session.AttachState, reason string)) *MockHandle_SetAttach_Call {
+func (_c *MockHandle_SetAttach_Call) RunAndReturn(run func(ctx context.Context, state session.AttachState, reason string)) *MockHandle_SetAttach_Call {
 	_c.Run(run)
 	return _c
 }

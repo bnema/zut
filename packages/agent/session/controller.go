@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
-	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -95,18 +97,52 @@ type Controller struct {
 	compactSeam  compactSeam
 	settingsSeam settingsSeam
 	interSeam    interSeam
+	// actorBase is the parent of every actor context handed out by Do; it
+	// carries actorKey so Close and SetAttach never wait on the actor.
+	actorBase context.Context
+	closeReq  chan struct{}
+	// turnDone closes when the latest turn goroutine returned (actor-owned).
+	turnDone chan struct{}
+	// compactDone closes when the latest compaction goroutine returned.
+	compactDone chan struct{}
+	closeOnce   sync.Once
+	closeWhy    string
 }
 
-var controllerIDs atomic.Uint64
+// Options configures NewControllerWithOptions.
+type Options struct {
+	// ID is used as-is when set (restore keeps the persisted identity);
+	// otherwise a random ID unique across daemon restarts is generated.
+	ID ID
+	// InterruptedTurn marks a session restored after a daemon restart that
+	// stopped an in-flight turn: Info().Activity reads "interrupted" until the
+	// next turn and a warning Note is published and kept in Snapshot.Notes.
+	InterruptedTurn bool
+}
 
-// NewController starts a daemon-owned actor. Its context belongs to the daemon,
-// not an attached client; cancel it to stop the skeleton and its subscriptions.
-// Until assembly supplies restored identity, local IDs are process-unique.
+// NewID returns a random session ID (12 lowercase base32 characters).
+func NewID() ID { return ID(strings.ToLower(rand.Text()[:12])) }
+
+// NewController starts a daemon-owned actor with a fresh random ID. Its
+// context belongs to the daemon, not an attached client; cancelling it or
+// calling Close stops the actor and its subscriptions.
 func NewController(ctx context.Context, deps Deps) *Controller {
+	return NewControllerWithOptions(ctx, deps, Options{})
+}
+
+// NewControllerWithOptions is NewController with a preset identity and
+// restore marker.
+func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Controller {
 	if deps.Clock == nil {
 		deps.Clock = time.Now
 	}
-	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: ID(strconv.FormatUint(controllerIDs.Add(1), 10)), created: deps.Clock()}
+	id := opts.ID
+	if id == "" {
+		id = NewID()
+	}
+	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), closeReq: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: id, created: deps.Clock()}
+	c.ops.interrupted = opts.InterruptedTurn
+	c.actorBase = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
 	c.extInit(ctx)
 	c.turnSeam = c
 	c.confirmSeam = c
@@ -120,6 +156,10 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	c.residentSeam.residentsInit()
 	c.initConfirm()
 	c.updateInfo()
+	if opts.InterruptedTurn {
+		c.ops.restoreNote = true
+		c.publish(EvNote, NoteEvent{Note: interruptedNote})
+	}
 	go func() {
 		defer close(c.done)
 		defer c.extShutdown()
@@ -132,7 +172,13 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 		for {
 			select {
 			case <-ctx.Done():
-				c.residentsShutdown()
+				// The daemon context ending is a daemon stop: close the
+				// session properly (D3/D6) instead of just dropping it.
+				c.requestClose(closeReasonDaemonStop)
+				c.closeOnActor()
+				return
+			case <-c.closeReq:
+				c.closeOnActor()
 				return
 			case <-c.ext.wake:
 				c.extDrain()
@@ -151,12 +197,17 @@ func (c *Controller) post(ctx context.Context, fn func()) error {
 	select {
 	case <-c.done:
 		return ErrClosed
+	case <-c.closeReq:
+		return ErrClosed
 	default:
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.done:
+		return ErrClosed
+	case <-c.closeReq:
+		// The loop stops reading once close is requested; never block on it.
 		return ErrClosed
 	case c.loop <- fn:
 		return nil
@@ -224,6 +275,14 @@ func (c *Controller) updateInfo() {
 	}
 	if compacting {
 		info.Activity = Activity{Kind: "compacting", Since: info.Activity.Since}
+	}
+	if c.ops.interrupted {
+		if run != RunStateIdle {
+			c.ops.interrupted = false
+			c.ops.restoreNote = false
+		} else if info.Activity.Kind == "idle" || info.Activity.Kind == "" {
+			info.Activity = Activity{Kind: "interrupted"}
+		}
 	}
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()

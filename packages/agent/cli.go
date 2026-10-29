@@ -949,6 +949,9 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runUpdateCommand(rawArgs, version); handled {
 		return err
 	}
+	if handled, err := runDaemonCommand(rawArgs, version); handled {
+		return err
+	}
 	if handled, err := runSessionsCommand(rawArgs); handled {
 		return err
 	}

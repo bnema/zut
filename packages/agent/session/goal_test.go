@@ -70,6 +70,10 @@ func TestScheduledInputQueuesWithoutStarting(t *testing.T) {
 	c, ctx := newTestController(t)
 	turn := newMockturnSeam(t)
 	turn.EXPECT().enqueue(Input{Origin: InputOriginScheduler, Mode: SubmitModeQueue, Text: "scheduled"}).Return().Once()
+	// Projection reads made by the final EvClosed when the test ends.
+	turn.EXPECT().isBusy().Return(false).Maybe()
+	turn.EXPECT().turnOrigin().Return("").Maybe()
+	turn.EXPECT().turnInfo().Return(turnInfoProjection{}).Maybe()
 	require.NoError(t, c.call(ctx, func() { c.turnSeam = turn; c.deliverScheduled(scheduler.Task{Message: "scheduled"}) }))
 }
 

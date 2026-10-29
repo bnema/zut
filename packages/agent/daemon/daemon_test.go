@@ -57,7 +57,7 @@ func newTestSession(t *testing.T, id string) *testSession {
 		s.mu.Unlock()
 		return ch, nil
 	}).Maybe()
-	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything).Run(func(st session.AttachState, _ string) {
+	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, st session.AttachState, _ string) {
 		s.mu.Lock()
 		s.info.Attach = st
 		s.mu.Unlock()

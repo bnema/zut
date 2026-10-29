@@ -202,7 +202,10 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	c.turn.projection.ContextMax = ag.ContextWindow
 	c.turn.projection.Activity = Activity{Kind: "waiting_model", Since: c.deps.Clock()}
 	c.publishTurnInfo()
+	turnDone := make(chan struct{})
+	c.turnDone = turnDone
 	go func() {
+		defer close(turnDone)
 		// Controller.Done is daemon-owned; client disconnect cannot cancel a turn.
 		finished := make(chan struct{})
 		go func() {
