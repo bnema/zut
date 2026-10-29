@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/extproto"
@@ -27,9 +26,9 @@ type pendingEntry struct {
 	result  chan pendingResult
 }
 type confirmState struct {
-	next     uint64
-	pending  map[string]*pendingEntry
-	deferred []DeferredAction
+	dispatched map[string]bool
+	pending    map[string]*pendingEntry
+	deferred   []DeferredAction
 }
 
 // initConfirm hydrates review state before the first actor projection.
@@ -61,9 +60,12 @@ func (s *confirmState) snapshotInto(out *Snapshot) {
 // registerPending runs on the actor; callers wait outside it.
 func (c *Controller) registerPending(req PendingRequest) *pendingEntry {
 	req = confirmCopy(req)
-	c.confirm.next++
-	if req.ID == "" {
-		req.ID = "pending-" + strconv.FormatUint(c.confirm.next, 10)
+	// Caller IDs are never registry keys. Retry any random collision before mutation.
+	for {
+		req.ID = "pending-" + rand.Text()
+		if c.confirm.pending[req.ID] == nil {
+			break
+		}
 	}
 	req.CreatedAt = c.deps.Clock()
 	p := &pendingEntry{req, make(chan pendingResult, 1)}
@@ -135,7 +137,10 @@ func (c *Controller) AnswerQuestion(ctx context.Context, id string, answers []to
 func (c *Controller) awaitPending(ctx context.Context, req PendingRequest) ([]tools.QuestionAnswer, error) {
 	var p *pendingEntry
 	var result error
-	err := c.call(ctx, func() {
+	err := c.call(context.Background(), func() {
+		if result = ctx.Err(); result != nil {
+			return
+		}
 		if c.attach != AttachStateAttached {
 			result = ErrNotAttached
 			return
@@ -190,7 +195,11 @@ func (x controllerQuestionAsker) AskQuestions(ctx context.Context, q []tools.Que
 	c := x.c
 	var p *pendingEntry
 	var detached bool
-	err := c.call(ctx, func() {
+	var canceled error
+	err := c.call(context.Background(), func() {
+		if canceled = ctx.Err(); canceled != nil {
+			return
+		}
 		req := PendingRequest{Kind: "question", Questions: q}
 		if c.attach != AttachStateAttached {
 			detached = true
@@ -201,6 +210,9 @@ func (x controllerQuestionAsker) AskQuestions(ctx context.Context, q []tools.Que
 	})
 	if err != nil {
 		return nil, err
+	}
+	if canceled != nil {
+		return nil, canceled
 	}
 	if detached {
 		return nil, errors.New(detachedQuestionReason)
@@ -226,7 +238,6 @@ func (c *Controller) denyAllPending(reason string) {
 	}
 }
 func (c *Controller) recordDeferred(req PendingRequest) {
-	c.confirm.next++
 	// Random IDs remain unique across daemon restarts and independent stores.
 	d := DeferredAction{ID: "deferred-" + rand.Text(), Kind: req.Kind, Questions: confirmCopy(req.Questions), At: c.deps.Clock()}
 	if req.Confirm != nil {
@@ -258,13 +269,18 @@ func (c *Controller) ResolveDeferred(ctx context.Context, id, action string) err
 			if d.ID != id {
 				continue
 			}
-			if action == "send_to_agent" {
+			if action == "send_to_agent" && !c.confirm.dispatched[id] {
 				in := Input{Origin: InputOriginUser, Text: fmt.Sprintf("The user reviewed a previously denied action and approves it: %s — %s. Retry it if still relevant.", d.Tool, d.Summary)}
 				if c.turnSeam.isBusy() {
 					c.turnSeam.enqueue(in)
 				} else if result = c.turnSeam.startTurn(in); result != nil {
 					return
 				}
+
+				if c.confirm.dispatched == nil {
+					c.confirm.dispatched = make(map[string]bool)
+				}
+				c.confirm.dispatched[id] = true
 			}
 			if c.deps.DeferredStore != nil {
 				if result = c.deps.DeferredStore.Remove(id); result != nil && !errors.Is(result, ErrUnknownRequest) {
@@ -289,3 +305,6 @@ func (c *Controller) ResolveDeferred(ctx context.Context, id, action string) err
 	}
 	return result
 }
+
+// deferredCount is actor-only and includes actions whose persistence failed.
+func (c *Controller) deferredCount() int { return len(c.confirm.deferred) }

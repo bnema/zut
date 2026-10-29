@@ -45,3 +45,18 @@ func TestConfirmPersistenceFailureNote(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snap.Deferred, 1)
 }
+
+func TestConfirmSendBackRemoveRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := sessionmocks.NewMockDeferredStore(t)
+	store.EXPECT().List().Return([]DeferredAction{{ID: "retry", Tool: "bash", Summary: "hi"}}).Once()
+	store.EXPECT().Remove("retry").Return(errors.New("disk unavailable")).Once()
+	store.EXPECT().Remove("retry").Return(nil).Once()
+	c, _ := ConfirmTestSetup(ctx, Deps{DeferredStore: store}, false)
+	ConfirmTestDispatch(t, c)
+	require.Error(t, c.ResolveDeferred(ctx, "retry", "send_to_agent"))
+	require.Equal(t, 1, c.Info().Deferred)
+	require.NoError(t, c.ResolveDeferred(ctx, "retry", "send_to_agent"))
+	require.Zero(t, c.Info().Deferred)
+}

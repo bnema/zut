@@ -207,9 +207,7 @@ func (c *Controller) updateInfo() {
 	if c.residentSeam != nil {
 		info.Residents = c.residentSeam.residentSummaries()
 	}
-	if c.deps.DeferredStore != nil {
-		info.Deferred = len(c.deps.DeferredStore.List())
-	}
+	info.Deferred = c.deferredCount()
 	if c.deps.SessionStore != nil {
 		info.SessionPath = c.deps.SessionStore.CurrentSessionPath()
 	}

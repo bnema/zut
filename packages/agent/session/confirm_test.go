@@ -181,3 +181,45 @@ func TestConfirmQuestionAnswerAndDetach(t *testing.T) {
 		})
 	}
 }
+
+func TestConfirmDuplicateCallerIDs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := NewController(ctx, Deps{})
+	require.NoError(t, c.call(ctx, func() {
+		a := c.registerPending(PendingRequest{ID: "duplicate", Kind: "rescue"})
+		b := c.registerPending(PendingRequest{ID: "duplicate", Kind: "rescue"})
+		require.NotEqual(t, "duplicate", a.request.ID)
+		require.NotEqual(t, a.request.ID, b.request.ID)
+		require.Len(t, c.confirm.pending, 2)
+		c.denyAllPending("aborted")
+		require.Error(t, (<-a.result).err)
+		require.Error(t, (<-b.result).err)
+	}))
+}
+func TestConfirmCancelRegistrationRace(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		c := NewController(ctx, Deps{})
+		require.NoError(t, c.call(ctx, func() { c.attach = AttachStateAttached }))
+		reqctx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { _, err := c.awaitPending(reqctx, PendingRequest{Kind: "rescue"}); done <- err }()
+		stop()
+		require.NoError(t, c.call(ctx, func() { c.denyAllPending("aborted") }))
+		require.Error(t, <-done)
+		snap, err := c.Snapshot(ctx)
+		require.NoError(t, err)
+		require.Empty(t, snap.Pending)
+		cancel()
+	}
+}
+
+func ConfirmTestDispatch(t *testing.T, c *Controller) {
+	turn := newMockturnSeam(t)
+	turn.EXPECT().isBusy().Return(false)
+	turn.EXPECT().turnOrigin().Return(InputOrigin(""))
+	turn.EXPECT().turnInfo().Return(turnInfoProjection{})
+	turn.EXPECT().startTurn(Input{Origin: InputOriginUser, Text: "The user reviewed a previously denied action and approves it: bash — hi. Retry it if still relevant."}).Return(nil).Once()
+	require.NoError(t, c.call(context.Background(), func() { c.turnSeam = turn }))
+}
