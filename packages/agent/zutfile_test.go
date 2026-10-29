@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -14,7 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -480,8 +483,30 @@ func TestRunLocalZutfilePreservesUserSkillDirs(t *testing.T) {
 		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
-	args := Args{CWD: cwd, Mode: ModePrint, Provider: "openai", Model: "gpt-5", APIKey: "synthetic-local-key", BaseURL: srv.URL, Prompt: "hello", Yes: true, NoExt: true, NoMCP: true, WithSkills: true}
-	if _, err := captureTestStdout(t, func() error { return runLocalZutfile(pkg, args, "test") }); err != nil {
+	raw := []string{"-p", "--provider", "openai", "--model", "gpt-5", "--api-key", "synthetic-local-key", "--base-url", srv.URL, "--no-ext", "--no-mcp", "--with-skills", "hello"}
+	args, err := ParseArgs(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args.CWD, args.Yes = cwd, true
+	var gotArgs Args
+	var gotRaw []string
+	restore := runZutfileClient
+	runZutfileClient = func(a Args, r []string, _ string) error { gotArgs, gotRaw = a, r; return nil }
+	t.Cleanup(func() { runZutfileClient = restore })
+	if err := runLocalZutfile(pkg, args, raw, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if gotArgs.zutfile == nil {
+		t.Fatal("zutfile spec not carried to the client")
+	}
+	// The daemon session built from the forwarded spec sees both skill sets.
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: cwd, Env: os.Environ(), Args: gotRaw, Zutfile: gotArgs.zutfile})
+	ag, _, _, err := deps.AgentBuilder.BuildAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ag.Prompt(context.Background(), "hello", nil, func(core.AgentEvent) {}); err != nil {
 		t.Fatal(err)
 	}
 	select {

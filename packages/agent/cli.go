@@ -1087,7 +1087,7 @@ func defaultSessionLocator() sessionLocator {
 // A bare --resume whose picker returns nothing starts fresh, as before, so the
 // resume flag is dropped from Args (the daemon refuses an empty resume).
 func buildCreateSpec(ctx context.Context, args Args, rawArgs []string, cwd string, env []string, loc sessionLocator) (*session.CreateSpec, error) {
-	spec := &session.CreateSpec{CWD: cwd, Env: env, Args: rawArgs}
+	spec := &session.CreateSpec{CWD: cwd, Env: env, Args: rawArgs, Zutfile: args.zutfile}
 	if args.NoSess {
 		return spec, nil
 	}
@@ -1571,6 +1571,11 @@ func runJSONMode(ctx context.Context, args Args, version string) (runErr error) 
 // shellOut receives live shell chunks (typically os.Stderr); sink receives
 // agent events for plain-text pre (stream mode wires a live text sink).
 func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.Sandbox, ag *core.Agent, sink func(core.AgentEvent), shellOut io.Writer) error {
+	return runZutfileStartupPreEnv(ctx, pre, cwd, os.Environ(), sandbox, ag, sink, shellOut)
+}
+
+// runZutfileStartupPreEnv is runZutfileStartupPre with an explicit shell env.
+func runZutfileStartupPreEnv(ctx context.Context, pre, cwd string, env []string, sandbox *tools.Sandbox, ag *core.Agent, sink func(core.AgentEvent), shellOut io.Writer) error {
 	pre = strings.TrimSpace(pre)
 	if pre == "" {
 		return nil
@@ -1598,7 +1603,7 @@ func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 				_ = f.Sync()
 			}
 		}
-		bash := &tools.BashTool{CWD: cwd, Env: os.Environ(), Sandbox: sandbox}
+		bash := &tools.BashTool{CWD: cwd, Env: env, Sandbox: sandbox}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
 			return fmt.Errorf("zutfile entry.pre: %w", err)

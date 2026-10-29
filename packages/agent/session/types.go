@@ -254,6 +254,31 @@ type CreateSpec struct {
 	ResumePath string    `json:"resume_path"`
 	Fork       *ForkSpec `json:"fork"`
 	Headless   bool      `json:"headless"`
+	// Zutfile carries `zut run` packaged-agent settings that have no CLI
+	// flag. Absent for ordinary sessions and older clients.
+	Zutfile *ZutfileSpec `json:"zutfile,omitempty"`
+}
+
+// ZutfileSpec is the packaged-agent part of a CreateSpec. Permissions is the
+// manifest set already expanded for the workspace; a non-nil value must be
+// enforced or session creation fails. Pre runs once when the session is
+// created, never on restore or clear.
+type ZutfileSpec struct {
+	Name        string               `json:"name,omitempty"`
+	DataDir     string               `json:"data_dir,omitempty"`
+	Permissions *tools.PermissionSet `json:"permissions,omitempty"`
+	SkillDirs   []string             `json:"skill_dirs,omitempty"`
+	Pre         string               `json:"pre,omitempty"`
+}
+
+// WithoutPre returns a copy of z with Pre cleared, for restore and clear.
+func (z *ZutfileSpec) WithoutPre() *ZutfileSpec {
+	if z == nil {
+		return nil
+	}
+	c := *z
+	c.Pre = ""
+	return &c
 }
 
 // RestoreSpec is a terminal-free session contract payload.
@@ -264,6 +289,8 @@ type RestoreSpec struct {
 	Env             []string `json:"env"`
 	Args            []string `json:"args"`
 	InterruptedTurn bool     `json:"interrupted_turn"`
+	// Zutfile restores packaged-agent settings; its Pre is never rerun.
+	Zutfile *ZutfileSpec `json:"zutfile,omitempty"`
 }
 
 // ForkSpec mirrors core.BranchSession and BranchSessionHidden. UpToMessage is

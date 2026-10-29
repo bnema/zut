@@ -55,7 +55,7 @@ func (f *sessionFactory) Restore(ctx context.Context, rs session.RestoreSpec) (s
 	if rs.ID == "" {
 		return nil, fmt.Errorf("restore: session id is required")
 	}
-	spec := session.CreateSpec{CWD: rs.CWD, Env: rs.Env, Args: rs.Args, ResumePath: rs.SessionPath}
+	spec := session.CreateSpec{CWD: rs.CWD, Env: rs.Env, Args: rs.Args, ResumePath: rs.SessionPath, Zutfile: rs.Zutfile.WithoutPre()}
 	return f.build(ctx, spec, session.Options{ID: rs.ID, InterruptedTurn: rs.InterruptedTurn})
 }
 

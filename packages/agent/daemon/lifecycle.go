@@ -210,7 +210,7 @@ func (d *Daemon) restoreOne(s stateSession) error {
 		return err
 	}
 	h, err := d.factory.Restore(d.sessCtx, session.RestoreSpec{
-		ID: s.ID, SessionPath: s.SessionPath, CWD: s.CWD, Env: s.Env, Args: s.Args, InterruptedTurn: s.Running,
+		ID: s.ID, SessionPath: s.SessionPath, CWD: s.CWD, Env: s.Env, Args: s.Args, InterruptedTurn: s.Running, Zutfile: s.Zutfile.WithoutPre(),
 	})
 	if err != nil {
 		_ = lock.Close()
@@ -256,7 +256,7 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 	if cwd == "" {
 		cwd = info.CWD
 	}
-	if err := d.register(h, stateSession{ID: session.ID(info.ID), SessionPath: info.SessionPath, CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless}, lock); err != nil {
+	if err := d.register(h, stateSession{ID: session.ID(info.ID), SessionPath: info.SessionPath, CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre()}, lock); err != nil {
 		return session.Info{}, err
 	}
 	d.persist()
@@ -510,7 +510,7 @@ func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 	if cwd == "" {
 		cwd = e.spec.CWD
 	}
-	spec := session.CreateSpec{CWD: cwd, Env: e.spec.Env, Args: clearArgs(e.spec.Args, old), Headless: e.spec.Headless}
+	spec := session.CreateSpec{CWD: cwd, Env: e.spec.Env, Args: clearArgs(e.spec.Args, old), Headless: e.spec.Headless, Zutfile: e.spec.Zutfile.WithoutPre()}
 	info, err := d.createLocked(spec)
 	if err != nil {
 		return session.Info{}, err

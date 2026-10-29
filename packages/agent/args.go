@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/mcp"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
@@ -75,6 +76,8 @@ type Args struct {
 	// mcpManager holds the process-wide MCP connections. Resolve adds its
 	// tools; resident children inherit the pointer and share connections.
 	mcpManager *mcp.Manager
+	// zutfile is the `zut run` payload sent in session.CreateSpec.Zutfile.
+	zutfile *session.ZutfileSpec
 	// mcpStartupErrors are non-fatal MCP startup failures shown by
 	// interactive mode (other modes print them to stderr).
 	mcpStartupErrors []string
