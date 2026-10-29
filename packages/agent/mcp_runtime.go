@@ -142,29 +142,6 @@ func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-ch
 	}
 }
 
-// exitAfterMCPCleanupOnSignal keeps the default "terminate on signal"
-// behavior of headless modes while closing MCP servers first. Default
-// handling is restored before cleanup, so a second signal still kills zut
-// immediately. The returned func uninstalls the handler.
-func exitAfterMCPCleanupOnSignal(manager *mcp.Manager) func() {
-	sigCh := make(chan os.Signal, 1)
-	done := make(chan struct{})
-	signal.Notify(sigCh, mcpSignals...)
-	go func() {
-		select {
-		case sig := <-sigCh:
-			signal.Stop(sigCh)
-			_ = manager.Close()
-			mcpSignalExit(signalExitCode(sig))
-		case <-done:
-		}
-	}()
-	return func() {
-		signal.Stop(sigCh)
-		close(done)
-	}
-}
-
 // reportMCPStartup prints startup failures for non-interactive modes. The
 // interactive TUI shows them with the extension startup errors instead.
 func reportMCPStartup(args Args) {

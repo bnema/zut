@@ -1031,7 +1031,7 @@ func daemonClientSubcommand(name string) func([]string, io.Writer, io.Writer) in
 }
 
 // runClientWithArgs dispatches a parsed invocation to the daemon client
-// paths. The in-process runWithArgs path is kept until its removal.
+// paths.
 func runClientWithArgs(args Args, rawArgs []string, version string) error {
 	if err := validateOrchestrationArgs(args); err != nil {
 		return err
@@ -1133,38 +1133,6 @@ func withoutResumeFlag(rawArgs []string) []string {
 		out = append(out, a)
 	}
 	return out
-}
-
-func runWithArgs(args Args, version string) error {
-	if err := validateOrchestrationArgs(args); err != nil {
-		return err
-	}
-	ctx := context.Background()
-	// MCP servers start once per process. Every later Resolve, including
-	// resident subagents, shares these connections through args.
-	stopMCP, err := startMCP(ctx, &args, version)
-	if err != nil {
-		return err
-	}
-	defer stopMCP()
-	if args.mcpManager != nil && args.Mode != ModeInteractive && args.Mode != "" && !args.Orchestrate {
-		// Plain headless modes terminate on signals. Stop MCP servers first so
-		// their process groups and HTTP sessions do not outlive zut. The TUI
-		// and --orchestrate own their signal handling and cancel gracefully.
-		defer exitAfterMCPCleanupOnSignal(args.mcpManager)()
-	}
-	switch args.Mode {
-	case ModePrint:
-		return runPrintMode(ctx, args, version)
-	case ModeStream:
-		return runStreamMode(ctx, args, version)
-	case ModeJSON:
-		return runJSONMode(ctx, args, version)
-	case ModeRPC:
-		return runRPCMode(ctx, args, version)
-	default:
-		return runInteractive(ctx, args, version)
-	}
 }
 
 // ---- print / json modes: require credentials, run single-shot ----
