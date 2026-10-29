@@ -50,3 +50,6 @@ type turnInfoProjection struct {
 func (c *Controller) turnInfo() turnInfoProjection {
 	return turnInfoProjection{Activity: Activity{Kind: "idle"}}
 }
+
+func (c *Controller) currentAgent() *core.Agent  { return nil }
+func (c *Controller) setAgent(*core.Agent) error { return errors.New("unimplemented") }

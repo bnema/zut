@@ -10,6 +10,8 @@ import (
 
 // These actor-only seams preserve cluster ownership and permit generated mocks.
 type turnSeam interface {
+	currentAgent() *core.Agent
+	setAgent(*core.Agent) error
 	startTurn(Input) error
 	enqueue(Input)
 	applyAgentEvent(core.AgentEvent)

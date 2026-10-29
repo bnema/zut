@@ -118,6 +118,52 @@ func (_c *mockturnSeam_cancelTurn_Call) RunAndReturn(run func()) *mockturnSeam_c
 	return _c
 }
 
+// currentAgent provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) currentAgent() *core.Agent {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for currentAgent")
+	}
+
+	var r0 *core.Agent
+	if returnFunc, ok := ret.Get(0).(func() *core.Agent); ok {
+		r0 = returnFunc()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*core.Agent)
+		}
+	}
+	return r0
+}
+
+// mockturnSeam_currentAgent_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'currentAgent'
+type mockturnSeam_currentAgent_Call struct {
+	*mock.Call
+}
+
+// currentAgent is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) currentAgent() *mockturnSeam_currentAgent_Call {
+	return &mockturnSeam_currentAgent_Call{Call: _e.mock.On("currentAgent")}
+}
+
+func (_c *mockturnSeam_currentAgent_Call) Run(run func()) *mockturnSeam_currentAgent_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_currentAgent_Call) Return(agent *core.Agent) *mockturnSeam_currentAgent_Call {
+	_c.Call.Return(agent)
+	return _c
+}
+
+func (_c *mockturnSeam_currentAgent_Call) RunAndReturn(run func() *core.Agent) *mockturnSeam_currentAgent_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // enqueue provides a mock function for the type mockturnSeam
 func (_mock *mockturnSeam) enqueue(input Input) {
 	_mock.Called(input)
@@ -198,6 +244,57 @@ func (_c *mockturnSeam_isBusy_Call) Return(b bool) *mockturnSeam_isBusy_Call {
 }
 
 func (_c *mockturnSeam_isBusy_Call) RunAndReturn(run func() bool) *mockturnSeam_isBusy_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// setAgent provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) setAgent(agent *core.Agent) error {
+	ret := _mock.Called(agent)
+
+	if len(ret) == 0 {
+		panic("no return value specified for setAgent")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(*core.Agent) error); ok {
+		r0 = returnFunc(agent)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// mockturnSeam_setAgent_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'setAgent'
+type mockturnSeam_setAgent_Call struct {
+	*mock.Call
+}
+
+// setAgent is a helper method to define mock.On call
+//   - agent *core.Agent
+func (_e *mockturnSeam_Expecter) setAgent(agent any) *mockturnSeam_setAgent_Call {
+	return &mockturnSeam_setAgent_Call{Call: _e.mock.On("setAgent", agent)}
+}
+
+func (_c *mockturnSeam_setAgent_Call) Run(run func(agent *core.Agent)) *mockturnSeam_setAgent_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 *core.Agent
+		if args[0] != nil {
+			arg0 = args[0].(*core.Agent)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_setAgent_Call) Return(err error) *mockturnSeam_setAgent_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *mockturnSeam_setAgent_Call) RunAndReturn(run func(agent *core.Agent) error) *mockturnSeam_setAgent_Call {
 	_c.Call.Return(run)
 	return _c
 }
