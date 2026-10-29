@@ -1425,7 +1425,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// Stamp the welcome time and schedule a one-shot redraw at the
 	// expiry so the version suffix disappears on its own even if the
 	// user hasn't typed anything yet.
+	// The renderer may already run (attachPort invalidates), so publish
+	// the stamp under mu.
+	i.mu.Lock()
 	i.welcomeStart = time.Now()
+	i.mu.Unlock()
 	time.AfterFunc(welcomeVersionDuration, i.invalidate)
 
 	// If the agent was constructed with a pre-loaded transcript
