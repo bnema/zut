@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // maxStdioFrame bounds one newline-delimited JSON-RPC message from a server.
@@ -152,8 +154,6 @@ func buildStdioEnv(cfg ServerConfig) []string {
 }
 
 func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*stdioTransport, error) {
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Env = buildStdioEnv(cfg)
 	dir := cwd
 	if cfg.CWD != "" {
 		dir = cfg.CWD
@@ -161,6 +161,12 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 			dir = filepath.Join(cwd, dir)
 		}
 	}
+	command, err := execpath.Resolve(cfg.Command, dir, cfg.BaseEnv)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(command, cfg.Args...)
+	cmd.Env = buildStdioEnv(cfg)
 	cmd.Dir = dir
 	isolateProcess(cmd)
 	stdin, err := cmd.StdinPipe()

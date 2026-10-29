@@ -33,6 +33,8 @@ import (
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/tui"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // Manifest is the extension.json file shipped alongside an
@@ -698,11 +700,17 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Bare names (node, npx, python3, tsx, etc.) are looked up via PATH;
 	// absolute and extension-relative paths are resolved by the helper.
 	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
-	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
-	cmd.Dir = ext.Dir
+	childCWD := ext.Dir
 	if m.spawnCWD != "" {
-		cmd.Dir = m.spawnCWD
+		childCWD = m.spawnCWD
 	}
+	execPath, err = execpath.Resolve(execPath, childCWD, m.spawnEnv)
+	if err != nil {
+		_ = logFile.Close()
+		return err
+	}
+	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
+	cmd.Dir = childCWD
 	cmd.Env = m.spawnEnv
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)

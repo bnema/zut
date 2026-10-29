@@ -443,3 +443,58 @@ func TestConsentZutfileAutoYesAskDoesNotCache(t *testing.T) {
 		t.Fatalf("ask mode should not cache consent, err=%v", err)
 	}
 }
+
+func TestRunLocalZutfilePreservesUserSkillDirs(t *testing.T) {
+	home, cwd, pkg, user := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZUT_AGENT_SKILLS", user)
+	for _, entry := range []struct{ root, name string }{{filepath.Join(pkg, "skills"), "packaged-local"}, {user, "user-extra"}} {
+		dir := filepath.Join(entry.root, entry.name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: "+entry.name+"\ndescription: local regression skill\n---\nInstructions\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "manifest.json"), []byte(`{"zutfile":1,"name":"l2-skills"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "models") {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"data":[]}`)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		select {
+		case requests <- string(body):
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	args := Args{CWD: cwd, Mode: ModePrint, Provider: "openai", Model: "gpt-5", APIKey: "synthetic-local-key", BaseURL: srv.URL, Prompt: "hello", Yes: true, NoExt: true, NoMCP: true, WithSkills: true}
+	if _, err := captureTestStdout(t, func() error { return runLocalZutfile(pkg, args, "test") }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-requests:
+		for _, name := range []string{"packaged-local", "user-extra"} {
+			if !strings.Contains(body, name) {
+				t.Fatalf("skill %q missing from provider request", name)
+			}
+		}
+	default:
+		t.Fatal("no provider request")
+	}
+	if got := os.Getenv("ZUT_AGENT_SKILLS"); got != user {
+		t.Fatalf("user skill environment changed: %q", got)
+	}
+}

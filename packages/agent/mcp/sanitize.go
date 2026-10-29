@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -63,17 +62,17 @@ func newRedactor(cfg ServerConfig) *redactor {
 		add(v)
 	}
 	for _, name := range cfg.EnvHeaders {
-		if v, ok := os.LookupEnv(name); ok {
+		if v, ok := lookupBaseEnv(cfg.BaseEnv, name); ok {
 			add(v)
 		}
 	}
 	for _, name := range cfg.EnvVars {
-		if v, ok := os.LookupEnv(name); ok {
+		if v, ok := lookupBaseEnv(cfg.BaseEnv, name); ok {
 			add(v)
 		}
 	}
 	if cfg.BearerTokenEnvVar != "" {
-		if v, ok := os.LookupEnv(cfg.BearerTokenEnvVar); ok {
+		if v, ok := lookupBaseEnv(cfg.BaseEnv, cfg.BearerTokenEnvVar); ok {
 			add(v)
 		}
 	}
