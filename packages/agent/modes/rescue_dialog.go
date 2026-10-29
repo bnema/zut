@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -26,6 +28,10 @@ type rescueDialog struct {
 	prompt   string // the user prompt that should be retried on Select
 	details  bool
 	scroll   int
+	// Port mode: pendingID identifies the session request and onAnswer
+	// receives "provider/model" (or nil when cancelled).
+	pendingID string
+	onAnswer  func([]tools.QuestionAnswer)
 }
 
 type rescueDialogAction struct {
@@ -78,7 +84,44 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 	d.refilter()
 }
 
-func (d *rescueDialog) Close()       { d.active = false }
+// OpenPending shows a Port rescue request using the session's candidates.
+func (d *rescueDialog) OpenPending(id string, opts session.RescueOptions, onAnswer func([]tools.QuestionAnswer)) {
+	d.Close()
+	d.active = true
+	d.current, d.query, d.prompt, d.failedAt = "", "", "", ""
+	d.details, d.scroll = false, 0
+	d.reason = opts.Error
+	d.pendingID, d.onAnswer = id, onAnswer
+	d.all = nil
+	for _, c := range opts.Candidates {
+		if p, m, ok := strings.Cut(c, "/"); ok && p != "" && m != "" {
+			d.all = append(d.all, provider.Model{Provider: p, ID: m})
+		}
+	}
+	d.refilter()
+}
+
+// ClosePending closes the dialog without answering when it shows id.
+func (d *rescueDialog) ClosePending(id string) {
+	if d.active && d.pendingID == id {
+		d.pendingID, d.onAnswer = "", nil
+		d.active = false
+	}
+}
+
+// Close dismisses the dialog; a Port request is answered as declined.
+func (d *rescueDialog) Close() {
+	d.answer(nil)
+	d.active = false
+}
+
+func (d *rescueDialog) answer(answers []tools.QuestionAnswer) {
+	if fn := d.onAnswer; fn != nil {
+		d.pendingID, d.onAnswer = "", nil
+		fn(answers)
+	}
+}
+
 func (d *rescueDialog) Active() bool { return d != nil && d.active }
 
 func (d *rescueDialog) refilter() {
@@ -261,6 +304,11 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 			return rescueDialogAction{Close: true}
 		}
 		m := d.view[d.cursor]
+		if d.onAnswer != nil {
+			d.answer([]tools.QuestionAnswer{{Selected: []string{m.Provider + "/" + m.ID}}})
+			d.active = false
+			return rescueDialogAction{Close: true}
+		}
 		prompt := d.prompt
 		d.Close()
 		return rescueDialogAction{Select: true, Provider: m.Provider, Model: m.ID, Prompt: prompt}

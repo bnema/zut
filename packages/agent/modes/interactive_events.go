@@ -770,6 +770,7 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 	i.mu.Lock()
 	i.applySessionViewEventLocked(ev)
 	i.mu.Unlock()
+	i.syncPortDialogs()
 	i.invalidate()
 	return false
 }
