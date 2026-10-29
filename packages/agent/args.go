@@ -53,7 +53,10 @@ type Args struct {
 	// FastModeSet distinguishes the durable child override from host config.
 	FastModeSet bool
 
-	Continue        bool
+	Continue bool
+	// KeepSession leaves the daemon session of a headless run open
+	// (visible in `zut ls`, reattachable) instead of closing it at exit.
+	KeepSession     bool
 	Resume          bool
 	ResumeSessionID string
 	Session         string
@@ -205,6 +208,8 @@ func ParseArgs(in []string) (Args, error) {
 			}
 		case "--no-session":
 			a.NoSess = true
+		case "--keep-session":
+			a.KeepSession = true
 		case "--no-tools":
 			a.NoTools = true
 		case "--no-repetition-guard":
@@ -494,6 +499,7 @@ func PrintHelp(version string) {
 		row{"-r, --resume [UUID]", "pick a session, or resume the persisted UUID"},
 		row{"--session PATH", "resume a specific session file"},
 		row{"--no-session", "do not read or write a session file"},
+		row{"--keep-session", "headless modes: keep the daemon session open after the run"},
 	)
 	section("workspace, tools, skills",
 		row{"--cwd PATH", "treat PATH as the working directory"},

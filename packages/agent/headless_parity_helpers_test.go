@@ -125,6 +125,13 @@ func (s parityScenario) server(t *testing.T) *httptest.Server {
 	p := &parityProvider{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		// Daemon sessions generate a title from the first prompt with a
+		// separate request (core.GenerateSessionTitle); answer it without
+		// consuming the scripted transcript replies.
+		if bytes.Contains(body, []byte("You create concise titles")) {
+			writeText(w, "parity title")
+			return
+		}
 		s.handler(p, w, body)
 	}))
 	t.Cleanup(server.Close)
