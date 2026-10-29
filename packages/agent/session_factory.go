@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -73,13 +74,20 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	}
 	deps.DeferredStore = store
 	deps.Directory = f.dir
+	var extra []core.Tool
 	if f.engine != nil {
 		deps.Scheduler = sessionSchedule{engine: f.engine, id: string(opts.ID)}
-		if scheduleToolAllowed(spec.Args) {
-			tool := &tools.ScheduleTool{Engine: f.engine, SessionID: func() string { return string(opts.ID) }, Location: func() *time.Location { return time.Local }}
-			deps.AgentBuilder = scheduleAgentBuilder{AgentBuilder: deps.AgentBuilder, tool: tool, last: new(atomic.Pointer[core.Agent])}
-			deps.ToolRefresher = scheduleToolRefresher{ToolRefresher: deps.ToolRefresher, builder: deps.AgentBuilder.(scheduleAgentBuilder)}
+		if daemonToolAllowed(spec.Args, tools.ScheduleToolName) {
+			extra = append(extra, &tools.ScheduleTool{Engine: f.engine, SessionID: func() string { return string(opts.ID) }, Location: func() *time.Location { return time.Local }})
 		}
+	}
+	if f.dir != nil && daemonToolAllowed(spec.Args, tools.SessionsToolName) {
+		extra = append(extra, &tools.SessionsTool{Directory: sessionDirectory{dir: f.dir, from: opts.ID}})
+	}
+	if len(extra) > 0 {
+		builder := extraToolsAgentBuilder{AgentBuilder: deps.AgentBuilder, tools: extra, last: new(atomic.Pointer[core.Agent])}
+		deps.AgentBuilder = builder
+		deps.ToolRefresher = extraToolsRefresher{ToolRefresher: deps.ToolRefresher, builder: builder}
 	}
 	ctrl := session.NewControllerWithOptions(ctx, deps, opts)
 	h := &factoryHandle{Controller: ctrl, f: f, id: opts.ID, cleanup: cleanup, done: make(chan struct{})}
@@ -204,61 +212,132 @@ func (h *factoryHandle) watch() {
 	}
 }
 
-// scheduleToolAllowed mirrors runInteractive's schedulerAllowed rule.
-func scheduleToolAllowed(raw []string) bool {
+// daemonToolAllowed mirrors runInteractive's schedulerAllowed rule for a
+// daemon-scoped tool: off with --no-tools or an explicit --tools list that
+// omits name.
+func daemonToolAllowed(raw []string, name string) bool {
 	args, err := ParseArgs(raw)
 	if err != nil {
 		return false
 	}
-	return !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, tools.ScheduleToolName))
+	return !args.NoTools && (!args.ToolsSet && len(args.Tools) == 0 || toolListContains(args.Tools, name))
 }
 
-// scheduleAgentBuilder installs the session-scoped schedule tool on every
-// agent the assembly builds (the daemon owns the engine, not the assembly).
-type scheduleAgentBuilder struct {
+// extraToolsAgentBuilder installs the daemon-scoped tools (schedule,
+// sessions) on every agent the assembly builds; the daemon owns their
+// backends, not the assembly.
+type extraToolsAgentBuilder struct {
 	session.AgentBuilder
-	tool *tools.ScheduleTool
+	tools []core.Tool
 	// last is the most recent agent, re-equipped after tool refreshes.
 	last *atomic.Pointer[core.Agent]
 }
 
-func (b scheduleAgentBuilder) install(ag *core.Agent, p, m string, err error) (*core.Agent, string, string, error) {
+func (b extraToolsAgentBuilder) install(ag *core.Agent, p, m string, err error) (*core.Agent, string, string, error) {
 	if ag != nil {
 		reg := ag.ToolsSnapshot()
-		reg[tools.ScheduleToolName] = b.tool
+		for _, tool := range b.tools {
+			reg[tool.Name()] = tool
+		}
 		ag.SetTools(reg)
 		b.last.Store(ag)
 	}
 	return ag, p, m, err
 }
 
-func (b scheduleAgentBuilder) BuildAgent() (*core.Agent, string, string, error) {
+func (b extraToolsAgentBuilder) BuildAgent() (*core.Agent, string, string, error) {
 	return b.install(b.AgentBuilder.BuildAgent())
 }
 
-func (b scheduleAgentBuilder) BuildAgentFor(p, m string) (*core.Agent, string, string, error) {
+func (b extraToolsAgentBuilder) BuildAgentFor(p, m string) (*core.Agent, string, string, error) {
 	return b.install(b.AgentBuilder.BuildAgentFor(p, m))
 }
 
-func (b scheduleAgentBuilder) BuildAgentForRescue(p, m string) (*core.Agent, string, string, error) {
+func (b extraToolsAgentBuilder) BuildAgentForRescue(p, m string) (*core.Agent, string, string, error) {
 	return b.install(b.AgentBuilder.BuildAgentForRescue(p, m))
 }
 
-// scheduleToolRefresher re-adds the schedule tool after RefreshTools rebuilt
-// the live agent's registry.
-type scheduleToolRefresher struct {
+// extraToolsRefresher re-adds the daemon-scoped tools after RefreshTools
+// rebuilt the live agent's registry.
+type extraToolsRefresher struct {
 	session.ToolRefresher
-	builder scheduleAgentBuilder
+	builder extraToolsAgentBuilder
 }
 
-func (r scheduleToolRefresher) RefreshTools() error {
+func (r extraToolsRefresher) RefreshTools() error {
 	err := r.ToolRefresher.RefreshTools()
 	if ag := r.builder.last.Load(); ag != nil {
-		if _, ok := ag.ToolsSnapshot()[tools.ScheduleToolName]; !ok {
-			r.builder.install(ag, "", "", nil)
+		reg := ag.ToolsSnapshot()
+		for _, tool := range r.builder.tools {
+			if _, ok := reg[tool.Name()]; !ok {
+				r.builder.install(ag, "", "", nil)
+				break
+			}
 		}
 	}
 	return err
+}
+
+// sessionDirectory adapts the daemon directory to tools.SessionDirectory,
+// bound to the sending session and mapping the D10 guard errors.
+type sessionDirectory struct {
+	dir  session.Directory
+	from session.ID
+}
+
+func (d sessionDirectory) List(ctx context.Context) ([]tools.SessionEntry, error) {
+	infos := d.dir.List(ctx)
+	out := make([]tools.SessionEntry, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, tools.SessionEntry{ID: info.ID, Title: info.Title, CWD: info.CWD, Attach: string(info.Attach), Run: string(info.Run), Activity: info.Activity.Kind, Model: info.Model})
+	}
+	return out, nil
+}
+
+func (d sessionDirectory) Tree(ctx context.Context) (string, error) {
+	return renderSessionTree(d.dir.Tree(ctx), d.from), nil
+}
+
+func (d sessionDirectory) Send(ctx context.Context, to, text string) error {
+	err := d.dir.Send(ctx, d.from, session.ID(to), text)
+	switch {
+	case errors.Is(err, session.ErrNotAttached):
+		return tools.ErrSenderDetached
+	case errors.Is(err, session.ErrLoopGuard):
+		return tools.ErrSenderLoop
+	}
+	return err
+}
+
+// renderSessionTree renders workspace → session → plan step, goal and
+// residents; self marks the calling session.
+func renderSessionTree(tree session.Tree, self session.ID) string {
+	var b strings.Builder
+	for _, ws := range tree.Workspaces {
+		fmt.Fprintf(&b, "%s\n", tools.SanitizeSessionText(ws.RepoRoot))
+		for _, node := range ws.Sessions {
+			info := node.Info
+			title := tools.SanitizeSessionText(info.Title)
+			if title == "" {
+				title = "(untitled)"
+			}
+			mark := ""
+			if session.ID(info.ID) == self {
+				mark = " (this session)"
+			}
+			fmt.Fprintf(&b, "  %s %s [%s, %s, %s]%s\n", info.ID, title, info.Attach, info.Run, tools.SanitizeSessionText(info.Activity.Kind), mark)
+			if info.PlanStep != nil {
+				fmt.Fprintf(&b, "    plan step %d/%d: %s\n", info.PlanStep.Index, info.PlanStep.Total, tools.SanitizeSessionText(info.PlanStep.Text))
+			}
+			if info.Goal != nil {
+				fmt.Fprintf(&b, "    goal (%s): %s\n", tools.SanitizeSessionText(info.Goal.Status), tools.SanitizeSessionText(info.Goal.Objective))
+			}
+			for _, r := range node.Residents {
+				fmt.Fprintf(&b, "    resident %s %s [%s]: %s\n", tools.SanitizeSessionText(r.ID), tools.SanitizeSessionText(r.Profile), tools.SanitizeSessionText(r.State), tools.SanitizeSessionText(r.Task))
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // sessionSchedule is a session.ScheduleHost scoped to one session over the
