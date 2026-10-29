@@ -198,3 +198,13 @@ func TestGoalSavePublishesAssignedIdentity(t *testing.T) {
 	require.Equal(t, "mission", got.MissionID)
 	require.Equal(t, 7, got.Ordinal)
 }
+func TestGoalReplacedMidTurnIsNotCharged(t *testing.T) {
+	store, g := goalStore(t, &core.SessionGoal{ID: "old", MissionID: "m", Objective: "work", Status: core.GoalActive})
+	// One start for the original continuation, one for the replacement goal.
+	c := session.GoalTestController(t, store, 2)
+	require.NoError(t, c.SetGoal(context.Background(), session.GoalCommand{Op: "resume"}))
+	*g = &core.SessionGoal{ID: "new", MissionID: "m", Objective: "replacement", Status: core.GoalActive}
+	session.GoalTestFinish(t, c, 5, true, core.EvTurnEnd{})
+	require.Equal(t, "new", (*g).ID)
+	require.Zero(t, (*g).TokensUsed)
+}

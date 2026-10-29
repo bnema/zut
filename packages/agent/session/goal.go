@@ -21,7 +21,7 @@ type goalState struct {
 	controller                        *Controller
 	run                               *goalRun
 	interruptedID, interruptedMission string
-	armed, returning                  bool
+	armed                             bool
 	plan                              map[string]core.PlanUpdate
 }
 
@@ -94,7 +94,6 @@ func (s *goalState) snapshotInto(out *Snapshot) {
 	}
 }
 func (c *Controller) currentGoal() *core.SessionGoal {
-	c.goal.controller = c
 	if c.deps.SessionStore == nil {
 		return nil
 	}
@@ -124,7 +123,6 @@ func (c *Controller) SetGoal(ctx context.Context, command GoalCommand) error {
 	return result
 }
 func (c *Controller) setGoal(command GoalCommand) error {
-	c.goal.controller = c
 	if c.deps.SessionStore == nil {
 		return errors.New("goal: session persistence is unavailable")
 	}
@@ -165,7 +163,6 @@ func (c *Controller) setGoal(command GoalCommand) error {
 		return err
 	}
 	c.goal.armed = false
-	c.goal.returning = false
 	if wake {
 		return c.continueGoal()
 	}
@@ -211,7 +208,6 @@ func (c *Controller) continueGoal() error {
 	return nil
 }
 func (c *Controller) goalAfterTurn(end core.EvTurnEnd) {
-	c.goal.controller = c
 	run := c.goal.run
 	c.goal.run = nil
 	if run != nil {
@@ -255,7 +251,6 @@ func (c *Controller) goalAfterTurn(end core.EvTurnEnd) {
 	if end.Err != nil || end.Stop == provider.StopAborted {
 		return
 	}
-	c.goal.returning = false
 	if err := c.continueGoal(); err != nil {
 		c.goalError(err)
 	}
@@ -278,7 +273,6 @@ func (s *goalState) observe(ev core.AgentEvent) {
 			g := c.currentGoal()
 			if g == nil || g.Status != core.GoalActive || g.ID != s.interruptedID || g.MissionID != s.interruptedMission {
 				s.armed = false
-				s.returning = false
 			}
 			c.publishGoal()
 		}
@@ -316,13 +310,11 @@ func (c *Controller) goalOnAbort() {
 	c.goal.interruptedID = g.ID
 	c.goal.interruptedMission = g.MissionID
 	c.goal.armed = true
-	c.goal.returning = false
 }
 
 // goalBeforeTurn appends a hidden reassessment message before the next user
 // prompt without changing the visible user input.
 func (c *Controller) goalBeforeTurn(in *Input) {
-	c.goal.controller = c
 	if in == nil || in.Origin != InputOriginUser || !c.goal.armed {
 		return
 	}
@@ -332,7 +324,6 @@ func (c *Controller) goalBeforeTurn(in *Input) {
 		return
 	}
 	c.goal.armed = false
-	c.goal.returning = true
 	text := "The previous turn was interrupted by the user; the autonomous goal below remains active. Handle the latest user message first. Classify it as changing, settling, blocking, or incidental to that goal. If it is incidental, answer it briefly and then continue the goal autonomously without waiting for the user to say continue. Call update_goal only for a genuine complete, blocked, or superseded transition.\n\nActive goal: " + g.Objective
 	if g.ID != "" {
 		text += " When superseding this goal, use goal_id " + g.ID + "."
