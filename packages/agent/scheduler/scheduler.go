@@ -52,6 +52,21 @@ type Engine struct {
 	wake       chan struct{}
 	store      Store
 	persistErr error
+	// unsaved marks in-memory completion state that failed to persist; Run
+	// retries the save on its next wake.
+	unsaved bool
+	onError func(error)
+}
+
+// OnPersistError registers a callback for save failures observed by Run
+// (completion saves and their retries). Call before Run.
+func (e *Engine) OnPersistError(fn func(error)) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.onError = fn
+	e.mu.Unlock()
 }
 
 // NewEngine creates an empty scheduler. now is injectable for tests; nil uses
@@ -168,12 +183,12 @@ func (e *Engine) Run(ctx context.Context, executor func(context.Context, Task) e
 		return fmt.Errorf("scheduler executor is required")
 	}
 	for {
-		if err := e.Err(); err != nil {
-			return err
-		}
 		if ctx.Err() != nil {
 			return nil
 		}
+		// Persistence failures never stop dispatch: Add/Cancel report theirs
+		// to the caller, and unsaved completions are retried on each wake.
+		e.retryUnsaved()
 		now := e.now()
 		e.dispatchDue(ctx, now, executor)
 		next, ok := e.nextRun()
@@ -289,7 +304,7 @@ func (e *Engine) releaseQueued(id string, scheduledFor time.Time) {
 }
 
 func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
-	_ = e.update(true, func(tasks map[string]Task) {
+	e.reportPersistError(e.update(true, func(tasks map[string]Task) {
 		task, ok := tasks[id]
 		if !ok || !task.NextRun.Equal(scheduledFor) {
 			return
@@ -308,7 +323,40 @@ func (e *Engine) finish(id string, scheduledFor time.Time, err error) {
 		} else {
 			tasks[id] = task
 		}
-	})
+	}))
+}
+
+func (e *Engine) reportPersistError(err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	fn := e.onError
+	e.mu.Unlock()
+	if fn != nil {
+		fn(err)
+	}
+}
+
+// retryUnsaved re-saves the current snapshot after a failed completion save.
+// It does not signal a wake on failure, so retries follow the normal loop
+// cadence rather than spinning.
+func (e *Engine) retryUnsaved() {
+	e.persistMu.Lock()
+	e.mu.Lock()
+	if !e.unsaved {
+		e.mu.Unlock()
+		e.persistMu.Unlock()
+		return
+	}
+	candidate := make(map[string]Task, len(e.tasks))
+	for id, task := range e.tasks {
+		candidate[id] = task
+	}
+	e.mu.Unlock()
+	err := e.persistSnapshot(candidate, true)
+	e.persistMu.Unlock()
+	e.reportPersistError(err)
 }
 
 func (e *Engine) nextRun() (time.Time, bool) {

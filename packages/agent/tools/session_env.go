@@ -3,10 +3,11 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // toolEnvKey carries the session environment through the worktree helper graph,
@@ -25,130 +26,20 @@ func toolEnv(ctx context.Context) []string {
 }
 
 func envValue(env []string, key string) string {
-	return envValueOS(runtime.GOOS, env, key)
+	return execpath.LookupEnv(env, key)
 }
 
 // lookPathEnv resolves executable discovery against the session PATH and
-// cwd, never the daemon's working directory or environment.
+// cwd, never the daemon's working directory or environment. A nil env fails
+// closed rather than falling back to the process PATH.
 func lookPathEnv(cwd string, env []string, name string) (string, error) {
-	return lookPathEnvOS(runtime.GOOS, cwd, env, name, isExecutableCandidate)
-}
-
-func isExecutableCandidate(goos, path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && (goos == "windows" || info.Mode()&0111 != 0)
-}
-
-// lookPathEnvOS holds the platform path rules so they can be tested on any host.
-func lookPathEnvOS(goos, cwd string, env []string, name string, exists func(goos, path string) bool) (string, error) {
-	if !isAbsSessionPath(goos, cwd) {
+	if !isAbsSessionPath(runtime.GOOS, cwd) {
 		return "", fmt.Errorf("executable %q: session cwd must be absolute", name)
 	}
-	if name == "" {
-		return "", fmt.Errorf("executable name is empty")
+	if env == nil {
+		env = []string{}
 	}
-	names := []string{name}
-	if goos == "windows" {
-		names = windowsExecutableNames(env, name)
-	}
-	if hasPathSeparator(goos, name) {
-		for _, candidate := range names {
-			path := joinSessionPath(goos, cwd, candidate)
-			if exists(goos, path) {
-				return path, nil
-			}
-		}
-		return "", fmt.Errorf("executable %q not found", name)
-	}
-	listSep := ":"
-	if goos == "windows" {
-		listSep = ";"
-	}
-	pathValue := envValueOS(goos, env, "PATH")
-	if pathValue == "" {
-		return "", fmt.Errorf("executable %q not found in session PATH", name)
-	}
-	for _, dir := range strings.Split(pathValue, listSep) {
-		if goos == "windows" {
-			dir = strings.Trim(dir, `"`)
-		}
-		if dir == "" {
-			continue
-		}
-		base := joinSessionPath(goos, cwd, dir)
-		for _, candidate := range names {
-			path := joinSessionPath(goos, base, candidate)
-			if exists(goos, path) {
-				return path, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("executable %q not found in session PATH", name)
-}
-
-// windowsExecutableNames mirrors PATHEXT semantics: a name that already ends
-// in a PATHEXT extension is tried as-is first; other names, including dotted
-// ones such as python3.12, get every PATHEXT extension appended.
-func windowsExecutableNames(env []string, name string) []string {
-	extensions := envValueOS("windows", env, "PATHEXT")
-	if extensions == "" {
-		extensions = ".COM;.EXE;.BAT;.CMD"
-	}
-	var exts []string
-	for _, ext := range strings.Split(extensions, ";") {
-		if ext == "" {
-			continue
-		}
-		if !strings.HasPrefix(ext, ".") {
-			ext = "." + ext
-		}
-		exts = append(exts, ext)
-	}
-	var names []string
-	lowerName := strings.ToLower(name)
-	for _, ext := range exts {
-		if strings.HasSuffix(lowerName, strings.ToLower(ext)) {
-			names = append(names, name)
-			break
-		}
-	}
-	for _, ext := range exts {
-		names = append(names, name+ext)
-	}
-	return names
-}
-
-func envValueOS(goos string, env []string, key string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(env[i], "=")
-		if ok && (k == key || goos == "windows" && strings.EqualFold(k, key)) {
-			return v
-		}
-	}
-	return ""
-}
-
-func hasPathSeparator(goos, name string) bool {
-	if goos == "windows" {
-		return strings.ContainsAny(name, `/\`) || windowsVolumeLen(name) > 0
-	}
-	return strings.Contains(name, "/")
-}
-
-// joinSessionPath anchors p at the absolute dir using goos path rules.
-func joinSessionPath(goos, dir, p string) string {
-	if isAbsSessionPath(goos, p) {
-		return p
-	}
-	if goos == "windows" {
-		if windowsVolumeLen(p) > 0 || strings.HasPrefix(p, `\`) || strings.HasPrefix(p, "/") {
-			// Drive-relative or rooted-without-volume: never resolve against
-			// another drive's process state; anchor under the session cwd.
-			p = strings.TrimLeft(p[windowsVolumeLen(p):], `/\`)
-		}
-		return strings.TrimRight(dir, `/\`) + `\` + p
-	}
-	return strings.TrimRight(dir, "/") + "/" + p
+	return execpath.Resolve(name, cwd, env)
 }
 
 // windowsVolumeLen returns the length of a leading "X:" drive designator.

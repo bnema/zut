@@ -35,15 +35,7 @@ func resolve(windows bool, name, cwd string, env []string, isExecutable func(str
 	if name == "" {
 		return "", fmt.Errorf("empty session executable name")
 	}
-	lookup := func(key string) string {
-		for i := len(env) - 1; i >= 0; i-- {
-			k, v, ok := strings.Cut(env[i], "=")
-			if ok && (k == key || windows && strings.EqualFold(k, key)) {
-				return v
-			}
-		}
-		return ""
-	}
+	lookup := func(key string) string { return lookupEnv(windows, env, key) }
 	var exts []string
 	if windows {
 		exts = pathExts(lookup("PATHEXT"))
@@ -79,6 +71,22 @@ func resolve(windows bool, name, cwd string, env []string, isExecutable func(str
 		}
 	}
 	return "", fmt.Errorf("executable %q not found in session PATH", name)
+}
+
+// LookupEnv returns the last value for key in env. Keys compare
+// case-insensitively on Windows, matching the process environment there.
+func LookupEnv(env []string, key string) string {
+	return lookupEnv(runtime.GOOS == "windows", env, key)
+}
+
+func lookupEnv(windows bool, env []string, key string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		k, v, ok := strings.Cut(env[i], "=")
+		if ok && (k == key || windows && strings.EqualFold(k, key)) {
+			return v
+		}
+	}
+	return ""
 }
 
 // pathExts normalizes a PATHEXT value like os/exec: lowercased, empty entries

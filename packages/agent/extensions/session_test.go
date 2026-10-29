@@ -81,3 +81,62 @@ func TestExtensionSpawnUsesSessionEnv(t *testing.T) {
 		t.Fatalf("child environment/cwd = %v", got)
 	}
 }
+
+func TestExtensionRunsFromItsDirectoryWithRelativeArgs(t *testing.T) {
+	if os.Getenv("ZUT_EXTDIR_HELPER") == "1" {
+		data, err := os.ReadFile(os.Args[len(os.Args)-1])
+		if err != nil {
+			data = []byte("missing: " + err.Error())
+		}
+		_ = os.WriteFile(os.Getenv("ZUT_EXTDIR_RESULT"), data, 0600)
+		fmt.Println("not a hello")
+		return
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := t.TempDir()
+	extDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(session, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	name := "extdir-helper"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	in, err := os.Open(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.OpenFile(filepath.Join(session, "bin", name), os.O_CREATE|os.O_WRONLY, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.Copy(out, in)
+	in.Close()
+	out.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "script.txt"), []byte("ext-dir"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := filepath.Join(t.TempDir(), "result")
+	mgr := New(t.TempDir(), "", "test", "", "", nil,
+		WithEnv([]string{"PATH=bin", "ZUT_EXTDIR_HELPER=1", "ZUT_EXTDIR_RESULT=" + result}), WithCWD(session))
+	ext := &Extension{Manifest: Manifest{Name: "extdir", Exec: name, Args: []string{"-test.run=^TestExtensionRunsFromItsDirectoryWithRelativeArgs$", "script.txt"}}, Dir: extDir}
+	if err := mgr.spawn(context.Background(), ext); err == nil || !strings.Contains(err.Error(), "parse hello") {
+		t.Fatalf("unexpected result: %v", err)
+	}
+	if ext.cmd.Path != filepath.Join(session, "bin", name) {
+		t.Fatalf("executable = %q, want PATH resolved against session cwd", ext.cmd.Path)
+	}
+	data, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ext-dir" {
+		t.Fatalf("relative arg read = %q", data)
+	}
+}

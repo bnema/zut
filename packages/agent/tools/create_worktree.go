@@ -640,20 +640,16 @@ func createWorktreeGitExitCode(err error) int {
 
 func createWorktreeGitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-c", "core.hooksPath=" + os.DevNull, "-C", dir}, args...)
-	git := "git"
 	env := toolEnv(ctx)
 	if env == nil {
 		return "", fmt.Errorf("git: session env not set")
 	}
-	{
-		var err error
-		git, err = lookPathEnv(dir, env, git)
-		if err != nil {
-			return "", err
-		}
+	git, err := lookPathEnv(dir, env, "git")
+	if err != nil {
+		return "", err
 	}
 	cmd := exec.CommandContext(ctx, git, cmdArgs...)
-	cmd.Env = createWorktreeGitEnv(toolEnv(ctx))
+	cmd.Env = createWorktreeGitEnv(env)
 	setProcessGroup(cmd)
 
 	var stdout, output cappedGitOutput

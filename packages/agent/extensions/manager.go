@@ -701,11 +701,13 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Bare names (node, npx, python3, tsx, etc.) are looked up via PATH;
 	// absolute and extension-relative paths are resolved by the helper.
 	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
-	childCWD := ext.Dir
+	// spawnCWD only anchors relative PATH entries; the process itself
+	// runs from the extension directory.
+	lookupCWD := ext.Dir
 	if m.spawnCWD != "" {
-		childCWD = m.spawnCWD
+		lookupCWD = m.spawnCWD
 	}
-	execPath, err = execpath.Resolve(execPath, childCWD, m.spawnEnv)
+	execPath, err = execpath.Resolve(execPath, lookupCWD, m.spawnEnv)
 	if err != nil {
 		_ = logFile.Close()
 		return fmt.Errorf("extension %s: %w", ext.Manifest.Name, err)
@@ -716,7 +718,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		// os/exec re-resolution is a no-op; pin it explicitly anyway.
 		cmd.Path, cmd.Err = execPath, nil
 	}
-	cmd.Dir = childCWD
+	cmd.Dir = ext.Dir
 	cmd.Env = m.spawnEnv
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)

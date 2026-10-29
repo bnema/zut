@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // ServerConfig describes either a stdio LSP server or a command-line linter.
@@ -349,13 +351,7 @@ func zutHome(env ...string) string {
 	lookup := os.Getenv
 	home, _ := os.UserHomeDir()
 	if env != nil {
-		values := map[string]string{}
-		for _, item := range env {
-			if k, v, ok := strings.Cut(item, "="); ok {
-				values[k] = v
-			}
-		}
-		lookup = func(k string) string { return values[k] }
+		lookup = func(k string) string { return execpath.LookupEnv(env, k) }
 		home = lookup("HOME")
 		if runtime.GOOS == "windows" {
 			home = lookup("USERPROFILE")
