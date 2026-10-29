@@ -13,7 +13,7 @@ import (
 )
 
 func TestExtensionAdapterPreservesInteractivePolicy(t *testing.T) {
-	manager := extensions.New(t.TempDir(), t.TempDir(), "test", "provider", "model", nonInteractiveExtHooks{})
+	manager := extensions.New(t.TempDir(), t.TempDir(), "test", "provider", "model", newSessionBindings().hooks())
 	adapter := &extToolAdapter{mgr: manager}
 	tool := adapter.NewExtensionTool(ExtensionToolInfo{
 		Name: "ask_user", Interactive: true, Schema: json.RawMessage(`{"type":"object"}`),

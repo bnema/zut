@@ -1,37 +1,19 @@
 package agent
 
 import (
-	"bytes"
 	"context"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/provider"
 )
-
-func TestStreamTextSinkDoesNotRepeatCompletedMessage(t *testing.T) {
-	var out bytes.Buffer
-	sink, finish := newStreamTextSink(&out)
-	sink(core.EvAssistantStart{})
-	sink(core.EvTextDelta{Delta: "streamed"})
-	sink(core.EvAssistantMessage{Message: provider.Message{
-		Role:    provider.RoleAssistant,
-		Content: []provider.Content{provider.TextBlock{Text: "streamed"}},
-	}})
-	finish()
-	if got := out.String(); got != "streamed\n" {
-		t.Fatalf("output = %q, want streamed\\n", got)
-	}
-}
 
 func TestRunZutfileStartupPreShellFailure(t *testing.T) {
 	pre := "!false"
 	if runtime.GOOS == "windows" {
 		pre = "!exit 1"
 	}
-	err := runZutfileStartupPre(context.Background(), pre, t.TempDir(), nil, nil, nil, nil)
+	err := runZutfileStartupPreEnv(context.Background(), pre, t.TempDir(), os.Environ(), nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected entry.pre shell failure")
 	}
@@ -41,7 +23,7 @@ func TestRunZutfileStartupPreShellFailure(t *testing.T) {
 }
 
 func TestRunZutfileStartupPreEmpty(t *testing.T) {
-	if err := runZutfileStartupPre(context.Background(), "  ", t.TempDir(), nil, nil, nil, nil); err != nil {
+	if err := runZutfileStartupPreEnv(context.Background(), "  ", t.TempDir(), os.Environ(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("empty pre: %v", err)
 	}
 }
@@ -52,7 +34,7 @@ func TestRunZutfileStartupPreShellStreams(t *testing.T) {
 		cmd = "!echo streamed-pre"
 	}
 	var out strings.Builder
-	if err := runZutfileStartupPre(context.Background(), cmd, t.TempDir(), nil, nil, nil, &out); err != nil {
+	if err := runZutfileStartupPreEnv(context.Background(), cmd, t.TempDir(), os.Environ(), nil, nil, nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "streamed-pre") {

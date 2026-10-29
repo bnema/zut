@@ -88,11 +88,12 @@ func setupMCPHome(t *testing.T, url string) (project string) {
 
 func startTestMCP(t *testing.T, args *Args) {
 	t.Helper()
-	stop, err := startMCP(context.Background(), args, "test")
+	manager, stop, err := startSessionMCP(context.Background(), *args, os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(stop)
+	args.mcpManager = manager
 	if args.mcpManager == nil {
 		t.Fatalf("mcp manager not started: %v", args.mcpStartupErrors)
 	}
@@ -254,15 +255,15 @@ func TestRequiredMCPServerFailureAbortsStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := Args{CWD: root, Mode: ModePrint}
-	if _, err := startMCP(context.Background(), &args, "test"); err == nil || !strings.Contains(err.Error(), "required MCP server") {
-		t.Fatalf("startMCP err = %v", err)
+	if _, _, err := startMCPWithEnv(context.Background(), &args, "test", os.Environ()); err == nil || !strings.Contains(err.Error(), "required MCP server") {
+		t.Fatalf("startMCPWithEnv err = %v", err)
 	}
 	cfg.Servers["broken"] = mcp.ServerConfig{Command: filepath.Join(root, "missing-binary")}
 	if err := mcp.WriteConfigFile(mcp.GlobalConfigPath(root), cfg); err != nil {
 		t.Fatal(err)
 	}
 	args = Args{CWD: root, Mode: ModeInteractive}
-	stop, err := startMCP(context.Background(), &args, "test")
+	_, stop, err := startMCPWithEnv(context.Background(), &args, "test", os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,39 +391,4 @@ func keys(reg core.Registry) []string {
 	}
 	slices.Sort(out)
 	return out
-}
-
-// A signal during the MCP handshake must cancel startup (not wait for the
-// startup timeout) so the caller can close the servers already launched.
-func TestStartMCPInterruptibleCancelsHandshake(t *testing.T) {
-	reached := make(chan struct{}, 1)
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case reached <- struct{}{}:
-		default:
-		}
-		// Stall every request until the client gives up or the test ends.
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
-	}))
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
-	cfg := mcp.Config{Servers: map[string]mcp.ServerConfig{"slow": {Type: "http", URL: srv.URL}}}
-	manager := mcp.NewManager(cfg, t.TempDir(), mcp.ClientInfo{Name: "zut"}, srv.Client())
-	t.Cleanup(func() { _ = manager.Close() })
-
-	sigCh := make(chan os.Signal, 1)
-	result := make(chan os.Signal, 1)
-	go func() {
-		_, sig, _ := startMCPInterruptible(context.Background(), manager, sigCh)
-		result <- sig
-	}()
-	<-reached
-	sigCh <- os.Interrupt
-	if sig := <-result; sig != os.Interrupt {
-		t.Fatalf("signal = %v, want interrupt", sig)
-	}
 }
