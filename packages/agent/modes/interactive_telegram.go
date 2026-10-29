@@ -96,17 +96,6 @@ func (i *Interactive) telegramConnect() {
 		i.invalidate()
 		return
 	}
-	// Refuse to start when a background daemon is already polling
-	// the same bot. Two concurrent long-poll consumers race each
-	// update and one always loses, so DMs get half-delivered. The
-	// user can `zut telegram-bot stop` first, then /telegram connect.
-	if pid, alive, _ := telegram.IsRunning(i.cfg.ZutHome); alive && pid > 0 {
-		i.mu.Lock()
-		i.statusErr = fmt.Sprintf("telegram: bot daemon already running (pid %d). stop it with `zut telegram-bot stop` first.", pid)
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
 	bridge := &telegram.Bridge{
 		Client: telegram.NewClient(cfg.BotToken),
 		Config: cfg,

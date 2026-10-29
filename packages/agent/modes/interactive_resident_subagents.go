@@ -623,8 +623,6 @@ func (i *Interactive) telegramStatus() {
 		} else {
 			msg += " - awaiting pairing"
 		}
-	} else if pid, alive, _ := telegram.IsRunning(i.cfg.ZutHome); alive && pid > 0 {
-		msg = fmt.Sprintf("telegram: background daemon running (pid %d) - /telegram connect won't work until you stop it", pid)
 	} else {
 		cfg, _ := telegram.LoadConfig(i.cfg.ZutHome)
 		if cfg.BotToken == "" {
