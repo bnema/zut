@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/internal/ndjson"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -777,7 +778,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Every frame after the handshake goes through the bounded, ordered
 	// transport so a subprocess that stops reading stdin cannot pin host
 	// goroutines indefinitely.
-	ext.stdin = newOrderedPipe(stdin)
+	ext.stdin = ndjson.NewOrderedPipe(stdin)
 
 	cleanup = false
 
@@ -1100,7 +1101,7 @@ func (ext *Extension) writeFrame(frame []byte) (int, error) {
 	if ext == nil || ext.stdin == nil {
 		return 0, fmt.Errorf("extension stdin is closed")
 	}
-	if pipe, ok := ext.stdin.(*orderedPipe); ok {
+	if pipe, ok := ext.stdin.(*ndjson.OrderedPipe); ok {
 		return pipe.Write(frame)
 	}
 	ext.writeMu.Lock()
@@ -1110,11 +1111,11 @@ func (ext *Extension) writeFrame(frame []byte) (int, error) {
 
 // orderedStdin returns the bounded transport when the extension was spawned
 // by this manager. The bool is false for plain writers.
-func (ext *Extension) orderedStdin() (*orderedPipe, bool) {
+func (ext *Extension) orderedStdin() (*ndjson.OrderedPipe, bool) {
 	if ext == nil || ext.stdin == nil {
 		return nil, false
 	}
-	pipe, ok := ext.stdin.(*orderedPipe)
+	pipe, ok := ext.stdin.(*ndjson.OrderedPipe)
 	return pipe, ok
 }
 
@@ -1436,7 +1437,7 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 	pipe, ordered := ext.orderedStdin()
 	if ordered {
 		disconnected = pipe.Done()
-		_, err = pipe.writeContext(ctx, frame, transportWriteTimeout)
+		_, err = pipe.WriteContext(ctx, frame, transportWriteTimeout)
 	} else {
 		_, err = ext.writeFrame(frame)
 	}
@@ -1455,7 +1456,7 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 		if encErr != nil {
 			return
 		}
-		_, _ = pipe.enqueue(cancelFrame, nil)
+		_, _ = pipe.Enqueue(cancelFrame, nil)
 	}
 
 	var deadline <-chan time.Time
@@ -1605,7 +1606,7 @@ func stopExtensions(exts []*Extension, gracePeriod time.Duration) {
 				if wait < 50*time.Millisecond {
 					wait = 50 * time.Millisecond
 				}
-				_, _ = pipe.writeContext(context.Background(), frame, wait)
+				_, _ = pipe.WriteContext(context.Background(), frame, wait)
 			} else {
 				_, _ = ext.writeFrame(frame)
 			}
