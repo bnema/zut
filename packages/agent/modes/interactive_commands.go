@@ -794,6 +794,22 @@ func (i *Interactive) doLogout(target string) {
 		llamaConfigured = err == nil && baseURL != ""
 	}
 
+	if i.portMode.Load() {
+		// The daemon session owns the agent; ask it to re-read credentials
+		// instead of touching the local agent.
+		i.mu.Lock()
+		i.llamaConfigured = llamaConfigured
+		if len(errs) > 0 {
+			i.statusErr = "logout errors: " + strings.Join(errs, "; ")
+		} else {
+			i.statusErr = ""
+			i.statusOK = "logged out of " + strings.Join(providers, ", ")
+		}
+		i.mu.Unlock()
+		i.portReloadCredentials("logout")
+		return
+	}
+
 	i.mu.Lock()
 	i.llamaConfigured = llamaConfigured
 	if len(errs) > 0 {
@@ -904,6 +920,17 @@ func (i *Interactive) saveLlamaCPPLogin(baseURL, apiKey string) {
 	i.statusOK = "configured llama.cpp router"
 	i.mu.Unlock()
 	i.showLoginResult(true, "")
+	if i.portMode.Load() {
+		i.portReloadCredentials("login")
+	}
+}
+
+// portReloadCredentials asks the attached daemon session to re-read its
+// credentials. It runs off the render loop and reports failures as a status note.
+func (i *Interactive) portReloadCredentials(label string) {
+	i.portSettingsCall(label+": reload daemon credentials", func(ctx context.Context, port session.Port) error {
+		return port.ReloadCredentials(ctx)
+	})
 }
 func (i *Interactive) startAPIKeyFlow(provider string) {
 	if title, lines, ok := providerSetupInfo(provider); ok {
@@ -1446,6 +1473,17 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "error":
 		i.showLoginResult(false, ev.Message)
 	case "success":
+		if i.portMode.Load() {
+			// The daemon session owns the agent: skip the local rebuild and
+			// let the daemon reload its credentials.
+			i.mu.Lock()
+			i.statusErr = ""
+			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
+			i.mu.Unlock()
+			i.showLoginResult(true, "")
+			i.portReloadCredentials("login")
+			return
+		}
 		// Keep the credential-driven resolve and its final replacement in the
 		// same transition as settings/session changes. Otherwise a build that
 		// started under the old web-search policy could commit afterward.
