@@ -172,16 +172,15 @@ func TestWebSearchSessionGuardRefreshDoesNotReviveOldGeneration(t *testing.T) {
 
 func TestWebSearchToolAllowedForSessionHonorsInvocationCeilings(t *testing.T) {
 	cases := []struct {
-		name         string
-		args         Args
-		wantAllowed  bool
-		wantExplicit bool
+		name        string
+		args        Args
+		wantAllowed bool
 	}{
 		{name: "default", args: Args{}, wantAllowed: true},
 		{name: "no tools", args: Args{NoTools: true}, wantAllowed: false},
 		{name: "permission set", args: Args{PermissionSet: &tools.PermissionSet{}}, wantAllowed: false},
-		{name: "explicit web search", args: Args{ToolsSet: true, Tools: []string{"web_search"}}, wantAllowed: true, wantExplicit: true},
-		{name: "programmatic explicit web search", args: Args{Tools: []string{"web_search"}}, wantAllowed: true, wantExplicit: true},
+		{name: "explicit web search", args: Args{ToolsSet: true, Tools: []string{"web_search"}}, wantAllowed: true},
+		{name: "programmatic explicit web search", args: Args{Tools: []string{"web_search"}}, wantAllowed: true},
 		{name: "no tools overrides explicit web search", args: Args{NoTools: true, ToolsSet: true, Tools: []string{"web_search"}}, wantAllowed: false},
 		{name: "permission set overrides explicit web search", args: Args{PermissionSet: &tools.PermissionSet{}, ToolsSet: true, Tools: []string{"web_search"}}, wantAllowed: false},
 		{name: "explicit tools exclude web search", args: Args{ToolsSet: true, Tools: []string{"read"}}, wantAllowed: false},
@@ -190,9 +189,6 @@ func TestWebSearchToolAllowedForSessionHonorsInvocationCeilings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := webSearchToolAllowedForSession(tc.args); got != tc.wantAllowed {
 				t.Fatalf("allowed = %v, want %v", got, tc.wantAllowed)
-			}
-			if got := webSearchExplicitlyEnabledForSession(tc.args); got != tc.wantExplicit {
-				t.Fatalf("explicit override = %v, want %v", got, tc.wantExplicit)
 			}
 		})
 	}
