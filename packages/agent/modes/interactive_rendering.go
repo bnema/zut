@@ -50,8 +50,8 @@ func (i *Interactive) cachedChatLocked(cols int) []string {
 }
 func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	var rev uint64
-	if i.agent != nil {
-		rev = i.agent.Revision()
+	if _, r, ok := i.transcriptLenLocked(); ok {
+		rev = r
 	}
 	showVer := len(i.view.Messages) == 0 && !i.stream.Active() && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
@@ -239,8 +239,7 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	return append([]string(nil), rows...)
 }
 func (i *Interactive) buildChatLocked(cols int) []string {
-	if i.agent != nil {
-		msgs, rev := i.agent.Messages(), i.agent.Revision()
+	if msgs, rev, ok := i.portTranscriptLocked(); ok {
 		// While live text is on screen, show the transcript only as it was
 		// when the stream started. The agent appends the finished reply (and
 		// fast tool results) before the pacer has painted it; revealing them
@@ -719,6 +718,9 @@ func (i *Interactive) redraw() {
 	// to the editor but don't push the chat around.
 	var queue []string
 	queued := append([]core.QueuedMessage(nil), i.queued...)
+	for _, q := range i.portQueue {
+		queued = append(queued, core.QueuedMessage{Text: q.Input.Text, Images: q.Input.Images, HostEvent: q.Input.HostEvent})
+	}
 	if i.agent != nil {
 		queued = append(queued, i.agent.PendingQueuedMessages()...)
 	}
