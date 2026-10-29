@@ -271,7 +271,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.sessionSearches = i.sessionDialog.StartSearch(ctx)
 		}
 		i.mu.Unlock()
-		if act.Select {
+		if act.Select && act.LiveID != "" {
+			i.portAttachSession(act.LiveID)
+		} else if act.Select {
 			i.applySessionSelection(act.Path)
 		}
 		if act.Delete {

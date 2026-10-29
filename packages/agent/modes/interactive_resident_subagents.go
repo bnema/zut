@@ -1043,6 +1043,10 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 }
 func (i *Interactive) applyForkSelection(msgIdx int) {
 	i.pendingFork = false
+	if i.portMode.Load() {
+		i.portForkSession(msgIdx + 1)
+		return
+	}
 	src := i.currentSessionPath()
 	if src == "" {
 		i.mu.Lock()

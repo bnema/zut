@@ -387,7 +387,14 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
 		i.sessionSearches = nil
 		i.mu.Unlock()
+		if i.portMode.Load() {
+			i.loadLiveSessions(ctx)
+		}
 	case "/fork":
+		if i.portMode.Load() {
+			i.portOpenFork()
+			break
+		}
 		i.doSessionFork()
 	case "/jump":
 		i.openJumpDialog(parts[1:])
@@ -1139,6 +1146,11 @@ func totalTurnsLocked(msgs []provider.Message) int {
 	return n
 }
 func (i *Interactive) canResumeSessionSelection() bool {
+	if i != nil && i.portMode.Load() {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return !i.busy && !i.sessionLoading
+	}
 	if i == nil || i.cfg.LoadSession == nil {
 		return false
 	}
@@ -1187,6 +1199,10 @@ func (i *Interactive) applySessionDeletion(path string) {
 }
 
 func (i *Interactive) applySessionSelection(path string) {
+	if i.portMode.Load() {
+		i.portResumeSession(path)
+		return
+	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
 		i.statusErr = "session loading is not wired in this build"
@@ -1514,4 +1530,139 @@ func (i *Interactive) showLoginResult(success bool, message string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.dialog.ShowResult(success, message)
+}
+
+// loadLiveSessions fills the /sessions live section from client.List off
+// the render loop; the result is applied on the loop.
+func (i *Interactive) loadLiveSessions(ctx context.Context) {
+	client := i.SessionClient()
+	if client == nil {
+		return
+	}
+	self := i.SessionID()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		infos, err := client.List(callCtx)
+		apply := func() {
+			i.mu.Lock()
+			if err != nil {
+				i.statusErr, i.statusOK = "sessions: list live: "+err.Error(), ""
+			} else {
+				i.sessionDialog.SetLive(infos, self)
+			}
+			i.mu.Unlock()
+			i.invalidate()
+		}
+		select {
+		case i.loopCalls <- apply:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// portAttachSession switches to live session id (/sessions live pick).
+func (i *Interactive) portAttachSession(id session.ID) {
+	if id == i.SessionID() {
+		return
+	}
+	i.portSwitchAsync("attach", func(context.Context, SessionClient) (session.ID, error) { return id, nil })
+}
+
+// portResumeSession asks the daemon to resume the on-disk session at path.
+func (i *Interactive) portResumeSession(path string) {
+	cwd := i.SessionInfo().CWD
+	i.portSwitchAsync("resume", func(ctx context.Context, client SessionClient) (session.ID, error) {
+		info, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: path})
+		return session.ID(info.ID), err
+	})
+}
+
+// portForkSession forks the current session file keeping upTo messages.
+func (i *Interactive) portForkSession(upTo int) {
+	info := i.SessionInfo()
+	parent := info.SessionPath
+	if parent == "" {
+		parent = i.currentSessionPath()
+	}
+	if parent == "" {
+		i.ReportError(errors.New("fork: no session file for the attached session"))
+		return
+	}
+	i.portSwitchAsync("fork", func(ctx context.Context, client SessionClient) (session.ID, error) {
+		created, err := client.Create(ctx, session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}})
+		return session.ID(created.ID), err
+	})
+}
+
+// portOpenFork opens the fork-point picker over the daemon transcript.
+func (i *Interactive) portOpenFork() {
+	i.mu.Lock()
+	busy := i.busy || i.sessionLoading
+	msgs := i.view.Messages
+	if busy {
+		i.statusErr, i.statusOK = "fork: wait until the current turn finishes", ""
+	} else if len(msgs) == 0 {
+		i.statusErr, i.statusOK = "fork: transcript is empty; nothing to fork from", ""
+	} else {
+		i.pendingFork = true
+		i.jumpDialog.Open(msgs, "")
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// portSwitchAsync resolves the target session with resolve, then attaches,
+// snapshots and subscribes off the render loop. The loop applies the switch
+// (sessionResultSwitch), which releases the old session.
+func (i *Interactive) portSwitchAsync(label string, resolve func(context.Context, SessionClient) (session.ID, error)) {
+	client := i.SessionClient()
+	if client == nil {
+		i.ReportError(fmt.Errorf("%s: no session client", label))
+		return
+	}
+	ctx := i.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	i.mu.Lock()
+	gen := i.sessionGen
+	i.statusOK, i.statusErr = label+": switching session…", ""
+	i.mu.Unlock()
+	i.invalidate()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		res := sessionResult{kind: sessionResultSwitch, gen: gen}
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		fail := func(err error) {
+			res.err = fmt.Errorf("%s: %w", label, err)
+			i.deliverSessionResult(ctx, res)
+		}
+		id, err := resolve(callCtx, client)
+		if err != nil {
+			fail(err)
+			return
+		}
+		port, err := client.Attach(callCtx, id)
+		if err != nil {
+			fail(fmt.Errorf("attach %s: %w", id, err))
+			return
+		}
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			fail(fmt.Errorf("session snapshot: %w", err))
+			return
+		}
+		subCtx, subCancel := context.WithCancel(ctx)
+		events, err := port.Subscribe(subCtx, snap.Seq)
+		if err != nil {
+			subCancel()
+			fail(fmt.Errorf("session subscribe: %w", err))
+			return
+		}
+		res.id, res.port, res.snap, res.events, res.cancel = id, port, snap, events, subCancel
+		i.deliverSessionResult(ctx, res)
+	}()
 }
