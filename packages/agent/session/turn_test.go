@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -212,7 +213,7 @@ func TestTurnAbortExecutingTool(t *testing.T) {
 	stream <- provider.EventDone{Stop: provider.StopToolUse, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "bash1", Name: "bash", Arguments: []byte(`{"command":"printf 'executing\\n'; sleep 5","timeout":6}`)}}}}
 	close(stream)
 	client.EXPECT().Stream(mock.Anything, mock.Anything).Return((<-chan provider.Event)(stream), nil).Once()
-	ag := core.NewAgent(client, "test", "", core.NewRegistry(&tools.BashTool{CWD: t.TempDir()}))
+	ag := core.NewAgent(client, "test", "", core.NewRegistry(&tools.BashTool{CWD: t.TempDir(), Env: os.Environ()}))
 	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag }))
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
