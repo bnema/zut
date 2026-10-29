@@ -3,40 +3,325 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
+
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
-	"time"
 )
 
-type turnState struct{}
+// turnState owns the agent until assembly/settings replaces it through the
+// existing builder boundary. Deps has no OnAssistant callback: transcript
+// persistence uses SessionStore.FlushSession after assistant messages and turns.
+type turnState struct {
+	agent      *core.Agent
+	busy       bool
+	cancel     context.CancelFunc
+	live       LiveTurn
+	queue      []QueuedInput
+	next       uint64
+	projection turnInfoProjection
+	end        core.EvTurnEnd
+}
 
-func (s *turnState) snapshotInto(out *Snapshot) {}
+func (s *turnState) snapshotInto(out *Snapshot) {
+	out.Live = cloneTurn(s.live)
+	out.Queue = append([]QueuedInput(nil), s.queue...)
+	if s.agent != nil {
+		out.Messages = s.agent.Messages()
+	}
+}
+func cloneTurn(in LiveTurn) LiveTurn {
+	in.Tools = append([]LiveTool(nil), in.Tools...)
+	for i := range in.Tools {
+		in.Tools[i].Args = append([]byte(nil), in.Tools[i].Args...)
+		if in.Tools[i].Result != nil {
+			r := *in.Tools[i].Result
+			in.Tools[i].Result = &r
+		}
+	}
+	return in
+}
 
-// Submit is reserved for the turn cluster implementation.
-func (c *Controller) Submit(ctx context.Context, in Input) error { return errors.New("unimplemented") }
+// Submit starts idle work, queues busy work, or steers the running agent.
+// The request context governs command delivery only, never the agent lifetime.
+func (c *Controller) Submit(ctx context.Context, in Input) error {
+	var result error
+	err := c.call(ctx, func() {
+		if in.Origin == "" {
+			in.Origin = InputOrigin("user")
+		}
+		if in.Origin == "user" {
+			c.turn.projection.LastUserInputAt = c.deps.Clock()
+		}
+		if c.isBusy() {
+			if in.Mode == "steer" && c.turn.agent != nil {
+				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: in.HostEvent})
+			} else {
+				c.enqueue(in)
+			}
+		} else {
+			result = c.startTurn(in)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	return result
+}
 
-// Abort is reserved for the turn cluster implementation.
-func (c *Controller) Abort(ctx context.Context) error { return errors.New("unimplemented") }
+// Abort cancels active execution and resolves pending interactions.
+func (c *Controller) Abort(ctx context.Context) error { return c.call(ctx, func() { c.cancelTurn() }) }
 
-// CancelQueued is reserved for the turn cluster implementation.
+// CancelQueued removes one queued input by its published identifier.
 func (c *Controller) CancelQueued(ctx context.Context, id string) error {
-	return errors.New("unimplemented")
+	var result error
+	err := c.call(ctx, func() {
+		result = ErrUnknownRequest
+		for i, q := range c.turn.queue {
+			if q.ID == id {
+				c.turn.queue = append(c.turn.queue[:i], c.turn.queue[i+1:]...)
+				c.publishQueue()
+				result = nil
+				break
+			}
+		}
+	})
+	if err != nil {
+		return err
+	}
+	return result
 }
 
-// SlideBackQueued is reserved for the turn cluster implementation.
+// SlideBackQueued returns the newest queued input to the editor.
 func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
-	return Input{}, errors.New("unimplemented")
+	var in Input
+	var result error
+	err := c.call(ctx, func() {
+		n := len(c.turn.queue)
+		if n == 0 {
+			result = ErrUnknownRequest
+			return
+		}
+		in = c.turn.queue[n-1].Input
+		c.turn.queue = c.turn.queue[:n-1]
+		c.publishQueue()
+	})
+	if err != nil {
+		return Input{}, err
+	}
+	return in, result
 }
-func (c *Controller) startTurn(in Input) error { return errors.New("unimplemented") }
-func (c *Controller) enqueue(in Input)         {}
+func (c *Controller) publishQueue() {
+	c.publish(EvQueue, QueueEvent{Queue: append([]QueuedInput(nil), c.turn.queue...)})
+}
+func (c *Controller) publishTurnInfo()         { c.updateInfo(); c.publish(EvInfo, InfoEvent{Info: c.Info()}) }
+func (c *Controller) startTurn(in Input) error { return c.runTurn(in, false) }
+
+func (c *Controller) runTurn(in Input, continuing bool) error {
+	if c.isBusy() {
+		return ErrBusy
+	}
+	if c.compactSeam.maybeAutoCompact(in) {
+		return nil
+	}
+	if c.turn.agent == nil {
+		if c.deps.AgentBuilder == nil {
+			return errors.New("session agent builder unavailable")
+		}
+		ag, _, _, err := c.deps.AgentBuilder.BuildAgent()
+		if err != nil {
+			return err
+		}
+		if ag == nil {
+			return errors.New("session agent builder returned nil")
+		}
+		c.turn.agent = ag
+	}
+	if !continuing {
+		c.goalSeam.goalBeforeTurn(&in)
+	}
+	ag := c.turn.agent
+	if !continuing {
+		ag.ResetRepetitionGuard()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.turn.cancel = cancel
+	c.turn.busy = true
+	c.turn.live = LiveTurn{Origin: in.Origin}
+	c.turn.end = core.EvTurnEnd{}
+	c.turn.projection.ContextMax = ag.ContextWindow
+	c.turn.projection.Activity = Activity{Kind: "waiting_model", Since: c.deps.Clock()}
+	c.publishTurnInfo()
+	go func() {
+		// Controller.Done is daemon-owned; client disconnect cannot cancel a turn.
+		finished := make(chan struct{})
+		go func() {
+			select {
+			case <-c.Done():
+				cancel()
+			case <-finished:
+			}
+		}()
+		sink := func(ev core.AgentEvent) { _ = c.call(context.Background(), func() { c.applyAgentEvent(ev) }) }
+		var err error
+		if continuing {
+			err = ag.Continue(ctx, sink)
+		} else if in.HostEvent {
+			ag.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: true})
+			err = ag.Continue(ctx, sink)
+		} else {
+			err = ag.Prompt(ctx, in.Text, in.Images, sink)
+		}
+		_ = c.call(context.Background(), func() { c.finishTurn(ctx, err) })
+		close(finished)
+		cancel()
+	}()
+	return nil
+}
+func (c *Controller) finishTurn(ctx context.Context, err error) {
+	c.turn.busy = false
+	c.turn.cancel = nil
+	c.turn.projection.Activity = Activity{Kind: "idle", Since: c.deps.Clock()}
+	if c.deps.SessionStore != nil {
+		c.deps.SessionStore.FlushSession()
+	}
+	if ctx.Err() != nil || (err != nil && !errors.Is(err, core.ErrRepetitiveLoop)) {
+		kept := c.turn.queue[:0]
+		for _, q := range c.turn.queue {
+			if q.Input.Origin == "scheduler" {
+				kept = append(kept, q)
+			}
+		}
+		c.turn.queue = kept
+		for _, message := range c.turn.agent.DrainQueuedMessages() {
+			if errors.Is(err, core.ErrRepetitiveLoop) && !message.HostEvent {
+				c.enqueue(Input{Text: message.Text, Images: message.Images, Origin: "user"})
+			}
+		}
+		c.publishQueue()
+	}
+	c.publishTurnInfo()
+	if len(c.turn.queue) > 0 {
+		next := c.turn.queue[0]
+		c.turn.queue = c.turn.queue[1:]
+		c.publishQueue()
+		if e := c.startTurn(next.Input); e != nil {
+			c.publish(EvNote, NoteEvent{Note: Note{Text: e.Error()}})
+		}
+		return
+	}
+	if err == nil && ctx.Err() == nil && c.turn.agent.QueuedMessageCount() > 0 {
+		_ = c.runTurn(Input{Origin: c.turn.live.Origin}, true)
+		return
+	}
+	end := c.turn.end
+	if err != nil {
+		end.Err = err
+	}
+	c.goalSeam.goalAfterTurn(end)
+}
+func (c *Controller) enqueue(in Input) {
+	c.turn.next++
+	c.turn.queue = append(c.turn.queue, QueuedInput{ID: fmt.Sprint(c.turn.next), Input: in})
+	c.publishQueue()
+}
+func (c *Controller) tool(id string) *LiveTool {
+	for i := range c.turn.live.Tools {
+		if c.turn.live.Tools[i].ID == id {
+			return &c.turn.live.Tools[i]
+		}
+	}
+	c.turn.live.Tools = append(c.turn.live.Tools, LiveTool{ID: id})
+	return &c.turn.live.Tools[len(c.turn.live.Tools)-1]
+}
 func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
+	switch e := ev.(type) {
+	case core.EvTurnEnd:
+		c.turn.end = e
+	case core.EvTurnStart:
+		c.turn.live.TurnID = e.TurnID
+	case core.EvAssistantStart:
+		c.turn.live.AssistantText = ""
+	case core.EvTextDelta:
+		c.turn.live.AssistantText += e.Delta
+		c.turn.projection.Activity = Activity{Kind: "streaming", Since: c.deps.Clock()}
+	case core.EvToolUseStart:
+		t := c.tool(e.ID)
+		t.Name = e.Name
+		t.State = "composing"
+	case core.EvToolUseArgs:
+		t := c.tool(e.ID)
+		t.Args = append(t.Args, e.Delta...)
+	case core.EvToolUseEnd:
+		c.tool(e.ID).State = "pending"
+	case core.EvToolCall:
+		t := c.tool(e.ID)
+		t.Name = e.Name
+		t.Args = append([]byte(nil), e.Args...)
+		t.State = "pending"
+	case core.EvToolExecutionStarted:
+		t := c.tool(e.ID)
+		t.Name = e.Name
+		t.State = "running"
+		c.turn.projection.Activity = Activity{Kind: "tool", Tool: e.Name, Since: c.deps.Clock()}
+	case core.EvToolProgress:
+		c.tool(e.ID).Progress += e.Text
+	case core.EvToolResult:
+		t := c.tool(e.ID)
+		r := e.Result
+		t.Result = &r
+		t.State = "done"
+		if r.IsError {
+			t.State = "error"
+		}
+	case core.EvUsage:
+		c.turn.projection.Usage = c.turn.projection.Usage.Add(e.Usage)
+		c.turn.projection.ContextUsed = e.Usage.PromptTokens()
+	case core.EvAssistantMessage:
+		if c.deps.SessionStore != nil {
+			c.deps.SessionStore.FlushSession()
+		}
+	}
 	c.goal.observe(ev)
 	c.compact.observe(ev)
 	c.res.observe(ev)
+	c.publishAgent(ev)
+	c.publishTurnInfo()
 }
-func (c *Controller) isBusy() bool            { return false }
-func (c *Controller) turnOrigin() InputOrigin { return "" }
-func (c *Controller) cancelTurn()             {}
+
+// publishAgent mirrors the actor broadcaster with the contract's Agent field;
+// publish accepts Data only, so agent events need this typed envelope.
+func (c *Controller) publishAgent(agent core.AgentEvent) {
+	c.seq++
+	ev := Event{Seq: c.seq, Session: c.id, At: c.deps.Clock(), Kind: EvAgent, Agent: agent}
+	c.ring.append(ev)
+	c.updateInfo()
+	for id, s := range c.subs {
+		if len(s.events) >= cap(s.events)-1 {
+			s.events <- Event{Seq: ev.Seq, Session: c.id, At: ev.At, Kind: EvAttach, Data: AttachEvent{State: AttachStateDetached, Reason: "slow_consumer"}}
+			close(s.events)
+			close(s.stop)
+			delete(c.subs, id)
+		} else {
+			s.events <- ev
+		}
+	}
+}
+func (c *Controller) isBusy() bool { return c.turn.busy }
+func (c *Controller) turnOrigin() InputOrigin {
+	if c.turn.busy {
+		return c.turn.live.Origin
+	}
+	return ""
+}
+func (c *Controller) cancelTurn() {
+	c.goalSeam.goalOnAbort()
+	if c.turn.cancel != nil {
+		c.turn.cancel()
+	}
+	c.confirmSeam.denyAllPending("turn cancelled")
+}
 
 // turnInfoProjection carries turn-owned activity and usage into the actor Info.
 type turnInfoProjection struct {
@@ -46,7 +331,10 @@ type turnInfoProjection struct {
 	LastUserInputAt         time.Time
 }
 
-// turnInfo is implemented by the turn cluster; the skeleton remains idle.
 func (c *Controller) turnInfo() turnInfoProjection {
-	return turnInfoProjection{Activity: Activity{Kind: "idle"}}
+	p := c.turn.projection
+	if p.Activity.Kind == "" {
+		p.Activity.Kind = "idle"
+	}
+	return p
 }
