@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -69,7 +70,14 @@ const (
 
 // sessionDialog is the inline picker shown when the user runs /sessions.
 type sessionDialog struct {
-	active       bool
+	active bool
+	// live lists the daemon's sessions (port mode) above the on-disk rows.
+	// liveFocus moves the cursor into that section; liveCursor indexes it.
+	live       []session.Info
+	liveSelf   session.ID
+	liveFocus  bool
+	liveCursor int
+
 	sessions     []core.SessionSummary
 	baseSessions []core.SessionSummary
 	cursor       int
@@ -137,6 +145,7 @@ type sessionDialog struct {
 // sessionDialogAction is returned by HandleKey.
 type sessionDialogAction struct {
 	Select      bool
+	LiveID      session.ID
 	Delete      bool
 	Path        string
 	Close       bool
@@ -176,6 +185,10 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.loadDone = done
 	d.sessions = nil
 	d.baseSessions = nil
+	d.live = nil
+	d.liveSelf = ""
+	d.liveFocus = false
+	d.liveCursor = 0
 	d.cursor = 0
 	d.viewTop = 0
 	d.renaming = false
@@ -680,6 +693,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		title = "sessions · all"
 	}
 	lines = append(lines, frameHeader(th, title, width))
+	lines = append(lines, d.renderLive(th, width)...)
 	if d.SearchLoading() {
 		lines = append(lines, d.searchLoadingMessage(th))
 	}
@@ -1131,6 +1145,9 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		return sessionDialogAction{StartSearch: d.searchEvents == nil && sessionSearchQuery(d.query)}
 	}
 
+	if act, handled := d.handleLiveKey(k); handled {
+		return act
+	}
 	if d.loading && len(d.sessions) == 0 {
 		if k.Kind == tui.KeyEsc {
 			d.Close()
@@ -1140,6 +1157,9 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	}
 
 navigate:
+	if act, handled := d.handleLiveKey(k); handled {
+		return act
+	}
 	page := d.MaxRows
 	if page <= 0 {
 		page = 10
@@ -1232,4 +1252,92 @@ func removeSessionSummary(summaries []core.SessionSummary, path string) []core.S
 		return append(summaries[:idx], summaries[idx+1:]...)
 	}
 	return summaries
+}
+
+// SetLive installs the daemon's live sessions. self is the attached session.
+// The cursor starts in the live section so the common pick is one Enter.
+func (d *sessionDialog) SetLive(infos []session.Info, self session.ID) {
+	if !d.active {
+		return
+	}
+	d.live = append([]session.Info(nil), infos...)
+	d.liveSelf = self
+	d.liveCursor = 0
+	d.liveFocus = len(d.live) > 0
+}
+
+// liveAttachLabel renders a session's attach state for the live section.
+func liveAttachLabel(info session.Info, self session.ID) string {
+	if session.ID(info.ID) == self {
+		return "this terminal"
+	}
+	if info.Attach == session.AttachStateAttached {
+		return "attached"
+	}
+	return "detached"
+}
+
+func (d *sessionDialog) renderLive(th tui.Theme, width int) []string {
+	if len(d.live) == 0 {
+		return nil
+	}
+	lines := []string{th.FGColor(th.Muted, "live sessions")}
+	for idx, info := range d.live {
+		title := strings.TrimSpace(info.Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		plain := fmt.Sprintf("  %-13s  %s  %s/%s  %s", liveAttachLabel(info, d.liveSelf), sanitizeSessionTreeText(info.ID),
+			sanitizeSessionTreeText(info.Provider), sanitizeSessionTreeText(info.Model), sanitizeSessionTreeText(title))
+		if r := []rune(plain); width > 3 && len(r) > width {
+			plain = string(r[:width-3]) + "..."
+		}
+		if d.liveFocus && idx == d.liveCursor {
+			lines = append(lines, th.PadHighlight(plain, width))
+		} else {
+			lines = append(lines, th.FGColor(th.Muted, plain))
+		}
+	}
+	lines = append(lines, th.FGColor(th.Muted, "resumable sessions"))
+	return lines
+}
+
+// handleLiveKey moves between the live and on-disk sections and resolves
+// Enter on a live row. handled=false lets the on-disk navigation run.
+func (d *sessionDialog) handleLiveKey(k tui.Key) (sessionDialogAction, bool) {
+	if len(d.live) == 0 {
+		return sessionDialogAction{}, false
+	}
+	if !d.liveFocus {
+		if k.Kind == tui.KeyUp && d.cursor == 0 {
+			d.liveFocus = true
+			d.liveCursor = len(d.live) - 1
+			return sessionDialogAction{}, true
+		}
+		return sessionDialogAction{}, false
+	}
+	switch k.Kind {
+	case tui.KeyUp:
+		if d.liveCursor > 0 {
+			d.liveCursor--
+		}
+	case tui.KeyDown:
+		if d.liveCursor < len(d.live)-1 {
+			d.liveCursor++
+		} else if len(d.sessions) > 0 {
+			d.liveFocus = false
+			d.cursor = 0
+		}
+	case tui.KeyEnter:
+		id := session.ID(d.live[d.liveCursor].ID)
+		d.Close()
+		return sessionDialogAction{Select: true, LiveID: id}, true
+	case tui.KeyEsc:
+		d.Close()
+		return sessionDialogAction{Close: true}, true
+	case tui.KeyRune:
+		// Rename and delete act on files; ignore them on live rows.
+		return sessionDialogAction{}, true
+	}
+	return sessionDialogAction{}, true
 }

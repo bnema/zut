@@ -862,6 +862,9 @@ const (
 	sessionResultResnapshot sessionResultKind = iota
 	sessionResultSuccessor
 	sessionResultExit
+	// sessionResultSwitch moves the view to another daemon session
+	// (/sessions pick, /fork). A failure keeps the current session.
+	sessionResultSwitch
 )
 
 // sessionResult is the outcome of an async daemon call, applied by the Run
@@ -998,6 +1001,23 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.subCancel, i.events = res.cancel, res.events
 		i.extNotes = nil
 		i.statusErr, i.statusOK = "", ""
+		i.hydrateLocked(res.snap)
+	case sessionResultSwitch:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		i.sessionGen++
+		// Cancelling the old controlling stream releases it (detach).
+		if i.subCancel != nil {
+			i.subCancel()
+		}
+		i.port, i.sessionID = res.port, res.id
+		i.subCancel, i.events = res.cancel, res.events
+		i.extNotes = nil
+		i.statusErr, i.statusOK = "", "switched to session "+string(res.id)
 		i.hydrateLocked(res.snap)
 	case sessionResultExit:
 		if res.err != nil {
