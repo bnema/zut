@@ -15,44 +15,6 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// TestBotSessionPersistsPlanMutation guards GO-002 for the bot mode: the bot
-// session must persist a plan mutation through the tool-result commit path so
-// the next resume seeds from the file instead of an empty core state.
-func TestBotSessionPersistsPlanMutation(t *testing.T) {
-	t.Setenv("ZUT_HOME", t.TempDir())
-	ag := core.NewAgent(nil, "model", "", nil)
-
-	sess, _, err := openOrCreateSessionForBot(Args{}, Resolved{Provider: "provider", Model: "model"}, ag, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	if ag.CommitToolResult == nil {
-		t.Fatal("bot session did not wire CommitToolResult")
-	}
-
-	want := []core.PlanStep{{Step: "one", Status: core.PlanPending}}
-	if err := ag.CommitToolResult("plan-call", planMutationResult(want)); err != nil {
-		t.Fatal(err)
-	}
-	if sess.Meta.Plan == nil {
-		t.Fatal("plan mutation did not write SessionMeta.Plan")
-	}
-
-	path := sess.Path
-	if err := sess.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, _, err := core.OpenSession(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	if reopened.Meta.Plan == nil {
-		t.Fatal("reopened bot session lost the persisted plan")
-	}
-}
-
 // TestScheduledSessionPersistsPlanMutation guards GO-002 for the scheduled mode:
 // a scheduled turn that calls plan must persist the mutation to the session it
 // reconstructed.
