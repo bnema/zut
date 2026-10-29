@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,7 +50,67 @@ func sessionAssemblyEnv(t *testing.T) string {
 }
 
 func sessionAssemblyArgs(server *httptest.Server) []string {
-	return []string{"--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "--no-ext", "--no-mcp"}
+	return append(sessionAssemblyKeylessArgs(server), "--api-key", "test-key")
+}
+
+func sessionAssemblyKeylessArgs(server *httptest.Server) []string {
+	return []string{"--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--no-ext", "--no-mcp"}
+}
+
+// toolCallProvider answers the first request with one bash call and later
+// requests with a final message, recording each Authorization header.
+func toolCallProvider(t *testing.T, command string, auths *[]string) *httptest.Server {
+	args, _ := json.Marshal(map[string]any{"command": command, "timeout": 10})
+	return toolCallProviderFor(t, "bash", string(args), auths)
+}
+
+func toolCallProviderFor(t *testing.T, tool, arguments string, auths *[]string) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		mu.Lock()
+		*auths = append(*auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("content-type", "text/event-stream")
+		var chunk map[string]any
+		if calls.Add(1) == 1 {
+			chunk = map[string]any{"choices": []any{map[string]any{"index": 0, "finish_reason": "tool_calls",
+				"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call-1", "type": "function",
+					"function": map[string]string{"name": tool, "arguments": arguments}}}}}}}
+		} else {
+			chunk = map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]string{"content": "done"}, "finish_reason": "stop"}}}
+		}
+		chunk["usage"] = map[string]int{"prompt_tokens": 8, "completion_tokens": 2}
+		data, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// promptToolResult runs one turn and returns the text of the bash result.
+func promptToolResult(t *testing.T, ag *core.Agent) (string, bool) {
+	t.Helper()
+	if err := ag.Prompt(context.Background(), "run it", nil, func(core.AgentEvent) {}); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	for _, m := range ag.Messages() {
+		for _, c := range m.Content {
+			if res, ok := c.(provider.ToolResultBlock); ok && res.CallID == "call-1" {
+				var out strings.Builder
+				for _, b := range res.Content {
+					if text, ok := b.(provider.TextBlock); ok {
+						out.WriteString(text.Text)
+					}
+				}
+				return out.String(), res.IsError
+			}
+		}
+	}
+	t.Fatal("no tool result")
+	return "", true
 }
 
 func newTestSessionDeps(t *testing.T, spec session.CreateSpec) (session.Deps, func()) {
@@ -64,6 +127,167 @@ func TestNewSessionDepsRejectsRelativeCWD(t *testing.T) {
 	sessionAssemblyEnv(t)
 	if _, _, err := NewSessionDeps(context.Background(), session.CreateSpec{CWD: "relative", Env: []string{}}, "test"); err == nil {
 		t.Fatal("relative cwd accepted")
+	}
+}
+
+func TestNewSessionDepsResumeRequiresID(t *testing.T) {
+	sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	_, _, err := NewSessionDeps(context.Background(), session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: append(sessionAssemblyArgs(server), "--resume")}, "test")
+	if err == nil || !strings.Contains(err.Error(), "pick on the client") {
+		t.Fatalf("err = %v, want resume-needs-id error", err)
+	}
+}
+
+// The confirmation preview of worktree list runs git under the agent hook's
+// context, so a hook bound to the create context fails once it is cancelled.
+func TestNewSessionDepsOutlivesCreateContext(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	sessionAssemblyEnv(t)
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", repo}, {"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init"}} {
+		if out, err := exec.Command(gitPath, args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	var auths []string
+	server := toolCallProviderFor(t, "worktree", `{"action":"list"}`, &auths)
+	ctx, cancel := context.WithCancel(context.Background())
+	deps, cleanup, err := NewSessionDeps(ctx, session.CreateSpec{CWD: repo, Env: []string{"PATH=" + os.Getenv("PATH")}, Args: append(sessionAssemblyArgs(server), "--no-yolo")}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	cancel()
+	deps.ConfirmGate.AllowAll()
+	ag, _, _, err := deps.AgentBuilder.BuildAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, isErr := promptToolResult(t, ag)
+	if isErr || strings.Contains(out, "context canceled") {
+		t.Fatalf("tool result after create ctx cancel = %q (error=%v)", out, isErr)
+	}
+}
+
+func TestNewSessionDepsCredentialsFollowSpecEnv(t *testing.T) {
+	sessionAssemblyEnv(t)
+	t.Setenv("OPENAI_API_KEY", "")
+	var auths []string
+	server := toolCallProvider(t, "true", &auths)
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: t.TempDir(), Env: []string{"PATH=" + os.Getenv("PATH"), "OPENAI_API_KEY=spec-only-key"}, Args: sessionAssemblyKeylessArgs(server)})
+	ag, _, _, err := deps.AgentBuilder.BuildAgent()
+	if err != nil {
+		t.Fatalf("spec env key not used: %v", err)
+	}
+	promptToolResult(t, ag)
+	if len(auths) == 0 || auths[0] != "Bearer spec-only-key" {
+		t.Fatalf("authorization = %v", auths)
+	}
+
+	t.Setenv("OPENAI_API_KEY", "daemon-only-key")
+	other, _ := newTestSessionDeps(t, session.CreateSpec{CWD: t.TempDir(), Env: []string{"PATH=" + os.Getenv("PATH")}, Args: sessionAssemblyKeylessArgs(server)})
+	if ag, _, _, err := other.AgentBuilder.BuildAgent(); err == nil {
+		t.Fatalf("daemon env key leaked into session (agent %v)", ag != nil)
+	}
+}
+
+// boundHooks binds the late hooks to a real controller and returns its events.
+func boundHooks(t *testing.T, b *sessionBindings) <-chan session.Event {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c := session.NewController(ctx, session.Deps{})
+	events, err := c.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.setHooks(c.ExtensionHooks())
+	return events
+}
+
+func nextEvent(t *testing.T, events <-chan session.Event) session.Event {
+	t.Helper()
+	select {
+	case ev := <-events:
+		return ev
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event")
+		return session.Event{}
+	}
+}
+
+func TestSessionHooksKeepNotifyAndReportDrops(t *testing.T) {
+	b := newSessionBindings()
+	h := b.hooks()
+	h.Notify("ext", "info", "first")
+	for i := 0; i < maxBufferedSessionHookCalls+3; i++ {
+		h.Display("ext", fmt.Sprintf("display-%d", i))
+	}
+	h.Notify("ext", "info", "last")
+	events := boundHooks(t, b)
+
+	var notes, displays []string
+	for len(notes) < 3 || len(displays) < maxBufferedSessionHookCalls {
+		ev := nextEvent(t, events)
+		switch data := ev.Data.(type) {
+		case session.NoteEvent:
+			notes = append(notes, data.Note.Text)
+		case session.ExtDisplayEvent:
+			displays = append(displays, data.Text)
+		}
+	}
+	if !strings.Contains(notes[0], "first") || !strings.Contains(notes[1], "last") || !strings.Contains(notes[2], "dropped 3") {
+		t.Fatalf("notes = %q", notes)
+	}
+	if displays[0] != "display-3" || displays[len(displays)-1] != fmt.Sprintf("display-%d", maxBufferedSessionHookCalls+2) {
+		t.Fatalf("displays kept = %q .. %q", displays[0], displays[len(displays)-1])
+	}
+}
+
+func TestSessionHooksReplayPreservesOrderUnderConcurrency(t *testing.T) {
+	b := newSessionBindings()
+	h := b.hooks()
+	for i := 0; i < 10; i++ {
+		h.Notify("ext", "info", fmt.Sprintf("pre-%d", i))
+	}
+	const writers, perWriter = 4, 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perWriter; i++ {
+				h.Notify("ext", "info", fmt.Sprintf("w%d-%d", w, i))
+			}
+		}(w)
+	}
+	close(start)
+	events := boundHooks(t, b)
+	wg.Wait()
+
+	next := map[string]int{}
+	pre := 0
+	for seen := 0; seen < 10+writers*perWriter; seen++ {
+		text := strings.TrimPrefix(nextEvent(t, events).Data.(session.NoteEvent).Note.Text, "[ext] ")
+		var w, i int
+		if _, err := fmt.Sscanf(text, "w%d-%d", &w, &i); err == nil {
+			key := fmt.Sprint(w)
+			if i != next[key] {
+				t.Fatalf("writer %d out of order: got %d want %d", w, i, next[key])
+			}
+			next[key]++
+			continue
+		}
+		if text != fmt.Sprintf("pre-%d", pre) {
+			t.Fatalf("buffered note %d = %q", pre, text)
+		}
+		pre++
 	}
 }
 
@@ -204,7 +428,7 @@ func TestNewSessionDepsCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	warm()
-	before := runtime.NumGoroutine()
+	before := packageGoroutines()
 
 	deps, cleanup, err := NewSessionDeps(context.Background(), session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: sessionAssemblyArgs(server)}, "test")
 	if err != nil {
@@ -218,11 +442,13 @@ func TestNewSessionDepsCleanup(t *testing.T) {
 	cleanup() // idempotent
 
 	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before {
+	for {
+		after := packageGoroutines()
+		if len(after) <= len(before) {
+			break
+		}
 		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<20)
-			n := runtime.Stack(buf, true)
-			t.Fatalf("goroutines = %d, want <= %d\n%s", runtime.NumGoroutine(), before, buf[:n])
+			t.Fatalf("goroutines in zut packages = %d, want <= %d\n%s", len(after), len(before), strings.Join(after, "\n\n"))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -233,4 +459,22 @@ func TestNewSessionDepsCleanup(t *testing.T) {
 	if _, err := os.Stat(path); err == nil {
 		t.Fatalf("empty session %s was not cleaned up", path)
 	}
+}
+
+// packageGoroutines returns stacks of goroutines running zut code, excluding
+// the test runner itself, so unrelated runtime/net goroutines do not count.
+func packageGoroutines() []string {
+	buf := make([]byte, 1<<22)
+	buf = buf[:runtime.Stack(buf, true)]
+	var out []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if !strings.Contains(g, "github.com/bnema/zut/packages/") {
+			continue
+		}
+		if strings.Contains(g, "packageGoroutines") || strings.Contains(g, "testing.tRunner") && strings.Contains(g, "TestNewSessionDepsCleanup") {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
 }

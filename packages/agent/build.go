@@ -621,7 +621,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// stored credentials. Never execute a stored API key command.
 		cred, method, accountID, credErr = "", "", "", nil
 	} else if provName == "ollama" {
-		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
+		cred, method, accountID, credErr = resolveCredentialFullEnv(context.Background(), provName, args.APIKey, apiKeyCommandExecute, argsGetenv(args))
 		if credErr != nil {
 			// Local ollama needs no key: fall back to the dummy
 			// credential instead of failing resolution.
@@ -630,7 +630,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			hasRealOllamaCred = true
 		}
 	} else {
-		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
+		cred, method, accountID, credErr = resolveCredentialFullEnv(context.Background(), provName, args.APIKey, apiKeyCommandExecute, argsGetenv(args))
 	}
 
 	// Persist --api-key for custom providers so subsequent runs don't
@@ -675,12 +675,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			if other == provName || other == "ollama" || other == provider.LlamaCPPProviderID {
 				continue
 			}
-			if !CredentialAvailable(other) {
+			if !credentialAvailableEnv(other, argsGetenv(args)) {
 				continue
 			}
 			// An explicit launch key belongs to the initially selected provider;
 			// automatic fallback must never reuse it for another provider.
-			c, m, a, err := ResolveCredentialFull(other, "")
+			c, m, a, err := resolveCredentialFullEnv(context.Background(), other, "", apiKeyCommandExecute, argsGetenv(args))
 			provName = other
 			cred, method, accountID, credErr = c, m, a, err
 			break
@@ -874,7 +874,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 	}
 	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
-		managementURL, _, configErr := ResolveLlamaCPPConfig()
+		managementURL, _, configErr := resolveLlamaCPPConfigEnv(context.Background(), apiKeyCommandExecute, argsGetenv(args))
 		if configErr != nil {
 			return Resolved{}, configErr
 		}

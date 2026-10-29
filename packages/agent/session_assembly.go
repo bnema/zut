@@ -30,6 +30,14 @@ import (
 // rather than the process. The returned cleanup releases every resource and
 // is safe to call more than once.
 //
+// ctx bounds startup work only (Resolve, extension readiness, opening the
+// session file). Long-lived pieces (agent tool/assistant hooks, MCP
+// connections and extension processes) use context.WithoutCancel(ctx), so a
+// cancelled create request never tears down a running session; cleanup owns
+// their lifetime. Provider credentials and endpoints are read from spec.Env,
+// as the CLI would from that shell; the auth store keeps its priority.
+// Interactive pickers are never used: --resume needs an ID or ResumePath.
+//
 // Scheduler, Directory, DeferredStore and Clock are left for the daemon
 // factory. The factory must call BindSessionHooks once the controller exists
 // so extension hooks, confirmations and questions reach it.
@@ -48,6 +56,9 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 	if spec.ResumePath != "" {
 		args.Session = spec.ResumePath
 		args.Continue, args.Resume, args.ResumeSessionID = false, false, ""
+	}
+	if args.Resume && args.ResumeSessionID == "" {
+		return session.Deps{}, nil, errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 
 	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings()}
@@ -117,12 +128,13 @@ type sessionAssembly struct {
 }
 
 func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) error {
+	life := context.WithoutCancel(ctx)
 	a.initialCfg, _ = LoadConfig()
 	if a.initialCfg.Goals.MaxTokenBudget != nil && *a.initialCfg.Goals.MaxTokenBudget == 0 {
 		return errors.New("goals.max_token_budget must be greater than zero")
 	}
 
-	manager, stopMCP, err := startSessionMCP(ctx, a.args, a.args.Env)
+	manager, stopMCP, err := startSessionMCP(life, a.args, a.args.Env)
 	if err != nil {
 		return err
 	}
@@ -145,9 +157,9 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	a.extMgr = extensions.New(ZutHome(), a.r.CWD, a.version, a.r.Provider, a.r.Model, a.bind.hooks(),
 		extensions.WithEnv(a.args.Env), extensions.WithCWD(a.r.CWD))
 	var startupErrs []error
-	startupErrs = append(startupErrs, a.extMgr.LoadExplicit(ctx, a.args.Exts)...)
+	startupErrs = append(startupErrs, a.extMgr.LoadExplicit(life, a.args.Exts)...)
 	if !a.args.NoExt {
-		startupErrs = append(startupErrs, a.extMgr.Discover(ctx)...)
+		startupErrs = append(startupErrs, a.extMgr.Discover(life)...)
 	}
 	a.extMgr.WaitForReady(3 * time.Second)
 	for _, e := range startupErrs {
@@ -207,12 +219,12 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 		}
 	})
 
-	return a.openSession(ctx, spec)
+	return a.openSession(ctx, life, spec)
 }
 
 // openSession creates, opens, resumes or forks the session file as
 // runInteractive does, leaving the prepared agent for the first BuildAgent.
-func (a *sessionAssembly) openSession(ctx context.Context, spec session.CreateSpec) error {
+func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.CreateSpec) error {
 	if spec.Fork != nil {
 		root := agentSessionsRoot(ZutHome(), a.args)
 		branch := core.BranchSession
@@ -228,7 +240,7 @@ func (a *sessionAssembly) openSession(ctx context.Context, spec session.CreateSp
 	}
 	var ag *core.Agent
 	if a.r.HasCredential() {
-		ag = a.wireAgentExt(ctx, a.r.newInteractiveAgent())
+		ag = a.wireAgentExt(life, a.r.newInteractiveAgent())
 	}
 	if !a.args.NoSess && ag != nil {
 		sess, _, err := openOrCreateSessionState(ctx, a.args, a.r, ag, a.version)
@@ -239,7 +251,7 @@ func (a *sessionAssembly) openSession(ctx context.Context, spec session.CreateSp
 		if sess != nil {
 			candidate, err := applySessionResume(sess, ag, a.r.Provider, a.r.Model,
 				strings.TrimSpace(a.args.Provider) != "", strings.TrimSpace(a.args.Model) != "",
-				func(p, m string) (*core.Agent, string, string, error) { return a.buildFor(ctx, p, m, false) })
+				func(p, m string) (*core.Agent, string, string, error) { return a.buildFor(life, p, m, false) })
 			if err != nil {
 				return err
 			}
@@ -446,26 +458,43 @@ func (a *sessionAssembly) cleanup() {
 		a.mu.Lock()
 		live := a.live
 		a.mu.Unlock()
-		closeAgentLSP(live)
-		closeResolvedLSP(a.r)
+		var errs []error
+		if live != nil {
+			if err := tools.CloseLSPManagers(live.ToolsSnapshot()); err != nil {
+				errs = append(errs, fmt.Errorf("close agent lsp: %w", err))
+			}
+		}
+		if err := tools.CloseLSPManagers(a.r.ToolRegistry); err != nil {
+			errs = append(errs, fmt.Errorf("close lsp: %w", err))
+		}
 		if a.extMgr != nil {
 			a.extMgr.Stop(2 * time.Second)
 		}
 		if a.reloadDone != nil {
 			<-a.reloadDone
 		}
-		_ = closeSubagentRuntimeFresh(a.runtime)
+		if err := closeSubagentRuntimeFresh(a.runtime); err != nil {
+			errs = append(errs, fmt.Errorf("close subagents: %w", err))
+		}
 		a.transition.Lock()
 		a.mu.Lock()
 		if a.sess != nil {
 			if live != nil {
-				a.baseline, _ = writeNewTranscriptLocked(live, a.sess, a.baseline)
+				var err error
+				if a.baseline, err = writeNewTranscriptLocked(live, a.sess, a.baseline); err != nil {
+					errs = append(errs, fmt.Errorf("flush session: %w", err))
+				}
 			}
-			_ = a.sess.Close()
+			if err := a.sess.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close session: %w", err))
+			}
 			a.sess = nil
 		}
 		a.mu.Unlock()
 		a.transition.Unlock()
+		if err := errors.Join(errs...); err != nil {
+			a.bind.hooks().Notify("session", "error", "cleanup: "+err.Error())
+		}
 		if a.stopMCP != nil {
 			a.stopMCP()
 		}
@@ -976,16 +1005,26 @@ type sessionExtensionHost struct {
 	bind *sessionBindings
 }
 
-// maxBufferedSessionHookCalls bounds hook calls made before the controller binds.
+// maxBufferedSessionHookCalls bounds non-Notify hook calls made before the
+// controller binds. Notify calls are never dropped; when full, the oldest
+// non-Notify call is dropped and the count is reported after binding.
 const maxBufferedSessionHookCalls = 64
+
+type pendingHookCall struct {
+	notify bool
+	call   func(extensions.HostHooks)
+}
 
 // sessionBindings holds placeholders filled once the controller exists.
 type sessionBindings struct {
-	mu      sync.Mutex
-	target  extensions.HostHooks
-	pending []func(extensions.HostHooks)
-	ask     tools.QuestionAsker
-	adapter *lateHostHooks
+	mu        sync.Mutex
+	target    extensions.HostHooks
+	replaying bool
+	pending   []pendingHookCall
+	others    int
+	dropped   int
+	ask       tools.QuestionAsker
+	adapter   *lateHostHooks
 }
 
 func newSessionBindings() *sessionBindings {
@@ -1008,42 +1047,77 @@ func (b *sessionBindings) setAsker(asker tools.QuestionAsker) {
 	b.mu.Unlock()
 }
 
-// setHooks replays buffered calls outside the lock, so a hook that re-enters
-// the adapter cannot deadlock.
+// setHooks replays buffered calls in order outside the lock. Calls arriving
+// during replay keep appending to pending, so ordering is preserved and a hook
+// that re-enters the adapter cannot deadlock.
 func (b *sessionBindings) setHooks(target extensions.HostHooks) {
-	b.mu.Lock()
-	b.target = target
-	pending := b.pending
-	b.pending = nil
-	b.mu.Unlock()
 	if target == nil {
 		return
 	}
-	for _, call := range pending {
-		call(target)
+	b.mu.Lock()
+	if b.target != nil || b.replaying {
+		b.mu.Unlock()
+		return
+	}
+	b.replaying = true
+	if b.dropped > 0 {
+		msg := fmt.Sprintf("dropped %d extension host calls made before the session was ready", b.dropped)
+		b.pending = append(b.pending, pendingHookCall{notify: true, call: func(t extensions.HostHooks) { t.Notify("extensions", "warn", msg) }})
+		b.dropped = 0
+	}
+	for {
+		if len(b.pending) == 0 {
+			b.target = target
+			b.replaying = false
+			b.others = 0
+			b.mu.Unlock()
+			return
+		}
+		next := b.pending[0]
+		b.pending = b.pending[1:]
+		if !next.notify {
+			b.others--
+		}
+		b.mu.Unlock()
+		next.call(target)
+		b.mu.Lock()
 	}
 }
 
 // lateHostHooks forwards extension callbacks to the bound controller hooks
-// and buffers a bounded number of calls until binding.
+// and buffers calls until binding.
 type lateHostHooks struct{ b *sessionBindings }
 
-func (h *lateHostHooks) do(call func(extensions.HostHooks)) {
+func (h *lateHostHooks) enqueue(notify bool, call func(extensions.HostHooks)) {
 	h.b.mu.Lock()
 	target := h.b.target
 	if target == nil {
-		if len(h.b.pending) < maxBufferedSessionHookCalls {
-			h.b.pending = append(h.b.pending, call)
+		b := h.b
+		if !notify && b.others >= maxBufferedSessionHookCalls {
+			for i, p := range b.pending {
+				if !p.notify {
+					b.pending = append(b.pending[:i:i], b.pending[i+1:]...)
+					b.others--
+					b.dropped++
+					break
+				}
+			}
 		}
-		h.b.mu.Unlock()
+		b.pending = append(b.pending, pendingHookCall{notify: notify, call: call})
+		if !notify {
+			b.others++
+		}
+		b.mu.Unlock()
 		return
 	}
 	h.b.mu.Unlock()
 	call(target)
 }
 
+func (h *lateHostHooks) do(call func(extensions.HostHooks)) { h.enqueue(false, call) }
+
 func (h *lateHostHooks) Notify(ext, level, msg string) {
-	h.do(func(t extensions.HostHooks) { t.Notify(ext, level, msg) })
+	h.enqueue(true, func(t extensions.HostHooks) { t.Notify(ext, level, msg) })
 }
 func (h *lateHostHooks) Submit(text string) { h.do(func(t extensions.HostHooks) { t.Submit(text) }) }
 func (h *lateHostHooks) SubmitSlash(text string) {
