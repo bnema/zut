@@ -506,6 +506,7 @@ func (i *Interactive) attachPort(ctx context.Context) error {
 	i.hydrateLocked(snap)
 	i.mu.Unlock()
 	i.syncPortDialogs()
+	i.openDeferredDialog()
 	i.scrollToBottom()
 	i.invalidate()
 	return nil
