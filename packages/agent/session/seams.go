@@ -16,13 +16,16 @@ type turnSeam interface {
 	setAgent(*core.Agent) error
 	startTurn(Input) error
 	enqueue(Input)
+	// enqueueFront puts in at the head of the queue (aborted compaction prompt).
+	enqueueFront(Input)
 	applyAgentEvent(core.AgentEvent)
 	isBusy() bool
 	turnOrigin() InputOrigin
 	// turnInfo projects turn-owned status and accounting into Info.
 	turnInfo() turnInfoProjection
 	cancelTurn()
-	// drainQueued starts the next queued input once compaction releases the transcript.
+	// drainQueued starts the next queued input once compaction releases the
+	// transcript. It is a no-op while busy (turn running or compaction active).
 	drainQueued()
 }
 type confirmSeam interface {

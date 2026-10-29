@@ -19,6 +19,7 @@ import (
 func turnSeams(t *testing.T, c *Controller, ctx context.Context) {
 	t.Helper()
 	compact := newMockcompactSeam(t)
+	compact.EXPECT().compacting().Return(false).Maybe()
 	compact.EXPECT().maybeAutoCompact(mock.Anything).Return(false).Maybe()
 	goal := newMockgoalSeam(t)
 	goal.EXPECT().goalBeforeTurn(mock.Anything).Return().Maybe()
@@ -265,6 +266,7 @@ func TestTurnFollowUpErrorPolicy(t *testing.T) {
 			ag := core.NewAgent(nil, "test", "", nil)
 			// Prevent follow-up execution while inspecting the selected input and queues.
 			compact := newMockcompactSeam(t)
+			compact.EXPECT().compacting().Return(false).Maybe()
 			var selected Input
 			compact.EXPECT().maybeAutoCompact(mock.Anything).RunAndReturn(func(in Input) bool { selected = in; return true }).Maybe()
 			require.NoError(t, c.call(ctx, func() {
@@ -489,6 +491,7 @@ func TestTurnContinuingSkipsAutoCompact(t *testing.T) {
 	c, ctx := newTestController(t)
 	turnSeams(t, c, ctx)
 	compact := newMockcompactSeam(t)
+	compact.EXPECT().compacting().Return(false).Maybe()
 	compactCalls := 0
 	compact.EXPECT().maybeAutoCompact(mock.Anything).RunAndReturn(func(Input) bool { compactCalls++; return false }).Maybe()
 	goal := newMockgoalSeam(t)
@@ -529,6 +532,7 @@ func TestTurnRepetitionRebuildsQueueOnce(t *testing.T) {
 	c, ctx := newTestController(t)
 	turnSeams(t, c, ctx)
 	compact := newMockcompactSeam(t)
+	compact.EXPECT().compacting().Return(false).Maybe()
 	compact.EXPECT().maybeAutoCompact(mock.Anything).Return(true).Once()
 	ag := core.NewAgent(nil, "test", "", nil)
 	require.NoError(t, c.call(ctx, func() {
@@ -567,6 +571,7 @@ func TestTurnHiddenTextOnly(t *testing.T) {
 	c, ctx := newTestController(t)
 	turnSeams(t, c, ctx)
 	compact := newMockcompactSeam(t)
+	compact.EXPECT().compacting().Return(false).Maybe()
 	compact.EXPECT().maybeAutoCompact(mock.Anything).Return(false).Maybe()
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("test").Maybe()

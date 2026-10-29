@@ -237,6 +237,46 @@ func (_c *mockturnSeam_enqueue_Call) RunAndReturn(run func(input Input)) *mocktu
 	return _c
 }
 
+// enqueueFront provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) enqueueFront(input Input) {
+	_mock.Called(input)
+	return
+}
+
+// mockturnSeam_enqueueFront_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'enqueueFront'
+type mockturnSeam_enqueueFront_Call struct {
+	*mock.Call
+}
+
+// enqueueFront is a helper method to define mock.On call
+//   - input Input
+func (_e *mockturnSeam_Expecter) enqueueFront(input any) *mockturnSeam_enqueueFront_Call {
+	return &mockturnSeam_enqueueFront_Call{Call: _e.mock.On("enqueueFront", input)}
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) Run(run func(input Input)) *mockturnSeam_enqueueFront_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 Input
+		if args[0] != nil {
+			arg0 = args[0].(Input)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) Return() *mockturnSeam_enqueueFront_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) RunAndReturn(run func(input Input)) *mockturnSeam_enqueueFront_Call {
+	_c.Run(run)
+	return _c
+}
+
 // isBusy provides a mock function for the type mockturnSeam
 func (_mock *mockturnSeam) isBusy() bool {
 	ret := _mock.Called()

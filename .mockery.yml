@@ -18,6 +18,14 @@ packages:
       Factory:
       Handle:
       AgentBuilder:
+        configs:
+          - dir: packages/agent/session/sessionmocks
+            pkgname: sessionmocks
+            filename: AgentBuilder_mock.go
+          - dir: packages/agent/session
+            pkgname: session
+            filename: agent_builder_mock_test.go
+            structname: mockAgentBuilderLocal
       SessionStore:
       ResidentBuilder:
       SkillStore:

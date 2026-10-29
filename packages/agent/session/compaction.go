@@ -127,9 +127,11 @@ func (c *Controller) beginCompact(next *Input) error {
 					target.RestoreMessages(before)
 				}
 				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
-				// The user aborted compaction, not the prompt: keep it queued.
+				// The user aborted compaction, not the prompt: it runs first
+				// and must not immediately re-trigger the aborted compaction.
 				if next != nil {
-					c.turnSeam.enqueue(*next)
+					c.compact.skipOnce = true
+					c.turnSeam.enqueueFront(*next)
 				}
 				c.turnSeam.drainQueued()
 				return
@@ -186,6 +188,8 @@ func (c *Controller) rescueTurn(cause error, retry Input) {
 			}
 			if err != nil {
 				c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
+				// A failed rescue must not strand input queued behind the failed turn.
+				c.turnSeam.drainQueued()
 			}
 		})
 	}()

@@ -119,9 +119,9 @@ func TestAbortCompactionRequeuesPromptAndDrains(t *testing.T) {
 	started := make(chan struct{})
 	turn.EXPECT().currentAgent().Return(blockingAgent(t, started)).Maybe()
 	next := Input{Text: "pending", Origin: InputOriginUser}
-	// The prompt rejoins the queue behind already-queued input, then the queue drains.
+	// GO-008: the prompt rejoins the FRONT of the queue, then the queue drains.
 	requeued := make(chan struct{})
-	turn.EXPECT().enqueue(next).RunAndReturn(func(Input) { close(requeued) }).Once()
+	turn.EXPECT().enqueueFront(next).RunAndReturn(func(Input) { close(requeued) }).Once()
 	drained := make(chan struct{})
 	turn.EXPECT().drainQueued().RunAndReturn(func() {
 		select {
@@ -231,6 +231,8 @@ func NewLane9Harness(t *testing.T, deps Deps, ag *core.Agent) *Lane9Harness {
 	h.turn.EXPECT().currentAgent().RunAndReturn(func() *core.Agent { return h.agent }).Maybe()
 	h.turn.EXPECT().setAgent(mock.Anything).RunAndReturn(func(a *core.Agent) error { h.agent = a; return nil }).Maybe()
 	h.turn.EXPECT().startTurn(mock.Anything).RunAndReturn(func(in Input) error { h.Retried <- in; return nil }).Maybe()
+	// A failed rescue drains input queued behind the failed turn.
+	h.turn.EXPECT().drainQueued().Return().Maybe()
 	return h
 }
 
