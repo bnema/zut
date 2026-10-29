@@ -2,257 +2,218 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 
-	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/agent/session"
 )
-
-// stderr is a tiny hook so tests can redirect bot logging.
-var stderr = func() io.Writer { return os.Stderr }
 
 // Config holds runner-level settings that are protocol-independent.
 type Config struct {
-	ZutHome      string
-	Provider     string
-	Model        string
-	AuthMethod   string
-	CWD          string
-	RefreshCreds func() error
+	// Subscription marks OAuth/subscription billing in /status.
+	Subscription bool
+	// Log receives diagnostics (never message text or credentials).
+	// Nil discards them.
+	Log io.Writer
 }
 
-// queuedTurn is an inbound message waiting to become a prompt.
-type queuedTurn struct {
-	channelID string
-	messageID string
-	prompt    string
-	images    []provider.ImageBlock
-}
-
-// Runner is the protocol-agnostic bot engine.  It owns the turn queue,
-// dispatches prompts to the agent, and streams replies back through
-// the BotAdapter.
+// Runner is the protocol-agnostic bot engine. It forwards inbound messages
+// to a session Port (origin telegram), and sends each finished bot-originated
+// run's final assistant text back through the BotAdapter. Queueing and
+// turn execution belong to the session.
 type Runner struct {
-	agent   *core.Agent
+	port    session.Port
 	adapter BotAdapter
 	cfg     Config
 
-	mu           sync.Mutex
-	busy         bool
-	activeCtx    context.CancelFunc
-	queue        []queuedTurn
-	lastCtxInput int
-	runCtx       context.Context // set at Run entry; used by goroutines
+	mu      sync.Mutex
+	pending []string // channel IDs waiting for a reply, oldest first
+	working func()   // stops the typing indicator
+	runCtx  context.Context
 }
 
-// NewRunner creates a Runner wired to the given adapter and agent.
-func NewRunner(adapter BotAdapter, agent *core.Agent, cfg Config) *Runner {
-	return &Runner{
-		agent:   agent,
-		adapter: adapter,
-		cfg:     cfg,
+// NewRunner creates a Runner wired to the given adapter and session port.
+func NewRunner(adapter BotAdapter, port session.Port, cfg Config) *Runner {
+	if cfg.Log == nil {
+		cfg.Log = io.Discard
 	}
+	return &Runner{port: port, adapter: adapter, cfg: cfg}
 }
 
-// UpdateRuntimeConfig updates provider/model/auth/cwd at runtime (e.g. after
-// credential refresh).  This is thread-safe.
-func (r *Runner) UpdateRuntimeConfig(provider, model, authMethod, cwd string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cfg.Provider = provider
-	r.cfg.Model = model
-	r.cfg.AuthMethod = authMethod
-	r.cfg.CWD = cwd
-}
-
-// Run starts the adapter's polling loop and blocks until ctx cancels.
+// Run drives the adapter and the session watcher until ctx ends, the adapter
+// fails, or the session closes.
 func (r *Runner) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	r.mu.Lock()
 	r.runCtx = ctx
 	r.mu.Unlock()
+	defer r.stopWorking()
 
-	return r.adapter.Run(ctx, r.handleMessage, r.handleCommand)
+	watchErr := make(chan error, 1)
+	go func() {
+		err := WatchTurns(ctx, r.port, r.onTurn)
+		cancel() // a closed session ends the service
+		watchErr <- err
+	}()
+	adErr := r.adapter.Run(ctx, r.handleMessage, r.handleCommand)
+	cancel()
+	wErr := <-watchErr
+	if errors.Is(wErr, session.ErrClosed) {
+		return wErr
+	}
+	if errors.Is(adErr, context.Canceled) {
+		return nil
+	}
+	return adErr
 }
 
-// handleMessage is called by the adapter for every normal inbound message.
+func (r *Runner) ctx() context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.runCtx == nil {
+		return context.Background()
+	}
+	return r.runCtx
+}
+
+// handleMessage forwards a normal inbound message to the session.
 func (r *Runner) handleMessage(msg InboundMessage) {
 	if msg.Text == "" && len(msg.Images) == 0 {
 		return
 	}
-
+	ctx := r.ctx()
 	r.mu.Lock()
-	r.queue = append(r.queue, queuedTurn{
-		channelID: msg.ChannelID,
-		messageID: msg.MessageID,
-		prompt:    msg.Text,
-		images:    msg.Images,
-	})
-	idle := !r.busy
-	if idle {
-		r.busy = true
+	r.pending = append(r.pending, msg.ChannelID)
+	if r.working == nil {
+		r.working = r.adapter.IndicateWorking(ctx, msg.ChannelID)
 	}
 	r.mu.Unlock()
+	err := r.port.Submit(ctx, session.Input{Text: msg.Text, Images: msg.Images, Mode: session.SubmitModeAuto, Origin: session.InputOriginTelegram})
+	if err != nil {
+		r.mu.Lock()
+		if n := len(r.pending); n > 0 {
+			r.pending = r.pending[:n-1]
+		}
+		r.mu.Unlock()
+		r.stopWorkingIfIdle()
+		fmt.Fprintln(r.cfg.Log, "bot: submit:", err)
+		_ = r.adapter.Send(ctx, msg.ChannelID, "error: "+err.Error(), SendOptions{ReplyToMessageID: msg.MessageID})
+	}
+}
 
-	if idle {
-		go r.drainQueue()
+// onTurn replies to the oldest waiting channel when a bot-originated run ends.
+func (r *Runner) onTurn(t TurnResult) {
+	if t.Origin != session.InputOriginTelegram {
+		return
+	}
+	r.mu.Lock()
+	if len(r.pending) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	ch := r.pending[0]
+	r.pending = r.pending[1:]
+	r.mu.Unlock()
+	r.stopWorkingIfIdle()
+
+	reply := strings.TrimSpace(t.Text)
+	if t.Err != nil && !errors.Is(t.Err, context.Canceled) {
+		reply = "error: " + t.Err.Error()
+	}
+	if reply == "" {
+		reply = "(no reply)"
+	}
+	// Adapter.Send is responsible for chunking to protocol limits.
+	if err := r.adapter.Send(r.ctx(), ch, reply, SendOptions{}); err != nil {
+		fmt.Fprintln(r.cfg.Log, "bot: send reply:", err)
+	}
+}
+
+func (r *Runner) stopWorkingIfIdle() {
+	r.mu.Lock()
+	if len(r.pending) > 0 {
+		r.mu.Unlock()
+		return
+	}
+	stop := r.working
+	r.working = nil
+	r.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+func (r *Runner) stopWorking() {
+	r.mu.Lock()
+	stop := r.working
+	r.working = nil
+	r.pending = nil
+	r.mu.Unlock()
+	if stop != nil {
+		stop()
 	}
 }
 
 // handleCommand is called by the adapter for built-in commands.
 func (r *Runner) handleCommand(cmd Command, msg InboundMessage) {
+	ctx := r.ctx()
+	opts := SendOptions{ReplyToMessageID: msg.MessageID}
 	switch cmd {
 	case CmdStart, CmdHelp:
-		_ = r.adapter.Send(context.Background(), msg.ChannelID,
+		_ = r.adapter.Send(ctx, msg.ChannelID,
 			"send me any message and i'll forward it to zut. attach an image and i'll pass it to the model. commands: /status, /stop, or plain stop.",
-			SendOptions{ReplyToMessageID: msg.MessageID})
+			opts)
 	case CmdStatus:
-		r.sendStatus(msg.ChannelID, msg.MessageID)
+		_ = r.adapter.Send(ctx, msg.ChannelID, r.Status(), opts)
 	case CmdStop:
-		r.cancelActiveTurn(msg.ChannelID, msg.MessageID)
-	}
-}
-
-// drainQueue runs queued turns one at a time until the queue is empty.
-func (r *Runner) drainQueue() {
-	r.mu.Lock()
-	parent := r.runCtx
-	r.mu.Unlock()
-
-	for {
-		r.mu.Lock()
-		if len(r.queue) == 0 {
-			r.busy = false
-			r.activeCtx = nil
-			r.mu.Unlock()
+		info := r.port.Info()
+		if info.Run == session.RunStateIdle {
+			_ = r.adapter.Send(ctx, msg.ChannelID, "nothing running.", opts)
 			return
 		}
-		t := r.queue[0]
-		r.queue = r.queue[1:]
-		turnCtx, cancel := context.WithCancel(parent)
-		r.activeCtx = cancel
-		r.mu.Unlock()
-
-		if r.cfg.RefreshCreds != nil {
-			if err := r.cfg.RefreshCreds(); err != nil {
-				fmt.Fprintln(stderr(), "bot: refresh creds:", err)
-			}
+		if err := r.port.Abort(ctx); err != nil {
+			_ = r.adapter.Send(ctx, msg.ChannelID, "error: "+err.Error(), opts)
+			return
 		}
-		r.runTurn(turnCtx, t)
-		cancel()
+		_ = r.adapter.Send(ctx, msg.ChannelID, "cancelled the current turn.", opts)
 	}
 }
 
-// runTurn sends the queued prompt to the agent and streams the reply.
-func (r *Runner) runTurn(ctx context.Context, t queuedTurn) {
-	stopWorking := r.adapter.IndicateWorking(ctx, t.channelID)
-	defer stopWorking()
-
-	var replyBuilder strings.Builder
-	var lastAssistantText string
-	var turnErr error
-
-	sink := func(ev core.AgentEvent) {
-		switch e := ev.(type) {
-		case core.EvTextDelta:
-			replyBuilder.WriteString(e.Delta)
-		case core.EvUsage:
-			r.mu.Lock()
-			if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {
-				r.lastCtxInput = contextUsed
-			}
-			r.mu.Unlock()
-		case core.EvAssistantMessage:
-			var sb strings.Builder
-			for _, c := range e.Message.Content {
-				if tb, ok := c.(provider.TextBlock); ok {
-					if sb.Len() > 0 {
-						sb.WriteString("\n")
-					}
-					sb.WriteString(tb.Text)
-				}
-			}
-			if sb.Len() > 0 {
-				lastAssistantText = sb.String()
-			}
-			replyBuilder.Reset()
-		case core.EvTurnEnd:
-			if e.Err != nil {
-				turnErr = e.Err
-			}
-		}
-	}
-
-	if err := r.agent.Prompt(ctx, t.prompt, t.images, sink); err != nil {
-		turnErr = err
-	}
-
-	reply := strings.TrimSpace(lastAssistantText)
-	if reply == "" {
-		reply = strings.TrimSpace(replyBuilder.String())
-	}
-	if turnErr != nil && ctx.Err() == nil {
-		reply = "error: " + turnErr.Error()
-	}
-	if reply == "" {
-		reply = "(no reply)"
-	}
-
-	// Adapter.Send is responsible for chunking to protocol limits.
-	if err := r.adapter.Send(context.Background(), t.channelID, reply, SendOptions{}); err != nil {
-		fmt.Fprintln(stderr(), "bot: send reply:", err)
-	}
-}
-
-// cancelActiveTurn aborts the currently running turn, if any.
-func (r *Runner) cancelActiveTurn(channelID, messageID string) {
+// Status renders the /status reply from the session Info.
+func (r *Runner) Status() string {
+	info := r.port.Info()
 	r.mu.Lock()
-	cancel := r.activeCtx
+	waiting := len(r.pending)
 	r.mu.Unlock()
-	opts := SendOptions{ReplyToMessageID: messageID}
-	if cancel != nil {
-		cancel()
-		_ = r.adapter.Send(context.Background(), channelID, "cancelled the current turn.", opts)
-	} else {
-		_ = r.adapter.Send(context.Background(), channelID, "nothing running.", opts)
+	queued := waiting - 1
+	if info.Run == session.RunStateIdle {
+		queued = waiting
 	}
-}
-
-// sendStatus describes agent state to the user.
-func (r *Runner) sendStatus(channelID, messageID string) {
-	r.mu.Lock()
-	busy := r.busy
-	queued := len(r.queue)
-	ctxUsed := r.lastCtxInput
-	providerName := r.cfg.Provider
-	model := r.cfg.Model
-	authMethod := r.cfg.AuthMethod
-	cwd := r.cfg.CWD
-	r.mu.Unlock()
-
-	ctxMax := 0
-	if m, err := provider.FindModel(providerName, model); err == nil {
-		ctxMax = m.ContextWindow
+	if queued < 0 {
+		queued = 0
 	}
-
-	status := FormatStatus(StatusSnapshot{
-		Provider:     providerName,
-		Model:        model,
-		CWD:          cwd,
-		Usage:        r.agent.Cost(),
-		Subscription: authMethod == "oauth",
-		ContextUsed:  ctxUsed,
-		ContextMax:   ctxMax,
-		Busy:         busy,
-		Queued:       queued,
-	})
-
+	status := FormatStatus(StatusFromInfo(info, r.cfg.Subscription, queued))
 	if extra := r.adapter.StatusText(); extra != "" {
 		status += "\n" + extra
 	}
+	return status
+}
 
-	_ = r.adapter.Send(context.Background(), channelID, status, SendOptions{ReplyToMessageID: messageID})
+// StatusFromInfo maps a session Info to the /status snapshot.
+func StatusFromInfo(info session.Info, subscription bool, queued int) StatusSnapshot {
+	return StatusSnapshot{
+		Provider:     info.Provider,
+		Model:        info.Model,
+		CWD:          info.CWD,
+		Usage:        info.Usage,
+		Subscription: subscription,
+		ContextUsed:  info.ContextUsed,
+		ContextMax:   info.ContextMax,
+		Busy:         info.Run != session.RunStateIdle,
+		Queued:       queued,
+	}
 }

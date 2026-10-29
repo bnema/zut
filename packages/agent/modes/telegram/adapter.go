@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,15 @@ type Adapter struct {
 	Client *Client
 	Cfg    *Config // pointer so Run can mutate and persist
 	Save   func(Config) error
+	// Log receives diagnostics; nil uses stderr. Never the token.
+	Log io.Writer
+}
+
+func (a *Adapter) log() io.Writer {
+	if a.Log != nil {
+		return a.Log
+	}
+	return stderr()
 }
 
 // NewAdapter creates a Telegram adapter.
@@ -47,11 +57,11 @@ func (a *Adapter) Run(ctx context.Context,
 		_ = a.Save(*a.Cfg)
 	}
 
-	fmt.Printf("telegram bridge online as @%s (id=%d)\n", me.Username, me.ID)
+	fmt.Fprintf(a.log(), "telegram bot online as @%s (id=%d)\n", me.Username, me.ID)
 	if a.Cfg.AllowedUserID == 0 {
-		fmt.Println("no user paired yet — send /start to the bot from Telegram to claim it")
+		fmt.Fprintln(a.log(), "no user paired yet — send /start to the bot from Telegram to claim it")
 	} else {
-		fmt.Printf("paired with telegram user id %d\n", a.Cfg.AllowedUserID)
+		fmt.Fprintf(a.log(), "paired with telegram user id %d\n", a.Cfg.AllowedUserID)
 	}
 
 	return a.pollLoop(ctx, handler, commandHandler)
@@ -72,7 +82,7 @@ func (a *Adapter) pollLoop(ctx context.Context,
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			fmt.Fprintln(stderr(), "telegram: getUpdates error:", err)
+			fmt.Fprintln(a.log(), "telegram: getUpdates error:", err)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -169,7 +179,7 @@ func (a *Adapter) handleUpdate(ctx context.Context, u Update,
 		if data, mime, err := a.download(ctx, largest.FileID, ""); err == nil {
 			images = append(images, provider.ImageBlock{MimeType: mime, Data: data})
 		} else {
-			fmt.Fprintln(stderr(), "telegram: download photo:", err)
+			fmt.Fprintln(a.log(), "telegram: download photo:", err)
 		}
 	}
 	if msg.Document != nil && bot.IsImageMIME(msg.Document.MimeType) {
