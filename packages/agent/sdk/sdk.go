@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -136,6 +137,7 @@ func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
 		}
 	}
 	args := agent.Args{
+		Env:                    os.Environ(),
 		Mode:                   agent.ModeJSON, // headless
 		Provider:               cfg.Provider,
 		Model:                  cfg.Model,

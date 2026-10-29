@@ -32,6 +32,7 @@ const (
 // LookPath is injectable for deterministic tests; nil uses exec.LookPath.
 type GrepTool struct {
 	CWD      string
+	Env      []string
 	Sandbox  *Sandbox
 	LookPath func(string) (string, error)
 	// ASTAvailable reports whether the ast tool is registered and usable.
@@ -60,8 +61,8 @@ func (t *GrepTool) Schema() json.RawMessage { return json.RawMessage(grepSchema)
 // checked before the executable is selected or started, so a denied path
 // cannot be used to probe or read through the subprocess.
 func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool grep: session cwd not set")
+	if err := requireSessionCWD("grep", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	return t.executeWithTimeout(ctx, raw, progress, grepInternalTimeout)
 }
@@ -81,6 +82,9 @@ func (e *grepTimeoutError) Timeout() bool { return true }
 // executeWithTimeout keeps the production deadline in Execute while allowing
 // deadline behavior to be tested without waiting 30 seconds.
 func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, progress func(string), timeout time.Duration) (core.ToolResult, error) {
+	if t.Env == nil {
+		return core.ToolResult{}, fmt.Errorf("tool grep: session env not set")
+	}
 	args, err := parseGrepArgs(raw)
 	if err != nil {
 		return core.ToolResult{}, err
@@ -116,6 +120,7 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, executable, commandArgs...)
+	cmd.Env = t.Env
 	if info.IsDir() {
 		cmd.Dir = root
 	} else {
@@ -290,7 +295,7 @@ func parseGrepArgs(raw json.RawMessage) (grepArgs, error) {
 func (t *GrepTool) searchExecutable() (string, string, error) {
 	lookup := t.LookPath
 	if lookup == nil {
-		lookup = exec.LookPath
+		lookup = func(name string) (string, error) { return lookPathEnv(t.CWD, t.Env, name) }
 	}
 	if path, err := lookup("rg"); err == nil && path != "" {
 		return "rg", path, nil

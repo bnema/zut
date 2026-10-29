@@ -1402,10 +1402,10 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
 	a.FastMode = r.FastMode
-	if _, ok := r.ToolRegistry["worktree"].(*tools.WorktreeTool); ok {
+	if worktree, ok := r.ToolRegistry["worktree"].(*tools.WorktreeTool); ok {
 		cwd := r.CWD
 		a.HostContext = func(ctx context.Context) string {
-			return tools.WorktreeInventoryContext(ctx, cwd)
+			return tools.WorktreeInventoryContext(ctx, cwd, worktree.Manage.Env)
 		}
 	}
 	return a
@@ -1432,9 +1432,9 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 			Create: &tools.CreateWorktreeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, DefaultRoot: filepath.Join(ZutHome(), "worktrees")},
 			Manage: &tools.ManageWorktreesTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		},
-		"grep":              &tools.GrepTool{CWD: cwd, Sandbox: sandbox},
+		"grep":              &tools.GrepTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		"glob":              &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
-		"ast":               &tools.ASTTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
+		"ast":               &tools.ASTTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"update_goal":       &tools.UpdateGoalTool{},
 		"plan":              &tools.PlanTool{},
 		"ask_user_question": &tools.AskUserQuestionTool{},
@@ -1446,7 +1446,6 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	}
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
-		lspTool.Env = args.Env
 		lspTool.Sandbox = sandbox
 		lspTool.LSPDiagnostics = diagnosticsOnEdit
 		all["lsp"] = lspTool

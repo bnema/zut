@@ -410,7 +410,7 @@ func TestCreateWorktreeCleanupRemovesPartialCheckoutAndBranch(t *testing.T) {
 		worktreePath: worktreePath,
 	}
 
-	if err := plan.cleanupFailedCheckout(context.Background()); err != nil {
+	if err := plan.cleanupFailedCheckout(withToolEnv(context.Background(), os.Environ())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
@@ -699,7 +699,7 @@ func TestCreateWorktreeGitOutputKeepsStderrOutOfSuccessfulOutput(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	output, err := createWorktreeGitOutput(context.Background(), t.TempDir(), "status")
+	output, err := createWorktreeGitOutput(withToolEnv(context.Background(), os.Environ()), t.TempDir(), "status")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +726,7 @@ func TestCreateWorktreeGitCancelsDescendants(t *testing.T) {
 	cwd := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		_, err := createWorktreeGitOutput(ctx, cwd, "status")
+		_, err := createWorktreeGitOutput(withToolEnv(ctx, os.Environ()), cwd, "status")
 		done <- err
 	}()
 

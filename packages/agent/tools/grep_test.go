@@ -22,7 +22,7 @@ func TestGrepPrefersRGAndFallsBackToGrep(t *testing.T) {
 	grep := writeGrepScript(t, "#!/bin/sh\nprintf 'grep selected\\n'\n")
 
 	t.Run("rg", func(t *testing.T) {
-		tool := &GrepTool{CWD: root, LookPath: func(name string) (string, error) {
+		tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: func(name string) (string, error) {
 			switch name {
 			case "rg":
 				return rg, nil
@@ -42,7 +42,7 @@ func TestGrepPrefersRGAndFallsBackToGrep(t *testing.T) {
 	})
 
 	t.Run("grep fallback", func(t *testing.T) {
-		tool := &GrepTool{CWD: root, LookPath: func(name string) (string, error) {
+		tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: func(name string) (string, error) {
 			if name == "rg" {
 				return "", os.ErrNotExist
 			}
@@ -72,7 +72,7 @@ func TestGrepChecksSandboxReadScopeBeforeRunning(t *testing.T) {
 	sandbox := NewSandbox(root)
 	sandbox.Lock()
 	called := false
-	tool := &GrepTool{
+	tool := &GrepTool{Env: os.Environ(),
 		CWD:     root,
 		Sandbox: sandbox,
 		LookPath: func(string) (string, error) {
@@ -93,7 +93,7 @@ func TestGrepNoMatchIsSuccessful(t *testing.T) {
 	skipGrepScriptTestsOnWindows(t)
 	root := t.TempDir()
 	noMatch := writeGrepScript(t, "#!/bin/sh\nexit 1\n")
-	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": noMatch})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: lookupScripts(map[string]string{"rg": noMatch})}
 	result := executeGrepTest(t, tool, root)
 	if result.IsError {
 		t.Fatal("no-match result is an error")
@@ -113,7 +113,7 @@ func TestGrepBoundsOutput(t *testing.T) {
 	skipGrepScriptTestsOnWindows(t)
 	root := t.TempDir()
 	script := writeGrepScript(t, "#!/bin/sh\ni=0\nwhile [ $i -lt 4000 ]; do\n  printf 'matching line %04d with enough padding to hit the cap\\n' $i\n  i=$((i + 1))\ndone\n")
-	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
 	result := executeGrepTest(t, tool, root)
 	text := grepText(result)
 	if !grepDetails(result)["bytes_truncated"].(bool) {
@@ -147,7 +147,7 @@ func TestGrepCancellationPropagates(t *testing.T) {
 	root := t.TempDir()
 	started := filepath.Join(root, "started")
 	script := writeGrepScript(t, "#!/bin/sh\nprintf started > started\nsleep 10\n")
-	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	resultCh := make(chan error, 1)
@@ -184,7 +184,7 @@ func TestGrepInternalTimeoutStopsSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := writeGrepScript(t, "#!/bin/sh\nprintf 'started\\n'\nexec tail -f hold\n")
-	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
 
 	resultCh := make(chan error, 1)
 	go func() {
@@ -212,7 +212,7 @@ func TestGrepCallerDeadlineTakesPrecedenceOverInternalTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := writeGrepScript(t, "#!/bin/sh\nprintf 'started\\n'\nexec tail -f hold\n")
-	tool := &GrepTool{CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, LookPath: lookupScripts(map[string]string{"rg": script})}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
@@ -255,7 +255,7 @@ func TestGrepDoesNotRequireBashPermission(t *testing.T) {
 	permissions.FS.Read = []string{root}
 	permissions.Bash.Mode = "none"
 	sandbox.SetPermissions(permissions)
-	tool := &GrepTool{CWD: root, Sandbox: sandbox, LookPath: lookupScripts(map[string]string{"rg": script})}
+	tool := &GrepTool{Env: os.Environ(), CWD: root, Sandbox: sandbox, LookPath: lookupScripts(map[string]string{"rg": script})}
 	result := executeGrepTest(t, tool, root)
 	if got := grepText(result); got != "read-only search\n" {
 		t.Fatalf("output = %q", got)
@@ -263,7 +263,7 @@ func TestGrepDoesNotRequireBashPermission(t *testing.T) {
 }
 
 func TestGrepSchemaValidation(t *testing.T) {
-	tool := &GrepTool{LookPath: func(string) (string, error) {
+	tool := &GrepTool{Env: os.Environ(), LookPath: func(string) (string, error) {
 		t.Fatal("schema-invalid input reached executable lookup")
 		return "", nil
 	}}

@@ -113,8 +113,8 @@ func pythonExecArgv(exe string) []string {
 }
 
 func (t *PythonTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool python: session cwd not set")
+	if err := requireSessionCWD("python", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool python: session env not set")
@@ -208,6 +208,9 @@ func (t *PythonTool) run(runCtx, parentCtx context.Context, exe, code, cwd strin
 // without claiming every detached descendant was terminated.
 func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, progress func(string)) (pythonExecOutcome, error) {
 	var outcome pythonExecOutcome
+	if toolEnv(runCtx) == nil {
+		return outcome, fmt.Errorf("tool python: session env not set")
+	}
 	cmd := exec.CommandContext(runCtx, exe, "-u", "-B", "-")
 	cmd.Dir = cwd
 	cmd.Env = pythonChildEnv(toolEnv(runCtx))

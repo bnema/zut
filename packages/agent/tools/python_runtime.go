@@ -101,7 +101,7 @@ func (d *pythonResolveDeps) lookPath(name string) (string, error) {
 	if d.LookPath != nil {
 		return d.LookPath(name)
 	}
-	return sessionLookPath(d.CWD, d.Env, name)
+	return lookPathEnv(d.CWD, d.Env, name)
 }
 
 func (d *pythonResolveDeps) isFile(path string) bool {
@@ -165,8 +165,8 @@ func pythonVenvCandidate(cwd, root, goos string) string {
 
 // resolvePythonInterpreter implements the specified priority order.
 func resolvePythonInterpreter(ctx context.Context, deps pythonResolveDeps) (resolvedPython, error) {
-	if deps.CWD == "" {
-		return resolvedPython{}, fmt.Errorf("tool python: session cwd not set")
+	if err := requireSessionCWD("python", deps.CWD); err != nil {
+		return resolvedPython{}, err
 	}
 	if deps.Env == nil {
 		return resolvedPython{}, fmt.Errorf("tool python: session env not set")

@@ -42,8 +42,8 @@ func (t *ReadTool) Description() string {
 func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
 
 func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool read: session cwd not set")
+	if err := requireSessionCWD("read", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	var a readArgs
 	if err := json.Unmarshal(raw, &a); err != nil {

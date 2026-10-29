@@ -26,7 +26,7 @@ func TestGrepChecksDeclaredReadScopeBeforeRunning(t *testing.T) {
 	permissions.FS.Read = []string{allowed}
 	sandbox.SetPermissions(permissions)
 	called := false
-	tool := &GrepTool{
+	tool := &GrepTool{Env: os.Environ(),
 		CWD:     base,
 		Sandbox: sandbox,
 		LookPath: func(string) (string, error) {

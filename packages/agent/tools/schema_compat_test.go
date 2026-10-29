@@ -13,12 +13,12 @@ import (
 func TestToolSchemasAnthropicCompatible(t *testing.T) {
 	schemas := map[string]json.RawMessage{
 		"ask_user_question":   (&AskUserQuestionTool{}).Schema(),
-		"ast":                 (&ASTTool{}).Schema(),
+		"ast":                 (&ASTTool{Env: os.Environ()}).Schema(),
 		"bash":                (&BashTool{Env: []string{}}).Schema(),
 		"create_worktree":     (&CreateWorktreeTool{Env: os.Environ()}).Schema(),
 		"edit":                (&EditTool{}).Schema(),
 		"glob":                (&GlobTool{}).Schema(),
-		"grep":                (&GrepTool{}).Schema(),
+		"grep":                (&GrepTool{Env: os.Environ()}).Schema(),
 		"lsp":                 (&LSPTool{}).Schema(),
 		"manage_worktrees":    (&ManageWorktreesTool{Env: os.Environ()}).Schema(),
 		"plan":                (&PlanTool{}).Schema(),

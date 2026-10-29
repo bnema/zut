@@ -56,8 +56,8 @@ func bashTimeoutDuration(seconds int64) (time.Duration, error) {
 }
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool bash: session cwd not set")
+	if err := requireSessionCWD("bash", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool bash: session env not set")
@@ -86,9 +86,9 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	shell := resolveShell(runtime.GOOS, isExecutableFile, func(name string) (string, error) { return sessionLookPath(cwd, t.Env, name) })
+	shell := resolveShell(runtime.GOOS, isExecutableFile, func(name string) (string, error) { return lookPathEnv(cwd, t.Env, name) })
 	if runtime.GOOS == "windows" {
-		path, err := sessionLookPath(cwd, t.Env, "cmd")
+		path, err := lookPathEnv(cwd, t.Env, "cmd")
 		if err != nil {
 			return core.ToolResult{}, err
 		}
@@ -260,9 +260,4 @@ func shellDescription(shell shellCommand) string {
 		return fmt.Sprintf("Run a Bash command via %s -c. stdout+stderr merged.", shell.path)
 	}
 	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
-}
-
-func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	shell := currentShell()
-	return exec.CommandContext(ctx, shell.path, shell.flag, command)
 }

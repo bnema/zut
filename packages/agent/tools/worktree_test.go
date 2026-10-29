@@ -230,7 +230,7 @@ func TestDeleteMergedBranchKeepsBranchThatMoved(t *testing.T) {
 	commitInWorktree(t, apiPath, "moved.txt")
 	gitTestOutput(t, repo, "worktree", "remove", apiPath)
 
-	err := deleteMergedBranch(context.Background(), repo, "feat/x-api", inspected)
+	err := deleteMergedBranch(withToolEnv(context.Background(), os.Environ()), repo, "feat/x-api", inspected)
 	if err == nil || !strings.Contains(err.Error(), "changed since inspection") {
 		t.Fatalf("error = %v, want moved-branch rejection", err)
 	}
@@ -238,7 +238,7 @@ func TestDeleteMergedBranchKeepsBranchThatMoved(t *testing.T) {
 		t.Fatal("moved branch was deleted")
 	}
 	current := gitTestOutput(t, repo, "rev-parse", "refs/heads/feat/x-api")
-	if err := deleteMergedBranch(context.Background(), repo, "feat/x-api", current); err != nil {
+	if err := deleteMergedBranch(withToolEnv(context.Background(), os.Environ()), repo, "feat/x-api", current); err != nil {
 		t.Fatal(err)
 	}
 }

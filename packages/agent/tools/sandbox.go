@@ -48,7 +48,7 @@ func (s *Sandbox) CheckPath(path string) error {
 	}
 	// Resolve the target to an absolute path. Walk up until we find an
 	// existing parent so symlinks inside nonexistent dirs are still caught.
-	target, err := canonicalOrParent(resolvePath(s.Root, path))
+	target, err := canonicalOrParent(path)
 	if err != nil {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
@@ -77,7 +77,7 @@ func (s *Sandbox) DisplayPath(abs, given string) string {
 	if err != nil {
 		return given
 	}
-	target, err := canonicalOrParent(resolvePath(s.Root, abs))
+	target, err := canonicalOrParent(abs)
 	if err != nil {
 		return given
 	}

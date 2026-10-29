@@ -19,7 +19,7 @@ func realASTTool(t *testing.T, root string) *ASTTool {
 	if err != nil {
 		t.Skip("ast-grep not installed")
 	}
-	return &ASTTool{CWD: root, LookPath: func(string) (string, error) { return binary, nil }}
+	return &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return binary, nil }}
 }
 
 func astText(t *testing.T, tool *ASTTool, raw string) string {
@@ -85,7 +85,7 @@ func TestASTRewriteWritesThroughSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skip("symlinks unavailable:", err)
 	}
-	if err := (&ASTTool{}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}}); err != nil {
+	if err := (&ASTTool{Env: os.Environ()}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}}); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -109,7 +109,7 @@ func TestASTApplyRewriteRejectsSymlinkRetargetedOutsideJail(t *testing.T) {
 	}
 	sandbox := NewSandbox(root)
 	sandbox.Lock()
-	err := (&ASTTool{Sandbox: sandbox}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}})
+	err := (&ASTTool{Env: os.Environ(), Sandbox: sandbox}).applyRewrite([]astChange{{path: link, original: []byte("old"), content: []byte("new"), mode: 0o644}})
 	if err == nil {
 		t.Fatal("rewrite through escaping symlink succeeded")
 	}
@@ -129,7 +129,7 @@ func TestASTGoCallRetryFailureIsReported(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return script, nil }}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return script, nil }}
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"fmt.Errorf($$$)","language":"go","path":"."}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "invalid rule") {
 		t.Fatalf("Execute error = %v", err)
@@ -168,7 +168,7 @@ func TestASTGoCallPatternDetection(t *testing.T) {
 }
 
 func TestASTSchemaAndDescriptionTeachUsage(t *testing.T) {
-	tool := &ASTTool{}
+	tool := &ASTTool{Env: os.Environ()}
 	var schema struct {
 		Required []string `json:"required"`
 	}

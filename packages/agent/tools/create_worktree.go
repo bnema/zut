@@ -75,8 +75,8 @@ func (t *CreateWorktreeTool) Schema() json.RawMessage { return json.RawMessage(c
 // Preview reports the checkout that Execute will produce without modifying the
 // repository or filesystem.
 func (t *CreateWorktreeTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session cwd not set")
+	if err := requireSessionCWD("create_worktree", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session env not set")
@@ -93,8 +93,8 @@ func (t *CreateWorktreeTool) Preview(ctx context.Context, raw json.RawMessage) (
 }
 
 func (t *CreateWorktreeTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session cwd not set")
+	if err := requireSessionCWD("create_worktree", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool create_worktree: session env not set")
@@ -641,9 +641,13 @@ func createWorktreeGitExitCode(err error) int {
 func createWorktreeGitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-c", "core.hooksPath=" + os.DevNull, "-C", dir}, args...)
 	git := "git"
-	if env, ok := ctx.Value(toolEnvKey{}).([]string); ok {
+	env := toolEnv(ctx)
+	if env == nil {
+		return "", fmt.Errorf("git: session env not set")
+	}
+	{
 		var err error
-		git, err = sessionLookPath(dir, env, git)
+		git, err = lookPathEnv(dir, env, git)
 		if err != nil {
 			return "", err
 		}

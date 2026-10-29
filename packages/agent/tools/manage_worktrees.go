@@ -84,8 +84,8 @@ func (t *ManageWorktreesTool) Description() string {
 func (t *ManageWorktreesTool) Schema() json.RawMessage { return json.RawMessage(manageWorktreesSchema) }
 
 func (t *ManageWorktreesTool) Preview(ctx context.Context, raw json.RawMessage) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session cwd not set")
+	if err := requireSessionCWD("manage_worktrees", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session env not set")
@@ -102,8 +102,8 @@ func (t *ManageWorktreesTool) Preview(ctx context.Context, raw json.RawMessage) 
 }
 
 func (t *ManageWorktreesTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session cwd not set")
+	if err := requireSessionCWD("manage_worktrees", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if t.Env == nil {
 		return core.ToolResult{}, fmt.Errorf("tool manage_worktrees: session env not set")
@@ -364,7 +364,11 @@ func (t *ManageWorktreesTool) plan(ctx context.Context, raw json.RawMessage) (ma
 
 // WorktreeInventoryContext returns a model-readable repository inventory. A
 // non-Git working directory has no inventory and is not an error.
-func WorktreeInventoryContext(ctx context.Context, cwd string) string {
+func WorktreeInventoryContext(ctx context.Context, cwd string, env []string) string {
+	if requireSessionCWD("worktree", cwd) != nil || env == nil {
+		return ""
+	}
+	ctx = withToolEnv(ctx, env)
 	root, err := manageWorktreesGit(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ""

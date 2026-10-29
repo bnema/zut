@@ -307,7 +307,7 @@ func TestWindowsRejectsStoreAliasBothNames(t *testing.T) {
 	for _, name := range []string{"python3", "python"} {
 		deps := testPythonDeps()
 		deps.GOOS = "windows"
-		deps.CWD = `C:\proj`
+		deps.CWD = t.TempDir()
 		alias := `C:\Users\test\AppData\Local\Microsoft\WindowsApps\` + name + `.exe`
 		deps.LookPath = func(n string) (string, error) {
 			if n == name {

@@ -35,6 +35,9 @@ func (t *WriteTool) Description() string {
 func (t *WriteTool) Schema() json.RawMessage { return json.RawMessage(writeSchema) }
 
 func (t *WriteTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	if err := requireSessionCWD("write", t.CWD); err != nil {
+		return core.ToolResult{}, err
+	}
 	var a writeArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)

@@ -16,7 +16,7 @@ import (
 )
 
 func TestASTToolReportsMissingBackend(t *testing.T) {
-	tool := &ASTTool{CWD: t.TempDir(), LookPath: func(string) (string, error) { return "", os.ErrNotExist }}
+	tool := &ASTTool{Env: os.Environ(), CWD: t.TempDir(), LookPath: func(string) (string, error) { return "", os.ErrNotExist }}
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"$A","language":"go","path":"."}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "ast-grep executable ('ast-grep' or 'sg') not found") {
 		t.Fatalf("Execute error = %v", err)
@@ -33,7 +33,7 @@ func TestASTToolReportsCaptureLimitWithoutBrokenPipe(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return script, nil }}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return script, nil }}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"$A","language":"go","path":"."}`), nil)
 	if err != nil || !strings.Contains(result.Content[0].(provider.TextBlock).Text, "search output truncated") {
 		t.Fatalf("search result = %+v, error = %v", result, err)
@@ -54,7 +54,7 @@ func TestASTToolExecutesWithoutShellAndTracksDiscoveredFiles(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return script, nil }}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return script, nil }}
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"fmt.Errorf($MSG)","language":"go","path":"."}`), nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -68,7 +68,7 @@ func TestASTToolExecutesWithoutShellAndTracksDiscoveredFiles(t *testing.T) {
 func TestASTToolPrefersArchExecutableName(t *testing.T) {
 	root := t.TempDir()
 	var lookedUp []string
-	tool := &ASTTool{CWD: root, LookPath: func(name string) (string, error) {
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(name string) (string, error) {
 		lookedUp = append(lookedUp, name)
 		if name == "ast-grep" {
 			return "/usr/bin/ast-grep", nil
@@ -92,7 +92,7 @@ func TestASTToolRewritePreviewAndExecute(t *testing.T) {
 	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return binary, nil }}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return binary, nil }}
 	args := json.RawMessage(`{"pattern":"println($A)","language":"go","path":".","rewrite":"fmt.Println($A)"}`)
 	preview, err := tool.Preview(context.Background(), args)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestASTRewriteFormatsGoSource(t *testing.T) {
 	}
 	start := bytes.Index(original, []byte("return left + right"))
 	match := astTestMatch(path, "return left + right", "return left + right\n\n", start, start+len("return left + right"))
-	plan, err := (&ASTTool{CWD: root}).planRewrite(root, astArgs{Language: "go", Rewrite: "{$$$BODY}"}, []astMatch{match})
+	plan, err := (&ASTTool{Env: os.Environ(), CWD: root}).planRewrite(root, astArgs{Language: "go", Rewrite: "{$$$BODY}"}, []astMatch{match})
 	if err != nil {
 		t.Fatalf("planRewrite: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestASTRewriteUsesOutermostNestedMatch(t *testing.T) {
 		astTestMatch(path, "f(g(x))", "WRAP(f)", 27, 34),
 		astTestMatch(path, "g(x)", "WRAP(g)", 29, 33),
 	}
-	plan, err := (&ASTTool{CWD: root}).planRewrite(root, astArgs{Rewrite: "WRAP($A)"}, matches)
+	plan, err := (&ASTTool{Env: os.Environ(), CWD: root}).planRewrite(root, astArgs{Rewrite: "WRAP($A)"}, matches)
 	if err != nil {
 		t.Fatalf("planRewrite: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestASTFallbackRejectsOtherSG(t *testing.T) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'shadow-utils 1.0'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tool := &ASTTool{LookPath: func(name string) (string, error) {
+	tool := &ASTTool{Env: os.Environ(), LookPath: func(name string) (string, error) {
 		if name == "sg" {
 			return path, nil
 		}
@@ -210,7 +210,7 @@ func TestASTRewriteFormattingDependsOnOriginal(t *testing.T) {
 			}
 			start := strings.Index(tc.original, "println(1)")
 			match := astTestMatch(path, "println(1)", tc.replacement, start, start+len("println(1)"))
-			plan, err := (&ASTTool{CWD: root}).planRewrite(root, astArgs{Language: "go", Rewrite: "x"}, []astMatch{match})
+			plan, err := (&ASTTool{Env: os.Environ(), CWD: root}).planRewrite(root, astArgs{Language: "go", Rewrite: "x"}, []astMatch{match})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -230,7 +230,7 @@ func TestASTScopeAndReadOnly(t *testing.T) {
 	}
 	sandbox := NewSandbox(root)
 	sandbox.Lock()
-	tool := &ASTTool{CWD: root, Sandbox: sandbox}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, Sandbox: sandbox}
 	// Marshal the path: raw Windows backslashes are invalid JSON escapes.
 	args, err := json.Marshal(map[string]string{"pattern": "$A", "language": "go", "path": path})
 	if err != nil {
@@ -253,7 +253,7 @@ func TestASTScopeAndReadOnly(t *testing.T) {
 	permissions.FS.Write = []string{root}
 	unlocked := NewSandbox(root)
 	unlocked.SetPermissions(permissions)
-	if _, err := (&ASTTool{CWD: root, Sandbox: unlocked}).planRewrite(root, astArgs{Rewrite: "module"}, []astMatch{match}); err == nil || !strings.Contains(err.Error(), "outside declared scopes") {
+	if _, err := (&ASTTool{Env: os.Environ(), CWD: root, Sandbox: unlocked}).planRewrite(root, astArgs{Rewrite: "module"}, []astMatch{match}); err == nil || !strings.Contains(err.Error(), "outside declared scopes") {
 		t.Fatalf("permission: %v", err)
 	}
 }
@@ -264,7 +264,7 @@ func TestASTWarningsAndExitError(t *testing.T) {
 	}
 	root := t.TempDir()
 	script := filepath.Join(root, "ast-grep")
-	tool := &ASTTool{CWD: root, LookPath: func(string) (string, error) { return script, nil }}
+	tool := &ASTTool{Env: os.Environ(), CWD: root, LookPath: func(string) (string, error) { return script, nil }}
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'Pattern contains an ERROR node' >&2\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestASTApplyRewriteValidatesAllBeforeWriting(t *testing.T) {
 	if err := os.WriteFile(second, []byte("changed"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&ASTTool{}).applyRewrite(changes); err == nil || !strings.Contains(err.Error(), "changed while applying") {
+	if err := (&ASTTool{Env: os.Environ()}).applyRewrite(changes); err == nil || !strings.Contains(err.Error(), "changed while applying") {
 		t.Fatalf("error = %v", err)
 	}
 	if got, _ := os.ReadFile(first); string(got) != "old" {
@@ -307,7 +307,7 @@ func TestASTApplyRewriteValidatesAllBeforeWriting(t *testing.T) {
 	if err := os.WriteFile(second, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&ASTTool{}).applyRewrite(changes); err != nil {
+	if err := (&ASTTool{Env: os.Environ()}).applyRewrite(changes); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(first); string(got) != "new" {

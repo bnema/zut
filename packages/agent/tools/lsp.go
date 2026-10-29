@@ -25,9 +25,7 @@ const (
 // the model. Manager owns processes and is normally shared by all tool calls
 // in one agent session.
 type LSPTool struct {
-	CWD string
-	// Env is the explicit session environment; nil is invalid.
-	Env            []string
+	CWD            string
 	Manager        *lsp.Manager
 	Sandbox        *Sandbox
 	LSPDiagnostics bool
@@ -66,11 +64,8 @@ func (t *LSPTool) Description() string {
 func (t *LSPTool) Schema() json.RawMessage { return json.RawMessage(lspSchema) }
 
 func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool lsp: session cwd not set")
-	}
-	if t.Env == nil {
-		return core.ToolResult{}, fmt.Errorf("tool lsp: session env not set")
+	if err := requireSessionCWD("lsp", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	if ctx == nil {
 		ctx = context.Background()

@@ -90,7 +90,7 @@ func TestWorktreeInventoryContextReportsRepositoryWorktrees(t *testing.T) {
 	gitTestOutput(t, repo, "branch", "merged")
 	gitTestOutput(t, repo, "worktree", "add", path, "merged")
 
-	contextText := WorktreeInventoryContext(context.Background(), repo)
+	contextText := WorktreeInventoryContext(context.Background(), repo, os.Environ())
 	wantPath, err := canonicalOrParent(path)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestDeleteMergedBranchRefusesSymbolicRef(t *testing.T) {
 	gitTestOutput(t, repo, "branch", "side")
 	gitTestOutput(t, repo, "symbolic-ref", "refs/heads/side", "refs/heads/"+mainBranch)
 
-	err := deleteMergedBranch(context.Background(), repo, "side", head)
+	err := deleteMergedBranch(withToolEnv(context.Background(), os.Environ()), repo, "side", head)
 	if err == nil || !strings.Contains(err.Error(), "symbolic") {
 		t.Fatalf("error = %v, want symbolic-ref rejection", err)
 	}

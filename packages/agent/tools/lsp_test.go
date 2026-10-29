@@ -17,7 +17,6 @@ import (
 
 func TestLSPToolSchemaAndFormatting(t *testing.T) {
 	tool := NewLSPTool(t.TempDir(), lsp.NewManager())
-	tool.Env = []string{}
 	var schema map[string]any
 	if err := json.Unmarshal(tool.Schema(), &schema); err != nil {
 		t.Fatal(err)
@@ -54,7 +53,6 @@ func TestLSPToolGlobRespectsJailForSymlinkMatches(t *testing.T) {
 	sandbox := NewSandbox(root)
 	sandbox.Lock()
 	tool := NewLSPTool(root, lsp.NewManager())
-	tool.Env = []string{}
 	tool.Sandbox = sandbox
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"action":"diagnostics","path":"*.go","run_cli":false}`), nil)
 	if err != nil {

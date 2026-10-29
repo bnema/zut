@@ -50,8 +50,8 @@ func (t *GlobTool) Schema() json.RawMessage { return json.RawMessage(globSchema)
 // pattern. The search root is resolved and checked before traversal so a
 // denied path cannot be used to probe the filesystem.
 func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	if t.CWD == "" {
-		return core.ToolResult{}, fmt.Errorf("tool glob: session cwd not set")
+	if err := requireSessionCWD("glob", t.CWD); err != nil {
+		return core.ToolResult{}, err
 	}
 	args, err := parseGlobArgs(raw)
 	if err != nil {
