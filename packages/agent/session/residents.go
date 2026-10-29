@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -16,6 +17,9 @@ type residentState struct {
 	coordinator *orchestration.Coordinator
 	specs       map[string]subagents.ResidentChildSpec
 	tasks       map[string]string
+	inboxMu     sync.Mutex
+	inbox       []func()
+	wake        chan struct{}
 }
 
 func (s *residentState) snapshotInto(out *Snapshot) {}
@@ -64,16 +68,31 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 	return out
 }
 
-func (s *residentState) observe(ev core.AgentEvent) {
-	if s.coordinator == nil {
-		return
+// Agent turn events include retry boundaries, not manager-run boundaries.
+func (s *residentState) observe(core.AgentEvent) {}
+
+func (c *Controller) residentsRunStarted() {
+	c.res.deliver(c.res.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerStarted}).Actions)
+}
+func (c *Controller) residentsRunEnded() {
+	c.res.deliver(c.res.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions)
+}
+
+// postResident queues observer work without waiting for the actor. A single
+// dispatcher preserves callback order, including acceptance before completion.
+// The mutex also serializes tracker acceptance and shutdown checks.
+func (c *Controller) postResident(fn func()) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
 	}
-	switch ev.(type) {
-	case core.EvTurnStart:
-		s.deliver(s.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerStarted}).Actions)
-	case core.EvTurnEnd:
-		s.deliver(s.coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions)
+	c.res.inbox = append(c.res.inbox, fn)
+	select {
+	case c.res.wake <- struct{}{}:
+	default:
 	}
+	return true
 }
 
 func (s *residentState) deliver(actions []orchestration.Action) {
@@ -89,9 +108,7 @@ func (s *residentState) deliver(actions []orchestration.Action) {
 	}
 }
 
-// residentsInit installs observers before work can be accepted. Callbacks enter
-// the actor synchronously so an accepted turn is tracked before its completion.
-// Manager operations must run outside the actor (as ResidentAction does).
+// residentsInit installs non-blocking, ordered observers before work is accepted.
 func (c *Controller) residentsInit() {
 	s := &c.res
 	s.controller = c
@@ -99,15 +116,41 @@ func (c *Controller) residentsInit() {
 	s.coordinator = orchestration.New()
 	s.specs = make(map[string]subagents.ResidentChildSpec)
 	s.tasks = make(map[string]string)
+	s.wake = make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-s.wake:
+			}
+			for {
+				s.inboxMu.Lock()
+				if len(s.inbox) == 0 {
+					s.inboxMu.Unlock()
+					break
+				}
+				fn := s.inbox[0]
+				s.inbox[0] = nil
+				s.inbox = s.inbox[1:]
+				s.inboxMu.Unlock()
+				if c.call(context.Background(), fn) != nil {
+					return
+				}
+			}
+		}
+	}()
 	m := c.deps.ResidentManager
 	if m == nil {
 		return
 	}
 	m.SetAcceptedObserver(func(spec subagents.ResidentChildSpec, turnID, prompt string) {
-		_ = c.call(context.Background(), func() {
-			if !s.tracker.TrackResident(spec.ID, turnID) {
-				return
-			}
+		s.inboxMu.Lock()
+		defer s.inboxMu.Unlock()
+		if !s.tracker.TrackResident(spec.ID, turnID) {
+			return
+		}
+		c.postResident(func() {
 			if _, exists := s.specs[spec.ID]; !exists {
 				s.specs[spec.ID] = spec
 				line, _, _ := strings.Cut(prompt, "\n")
@@ -128,22 +171,28 @@ func (c *Controller) residentsInit() {
 		})
 	})
 	m.SetCompletionObserver(func(completion subagents.ResidentCompletion) bool {
-		accepted := false
-		err := c.call(context.Background(), func() {
-			accepted = s.tracker.Report(completion.Completion())
-			if !accepted {
-				return
-			}
-			batch, _ := s.tracker.WaitReady(context.Background())
+		s.inboxMu.Lock()
+		defer s.inboxMu.Unlock()
+		select {
+		case <-c.done:
+			return false
+		default:
+		}
+		if !s.tracker.Report(completion.Completion()) {
+			return false
+		}
+		batch, _ := s.tracker.WaitReady(context.Background())
+		return c.postResident(func() {
 			for _, item := range batch {
 				s.deliver(s.coordinator.Apply(orchestration.Event{Kind: orchestration.EventWorkerFinished, WorkerID: item.AgentID + "\x00" + item.TurnID, Completion: item}).Actions)
 			}
 			c.publish(EvInfo, InfoEvent{Info: c.residentInfo()})
 		})
-		return err == nil && accepted
 	})
 	m.SetUpdateObserver(func(string) {
-		_ = c.call(context.Background(), func() { c.publish(EvInfo, InfoEvent{Info: c.residentInfo()}) })
+		s.inboxMu.Lock()
+		defer s.inboxMu.Unlock()
+		c.postResident(func() { c.publish(EvInfo, InfoEvent{Info: c.residentInfo()}) })
 	})
 }
 

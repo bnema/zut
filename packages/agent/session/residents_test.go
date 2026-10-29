@@ -32,8 +32,12 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 			accepted(subagents.ResidentChildSpec{ID: "child", Workspace: "/workspace"}, "turn", strings.Repeat("界", 130)+"\nignored")
 			accepted(subagents.ResidentChildSpec{ID: "child"}, "turn", "duplicate")
 			update("child")
-			snapshot, err := c.Snapshot(ctx)
-			require.NoError(t, err)
+			var snapshot Snapshot
+			require.Eventually(t, func() bool {
+				var err error
+				snapshot, err = c.Snapshot(ctx)
+				return err == nil && snapshot.Info.Residents[0].Workspace != ""
+			}, time.Second, time.Millisecond)
 			require.Equal(t, "/workspace", snapshot.Info.Residents[0].Workspace)
 			require.Len(t, []rune(snapshot.Info.Residents[0].Task), 120)
 			completion := subagents.ResidentCompletion{ChildID: "child", TurnID: "turn", Summary: "finished"}
