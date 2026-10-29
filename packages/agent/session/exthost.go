@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extensions"
@@ -14,6 +15,11 @@ import (
 // extState retains terminal-free chrome and extension ownership of notes.
 // Note has no owner field on the public contract, so ownership stays internal.
 type extState struct {
+	mu         sync.Mutex
+	mailbox    []func()
+	wake       chan struct{}
+	port       Port
+	domainTail <-chan struct{}
 	chrome     ExtChrome
 	notes      []ownedExtNote
 	alertOwner string
@@ -67,7 +73,54 @@ var (
 
 // ExtensionHooks returns the adapter assembly passes to the extension manager.
 func (c *Controller) ExtensionHooks() extensions.HostHooks { return extHooks{c} }
-func (h extHooks) mutate(fn func())                        { _ = h.c.call(context.Background(), fn) }
+
+// mutate never waits for the actor, including when a manager callback originates
+// on that actor. The mailbox is lossless and preserves enqueue order.
+func (h extHooks) mutate(fn func()) {
+	s := &h.c.ext
+	s.mu.Lock()
+	s.mailbox = append(s.mailbox, fn)
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+func (s *extState) init() { s.wake = make(chan struct{}, 1) }
+func (s *extState) drain() {
+	s.mu.Lock()
+	jobs := s.mailbox
+	s.mailbox = nil
+	s.mu.Unlock()
+	for _, job := range jobs {
+		job()
+	}
+}
+
+// domain runs Port calls off-actor, in mailbox order, because Port calls may
+// themselves wait for the actor. Tests use the existing generated Port mock.
+func (h extHooks) domain(fn func(Port) error) {
+	previous := h.c.ext.domainTail
+	done := make(chan struct{})
+	h.c.ext.domainTail = done
+	port := h.c.ext.port
+	if port == nil {
+		port = h.c
+	}
+	go func() {
+		defer close(done)
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-h.c.done:
+				return
+			}
+		}
+		if err := fn(port); err != nil {
+			h.Notify("extensions", "error", err.Error())
+		}
+	}()
+}
 func (h extHooks) chrome() {
 	h.c.publish(EvExtChrome, ExtChromeEvent{ExtChrome: cloneChrome(h.c.ext.chrome)})
 }
@@ -109,9 +162,11 @@ func (h extHooks) Submit(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	if err := h.c.Submit(context.Background(), Input{Text: text, Origin: InputOriginExtension}); err != nil {
-		h.Notify("extensions", "error", err.Error())
-	}
+	h.mutate(func() {
+		h.domain(func(p Port) error {
+			return p.Submit(context.Background(), Input{Text: text, Origin: InputOriginExtension})
+		})
+	})
 }
 func (h extHooks) Insert(text string) {
 	h.mutate(func() { h.c.publish(EvExtInsert, ExtInsertEvent{Text: text}) })
@@ -125,22 +180,21 @@ func (h extHooks) SubmitSlash(text string) {
 	if !strings.HasPrefix(text, "/") {
 		return
 	}
-	attached := false
 	h.mutate(func() {
-		attached = h.c.attach == AttachStateAttached
-		if attached {
+		if h.c.attach == AttachStateAttached {
 			h.c.publish(EvExtInsert, ExtInsertEvent{Text: text, Submit: true})
+			return
 		}
+		h.domain(func(p Port) error { return h.detachedSlash(p, text) })
 	})
-	if attached {
-		return
-	}
+}
+func (h extHooks) detachedSlash(pport Port, text string) error {
 	fields := strings.Fields(text)
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 	var err error
 	switch fields[0] {
 	case "/compact":
-		err = h.c.Compact(context.Background())
+		err = pport.Compact(context.Background())
 	case "/model":
 		p, m, ok := strings.Cut(arg, "/")
 		if !ok {
@@ -149,9 +203,9 @@ func (h extHooks) SubmitSlash(text string) {
 		}
 		if m == "" {
 			h.Notify("extensions", "info", text)
-			return
+			return nil
 		}
-		err = h.c.SetModel(context.Background(), p, m)
+		err = pport.SetModel(context.Background(), p, m)
 	case "/goal":
 		cmd := GoalCommand{Op: "set", Objective: arg}
 		switch arg {
@@ -161,14 +215,12 @@ func (h extHooks) SubmitSlash(text string) {
 		if arg == "" {
 			cmd.Op = "status"
 		}
-		err = h.c.SetGoal(context.Background(), cmd)
+		err = pport.SetGoal(context.Background(), cmd)
 	default:
 		h.Notify("extensions", "info", text)
-		return
+		return nil
 	}
-	if err != nil {
-		h.Notify("extensions", "error", err.Error())
-	}
+	return err
 }
 func (h extHooks) SetStatus(ext, key, level, text string) {
 	if strings.TrimSpace(ext) == "" || strings.TrimSpace(key) == "" {
@@ -219,12 +271,13 @@ func (h extHooks) ClearWidget(ext, id string) {
 		h.chrome()
 	})
 }
+func clonePanel(p ExtPanel) ExtPanel { p.Spec.Lines = append([]string(nil), p.Spec.Lines...); return p }
 func (h extHooks) OpenPanel(ext string, spec extproto.PanelSpec) {
 	spec.Lines = append([]string(nil), spec.Lines...)
 	h.mutate(func() {
 		p := ExtPanel{Ext: ext, Spec: spec}
 		h.c.ext.chrome.Panels = []ExtPanel{p}
-		h.c.publish(EvExtPanel, ExtPanelEvent{Op: "open", Panel: p})
+		h.c.publish(EvExtPanel, ExtPanelEvent{Op: "open", Panel: clonePanel(p)})
 	})
 }
 func (h extHooks) UpdatePanel(ext, id, title string, lines []string, footer string) {
@@ -236,7 +289,7 @@ func (h extHooks) UpdatePanel(ext, id, title string, lines []string, footer stri
 				p.Spec.Lines = lines
 				p.Spec.Footer = footer
 				h.c.ext.chrome.Panels[i] = p
-				h.c.publish(EvExtPanel, ExtPanelEvent{Op: "update", Panel: p})
+				h.c.publish(EvExtPanel, ExtPanelEvent{Op: "update", Panel: clonePanel(p)})
 			}
 		}
 	})
@@ -246,7 +299,7 @@ func (h extHooks) ClosePanel(ext, id string) {
 		for i, p := range h.c.ext.chrome.Panels {
 			if p.Ext == ext && p.Spec.ID == id {
 				h.c.ext.chrome.Panels = append(h.c.ext.chrome.Panels[:i], h.c.ext.chrome.Panels[i+1:]...)
-				h.c.publish(EvExtPanel, ExtPanelEvent{Op: "close", Panel: p})
+				h.c.publish(EvExtPanel, ExtPanelEvent{Op: "close", Panel: clonePanel(p)})
 				break
 			}
 		}
@@ -296,7 +349,20 @@ func (c *Controller) ReloadExtensions(ctx context.Context) error {
 	if err != nil {
 		level = "error"
 	}
-	c.ExtensionHooks().Notify("extensions", level, fmt.Sprintf("reloaded: %d stopped, %d loaded (%d ready)", stats.Stopped, stats.Loaded, stats.Ready))
+	message := fmt.Sprintf("reloaded: %d stopped, %d loaded (%d ready)", stats.Stopped, stats.Loaded, stats.Ready)
+	if len(stats.Errors) > 0 {
+		message += fmt.Sprintf(", %d error(s)", len(stats.Errors))
+		var details []string
+		for _, failure := range stats.Errors {
+			if failure != nil {
+				details = append(details, failure.Error())
+			}
+		}
+		if len(details) > 0 {
+			message += ": " + strings.Join(details, "; ")
+		}
+	}
+	c.ExtensionHooks().Notify("extensions", level, message)
 	return err
 }
 

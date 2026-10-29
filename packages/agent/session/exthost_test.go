@@ -10,6 +10,7 @@ import (
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,7 +75,14 @@ func TestExtensionSlashRouting(t *testing.T) {
 	c, ctx := extController(t, session.Deps{})
 	h := c.ExtensionHooks()
 	require.False(t, h.(extensions.InteractiveToolHostHooks).SupportsInteractiveTools())
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
 	h.SubmitSlash("/unknown value")
+	select {
+	case <-events:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "[extensions] /unknown value", snap.Notes[0].Text)
@@ -108,6 +116,9 @@ func TestExtensionManagerOperations(t *testing.T) {
 	require.EqualError(t, c.InvokeExtensionCommand(ctx, "cmd", "fail"), "failed")
 	m.EXPECT().Reload(ctx, 5*time.Second).Return(extensions.ReloadStats{Errors: []error{errors.New("reload failed")}}).Once()
 	require.EqualError(t, c.ReloadExtensions(ctx), "reload failed")
+	snap, err = c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "[extensions] reloaded: 0 stopped, 0 loaded (0 ready), 1 error(s): reload failed", snap.Notes[len(snap.Notes)-1].Text)
 }
 func TestExtensionRemovals(t *testing.T) {
 	c, ctx := extController(t, session.Deps{})
@@ -127,4 +138,27 @@ func TestExtensionRemovals(t *testing.T) {
 	require.Empty(t, snap.ExtChrome.Panels)
 	require.Empty(t, snap.ExtChrome.Widgets)
 	require.Empty(t, snap.ExtChrome.Statuses)
+}
+
+func TestExtensionDetachedDelegation(t *testing.T) {
+	c, ctx := extController(t, session.Deps{})
+	p := sessionmocks.NewMockPort(t)
+	require.NoError(t, session.SetExtensionTestPort(c, ctx, p))
+	completed := make(chan struct{})
+	p.EXPECT().Compact(mock.Anything).Return(nil).Once()
+	p.EXPECT().SetGoal(mock.Anything, session.GoalCommand{Op: "set", Objective: "ship the feature"}).Return(nil).Once()
+	p.EXPECT().SetGoal(mock.Anything, session.GoalCommand{Op: "pause"}).Return(nil).Once()
+	p.EXPECT().SetModel(mock.Anything, "provider", "model").Return(nil).Once()
+	p.EXPECT().SetModel(mock.Anything, "", "model-only").RunAndReturn(func(context.Context, string, string) error { close(completed); return nil }).Once()
+	h := c.ExtensionHooks()
+	h.SubmitSlash("/compact")
+	h.SubmitSlash("/goal ship the feature")
+	h.SubmitSlash("/goal pause")
+	h.SubmitSlash("/model provider/model")
+	h.SubmitSlash("/model model-only")
+	select {
+	case <-completed:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
