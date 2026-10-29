@@ -117,6 +117,8 @@ type LiveTool struct {
 
 // Input is a terminal-free session contract payload.
 type Input struct {
+	// Hidden contains extra hidden messages appended before the prompt by the turn cluster, carrying Meta.
+	Hidden []provider.Message `json:"hidden,omitempty"`
 	// HostEvent is queued as core.QueuedMessage.HostEvent by the turn cluster.
 	HostEvent bool                  `json:"host_event,omitempty"`
 	Text      string                `json:"text"`

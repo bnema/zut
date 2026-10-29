@@ -86,7 +86,8 @@ names below (snake_case); context is transport-owned and never serialized.
 Payload fields use the snake_case JSON tags in `session`.
 `Input.host_event` is an optional boolean (default false); the turn cluster queues
 it as `core.QueuedMessage.HostEvent`. Other input fields are `text`, `images`,
-`mode`, `origin`, and `from`. `ExtInsertEvent.submit` is optional (default false);
+`mode`, `origin`, `from`, and optional `hidden` (provider messages carrying Meta,
+appended before the prompt by the turn cluster). `ExtInsertEvent.submit` is optional (default false);
 when true, the attached client executes the inserted input rather than only
 inserting it into the editor.
 

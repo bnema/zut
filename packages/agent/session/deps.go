@@ -31,6 +31,8 @@ type SessionStore interface {
 	EnsureMission(objective string) error
 	PersistGoal(goal *core.SessionGoal) error
 	PersistGoalRuntime(goal *core.SessionGoal) error
+	// InitialPlanSnapshots reconstructs checklist snapshots from the full, untrimmed transcript.
+	InitialPlanSnapshots() map[string]core.PlanUpdate
 	CurrentPlan() []core.PlanStep
 	PersistPlan(plan *core.SessionPlan) error
 	PersistedPlan() *core.SessionPlan
