@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/core"
@@ -153,18 +152,4 @@ func childMCPTools(child core.Registry) []string {
 		}
 	}
 	return out
-}
-
-// mcpStatusText renders /mcp and `zut mcp status` output.
-func mcpStatusText(args Args) string {
-	if args.mcpManager == nil {
-		if !mcpAllowed(args) {
-			return "MCP is disabled for this run"
-		}
-		if len(args.mcpStartupErrors) > 0 {
-			return "MCP startup problems:\n" + strings.Join(args.mcpStartupErrors, "\n")
-		}
-		return "no MCP servers configured (" + mcp.GlobalConfigPath(ZutHome()) + " or .zut/mcp.json)"
-	}
-	return mcp.FormatStatus(args.mcpManager.Status())
 }
