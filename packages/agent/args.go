@@ -462,6 +462,13 @@ func PrintHelp(version string) {
 		row{"zut --ext ./path/to/ext", "load an extension for this run only"},
 		row{"zut ext help", "show all extension subcommands"},
 	)
+	section("daemon sessions",
+		row{"zut ls [--json]", "list sessions running in the daemon"},
+		row{"zut tree [--json]", "show daemon sessions and their subagents as a tree"},
+		row{"zut kill <id>...", "stop daemon sessions"},
+		row{"zut attach [id|title-prefix]", "attach the tui to a running daemon session"},
+		row{"zut daemon status|start|stop|restart|logs", "manage the local session daemon (zut daemon help)"},
+	)
 	section("session management",
 		row{"zut sessions prune", "select and delete sessions for directories that no longer exist"},
 		row{"zut sessions prune --dry-run", "list stale session groups without deleting them"},
