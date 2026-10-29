@@ -112,10 +112,18 @@ func (c *Controller) beginCompact(next *Input) error {
 		target := ag
 		summary, err := target.Compact(ctx, compactTail(target), nil)
 		if err != nil && ctx.Err() == nil && rescueEligible(err) {
-			_ = c.call(context.Background(), func() { c.compact.rescuing = true })
+			aborted := false
+			_ = c.call(context.Background(), func() {
+				aborted = c.compact.aborted
+				if !aborted {
+					c.compact.rescuing = true
+				}
+			})
 			var replacement *core.Agent
-			replacement, err = c.rescue(ctx, err)
-			if err == nil {
+			if !aborted {
+				replacement, err = c.rescue(ctx, err)
+			}
+			if !aborted && err == nil {
 				target = replacement
 				summary, err = target.Compact(ctx, compactTail(target), nil)
 			}
@@ -140,6 +148,8 @@ func (c *Controller) beginCompact(next *Input) error {
 				// the queue for the user instead of retrying on it.
 				if !rescuing {
 					c.turnSeam.drainQueued()
+				} else {
+					c.publish(EvNote, NoteEvent{Note: Note{Level: "info", Text: "queued prompts held; they run on your next message"}})
 				}
 				return
 			case err != nil:
@@ -198,9 +208,12 @@ func (c *Controller) rescueTurn(cause error, retry Input) {
 			}
 			if err != nil {
 				c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
-				c.turnSeam.rescueFailed()
-				// A failed rescue must not strand input queued behind the failed turn.
+				// A failed rescue must not strand input queued behind the failed
+				// turn; a started queued turn reports its own end instead.
 				c.turnSeam.drainQueued()
+				if !c.turnSeam.isBusy() {
+					c.turnSeam.rescueFailed()
+				}
 			}
 		})
 	}()

@@ -183,4 +183,87 @@ func TestAbortDuringCompactionRescueCleansPendingAndHoldsPrompt(t *testing.T) {
 	require.Equal(t, "first", snap.Queue[0].Input.Text)
 	require.Equal(t, "second", snap.Queue[1].Input.Text)
 	require.Equal(t, before, ag.Messages())
+	require.Equal(t, "queued prompts held; they run on your next message", nextKinds(t, ctx, events, EvNote).Data.(NoteEvent).Note.Text)
+}
+
+// GO-004: after an aborted compaction rescue, the next message drains the
+// held queue in order.
+func TestSubmitAfterAbortedRescueRunsQueueInOrder(t *testing.T) {
+	c, ctx := newTestController(t)
+	goal := newMockgoalSeam(t)
+	goal.EXPECT().goalBeforeTurn(mock.Anything).Return().Maybe()
+	goal.EXPECT().goalAfterTurn(mock.Anything).Return().Maybe()
+	prompts := make(chan string, 3)
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	calls := 0
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("http 503 service unavailable")
+		}
+		prompts <- lastUserText(req)
+		return reply("ok"), nil
+	})
+	ag := core.NewAgent(client, "model", "", nil)
+	ag.MaxRetries = 0
+	for range 6 {
+		ag.AppendUserContext("original", nil)
+	}
+	trigger := Input{Text: "first", Origin: InputOriginUser}
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.call(ctx, func() {
+		c.goalSeam = goal
+		c.attach = AttachStateAttached
+		c.settings.title = "t"
+		c.turn.agent = ag
+		c.deps.AgentBuilder = newMockAgentBuilderLocal(t)
+		c.enqueue(Input{Text: "second"})
+		require.NoError(t, c.beginCompact(&trigger))
+	}))
+	nextKinds(t, ctx, events, EvPending)
+	require.NoError(t, c.Abort(ctx))
+	nextKinds(t, ctx, events, EvNote)
+	require.NoError(t, c.Submit(ctx, Input{Text: "third"}))
+	require.Equal(t, "first", recv(t, ctx, (<-chan string)(prompts)))
+	require.Equal(t, "second", recv(t, ctx, (<-chan string)(prompts)))
+	require.Equal(t, "third", recv(t, ctx, (<-chan string)(prompts)))
+	waitIdle(t, c, ctx)
+}
+
+// GO-005: a failed rescue with queued input reports exactly one turn end.
+func TestFailedRescueWithQueuedInputReportsOnce(t *testing.T) {
+	c, ctx, goal, confirm := rescueController(t)
+	reported := make(chan core.EvTurnEnd, 3)
+	goal.EXPECT().goalAfterTurn(mock.Anything).Run(func(e core.EvTurnEnd) { reported <- e }).Once()
+	asked, answer := make(chan struct{}), make(chan struct{})
+	confirm.EXPECT().awaitPending(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, PendingRequest) ([]tools.QuestionAnswer, error) {
+		close(asked)
+		<-answer
+		return nil, errors.New("declined")
+	}).Once()
+	prompts := make(chan string, 1)
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	calls := 0
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("http 429: rate limit")
+		}
+		prompts <- lastUserText(req)
+		return reply("ok"), nil
+	}).Twice()
+	ag := core.NewAgent(client, "old", "", nil)
+	ag.MaxRetries = 0
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.deps.AgentBuilder = newMockAgentBuilderLocal(t) }))
+	require.NoError(t, c.Submit(ctx, Input{Text: "first"}))
+	recv(t, ctx, (<-chan struct{})(asked))
+	require.NoError(t, c.Submit(ctx, Input{Text: "second"}))
+	close(answer)
+	require.Equal(t, "second", recv(t, ctx, (<-chan string)(prompts)))
+	require.NoError(t, recv(t, ctx, (<-chan core.EvTurnEnd)(reported)).Err)
+	waitIdle(t, c, ctx)
+	require.Empty(t, reported)
 }

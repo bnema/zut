@@ -53,7 +53,8 @@ func cloneTurn(in LiveTurn) LiveTurn {
 // Submit starts idle work, queues busy work, or steers the running agent.
 // The request context governs command delivery only, never the agent lifetime.
 //
-// Compaction counts as busy: input is queued and runs once it ends.
+// Compaction counts as busy: input is queued and runs once it ends. When idle
+// with held queued input, the new input joins the queue and the queue drains.
 //
 // Input.Hidden messages are text-only: they become hidden user context through
 // core.Agent.AppendUserContext, so non-text blocks are skipped with an error
@@ -74,6 +75,10 @@ func (c *Controller) Submit(ctx context.Context, in Input) error {
 			} else {
 				c.enqueue(in)
 			}
+		} else if len(c.turn.queue) > 0 {
+			// Held input (e.g. after an aborted rescue) runs first, in order.
+			c.enqueue(in)
+			c.drainQueued()
 		} else {
 			result = c.startTurn(in)
 		}
