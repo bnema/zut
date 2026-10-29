@@ -24,3 +24,6 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+var _ Port = (*Controller)(nil)
+var _ Handle = (*Controller)(nil)
