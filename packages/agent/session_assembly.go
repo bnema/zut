@@ -303,7 +303,7 @@ func (a *sessionAssembly) wireAgentExt(ctx context.Context, ag *core.Agent) *cor
 		if len(r.ModifiedArgs) > 0 && json.Valid(r.ModifiedArgs) {
 			effectiveArgs = r.ModifiedArgs
 		}
-		if noYolo && call.Name != tools.AskUserQuestionToolName {
+		if noYolo && call.Name != tools.AskUserQuestionToolName && call.Name != tools.SessionsToolName {
 			var content strings.Builder
 			_, currentTools := ag.PromptConfig()
 			key := confirmationKeyFor(currentTools, call.Name, effectiveArgs)

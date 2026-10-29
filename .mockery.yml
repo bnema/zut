@@ -84,6 +84,14 @@ packages:
           dir: packages/agent/session
           pkgname: session
           filename: interSeam_mock_test.go
+  github.com/bnema/zut/packages/agent/tools:
+    interfaces:
+      SessionDirectory:
+        config:
+          dir: packages/agent/tools
+          pkgname: tools
+          filename: sessionDirectory_mock_test.go
+          structname: mockSessionDirectory
   github.com/bnema/zut/packages/provider:
     config:
       dir: packages/provider/providermocks
