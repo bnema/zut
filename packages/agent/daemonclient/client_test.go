@@ -267,6 +267,68 @@ func TestSubscribeSlowConsumerIsDropped(t *testing.T) {
 	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, last.Data)
 }
 
+func waitAttach(t *testing.T, d *miniDaemon) {
+	t.Helper()
+	select {
+	case <-d.onAttach:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for attach")
+	}
+}
+
+func TestSubscribeDaemonSlowConsumerDropReattaches(t *testing.T) {
+	for _, controlling := range []bool{true, false} {
+		d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+		d.onAttach = make(chan struct{}, 8)
+		d.publish("1")
+		c := dial(t, path, Options{ClientVersion: "v"})
+		ch, err := c.Port("s1", controlling).Subscribe(testCtx(t), 0)
+		require.NoError(t, err)
+		waitAttach(t, d)
+
+		// The reader is blocked (ch is not drained) while the daemon drops
+		// the subscriber mid-publish and more events arrive meanwhile.
+		d.publish("2")
+		d.dropSlowConsumer("3")
+		waitAttach(t, d)
+		d.publish("4")
+
+		got := recvSeqs(t, ch, 4)
+		for i, ev := range got {
+			require.Equal(t, uint64(i+1), ev.Seq)
+			require.Equal(t, session.TitleEvent{Title: string(rune('1' + i))}, ev.Data)
+		}
+		attaches := d.attachRequests()
+		require.Len(t, attaches, 2)
+		require.Equal(t, uint64(2), attaches[1].AfterSeq)
+		for _, a := range attaches {
+			require.Equal(t, controlling, a.Controlling, "re-attach must keep the subscription's control mode")
+		}
+		require.Equal(t, 1, d.count("snapshot"))
+	}
+}
+
+func TestSubscribeDaemonSlowConsumerDropsWithoutProgressAreBounded(t *testing.T) {
+	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	d.onAttach = make(chan struct{}, 8)
+	c := dial(t, path, Options{ClientVersion: "v"})
+	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
+	require.NoError(t, err)
+	waitAttach(t, d)
+	for i := 0; i < maxSlowResubscribes; i++ {
+		d.dropSlowConsumer("")
+		waitAttach(t, d)
+	}
+	d.dropSlowConsumer("")
+	var evs []session.Event
+	for ev := range ch {
+		evs = append(evs, ev)
+	}
+	require.Len(t, evs, 1)
+	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, evs[0].Data)
+	require.Equal(t, 1+maxSlowResubscribes, d.count("attach"))
+}
+
 func TestEnsureDaemonAutospawns(t *testing.T) {
 	path := shortSocket(t)
 	home := t.TempDir()
