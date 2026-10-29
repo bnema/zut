@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 type rpcError struct {
@@ -39,6 +41,8 @@ type rpcEnvelope struct {
 // ClientOptions configures notifications and the small set of client-side
 // handlers required by real language servers.
 type ClientOptions struct {
+	// Env is the session base environment; nil preserves process inheritance.
+	Env                   []string
 	Settings              map[string]any
 	InitializationOptions any
 	OnDiagnostics         func([]Diagnostic)
@@ -87,18 +91,21 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 	if strings.EqualFold(spec.Kind, "cli") {
 		return nil, fmt.Errorf("%s is a CLI provider, not an LSP server", spec.ID)
 	}
+	if options.Env != nil && !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("session root must be absolute: %q", root)
+	}
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	command, err := ResolveCommand(root, spec.Command)
+	command, err := ResolveCommand(root, spec.Command, options.Env)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", spec.ID, err)
 	}
 	cmd := exec.Command(command, spec.Args...)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = root
-	cmd.Env = mergedEnvironment(spec.Env)
+	cmd.Env = mergedEnvironment(spec.Env, options.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("LSP stdin: %w", err)
@@ -577,8 +584,11 @@ func mustURI(path string) string {
 	return uri
 }
 
-func mergedEnvironment(overrides map[string]string) []string {
+func mergedEnvironment(overrides map[string]string, base ...[]string) []string {
 	env := os.Environ()
+	if len(base) > 0 && base[0] != nil {
+		env = append([]string{}, base[0]...)
+	}
 	if len(overrides) == 0 {
 		return env
 	}
@@ -600,7 +610,7 @@ func mergedEnvironment(overrides map[string]string) []string {
 }
 
 // ResolveCommand searches workspace-local tool directories before PATH.
-func ResolveCommand(cwd, command string) (string, error) {
+func ResolveCommand(cwd, command string, base ...[]string) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", errors.New("empty command")
 	}
@@ -632,6 +642,13 @@ func ResolveCommand(cwd, command string) (string, error) {
 				return path, nil
 			}
 		}
+	}
+	if len(base) > 0 && base[0] != nil {
+		path, err := execpath.Resolve(command, cwd, base[0])
+		if err != nil {
+			return "", fmt.Errorf("command %q not found in session PATH: %w", command, err)
+		}
+		return path, nil
 	}
 	if path, err := exec.LookPath(command); err == nil {
 		return path, nil

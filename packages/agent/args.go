@@ -60,7 +60,10 @@ type Args struct {
 	NoSess          bool
 
 	// Env is the client environment captured for this session.
-	Env     []string
+	Env []string
+	// ExtraSkillDirs adds session-local packaged skill directories before user locations.
+	ExtraSkillDirs []string
+
 	CWD     string
 	NoTools bool
 	NoLSP   bool

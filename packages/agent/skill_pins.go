@@ -38,7 +38,7 @@ func userSkillSnapshot(args Args, cwd string, bundled []*skills.Skill) []*skills
 		return nil
 	}
 	userHome, _ := os.UserHomeDir()
-	list, _ := skills.Discover(ZutHome(), cwd, userHome, args.WithSkills)
+	list, _ := skills.Discover(ZutHome(), cwd, userHome, args.WithSkills, args.ExtraSkillDirs...)
 	list = mergeExtensionSkills(skills.NewTool(list), bundled)
 	return skills.VisibleSkills(list)
 }

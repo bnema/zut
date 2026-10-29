@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // maxStdioFrame bounds one newline-delimited JSON-RPC message from a server.
@@ -126,8 +128,18 @@ type stdioTransport struct {
 // buildStdioEnv returns the restricted child environment.
 func buildStdioEnv(cfg ServerConfig) []string {
 	env := map[string]string{}
+	base := cfg.BaseEnv
+	if base == nil {
+		base = os.Environ()
+	}
+	lookup := map[string]string{}
+	for _, item := range base {
+		if k, v, ok := strings.Cut(item, "="); ok {
+			lookup[k] = v
+		}
+	}
 	for _, key := range append(append([]string(nil), defaultEnvVars...), cfg.EnvVars...) {
-		if v, ok := os.LookupEnv(key); ok {
+		if v, ok := lookup[key]; ok {
 			env[key] = v
 		}
 	}
@@ -142,8 +154,6 @@ func buildStdioEnv(cfg ServerConfig) []string {
 }
 
 func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*stdioTransport, error) {
-	cmd := exec.Command(cfg.Command, cfg.Args...)
-	cmd.Env = buildStdioEnv(cfg)
 	dir := cwd
 	if cfg.CWD != "" {
 		dir = cfg.CWD
@@ -151,6 +161,19 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 			dir = filepath.Join(cwd, dir)
 		}
 	}
+	command, err := execpath.Resolve(cfg.Command, dir, cfg.BaseEnv)
+	if err != nil {
+		return nil, err
+	}
+	var cmd *exec.Cmd
+	if cfg.BaseEnv == nil {
+		cmd = exec.Command(command, cfg.Args...)
+	} else {
+		// Session lookup already produced a concrete absolute file, so any
+		// os/exec re-resolution is a no-op; build the Cmd directly anyway.
+		cmd = &exec.Cmd{Path: command, Args: append([]string{cfg.Command}, cfg.Args...)}
+	}
+	cmd.Env = buildStdioEnv(cfg)
 	cmd.Dir = dir
 	isolateProcess(cmd)
 	stdin, err := cmd.StdinPipe()

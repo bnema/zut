@@ -34,6 +34,8 @@ import (
 	"github.com/bnema/zut/packages/agent/internal/ndjson"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/tui"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 // Manifest is the extension.json file shipped alongside an
@@ -242,6 +244,8 @@ type commandRegistration struct {
 // Manager owns every extension subprocess for the lifetime of zut.
 type Manager struct {
 	zutHome    string
+	spawnEnv   []string
+	spawnCWD   string
 	cwd        string
 	zutVersion string
 	provider   string
@@ -282,8 +286,8 @@ type sessionEventState struct {
 
 // New constructs an empty Manager. Call Discover to populate it from
 // the on-disk extension directories.
-func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks) *Manager {
-	return &Manager{
+func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks, options ...Option) *Manager {
+	m := &Manager{
 		zutHome:      zutHome,
 		cwd:          cwd,
 		zutVersion:   zutVersion,
@@ -294,7 +298,22 @@ func New(zutHome, cwd, zutVersion, provider, model string, hooks HostHooks) *Man
 		commandIndex: map[string]commandRegistration{},
 		toolIndex:    map[string]*Extension{},
 	}
+	for _, option := range options {
+		option(m)
+	}
+	return m
 }
+
+// Option configures session-local child process settings.
+type Option func(*Manager)
+
+// WithEnv sets the child environment; an empty slice means no inherited variables.
+func WithEnv(env []string) Option {
+	return func(m *Manager) { m.spawnEnv = append([]string{}, env...) }
+}
+
+// WithCWD sets the child working directory instead of the extension install directory.
+func WithCWD(cwd string) Option { return func(m *Manager) { m.spawnCWD = cwd } }
 
 // Discover scans the global and project extension dirs and starts
 // every extension whose manifest is enabled. Spawns happen in
@@ -682,8 +701,23 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Bare names (node, npx, python3, tsx, etc.) are looked up via PATH;
 	// absolute and extension-relative paths are resolved by the helper.
 	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
+	childCWD := ext.Dir
+	if m.spawnCWD != "" {
+		childCWD = m.spawnCWD
+	}
+	execPath, err = execpath.Resolve(execPath, childCWD, m.spawnEnv)
+	if err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("extension %s: %w", ext.Manifest.Name, err)
+	}
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
-	cmd.Dir = ext.Dir
+	if m.spawnEnv != nil {
+		// Session lookup already produced a concrete absolute file, so
+		// os/exec re-resolution is a no-op; pin it explicitly anyway.
+		cmd.Path, cmd.Err = execPath, nil
+	}
+	cmd.Dir = childCWD
+	cmd.Env = m.spawnEnv
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)
 

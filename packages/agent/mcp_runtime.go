@@ -43,43 +43,67 @@ func mcpAllowed(args Args) bool {
 // and resident children) shares the same connections. A server marked
 // required that fails to start aborts the run.
 func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
+	manager, stop, err := startMCPWithEnv(ctx, args, version, os.Environ(), true)
+	if err == nil {
+		args.mcpManager = manager
+	}
+	return stop, err
+}
+
+func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string, processSignals bool) (*mcp.Manager, func(), error) {
 	noop := func() {}
 	if args.mcpManager != nil || !mcpAllowed(*args) {
-		return noop, nil
+		return args.mcpManager, noop, nil
 	}
-	cfg, cfgErrs := mcp.LoadConfig(ZutHome(), args.CWD)
+	cfg, cfgErrs := mcp.LoadConfig(ZutHome(), args.CWD, env)
 	for _, err := range cfgErrs {
 		args.mcpStartupErrors = append(args.mcpStartupErrors, err.Error())
 	}
 	if len(cfg.Servers) == 0 {
 		reportMCPStartup(*args)
-		return noop, nil
+		return args.mcpManager, noop, nil
 	}
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, mcpSignals...)
-	failures, sig, requiredErr := startMCPInterruptible(ctx, manager, sigCh)
-	signal.Stop(sigCh)
-	if sig != nil {
-		// Interrupted during startup: no mode owns signals yet, so stop the
-		// servers already launched and terminate like an unhandled signal.
-		_ = manager.Close()
-		mcpSignalExit(signalExitCode(sig))
-		return noop, fmt.Errorf("mcp startup interrupted by %v", sig)
+	manager.SetEnv(env)
+	var failures []error
+	var requiredErr error
+	if processSignals {
+		sigCh := make(chan os.Signal, 1)
+		mcpSignalNotify(sigCh, mcpSignals...)
+		var sig os.Signal
+		failures, sig, requiredErr = startMCPInterruptible(ctx, manager, sigCh)
+		signal.Stop(sigCh)
+		if sig != nil {
+			_ = manager.Close()
+			mcpSignalExit(signalExitCode(sig))
+			return nil, noop, fmt.Errorf("mcp startup interrupted by %v", sig)
+		}
+	} else {
+		failures, requiredErr = manager.Start(ctx)
 	}
+
 	for _, err := range failures {
 		args.mcpStartupErrors = append(args.mcpStartupErrors, err.Error())
 	}
 	if requiredErr != nil {
 		_ = manager.Close()
-		return noop, fmt.Errorf("required MCP server failed to start: %w", requiredErr)
+		return nil, noop, fmt.Errorf("required MCP server failed to start: %w", requiredErr)
 	}
-	args.mcpManager = manager
 	reportMCPStartup(*args)
-	return func() { _ = manager.Close() }, nil
+	return manager, func() { _ = manager.Close() }, nil
 }
+
+// startSessionMCP starts session-owned connections without process signal handlers
+// or process termination. The caller owns cancellation and supplies its base env.
+// The returned manager is installed by assembly; args is never mutated.
+// Use the returned cleanup on every exit.
+func startSessionMCP(ctx context.Context, args Args, env []string) (*mcp.Manager, func(), error) {
+	return startMCPWithEnv(ctx, &args, "", env, false)
+}
+
+var mcpSignalNotify = signal.Notify
 
 var mcpSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 func TestFakeLSPProcess(t *testing.T) {
@@ -305,6 +307,36 @@ func TestResolveCommandPrefersWorkspaceTools(t *testing.T) {
 	}
 	if got != command {
 		t.Fatalf("resolved %q, want %q", got, command)
+	}
+}
+
+func TestResolveCommandSessionMatchesMCPLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable bits are not represented on Windows")
+	}
+	root := t.TempDir()
+	host, session := filepath.Join(root, "host"), filepath.Join(root, "session")
+	for _, dir := range []string{root, host, session} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "session-lsp"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", host)
+	env := []string{"PATH=" + session}
+	want, err := execpath.Resolve("session-lsp", root, env) // the MCP lookup
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveCommand(root, "session-lsp", env)
+	if err != nil || got != want || got != filepath.Join(session, "session-lsp") {
+		t.Fatalf("ResolveCommand = %q, %v; MCP lookup %q", got, err, want)
+	}
+	// An empty PATH entry must not resolve to cwd.
+	if got, err := ResolveCommand(root, "session-lsp", []string{"PATH=" + string(os.PathListSeparator)}); err == nil {
+		t.Fatalf("empty PATH entry resolved %q", got)
 	}
 }
 
