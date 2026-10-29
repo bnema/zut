@@ -50,6 +50,7 @@ type timelineEntry struct {
 // caching (used by tests and callers without a live agent).
 type timelineCacheKey struct {
 	agent  *core.Agent
+	port   bool
 	rev    uint64
 	prompt uint64
 }
@@ -810,7 +811,19 @@ func (i *Interactive) timelineDataLocked() timelineData {
 	}
 	v := i.timeline
 	var data timelineData
-	if i.agent != nil {
+	if i.port != nil {
+		// The system prompt and tool specs live in the daemon; the client
+		// only has the transcript.
+		key := timelineCacheKey{port: true, rev: i.portRev}
+		if v.snapValid && v.snapKey == key {
+			data = v.snap
+		} else {
+			data = timelineData{Key: key}
+			data.Messages = filterHiddenTranscriptMessages(append([]provider.Message(nil), i.portMsgs...))
+			data.Est = computeTimelineEstimates("", nil, data.Messages)
+			v.snapKey, v.snap, v.snapValid = key, data, true
+		}
+	} else if i.agent != nil {
 		system, registry := i.agent.PromptConfig()
 		specs := registry.Specs()
 		// Read the revision before the messages: a concurrent append can only
