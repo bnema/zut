@@ -83,7 +83,7 @@ func reasoningSettingOptions(levels []string) []settingsOption {
 func (i *Interactive) reasoningSettingItem() settingsItem {
 	levels := []string{"", "minimum", "low", "medium", "high", "xhigh", "max"}
 	provName, modelName, current := i.cfg.Provider, i.cfg.Model, i.cfg.Reasoning
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		info := i.SessionInfo()
 		provName, modelName, current = info.Provider, info.Model, info.Reasoning
 	}
@@ -432,7 +432,7 @@ func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
 		return
 	}
 	threshold = NormalizeAutoCompactThreshold(&threshold)
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		i.portApplySettings("auto_compact_threshold", session.SettingsPatch{AutoCompactThreshold: &threshold})
 		return
 	}
@@ -553,7 +553,7 @@ func (i *Interactive) applyQuickModelShortcut(slot int) {
 	if slot < 1 || slot > 9 {
 		return
 	}
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		i.portSettingsCall(fmt.Sprintf("profile %d", slot), func(ctx context.Context, port session.Port) error {
 			return port.ApplyProfile(ctx, slot)
 		})
@@ -762,7 +762,7 @@ func (i *Interactive) stripWebSearchTool() {
 	i.agent.SetTools(tools)
 }
 func (i *Interactive) applySettingToggle(key string, value bool) {
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		if patch, ok := portSettingsPatch(key, value); ok {
 			i.portApplySettings(key, patch)
 			return
@@ -1243,7 +1243,7 @@ func (i *Interactive) applyReasoningSetting(level string) {
 		i.invalidate()
 	}()
 	level = provider.NormalizeReasoning(level)
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		i.portSettingsCall("reasoning", func(ctx context.Context, port session.Port) error {
 			return port.SetReasoning(ctx, level)
 		})
@@ -1282,12 +1282,16 @@ func (i *Interactive) applyReasoningSetting(level string) {
 // portSettingsCall runs a session-port settings call off the render loop.
 // Local state is not touched: the view follows the next EvInfo.
 func (i *Interactive) portSettingsCall(label string, call func(context.Context, session.Port) error) {
-	port := i.SessionPort()
 	parent := i.runCtx
 	if parent == nil {
 		parent = context.Background()
 	}
 	go func() {
+		port := i.SessionPort()
+		if port == nil {
+			i.ReportError(fmt.Errorf("%s: no session attached", label))
+			return
+		}
 		ctx, cancel := context.WithTimeout(parent, i.sessionCallTimeout())
 		defer cancel()
 		if err := call(ctx, port); err != nil {

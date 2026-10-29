@@ -351,7 +351,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/reasoning":
 		i.openReasoningDialog()
 	case "/fast":
-		if i.SessionPort() != nil {
+		if i.portMode.Load() {
 			i.portToggleFastMode()
 			break
 		}
@@ -1210,7 +1210,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
-	if i.SessionPort() != nil {
+	if i.portMode.Load() {
 		i.portSetModel(prov, model)
 		return
 	}

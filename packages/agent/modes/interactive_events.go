@@ -1014,6 +1014,9 @@ func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port ses
 	i.mu.Lock()
 	i.sessionGen++
 	i.port = port
+	if port != nil {
+		i.portMode.Store(true)
+	}
 	i.sessionID = id
 	i.extNotes = nil
 	i.statusErr, i.statusOK = "", ""

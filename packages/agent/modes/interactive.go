@@ -975,6 +975,9 @@ type Interactive struct {
 	fileSuggest       *fileSuggester
 	spin              *spinner
 	residentAnimating atomic.Bool
+	// portMode is set once a session port is attached and never cleared;
+	// settings paths read it without taking mu.
+	portMode atomic.Bool
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -1265,6 +1268,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if cfg.PreloadPinnedSkills {
 		i.SetPinnedSkillsPending(true)
 	}
+	i.portMode.Store(cfg.Port != nil)
 	return i
 }
 
