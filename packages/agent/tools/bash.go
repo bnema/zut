@@ -45,7 +45,7 @@ type bashArgs struct {
 var bashSchema = fmt.Sprintf(`{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1,"maximum":%d,"description":"Maximum command runtime in seconds."}},"required":["command","timeout"]}`, maxBashTimeoutSeconds)
 
 func (t *BashTool) Name() string            { return "bash" }
-func (t *BashTool) Description() string     { return shellDescription(currentShell()) }
+func (t *BashTool) Description() string     { return shellDescription(t.sessionShell()) }
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
 
 func bashTimeoutDuration(seconds int64) (time.Duration, error) {
@@ -230,8 +230,20 @@ type shellCommand struct {
 	isBash bool
 }
 
-func currentShell() shellCommand {
-	return resolveShell(runtime.GOOS, isExecutableFile, exec.LookPath)
+// sessionShell resolves the shell from the session PATH. Without a session
+// env no PATH lookup happens; Execute rejects that case anyway.
+func (t *BashTool) sessionShell() shellCommand {
+	return t.sessionShellWith(isExecutableFile)
+}
+
+func (t *BashTool) sessionShellWith(executable func(string) bool) shellCommand {
+	lookup := func(name string) (string, error) {
+		return "", fmt.Errorf("executable %q: session env not set", name)
+	}
+	if t.Env != nil {
+		lookup = func(name string) (string, error) { return lookPathEnv(t.CWD, t.Env, name) }
+	}
+	return resolveShell(runtime.GOOS, executable, lookup)
 }
 
 func resolveShell(goos string, executable func(string) bool, lookPath func(string) (string, error)) shellCommand {

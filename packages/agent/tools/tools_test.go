@@ -503,10 +503,10 @@ func TestBashSyntax(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("bash syntax is not used on Windows")
 	}
-	if !currentShell().isBash {
+	tool := &BashTool{Env: os.Environ(), CWD: t.TempDir()}
+	if !tool.sessionShell().isBash {
 		t.Skip("bash is unavailable")
 	}
-	tool := &BashTool{Env: []string{}, CWD: t.TempDir()}
 	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
 		"command": `items=(one two); [[ ${#items[@]} -eq 2 ]] && printf 'bash syntax works\n'`,
 		"timeout": 1,
@@ -588,5 +588,31 @@ func TestBashTimeoutCancelsCommand(t *testing.T) {
 	}
 	if elapsed >= 3*time.Second {
 		t.Fatalf("timeout took %s; command was not cancelled promptly", elapsed)
+	}
+}
+
+func TestEnvIsolationBashDescriptionUsesSessionPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell lookup")
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "bash")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Hide /bin/bash so the session PATH decides the shell on every host.
+	noSystemBash := func(path string) bool { return path != "/bin/bash" && isExecutableFile(path) }
+	withPath := &BashTool{CWD: dir, Env: []string{"PATH=" + dir}}
+	if got := shellDescription(withPath.sessionShellWith(noSystemBash)); !strings.Contains(got, fake) {
+		t.Fatalf("description %q does not use session PATH bash %q", got, fake)
+	}
+	for _, env := range [][]string{{"PATH="}, nil} {
+		tool := &BashTool{CWD: dir, Env: env}
+		if got := shellDescription(tool.sessionShellWith(noSystemBash)); strings.Contains(got, "Bash command") {
+			t.Fatalf("env %v: description %q found bash outside session PATH", env, got)
+		}
+	}
+	if got := withPath.Description(); got != shellDescription(withPath.sessionShell()) {
+		t.Fatalf("Description %q not built from session shell", got)
 	}
 }
