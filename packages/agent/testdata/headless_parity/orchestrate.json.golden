@@ -1,0 +1,56 @@
+{"content":[{"text":"delegate two waves","type":"text"}],"time":"<TIME>","type":"user_message"}
+{"step":1,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"id":"wave-one","name":"subagent","type":"tool_use_start"}
+{"delta":"{\"action\":\"spawn\",\"task\":\"wave one\"}","id":"wave-one","type":"tool_use_args"}
+{"id":"wave-one","type":"tool_use_end"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"input":8,"output":2,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"args":{"action":"spawn","task":"wave one"},"id":"wave-one","name":"subagent","type":"tool_call"}],"time":"<TIME>","type":"assistant_message"}
+{"args":{"action":"spawn","task":"wave one"},"id":"wave-one","name":"subagent","type":"tool_call"}
+{"stop":"tool_use","type":"turn_end"}
+{"id":"wave-one","name":"subagent","type":"tool_execution_started"}
+{"content":[{"text":"spawned sub-agent <RESIDENT>\nstate: queued\nworkspace: shared\ntask: wave one\nmodel: gpt-5\nprovider: openai\n\nThe sub-agent is running in the background and owns the delegated scope. Do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].","type":"text"}],"id":"wave-one","is_error":false,"type":"tool_result"}
+{"step":2,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"delta":"wave one synthesis","type":"text_delta"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.00006000000000000001,"input":16,"output":4,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"text":"wave one synthesis","type":"text"}],"time":"<TIME>","type":"assistant_message"}
+{"stop":"end","type":"turn_end"}
+{"type":"done"}
+{"content":[{"text":"[auto-subagents update]\n- <RESIDENT>: completed — wave one\n  final: worker result 1\nTreat the completion reports below as evidence, including failures. Do not retry failed workers automatically. Decide whether another independent dependency wave is required; if so, use the manager tools and end or yield the turn again. Otherwise synthesize the final answer for the user. Do not mention this orchestration protocol unless it is relevant to the answer.","type":"text"}],"time":"<TIME>","type":"user_message"}
+{"step":1,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"id":"wave-two","name":"subagent","type":"tool_use_start"}
+{"delta":"{\"action\":\"spawn\",\"task\":\"wave two\"}","id":"wave-two","type":"tool_use_args"}
+{"id":"wave-two","type":"tool_use_end"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.00009000000000000002,"input":24,"output":6,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"args":{"action":"spawn","task":"wave two"},"id":"wave-two","name":"subagent","type":"tool_call"}],"time":"<TIME>","type":"assistant_message"}
+{"args":{"action":"spawn","task":"wave two"},"id":"wave-two","name":"subagent","type":"tool_call"}
+{"stop":"tool_use","type":"turn_end"}
+{"id":"wave-two","name":"subagent","type":"tool_execution_started"}
+{"content":[{"text":"spawned sub-agent <RESIDENT>\nstate: queued\nworkspace: shared\ntask: wave two\nmodel: gpt-5\nprovider: openai\n\nThe sub-agent is running in the background and owns the delegated scope. Do not repeat that work in the parent. Continue only with a previously selected non-overlapping task, or end/yield for the host-event-driven [auto-subagents update].","type":"text"}],"id":"wave-two","is_error":false,"type":"tool_result"}
+{"step":2,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"delta":"final synthesis","type":"text_delta"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.00012000000000000002,"input":32,"output":8,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"text":"final synthesis","type":"text"}],"time":"<TIME>","type":"assistant_message"}
+{"stop":"end","type":"turn_end"}
+{"type":"done"}
+{"content":[{"text":"[auto-subagents update]\n- <RESIDENT>: completed — wave two\n  final: worker result 2\nTreat the completion reports below as evidence, including failures. Do not retry failed workers automatically. Decide whether another independent dependency wave is required; if so, use the manager tools and end or yield the turn again. Otherwise synthesize the final answer for the user. Do not mention this orchestration protocol unless it is relevant to the answer.","type":"text"}],"time":"<TIME>","type":"user_message"}
+{"step":1,"type":"turn_start"}
+{"attempt":1,"max_attempts":6,"model":"gpt-5","provider":"openai","scope":"agent","type":"request_started"}
+{"attempt":1,"max_attempts":5,"model":"gpt-5","provider":"openai","scope":"provider","type":"request_started"}
+{"type":"assistant_start"}
+{"delta":"final synthesis","type":"text_delta"}
+{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.000030000000000000004,"cumulative":{"cache_measured_prompt":0,"cache_measured_read":0,"cache_read":0,"cache_write":0,"cost_usd":0.00015000000000000001,"input":40,"output":10,"reasoning":null},"input":8,"output":2,"reasoning":null,"type":"usage"}
+{"content":[{"text":"final synthesis","type":"text"}],"time":"<TIME>","type":"assistant_message"}
+{"stop":"end","type":"turn_end"}
+{"type":"done"}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -158,7 +159,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			tc.Result = text.String()
 			i.bumpToolRevisionLocked(tc)
 		}
-		if update, ok := toolspkg.GoalUpdateFromResult(e.Result); ok {
+		if update, ok := toolspkg.GoalUpdateFromResult(e.Result); ok && i.port == nil {
 			if update.Status == core.GoalSuperseded && i.cfg.CurrentGoal != nil {
 				if current := i.cfg.CurrentGoal(); current != nil {
 					i.goalStatus = current.Status
@@ -200,6 +201,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// Bumping the revision invalidates those rows through msgVisualKey.
 		i.planRevision++
 	case core.EvUsage:
+		if i.port != nil {
+			// Usage and context gauges are domain projections (EvInfo).
+			break
+		}
 		i.cumUsage = e.Cumulative
 		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {
 			i.lastCtxInput = contextUsed
@@ -398,4 +403,654 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 	i.alertNeedsInput(alertAwaitingConfirmation)
 	i.invalidate()
 	return <-resp
+}
+
+// ---- Port mode (daemon client) -------------------------------------------
+
+// portTranscriptLocked returns the transcript the view renders from and its
+// revision. In Port mode it is the snapshot-hydrated copy; otherwise the
+// legacy in-process agent (L16 SHIM). ok is false when neither exists.
+func (i *Interactive) portTranscriptLocked() (msgs []provider.Message, rev uint64, ok bool) {
+	if i.port != nil {
+		return i.portMsgs, i.portRev, true
+	}
+	if i.agent != nil {
+		return i.agent.Messages(), i.agent.Revision(), true
+	}
+	return nil, 0, false
+}
+
+// transcriptLenLocked is the raw transcript length and revision used to
+// anchor the stream presenter.
+func (i *Interactive) transcriptLenLocked() (int, uint64, bool) {
+	if i.port != nil {
+		return len(i.portMsgs), i.portRev, true
+	}
+	if i.agent != nil {
+		return i.agent.MessageCount(), i.agent.Revision(), true
+	}
+	return 0, 0, false
+}
+
+// SessionPort returns the attached session port (nil in legacy mode).
+func (i *Interactive) SessionPort() session.Port {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.port
+}
+
+// SessionClient returns the lifecycle client (nil when not configured).
+func (i *Interactive) SessionClient() SessionClient {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.client
+}
+
+// SessionID returns the id of the attached session.
+func (i *Interactive) SessionID() session.ID {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.sessionID
+}
+
+// SessionInfo returns the latest Info projection received from the daemon.
+func (i *Interactive) SessionInfo() session.Info {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.portInfo
+}
+
+// PendingRequests returns the open confirm/question/rescue requests.
+func (i *Interactive) PendingRequests() []session.PendingRequest {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]session.PendingRequest(nil), i.portPending...)
+}
+
+// DeferredActions returns the deferred actions recorded while detached (D3).
+func (i *Interactive) DeferredActions() []session.DeferredAction {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]session.DeferredAction(nil), i.portDeferred...)
+}
+
+// QueuedInputs returns the daemon-side queue as last published.
+func (i *Interactive) QueuedInputs() []session.QueuedInput {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]session.QueuedInput(nil), i.portQueue...)
+}
+
+// attachPort snapshots the session, hydrates the view and subscribes after
+// the snapshot sequence so no event is missed or applied twice.
+func (i *Interactive) attachPort(ctx context.Context) error {
+	i.mu.Lock()
+	port := i.port
+	i.mu.Unlock()
+	snap, err := port.Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("session snapshot: %w", err)
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	events, err := port.Subscribe(subCtx, snap.Seq)
+	if err != nil {
+		cancel()
+		return fmt.Errorf("session subscribe: %w", err)
+	}
+	i.mu.Lock()
+	if i.subCancel != nil {
+		i.subCancel()
+	}
+	i.subCancel = cancel
+	i.events = events
+	i.hydrateLocked(snap)
+	i.mu.Unlock()
+	i.syncPortDialogs()
+	i.openDeferredDialog()
+	i.scrollToBottom()
+	i.invalidate()
+	return nil
+}
+
+// stopSubscription ends the live subscription.
+func (i *Interactive) stopSubscription() {
+	i.mu.Lock()
+	if i.subCancel != nil {
+		i.subCancel()
+		i.subCancel = nil
+	}
+	i.events = nil
+	i.mu.Unlock()
+}
+
+// hydrateLocked replaces every presentation projection with snap.
+func (i *Interactive) hydrateLocked(snap session.Snapshot) {
+	if snap.Info.ID != "" {
+		i.sessionID = session.ID(snap.Info.ID)
+	}
+	i.lastSeq = snap.Seq
+	i.portMsgs = append([]provider.Message(nil), snap.Messages...)
+	i.portRev++
+	i.portToolMsg = nil
+	i.view.Messages = filterHiddenTranscriptMessages(i.portMsgs)
+	i.view.TailLimit = 0
+	if len(i.view.Messages) > initialResumeTailLimit {
+		i.view.TailLimit = initialResumeTailLimit
+	}
+	i.resetTranscriptRenderLocked()
+	i.stableChatCacheValid = false
+	i.stream.Reset()
+	i.applyInfoLocked(snap.Info)
+	i.portQueue = append([]session.QueuedInput(nil), snap.Queue...)
+	i.portPending = append([]session.PendingRequest(nil), snap.Pending...)
+	i.portDeferred = append([]session.DeferredAction(nil), snap.Deferred...)
+	i.planSnapshots = snap.Plan
+	i.planRevision++
+	i.applyExtChromeLocked(snap.ExtChrome)
+	for _, n := range snap.Notes {
+		i.applyNoteLocked(n)
+	}
+	// Live turn: rebuild streamed text and tool panels as of snap.Seq.
+	i.toolCalls = map[string]*tui.ToolCallView{}
+	i.toolOrder = nil
+	if snap.Live.AssistantText != "" || len(snap.Live.Tools) > 0 {
+		i.startStreamLocked()
+		i.stream.Push(snap.Live.AssistantText)
+		i.wakeStreamPacer()
+	}
+	for _, lt := range snap.Live.Tools {
+		tc := &tui.ToolCallView{ID: lt.ID, Name: lt.Name, RawJSONBuf: string(lt.Args), Streaming: lt.State == "composing"}
+		if len(lt.Args) > 0 && lt.State != "composing" {
+			tc.Args = tui.ShortArgs(lt.Name, lt.Args)
+		}
+		if lt.Result != nil {
+			tc.Done = true
+			tc.Error = lt.Result.IsError
+			tc.Result = toolResultText(*lt.Result)
+		}
+		i.bumpToolRevisionLocked(tc)
+		i.toolCalls[lt.ID] = tc
+		i.toolOrder = append(i.toolOrder, lt.ID)
+		i.stream.Gate(lt.ID)
+	}
+}
+
+func toolResultText(r core.ToolResult) string {
+	var text strings.Builder
+	for _, c := range r.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			if text.Len() > 0 {
+				text.WriteString("\n")
+			}
+			text.WriteString(tb.Text)
+		}
+	}
+	return text.String()
+}
+
+// applyInfoLocked projects session.Info onto the status-bar view state.
+func (i *Interactive) applyInfoLocked(info session.Info) {
+	i.portInfo = info
+	if info.Provider != "" {
+		i.cfg.Provider = info.Provider
+	}
+	if info.Model != "" {
+		i.cfg.Model = info.Model
+	}
+	i.cfg.Reasoning = info.Reasoning
+	fast := info.FastMode
+	i.cfg.FastMode = &fast
+	if info.CWD != "" {
+		i.cfg.CWD = info.CWD
+	}
+	busy := info.Run == session.RunStateRunning || info.Run == session.RunStateCompacting
+	if busy && !i.busy {
+		i.spin.Start()
+	}
+	i.busy = busy
+	i.autoCompacting = info.Run == session.RunStateCompacting
+	i.cumUsage = info.Usage
+	i.lastCtxInput = info.ContextUsed
+	i.goalStatus = ""
+	if info.Goal != nil {
+		i.goalStatus = core.GoalStatus(info.Goal.Status)
+	}
+	if info.PlanStep != nil {
+		i.planCurrent, i.planTotal = info.PlanStep.Index, info.PlanStep.Total
+	} else {
+		i.planCurrent, i.planTotal = 0, 0
+	}
+	if info.Title != "" {
+		i.sessionTitle = core.NormalizeSessionTitle(info.Title)
+	}
+	switch {
+	case !busy:
+		i.activity.activity = activity{kind: activityIdle}
+	case info.Run == session.RunStateCompacting:
+		i.activity.activity = activity{kind: activityCompactingHistory}
+	}
+	if !busy {
+		i.flushPortToolMsgLocked()
+		work := i.takePendingIdleWorkLocked()
+		if len(work) > 0 {
+			go runPendingIdleWork(work)
+		}
+	}
+}
+
+func (i *Interactive) applyExtChromeLocked(ch session.ExtChrome) {
+	i.extStatuses = map[string]map[string]extensionStatus{}
+	for ext, items := range ch.Statuses {
+		i.extStatuses[ext] = map[string]extensionStatus{}
+		for k, v := range items {
+			i.extStatuses[ext][k] = extensionStatus{Level: v.Level, Text: v.Text}
+		}
+	}
+	i.extWidgets = map[string]map[string]extensionWidget{}
+	for ext, items := range ch.Widgets {
+		i.extWidgets[ext] = map[string]extensionWidget{}
+		for k, v := range items {
+			i.extWidgets[ext][k] = extensionWidget{Position: v.Position, Title: v.Title, Lines: append([]string(nil), v.Lines...)}
+		}
+	}
+	if len(ch.Panels) > 0 && i.extPanel != nil {
+		p := ch.Panels[len(ch.Panels)-1]
+		i.extPanel.Open(p.Ext, p.Spec.ID, p.Spec.Title, p.Spec.Lines, p.Spec.Footer)
+	}
+	if ch.Alert != nil {
+		alert := *ch.Alert
+		i.pendingAlert = &alert
+	}
+}
+
+func (i *Interactive) applyNoteLocked(n session.Note) {
+	switch n.Level {
+	case "error":
+		i.statusErr, i.statusOK = n.Text, ""
+	case "warning", "warn":
+		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Warning, n.Text))
+	default:
+		i.statusOK, i.statusErr = n.Text, ""
+	}
+}
+
+// flushPortToolMsgLocked commits buffered tool results as the tool-role
+// message the agent appended after executing the batch.
+func (i *Interactive) flushPortToolMsgLocked() {
+	if i.portToolMsg == nil {
+		return
+	}
+	i.portMsgs = append(i.portMsgs, *i.portToolMsg)
+	i.portRev++
+	i.portToolMsg = nil
+}
+
+// applyPortAgentTranscript mirrors the agent's transcript appends from
+// events, so the presenter's anchor logic works as with an in-process agent.
+func (i *Interactive) applyPortAgentTranscriptLocked(ev core.AgentEvent) {
+	switch e := ev.(type) {
+	case core.EvTurnStart, core.EvDone, core.EvAssistantStart:
+		i.flushPortToolMsgLocked()
+	case core.EvUserMessage:
+		i.flushPortToolMsgLocked()
+		i.portMsgs = append(i.portMsgs, e.Message)
+		i.portRev++
+	case core.EvAssistantMessage:
+		i.portMsgs = append(i.portMsgs, e.Message)
+		i.portRev++
+	case core.EvToolResult:
+		if i.portToolMsg == nil {
+			i.portToolMsg = &provider.Message{Role: provider.RoleTool, Time: time.Now()}
+		}
+		i.portToolMsg.Content = append(i.portToolMsg.Content, provider.ToolResultBlock{
+			CallID: e.ID, Content: e.Result.Content, IsError: e.Result.IsError, Timing: e.Result.Timing, Context: e.Result.Context,
+		})
+	}
+}
+
+// handleSessionEvent applies one daemon event. done reports that Run must
+// return (nil error): the session was taken over or closed without successor.
+func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) (done bool) {
+	// Seq 0 marks client-synthesized terminal events; never drop those.
+	if ev.Seq != 0 {
+		i.mu.Lock()
+		if ev.Seq <= i.lastSeq {
+			i.mu.Unlock()
+			return false
+		}
+		i.lastSeq = ev.Seq
+		i.mu.Unlock()
+	}
+	switch ev.Kind {
+	case session.EvAgent:
+		if ev.Agent == nil {
+			return false
+		}
+		i.mu.Lock()
+		i.applyPortAgentTranscriptLocked(ev.Agent)
+		i.mu.Unlock()
+		i.handleEventForPresentation(ev.Agent)
+		return false
+	case session.EvMessagesReplaced:
+		i.resnapshot(ctx)
+		return false
+	case session.EvAttach:
+		a, _ := ev.Data.(session.AttachEvent)
+		if a.State == session.AttachStateDetached {
+			i.mu.Lock()
+			switch a.Reason {
+			case "detached_by_other":
+				i.exitNotice = detachedByOtherNotice
+			default:
+				i.exitNotice = "detached: " + a.Reason
+			}
+			i.mu.Unlock()
+			return true
+		}
+		return false
+	case session.EvClosed:
+		c, _ := ev.Data.(session.ClosedEvent)
+		if c.Successor != "" {
+			if err := i.reattachSuccessor(ctx, c.Successor); err != nil {
+				i.mu.Lock()
+				i.exitNotice = "session closed; reattach failed: " + err.Error()
+				i.mu.Unlock()
+				return true
+			}
+			return false
+		}
+		i.mu.Lock()
+		if i.exitNotice == "" {
+			i.exitNotice = "session closed"
+			if c.Reason != "" {
+				i.exitNotice += ": " + c.Reason
+			}
+		}
+		i.mu.Unlock()
+		return true
+	}
+	i.mu.Lock()
+	i.applySessionViewEventLocked(ev)
+	i.mu.Unlock()
+	i.syncPortDialogs()
+	i.invalidate()
+	return false
+}
+
+func (i *Interactive) applySessionViewEventLocked(ev session.Event) {
+	switch d := ev.Data.(type) {
+	case session.InfoEvent:
+		if d.Info.ID != "" {
+			i.applyInfoLocked(d.Info)
+		}
+	case session.QueueEvent:
+		i.portQueue = append([]session.QueuedInput(nil), d.Queue...)
+	case session.PendingEvent:
+		i.portPending = append(i.portPending, d.Pending)
+	case session.PendingResolvedEvent:
+		kept := i.portPending[:0:0]
+		for _, p := range i.portPending {
+			if p.ID != d.ID {
+				kept = append(kept, p)
+			}
+		}
+		i.portPending = kept
+	case session.DeferredEvent:
+		i.portDeferred = append(i.portDeferred, d.Deferred)
+	case session.NoteEvent:
+		i.applyNoteLocked(d.Note)
+	case session.ExtChromeEvent:
+		i.applyExtChromeLocked(d.ExtChrome)
+	case session.ExtPanelEvent:
+		switch d.Op {
+		case "open":
+			i.extPanel.Open(d.Panel.Ext, d.Panel.Spec.ID, d.Panel.Spec.Title, d.Panel.Spec.Lines, d.Panel.Spec.Footer)
+		case "update":
+			if i.extPanel.Active() && i.extPanel.ext == d.Panel.Ext && i.extPanel.id == d.Panel.Spec.ID {
+				i.extPanel.Update(d.Panel.Spec.Title, d.Panel.Spec.Lines, d.Panel.Spec.Footer)
+			}
+		case "close":
+			if i.extPanel.Active() && i.extPanel.ext == d.Panel.Ext && i.extPanel.id == d.Panel.Spec.ID {
+				i.extPanel.Close()
+			}
+		}
+	case session.ExtAlertEvent:
+		alert := d.Alert
+		i.pendingAlert = &alert
+	case session.ExtDisplayEvent:
+		prefix := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "["+d.Ext+"] ")
+		for _, line := range strings.Split(d.Text, "\n") {
+			i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, line))
+		}
+	case session.ExtInsertEvent:
+		// Submit=true slash execution is routed by L16 (input owner);
+		// presentation inserts the text either way.
+		if i.ed != nil {
+			i.ed.Insert(d.Text)
+		}
+	case session.PlanEvent:
+		i.planSnapshots = d.Plan
+		i.planRevision++
+	case session.GoalEvent:
+		i.goalStatus = core.GoalStatus(d.Status)
+	case session.TitleEvent:
+		i.sessionTitle = core.NormalizeSessionTitle(d.Title)
+		i.writeTerminalTitleLocked(i.sessionTitle)
+	case session.CompactionEvent:
+		switch d.Phase {
+		case "start":
+			i.activity.activity = activity{kind: activityCompactingHistory}
+		case "failed":
+			i.statusErr, i.statusOK = "compaction failed", ""
+		}
+	case session.InterSessionEvent:
+		label := "[message from " + string(d.From.SessionID)
+		if d.From.Title != "" {
+			label += " (" + d.From.Title + ")"
+		}
+		label += "] "
+		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Accent, label)+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, d.Text))
+	}
+}
+
+// defaultSessionTimeout bounds async daemon calls made from the Run loop.
+const defaultSessionTimeout = 10 * time.Second
+
+type sessionResultKind uint8
+
+const (
+	sessionResultResnapshot sessionResultKind = iota
+	sessionResultSuccessor
+	sessionResultExit
+	// sessionResultSwitch moves the view to another daemon session
+	// (/sessions pick, /fork). A failure keeps the current session.
+	sessionResultSwitch
+)
+
+// sessionResult is the outcome of an async daemon call, applied by the Run
+// loop only when gen still matches the attached session.
+type sessionResult struct {
+	kind   sessionResultKind
+	gen    uint64
+	id     session.ID
+	port   session.Port
+	snap   session.Snapshot
+	events <-chan session.Event
+	cancel context.CancelFunc
+	err    error
+}
+
+func (i *Interactive) sessionCallTimeout() time.Duration {
+	if i.sessionTimeout > 0 {
+		return i.sessionTimeout
+	}
+	return defaultSessionTimeout
+}
+
+func (i *Interactive) deliverSessionResult(ctx context.Context, res sessionResult) {
+	select {
+	case i.sessionResults <- res:
+	case <-ctx.Done():
+		if res.cancel != nil {
+			res.cancel()
+		}
+	}
+}
+
+// resnapshot refetches the full state after the daemon replaced messages
+// (compaction, fork, clear) without blocking the Run loop. The live
+// subscription continues; events the snapshot already covers are dropped by
+// Seq once it is applied.
+func (i *Interactive) resnapshot(ctx context.Context) {
+	i.mu.Lock()
+	port, gen := i.port, i.sessionGen
+	i.mu.Unlock()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			err = fmt.Errorf("session snapshot: %w", err)
+		}
+		i.deliverSessionResult(ctx, sessionResult{kind: sessionResultResnapshot, gen: gen, snap: snap, err: err})
+	}()
+}
+
+// reattachSuccessor follows /clear (D9): the daemon closed this session and
+// created successor. The old stream is dropped at once; attach, snapshot and
+// subscribe run off the Run loop and are applied by applySessionResult.
+func (i *Interactive) reattachSuccessor(ctx context.Context, successor session.ID) error {
+	i.mu.Lock()
+	client := i.client
+	i.mu.Unlock()
+	if client == nil {
+		return errors.New("no session client")
+	}
+	i.stopSubscription()
+	i.mu.Lock()
+	gen := i.sessionGen
+	i.mu.Unlock()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		res := sessionResult{kind: sessionResultSuccessor, gen: gen, id: successor}
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		port, err := client.Attach(callCtx, successor)
+		if err != nil {
+			res.err = fmt.Errorf("attach %s: %w", successor, err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			res.err = fmt.Errorf("session snapshot: %w", err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		// The stream outlives the bounded call: scope it to the Run ctx.
+		subCtx, subCancel := context.WithCancel(ctx)
+		events, err := port.Subscribe(subCtx, snap.Seq)
+		if err != nil {
+			subCancel()
+			res.err = fmt.Errorf("session subscribe: %w", err)
+			i.deliverSessionResult(ctx, res)
+			return
+		}
+		res.port, res.snap, res.events, res.cancel = port, snap, events, subCancel
+		i.deliverSessionResult(ctx, res)
+	}()
+	return nil
+}
+
+// applySessionResult applies an async result on the Run loop. done reports
+// that Run must end (successor reattach failed).
+func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult) (done bool) {
+	i.mu.Lock()
+	if res.gen != i.sessionGen {
+		i.mu.Unlock()
+		if res.cancel != nil {
+			res.cancel()
+		}
+		return false
+	}
+	switch res.kind {
+	case sessionResultResnapshot:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+		} else if res.snap.Seq < i.lastSeq {
+			// Newer events were applied while the call ran; this snapshot
+			// would roll them back. Fetch a fresh one instead.
+			i.mu.Unlock()
+			i.resnapshot(ctx)
+			return false
+		} else {
+			i.hydrateLocked(res.snap)
+		}
+	case sessionResultSuccessor:
+		if res.err != nil {
+			i.exitNotice = "session closed; reattach failed: " + res.err.Error()
+			i.mu.Unlock()
+			return true
+		}
+		i.sessionGen++
+		if i.subCancel != nil {
+			i.subCancel()
+		}
+		i.port, i.sessionID = res.port, res.id
+		i.subCancel, i.events = res.cancel, res.events
+		i.extNotes = nil
+		i.statusErr, i.statusOK = "", ""
+		i.hydrateLocked(res.snap)
+	case sessionResultSwitch:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		i.sessionGen++
+		// Cancelling the old controlling stream releases it (detach).
+		if i.subCancel != nil {
+			i.subCancel()
+		}
+		i.port, i.sessionID = res.port, res.id
+		i.subCancel, i.events = res.cancel, res.events
+		i.extNotes = nil
+		i.statusErr, i.statusOK = "", "switched to session "+string(res.id)
+		i.hydrateLocked(res.snap)
+	case sessionResultExit:
+		if res.err != nil {
+			i.statusErr, i.statusOK = res.err.Error(), ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		i.mu.Unlock()
+		return true
+	}
+	i.mu.Unlock()
+	i.syncPortDialogs()
+	i.scrollToBottom()
+	i.invalidate()
+	return false
+}
+
+// SwitchSession replaces the attached session with port (/sessions live
+// pick, /fork) and rehydrates the view. Pending async results for the old
+// session are discarded. session.Port has no Detach; releasing the old
+// session is the caller's job (cfg.Detach / SessionClient).
+func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port session.Port) error {
+	i.stopSubscription()
+	i.mu.Lock()
+	i.sessionGen++
+	i.port = port
+	if port != nil {
+		i.portMode.Store(true)
+	}
+	i.sessionID = id
+	i.extNotes = nil
+	i.statusErr, i.statusOK = "", ""
+	i.mu.Unlock()
+	return i.attachPort(ctx)
 }

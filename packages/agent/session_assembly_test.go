@@ -478,3 +478,52 @@ func packageGoroutines() []string {
 	}
 	return out
 }
+
+// The daemon session persists provider retry lifecycle records into the
+// session file alongside usage.
+func TestSessionAgentPersistsRetryLifecycle(t *testing.T) {
+	sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	deps, cleanup := newTestSessionDeps(t, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: sessionAssemblyArgs(server)})
+	ag, _, _, err := deps.AgentBuilder.BuildAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.OnRetryLifecycle == nil {
+		t.Fatal("session agent has no retry lifecycle persistence")
+	}
+	ag.OnRetryLifecycle(core.RetryLifecycleRecord{
+		Event: core.RetryLifecycleRequestFailed, Scope: core.RetryScopeAgent,
+		Attempt: 1, MaxAttempts: 1, Reason: core.RetryReasonServer, Terminal: true,
+	})
+	if err := ag.Prompt(context.Background(), "hello", nil, func(core.AgentEvent) {}); err != nil {
+		t.Fatal(err)
+	}
+	path := deps.SessionStore.CurrentSessionPath()
+	cleanup()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifecycle []core.RetryLifecycleRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var row struct {
+			Type           string                      `json:"type"`
+			RetryLifecycle []core.RetryLifecycleRecord `json:"retry_lifecycle"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row.Type == "usage" && len(row.RetryLifecycle) > 0 {
+			lifecycle = row.RetryLifecycle
+		}
+	}
+	if len(lifecycle) != 1 {
+		t.Fatalf("retry lifecycle = %#v, want one record", lifecycle)
+	}
+	record := lifecycle[0]
+	if record.Event != core.RetryLifecycleRequestFailed || record.Scope != core.RetryScopeAgent ||
+		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != core.RetryReasonServer || !record.Terminal {
+		t.Fatalf("retry lifecycle record = %#v", record)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/session"
 	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -81,10 +82,15 @@ func reasoningSettingOptions(levels []string) []settingsOption {
 }
 func (i *Interactive) reasoningSettingItem() settingsItem {
 	levels := []string{"", "minimum", "low", "medium", "high", "xhigh", "max"}
-	reasoning := provider.NormalizeReasoning(i.cfg.Reasoning)
+	provName, modelName, current := i.cfg.Provider, i.cfg.Model, i.cfg.Reasoning
+	if i.portMode.Load() {
+		info := i.SessionInfo()
+		provName, modelName, current = info.Provider, info.Model, info.Reasoning
+	}
+	reasoning := provider.NormalizeReasoning(current)
 	desc := "reasoning depth for reasoning-capable models"
 	hint := ""
-	if m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
+	if m, err := provider.FindModel(provName, modelName); err == nil {
 		levels = provider.AvailableReasoningLevels(m)
 		reasoning = provider.ClampReasoningForModel(m, reasoning)
 		if !m.Reasoning {
@@ -426,6 +432,10 @@ func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
 		return
 	}
 	threshold = NormalizeAutoCompactThreshold(&threshold)
+	if i.portMode.Load() {
+		i.portApplySettings("auto_compact_threshold", session.SettingsPatch{AutoCompactThreshold: &threshold})
+		return
+	}
 	if store, ok := i.cfg.SettingsStore.(autoCompactThresholdSettingsStore); ok {
 		if err := store.SetAutoCompactThreshold(threshold); err != nil {
 			i.mu.Lock()
@@ -541,6 +551,12 @@ func (i *Interactive) applyQuickModelSelection(slot int, providerName, model str
 }
 func (i *Interactive) applyQuickModelShortcut(slot int) {
 	if slot < 1 || slot > 9 {
+		return
+	}
+	if i.portMode.Load() {
+		i.portSettingsCall(fmt.Sprintf("profile %d", slot), func(ctx context.Context, port session.Port) error {
+			return port.ApplyProfile(ctx, slot)
+		})
 		return
 	}
 	if i.busy {
@@ -746,6 +762,12 @@ func (i *Interactive) stripWebSearchTool() {
 	i.agent.SetTools(tools)
 }
 func (i *Interactive) applySettingToggle(key string, value bool) {
+	if i.portMode.Load() {
+		if patch, ok := portSettingsPatch(key, value); ok {
+			i.portApplySettings(key, patch)
+			return
+		}
+	}
 	// Every setting toggle forces a full repaint at the end — same
 	// effect as the user pressing Ctrl+L — so any per-setting visual
 	// change (image rendering, status copy, future toggles) lands
@@ -1221,6 +1243,12 @@ func (i *Interactive) applyReasoningSetting(level string) {
 		i.invalidate()
 	}()
 	level = provider.NormalizeReasoning(level)
+	if i.portMode.Load() {
+		i.portSettingsCall("reasoning", func(ctx context.Context, port session.Port) error {
+			return port.SetReasoning(ctx, level)
+		})
+		return
+	}
 	if slot := i.cfg.ActiveModelProfile; slot > 0 {
 		p := QuickModelShortcut{
 			Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: level,
@@ -1249,4 +1277,79 @@ func (i *Interactive) applyReasoningSetting(level string) {
 	}
 	i.statusErr = ""
 	i.mu.Unlock()
+}
+
+// portSettingsCall runs a session-port settings call off the render loop.
+// Local state is not touched: the view follows the next EvInfo.
+func (i *Interactive) portSettingsCall(label string, call func(context.Context, session.Port) error) {
+	parent := i.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	go func() {
+		port := i.SessionPort()
+		if port == nil {
+			i.ReportError(fmt.Errorf("%s: no session attached", label))
+			return
+		}
+		ctx, cancel := context.WithTimeout(parent, i.sessionCallTimeout())
+		defer cancel()
+		if err := call(ctx, port); err != nil {
+			i.ReportError(fmt.Errorf("%s: %w", label, err))
+		}
+	}()
+}
+
+func (i *Interactive) portApplySettings(key string, patch session.SettingsPatch) {
+	i.portSettingsCall("settings: "+key, func(ctx context.Context, port session.Port) error {
+		return port.ApplySettings(ctx, patch)
+	})
+}
+
+// portSettingsPatch maps daemon-owned setting toggles to a SettingsPatch.
+// Other toggles are TUI-local and keep their local handling.
+func portSettingsPatch(key string, value bool) (session.SettingsPatch, bool) {
+	v := value
+	switch key {
+	case "auto_subagents_enabled":
+		return session.SettingsPatch{AutoSubagentsEnabled: &v}, true
+	case "web_search_enabled":
+		return session.SettingsPatch{WebSearchEnabled: &v}, true
+	case "lsp_enabled":
+		return session.SettingsPatch{LSPEnabled: &v}, true
+	case "subagent_lsp_enabled":
+		return session.SettingsPatch{SubagentLSPEnabled: &v}, true
+	case "jail_by_default":
+		return session.SettingsPatch{JailByDefault: &v}, true
+	case "fast_mode":
+		return session.SettingsPatch{FastMode: &v}, true
+	}
+	return session.SettingsPatch{}, false
+}
+
+// portSetModel asks the session port to switch model. A bare or
+// provider-qualified name is resolved through the local catalog when
+// possible; otherwise "provider/model" is split at the first slash.
+func (i *Interactive) portSetModel(prov, model string) {
+	if model == "" {
+		return
+	}
+	if prov == "" {
+		if m, err := provider.FindModel("", model); err == nil {
+			prov, model = m.Provider, m.ID
+		} else if p, rest, ok := strings.Cut(model, "/"); ok {
+			prov, model = p, rest
+		}
+	}
+	i.portSettingsCall("model", func(ctx context.Context, port session.Port) error {
+		return port.SetModel(ctx, prov, model)
+	})
+}
+
+// portToggleFastMode flips the daemon session's fast mode from its last Info.
+func (i *Interactive) portToggleFastMode() {
+	enabled := !i.SessionInfo().FastMode
+	i.portSettingsCall("fast mode", func(ctx context.Context, port session.Port) error {
+		return port.SetFastMode(ctx, enabled)
+	})
 }

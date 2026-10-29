@@ -29,6 +29,8 @@ type stateSession struct {
 	Env         []string   `json:"env"`
 	Args        []string   `json:"args"`
 	Headless    bool       `json:"headless,omitempty"`
+	// Zutfile keeps packaged-agent permissions across restore and clear.
+	Zutfile *session.ZutfileSpec `json:"zutfile,omitempty"`
 	// Running records that a turn was in flight at the last state write; the
 	// restore marks it interrupted.
 	Running bool `json:"running,omitempty"`

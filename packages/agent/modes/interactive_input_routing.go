@@ -58,6 +58,7 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 	return len(i.helpBlock) > 0 ||
 		len(i.extNotes) > 0 ||
 		i.questionDialog.Active() ||
+		i.deferredDialog.Active() ||
 		i.dialog.Active() ||
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||
@@ -133,6 +134,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 	if i.questionDialog.Active() && !i.confirmDialog.Active() {
 		i.questionDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
+	if i.deferredDialog.Active() && !i.confirmDialog.Active() {
+		i.deferredDialog.HandleKey(k)
 		i.invalidate()
 		return false
 	}
@@ -265,7 +271,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.sessionSearches = i.sessionDialog.StartSearch(ctx)
 		}
 		i.mu.Unlock()
-		if act.Select {
+		if act.Select && act.LiveID != "" {
+			i.portAttachSession(act.LiveID)
+		} else if act.Select {
 			i.applySessionSelection(act.Path)
 		}
 		if act.Delete {
@@ -547,6 +555,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		loadingSession := i.sessionLoading
 		i.mu.Unlock()
 		if loadingSession {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			i.markCtrlCExit()
 			return true
 		}
@@ -560,6 +571,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// ctrlCExitWindow quits.
 		if i.busy {
 			if i.ctrlCExitArmed() {
+				if i.port != nil {
+					return i.portDetach()
+				}
 				i.markCtrlCExit()
 				return true
 			}
@@ -593,6 +607,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		if i.ctrlCExitArmed() {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			i.markCtrlCExit()
 			return true
 		}
@@ -626,6 +643,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if hadHelp || hadNotes {
 			i.invalidate()
 			return false
+		}
+		if i.port != nil {
+			if i.portRunning() {
+				i.portAbort(ctx)
+				return false
+			}
+			break
 		}
 		i.mu.Lock()
 		busyCancel := i.busy && i.cancelTurn != nil
@@ -662,6 +686,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	case tui.KeyCtrlD:
 		if i.ed.IsEmpty() && !i.busy {
+			if i.port != nil {
+				return i.portDetach()
+			}
 			return true
 		}
 	case tui.KeyCtrlL:
@@ -930,6 +957,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return i.runSlash(ctx, text)
 		}
 
+		if i.port != nil {
+			clearSubmittedInput()
+			i.portSubmit(ctx, text, images)
+			return false
+		}
 		if i.agent == nil {
 			i.mu.Lock()
 			i.statusErr = "not logged in. type /login first."

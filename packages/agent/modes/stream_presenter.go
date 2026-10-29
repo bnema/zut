@@ -170,10 +170,10 @@ func (s *streamPresenter) transcriptLimit(total int) (limit int, rev uint64, ok 
 // startStreamLocked anchors a new reply at the current transcript length.
 func (i *Interactive) startStreamLocked() {
 	anchor, rev := -1, uint64(0)
-	if i.agent != nil {
-		// The agent goroutine delivers this event synchronously, so the
-		// transcript cannot grow between these two reads.
-		anchor, rev = i.agent.MessageCount(), i.agent.Revision()
+	// The agent goroutine (or the session event loop in Port mode) delivers
+	// this event in order, so the transcript cannot grow between the reads.
+	if n, r, ok := i.transcriptLenLocked(); ok {
+		anchor, rev = n, r
 	}
 	i.stream.Start(anchor, rev)
 }

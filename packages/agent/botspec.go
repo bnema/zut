@@ -1,20 +1,16 @@
 package agent
 
-import (
-	"github.com/bnema/zut/packages/agent/modes/bot"
-)
+import "io"
 
 // botSpec describes one bot protocol to the generic daemon CLI in
 // botcmd.go. Everything protocol-specific (setup flow, status text,
-// adapter construction, state files) hangs off this struct; the
-// subcommand plumbing (run/start/stop/logs) is shared.
+// state files) hangs off this struct; the subcommand plumbing
+// (start/stop/logs through the daemon) is shared. name is also the daemon
+// bot kind.
 type botSpec struct {
 	name       string   // "telegram", "matrix" — used in messages
 	subcommand string   // "telegram-bot", "matrix-bot"
 	aliases    []string // {"tg"}, {"mx"}
-
-	pidPath func(zutHome string) string
-	logPath func(zutHome string) string
 
 	// configured reports whether setup has been completed (e.g. a
 	// token is present), with a hint error message when it hasn't.
@@ -22,12 +18,8 @@ type botSpec struct {
 
 	printHelp func()
 	setup     func(tail []string) error
-	status    func() error
+	status    func(w io.Writer, version string) error
 	reset     func() error
-
-	// newAdapter builds the protocol adapter for the standalone
-	// daemon. Credential refresh stays generic in botRun.
-	newAdapter func(zutHome string) (bot.BotAdapter, error)
 }
 
 // botSpecs is the registry the dispatcher walks. Matrix is appended

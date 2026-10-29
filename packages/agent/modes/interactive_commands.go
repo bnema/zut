@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -217,8 +218,20 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/goal":
 		i.runGoalCommand(ctx, cmd, parts)
 	case "/exit":
+		if i.port != nil {
+			i.portExit(ctx)
+			return false
+		}
 		return true
+	case "/detach":
+		if i.port != nil {
+			return i.portDetach()
+		}
 	case "/clear":
+		if i.port != nil {
+			i.portClear(ctx)
+			return false
+		}
 		// The bound session may still hold a plan core no longer has (a failed or
 		// skipped seed, a stray write). Read it before taking i.mu: the callback
 		// takes the host persistence lock, which must not nest under the mode
@@ -351,6 +364,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/reasoning":
 		i.openReasoningDialog()
 	case "/fast":
+		if i.portMode.Load() {
+			i.portToggleFastMode()
+			break
+		}
 		enabled := i.cfg.FastMode == nil || !*i.cfg.FastMode
 		i.applySettingToggle("fast_mode", enabled)
 	case "/orchestrator":
@@ -370,13 +387,37 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
 		i.sessionSearches = nil
 		i.mu.Unlock()
+		if i.portMode.Load() {
+			i.loadLiveSessions(ctx)
+		}
 	case "/fork":
+		if i.portMode.Load() {
+			i.portOpenFork()
+			break
+		}
 		i.doSessionFork()
 	case "/jump":
 		i.openJumpDialog(parts[1:])
 	case "/btw":
 		i.openBtwDialog(parts[1:])
 	case "/skills":
+		if i.portMode.Load() && len(parts) >= 3 && strings.EqualFold(parts[1], "pin") {
+			global := strings.EqualFold(parts[2], "--global")
+			name := strings.Join(parts[2:], " ")
+			if global {
+				name = strings.Join(parts[3:], " ")
+			}
+			if name == "" {
+				i.mu.Lock()
+				i.statusErr = "usage: /skills pin [--global] <name>"
+				i.mu.Unlock()
+				break
+			}
+			i.portSettingsCall("skill pin", func(ctx context.Context, port session.Port) error {
+				return port.ToggleSkillPin(ctx, name, global)
+			})
+			break
+		}
 		i.openSkillsDialog()
 	case "/compact":
 		i.runCompact(ctx, compactContinuationRequest{origin: compactOriginManual})
@@ -429,6 +470,24 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// The host's ChangeCWD hook handles validation, session
 		// close + reopen, agent rebuild, sandbox re-rooting, and
 		// re-jail-if-jailed semantics.
+		if i.portMode.Load() {
+			path := strings.TrimSpace(strings.TrimPrefix(cmd, parts[0]))
+			if path == "" {
+				i.mu.Lock()
+				i.statusErr = "/cd: missing path"
+				i.mu.Unlock()
+				break
+			}
+			if !filepath.IsAbs(path) {
+				if base := i.SessionInfo().CWD; base != "" {
+					path = filepath.Join(base, path)
+				}
+			}
+			i.portSettingsCall("/cd", func(ctx context.Context, port session.Port) error {
+				return port.ChangeCWD(ctx, path)
+			})
+			break
+		}
 		if i.cfg.ChangeCWD == nil {
 			i.mu.Lock()
 			i.statusErr = "/cd unavailable: host did not wire ChangeCWD"
@@ -466,6 +525,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.fileSuggest.SetCWD(i.cfg.CWD)
 		i.invalidate()
 	case "/jail":
+		if i.portMode.Load() {
+			i.portSettingsCall("/jail", func(ctx context.Context, port session.Port) error {
+				return port.SetJail(ctx, true)
+			})
+			break
+		}
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -478,6 +543,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "/unjail":
+		if i.portMode.Load() {
+			i.portSettingsCall("/unjail", func(ctx context.Context, port session.Port) error {
+				return port.SetJail(ctx, false)
+			})
+			break
+		}
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -490,6 +561,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "/reload-ext":
+		if i.portMode.Load() {
+			i.portSettingsCall("/reload-ext", func(ctx context.Context, port session.Port) error {
+				return port.ReloadExtensions(ctx)
+			})
+			break
+		}
 		i.runReloadExt(ctx)
 	case "/telegram", "/tg":
 		if len(parts) >= 2 {
@@ -717,6 +794,22 @@ func (i *Interactive) doLogout(target string) {
 		llamaConfigured = err == nil && baseURL != ""
 	}
 
+	if i.portMode.Load() {
+		// The daemon session owns the agent; ask it to re-read credentials
+		// instead of touching the local agent.
+		i.mu.Lock()
+		i.llamaConfigured = llamaConfigured
+		if len(errs) > 0 {
+			i.statusErr = "logout errors: " + strings.Join(errs, "; ")
+		} else {
+			i.statusErr = ""
+			i.statusOK = "logged out of " + strings.Join(providers, ", ")
+		}
+		i.mu.Unlock()
+		i.portReloadCredentials("logout")
+		return
+	}
+
 	i.mu.Lock()
 	i.llamaConfigured = llamaConfigured
 	if len(errs) > 0 {
@@ -827,6 +920,17 @@ func (i *Interactive) saveLlamaCPPLogin(baseURL, apiKey string) {
 	i.statusOK = "configured llama.cpp router"
 	i.mu.Unlock()
 	i.showLoginResult(true, "")
+	if i.portMode.Load() {
+		i.portReloadCredentials("login")
+	}
+}
+
+// portReloadCredentials asks the attached daemon session to re-read its
+// credentials. It runs off the render loop and reports failures as a status note.
+func (i *Interactive) portReloadCredentials(label string) {
+	i.portSettingsCall(label+": reload daemon credentials", func(ctx context.Context, port session.Port) error {
+		return port.ReloadCredentials(ctx)
+	})
 }
 func (i *Interactive) startAPIKeyFlow(provider string) {
 	if title, lines, ok := providerSetupInfo(provider); ok {
@@ -929,6 +1033,10 @@ func (i *Interactive) cancelAndWaitForIdle() {
 	}
 }
 func (i *Interactive) openBtwDialog(args []string) {
+	if i.portMode.Load() {
+		i.openPortBtwDialog(args)
+		return
+	}
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -952,6 +1060,40 @@ func (i *Interactive) openBtwDialog(args []string) {
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
 	i.btwDialog.Open(theme, ag, system, model, cwd, seed, compact, flatTools, lineInput, i.invalidate)
+	i.invalidate()
+}
+
+// openPortBtwDialog opens /btw on a headless fork of the attached daemon
+// session. The dialog creates and releases the fork off the render loop.
+func (i *Interactive) openPortBtwDialog(args []string) {
+	client := i.SessionClient()
+	if client == nil {
+		i.ReportError(errors.New("btw: no session client"))
+		return
+	}
+	info := i.SessionInfo()
+	parent := info.SessionPath
+	if parent == "" {
+		parent = i.currentSessionPath()
+	}
+	if parent == "" {
+		i.ReportError(errors.New("btw: no session file for the attached session"))
+		return
+	}
+	i.mu.Lock()
+	upTo := len(i.view.Messages)
+	theme := i.cfg.Theme
+	compact := i.compactModeEnabled()
+	flatTools := i.cfg.FlatTools
+	lineInput := tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines
+	i.mu.Unlock()
+	cwd := info.CWD
+	if cwd == "" {
+		cwd = i.cfg.CWD
+	}
+	spec := session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}, Headless: true}
+	seed := strings.TrimSpace(strings.Join(args, " "))
+	i.btwDialog.OpenPort(theme, client, spec, i.sessionCallTimeout(), cwd, seed, compact, flatTools, lineInput, i.invalidate)
 	i.invalidate()
 }
 func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
@@ -1069,6 +1211,11 @@ func totalTurnsLocked(msgs []provider.Message) int {
 	return n
 }
 func (i *Interactive) canResumeSessionSelection() bool {
+	if i != nil && i.portMode.Load() {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return !i.busy && !i.sessionLoading
+	}
 	if i == nil || i.cfg.LoadSession == nil {
 		return false
 	}
@@ -1117,6 +1264,10 @@ func (i *Interactive) applySessionDeletion(path string) {
 }
 
 func (i *Interactive) applySessionSelection(path string) {
+	if i.portMode.Load() {
+		i.portResumeSession(path)
+		return
+	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
 		i.statusErr = "session loading is not wired in this build"
@@ -1206,6 +1357,10 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
+	if i.portMode.Load() {
+		i.portSetModel(prov, model)
+		return
+	}
 	i.swapModel(prov, model, i.cfg.BuildAgentFor, false)
 }
 func (i *Interactive) applyRescueModelSelection(prov, model string) {
@@ -1356,6 +1511,17 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "error":
 		i.showLoginResult(false, ev.Message)
 	case "success":
+		if i.portMode.Load() {
+			// The daemon session owns the agent: skip the local rebuild and
+			// let the daemon reload its credentials.
+			i.mu.Lock()
+			i.statusErr = ""
+			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
+			i.mu.Unlock()
+			i.showLoginResult(true, "")
+			i.portReloadCredentials("login")
+			return
+		}
 		// Keep the credential-driven resolve and its final replacement in the
 		// same transition as settings/session changes. Otherwise a build that
 		// started under the old web-search policy could commit afterward.
@@ -1440,4 +1606,139 @@ func (i *Interactive) showLoginResult(success bool, message string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.dialog.ShowResult(success, message)
+}
+
+// loadLiveSessions fills the /sessions live section from client.List off
+// the render loop; the result is applied on the loop.
+func (i *Interactive) loadLiveSessions(ctx context.Context) {
+	client := i.SessionClient()
+	if client == nil {
+		return
+	}
+	self := i.SessionID()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		infos, err := client.List(callCtx)
+		apply := func() {
+			i.mu.Lock()
+			if err != nil {
+				i.statusErr, i.statusOK = "sessions: list live: "+err.Error(), ""
+			} else {
+				i.sessionDialog.SetLive(infos, self)
+			}
+			i.mu.Unlock()
+			i.invalidate()
+		}
+		select {
+		case i.loopCalls <- apply:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// portAttachSession switches to live session id (/sessions live pick).
+func (i *Interactive) portAttachSession(id session.ID) {
+	if id == i.SessionID() {
+		return
+	}
+	i.portSwitchAsync("attach", func(context.Context, SessionClient) (session.ID, error) { return id, nil })
+}
+
+// portResumeSession asks the daemon to resume the on-disk session at path.
+func (i *Interactive) portResumeSession(path string) {
+	cwd := i.SessionInfo().CWD
+	i.portSwitchAsync("resume", func(ctx context.Context, client SessionClient) (session.ID, error) {
+		info, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: path})
+		return session.ID(info.ID), err
+	})
+}
+
+// portForkSession forks the current session file keeping upTo messages.
+func (i *Interactive) portForkSession(upTo int) {
+	info := i.SessionInfo()
+	parent := info.SessionPath
+	if parent == "" {
+		parent = i.currentSessionPath()
+	}
+	if parent == "" {
+		i.ReportError(errors.New("fork: no session file for the attached session"))
+		return
+	}
+	i.portSwitchAsync("fork", func(ctx context.Context, client SessionClient) (session.ID, error) {
+		created, err := client.Create(ctx, session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}})
+		return session.ID(created.ID), err
+	})
+}
+
+// portOpenFork opens the fork-point picker over the daemon transcript.
+func (i *Interactive) portOpenFork() {
+	i.mu.Lock()
+	busy := i.busy || i.sessionLoading
+	msgs := i.view.Messages
+	if busy {
+		i.statusErr, i.statusOK = "fork: wait until the current turn finishes", ""
+	} else if len(msgs) == 0 {
+		i.statusErr, i.statusOK = "fork: transcript is empty; nothing to fork from", ""
+	} else {
+		i.pendingFork = true
+		i.jumpDialog.Open(msgs, "")
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// portSwitchAsync resolves the target session with resolve, then attaches,
+// snapshots and subscribes off the render loop. The loop applies the switch
+// (sessionResultSwitch), which releases the old session.
+func (i *Interactive) portSwitchAsync(label string, resolve func(context.Context, SessionClient) (session.ID, error)) {
+	client := i.SessionClient()
+	if client == nil {
+		i.ReportError(fmt.Errorf("%s: no session client", label))
+		return
+	}
+	ctx := i.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	i.mu.Lock()
+	gen := i.sessionGen
+	i.statusOK, i.statusErr = label+": switching session…", ""
+	i.mu.Unlock()
+	i.invalidate()
+	timeout := i.sessionCallTimeout()
+	go func() {
+		res := sessionResult{kind: sessionResultSwitch, gen: gen}
+		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		fail := func(err error) {
+			res.err = fmt.Errorf("%s: %w", label, err)
+			i.deliverSessionResult(ctx, res)
+		}
+		id, err := resolve(callCtx, client)
+		if err != nil {
+			fail(err)
+			return
+		}
+		port, err := client.Attach(callCtx, id)
+		if err != nil {
+			fail(fmt.Errorf("attach %s: %w", id, err))
+			return
+		}
+		snap, err := port.Snapshot(callCtx)
+		if err != nil {
+			fail(fmt.Errorf("session snapshot: %w", err))
+			return
+		}
+		subCtx, subCancel := context.WithCancel(ctx)
+		events, err := port.Subscribe(subCtx, snap.Seq)
+		if err != nil {
+			subCancel()
+			fail(fmt.Errorf("session subscribe: %w", err))
+			return
+		}
+		res.id, res.port, res.snap, res.events, res.cancel = id, port, snap, events, subCancel
+		i.deliverSessionResult(ctx, res)
+	}()
 }

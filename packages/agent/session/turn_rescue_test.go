@@ -267,3 +267,82 @@ func TestFailedRescueWithQueuedInputReportsOnce(t *testing.T) {
 	waitIdle(t, c, ctx)
 	require.Empty(t, reported)
 }
+
+func TestDeclinedTurnRescueKeepsOriginalErrorAndDrainsQueue(t *testing.T) {
+	c, ctx, goal, _ := rescueController(t)
+	reported := make(chan core.EvTurnEnd, 3)
+	goal.EXPECT().goalAfterTurn(mock.Anything).Run(func(e core.EvTurnEnd) { reported <- e }).Once()
+	prompts := make(chan string, 1)
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	calls := 0
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("http 429: rate limit")
+		}
+		prompts <- lastUserText(req)
+		return reply("ok"), nil
+	}).Twice()
+	ag := core.NewAgent(client, "old", "", nil)
+	ag.MaxRetries = 0
+	// Strict builder mock: a declined rescue must never swap the model.
+	require.NoError(t, c.call(ctx, func() {
+		c.confirmSeam = c
+		c.attach = AttachStateAttached
+		c.turn.agent = ag
+		c.deps.AgentBuilder = newMockAgentBuilderLocal(t)
+	}))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Submit(ctx, Input{Text: "first"}))
+	var id string
+	for id == "" {
+		ev := recv(t, ctx, (<-chan Event)(events))
+		if pe, ok := ev.Data.(PendingEvent); ok && ev.Kind == EvPending && pe.Pending.Kind == "rescue" {
+			id = pe.Pending.ID
+		}
+	}
+	require.NoError(t, c.Submit(ctx, Input{Text: "second"}))
+	require.NoError(t, c.AnswerQuestion(ctx, id, nil))
+	require.Equal(t, "second", recv(t, ctx, (<-chan string)(prompts)))
+	require.NoError(t, recv(t, ctx, (<-chan core.EvTurnEnd)(reported)).Err)
+	waitIdle(t, c, ctx)
+	require.Empty(t, reported)
+	for {
+		select {
+		case ev := <-events:
+			if n, ok := ev.Data.(NoteEvent); ok {
+				require.NotContains(t, n.Note.Text, "rescue")
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+func TestDeclinedTurnRescueAloneReportsOriginalError(t *testing.T) {
+	c, ctx, goal, _ := rescueController(t)
+	reported := make(chan core.EvTurnEnd, 2)
+	goal.EXPECT().goalAfterTurn(mock.Anything).Run(func(e core.EvTurnEnd) { reported <- e }).Once()
+	require.NoError(t, c.call(ctx, func() {
+		c.confirmSeam = c
+		c.attach = AttachStateAttached
+		c.turn.agent = rateLimitedAgent(t)
+		c.deps.AgentBuilder = newMockAgentBuilderLocal(t)
+	}))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Submit(ctx, Input{Text: "first"}))
+	for {
+		ev := recv(t, ctx, (<-chan Event)(events))
+		if pe, ok := ev.Data.(PendingEvent); ok && ev.Kind == EvPending {
+			require.NoError(t, c.AnswerQuestion(ctx, pe.Pending.ID, nil))
+			break
+		}
+	}
+	require.ErrorContains(t, recv(t, ctx, (<-chan core.EvTurnEnd)(reported)).Err, "rate limit")
+	waitIdle(t, c, ctx)
+	require.Empty(t, reported)
+}

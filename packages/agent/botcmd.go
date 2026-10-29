@@ -7,27 +7,17 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/bnema/zut/packages/agent/modes/bot"
+	"github.com/bnema/zut/packages/agent/daemon"
+	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
-	"github.com/bnema/zut/packages/agent/subagents"
-	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/provider"
 	"golang.org/x/term"
 )
-
-// detachChild configures cmd to run in its own process group so tty
-// signals sent to the parent (SIGINT, SIGHUP on logout) don't also
-// reach the detached bot. Platform-specific: setsid on unix, a noop
-// on windows (Go's spawn path already detaches when no console is
-// inherited). See botcmd_unix.go and botcmd_windows.go.
-var detachChild func(cmd *exec.Cmd)
 
 // runBotCommand dispatches `zut <protocol>-bot ...` subcommands via
 // the botSpec registry. Returns true if rawArgs begins with a
@@ -54,15 +44,13 @@ func runBotCommand(rawArgs []string, version string) (handled bool, err error) {
 	case "setup":
 		return true, spec.setup(tail)
 	case "status":
-		return true, spec.status()
+		return true, spec.status(os.Stdout, version)
 	case "reset":
 		return true, spec.reset()
-	case "run":
-		return true, botRun(spec, tail, version)
 	case "start":
-		return true, botStart(spec, tail)
+		return true, botStart(spec, tail, version)
 	case "stop":
-		return true, botStop(spec)
+		return true, botStop(spec, version)
 	case "logs":
 		return true, botLogs(spec, tail)
 	default:
@@ -71,98 +59,78 @@ func runBotCommand(rawArgs []string, version string) (handled bool, err error) {
 	}
 }
 
-// botStart launches `zut <spec.subcommand> run` as a detached child
-// process, writes its pid to the spec's pid file, and returns
-// immediately. Stdout/stderr of the child are redirected to the spec's
-// log file.
-func botStart(spec *botSpec, rawTail []string) error {
-	// Refuse to start if another bot is already running.
-	if pid, alive, _ := bot.IsRunningAt(spec.pidPath(ZutHome())); alive {
-		return fmt.Errorf("%s is already running (pid %d); use `zut %s stop` first", spec.name, pid, spec.subcommand)
-	}
-	_ = bot.RemovePIDFile(spec.pidPath(ZutHome())) // clear any stale pid file
-
+// botStart asks the daemon (spawned when absent) to run the bot service in
+// one headless session created with this cwd, environment and flags.
+func botStart(spec *botSpec, rawTail []string, version string) error {
 	if ok, cerr := spec.configured(ZutHome()); cerr != nil {
 		return cerr
 	} else if !ok {
 		return fmt.Errorf("%s is not configured — run `zut %s setup` first", spec.name, spec.subcommand)
 	}
-
-	self, err := os.Executable()
+	botSpec, err := botStartSpec(spec.name, rawTail)
 	if err != nil {
-		return fmt.Errorf("locate zut binary: %w", err)
-	}
-
-	logPath := spec.logPath(ZutHome())
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	ctx, cancel := context.WithTimeout(context.Background(), botRequestTimeout)
+	defer cancel()
+	conn, err := dialBotDaemon(ctx, version, true)
 	if err != nil {
-		return fmt.Errorf("open log file: %w", err)
+		return err
 	}
-	defer logFile.Close()
-
-	// Refuse to start from a `go run` temp binary: Go deletes the
-	// binary when `go run` exits, which breaks the detached child.
-	// Users hit cryptic tls / exec errors on that path; fail clearly.
-	if strings.Contains(self, string(os.PathSeparator)+"go-build") ||
-		strings.Contains(self, string(os.PathSeparator)+"go-tmp") {
-		return fmt.Errorf("detected `go run` temp binary at %s — run `make install` (or copy ./bin/zut to your PATH) and use the installed binary for `start`", self)
+	defer conn.close()
+	var st daemonproto.BotStatusData
+	if err := conn.call(ctx, daemonproto.BotStartRequest{Type: "bot_start", Spec: botSpec}, &st); err != nil {
+		return fmt.Errorf("start %s bot: %w", spec.name, err)
 	}
-
-	// Child argv: same flags the user passed to `zut <sub> start`,
-	// mapped to `zut <sub> run`. Preserves --provider, --model, --cwd, etc.
-	args := append([]string{spec.subcommand, "run"}, rawTail...)
-	cmd := exec.Command(self, args...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Stdin = nil
-	// Detach: new session / new process group so terminal signals
-	// don't reach the child. Impl lives in botcmd_unix.go /
-	// botcmd_windows.go because Setsid is posix-only.
-	detachChild(cmd)
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn: %w", err)
-	}
-	if err := bot.WritePIDFile(spec.pidPath(ZutHome()), cmd.Process.Pid); err != nil {
-		_ = cmd.Process.Kill()
-		return fmt.Errorf("write pid: %w", err)
-	}
-	// Don't wait() — detach. OS will reparent the child to init when we exit.
-	go func() { _ = cmd.Process.Release() }()
-
-	fmt.Printf("started zut %s as pid %d (logs: %s)\n", spec.subcommand, cmd.Process.Pid, logPath)
+	fmt.Printf("started zut %s in the daemon (session %s)\n", spec.subcommand, st.Session)
 	fmt.Printf("use `zut %s logs -f` to tail, `zut %s stop` to stop.\n", spec.subcommand, spec.subcommand)
 	return nil
 }
 
-// botStop sends SIGTERM to the running bot (SIGKILL if it doesn't
-// exit within 5s) and cleans up the pid file.
-func botStop(spec *botSpec) error {
-	pid, alive, err := bot.IsRunningAt(spec.pidPath(ZutHome()))
+// botStartSpec captures the client cwd, environment and session flags. The
+// flags are validated here so typos fail before the daemon is involved.
+func botStartSpec(kind string, rawTail []string) (daemonproto.BotSpec, error) {
+	args, err := ParseArgs(rawTail)
+	if err != nil {
+		return daemonproto.BotSpec{}, err
+	}
+	cwd, err := filepath.Abs(args.CWD)
+	if err != nil {
+		return daemonproto.BotSpec{}, fmt.Errorf("resolve cwd: %w", err)
+	}
+	return daemonproto.BotSpec{Kind: kind, CWD: cwd, Env: os.Environ(), Args: append([]string(nil), rawTail...)}, nil
+}
+
+// botStop asks the daemon to stop the bot service and close its session.
+func botStop(spec *botSpec, version string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), botRequestTimeout)
+	defer cancel()
+	conn, err := dialBotDaemon(ctx, version, false)
+	if errors.Is(err, errDaemonAbsent) {
+		fmt.Printf("%s is not running (zut daemon is not running)\n", spec.name)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if !alive {
-		if pid > 0 {
-			_ = bot.RemovePIDFile(spec.pidPath(ZutHome()))
-			fmt.Printf("no live process; cleared stale pid %d\n", pid)
-			return nil
-		}
+	defer conn.close()
+	var before daemonproto.BotStatusData
+	if err := conn.call(ctx, daemonproto.BotStatusRequest{Type: "bot_status", Kind: spec.name}, &before); err != nil {
+		return fmt.Errorf("%s bot status: %w", spec.name, err)
+	}
+	if !before.Running {
 		fmt.Printf("%s is not running\n", spec.name)
 		return nil
 	}
-	if err := bot.StopProcess(pid, 5*time.Second); err != nil {
-		return fmt.Errorf("stop pid %d: %w", pid, err)
+	if err := conn.call(ctx, daemonproto.BotStopRequest{Type: "bot_stop", Kind: spec.name}, nil); err != nil {
+		return fmt.Errorf("stop %s bot: %w", spec.name, err)
 	}
-	_ = bot.RemovePIDFile(spec.pidPath(ZutHome()))
-	fmt.Printf("stopped pid %d\n", pid)
+	fmt.Printf("stopped %s (session %s closed)\n", spec.name, before.Session)
 	return nil
 }
 
-// botLogs prints (or tails with --follow) the bot log file.
+// botLogs prints the bot lines of the daemon log (with --follow, keeps
+// printing new ones). The daemon log holds every bot diagnostic.
 func botLogs(spec *botSpec, rawTail []string) error {
 	follow := false
 	for _, a := range rawTail {
@@ -170,7 +138,7 @@ func botLogs(spec *botSpec, rawTail []string) error {
 			follow = true
 		}
 	}
-	p := spec.logPath(ZutHome())
+	p := daemon.LogPath(ZutHome())
 	f, err := os.Open(p)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Println("no log file at", p)
@@ -181,7 +149,8 @@ func botLogs(spec *botSpec, rawTail []string) error {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(os.Stdout, f); err != nil {
+	filter := &botLogFilter{w: os.Stdout, kind: spec.name}
+	if _, err := io.Copy(filter, f); err != nil {
 		return err
 	}
 	if !follow {
@@ -197,145 +166,11 @@ func botLogs(spec *botSpec, rawTail []string) error {
 		case <-sigc:
 			return nil
 		case <-time.After(500 * time.Millisecond):
-			if _, err := io.Copy(os.Stdout, f); err != nil {
+			if _, err := io.Copy(filter, f); err != nil {
 				return err
 			}
 		}
 	}
-}
-
-// botRun starts the polling loop in the foreground. Ctrl+C stops it.
-func botRun(spec *botSpec, rawTail []string, version string) (runErr error) {
-	// Parse only a small subset of flags relevant to bot run. We reuse
-	// the main args parser so --provider/--model/--cwd/--api-key/--reasoning
-	// behave the same as in the tui.
-	args, err := ParseArgs(rawTail)
-	if err != nil {
-		return err
-	}
-	// Messages arrive from an external channel without a per-request
-	// confirmation surface, so bot runs never receive native web search.
-	args.WebSearchPolicy = subagents.WebSearchDeny
-
-	// Bot mode always requires credentials (can't pop a /login dialog).
-	resolved, err := Resolve(args, true)
-	if err != nil {
-		return err
-	}
-	defer closeResolvedLSP(resolved)
-
-	if ok, cerr := spec.configured(ZutHome()); cerr != nil {
-		return cerr
-	} else if !ok {
-		return fmt.Errorf("%s is not configured — run `zut %s setup` first", spec.name, spec.subcommand)
-	}
-	adapter, err := spec.newAdapter(ZutHome())
-	if err != nil {
-		return err
-	}
-
-	agent := resolved.NewAgent()
-
-	// Session: optional, same model as the tui. Persist so DMs build on
-	// prior context. --no-session disables.
-	var sess *core.Session
-	if !args.NoSess {
-		s, _, serr := openOrCreateSessionForBot(args, resolved, agent, version)
-		if serr == nil {
-			sess = s
-			agent.OnMessageAppended = func(msg provider.Message) {
-				_ = sess.AppendMessage(msg)
-			}
-			agent.OnUsage = func(u provider.Usage) {
-				_ = sess.AppendUsage(u, u)
-			}
-			agent.OnRetryLifecycle = sess.RecordRetryLifecycle
-			agent.OnTranscriptCompacted = func(msgs []provider.Message) {
-				_ = sess.AppendCompaction(msgs)
-			}
-			defer func() {
-				runErr = errors.Join(runErr, sess.FlushRetryLifecycle(agent.LastTurnUsage(), agent.Cost()))
-				runErr = joinSessionCloseError(runErr, sess)
-			}()
-		} else {
-			fmt.Fprintln(os.Stderr, "session:", serr)
-		}
-	}
-
-	var runner *bot.Runner
-	runner = bot.NewRunner(adapter, agent, bot.Config{
-		ZutHome:    ZutHome(),
-		Provider:   resolved.Provider,
-		Model:      resolved.Model,
-		AuthMethod: resolved.AuthMethod,
-		CWD:        args.CWD,
-		RefreshCreds: func() error {
-			// Re-run the same resolver the tui uses so we pick up
-			// refreshed oauth tokens, re-logins, and model switches.
-			// Only the provider client is swapped — tools, sandbox,
-			// system prompt, and transcript stay with the existing agent.
-			next, err := Resolve(args, true)
-			if err != nil {
-				return err
-			}
-			defer closeResolvedLSP(next)
-			agent.Client = next.NewClient()
-			applyResolvedModel(agent, next)
-			runner.UpdateRuntimeConfig(next.Provider, next.Model, next.AuthMethod, next.CWD)
-			return nil
-		},
-	})
-
-	// Record our pid so `zut <sub> status` / `zut <sub> stop` can find us,
-	// regardless of whether we were started directly or via `start`.
-	_ = bot.WritePIDFile(spec.pidPath(ZutHome()), os.Getpid())
-	defer bot.RemovePIDFile(spec.pidPath(ZutHome()))
-
-	// Translate sigterm/sigint into a context cancel so the bot's goroutines
-	// and the currently-running turn wind down cleanly.
-	ctx, cancel := context.WithCancel(context.Background())
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigc
-		cancel()
-	}()
-	defer cancel()
-	return runner.Run(ctx)
-}
-
-// openOrCreateSessionForBot reuses the same logic as interactive mode
-// but never prompts (no TTY picker); falls back to latest or new.
-func openOrCreateSessionForBot(args Args, r Resolved, ag *core.Agent, version string) (*core.Session, []any, error) {
-	if args.Continue {
-		if latest := core.LatestSession(ZutHome(), args.CWD); latest != "" {
-			s, msgs, err := core.OpenSession(latest)
-			if err != nil {
-				return nil, nil, err
-			}
-			ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
-			ag.SetMessages(msgs)
-			// Seed the agent-owned plan from the resumed session so show and indexed
-			// updates see the persisted checklist instead of empty core state.
-			ag.SetPlan(s.Meta.PlanSteps())
-			// Route tool-result commits through the session so plan (and goal)
-			// mutations the bot makes are durable, matching the other modes.
-			ag.CommitToolResult = func(_ string, result core.ToolResult) error {
-				return persistToolResultState(nil, s, result)
-			}
-			return s, nil, nil
-		}
-	}
-	s, err := core.NewSession(ZutHome(), args.CWD, r.Provider, r.Model, version)
-	if err == nil {
-		ag.SetSessionTimeContext(s.Meta.Started, s.Meta.Timezone, s.Meta.TimezoneOffset)
-		// Route tool-result commits through the session so plan (and goal)
-		// mutations the bot makes are durable, matching the other modes.
-		ag.CommitToolResult = func(_ string, result core.ToolResult) error {
-			return persistToolResultState(nil, s, result)
-		}
-	}
-	return s, nil, err
 }
 
 // maskToken returns "123456:ABC...xyz" so copies of zut telegram-bot status can be
@@ -364,8 +199,6 @@ func telegramSpec() *botSpec {
 		name:       "telegram",
 		subcommand: "telegram-bot",
 		aliases:    []string{"tg"},
-		pidPath:    telegram.PIDPath,
-		logPath:    telegram.LogPath,
 		configured: func(zutHome string) (bool, error) {
 			cfg, err := telegram.LoadConfig(zutHome)
 			if err != nil {
@@ -377,17 +210,6 @@ func telegramSpec() *botSpec {
 		setup:     telegramBotSetup,
 		status:    telegramBotStatus,
 		reset:     telegramBotReset,
-		newAdapter: func(zutHome string) (bot.BotAdapter, error) {
-			cfg, err := telegram.LoadConfig(zutHome)
-			if err != nil {
-				return nil, err
-			}
-			return telegram.NewAdapter(
-				telegram.NewClient(cfg.BotToken),
-				&cfg,
-				func(c telegram.Config) error { return telegram.SaveConfig(zutHome, c) },
-			), nil
-		},
 	}
 }
 
@@ -397,28 +219,29 @@ func printTelegramBotHelp() {
 
 usage:
   zut telegram-bot setup                       paste a BotFather token, verify, save
-  zut telegram-bot status                      show bridge config and whether it's running
-  zut telegram-bot run [flags]                 run in the foreground (ctrl+c to stop)
-  zut telegram-bot start [flags]               launch in background, detach, return immediately
-  zut telegram-bot stop                        sigterm the running background bot, sigkill if needed
-  zut telegram-bot logs [--follow]             tail the background bot's log file
+  zut telegram-bot status                      show bot config and whether the daemon runs it
+  zut telegram-bot start [flags]               run the bot in the zut daemon (starts the daemon if needed)
+  zut telegram-bot stop                        stop the bot and close its session
+  zut telegram-bot logs [--follow]             print the bot lines of the daemon log
   zut telegram-bot reset                       forget token + allowed user
 
 setup flow:
   1. talk to @BotFather on telegram, /newbot, copy the token
   2. run "zut telegram-bot setup" and paste the token
-  3. run "zut telegram-bot start" (background) or "zut telegram-bot run" (foreground)
+  3. run "zut telegram-bot start" in the directory the agent should work in
   4. send /start to your bot from telegram; the first sender claims it
 
-while the bot is running, dm it anything and the message is forwarded
-to the agent the same way it would be from the tui. image attachments
-(photos or image/* documents) are passed to vision-capable models.
-telegram commands the bot handles directly: /help, /status, /stop.
+the bot runs inside the zut daemon as one headless session (see zut ls).
+start flags (--provider, --model, --reasoning, ...) configure that session.
+dm the bot anything and the message is forwarded to the session. image
+attachments (photos or image/* documents) are passed to vision-capable
+models. telegram commands the bot handles directly: /help, /status, /stop.
+the bot is not restarted automatically after a daemon restart; its session
+is restored idle and the next "start" reuses it.
 
 config & state:
-  $ZUT_HOME/bot.json       # bot token + paired user (mode 0600)
-  $ZUT_HOME/bot.pid        # pid of the running bot (written by run/start)
-  $ZUT_HOME/logs/bot.log   # stdout+stderr from "zut telegram-bot start"
+  $ZUT_HOME/bot.json          # bot token + paired user (mode 0600)
+  $ZUT_HOME/logs/daemon.log   # daemon log, including bot lines
 `)
 }
 
@@ -477,46 +300,62 @@ func telegramBotSetup(_ []string) error {
 		return err
 	}
 	fmt.Printf("\nsaved: @%s (id=%d) to %s\n", me.Username, me.ID, telegram.ConfigPath(ZutHome()))
-	fmt.Println("next: run `zut telegram-bot run`, then send /start to your bot from telegram.")
+	fmt.Println("next: run `zut telegram-bot start`, then send /start to your bot from telegram.")
 	return nil
 }
 
-// telegramBotStatus prints the current bot config without the token, plus
-// whether the background process is alive.
-func telegramBotStatus() error {
+// telegramBotStatus prints the bot config without the token, plus whether
+// the daemon runs the bot service or a session bridge.
+func telegramBotStatus(w io.Writer, version string) error {
 	cfg, err := telegram.LoadConfig(ZutHome())
 	if err != nil {
 		return err
 	}
 	if cfg.BotToken == "" {
-		fmt.Println("telegram: not configured (run `zut telegram-bot setup`)")
+		fmt.Fprintln(w, "telegram: not configured (run `zut telegram-bot setup`)")
 		return nil
 	}
-	maskedTok := maskToken(cfg.BotToken)
-	fmt.Printf("telegram bot: @%s (id=%d)\n", cfg.BotUsername, cfg.BotID)
-	fmt.Printf("token:        %s\n", maskedTok)
+	fmt.Fprintf(w, "telegram bot: @%s (id=%d)\n", cfg.BotUsername, cfg.BotID)
+	fmt.Fprintf(w, "token:        %s\n", maskToken(cfg.BotToken))
 	if cfg.AllowedUserID == 0 {
-		fmt.Println("paired with:  (unpaired — send /start from telegram to claim)")
+		fmt.Fprintln(w, "paired with:  (unpaired — send /start from telegram to claim)")
 	} else {
-		fmt.Printf("paired with:  telegram user id %d\n", cfg.AllowedUserID)
+		fmt.Fprintf(w, "paired with:  telegram user id %d\n", cfg.AllowedUserID)
 	}
-	fmt.Printf("last update:  %d\n", cfg.LastUpdateID)
-	fmt.Printf("config file:  %s\n", telegram.ConfigPath(ZutHome()))
+	fmt.Fprintf(w, "last update:  %d\n", cfg.LastUpdateID)
+	fmt.Fprintf(w, "config file:  %s\n", telegram.ConfigPath(ZutHome()))
 
-	pid, alive, _ := telegram.IsRunning(ZutHome())
-	switch {
-	case alive:
-		fmt.Printf("process:      running (pid %d)\n", pid)
-	case pid > 0:
-		fmt.Printf("process:      stopped (stale pid %d in %s)\n", pid, telegram.PIDPath(ZutHome()))
-	default:
-		fmt.Println("process:      stopped")
+	ctx, cancel := context.WithTimeout(context.Background(), botRequestTimeout)
+	defer cancel()
+	conn, err := dialBotDaemon(ctx, version, false)
+	if errors.Is(err, errDaemonAbsent) {
+		fmt.Fprintln(w, "service:      stopped (zut daemon is not running)")
+		return nil
 	}
-	logPath := telegram.LogPath(ZutHome())
-	if fi, err := os.Stat(logPath); err == nil {
-		fmt.Printf("log file:     %s (%d bytes)\n", logPath, fi.Size())
+	if err != nil {
+		return err
 	}
+	defer conn.close()
+	var st daemonproto.BotStatusData
+	if err := conn.call(ctx, daemonproto.BotStatusRequest{Type: "bot_status", Kind: "telegram"}, &st); err != nil {
+		return fmt.Errorf("telegram bot status: %w", err)
+	}
+	writeBotServiceStatus(w, st)
 	return nil
+}
+
+func writeBotServiceStatus(w io.Writer, st daemonproto.BotStatusData) {
+	switch {
+	case st.Running:
+		fmt.Fprintf(w, "service:      running in the zut daemon (session %s, since %s)\n", st.Session, st.StartedAt.Local().Format(time.DateTime))
+	case st.LastError != "":
+		fmt.Fprintf(w, "service:      stopped (last error: %s)\n", st.LastError)
+	default:
+		fmt.Fprintln(w, "service:      stopped")
+	}
+	if st.Bridge != nil && st.Bridge.Active {
+		fmt.Fprintf(w, "bridge:       mirroring session %s\n", st.Bridge.Session)
+	}
 }
 
 // telegramBotReset wipes the on-disk bot.json entry.
@@ -531,14 +370,4 @@ func telegramBotReset() error {
 	}
 	fmt.Println("removed", p)
 	return nil
-}
-
-// applyResolvedModel adopts a reloaded model's ID and limits together so a
-// model change does not keep the previous model's output budget.
-func applyResolvedModel(agent *core.Agent, next Resolved) {
-	agent.Model = next.Model
-	agent.MaxTokens = next.MaxOutput
-	if next.ContextWindow > 0 {
-		agent.ContextWindow = next.ContextWindow
-	}
 }

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -63,7 +65,28 @@ type btwDialog struct {
 	// path-completion that works in the main editor also works
 	// here.
 	cwd string
+
+	// remote is set when the side chat runs on a forked daemon session
+	// (port mode) instead of a local side agent.
+	remote *btwRemote
+	// note is a dialog-level message such as a failed fork creation.
+	note string
 }
+
+// btwRemote is the daemon-backed side chat state. The fork is created,
+// attached and subscribed off the render loop; port is nil until ready.
+type btwRemote struct {
+	client  SessionClient
+	timeout time.Duration
+	id      session.ID
+	port    session.Port
+	stop    context.CancelFunc
+	turn    int
+}
+
+// btwRemoteCloseReason is sent to the daemon when the side chat releases
+// its forked session.
+const btwRemoteCloseReason = "btw_closed"
 
 func newBtwDialog() *btwDialog {
 	return &btwDialog{}
@@ -191,11 +214,143 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 	d.editor = tui.NewEditor(prompt)
 	d.sideAgent = newBtwAgent(agent, system, model, btwOrigin(d.generation))
 	d.cwd = cwd
+	d.remote = nil
+	d.note = ""
 	d.mu.Unlock()
 
 	if seed = strings.TrimSpace(seed); seed != "" {
 		d.editor.SetValue(seed)
 		d.submit(invalidate)
+	}
+}
+
+// OpenPort enters the side chat backed by a forked daemon session. The fork
+// (spec) is created, attached and subscribed in a goroutine so the render
+// loop never waits on the daemon. A seed is submitted once the fork is ready.
+func (d *btwDialog) OpenPort(th tui.Theme, client SessionClient, spec session.CreateSpec, timeout time.Duration, cwd, seed string, compactMode, flatTools, lineInput bool, invalidate func()) {
+	d.mu.Lock()
+	d.generation++
+	generation := d.generation
+	d.active = true
+	d.theme = th
+	d.compactMode = compactMode
+	d.lineInput = lineInput
+	d.toolView = &tui.View{Theme: th, CompactMode: compactMode, FlatTools: flatTools}
+	d.turns = nil
+	d.loading = false
+	d.cancel = nil
+	d.activity = agentActivity{}
+	prompt := th.AccentBar(th.Accent)
+	if lineInput {
+		prompt = ""
+	}
+	d.editor = tui.NewEditor(prompt)
+	d.sideAgent = nil
+	d.cwd = cwd
+	d.note = "starting side session…"
+	rem := &btwRemote{client: client, timeout: timeout, turn: -1}
+	d.remote = rem
+	seed = strings.TrimSpace(seed)
+	if seed != "" {
+		d.editor.SetValue(seed)
+	}
+	d.mu.Unlock()
+
+	go d.startRemote(rem, generation, spec, seed != "", invalidate)
+}
+
+func (d *btwDialog) startRemote(rem *btwRemote, generation uint64, spec session.CreateSpec, submitSeed bool, invalidate func()) {
+	fail := func(err error) {
+		d.mu.Lock()
+		if d.active && d.generation == generation && d.remote == rem {
+			d.note = "side session: " + err.Error()
+		}
+		d.mu.Unlock()
+		if invalidate != nil {
+			invalidate()
+		}
+	}
+	callCtx, cancel := context.WithTimeout(context.Background(), rem.timeout)
+	info, err := rem.client.Create(callCtx, spec)
+	cancel()
+	if err != nil {
+		fail(err)
+		return
+	}
+	id := session.ID(info.ID)
+	release := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), rem.timeout)
+		defer cancel()
+		_ = rem.client.Close(ctx, id, btwRemoteCloseReason)
+	}
+	callCtx, cancel = context.WithTimeout(context.Background(), rem.timeout)
+	port, err := rem.client.Attach(callCtx, id)
+	cancel()
+	if err != nil {
+		release()
+		fail(err)
+		return
+	}
+	subCtx, stop := context.WithCancel(context.Background())
+	events, err := port.Subscribe(subCtx, 0)
+	if err != nil {
+		stop()
+		release()
+		fail(err)
+		return
+	}
+	d.mu.Lock()
+	if !d.active || d.generation != generation || d.remote != rem {
+		d.mu.Unlock()
+		stop()
+		release()
+		return
+	}
+	rem.id = id
+	rem.port = port
+	rem.stop = stop
+	d.note = ""
+	d.mu.Unlock()
+	go d.pumpRemote(rem, generation, events, invalidate)
+	if invalidate != nil {
+		invalidate()
+	}
+	if submitSeed {
+		d.submit(invalidate)
+	}
+}
+
+// pumpRemote routes the forked session's agent events to the current turn.
+func (d *btwDialog) pumpRemote(rem *btwRemote, generation uint64, events <-chan session.Event, invalidate func()) {
+	for ev := range events {
+		if ev.Kind != session.EvAgent || ev.Agent == nil {
+			continue
+		}
+		d.mu.Lock()
+		turnIdx := rem.turn
+		live := d.active && d.generation == generation && d.remote == rem
+		d.mu.Unlock()
+		if !live {
+			return
+		}
+		if turnIdx < 0 {
+			continue
+		}
+		switch e := ev.Agent.(type) {
+		case core.EvDone:
+			d.completeTurn(turnIdx, generation, "")
+		case core.EvError:
+			msg := "turn failed"
+			if e.Err != nil {
+				msg = e.Err.Error()
+			}
+			d.completeTurn(turnIdx, generation, msg)
+		default:
+			d.handleAgentEvent(turnIdx, generation, ev.Agent)
+		}
+		if invalidate != nil {
+			invalidate()
+		}
 	}
 }
 
@@ -212,10 +367,24 @@ func (d *btwDialog) Close() {
 	d.cancel = nil
 	d.sideAgent = nil
 	d.toolView = nil
+	rem := d.remote
+	d.remote = nil
+	d.note = ""
 	closeHook := d.closeHook
 	d.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if rem != nil && rem.port != nil {
+		if rem.stop != nil {
+			rem.stop()
+		}
+		// Release the forked daemon session off the caller's goroutine.
+		go func(client SessionClient, id session.ID, timeout time.Duration) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			_ = client.Close(ctx, id, btwRemoteCloseReason)
+		}(rem.client, rem.id, rem.timeout)
 	}
 	if closeHook != nil {
 		closeHook()
@@ -289,6 +458,10 @@ func (d *btwDialog) submit(invalidate func()) {
 		d.mu.Unlock()
 		return
 	}
+	if rem := d.remote; rem != nil {
+		d.submitRemoteLocked(rem, question, invalidate)
+		return
+	}
 	d.editor.Clear()
 	d.loading = true
 	if d.spin == nil {
@@ -327,6 +500,51 @@ func (d *btwDialog) submit(invalidate func()) {
 			errMsg = err.Error()
 		}
 		d.completeTurn(turnIdx, generation, errMsg)
+		if invalidate != nil {
+			invalidate()
+		}
+	}()
+}
+
+// submitRemoteLocked sends question to the forked daemon session. Called
+// with d.mu held; it unlocks d.mu. Replies arrive through pumpRemote.
+func (d *btwDialog) submitRemoteLocked(rem *btwRemote, question string, invalidate func()) {
+	port := rem.port
+	if port == nil {
+		// Keep the text in the editor until the fork is ready.
+		d.mu.Unlock()
+		return
+	}
+	d.editor.Clear()
+	d.loading = true
+	if d.spin == nil {
+		d.spin = newSpinner(d.theme)
+	} else {
+		d.spin.Configure(d.theme)
+	}
+	d.spin.Start()
+	d.turns = append(d.turns, btwTurn{User: question})
+	turnIdx := len(d.turns) - 1
+	rem.turn = turnIdx
+	generation := d.generation
+	timeout := rem.timeout
+	d.cancel = func() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			_ = port.Abort(ctx)
+		}()
+	}
+	d.activity = newAgentActivity("", "")
+	d.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		err := port.Submit(ctx, session.Input{Text: question, Mode: session.SubmitModeAuto, Origin: session.InputOriginUser})
+		if err != nil {
+			d.completeTurn(turnIdx, generation, err.Error())
+		}
 		if invalidate != nil {
 			invalidate()
 		}
@@ -459,6 +677,9 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	if len(d.turns) == 0 && !d.loading {
 		out = append(out, "  "+th.FGColor(th.Muted, "ask anything; replies stay private to this side chat."))
 	}
+	if d.note != "" {
+		out = append(out, wrapDialogTextRows(th.FGColor(th.Muted, "  "+d.note), width)...)
+	}
 
 	for _, t := range d.turns {
 		out = append(out, "")
@@ -537,6 +758,9 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 	if len(d.turns) == 0 && !d.loading {
 		editorOffset++ // padDialogFrame's post-header blank
 		editorOffset++ // muted "ask anything..." line
+	}
+	if d.note != "" {
+		editorOffset += len(wrapDialogTextRows(d.theme.FGColor(d.theme.Muted, "  "+d.note), width))
 	}
 	for _, t := range d.turns {
 		editorOffset++ // blank

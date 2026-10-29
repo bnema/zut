@@ -19,65 +19,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestWireRetryLifecyclePersistence(t *testing.T) {
-	session, err := core.NewSession(t.TempDir(), "/workspace", "provider", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := core.NewAgent(nil, "model", "system", core.Registry{})
-	agent.SetMessages([]provider.Message{{
-		Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}},
-	}})
-	wireRetryLifecyclePersistence(agent, session)
-	if agent.OnRetryLifecycle == nil {
-		t.Fatal("session-backed agent has no retry lifecycle persistence")
-	}
-	agent.OnRetryLifecycle(core.RetryLifecycleRecord{
-		Event: core.RetryLifecycleRequestFailed, Scope: core.RetryScopeAgent,
-		Attempt: 1, MaxAttempts: 1, Reason: core.RetryReasonServer, Terminal: true,
-	})
-	// Headless modes call WriteNewTranscript on both success and provider
-	// failure. Exercise that real finalization path rather than draining the
-	// session buffer directly.
-	if err := WriteNewTranscript(agent, session, 0); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var lifecycle []core.RetryLifecycleRecord
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		var row struct {
-			Type           string                      `json:"type"`
-			RetryLifecycle []core.RetryLifecycleRecord `json:"retry_lifecycle"`
-		}
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatal(err)
-		}
-		if row.Type == "usage" && len(row.RetryLifecycle) > 0 {
-			lifecycle = row.RetryLifecycle
-		}
-	}
-	if len(lifecycle) != 1 {
-		t.Fatalf("retry lifecycle = %#v, want one record", lifecycle)
-	}
-	record := lifecycle[0]
-	if record.Event != core.RetryLifecycleRequestFailed || record.Scope != core.RetryScopeAgent ||
-		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != core.RetryReasonServer || !record.Terminal {
-		t.Fatalf("retry lifecycle record = %#v", record)
-	}
-
-	wireRetryLifecyclePersistence(agent, nil)
-	if agent.OnRetryLifecycle != nil {
-		t.Fatal("sessionless agent retained retry lifecycle persistence")
-	}
-}
-
 func TestToolResultPersistenceUsesBoundSession(t *testing.T) {
 	root := t.TempDir()
 	original, err := core.NewSession(root, "original", "provider", "model", "test")
@@ -500,7 +441,7 @@ func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	}
 
 	ag := core.NewAgent(nil, "model", "", nil)
-	got, err := openOrCreateSession(context.Background(), Args{
+	got, _, err := openOrCreateSessionState(context.Background(), Args{
 		CWD:             otherCWD,
 		Resume:          true,
 		ResumeSessionID: id,
@@ -535,7 +476,7 @@ func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	}
 
 	namedAgent := core.NewAgent(nil, "model", "", nil)
-	namedGot, err := openOrCreateSession(context.Background(), Args{
+	namedGot, _, err := openOrCreateSessionState(context.Background(), Args{
 		CWD:             otherCWD,
 		Resume:          true,
 		ResumeSessionID: namedID,
@@ -554,44 +495,7 @@ func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	}
 }
 
-func TestResumeHintSuppressesEmptyAndArbitrarySessions(t *testing.T) {
-	root := t.TempDir()
-	cwd := t.TempDir()
-
-	empty, err := core.NewSession(root, cwd, "provider", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := empty.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(empty.Path); !os.IsNotExist(err) {
-		t.Fatalf("empty session stat error = %v, want deleted", err)
-	}
-	if got := resumableSessionID(root, empty, false); got != "" {
-		t.Fatalf("empty session hint ID = %q, want empty", got)
-	}
-
-	arbitraryPath := filepath.Join(t.TempDir(), "session.jsonl")
-	arbitrary, err := core.NewSessionAtPath(arbitraryPath, cwd, "provider", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := arbitrary.AppendMessage(provider.Message{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "arbitrary"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := arbitrary.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got := resumableSessionID(root, arbitrary, true); got != "" {
-		t.Fatalf("arbitrary session hint ID = %q, want empty", got)
-	}
-}
-
-func TestResumeHintSuppressesPersistedEmptyExplicitUUIDSession(t *testing.T) {
+func TestOpenOrCreateSessionResumesPersistedEmptyExplicitUUIDSession(t *testing.T) {
 	root := t.TempDir()
 	cwd := t.TempDir()
 	otherCWD := t.TempDir()
@@ -625,7 +529,7 @@ func TestResumeHintSuppressesPersistedEmptyExplicitUUIDSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sess, err := openOrCreateSession(context.Background(), Args{
+	sess, _, err := openOrCreateSessionState(context.Background(), Args{
 		CWD:             otherCWD,
 		Resume:          true,
 		ResumeSessionID: id,
@@ -635,9 +539,6 @@ func TestResumeHintSuppressesPersistedEmptyExplicitUUIDSession(t *testing.T) {
 	}
 	if sess == nil || sess.Path != path {
 		t.Fatalf("resumed persisted empty session = %#v, want path %q", sess, path)
-	}
-	if got := resumableSessionID(root, sess, false); got != "" {
-		t.Fatalf("persisted empty session hint ID = %q, want empty", got)
 	}
 	if err := sess.Close(); err != nil {
 		t.Fatal(err)
@@ -650,7 +551,7 @@ func TestOpenOrCreateSessionUnknownUUIDDoesNotCreateSession(t *testing.T) {
 	t.Setenv("ZUT_HOME", root)
 	id := uuid.NewString()
 
-	_, err := openOrCreateSession(context.Background(), Args{
+	_, _, err := openOrCreateSessionState(context.Background(), Args{
 		CWD:             cwd,
 		Resume:          true,
 		ResumeSessionID: id,
@@ -687,46 +588,17 @@ func TestOpenOrCreateSessionUUIDLookupIgnoresUnrelatedCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session, err := openOrCreateSession(context.Background(), Args{
+	session, _, err := openOrCreateSessionState(context.Background(), Args{
 		CWD:             cwd,
 		Resume:          true,
 		ResumeSessionID: target.ID,
 	}, Resolved{Provider: "provider", Model: "model"}, core.NewAgent(nil, "model", "", nil), "test")
 	if err != nil {
-		t.Fatalf("openOrCreateSession: %v", err)
+		t.Fatalf("openOrCreateSessionState: %v", err)
 	}
 	defer session.Close()
 	if session.Path != target.Path {
 		t.Fatalf("resumed session path = %q, want %q", session.Path, target.Path)
-	}
-}
-
-func TestResumeSessionHint(t *testing.T) {
-	id := uuid.NewString()
-	want := "Session ID: " + id + "\nResume with: zut --resume " + id + "\n\n"
-	if got := resumeSessionHint(id); got != want {
-		t.Fatalf("resume hint = %q, want %q", got, want)
-	}
-}
-
-func TestResumableSessionIDAcceptsManagedPersistedSession(t *testing.T) {
-	root := t.TempDir()
-	cwd := t.TempDir()
-	sess, err := core.NewSession(root, cwd, "provider", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sess.AppendMessage(provider.Message{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "resume me"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sess.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got := resumableSessionID(root, sess, true); got != sess.ID {
-		t.Fatalf("managed session hint ID = %q, want %q", got, sess.ID)
 	}
 }
 
@@ -778,37 +650,6 @@ func TestTrimMessagesForResumeKeepsCompactionSummaryAtTailBoundary(t *testing.T)
 				t.Fatalf("trimmed transcript lost compaction summary: %+v", trimmed)
 			}
 		})
-	}
-}
-
-func TestLiveInteractiveAgentUsesReplacementAgentForSessionResume(t *testing.T) {
-	startup := core.NewAgent(nil, "startup-model", "", nil)
-	startup.SetMessages([]provider.Message{{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "startup transcript"}},
-	}})
-
-	replacement := core.NewAgent(nil, "replacement-model", "", nil)
-	iv := modes.NewInteractive(modes.InteractiveConfig{Agent: replacement})
-
-	resumed := []provider.Message{{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "resumed transcript"}},
-	}}
-	liveInteractiveAgent(iv, startup).SetMessages(resumed)
-
-	if got := firstMessageText(replacement.Messages()); got != "resumed transcript" {
-		t.Fatalf("replacement agent transcript = %q, want resumed transcript", got)
-	}
-	if got := firstMessageText(startup.Messages()); got != "startup transcript" {
-		t.Fatalf("startup agent transcript changed to %q", got)
-	}
-}
-
-func TestLiveInteractiveAgentFallsBackBeforeInteractiveConstruction(t *testing.T) {
-	startup := core.NewAgent(nil, "startup-model", "", nil)
-	if got := liveInteractiveAgent(nil, startup); got != startup {
-		t.Fatalf("fallback agent = %p, want %p", got, startup)
 	}
 }
 
@@ -879,17 +720,21 @@ func syntheticSession(t *testing.T, providerName, model string, usage provider.U
 	return sess.Path
 }
 
-func TestApplyInitialSessionResumeKeepsFreshEmptySessionOwned(t *testing.T) {
+func TestApplySessionResumeKeepsFreshEmptySessionOwned(t *testing.T) {
 	root := t.TempDir()
 	sess, err := core.NewSession(root, "/workspace", "provider", "model", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ag := core.NewAgent(nil, "model", "", nil)
-	gotSess, gotAgent, providerName, model, err := applyInitialSessionResume(context.Background(), Args{}, Resolved{Provider: "provider", Model: "model"}, nil, sess, ag)
+	candidate, err := applySessionResume(sess, ag, "provider", "model", false, false, func(string, string) (*core.Agent, string, string, error) {
+		t.Fatal("empty session rebuilt the agent")
+		return nil, "", "", nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	gotSess, gotAgent, providerName, model := candidate.session, candidate.agent, candidate.provider, candidate.model
 	if gotSess != sess || gotAgent != ag || providerName != "provider" || model != "model" {
 		t.Fatalf("empty startup resume = session %p/%p agent %p/%p provider/model %q/%q", gotSess, sess, gotAgent, ag, providerName, model)
 	}
@@ -901,47 +746,6 @@ func TestApplyInitialSessionResumeKeepsFreshEmptySessionOwned(t *testing.T) {
 	}
 	if _, err := os.Stat(sess.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("fresh empty session remained after close: %v", err)
-	}
-}
-
-func TestApplyInitialSessionResumeWithRuntimePreservesInheritedModelDefaults(t *testing.T) {
-	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Provider: "ollama", Model: "current-local-model"}); err != nil {
-		t.Fatal(err)
-	}
-	path := syntheticSession(t, "ollama", "stored-local-model", provider.Usage{})
-	args := Args{Mode: ModePrint, Orchestrate: true, CWD: t.TempDir()}
-	base, err := Resolve(args, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current := base.NewAgent()
-	runtime := newSubagentRuntime(subagentRuntimeConfig{
-		Args:     args,
-		Root:     t.TempDir(),
-		RepoRoot: args.CWD,
-		Provider: base.Provider,
-		Model:    base.Model,
-	})
-	defer func() { _ = runtime.Close(context.Background()) }()
-
-	sess, _, err := core.OpenSession(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotSess, gotAgent, providerName, model, err := applyInitialSessionResumeWithRuntime(context.Background(), args, base, nil, sess, current, runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer gotSess.Close()
-	if gotAgent == current || providerName != "ollama" || model != "stored-local-model" {
-		t.Fatalf("resume candidate = rebuilt=%v provider/model=%q/%q", gotAgent == current, providerName, model)
-	}
-	if got := runtime.currentModel(); got != "stored-local-model" {
-		t.Fatalf("runtime inherited model = %q, want stored-local-model", got)
-	}
-	if _, ok := gotAgent.ToolsSnapshot()["subagent"]; !ok {
-		t.Fatal("resumed parent lost the canonical subagent manager tool")
 	}
 }
 

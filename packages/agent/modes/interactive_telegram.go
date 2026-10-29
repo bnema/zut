@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/bnema/zut/packages/agent/modes/telegram"
+	"github.com/bnema/zut/packages/agent/session"
 )
 
 func (i *Interactive) openTelegramDialog() {
@@ -26,6 +27,13 @@ func (i *Interactive) telegramMenuItems() []telegramItem {
 		return nil
 	}
 	var items []telegramItem
+	if i.portMode.Load() {
+		// The daemon owns the bridge; its state is not mirrored locally.
+		return []telegramItem{
+			{label: "connect", action: "connect", hint: "mirror dms into this session (daemon)"},
+			{label: "disconnect", action: "disconnect", hint: "stop mirroring"},
+		}
+	}
 	if i.telegramBridge != nil && i.telegramBridge.Active() {
 		items = append(items, telegramItem{label: "disconnect", action: "disconnect", hint: "stop mirroring"})
 		st := i.telegramBridge.State()
@@ -46,6 +54,10 @@ func (i *Interactive) telegramMenuItems() []telegramItem {
 	return items
 }
 func (i *Interactive) doTelegram(action string) {
+	if i.portMode.Load() && (action == "connect" || action == "disconnect") {
+		i.portTelegramBridge(action == "connect")
+		return
+	}
 	switch action {
 	case "connect":
 		i.telegramConnect()
@@ -80,17 +92,6 @@ func (i *Interactive) telegramConnect() {
 	if cfg.BotToken == "" {
 		i.mu.Lock()
 		i.statusErr = "telegram: no bot token configured. run `zut telegram-bot setup` first."
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	// Refuse to start when a background daemon is already polling
-	// the same bot. Two concurrent long-poll consumers race each
-	// update and one always loses, so DMs get half-delivered. The
-	// user can `zut telegram-bot stop` first, then /telegram connect.
-	if pid, alive, _ := telegram.IsRunning(i.cfg.ZutHome); alive && pid > 0 {
-		i.mu.Lock()
-		i.statusErr = fmt.Sprintf("telegram: bot daemon already running (pid %d). stop it with `zut telegram-bot stop` first.", pid)
 		i.mu.Unlock()
 		i.invalidate()
 		return
@@ -195,4 +196,40 @@ func (a telegramSenderAdapter) SendDocument(ctx context.Context, path, caption s
 }
 func (a telegramSenderAdapter) Active() bool {
 	return a.bridge != nil && a.bridge.Active()
+}
+
+// portTelegramBridge toggles the daemon-hosted bridge for the attached
+// session off the render loop.
+func (i *Interactive) portTelegramBridge(on bool) {
+	label := "telegram disconnect"
+	if on {
+		label = "telegram connect"
+	}
+	client := i.SessionClient()
+	id := i.SessionID()
+	i.portSettingsCall(label, func(ctx context.Context, _ session.Port) error {
+		if client == nil {
+			return errors.New("no session client")
+		}
+		st, err := client.TelegramBridge(ctx, string(id), on)
+		if err != nil {
+			return err
+		}
+		msg := "telegram disconnected"
+		if st.Active {
+			msg = "telegram connected"
+			if st.Username != "" {
+				msg += " as @" + st.Username
+			}
+			if st.PairedUserID == 0 {
+				msg += " — send /start to the bot from your phone to claim it"
+			}
+		}
+		i.mu.Lock()
+		i.statusOK = msg
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return nil
+	})
 }

@@ -106,6 +106,7 @@ type ExtPanelEvent struct {
 
 // ExtAlertEvent is a terminal-free session contract payload.
 type ExtAlertEvent struct {
+	Ext   string                `json:"ext,omitempty"`
 	Alert extproto.AlertRequest `json:"alert"`
 }
 

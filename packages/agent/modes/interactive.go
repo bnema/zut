@@ -12,6 +12,7 @@ import (
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -21,8 +22,50 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+// SessionClient is the daemon-side session lifecycle surface the TUI needs
+// for /clear, /sessions, /fork, /exit and successor reattach (D9). Attach
+// returns a controlling Port for id. The agent package adapts
+// daemonclient.Client to it so modes never imports daemonclient.
+type SessionClient interface {
+	Clear(ctx context.Context, id session.ID) (session.Info, error)
+	Close(ctx context.Context, id session.ID, reason string) error
+	List(ctx context.Context) ([]session.Info, error)
+	Create(ctx context.Context, spec session.CreateSpec) (session.Info, error)
+	Attach(ctx context.Context, id session.ID) (session.Port, error)
+	// TelegramBridge sends the daemon telegram_bridge request: on mirrors the
+	// paired Telegram DM into sessionID, off stops that mirror.
+	TelegramBridge(ctx context.Context, sessionID string, on bool) (TelegramBridgeStatus, error)
+}
+
+// TelegramBridgeStatus is the modes-local view of the daemon's
+// TelegramBridgeData result.
+type TelegramBridgeStatus struct {
+	Active       bool
+	Session      session.ID
+	Username     string
+	PairedUserID int64
+}
+
+// detachedByOtherNotice is printed after the terminal is restored when the
+// daemon hands this session to another client (D5).
+const detachedByOtherNotice = "detached: attached from another terminal"
+
 // InteractiveConfig configures the interactive loop.
+//
+// Port, Detach and Client are the daemon-client contract: when Port is set
+// the TUI renders only from Port snapshots/events. The remaining domain
+// fields (Agent, Build*, Persist*, Current*, ResidentManager, ConfirmGate,
+// ...) are L16 SHIMS kept so the in-process command/dialog code compiles
+// until L16/L18 delete it; Port-mode rendering never reads them.
 type InteractiveConfig struct {
+	// Port is the attached daemon session. nil keeps the legacy in-process
+	// path (L16 SHIM, removed with the domain fields).
+	Port session.Port
+	// Detach releases control of the session without closing it (D8).
+	Detach func()
+	// Client manages session lifecycle (clear/close/list/create/attach).
+	Client SessionClient
+
 	Dictation       DictationConfig
 	Terminal        tui.Terminal
 	Theme           tui.Theme
@@ -695,15 +738,69 @@ type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
 
+	// Port-mode presentation state (L15). All guarded by mu.
+	//   port/client: the attached session and lifecycle client.
+	//   sessionID: the attached session id (successor reattach replaces it).
+	//   portMsgs/portRev: transcript copy hydrated from Snapshot and grown
+	//     from EvAgent; portToolMsg buffers tool results until the agent's
+	//     tool-role message boundary (next request or turn end).
+	//   portInfo/portQueue/portPending/portDeferred: latest projections.
+	//   events/subCancel: the live subscription.
+	//   exitNotice: printed after terminal restore when Run ends because of
+	//     EvAttach{detached_by_other}.
+	port         session.Port
+	client       SessionClient
+	sessionID    session.ID
+	portMsgs     []provider.Message
+	portRev      uint64
+	portToolMsg  *provider.Message
+	portInfo     session.Info
+	portQueue    []session.QueuedInput
+	portPending  []session.PendingRequest
+	portDeferred []session.DeferredAction
+	events       <-chan session.Event
+	subCancel    context.CancelFunc
+	exitNotice   string
+	// lastSeq is the newest applied event Seq; replayed events at or below
+	// it (already covered by a snapshot) are dropped.
+	lastSeq uint64
+	// sessionGen changes whenever the attached session is replaced, so an
+	// async snapshot/attach result started for an older one is discarded.
+	sessionGen uint64
+	// sessionResults delivers async daemon call results to the Run loop.
+	sessionResults chan sessionResult
+	// loopCalls carries editor mutations from goroutines that do not own
+	// i.ed (extension inserts) to the Run loop. Bounded: senders fail fast
+	// when it is full instead of blocking.
+	loopCalls chan func()
+
+	// sessionTimeout bounds async daemon calls (default 10s).
+	sessionTimeout time.Duration
+
 	terminalProfile   tui.TerminalProfile
 	activeThemeSource *tui.ThemeSource
 	themeWatchCancel  context.CancelFunc
 	themeWatchEvents  chan themeWatchEvent
 	themeWatchWarning string
 	ed                *tui.Editor
-	rend              *tui.Renderer
+	// edView is the copy of ed the render goroutine draws, guarded by mu.
+	// Only the Run goroutine publishes it (publishEditorView); ed itself
+	// stays owned by the Run goroutine.
+	edView *tui.Editor
+	// suggestView is the slash suggester copy redraw renders, published
+	// with edView; i.suggest itself is owned by the Run goroutine.
+	suggestView *slashSuggester
+	rend        *tui.Renderer
 
-	mu    sync.Mutex
+	mu sync.Mutex
+	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
+	// scheduled, runCtx, pending*, compacting*, compactContinuation,
+	// interruptedGoalReturn, goalStatus, goalRun, completionTracker,
+	// turnCoordinator, coordinatorWorkerIDs, cumUsage, codexUsage,
+	// activity, lastCtxInput, busy, cancelTurn). In Port mode they are
+	// either unused or written only as view projections of session.Info
+	// (busy, cumUsage, lastCtxInput, goalStatus, activity label). L16
+	// deletes the remaining readers in its files, then these fields.
 	agent *core.Agent
 	// agentMu serializes live registry replacement with side-dialog
 	// snapshots, whose copied-agent constructor reads the registry field.
@@ -856,6 +953,7 @@ type Interactive struct {
 	skillsDialog            *skillsDialog
 	changelogDialog         *changelogDialog
 	questionDialog          *questionDialog
+	deferredDialog          deferredDialog
 	confirmDialog           *confirmDialog
 	logoutDialog            *logoutDialog
 	telegramDialog          *telegramDialog
@@ -902,6 +1000,9 @@ type Interactive struct {
 	fileSuggest       *fileSuggester
 	spin              *spinner
 	residentAnimating atomic.Bool
+	// portMode is set once a session port is attached and never cleared;
+	// settings paths read it without taking mu.
+	portMode atomic.Bool
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -1079,6 +1180,11 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	cfg.EffectiveThemeName = preference
 	i := &Interactive{
 		cfg:               cfg,
+		port:              cfg.Port,
+		client:            cfg.Client,
+		sessionResults:    make(chan sessionResult, 4),
+		loopCalls:         make(chan func(), loopCallsCap),
+		sessionTimeout:    defaultSessionTimeout,
 		terminalProfile:   profile,
 		activeThemeSource: source,
 		themeWatchEvents:  make(chan themeWatchEvent, 8),
@@ -1188,7 +1294,26 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if cfg.PreloadPinnedSkills {
 		i.SetPinnedSkillsPending(true)
 	}
+	i.portMode.Store(cfg.Port != nil)
 	return i
+}
+
+// ExitNotice returns the message Run printed after restoring the terminal
+// (empty when Run ended normally).
+func (i *Interactive) ExitNotice() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.exitNotice
+}
+
+func (i *Interactive) writeExitNotice() {
+	i.mu.Lock()
+	notice, term := i.exitNotice, i.cfg.Terminal
+	i.mu.Unlock()
+	if notice == "" || term == nil {
+		return
+	}
+	_, _ = term.Write([]byte(notice + "\n"))
 }
 
 // ExitedViaCtrlC reports whether the last Run returned because the user
@@ -1230,6 +1355,10 @@ func (i *Interactive) setResidentChildMouseReporting(enabled bool) {
 
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
+	// Registered first so it runs last: the notice must follow terminal
+	// restore and frame cleanup so it lands on the user's shell.
+	defer i.writeExitNotice()
+	defer i.stopSubscription()
 	defer i.shutdownDictation()
 	i.mu.Lock()
 	i.runCtx = ctx
@@ -1289,6 +1418,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	cols, rows := term.Size()
 	i.rend.Resize(cols, rows)
+	// Publish before the render owner starts so it never falls back to the
+	// live editor, which the Run goroutine owns.
+	i.publishEditorView()
 	renderScheduler := newLatestFrameScheduler()
 	i.renderScheduler.Store(renderScheduler)
 	go renderScheduler.run(func(req renderRequest) {
@@ -1313,6 +1445,12 @@ func (i *Interactive) Run(ctx context.Context) error {
 		renderScheduler.request(false, false)
 	})
 
+	if i.port != nil {
+		if err := i.attachPort(ctx); err != nil {
+			return err
+		}
+	}
+
 	if i.cfg.StartupPre != "" {
 		i.deferredInitialInput = i.cfg.InitialInput
 		i.autoSubmitDeferred = i.cfg.AutoSubmitInitial
@@ -1324,13 +1462,19 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if i.cfg.InitialInput != "" {
 			i.ed.SetValue(i.cfg.InitialInput)
 		}
-		i.startRestoredCompactHandoff(ctx)
+		if i.port == nil {
+			i.startRestoredCompactHandoff(ctx)
+		}
 	}
 
 	// Stamp the welcome time and schedule a one-shot redraw at the
 	// expiry so the version suffix disappears on its own even if the
 	// user hasn't typed anything yet.
+	// The renderer may already run (attachPort invalidates), so publish
+	// the stamp under mu.
+	i.mu.Lock()
 	i.welcomeStart = time.Now()
+	i.mu.Unlock()
 	time.AfterFunc(welcomeVersionDuration, i.invalidate)
 
 	// If the agent was constructed with a pre-loaded transcript
@@ -1348,7 +1492,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// No credential at startup? Auto-open the login dialog, and mark
 	// the status line. The user can Esc out of the dialog if they
 	// want to dismiss it (e.g. to check /help or /exit first).
-	if i.agent == nil {
+	if i.agent == nil && i.port == nil {
 		i.statusErr = "not logged in. pick a login method below or press esc to dismiss."
 		i.mu.Lock()
 		i.dialog.Open(i.cfg.ZutHome)
@@ -1429,6 +1573,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if pendingRedraw {
 			pendingRedraw = false
 			lastRedraw = time.Now()
+			i.publishEditorView()
 			renderScheduler.request(false, false)
 		}
 	}
@@ -1447,6 +1592,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			pendingRedraw = false
 			lastRedraw = time.Now()
+			i.publishEditorView()
 			renderScheduler.request(false, false)
 			return
 		}
@@ -1480,9 +1626,38 @@ func (i *Interactive) Run(ctx context.Context) error {
 	notificationsSupported := false
 
 	for {
+		i.mu.Lock()
+		sessionEvents := i.events
+		i.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case fn := <-i.loopCalls:
+			fn()
+		case res := <-i.sessionResults:
+			if i.applySessionResult(ctx, res) {
+				return nil
+			}
+		case ev, ok := <-sessionEvents:
+			if !ok {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				i.mu.Lock()
+				if i.events == sessionEvents {
+					i.events = nil
+					if i.exitNotice == "" {
+						i.exitNotice = "detached: session stream ended"
+					}
+					i.mu.Unlock()
+					return nil
+				}
+				i.mu.Unlock()
+				break
+			}
+			if i.handleSessionEvent(ctx, ev) {
+				return nil
+			}
 		case event := <-i.themeWatchEvents:
 			if i.activeThemeSource == nil || event.path != i.activeThemeSource.Path {
 				break

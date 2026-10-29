@@ -290,7 +290,7 @@ When the sandbox is on (see `/jail`), filesystem tools, `grep`, `glob`, `ast`, a
 - **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
 - **Piped input**: stdin implies print mode when no explicit mode is selected. Print, stream, and JSON modes prepend piped input to the positional prompt, separated by a newline. For example, `cat README.md | zut "summarize this text"`.
 - **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
-- **RPC**: `zut rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
+- **RPC**: `zut rpc` runs as a long-lived child process that bridges to a daemon session; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
 
 ### Headless orchestration
 
@@ -359,7 +359,8 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
 | `/settings` | Change persistent settings, including web search, inline images, terminal alerts, AI terminal titles, proactive delegation, fast mode, main/sub-agent LSP access, and the auto-compact threshold. `/fast` and `/orchestrator` are shortcuts for their corresponding toggles. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
-| `/exit` | Exit zut. |
+| `/detach` | Leave the TUI and keep the session running in the daemon. Reattach with `zut attach <id>`. |
+| `/exit` | Close the daemon session and exit zut. |
 
 Extension-registered commands appear under a divider at the bottom of the popup, sorted by name.
 
@@ -551,6 +552,32 @@ zut sessions prune --older-than 30d --all --yes       # delete every match witho
 ```
 
 `--all` selects every match and still asks for confirmation. Adding `--yes` makes deletion non-interactive and requires `--all`. Malformed, unreadable, and symlinked session entries are reported and preserved. The scan covers `$ZUT_HOME/sessions/` including named-agent namespaces; explicit session files stored elsewhere are not included.
+
+## Daemon and sessions
+
+Sessions are owned by a local background daemon. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc` and the Telegram bot are clients that create or attach to a daemon session. The first client that needs the daemon starts it (`zut daemon run`, detached), so there is nothing to set up.
+
+```sh
+zut ls [--json]                  # sessions open in the daemon
+zut tree [--json]                # sessions and their subagents
+zut attach [id|title-prefix]     # reattach the TUI; no argument picks the latest detached session in this directory
+zut kill <id>...                 # close sessions (exact ID or unique ID prefix)
+zut daemon status                # pid, version, uptime, session count
+zut daemon start|stop|restart    # stopped sessions are restored on next start
+zut daemon logs [-f]             # print or follow the daemon log
+zut daemon run [--idle-gc-hours N]  # foreground; detached idle sessions close after N hours (default 24, 0 disables)
+```
+
+In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
+
+On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
+
+The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`.
+
+Limitations:
+
+- Bot services are not restarted after a daemon restart. Their session is restored idle; run `zut telegram-bot start` again to resume polling.
+- Autospawn on Windows is untested.
 
 ## Providers
 
@@ -1154,7 +1181,7 @@ See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips,
 
 ## Telegram bot (bridge)
 
-zut can run as a telegram bot so you can DM it from your phone. Two ways to run it: **from inside the TUI** (the running session mirrors into Telegram) or **as a standalone background daemon** (a headless bot with its own independent agent).
+zut can run as a telegram bot so you can DM it from your phone. Both forms run inside the daemon: **a bridge on the TUI session** (the session you're typing in mirrors into Telegram) or **a bot service** (a headless daemon session of its own).
 
 ### From inside the TUI
 
@@ -1166,39 +1193,36 @@ Type `/telegram` in the running TUI to open a picker with **connect**, **disconn
 - The status bar shows a `- tg -` tag while the bridge is active.
 - `/telegram connect` / `/telegram disconnect` / `/telegram status` (or `/tg`) also work as direct commands without the picker.
 
-The in-TUI bridge refuses to start while the standalone daemon (below) is running, since two concurrent long-poll consumers of the same bot race on every update and silently drop messages.
+The bridge is hosted by the daemon next to the session, so it keeps working after `/detach`. It refuses to start while the bot service (below) is polling the same bot, since two long-poll consumers race on every update and drop messages.
 
-### Standalone daemon
+### Bot service
 
-For headless servers or long-running bots unattached to a TUI:
+For a bot that is not tied to a TUI:
 
 ```bash
 zut telegram-bot setup     # paste a BotFather token, verify, save
-zut telegram-bot run       # foreground: long-poll in this terminal (ctrl+c to stop)
-zut telegram-bot start     # background: detach and return immediately
-zut telegram-bot stop      # SIGTERM the background bot (SIGKILL after 5s)
-zut telegram-bot logs -f   # tail $ZUT_HOME/logs/bot.log (omit -f to just cat)
-zut telegram-bot status    # config (token masked) + running/stopped
+zut telegram-bot start     # run the bot in the daemon (starts the daemon if needed)
+zut telegram-bot stop      # stop the bot and close its session
+zut telegram-bot logs -f   # bot lines of the daemon log (omit -f to print and exit)
+zut telegram-bot status    # config (token masked) + whether the daemon runs it
 zut telegram-bot reset     # forget the token and paired user
 # short alias: `zut tg ...` is accepted for every subcommand
 ```
 
-The background flavor writes the child's PID to `$ZUT_HOME/bot.pid` and redirects stdout and stderr to `$ZUT_HOME/logs/bot.log`. `zut telegram-bot stop` reads that PID, sends SIGTERM, waits up to five seconds, then escalates to SIGKILL if the child is still alive. Running two instances at once is refused at startup.
-
-> **Use the installed binary for `start`.** `go run ./cmd/zut telegram-bot start` won't work. `go run` builds a binary in a temp directory and deletes it when it exits, which kills the detached child. Run `make install` (or `go build`) first and invoke the installed binary.
+The bot runs as one headless daemon session (visible in `zut ls`) created with the cwd, environment and flags given to `start`. It is not restarted after a daemon restart: its session is restored idle and the next `start` reuses it.
 
 Setup flow:
 
 1. Talk to [@BotFather](https://t.me/BotFather) on telegram, run `/newbot`, copy the token it gives you.
 2. Run `zut telegram-bot setup` and paste the token when prompted.
-3. Run `zut telegram-bot run` in the directory you want the agent to operate in.
+3. Run `zut telegram-bot start` in the directory you want the agent to operate in.
 4. Open your bot on telegram, send `/start`. The first user to do this claims the bridge (stored as `allowed_user_id`); every other user is rejected.
 
 From then on, any DM you send is forwarded to the agent as a user prompt. Attached photos or `image/*` documents are downloaded and passed to vision-capable models. In-bot telegram commands are case-insensitive: `/help`, `/status`, `/stop` (cancel the current turn). Config lives in `$ZUT_HOME/bot.json` (mode 0600).
 
 Starting either Telegram bridge removes any webhook configured for that bot before long polling begins, while preserving pending updates. Telegram does not allow webhooks and `getUpdates` polling at the same time, so do not share the bot token with another service that expects to keep a webhook active.
 
-Bot mode respects the usual zut flags: `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, and so on. Run `zut tg run -c --model claude-opus-4-1` to resume the latest session on Opus, for example.
+Bot mode respects the usual zut flags: `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, and so on. Run `zut tg start -c --model claude-opus-4-1` to resume the latest session on Opus, for example.
 
 ### Architecture: protocol-agnostic bot core
 

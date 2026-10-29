@@ -208,6 +208,21 @@ func TestTitleGenerationCancelledOnClose(t *testing.T) {
 	}
 }
 
+func TestHeadlessSessionSkipsTitleGeneration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := NewController(ctx, Deps{Headless: true})
+	turn := lane9Turn(t, c, ctx)
+	// No Stream expectation: any title request fails the mock.
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	turn.EXPECT().currentAgent().Return(core.NewAgent(client, "m", "", nil)).Maybe()
+	require.NoError(t, c.call(ctx, func() { c.maybeGenerateTitle(Input{Text: "hello", Origin: InputOriginUser}) }))
+	var started bool
+	require.NoError(t, c.call(ctx, func() { started = c.settings.titleStarted }))
+	require.False(t, started)
+}
+
 // Lane9Harness bridges external tests (which own sessionmocks for Deps, since
 // package session cannot import it) to generated internal seam mocks.
 type Lane9Harness struct {

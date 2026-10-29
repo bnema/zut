@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/auth"
@@ -121,13 +122,13 @@ func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 		if err := validateOrchestrationArgs(args); err != nil {
 			return true, err
 		}
-		return true, runLocalZutfile(ref, args, version)
+		return true, runLocalZutfile(ref, args, rest, version)
 	default:
 		return false, nil
 	}
 }
 
-func runLocalZutfile(ref string, args Args, version string) error {
+func runLocalZutfile(ref string, args Args, rawArgs []string, version string) error {
 	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
@@ -163,6 +164,7 @@ func runLocalZutfile(ref string, args Args, version string) error {
 	if err := applyZutfileModelRequirements(&args, zf.Manifest); err != nil {
 		return err
 	}
+	before := args
 	agentPath := filepath.Join(zf.Dir, "AGENT.md")
 	agentPrompt, err := os.ReadFile(agentPath)
 	switch {
@@ -178,17 +180,59 @@ func runLocalZutfile(ref string, args Args, version string) error {
 	default:
 		return fmt.Errorf("read AGENT.md: %w", err)
 	}
-	args.StartupPre = strings.TrimSpace(zf.Manifest.Entry.Pre)
 	if args.Prompt == "" && zf.Manifest.Entry.DefaultPrompt != nil {
 		args.Prompt = *zf.Manifest.Entry.DefaultPrompt
 	}
-	if dirExists(filepath.Join(zf.Dir, "skills")) {
-		args.ExtraSkillDirs = append([]string{filepath.Join(zf.Dir, "skills")}, args.ExtraSkillDirs...)
+	z := &session.ZutfileSpec{
+		Name:        zf.Manifest.Name,
+		DataDir:     agentData,
+		Permissions: &perms,
+		Pre:         strings.TrimSpace(zf.Manifest.Entry.Pre),
 	}
-	args.AgentName = zf.Manifest.Name
-	args.AgentDataDir = agentData
-	args.PermissionSet = &perms
-	return runWithArgs(args, version)
+	if dirExists(filepath.Join(zf.Dir, "skills")) {
+		z.SkillDirs = []string{filepath.Join(zf.Dir, "skills")}
+	}
+	applyZutfileSpec(&args, z)
+	args.zutfile = z
+	return runZutfileClient(args, zutfileClientArgs(rawArgs, before, args), version)
+}
+
+// runZutfileClient runs a packaged agent through the daemon client path.
+// Tests replace it to inspect the invocation without a daemon.
+var runZutfileClient = runClientWithArgs
+
+// zutfileClientArgs rebuilds the daemon session args: rawArgs plus the flags
+// for settings runLocalZutfile changed (model requirements, AGENT.md and the
+// default prompt). Flags go before any "--" terminator; later flags win.
+func zutfileClientArgs(rawArgs []string, before, after Args) []string {
+	head, tail := rawArgs, []string(nil)
+	for i, a := range rawArgs {
+		if a == "--" {
+			head, tail = rawArgs[:i], rawArgs[i:]
+			break
+		}
+	}
+	out := append([]string{}, head...)
+	if after.Provider != before.Provider {
+		out = append(out, "--provider", after.Provider)
+	}
+	if after.Model != before.Model {
+		out = append(out, "--model", after.Model)
+	}
+	if after.SystemPrompt != before.SystemPrompt {
+		out = append(out, "--system-prompt", after.SystemPrompt)
+	}
+	for _, text := range after.AppendSystemPrompt[len(before.AppendSystemPrompt):] {
+		out = append(out, "--append-system-prompt", text)
+	}
+	out = append(out, tail...)
+	if before.Prompt == "" && after.Prompt != "" {
+		if len(tail) == 0 {
+			out = append(out, "--")
+		}
+		out = append(out, after.Prompt)
+	}
+	return out
 }
 
 func zutInspect(ref string) error {

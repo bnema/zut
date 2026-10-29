@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/session"
 	agenttools "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -360,6 +361,10 @@ func (i *Interactive) updateActiveGoal(status core.GoalStatus, reason string) {
 }
 
 func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []string) {
+	if i.portMode.Load() {
+		i.portGoalCommand(cmd, parts)
+		return
+	}
 	if i.cfg.CurrentGoal == nil || i.cfg.PersistGoal == nil {
 		i.setGoalCommandError("goal: session persistence is unavailable")
 		return
@@ -534,4 +539,21 @@ func (i *Interactive) setGoalCommandError(message string) {
 	i.statusErr = message
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// portGoalCommand maps the /goal sub-forms onto the daemon's GoalCommand.
+func (i *Interactive) portGoalCommand(cmd string, parts []string) {
+	goal := session.GoalCommand{Op: "status"}
+	if len(parts) > 1 {
+		arg := strings.ToLower(parts[1])
+		switch {
+		case len(parts) == 2 && (arg == "pause" || arg == "resume" || arg == "clear" || arg == "history" || arg == "status"):
+			goal.Op = arg
+		default:
+			goal = session.GoalCommand{Op: "set", Objective: strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cmd), parts[0]))}
+		}
+	}
+	i.portSettingsCall("goal", func(ctx context.Context, port session.Port) error {
+		return port.SetGoal(ctx, goal)
+	})
 }

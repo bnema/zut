@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/modes"
@@ -90,22 +88,6 @@ func TestResumeSeedsReusedAgentPlan(t *testing.T) {
 	}
 	if got := current.CurrentPlan(); !slices.Equal(got, want) {
 		t.Fatalf("reused agent plan = %#v, want %#v", got, want)
-	}
-}
-
-func TestRPCClearDropsPlanState(t *testing.T) {
-	var out bytes.Buffer
-	ag := &core.Agent{}
-	ag.SetPlan([]core.PlanStep{{Step: "one", Status: core.PlanPending}})
-	s := &rpcServer{agent: ag, out: &out}
-
-	s.dispatch("clear", "1", []byte(`{"type":"clear","id":"1"}`))
-
-	if got := ag.CurrentPlan(); got != nil {
-		t.Fatalf("plan after rpc clear = %#v, want nil", got)
-	}
-	if !strings.Contains(out.String(), `"success":true`) {
-		t.Fatalf("rpc clear response = %q", out.String())
 	}
 }
 

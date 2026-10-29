@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"github.com/bnema/zut/packages/core"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,7 +77,12 @@ func TestResidentObserverRetryAndReentry(t *testing.T) {
 			turn.EXPECT().turnOrigin().Return(InputOriginUser)
 			turn.EXPECT().turnInfo().Return(turnInfoProjection{})
 			delivered := make(chan Input, 1)
-			turn.EXPECT().enqueue(mock.Anything).Run(func(in Input) { delivered <- in }).Once()
+			var enqueued atomic.Bool
+			turn.EXPECT().enqueue(mock.Anything).Run(func(in Input) { enqueued.Store(true); delivered <- in }).Once()
+			// An idle manager has no turn end to drain the FIFO: the resident
+			// mailbox must start the queued update itself, after enqueueing it.
+			drained := make(chan bool, 4)
+			turn.EXPECT().drainQueued().Run(func() { drained <- enqueued.Load() }).Maybe()
 			require.NoError(t, c.call(ctx, func() {
 				c.turnSeam = turn
 				if busy {
@@ -106,6 +112,13 @@ func TestResidentObserverRetryAndReentry(t *testing.T) {
 				}
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
+			}
+			for afterEnqueue := false; !afterEnqueue; {
+				select {
+				case afterEnqueue = <-drained:
+				case <-ctx.Done():
+					t.Fatal("queued completion update was never drained")
+				}
 			}
 			require.NoError(t, c.call(ctx, func() { c.residentsRunEnded(); c.turnSeam = c }))
 		})

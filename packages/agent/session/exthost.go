@@ -409,7 +409,7 @@ func (h extHooks) Alert(ext string, alert extproto.AlertRequest) {
 		copy := alert
 		h.c.ext.chrome.Alert = &copy
 		h.c.ext.alertOwner = ext
-		h.c.publish(EvExtAlert, ExtAlertEvent{Alert: alert})
+		h.c.publish(EvExtAlert, ExtAlertEvent{Ext: ext, Alert: alert})
 	})
 }
 func (h extHooks) ClearExtensionChrome(ext string) {

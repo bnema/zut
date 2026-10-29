@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/mcp"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
@@ -53,7 +54,10 @@ type Args struct {
 	// FastModeSet distinguishes the durable child override from host config.
 	FastModeSet bool
 
-	Continue        bool
+	Continue bool
+	// KeepSession leaves the daemon session of a headless run open
+	// (visible in `zut ls`, reattachable) instead of closing it at exit.
+	KeepSession     bool
 	Resume          bool
 	ResumeSessionID string
 	Session         string
@@ -72,6 +76,8 @@ type Args struct {
 	// mcpManager holds the process-wide MCP connections. Resolve adds its
 	// tools; resident children inherit the pointer and share connections.
 	mcpManager *mcp.Manager
+	// zutfile is the `zut run` payload sent in session.CreateSpec.Zutfile.
+	zutfile *session.ZutfileSpec
 	// mcpStartupErrors are non-fatal MCP startup failures shown by
 	// interactive mode (other modes print them to stderr).
 	mcpStartupErrors []string
@@ -205,6 +211,8 @@ func ParseArgs(in []string) (Args, error) {
 			}
 		case "--no-session":
 			a.NoSess = true
+		case "--keep-session":
+			a.KeepSession = true
 		case "--no-tools":
 			a.NoTools = true
 		case "--no-repetition-guard":
@@ -457,6 +465,13 @@ func PrintHelp(version string) {
 		row{"zut --ext ./path/to/ext", "load an extension for this run only"},
 		row{"zut ext help", "show all extension subcommands"},
 	)
+	section("daemon sessions",
+		row{"zut ls [--json]", "list sessions running in the daemon"},
+		row{"zut tree [--json]", "show daemon sessions and their subagents as a tree"},
+		row{"zut kill <id>...", "stop daemon sessions"},
+		row{"zut attach [id|title-prefix]", "attach the tui to a running daemon session"},
+		row{"zut daemon status|start|stop|restart|logs", "manage the local session daemon (zut daemon help)"},
+	)
 	section("session management",
 		row{"zut sessions prune", "select and delete sessions for directories that no longer exist"},
 		row{"zut sessions prune --dry-run", "list stale session groups without deleting them"},
@@ -468,10 +483,9 @@ func PrintHelp(version string) {
 	)
 	section("telegram",
 		row{"zut telegram-bot setup", "configure a telegram bot (from BotFather)"},
-		row{"zut telegram-bot run", "foreground bridge (ctrl+c to stop)"},
-		row{"zut telegram-bot start", "background bridge (detached)"},
-		row{"zut telegram-bot stop", "stop the background bridge"},
-		row{"zut telegram-bot logs [-f]", "tail the background bridge log"},
+		row{"zut telegram-bot start", "run the bot inside the zut daemon"},
+		row{"zut telegram-bot stop", "stop the bot service"},
+		row{"zut telegram-bot logs [-f]", "show the bot service log"},
 		row{"zut telegram-bot status", "config + running state"},
 		row{"zut telegram-bot reset", "forget saved token"},
 		row{"zut tg ...", "short alias for telegram-bot"},
@@ -494,6 +508,7 @@ func PrintHelp(version string) {
 		row{"-r, --resume [UUID]", "pick a session, or resume the persisted UUID"},
 		row{"--session PATH", "resume a specific session file"},
 		row{"--no-session", "do not read or write a session file"},
+		row{"--keep-session", "headless modes: keep the daemon session open after the run"},
 	)
 	section("workspace, tools, skills",
 		row{"--cwd PATH", "treat PATH as the working directory"},

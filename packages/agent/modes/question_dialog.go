@@ -27,6 +27,9 @@ type questionRequest struct {
 	index     int
 	hint      string
 	resp      chan questionResponse
+	// Port mode: answers go to onAnswer instead of resp.
+	pendingID string
+	onAnswer  func([]tools.QuestionAnswer)
 }
 type questionDialog struct {
 	mu      sync.Mutex
@@ -43,6 +46,27 @@ func (d *questionDialog) Enqueue(qs []tools.Question) *questionRequest {
 	d.pending = append(d.pending, r)
 	d.mu.Unlock()
 	return r
+}
+
+// EnqueuePending queues a Port request; onAnswer receives the answers, or
+// nil when the user declines (the port has no separate decline call).
+func (d *questionDialog) EnqueuePending(id string, qs []tools.Question, onAnswer func([]tools.QuestionAnswer)) {
+	r := d.Enqueue(qs)
+	d.mu.Lock()
+	r.pendingID, r.onAnswer = id, onAnswer
+	d.mu.Unlock()
+}
+
+// RemovePending drops the Port request id without answering it.
+func (d *questionDialog) RemovePending(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for n, p := range d.pending {
+		if p.pendingID == id {
+			d.pending = append(d.pending[:n:n], d.pending[n+1:]...)
+			return
+		}
+	}
 }
 func (d *questionDialog) Active() bool {
 	if d == nil {
@@ -77,6 +101,13 @@ func (d *questionDialog) HandleKey(k tui.Key) {
 			answers[n] = st.answer
 		}
 		d.pending = d.pending[1:]
+		if r.onAnswer != nil {
+			if err != nil {
+				answers = nil
+			}
+			r.onAnswer(answers)
+			return
+		}
 		r.resp <- questionResponse{answers, err}
 	}
 	advance := func() {

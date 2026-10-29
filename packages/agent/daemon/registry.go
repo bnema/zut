@@ -79,6 +79,8 @@ type Daemon struct {
 	stateWrites chan struct{}
 	// runDirty signals a run-state transition to stateLoop (cap 1).
 	runDirty chan struct{}
+	// bot holds hosted bot services and bridges (bot.go).
+	bot *botState
 }
 
 type entry struct {
@@ -102,6 +104,7 @@ func New(factory session.Factory) *Daemon {
 		runDebounce: runPersistDebounce,
 		stateWrites: make(chan struct{}, 1),
 		log:         discardLogger(),
+		bot:         newBotState(),
 	}
 }
 

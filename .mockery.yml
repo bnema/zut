@@ -92,6 +92,30 @@ packages:
           pkgname: tools
           filename: sessionDirectory_mock_test.go
           structname: mockSessionDirectory
+  github.com/bnema/zut/packages/agent/modes:
+    interfaces:
+      SessionClient:
+        config:
+          dir: packages/agent/modes
+          pkgname: modes
+          filename: sessionClient_mock_test.go
+          structname: mockSessionClient
+  github.com/bnema/zut/packages/agent/daemon:
+    interfaces:
+      BotFactory:
+        config:
+          dir: packages/agent/daemon
+          pkgname: daemon
+          filename: botFactory_mock_test.go
+          structname: mockBotFactory
+  github.com/bnema/zut/packages/agent/modes/bot:
+    interfaces:
+      BotAdapter:
+        config:
+          dir: packages/agent/modes/bot
+          pkgname: bot
+          filename: botAdapter_mock_test.go
+          structname: mockBotAdapter
   github.com/bnema/zut/packages/provider:
     config:
       dir: packages/provider/providermocks

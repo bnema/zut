@@ -1,11 +1,13 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -18,6 +20,26 @@ type confirmRequest struct {
 	preview       string
 	resp          chan core.ConfirmDecision
 	returnToChild bool
+	// pendingID and onAnswer are set for Port-mode requests: the answer
+	// goes to the session port instead of resp.
+	pendingID string
+	onAnswer  func(core.ConfirmDecision)
+}
+
+// deliver hands the decision to its owner. Port answers never block.
+func (r *confirmRequest) deliver(d core.ConfirmDecision, wait bool) {
+	if r.onAnswer != nil {
+		r.onAnswer(d)
+		return
+	}
+	if wait {
+		r.resp <- d
+		return
+	}
+	select {
+	case r.resp <- d:
+	default:
+	}
 }
 
 // confirmDialog is the inline prompt shown before every tool call
@@ -32,6 +54,9 @@ type confirmDialog struct {
 	// showing. Used only for debug/future UX (e.g. flashing the
 	// dialog border after N seconds of no answer).
 	activeSince time.Time
+	// portSeen records Port pending IDs already shown (any kind), so a
+	// locally answered request is not reopened before it resolves.
+	portSeen map[string]bool
 }
 
 func newConfirmDialog() *confirmDialog { return &confirmDialog{} }
@@ -114,10 +139,7 @@ func (d *confirmDialog) CancelAll(reason string) {
 	d.focused = false
 	d.mu.Unlock()
 	for _, req := range pending {
-		select {
-		case req.resp <- core.ConfirmDecision{Allow: false, Reason: reason}:
-		default:
-		}
+		req.deliver(core.ConfirmDecision{Allow: false, Reason: reason}, false)
 	}
 }
 
@@ -152,10 +174,7 @@ func (d *confirmDialog) CancelChildConfirmations(reason string) {
 	d.mu.Unlock()
 
 	for _, req := range cancelled {
-		select {
-		case req.resp <- core.ConfirmDecision{Allow: false, Reason: reason}:
-		default:
-		}
+		req.deliver(core.ConfirmDecision{Allow: false, Reason: reason}, false)
 	}
 }
 
@@ -169,10 +188,128 @@ func (d *confirmDialog) AllowAllPending() {
 	d.focused = false
 	d.mu.Unlock()
 	for _, req := range pending {
-		select {
-		case req.resp <- core.ConfirmDecision{Allow: true, RememberAll: true}:
-		default:
+		req.deliver(core.ConfirmDecision{Allow: true, RememberAll: true}, false)
+	}
+}
+
+// RemovePending drops the Port request id without answering it (it was
+// resolved elsewhere). Reports whether it was queued.
+func (d *confirmDialog) RemovePending(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for n, req := range d.pending {
+		if req.pendingID != id {
+			continue
 		}
+		d.pending = append(d.pending[:n:n], d.pending[n+1:]...)
+		if n == 0 {
+			d.cursor = 0
+			d.focused = len(d.pending) > 0
+			d.activeSince = time.Now()
+		}
+		return true
+	}
+	return false
+}
+
+// markPortSeen records id and reports whether it was new.
+func (d *confirmDialog) markPortSeen(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.portSeen[id] {
+		return false
+	}
+	if d.portSeen == nil {
+		d.portSeen = map[string]bool{}
+	}
+	d.portSeen[id] = true
+	return true
+}
+
+// prunePortSeen forgets ids that are no longer pending and returns them.
+func (d *confirmDialog) prunePortSeen(live map[string]bool) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var gone []string
+	for id := range d.portSeen {
+		if !live[id] {
+			delete(d.portSeen, id)
+			gone = append(gone, id)
+		}
+	}
+	return gone
+}
+
+// syncPortDialogs reconciles the confirm, question and rescue dialogs with
+// the session's pending requests in Port mode: new requests open their
+// dialog, resolved ones close it. No-op outside Port mode.
+func (i *Interactive) syncPortDialogs() {
+	i.mu.Lock()
+	port, ctx := i.port, i.runCtx
+	i.mu.Unlock()
+	if port == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pending := i.PendingRequests()
+	live := make(map[string]bool, len(pending))
+	for _, p := range pending {
+		live[p.ID] = true
+	}
+	for _, id := range i.confirmDialog.prunePortSeen(live) {
+		i.confirmDialog.RemovePending(id)
+		i.questionDialog.RemovePending(id)
+		i.rescueDialog.ClosePending(id)
+	}
+	opened := false
+	for _, p := range pending {
+		if p.ID == "" || !i.confirmDialog.markPortSeen(p.ID) {
+			continue
+		}
+		id := p.ID
+		switch p.Kind {
+		case "confirm":
+			req := &confirmRequest{pendingID: id, onAnswer: func(d core.ConfirmDecision) {
+				go func() {
+					if err := port.AnswerConfirmation(ctx, id, d); err != nil {
+						i.ReportError(fmt.Errorf("answer confirmation: %w", err))
+					}
+				}()
+			}}
+			if p.Confirm != nil {
+				req.toolName, req.preview = p.Confirm.Name, p.Confirm.Summary
+			}
+			i.confirmDialog.Enqueue(req)
+			i.alertNeedsInput(alertAwaitingConfirmation)
+		case "question":
+			i.questionDialog.EnqueuePending(id, p.Questions, func(answers []tools.QuestionAnswer) {
+				go func() {
+					if err := port.AnswerQuestion(ctx, id, answers); err != nil {
+						i.ReportError(fmt.Errorf("answer question: %w", err))
+					}
+				}()
+			})
+			i.alertNeedsInput(alertAwaitingAnswers)
+		case "rescue":
+			if p.Rescue == nil {
+				continue
+			}
+			i.rescueDialog.OpenPending(id, *p.Rescue, func(answers []tools.QuestionAnswer) {
+				go func() {
+					if err := port.AnswerQuestion(ctx, id, answers); err != nil {
+						i.ReportError(fmt.Errorf("answer rescue: %w", err))
+					}
+				}()
+			})
+		default:
+			continue
+		}
+		opened = true
+	}
+	if opened {
+		i.invalidate()
 	}
 }
 
@@ -245,13 +382,13 @@ func (d *confirmDialog) HandleKey(k tui.Key) bool {
 		// so the agent goroutine unblocks.
 		d.advanceLocked(req)
 		d.mu.Unlock()
-		req.resp <- core.ConfirmDecision{Allow: false, Reason: "user cancelled"}
+		req.deliver(core.ConfirmDecision{Allow: false, Reason: "user cancelled"}, true)
 		return true
 	case tui.KeyEnter:
 		selected := confirmOptions[d.cursor].decision
 		d.advanceLocked(req)
 		d.mu.Unlock()
-		req.resp <- selected
+		req.deliver(selected, true)
 		return true
 	}
 
@@ -262,7 +399,7 @@ func (d *confirmDialog) HandleKey(k tui.Key) bool {
 			selected := confirmOptions[idx].decision
 			d.advanceLocked(req)
 			d.mu.Unlock()
-			req.resp <- selected
+			req.deliver(selected, true)
 			return true
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
 
@@ -124,7 +125,11 @@ func (c *Controller) beginCompact(next *Input) error {
 			})
 			var replacement *core.Agent
 			if !aborted {
-				replacement, err = c.rescue(ctx, err)
+				cause := err
+				if replacement, err = c.rescue(ctx, cause); errors.Is(err, tools.ErrQuestionsDeclined) {
+					// A declined rescue is a cancel: the compaction error stands.
+					err = cause
+				}
 			}
 			if !aborted && err == nil {
 				target = replacement
@@ -210,7 +215,10 @@ func (c *Controller) rescueTurn(cause error, retry Input) {
 				err = c.turnSeam.startTurn(retry)
 			}
 			if err != nil {
-				c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
+				// A declined rescue is a cancel: the original turn error stands.
+				if !errors.Is(err, tools.ErrQuestionsDeclined) {
+					c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
+				}
 				// A failed rescue must not strand input queued behind the failed
 				// turn; a started queued turn reports its own end instead.
 				c.turnSeam.drainQueued()
@@ -285,9 +293,11 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 	return replacement, nil
 }
 
-// maybeGenerateTitle is best effort and runs only for the first real user input.
+// maybeGenerateTitle is best effort and runs only for the first real user
+// input of an interactive session; headless runs never spend a provider call
+// on a title.
 func (c *Controller) maybeGenerateTitle(in Input) {
-	if c.settings.titleStarted || c.settings.title != "" || (in.Origin != "" && in.Origin != InputOriginUser) || strings.TrimSpace(in.Text) == "" {
+	if c.deps.Headless || c.settings.titleStarted || c.settings.title != "" || (in.Origin != "" && in.Origin != InputOriginUser) || strings.TrimSpace(in.Text) == "" {
 		return
 	}
 	ag := c.turnSeam.currentAgent()

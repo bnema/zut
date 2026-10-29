@@ -24,37 +24,52 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 // continued turn succeeds. OutputStart identifies the suffix to persist after
 // a successful checkpoint.
 func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, persistCompaction func([]provider.Message) error) (ContextRecoveryResult, error) {
-	enc := json.NewEncoder(out)
-	var writeMu sync.Mutex
-	var writeErr error
-	write := func(v any) {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		if writeErr == nil {
-			writeErr = enc.Encode(v)
-		}
-	}
-
-	var runErr error
-	sink := func(ev core.AgentEvent) {
-		write(EventToJSON(ev))
-	}
-
-	recovery, err := PromptWithContextRecovery(ctx, ag, prompt, images, sink, ContextRecoveryOptions{
+	w := NewJSONWriter(out)
+	recovery, runErr := PromptWithContextRecovery(ctx, ag, prompt, images, w.Handle, ContextRecoveryOptions{
 		PersistCompaction:            persistCompaction,
 		SuppressInitialOverflowEvent: true,
 	})
-	if err != nil {
-		runErr = err
-	}
-
 	if runErr != nil {
-		write(map[string]any{"type": "error", "message": runErr.Error()})
+		w.WriteError(runErr)
 	}
-	writeMu.Lock()
-	outputErr := writeErr
-	writeMu.Unlock()
-	return recovery, errors.Join(runErr, outputErr)
+	return recovery, errors.Join(runErr, w.Err())
+}
+
+// JSONWriter is the --json formatter: one EventToJSON object per line.
+// It is safe for concurrent use and keeps the first write error.
+type JSONWriter struct {
+	mu  sync.Mutex
+	enc *json.Encoder
+	err error
+}
+
+// NewJSONWriter returns a newline-delimited JSON writer on out.
+func NewJSONWriter(out io.Writer) *JSONWriter { return &JSONWriter{enc: json.NewEncoder(out)} }
+
+// Write encodes one value unless an earlier write failed.
+func (w *JSONWriter) Write(v any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err == nil {
+		w.err = w.enc.Encode(v)
+	}
+}
+
+// Handle writes one agent event.
+func (w *JSONWriter) Handle(ev core.AgentEvent) { w.Write(EventToJSON(ev)) }
+
+// WriteError writes the terminal {"type":"error"} object for err.
+func (w *JSONWriter) WriteError(err error) {
+	if err != nil {
+		w.Write(map[string]any{"type": "error", "message": err.Error()})
+	}
+}
+
+// Err returns the first output error.
+func (w *JSONWriter) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
 }
 
 // EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
