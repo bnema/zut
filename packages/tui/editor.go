@@ -111,6 +111,29 @@ func (e *Editor) SetValue(s string) {
 	e.dirSeq = 0
 }
 
+// Clone returns an independent copy of the editor, including the cursor,
+// prompt, last render width and placeholder tables, so another goroutine
+// can render it while the original keeps receiving input.
+func (e *Editor) Clone() *Editor {
+	c := *e
+	c.Lines = append([]string(nil), e.Lines...)
+	c.pastes = cloneIntStringMap(e.pastes)
+	c.files = cloneIntStringMap(e.files)
+	c.dirs = cloneIntStringMap(e.dirs)
+	return &c
+}
+
+func cloneIntStringMap(m map[int]string) map[int]string {
+	if m == nil {
+		return nil
+	}
+	c := make(map[int]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
 // Clear resets the buffer.
 func (e *Editor) Clear() { e.SetValue("") }
 

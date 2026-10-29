@@ -766,7 +766,11 @@ type Interactive struct {
 	themeWatchEvents  chan themeWatchEvent
 	themeWatchWarning string
 	ed                *tui.Editor
-	rend              *tui.Renderer
+	// edView is the copy of ed the render goroutine draws, guarded by mu.
+	// Only the Run goroutine publishes it (publishEditorView); ed itself
+	// stays owned by the Run goroutine.
+	edView *tui.Editor
+	rend   *tui.Renderer
 
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
@@ -1388,6 +1392,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	cols, rows := term.Size()
 	i.rend.Resize(cols, rows)
+	// Publish before the render owner starts so it never falls back to the
+	// live editor, which the Run goroutine owns.
+	i.publishEditorView()
 	renderScheduler := newLatestFrameScheduler()
 	i.renderScheduler.Store(renderScheduler)
 	go renderScheduler.run(func(req renderRequest) {
@@ -1540,6 +1547,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if pendingRedraw {
 			pendingRedraw = false
 			lastRedraw = time.Now()
+			i.publishEditorView()
 			renderScheduler.request(false, false)
 		}
 	}
@@ -1558,6 +1566,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			pendingRedraw = false
 			lastRedraw = time.Now()
+			i.publishEditorView()
 			renderScheduler.request(false, false)
 			return
 		}

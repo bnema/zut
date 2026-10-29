@@ -448,6 +448,36 @@ func (i *Interactive) scrollToBottom() {
 	i.mu.Unlock()
 	i.invalidate()
 }
+
+// applyEditorPrompt sets the input prompt for the configured input style.
+func (i *Interactive) applyEditorPrompt(ed *tui.Editor) {
+	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
+	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
+		ed.Prompt = ""
+	} else {
+		ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
+	}
+}
+
+// publishEditorView runs on the Run goroutine, which owns i.ed. It applies
+// the prompt, refreshes the editor's render width (Up/Down navigation walks
+// the same wrapped layout the user sees), and publishes a copy under i.mu
+// for the render goroutine, so redraw never reads the live editor.
+func (i *Interactive) publishEditorView() {
+	if i.ed == nil {
+		return
+	}
+	i.mu.Lock()
+	i.applyEditorPrompt(i.ed)
+	cols := i.lastCols()
+	i.mu.Unlock()
+	i.ed.Render(cols)
+	view := i.ed.Clone()
+	i.mu.Lock()
+	i.edView = view
+	i.mu.Unlock()
+}
+
 func (i *Interactive) redraw() {
 	i.mu.Lock()
 	renderRevision := i.renderRevision.Load()
@@ -592,7 +622,12 @@ func (i *Interactive) redraw() {
 		i.suggest.SetExtra(extra)
 	}
 	var suggest []string
-	currentInput := i.ed.Value()
+	var currentInput string
+	if i.edView != nil {
+		currentInput = i.edView.Value()
+	} else {
+		currentInput = i.ed.Value()
+	}
 	if i.suggest.SkillInputStarted(currentInput) {
 		var list []*skills.Skill
 		if i.cfg.SkillSnapshot != nil {
@@ -695,12 +730,14 @@ func (i *Interactive) redraw() {
 		Cols:           mainCols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
-	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
-		i.ed.Prompt = ""
-	} else {
-		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
+	ed := i.edView
+	if ed == nil {
+		// Direct redraw without a Run loop (tests): nothing publishes a
+		// view, so render the live editor on this goroutine.
+		i.applyEditorPrompt(i.ed)
+		ed = i.ed
 	}
-	edLines, curR, curC := i.ed.Render(mainCols)
+	edLines, curR, curC := ed.Render(mainCols)
 	// Floating independent views no longer replace the main bottom band: the
 	// underlying chat, status, and editor keep updating behind the pane.
 	residentViewActive := i.residentSubagentsDialog.Active() || i.residentChildSession != nil
