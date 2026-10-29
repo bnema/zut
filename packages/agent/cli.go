@@ -20,6 +20,7 @@ import (
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/agent/scheduler"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -935,6 +936,17 @@ func Run(rawArgs []string, version string) error {
 	}
 	defer stopExtContext()
 
+	// Daemon client subcommands run before every other router so their
+	// names never reach the generic flag parser.
+	if len(rawArgs) > 0 {
+		if cmd := daemonClientSubcommand(rawArgs[0]); cmd != nil {
+			if code := cmd(rawArgs[1:], os.Stdout, os.Stderr); code != 0 {
+				os.Exit(code)
+			}
+			return nil
+		}
+	}
+
 	// Subcommand router: `zut bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
 	if handled, err := runBotCommand(rawArgs, version); handled {
@@ -1000,7 +1012,127 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		return nil
 	}
 
-	return runWithArgs(args, version)
+	return runClientWithArgs(args, rawArgs, version)
+}
+
+// daemonClientSubcommand returns the daemon client handler for name, or nil.
+func daemonClientSubcommand(name string) func([]string, io.Writer, io.Writer) int {
+	switch name {
+	case "ls":
+		return runLsCommand
+	case "tree":
+		return runTreeCommand
+	case "kill":
+		return runKillCommand
+	case "attach":
+		return runAttachCommand
+	}
+	return nil
+}
+
+// runClientWithArgs dispatches a parsed invocation to the daemon client
+// paths. The in-process runWithArgs path is kept until its removal.
+func runClientWithArgs(args Args, rawArgs []string, version string) error {
+	if err := validateOrchestrationArgs(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	switch args.Mode {
+	case ModePrint:
+		return runPrintClient(ctx, args, rawArgs, version)
+	case ModeStream:
+		return runStreamClient(ctx, args, rawArgs, version)
+	case ModeJSON:
+		return runJSONClient(ctx, args, rawArgs, version)
+	case ModeRPC:
+		return runRPCClient(ctx, args, rawArgs, version)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	spec, err := buildCreateSpec(ctx, args, rawArgs, cwd, os.Environ(), defaultSessionLocator())
+	if err != nil {
+		return err
+	}
+	if code := runTUIClient(ctx, "", spec, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+	return nil
+}
+
+// sessionLocator resolves session files on the client side, mirroring
+// openOrCreateSessionState.
+type sessionLocator struct {
+	latest   func(root, cwd string) string
+	findByID func(ctx context.Context, id string) (string, error)
+	pick     func(root, cwd string) (string, error)
+	prune    func(root, cwd string)
+}
+
+func defaultSessionLocator() sessionLocator {
+	return sessionLocator{
+		latest: core.LatestSession,
+		findByID: func(ctx context.Context, id string) (string, error) {
+			return core.FindManagedSessionByID(ctx, ZutHome(), id)
+		},
+		pick:  pickSession,
+		prune: core.PruneEmptySessions,
+	}
+}
+
+// buildCreateSpec maps parsed args to the daemon CreateSpec. ResumePath is
+// chosen like openOrCreateSessionState; empty means a fresh session. A
+// missing --session file is created by the daemon (openOrCreateSessionState).
+// A bare --resume whose picker returns nothing starts fresh, as before, so the
+// resume flag is dropped from Args (the daemon refuses an empty resume).
+func buildCreateSpec(ctx context.Context, args Args, rawArgs []string, cwd string, env []string, loc sessionLocator) (*session.CreateSpec, error) {
+	spec := &session.CreateSpec{CWD: cwd, Env: env, Args: rawArgs}
+	if args.NoSess {
+		return spec, nil
+	}
+	root := agentSessionsRoot(ZutHome(), args)
+	// Explicit paths and UUIDs may identify empty sessions; keep them.
+	if args.ResumeSessionID == "" && args.Session == "" && loc.prune != nil {
+		loc.prune(root, args.CWD)
+	}
+	switch {
+	case args.Session != "":
+		spec.ResumePath = args.Session
+	case args.Continue:
+		spec.ResumePath = loc.latest(root, args.CWD)
+	case args.Resume && args.ResumeSessionID != "":
+		path, err := loc.findByID(ctx, args.ResumeSessionID)
+		if err != nil {
+			return nil, err
+		}
+		if path == "" {
+			return nil, fmt.Errorf("session %q not found", args.ResumeSessionID)
+		}
+		spec.ResumePath = path
+	case args.Resume:
+		path, err := loc.pick(root, args.CWD)
+		if err != nil {
+			return nil, err
+		}
+		spec.ResumePath = path
+		if path == "" {
+			spec.Args = withoutResumeFlag(rawArgs)
+		}
+	}
+	return spec, nil
+}
+
+// withoutResumeFlag drops a bare -r/--resume from rawArgs.
+func withoutResumeFlag(rawArgs []string) []string {
+	out := make([]string, 0, len(rawArgs))
+	for _, a := range rawArgs {
+		if a == "-r" || a == "--resume" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func runWithArgs(args Args, version string) error {

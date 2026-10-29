@@ -200,7 +200,7 @@ func TestHeadlessParityRecord(t *testing.T) {
 				cwd := t.TempDir()
 				home := t.TempDir()
 				cmd := exec.Command(binary, sc.args(mode, server.URL, cwd)...)
-				cmd.Env = append(orchestrationCLIEnv(binary, home), "HOME="+t.TempDir())
+				cmd.Env = append(orchestrationCLIEnv(t, binary, home), "HOME="+t.TempDir())
 				if mode == "rpc" {
 					cmd.Stdin = strings.NewReader(sc.rpcInput)
 				}

@@ -293,9 +293,11 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 	return replacement, nil
 }
 
-// maybeGenerateTitle is best effort and runs only for the first real user input.
+// maybeGenerateTitle is best effort and runs only for the first real user
+// input of an interactive session; headless runs never spend a provider call
+// on a title.
 func (c *Controller) maybeGenerateTitle(in Input) {
-	if c.settings.titleStarted || c.settings.title != "" || (in.Origin != "" && in.Origin != InputOriginUser) || strings.TrimSpace(in.Text) == "" {
+	if c.deps.Headless || c.settings.titleStarted || c.settings.title != "" || (in.Origin != "" && in.Origin != InputOriginUser) || strings.TrimSpace(in.Text) == "" {
 		return
 	}
 	ag := c.turnSeam.currentAgent()
