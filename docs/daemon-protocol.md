@@ -50,7 +50,9 @@ A fork uses `"fork":{"parent_path":"/sessions/parent.jsonl","up_to_message":3,"h
 from creation and assembly dependencies.
 
 `attach` replays events strictly after `after_seq` before live delivery.
-A sequence outside retention fails with `event sequence too old`; fetch a
+A sequence outside retention fails with `event sequence too old`; an
+`after_seq` ahead of the daemon's current sequence (for example after a daemon
+restart) counts as too old; fetch a
 snapshot and attach after its `seq`. Retention is 8192 events or 16 MiB,
 whichever limit is reached first. A new controlling attach detaches the old
 controller. Non-controlling subscribers do not take control.

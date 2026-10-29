@@ -39,7 +39,11 @@ func (r *eventRing) append(ev Event) {
 	}
 }
 func (r *eventRing) replay(after, seq uint64) ([]Event, error) {
-	if after >= seq {
+	if after > seq {
+		// A sequence ahead of ours predates a restart; the client must resync.
+		return nil, ErrSeqTooOld
+	}
+	if after == seq {
 		return nil, nil
 	}
 	if len(r.entries) == 0 || after < r.entries[0].event.Seq-1 {
