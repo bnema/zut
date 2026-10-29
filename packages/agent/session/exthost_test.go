@@ -192,6 +192,13 @@ func TestExtensionDomainSaturation(t *testing.T) {
 	for i := 0; i < 80; i++ {
 		h.SubmitSlash("/compact") // 64 fit in the queue; the rest are dropped
 	}
+	// SubmitSlash only admits into the mailbox; the actor drains it in batches
+	// concurrently. Without this barrier the overload note of an early batch
+	// can release the dispatcher before later batches run domain(), letting
+	// them into freed slots. Snapshot runs on the actor after extDrain, so
+	// every admitted hook has reached domain() before release.
+	_, err = c.Snapshot(ctx)
+	require.NoError(t, err)
 	for {
 		select {
 		case ev := <-events:
