@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/core"
@@ -38,19 +36,10 @@ func mcpAllowed(args Args) bool {
 	return false
 }
 
-// startMCP loads the MCP configuration and connects every server once per
-// process. The manager is stored in args so every Resolve (primary, reloads,
-// and resident children) shares the same connections. A server marked
-// required that fails to start aborts the run.
-func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
-	manager, stop, err := startMCPWithEnv(ctx, args, version, os.Environ(), true)
-	if err == nil {
-		args.mcpManager = manager
-	}
-	return stop, err
-}
-
-func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string, processSignals bool) (*mcp.Manager, func(), error) {
+// startMCPWithEnv loads the MCP configuration for args.CWD and connects
+// every server. Startup failures are appended to args.mcpStartupErrors; a
+// server marked required that fails to start aborts with an error.
+func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string) (*mcp.Manager, func(), error) {
 	noop := func() {}
 	if args.mcpManager != nil || !mcpAllowed(*args) {
 		return args.mcpManager, noop, nil
@@ -67,22 +56,7 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
 	manager.SetEnv(env)
-	var failures []error
-	var requiredErr error
-	if processSignals {
-		sigCh := make(chan os.Signal, 1)
-		mcpSignalNotify(sigCh, mcpSignals...)
-		var sig os.Signal
-		failures, sig, requiredErr = startMCPInterruptible(ctx, manager, sigCh)
-		signal.Stop(sigCh)
-		if sig != nil {
-			_ = manager.Close()
-			mcpSignalExit(signalExitCode(sig))
-			return nil, noop, fmt.Errorf("mcp startup interrupted by %v", sig)
-		}
-	} else {
-		failures, requiredErr = manager.Start(ctx)
-	}
+	failures, requiredErr := manager.Start(ctx)
 
 	for _, err := range failures {
 		args.mcpStartupErrors = append(args.mcpStartupErrors, err.Error())
@@ -95,51 +69,12 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	return manager, func() { _ = manager.Close() }, nil
 }
 
-// startSessionMCP starts session-owned connections without process signal handlers
-// or process termination. The caller owns cancellation and supplies its base env.
+// startSessionMCP starts session-owned connections; it never installs process
+// signal handlers or terminates the process. The caller owns cancellation and supplies its base env.
 // The returned manager is installed by assembly; args is never mutated.
 // Use the returned cleanup on every exit.
 func startSessionMCP(ctx context.Context, args Args, env []string) (*mcp.Manager, func(), error) {
-	return startMCPWithEnv(ctx, &args, "", env, false)
-}
-
-var mcpSignalNotify = signal.Notify
-
-var mcpSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
-
-// mcpSignalExit terminates the process after a signal; tests replace it.
-var mcpSignalExit = os.Exit
-
-func signalExitCode(sig os.Signal) int {
-	if s, ok := sig.(syscall.Signal); ok {
-		return 128 + int(s)
-	}
-	return 1
-}
-
-// startMCPInterruptible runs manager.Start and cancels the handshakes when a
-// signal arrives on sigCh, waiting until every connection attempt has closed
-// its transport. It returns the signal that interrupted startup, if any.
-func startMCPInterruptible(ctx context.Context, manager *mcp.Manager, sigCh <-chan os.Signal) ([]error, os.Signal, error) {
-	startCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	type result struct {
-		failures []error
-		required error
-	}
-	done := make(chan result, 1)
-	go func() {
-		failures, required := manager.Start(startCtx)
-		done <- result{failures, required}
-	}()
-	select {
-	case r := <-done:
-		return r.failures, nil, r.required
-	case sig := <-sigCh:
-		cancel()
-		<-done
-		return nil, sig, nil
-	}
+	return startMCPWithEnv(ctx, &args, "", env)
 }
 
 // reportMCPStartup prints startup failures for non-interactive modes. The
