@@ -174,7 +174,7 @@ func openHeadlessSession(ctx context.Context, hio headlessIO, args Args, rawArgs
 	if err != nil {
 		return nil, err
 	}
-	spec := session.CreateSpec{CWD: args.CWD, Env: append([]string{}, hio.env...), Args: headlessCreateArgs(rawArgs), Headless: true}
+	spec := session.CreateSpec{CWD: args.CWD, Env: append([]string{}, hio.env...), Args: headlessCreateArgs(rawArgs), Headless: true, Zutfile: args.zutfile}
 	info, err := client.Create(ctx, spec)
 	if err != nil {
 		_ = client.Disconnect()

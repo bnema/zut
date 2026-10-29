@@ -60,6 +60,7 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 	if args.Resume && args.ResumeSessionID == "" {
 		return session.Deps{}, nil, errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
+	applyZutfileSpec(&args, spec.Zutfile)
 
 	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings()}
 	ok := false
@@ -148,6 +149,9 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	if err != nil {
 		return err
 	}
+	if a.args.PermissionSet != nil && (a.r.Sandbox == nil || a.r.Sandbox.Permissions != a.args.PermissionSet) {
+		return errors.New("zutfile permissions could not be applied to the session sandbox")
+	}
 	if resolvedCfg, err := LoadConfig(); err == nil {
 		a.initialCfg.QuickModelShortcuts = resolvedCfg.QuickModelShortcuts
 		a.initialCfg.ActiveModelProfile = resolvedCfg.ActiveModelProfile
@@ -222,7 +226,40 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 		}
 	})
 
-	return a.openSession(ctx, life, spec)
+	if err := a.openSession(ctx, life, spec); err != nil {
+		return err
+	}
+	return a.runStartupPre(life)
+}
+
+// applyZutfileSpec copies `zut run` settings onto args parsed from the spec.
+func applyZutfileSpec(args *Args, z *session.ZutfileSpec) {
+	if z == nil {
+		return
+	}
+	args.AgentName, args.AgentDataDir, args.StartupPre = z.Name, z.DataDir, strings.TrimSpace(z.Pre)
+	if z.Permissions != nil {
+		perms := *z.Permissions
+		args.PermissionSet = &perms
+	}
+	args.ExtraSkillDirs = append(append([]string{}, z.SkillDirs...), args.ExtraSkillDirs...)
+}
+
+// runStartupPre runs zutfile entry.pre once on the prepared agent, as the
+// in-process modes did, then reloads extensions, skills and tools it may
+// have installed. Output reaches the transcript, not a terminal.
+func (a *sessionAssembly) runStartupPre(ctx context.Context) error {
+	if a.args.StartupPre == "" {
+		return nil
+	}
+	if err := runZutfileStartupPreEnv(ctx, a.args.StartupPre, a.r.CWD, a.args.Env, a.sandbox, a.next, nil, nil); err != nil {
+		return err
+	}
+	if a.next == nil {
+		return nil
+	}
+	_ = a.extMgr.Reload(ctx, 2*time.Second)
+	return sessionToolRefresher{a}.RefreshTools()
 }
 
 // openSession creates, opens, resumes or forks the session file as
