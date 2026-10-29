@@ -154,12 +154,14 @@ func (b *rpcBridge) subscribe() error {
 	b.cancel, b.events, b.pumped = cancel, events, pumped
 	b.info = b.h.port.Info()
 	b.mu.Unlock()
-	go b.pump(events, pumped)
+	go b.pump(b.h.port, events, pumped)
 	return nil
 }
 
-// pump forwards events of the current session until its stream ends.
-func (b *rpcBridge) pump(events <-chan session.Event, done chan struct{}) {
+// pump forwards events of the current session until its stream ends. port
+// is that session's port, captured at subscribe time: clear swaps b.h, so
+// pending declines must not read it.
+func (b *rpcBridge) pump(port session.Port, events <-chan session.Event, done chan struct{}) {
 	defer close(done)
 	for ev := range events {
 		switch ev.Kind {
@@ -218,7 +220,7 @@ func (b *rpcBridge) pump(events <-chan session.Event, done chan struct{}) {
 			}
 		case session.EvPending:
 			if p, ok := ev.Data.(session.PendingEvent); ok {
-				go declineHeadlessPending(b.h)(p.Pending)
+				go declineHeadlessPending(port)(p.Pending)
 			}
 		}
 	}

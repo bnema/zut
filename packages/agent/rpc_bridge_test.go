@@ -14,7 +14,10 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +49,7 @@ func TestRPCBridgeExtAlertIsJSONOnly(t *testing.T) {
 	events <- session.Event{Kind: session.EvExtAlert, Data: session.ExtAlertEvent{Ext: "notify", Alert: extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "question_ready"}}}
 	close(events)
 	done := make(chan struct{})
-	b.pump(events, done)
+	b.pump(nil, events, done)
 	<-done
 	require.NotContains(t, out.String(), "\a", "RPC alert contains raw BEL")
 	frames := rpcFrames(t, out.String())
@@ -55,6 +58,33 @@ func TestRPCBridgeExtAlertIsJSONOnly(t *testing.T) {
 	require.Equal(t, "notify", frames[0]["extension"])
 	require.Equal(t, extproto.AlertKindBell, frames[0]["kind"])
 	require.Equal(t, "question_ready", frames[0]["reason"])
+}
+
+// A pending request is declined on the port of the stream that raised it,
+// even after clear has moved b.h to a successor session.
+func TestRPCBridgePendingDeclineUsesStreamPort(t *testing.T) {
+	var out bytes.Buffer
+	b := offlineBridge(&out, session.Info{})
+	old := sessionmocks.NewMockPort(t)
+	answered := make(chan string, 1)
+	old.EXPECT().AnswerConfirmation(mock.Anything, "req1", core.ConfirmDecision{Allow: true}).RunAndReturn(func(context.Context, string, core.ConfirmDecision) error {
+		answered <- "req1"
+		return nil
+	}).Once()
+	events := make(chan session.Event, 1)
+	events <- session.Event{Kind: session.EvPending, Data: session.PendingEvent{Pending: session.PendingRequest{ID: "req1", Kind: "confirm"}}}
+	close(events)
+	done := make(chan struct{})
+	go b.pump(old, events, done)
+	// clear swaps the session concurrently; the decline must ignore it.
+	b.h = &headlessSession{id: "successor"}
+	<-done
+	select {
+	case id := <-answered:
+		require.Equal(t, "req1", id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending request not declined on its stream's port")
+	}
 }
 
 func TestRPCBridgeRequiresAuthentication(t *testing.T) {

@@ -345,15 +345,15 @@ func pumpHeadless(ctx context.Context, events <-chan session.Event, w *headlessW
 // questions and rescue pickers get an empty answer (the tool or rescue then
 // fails, as without an interactive terminal), confirmations are allowed
 // because headless runs never ask (no-yolo has no effect).
-func declineHeadlessPending(h *headlessSession) func(session.PendingRequest) {
+func declineHeadlessPending(port session.Port) func(session.PendingRequest) {
 	return func(p session.PendingRequest) {
 		ctx, cancel := context.WithTimeout(context.Background(), headlessShutdownTimeout)
 		defer cancel()
 		if p.Kind == "confirm" {
-			_ = h.port.AnswerConfirmation(ctx, p.ID, core.ConfirmDecision{Allow: true})
+			_ = port.AnswerConfirmation(ctx, p.ID, core.ConfirmDecision{Allow: true})
 			return
 		}
-		_ = h.port.AnswerQuestion(ctx, p.ID, nil)
+		_ = port.AnswerQuestion(ctx, p.ID, nil)
 	}
 }
 
@@ -411,7 +411,7 @@ func runHeadlessClient(parent context.Context, hio headlessIO, mode Mode, args A
 		return fmt.Errorf("submit prompt: %w", err)
 	}
 	w := &headlessWaiter{orchestrate: args.Orchestrate}
-	err = pumpHeadless(ctx, events, w, r.handle, declineHeadlessPending(h))
+	err = pumpHeadless(ctx, events, w, r.handle, declineHeadlessPending(h.port))
 	if err != nil {
 		if ctx.Err() != nil {
 			// Ctrl+C: abort the daemon turn; end() then closes the session.
