@@ -113,3 +113,59 @@ func TestWindowsRules(t *testing.T) {
 		}
 	}
 }
+
+// Session lookup rules shared with tools (formerly tools.lookPathEnvOS).
+func TestSessionLookupRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		windows bool
+		cwd     string
+		exe     string
+		env     []string
+		exists  []string
+		want    string
+	}{
+		{"unix path", false, "/w", "rg", []string{"PATH=/a:/b"}, []string{"/b/rg"}, "/b/rg"},
+		{"unix relative entry anchored at cwd", false, "/w", "rg", []string{"PATH=bin"}, []string{"/w/bin/rg"}, "/w/bin/rg"},
+		{"unix slash name anchored at cwd", false, "/w", "./x", []string{"PATH=/a"}, []string{"/w/x"}, "/w/x"},
+		{"unix empty PATH", false, "/w", "rg", []string{"PATH="}, []string{"/w/rg"}, ""},
+		{"unix missing PATH", false, "/w", "rg", []string{}, []string{"/w/rg"}, ""},
+		{"unix relative cwd", false, "w", "rg", []string{"PATH=/a"}, nil, ""},
+		{"windows pathext from env", true, `C:\w`, "git", []string{`Path=C:\g`, "PATHEXT=.PS1;.EXE"}, []string{`C:\g\git.exe`}, `C:\g\git.exe`},
+		{"windows dotted name gets ext", true, `C:\w`, "python3.12", []string{`PATH=C:\p`, "PATHEXT=.EXE"}, []string{`C:\p\python3.12.exe`}, `C:\p\python3.12.exe`},
+		{"windows name with ext as-is", true, `C:\w`, "cmd.exe", []string{`PATH=C:\s`, "PATHEXT=.EXE"}, []string{`C:\s\cmd.exe`}, `C:\s\cmd.exe`},
+		{"windows backslash name", true, `C:\w`, `bin\rg.exe`, []string{`PATH=C:\x`, "PATHEXT=.EXE"}, []string{`C:\w\bin\rg.exe`}, `C:\w\bin\rg.exe`},
+		{"windows drive-relative cwd", true, `C:project`, "rg", []string{`PATH=C:\x`}, nil, ""},
+		// Another drive's current directory is process state; never guess it.
+		{"windows drive-relative entry on other drive", true, `C:\w`, "rg", []string{`PATH=D:t`, "PATHEXT=.EXE"}, []string{`C:\w\t\rg.exe`, `D:\t\rg.exe`}, ""},
+		{"windows drive-relative entry on cwd drive", true, `C:\w`, "rg", []string{`PATH=C:t`, "PATHEXT=.EXE"}, []string{`C:\w\t\rg.exe`}, `C:\w\t\rg.exe`},
+		{"windows empty PATH", true, `C:\w`, "rg", []string{"PATHEXT=.EXE"}, []string{`C:\w\rg.exe`}, ""},
+	}
+	for _, tc := range cases {
+		exists := map[string]bool{}
+		for _, p := range tc.exists {
+			exists[p] = true
+		}
+		got, err := resolve(tc.windows, tc.exe, tc.cwd, tc.env, func(p string) bool { return exists[p] })
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: resolved %q, want error", tc.name, got)
+			}
+		} else if err != nil || got != tc.want {
+			t.Errorf("%s: got %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+func TestLookupEnvKeyCase(t *testing.T) {
+	env := []string{"zut_home=lower", "OTHER=x"}
+	if got := lookupEnv(true, env, "ZUT_HOME"); got != "lower" {
+		t.Fatalf("windows lookup = %q", got)
+	}
+	if got := lookupEnv(false, env, "ZUT_HOME"); got != "" {
+		t.Fatalf("unix lookup = %q", got)
+	}
+	if got := lookupEnv(true, []string{"A=1", "a=2"}, "A"); got != "2" {
+		t.Fatalf("last value wins: %q", got)
+	}
+}

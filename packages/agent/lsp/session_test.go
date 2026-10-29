@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,5 +15,16 @@ func TestPerSessionEnvironment(t *testing.T) {
 	}
 	if got := zutHome("ZUT_HOME=/session/state"); got != "/session/state" {
 		t.Fatalf("home = %q", got)
+	}
+}
+
+func TestZutHomeSessionEnvKeyCase(t *testing.T) {
+	got := zutHome("zut_home=/session/state")
+	if runtime.GOOS == "windows" {
+		if got != "/session/state" {
+			t.Fatalf("windows env keys are case-insensitive; home = %q", got)
+		}
+	} else if got == "/session/state" {
+		t.Fatalf("unix env keys are case-sensitive; home = %q", got)
 	}
 }
