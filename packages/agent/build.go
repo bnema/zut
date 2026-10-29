@@ -1417,7 +1417,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	}
 	var manager *lsp.Manager
 	if lspEnabled && lspManagerNeeded(args, diagnosticsOnWrite, diagnosticsOnEdit) {
-		options := lsp.ManagerOptions{}
+		options := lsp.ManagerOptions{Env: args.Env}
 		if sandbox != nil {
 			options.CheckWritePath = sandbox.CheckWritePath
 		}
