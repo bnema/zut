@@ -3,8 +3,9 @@ package subagents
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
+
+	"github.com/bnema/zut/packages/agent/internal/flock"
 )
 
 const residentLeaseName = "owner.lock"
@@ -17,32 +18,25 @@ var ErrResidentLeaseBusy = errors.New("resident journal: owned by another proces
 // writer lifetime. The lock file is deliberately stable: deleting or replacing
 // it would permit separate processes to lock different filesystem objects.
 type residentLease struct {
-	file *os.File
+	lock *flock.Lock
 }
 
 func acquireResidentLease(dir string) (*residentLease, error) {
-	file, err := os.OpenFile(filepath.Join(dir, residentLeaseName), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := flock.TryLock(filepath.Join(dir, residentLeaseName))
 	if err != nil {
+		if errors.Is(err, flock.ErrBusy) {
+			return nil, ErrResidentLeaseBusy
+		}
 		return nil, fmt.Errorf("resident journal lease: %w", err)
 	}
-	_ = file.Chmod(0o600)
-	if err := lockResidentLease(file); err != nil {
-		_ = file.Close()
-		if errors.Is(err, ErrResidentLeaseBusy) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("resident journal lease lock: %w", err)
-	}
-	return &residentLease{file: file}, nil
+	return &residentLease{lock: lock}, nil
 }
 
 func (l *residentLease) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil || l.lock == nil {
 		return nil
 	}
-	file := l.file
-	l.file = nil
-	unlockErr := unlockResidentLease(file)
-	closeErr := file.Close()
-	return errors.Join(unlockErr, closeErr)
+	lock := l.lock
+	l.lock = nil
+	return lock.Close()
 }
