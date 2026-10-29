@@ -47,13 +47,22 @@ func WatchTurns(ctx context.Context, port session.Port, onTurn func(TurnResult))
 		if err != nil {
 			return err
 		}
-		for ev := range ch {
-			seq = ev.Seq
-			if ev.Kind == session.EvClosed {
-				return session.ErrClosed
-			}
-			if r, ok := t.apply(ev); ok {
-				onTurn(r)
+	recv:
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ev, ok := <-ch:
+				if !ok {
+					break recv
+				}
+				seq = ev.Seq
+				if ev.Kind == session.EvClosed {
+					return session.ErrClosed
+				}
+				if r, ok := t.apply(ev); ok {
+					onTurn(r)
+				}
 			}
 		}
 		if ctx.Err() != nil {

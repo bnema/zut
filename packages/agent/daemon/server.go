@@ -360,6 +360,9 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 		d.requestStop(time.Duration(req.GracefulMS) * time.Millisecond)
 		return nil, nil
 	}
+	if v, err, ok := c.handleBot(ctx, r); ok {
+		return v, err
+	}
 	return nil, fmt.Errorf("unsupported request type %q", r.Type)
 }
 
