@@ -30,6 +30,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: install Mockery
+        run: go install github.com/vektra/mockery/v3@v3.8.1
+
+      - name: generated mocks check
+        shell: bash
+        run: make mocks-check
+
+      - name: handwritten doubles check
+        shell: bash
+        run: make fakes-check
+
       - name: go vet
         run: go vet ./...
 

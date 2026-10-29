@@ -1,0 +1,77 @@
+# Sealed message interfaces are not mockable; channel ports are tested with messages.
+all: false
+formatter: goimports
+force-file-write: true
+structname: '{{.Mock}}{{.InterfaceName}}'
+template: testify
+template-schema: '{{.Template}}.schema.json'
+require-template-schema-exists: true
+packages:
+  github.com/bnema/zut/packages/agent/session:
+    config:
+      dir: packages/agent/session/sessionmocks
+      pkgname: sessionmocks
+      filename: '{{.InterfaceName}}_mock.go'
+    interfaces:
+      Port:
+      Directory:
+      Factory:
+      Handle:
+      AgentBuilder:
+      SessionStore:
+      ResidentBuilder:
+      SkillStore:
+      ToolRefresher:
+      ExtensionHost:
+      ResidentHost:
+      SettingsStore:
+      ConfirmGate:
+      ScheduleHost:
+      DeferredStore:
+      turnSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: turnSeam_mock_test.go
+      confirmSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: confirmSeam_mock_test.go
+      goalSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: goalSeam_mock_test.go
+      schedSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: schedSeam_mock_test.go
+      residentSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: residentSeam_mock_test.go
+      compactSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: compactSeam_mock_test.go
+      settingsSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: settingsSeam_mock_test.go
+      interSeam:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: interSeam_mock_test.go
+  github.com/bnema/zut/packages/provider:
+    config:
+      dir: packages/provider/providermocks
+      pkgname: providermocks
+      filename: '{{.InterfaceName}}_mock.go'
+    interfaces:
+      Client:

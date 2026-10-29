@@ -189,3 +189,13 @@ A final response should be brief and factual. Include:
 - any unresolved risk, skipped validation, or follow-up needed
 
 Do not report success while tests are failing. Do not include unrelated cleanup suggestions unless they materially affect the requested work.
+
+## Test doubles
+
+In new session, daemon, daemonproto, daemonclient, internal/flock,
+internal/ndjson and internal/detach packages, and new cutover test files,
+use only Mockery v3 generated doubles (testify template, `.EXPECT()`,
+`RunAndReturn`). No handwritten fake/stub/spy types or test-swapped function
+fields. Existing doubles elsewhere remain unchanged. testify is test-only.
+Run `make mocks` after interface changes; commit the generated output.
+Verify with `make mocks-check && make fakes-check`.
