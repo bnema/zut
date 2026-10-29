@@ -28,7 +28,7 @@ const (
 	daemonClientDeadline = 10 * time.Second
 )
 
-// runDaemonCommand handles `zut daemon run|status|stop|restart`.
+// runDaemonCommand handles `zut daemon run|status|stop|restart|start|install|uninstall|logs`.
 func runDaemonCommand(rawArgs []string, version string) (handled bool, err error) {
 	if len(rawArgs) == 0 || rawArgs[0] != "daemon" {
 		return false, nil
@@ -53,6 +53,14 @@ func runDaemonCommand(rawArgs []string, version string) (handled bool, err error
 		return true, daemonStop(os.Stdout, version)
 	case "restart":
 		return true, daemonRestart(os.Stdout, version)
+	case "start":
+		return true, daemonStart(os.Stdout, version)
+	case "install":
+		return true, daemonInstall(os.Stdout, tail)
+	case "uninstall":
+		return true, daemonUninstall(os.Stdout, tail)
+	case "logs":
+		return true, daemonLogsCommand(os.Stdout, tail)
 	default:
 		printDaemonHelp(os.Stderr)
 		return true, fmt.Errorf("unknown daemon subcommand %q", sub)
@@ -67,6 +75,10 @@ Usage:
   zut daemon status                   show pid, version, uptime and sessions
   zut daemon stop                     stop the daemon (sessions restore on next start)
   zut daemon restart                  stop, then start the daemon in the background
+  zut daemon start                    start the daemon in the background if needed
+  zut daemon install [--now]          install a systemd user unit (Linux)
+  zut daemon uninstall [--now]        remove the systemd user unit (Linux)
+  zut daemon logs [-f]                print (or follow) the daemon log
 
 The socket is $XDG_RUNTIME_DIR/zut/daemon.sock (fallback $ZUT_HOME/run/daemon.sock),
 overridable with ZUT_DAEMON_SOCKET. Logs: $ZUT_HOME/logs/daemon.log.
@@ -345,4 +357,90 @@ func daemonRestart(w io.Writer, version string) error {
 	}
 	fmt.Fprintf(w, "zut daemon: restarted (pid %d)\n", st.PID)
 	return nil
+}
+
+// daemonStart spawns the daemon in the background unless one already runs.
+func daemonStart(w io.Writer, version string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), daemonClientDeadline)
+	defer cancel()
+	c, err := daemonclient.EnsureDaemon(ctx, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}})
+	if err != nil {
+		return err
+	}
+	defer c.Disconnect()
+	st, err := c.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("daemon status: %w", err)
+	}
+	fmt.Fprintf(w, "zut daemon: running\npid: %d\nsocket: %s\n", st.PID, daemonclient.SocketPath(os.Getenv))
+	return nil
+}
+
+const daemonLogPollInterval = 250 * time.Millisecond
+
+func daemonLogsCommand(w io.Writer, args []string) error {
+	fs := flag.NewFlagSet("zut daemon logs", flag.ContinueOnError)
+	follow := fs.Bool("f", false, "follow appended lines until interrupted")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("zut daemon logs: unexpected arguments %v", fs.Args())
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return daemonLogs(ctx, w, daemon.LogPath(ZutHome()), *follow)
+}
+
+// daemonLogs copies the log to w; with follow it then polls the file size
+// and copies appended bytes until ctx ends (a truncated log restarts at 0).
+func daemonLogs(ctx context.Context, w io.Writer, path string, follow bool) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && !follow {
+			return fmt.Errorf("no daemon log at %s", path)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	var off int64
+	for {
+		if f != nil {
+			fi, err := f.Stat()
+			if err != nil {
+				f.Close()
+				return err
+			}
+			if fi.Size() < off {
+				off = 0
+			}
+			if fi.Size() > off {
+				n, err := io.Copy(w, io.NewSectionReader(f, off, fi.Size()-off))
+				off += n
+				if err != nil {
+					f.Close()
+					return err
+				}
+			}
+		}
+		if !follow {
+			return f.Close()
+		}
+		select {
+		case <-ctx.Done():
+			if f != nil {
+				f.Close()
+			}
+			return nil
+		case <-time.After(daemonLogPollInterval):
+		}
+		if f == nil {
+			if f, err = os.Open(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			} else if err != nil {
+				f = nil
+			}
+		}
+	}
 }
