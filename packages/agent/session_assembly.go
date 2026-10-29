@@ -76,6 +76,12 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 	deps := a.deps()
 	deps.Headless = spec.Headless
 	deps.HeadlessOrchestrate = spec.Headless && args.Orchestrate
+	if spec.Headless && a.fresh {
+		pinArgs, bundled := a.args, a.extMgr.Skills()
+		deps.FirstPromptTransform = func(prompt string) string {
+			return preloadSkillPins(pinArgs, true, prompt, bundled, os.Stderr)
+		}
+	}
 	return deps, a.cleanup, nil
 }
 
@@ -118,6 +124,7 @@ type sessionAssembly struct {
 	mu         sync.Mutex
 	sess       *core.Session
 	baseline   int
+	fresh      bool
 	live       *core.Agent
 	next       *core.Agent
 	provider   string
@@ -282,11 +289,13 @@ func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.Cr
 	if a.r.HasCredential() {
 		ag = a.wireAgentExt(life, a.r.newInteractiveAgent())
 	}
+	a.fresh = a.args.NoSess // like openOrCreateSessionState without a session file
 	if !a.args.NoSess && ag != nil {
-		sess, _, err := openOrCreateSessionState(ctx, a.args, a.r, ag, a.version)
+		sess, fresh, err := openOrCreateSessionState(ctx, a.args, a.r, ag, a.version)
 		if err != nil {
 			return err
 		}
+		a.fresh = fresh
 		a.baseline = len(ag.Messages())
 		if sess != nil {
 			candidate, err := applySessionResume(sess, ag, a.r.Provider, a.r.Model,
