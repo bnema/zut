@@ -33,14 +33,64 @@ type Runner struct {
 	pending []string // channel IDs waiting for a reply, oldest first
 	working func()   // stops the typing indicator
 	runCtx  context.Context
+	// outbox holds replies for the sender goroutine, so the session event
+	// loop never waits on the network. Bounded by replyQueueSize; on
+	// overflow the oldest reply is dropped.
+	outbox []reply
+	wake   chan struct{}
 }
+
+// replyQueueSize bounds queued outgoing replies.
+const replyQueueSize = 16
+
+type reply struct{ channel, text string }
 
 // NewRunner creates a Runner wired to the given adapter and session port.
 func NewRunner(adapter BotAdapter, port session.Port, cfg Config) *Runner {
 	if cfg.Log == nil {
 		cfg.Log = io.Discard
 	}
-	return &Runner{port: port, adapter: adapter, cfg: cfg}
+	return &Runner{port: port, adapter: adapter, cfg: cfg, wake: make(chan struct{}, 1)}
+}
+
+// enqueueReply queues a reply without blocking.
+func (r *Runner) enqueueReply(channel, text string) {
+	r.mu.Lock()
+	if len(r.outbox) >= replyQueueSize {
+		r.outbox = r.outbox[1:]
+		fmt.Fprintln(r.cfg.Log, "bot: reply queue full; dropped the oldest reply")
+	}
+	r.outbox = append(r.outbox, reply{channel, text})
+	r.mu.Unlock()
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// sendLoop delivers queued replies in order until ctx ends.
+func (r *Runner) sendLoop(ctx context.Context) {
+	for {
+		r.mu.Lock()
+		var next *reply
+		if len(r.outbox) > 0 {
+			next = &r.outbox[0]
+			r.outbox = r.outbox[1:]
+		}
+		r.mu.Unlock()
+		if next == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.wake:
+			}
+			continue
+		}
+		// Adapter.Send is responsible for chunking to protocol limits.
+		if err := r.adapter.Send(ctx, next.channel, next.text, SendOptions{}); err != nil {
+			fmt.Fprintln(r.cfg.Log, "bot: send reply:", err)
+		}
+	}
 }
 
 // Run drives the adapter and the session watcher until ctx ends, the adapter
@@ -53,6 +103,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.mu.Unlock()
 	defer r.stopWorking()
 
+	sendDone := make(chan struct{})
+	go func() { defer close(sendDone); r.sendLoop(ctx) }()
+	defer func() { <-sendDone }()
 	watchErr := make(chan error, 1)
 	go func() {
 		err := WatchTurns(ctx, r.port, r.onTurn)
@@ -120,17 +173,14 @@ func (r *Runner) onTurn(t TurnResult) {
 	r.mu.Unlock()
 	r.stopWorkingIfIdle()
 
-	reply := strings.TrimSpace(t.Text)
+	text := strings.TrimSpace(t.Text)
 	if t.Err != nil && !errors.Is(t.Err, context.Canceled) {
-		reply = "error: " + t.Err.Error()
+		text = "error: " + t.Err.Error()
 	}
-	if reply == "" {
-		reply = "(no reply)"
+	if text == "" {
+		text = "(no reply)"
 	}
-	// Adapter.Send is responsible for chunking to protocol limits.
-	if err := r.adapter.Send(r.ctx(), ch, reply, SendOptions{}); err != nil {
-		fmt.Fprintln(r.cfg.Log, "bot: send reply:", err)
-	}
+	r.enqueueReply(ch, text)
 }
 
 func (r *Runner) stopWorkingIfIdle() {

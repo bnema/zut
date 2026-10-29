@@ -302,3 +302,70 @@ func TestBotRequestsWithoutBotHost(t *testing.T) {
 		t.Fatalf("bot_status = %v", err)
 	}
 }
+
+func TestBotStopRacingStart(t *testing.T) {
+	s1 := newTestSession(t, "s1")
+	bt := newBotTest(t, s1)
+	spec := daemonproto.BotSpec{Kind: "telegram", CWD: "/w"}
+	stopper := dial(t, bt.r.sock)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = bt.c.call(t, daemonproto.BotStartRequest{Type: "bot_start", Spec: spec}, nil)
+	}()
+	go func() {
+		defer wg.Done()
+		// May observe nothing, a starting bot (retry error) or a running one.
+		_ = stopper.call(t, daemonproto.BotStopRequest{Type: "bot_stop", Kind: "telegram"}, nil)
+	}()
+	wg.Wait()
+	var st daemonproto.BotStatusData
+	if err := bt.c.call(t, daemonproto.BotStopRequest{Type: "bot_stop", Kind: "telegram"}, &st); err != nil || st.Running {
+		t.Fatalf("final stop = %+v, %v", st, err)
+	}
+}
+
+func TestBotStartRacingShutdown(t *testing.T) {
+	home := t.TempDir()
+	if err := telegram.SaveConfig(home, telegram.Config{BotToken: testBotToken}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &telegram.Service{Home: home}
+	s1 := newTestSession(t, "s1")
+	f := newMockBotFactory(t)
+	inCreate, release := make(chan struct{}), make(chan struct{})
+	f.EXPECT().CheckBot("telegram").RunAndReturn(func(string) error { return svc.Check() }).Once()
+	f.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, session.CreateSpec) (session.Handle, error) {
+		close(inCreate)
+		<-release
+		return s1.h, nil
+	}).Once()
+	r := startDaemon(t, f, home, Options{})
+	c := dial(t, r.sock)
+	errc := make(chan error, 1)
+	go func() {
+		errc <- c.call(t, daemonproto.BotStartRequest{Type: "bot_start", Spec: daemonproto.BotSpec{Kind: "telegram", CWD: "/w"}}, nil)
+	}()
+	recv(t, inCreate)
+	r.d.Stop()
+	for !r.d.isStopping() {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	// The bot never runs (RunBot has no expectation) and its session is
+	// closed instead of being left for restore.
+	recv(t, s1.closes)
+	r.wait(t)
+	<-errc
+	deadline := time.Now().Add(5 * time.Second)
+	for len(readState(t, home).Sessions) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("bot session kept in state.json: %+v", readState(t, home))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if rec := loadBotRecord(home); len(rec) != 0 {
+		t.Fatalf("bot record kept: %v", rec)
+	}
+}

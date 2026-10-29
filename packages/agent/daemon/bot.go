@@ -62,12 +62,11 @@ type botState struct {
 	lastErr  map[string]string
 }
 
-var botStates sync.Map // *Daemon → *botState
-
-func (d *Daemon) bots() *botState {
-	v, _ := botStates.LoadOrStore(d, &botState{services: map[string]*botRun{}, bridges: map[string]*botRun{}, lastErr: map[string]string{}})
-	return v.(*botState)
+func newBotState() *botState {
+	return &botState{services: map[string]*botRun{}, bridges: map[string]*botRun{}, lastErr: map[string]string{}}
 }
+
+func (d *Daemon) bots() *botState { return d.bot }
 
 func (d *Daemon) botHost() (BotHost, error) {
 	h, ok := d.factory.(BotHost)
@@ -196,16 +195,22 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 	if d.ctx == nil || d.stopping {
 		d.mu.Unlock()
 		release()
+		// The session was created for this bot; do not leak it into a
+		// stopping daemon (shutdown keeps it in state.json otherwise).
+		d.closeBotSession(e.id)
+		d.saveBotRecord(kind, "")
 		return daemonproto.BotStatusData{}, ErrStopping
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
+	// Add under d.mu with the stopping check so shutdown's wg.Wait cannot
+	// miss this goroutine.
+	d.wg.Add(1)
 	d.mu.Unlock()
 	st.mu.Lock()
 	run.session, run.cancel = e.id, cancel
 	delete(st.lastErr, kind)
 	st.mu.Unlock()
 	d.log.Info("bot started", "kind", kind, "session", e.id)
-	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
 		defer close(run.done)
@@ -280,6 +285,17 @@ func (d *Daemon) serveBot(ctx context.Context, host BotHost, run *botRun, spec d
 	}
 }
 
+// closeBotSession closes a bot session created by a start that lost the
+// race with shutdown, and forgets the bot record.
+func (d *Daemon) closeBotSession(id session.ID) {
+	d.opMu.Lock()
+	err := d.closeLocked(id, ReasonDaemonStop, "")
+	d.opMu.Unlock()
+	if err != nil && !errors.Is(err, ErrUnknownSession) {
+		d.log.Warn("close bot session", "session", id, "err", err)
+	}
+}
+
 // botStop stops kind's service and closes its session (the session file
 // stays resumable).
 func (d *Daemon) botStop(kind string) (daemonproto.BotStatusData, error) {
@@ -287,14 +303,18 @@ func (d *Daemon) botStop(kind string) (daemonproto.BotStatusData, error) {
 	st := d.bots()
 	st.mu.Lock()
 	run := st.services[kind]
+	var cancel context.CancelFunc
+	if run != nil {
+		cancel = run.cancel
+	}
 	st.mu.Unlock()
 	if run == nil {
 		return d.botStatus(kind)
 	}
-	if run.cancel == nil {
+	if cancel == nil {
 		return daemonproto.BotStatusData{}, fmt.Errorf("%s bot is starting; retry", kind)
 	}
-	run.cancel()
+	cancel()
 	<-run.done
 	st.mu.Lock()
 	id := run.session
@@ -369,18 +389,19 @@ func (d *Daemon) bridgeOn(ctx context.Context, kind string, id session.ID) (daem
 		return daemonproto.TelegramBridgeData{}, ErrStopping
 	}
 	runCtx, cancel := context.WithCancel(d.ctx)
+	d.wg.Add(1) // released below if the bridge is refused
 	d.mu.Unlock()
 	run := &botRun{kind: kind, session: id, started: d.now(), cancel: cancel, done: make(chan struct{})}
 	st.mu.Lock()
 	if st.bridges[kind] != nil || st.services[kind] != nil {
 		st.mu.Unlock()
 		cancel()
+		d.wg.Done()
 		return daemonproto.TelegramBridgeData{}, fmt.Errorf("%s %w", kind, ErrBotRunning)
 	}
 	st.bridges[kind] = run
 	st.mu.Unlock()
 	ready := make(chan error, 1)
-	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
 		defer close(run.done)

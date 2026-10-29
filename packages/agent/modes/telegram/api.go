@@ -224,7 +224,7 @@ func (c *Client) SendPhoto(ctx context.Context, chatID int64, path, caption stri
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL()+"/sendPhoto", &buf)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	req.Header.Set("content-type", w.FormDataContentType())
 	resp, err := c.http.Do(req)
@@ -264,7 +264,7 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, path, caption s
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL()+"/sendDocument", &buf)
 	if err != nil {
-		return err
+		return c.scrub(err)
 	}
 	req.Header.Set("content-type", w.FormDataContentType())
 	resp, err := c.http.Do(req)

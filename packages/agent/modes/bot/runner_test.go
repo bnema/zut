@@ -222,3 +222,37 @@ func TestWatchTurnsResubscribesAfterSeqTooOld(t *testing.T) {
 		t.Fatalf("turns = %+v", got)
 	}
 }
+
+func TestRunnerReplyQueueDropsOldestWhenFull(t *testing.T) {
+	adapter := newMockBotAdapter(t)
+	var log strings.Builder
+	r := NewRunner(adapter, sessionmocks.NewMockPort(t), Config{Log: &log})
+	for i := 0; i < replyQueueSize+2; i++ {
+		r.enqueueReply("c", string(rune('a'+i)))
+	}
+	if len(r.outbox) != replyQueueSize || r.outbox[0].text != "c" {
+		t.Fatalf("outbox = %d items, first %q", len(r.outbox), r.outbox[0].text)
+	}
+	if strings.Count(log.String(), "dropped the oldest reply") != 2 {
+		t.Fatalf("log = %q", log.String())
+	}
+	// The sender drains in order without blocking the caller.
+	var got []string
+	done := make(chan struct{})
+	adapter.EXPECT().Send(mock.Anything, "c", mock.Anything, SendOptions{}).RunAndReturn(func(_ context.Context, _, text string, _ SendOptions) error {
+		got = append(got, text)
+		if len(got) == replyQueueSize {
+			close(done)
+		}
+		return nil
+	}).Times(replyQueueSize)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { r.sendLoop(ctx); close(stopped) }()
+	recv(t, done)
+	cancel()
+	<-stopped
+	if got[0] != "c" || got[replyQueueSize-1] != string(rune('a'+replyQueueSize+1)) {
+		t.Fatalf("order = %v", got)
+	}
+}

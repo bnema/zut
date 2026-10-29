@@ -16,12 +16,14 @@ import (
 // telegram_bridge). Credentials are read from $ZUT_HOME by the service.
 var _ daemon.BotFactory = (*sessionFactory)(nil)
 
-// telegramServices holds one service per factory so bot.json writes from the
-// bot service and the bridge are serialized.
-var telegramServices sync.Map // *sessionFactory → *telegram.Service
+// telegramServices holds one service per $ZUT_HOME so bot.json writes from
+// the bot service and the bridge are serialized. Keyed by home (not by
+// factory) so it stays bounded without a factory shutdown hook; the
+// service holds no goroutines or connections between runs.
+var telegramServices sync.Map // home → *telegram.Service
 
 func (f *sessionFactory) telegramService() *telegram.Service {
-	v, _ := telegramServices.LoadOrStore(f, &telegram.Service{Home: f.home, Log: slogWriter{log: f.log, kind: "telegram"}})
+	v, _ := telegramServices.LoadOrStore(f.home, &telegram.Service{Home: f.home, Log: slogWriter{log: f.log, kind: "telegram"}})
 	return v.(*telegram.Service)
 }
 
