@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -234,6 +235,12 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 	i.startTurnRequest(parent, "", nil, true, false)
 }
 func (i *Interactive) runCompact(parent context.Context, request compactContinuationRequest) {
+	if request.origin == compactOriginManual && i.portMode.Load() {
+		i.portSettingsCall("compact", func(ctx context.Context, port session.Port) error {
+			return port.Compact(ctx)
+		})
+		return
+	}
 	auto := request.origin != compactOriginManual
 	if i.agent == nil {
 		i.mu.Lock()
