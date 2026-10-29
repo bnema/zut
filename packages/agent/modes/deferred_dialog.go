@@ -102,6 +102,19 @@ func (d *deferredDialog) Render(th tui.Theme, width int) []string {
 }
 
 // openDeferredDialog shows the snapshot's deferred actions after attach.
+// dropDeferred removes a resolved action from the local projection.
+func (i *Interactive) dropDeferred(id string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	kept := i.portDeferred[:0]
+	for _, d := range i.portDeferred {
+		if d.ID != id {
+			kept = append(kept, d)
+		}
+	}
+	i.portDeferred = kept
+}
+
 // No-op outside Port mode or when nothing is deferred.
 func (i *Interactive) openDeferredDialog() {
 	actions := i.DeferredActions()
@@ -110,7 +123,11 @@ func (i *Interactive) openDeferredDialog() {
 	}
 	i.deferredDialog.Open(actions, func(id, action string) {
 		i.portSettingsCall("deferred "+action, func(ctx context.Context, port session.Port) error {
-			return port.ResolveDeferred(ctx, id, action)
+			if err := port.ResolveDeferred(ctx, id, action); err != nil {
+				return err
+			}
+			i.dropDeferred(id)
+			return nil
 		})
 	})
 	i.invalidate()
