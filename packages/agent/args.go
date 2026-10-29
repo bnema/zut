@@ -480,10 +480,9 @@ func PrintHelp(version string) {
 	)
 	section("telegram",
 		row{"zut telegram-bot setup", "configure a telegram bot (from BotFather)"},
-		row{"zut telegram-bot run", "foreground bridge (ctrl+c to stop)"},
-		row{"zut telegram-bot start", "background bridge (detached)"},
-		row{"zut telegram-bot stop", "stop the background bridge"},
-		row{"zut telegram-bot logs [-f]", "tail the background bridge log"},
+		row{"zut telegram-bot start", "run the bot inside the zut daemon"},
+		row{"zut telegram-bot stop", "stop the bot service"},
+		row{"zut telegram-bot logs [-f]", "show the bot service log"},
 		row{"zut telegram-bot status", "config + running state"},
 		row{"zut telegram-bot reset", "forget saved token"},
 		row{"zut tg ...", "short alias for telegram-bot"},
