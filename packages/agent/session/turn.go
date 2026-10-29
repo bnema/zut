@@ -26,6 +26,9 @@ type turnState struct {
 	end        core.EvTurnEnd
 	// input is the fresh prompt of the running turn, kept for rescue retries.
 	input *Input
+	// rescuing holds the queue while a failed turn waits for a rescue model.
+	rescuing  bool
+	rescueEnd core.EvTurnEnd
 }
 
 func (s *turnState) snapshotInto(out *Snapshot) {
@@ -278,6 +281,11 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 	// retries the prompt; it is not a terminal goal error. rescueTurn waits off
 	// the actor; remaining queued input runs after the retried turn.
 	if err != nil && ctx.Err() == nil && failed != nil && rescueEligible(err) {
+		c.turn.rescuing = true
+		c.turn.rescueEnd = c.turn.end
+		c.turn.rescueEnd.Err = err
+		// Clients see the session busy while the rescue holds the queue.
+		c.publishTurnInfo()
 		c.compactSeam.rescueTurn(err, *failed)
 		return
 	}
@@ -413,8 +421,20 @@ func projectionChanged(a, b turnInfoProjection) bool {
 	return a.Activity.Kind != b.Activity.Kind || a.Activity.Tool != b.Activity.Tool || a.Usage != b.Usage || a.ContextUsed != b.ContextUsed || a.ContextMax != b.ContextMax
 }
 
-// isBusy reports a running turn or an in-flight compaction.
-func (c *Controller) isBusy() bool { return c.turn.busy || c.compactSeam.compacting() }
+// isBusy reports a running turn, a pending turn rescue or an in-flight compaction.
+func (c *Controller) isBusy() bool {
+	return c.turn.busy || c.turn.rescuing || c.compactSeam.compacting()
+}
+
+// endRescue runs on the actor when the turn rescue completes.
+func (c *Controller) endRescue() { c.turn.rescuing = false }
+
+// rescueFailed reports the failed turn once; a retried turn reports its own end.
+func (c *Controller) rescueFailed() {
+	end := c.turn.rescueEnd
+	c.turn.rescueEnd = core.EvTurnEnd{}
+	c.goalSeam.goalAfterTurn(end)
+}
 func (c *Controller) turnOrigin() InputOrigin {
 	if c.turn.busy {
 		return c.turn.live.Origin

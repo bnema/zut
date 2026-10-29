@@ -233,6 +233,8 @@ func NewLane9Harness(t *testing.T, deps Deps, ag *core.Agent) *Lane9Harness {
 	h.turn.EXPECT().startTurn(mock.Anything).RunAndReturn(func(in Input) error { h.Retried <- in; return nil }).Maybe()
 	// A failed rescue drains input queued behind the failed turn.
 	h.turn.EXPECT().drainQueued().Return().Maybe()
+	h.turn.EXPECT().endRescue().Return().Maybe()
+	h.turn.EXPECT().rescueFailed().Return().Maybe()
 	return h
 }
 

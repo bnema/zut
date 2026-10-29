@@ -15,6 +15,8 @@ type compactState struct {
 	// cancel and aborted belong to the in-flight compaction only.
 	cancel  context.CancelFunc
 	aborted bool
+	// rescuing marks a compaction waiting on a rescue model answer.
+	rescuing bool
 }
 
 func (s *compactState) snapshotInto(out *Snapshot) {
@@ -109,7 +111,8 @@ func (c *Controller) beginCompact(next *Input) error {
 		}()
 		target := ag
 		summary, err := target.Compact(ctx, compactTail(target), nil)
-		if err != nil && ctx.Err() == nil {
+		if err != nil && ctx.Err() == nil && rescueEligible(err) {
+			_ = c.call(context.Background(), func() { c.compact.rescuing = true })
 			var replacement *core.Agent
 			replacement, err = c.rescue(ctx, err)
 			if err == nil {
@@ -118,8 +121,8 @@ func (c *Controller) beginCompact(next *Input) error {
 			}
 		}
 		_ = c.call(context.Background(), func() {
-			aborted := c.compact.aborted
-			c.compact.busy, c.compact.aborted, c.compact.cancel = false, false, nil
+			aborted, rescuing := c.compact.aborted, c.compact.rescuing
+			c.compact.busy, c.compact.aborted, c.compact.cancel, c.compact.rescuing = false, false, nil, false
 			switch {
 			case aborted:
 				// A summary that won the race with cancellation is rolled back.
@@ -133,7 +136,11 @@ func (c *Controller) beginCompact(next *Input) error {
 					c.compact.skipOnce = true
 					c.turnSeam.enqueueFront(*next)
 				}
-				c.turnSeam.drainQueued()
+				// Aborting a rescue prompt means the model is unusable: hold
+				// the queue for the user instead of retrying on it.
+				if !rescuing {
+					c.turnSeam.drainQueued()
+				}
 				return
 			case err != nil:
 				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
@@ -150,6 +157,8 @@ func (c *Controller) beginCompact(next *Input) error {
 				c.compact.skipOnce = true
 				if e := c.turnSeam.startTurn(*next); e != nil {
 					c.compact.skipOnce = false
+					// Never lose the prompt: it runs first once startable.
+					c.turnSeam.enqueueFront(*next)
 					c.compactNote(e)
 				}
 			}
@@ -183,11 +192,13 @@ func (c *Controller) rescueTurn(cause error, retry Input) {
 		}()
 		_, err := c.rescue(ctx, cause)
 		_ = c.call(context.Background(), func() {
+			c.turnSeam.endRescue()
 			if err == nil {
 				err = c.turnSeam.startTurn(retry)
 			}
 			if err != nil {
 				c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
+				c.turnSeam.rescueFailed()
 				// A failed rescue must not strand input queued behind the failed turn.
 				c.turnSeam.drainQueued()
 			}

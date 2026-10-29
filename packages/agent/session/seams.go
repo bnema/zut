@@ -24,6 +24,12 @@ type turnSeam interface {
 	// turnInfo projects turn-owned status and accounting into Info.
 	turnInfo() turnInfoProjection
 	cancelTurn()
+	// endRescue releases the queue held since a turn failed into rescue; call
+	// it before retrying or draining.
+	endRescue()
+	// rescueFailed reports the original failed turn end to the goal cluster
+	// when no retry runs; a started retry reports its own end instead.
+	rescueFailed()
 	// drainQueued starts the next queued input once compaction releases the
 	// transcript. It is a no-op while busy (turn running or compaction active).
 	drainQueued()
