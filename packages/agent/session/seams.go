@@ -16,12 +16,23 @@ type turnSeam interface {
 	setAgent(*core.Agent) error
 	startTurn(Input) error
 	enqueue(Input)
+	// enqueueFront puts in at the head of the queue (aborted compaction prompt).
+	enqueueFront(Input)
 	applyAgentEvent(core.AgentEvent)
 	isBusy() bool
 	turnOrigin() InputOrigin
 	// turnInfo projects turn-owned status and accounting into Info.
 	turnInfo() turnInfoProjection
 	cancelTurn()
+	// endRescue releases the queue held since a turn failed into rescue; call
+	// it before retrying or draining.
+	endRescue()
+	// rescueFailed reports the original failed turn end to the goal cluster
+	// when no retry runs; a started retry reports its own end instead.
+	rescueFailed()
+	// drainQueued starts the next queued input once compaction releases the
+	// transcript. It is a no-op while busy (turn running or compaction active).
+	drainQueued()
 }
 type confirmSeam interface {
 	// awaitPending MUST be called OFF the actor loop: it blocks.
@@ -53,6 +64,14 @@ type residentSeam interface {
 	residentsRunning() bool
 	residentSummaries() []ResidentSummary
 }
-type compactSeam interface{ maybeAutoCompact(Input) bool }
+type compactSeam interface {
+	maybeAutoCompact(Input) bool
+	// compacting reports an in-flight compaction (busy for Submit/updateInfo).
+	compacting() bool
+	// abortCompaction cancels cleanly: EvCompaction{failed}, transcript unchanged.
+	abortCompaction()
+	// rescueTurn asks for a fallback model off the actor, then retries retry.
+	rescueTurn(cause error, retry Input)
+}
 type settingsSeam interface{ replaceAgent(*core.Agent) }
 type interSeam interface{ deliverInterSession(Sender, string) error }

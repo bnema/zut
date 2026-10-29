@@ -205,6 +205,10 @@ func (c *Controller) updateInfo() {
 	if c.turnSeam != nil && c.turnSeam.isBusy() {
 		run = RunStateRunning
 	}
+	compacting := c.compactSeam != nil && c.compactSeam.compacting()
+	if compacting {
+		run = RunStateCompacting
+	}
 	info := Info{ID: string(c.id), CWD: c.deps.CWD, Provider: c.deps.Provider, Model: c.deps.Model, Reasoning: c.deps.Reasoning, Attach: c.attach, Run: run, CreatedAt: c.created, UpdatedAt: c.deps.Clock(), Activity: Activity{Kind: "idle"}}
 	if c.deps.FastMode != nil {
 		info.FastMode = *c.deps.FastMode
@@ -217,6 +221,9 @@ func (c *Controller) updateInfo() {
 		info.ContextUsed = projection.ContextUsed
 		info.ContextMax = projection.ContextMax
 		info.LastUserInputAt = projection.LastUserInputAt
+	}
+	if compacting {
+		info.Activity = Activity{Kind: "compacting", Since: info.Activity.Since}
 	}
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()

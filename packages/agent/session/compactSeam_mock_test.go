@@ -44,6 +44,83 @@ func (_m *mockcompactSeam) EXPECT() *mockcompactSeam_Expecter {
 	return &mockcompactSeam_Expecter{mock: &_m.Mock}
 }
 
+// abortCompaction provides a mock function for the type mockcompactSeam
+func (_mock *mockcompactSeam) abortCompaction() {
+	_mock.Called()
+	return
+}
+
+// mockcompactSeam_abortCompaction_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'abortCompaction'
+type mockcompactSeam_abortCompaction_Call struct {
+	*mock.Call
+}
+
+// abortCompaction is a helper method to define mock.On call
+func (_e *mockcompactSeam_Expecter) abortCompaction() *mockcompactSeam_abortCompaction_Call {
+	return &mockcompactSeam_abortCompaction_Call{Call: _e.mock.On("abortCompaction")}
+}
+
+func (_c *mockcompactSeam_abortCompaction_Call) Run(run func()) *mockcompactSeam_abortCompaction_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockcompactSeam_abortCompaction_Call) Return() *mockcompactSeam_abortCompaction_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockcompactSeam_abortCompaction_Call) RunAndReturn(run func()) *mockcompactSeam_abortCompaction_Call {
+	_c.Run(run)
+	return _c
+}
+
+// compacting provides a mock function for the type mockcompactSeam
+func (_mock *mockcompactSeam) compacting() bool {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for compacting")
+	}
+
+	var r0 bool
+	if returnFunc, ok := ret.Get(0).(func() bool); ok {
+		r0 = returnFunc()
+	} else {
+		r0 = ret.Get(0).(bool)
+	}
+	return r0
+}
+
+// mockcompactSeam_compacting_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'compacting'
+type mockcompactSeam_compacting_Call struct {
+	*mock.Call
+}
+
+// compacting is a helper method to define mock.On call
+func (_e *mockcompactSeam_Expecter) compacting() *mockcompactSeam_compacting_Call {
+	return &mockcompactSeam_compacting_Call{Call: _e.mock.On("compacting")}
+}
+
+func (_c *mockcompactSeam_compacting_Call) Run(run func()) *mockcompactSeam_compacting_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockcompactSeam_compacting_Call) Return(b bool) *mockcompactSeam_compacting_Call {
+	_c.Call.Return(b)
+	return _c
+}
+
+func (_c *mockcompactSeam_compacting_Call) RunAndReturn(run func() bool) *mockcompactSeam_compacting_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // maybeAutoCompact provides a mock function for the type mockcompactSeam
 func (_mock *mockcompactSeam) maybeAutoCompact(input Input) bool {
 	ret := _mock.Called(input)
@@ -92,5 +169,51 @@ func (_c *mockcompactSeam_maybeAutoCompact_Call) Return(b bool) *mockcompactSeam
 
 func (_c *mockcompactSeam_maybeAutoCompact_Call) RunAndReturn(run func(input Input) bool) *mockcompactSeam_maybeAutoCompact_Call {
 	_c.Call.Return(run)
+	return _c
+}
+
+// rescueTurn provides a mock function for the type mockcompactSeam
+func (_mock *mockcompactSeam) rescueTurn(cause error, retry Input) {
+	_mock.Called(cause, retry)
+	return
+}
+
+// mockcompactSeam_rescueTurn_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'rescueTurn'
+type mockcompactSeam_rescueTurn_Call struct {
+	*mock.Call
+}
+
+// rescueTurn is a helper method to define mock.On call
+//   - cause error
+//   - retry Input
+func (_e *mockcompactSeam_Expecter) rescueTurn(cause any, retry any) *mockcompactSeam_rescueTurn_Call {
+	return &mockcompactSeam_rescueTurn_Call{Call: _e.mock.On("rescueTurn", cause, retry)}
+}
+
+func (_c *mockcompactSeam_rescueTurn_Call) Run(run func(cause error, retry Input)) *mockcompactSeam_rescueTurn_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 error
+		if args[0] != nil {
+			arg0 = args[0].(error)
+		}
+		var arg1 Input
+		if args[1] != nil {
+			arg1 = args[1].(Input)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *mockcompactSeam_rescueTurn_Call) Return() *mockcompactSeam_rescueTurn_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockcompactSeam_rescueTurn_Call) RunAndReturn(run func(cause error, retry Input)) *mockcompactSeam_rescueTurn_Call {
+	_c.Run(run)
 	return _c
 }

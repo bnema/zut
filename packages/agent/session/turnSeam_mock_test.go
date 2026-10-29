@@ -164,6 +164,72 @@ func (_c *mockturnSeam_currentAgent_Call) RunAndReturn(run func() *core.Agent) *
 	return _c
 }
 
+// drainQueued provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) drainQueued() {
+	_mock.Called()
+	return
+}
+
+// mockturnSeam_drainQueued_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'drainQueued'
+type mockturnSeam_drainQueued_Call struct {
+	*mock.Call
+}
+
+// drainQueued is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) drainQueued() *mockturnSeam_drainQueued_Call {
+	return &mockturnSeam_drainQueued_Call{Call: _e.mock.On("drainQueued")}
+}
+
+func (_c *mockturnSeam_drainQueued_Call) Run(run func()) *mockturnSeam_drainQueued_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_drainQueued_Call) Return() *mockturnSeam_drainQueued_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_drainQueued_Call) RunAndReturn(run func()) *mockturnSeam_drainQueued_Call {
+	_c.Run(run)
+	return _c
+}
+
+// endRescue provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) endRescue() {
+	_mock.Called()
+	return
+}
+
+// mockturnSeam_endRescue_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'endRescue'
+type mockturnSeam_endRescue_Call struct {
+	*mock.Call
+}
+
+// endRescue is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) endRescue() *mockturnSeam_endRescue_Call {
+	return &mockturnSeam_endRescue_Call{Call: _e.mock.On("endRescue")}
+}
+
+func (_c *mockturnSeam_endRescue_Call) Run(run func()) *mockturnSeam_endRescue_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_endRescue_Call) Return() *mockturnSeam_endRescue_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_endRescue_Call) RunAndReturn(run func()) *mockturnSeam_endRescue_Call {
+	_c.Run(run)
+	return _c
+}
+
 // enqueue provides a mock function for the type mockturnSeam
 func (_mock *mockturnSeam) enqueue(input Input) {
 	_mock.Called(input)
@@ -200,6 +266,46 @@ func (_c *mockturnSeam_enqueue_Call) Return() *mockturnSeam_enqueue_Call {
 }
 
 func (_c *mockturnSeam_enqueue_Call) RunAndReturn(run func(input Input)) *mockturnSeam_enqueue_Call {
+	_c.Run(run)
+	return _c
+}
+
+// enqueueFront provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) enqueueFront(input Input) {
+	_mock.Called(input)
+	return
+}
+
+// mockturnSeam_enqueueFront_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'enqueueFront'
+type mockturnSeam_enqueueFront_Call struct {
+	*mock.Call
+}
+
+// enqueueFront is a helper method to define mock.On call
+//   - input Input
+func (_e *mockturnSeam_Expecter) enqueueFront(input any) *mockturnSeam_enqueueFront_Call {
+	return &mockturnSeam_enqueueFront_Call{Call: _e.mock.On("enqueueFront", input)}
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) Run(run func(input Input)) *mockturnSeam_enqueueFront_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 Input
+		if args[0] != nil {
+			arg0 = args[0].(Input)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) Return() *mockturnSeam_enqueueFront_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_enqueueFront_Call) RunAndReturn(run func(input Input)) *mockturnSeam_enqueueFront_Call {
 	_c.Run(run)
 	return _c
 }
@@ -245,6 +351,39 @@ func (_c *mockturnSeam_isBusy_Call) Return(b bool) *mockturnSeam_isBusy_Call {
 
 func (_c *mockturnSeam_isBusy_Call) RunAndReturn(run func() bool) *mockturnSeam_isBusy_Call {
 	_c.Call.Return(run)
+	return _c
+}
+
+// rescueFailed provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) rescueFailed() {
+	_mock.Called()
+	return
+}
+
+// mockturnSeam_rescueFailed_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'rescueFailed'
+type mockturnSeam_rescueFailed_Call struct {
+	*mock.Call
+}
+
+// rescueFailed is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) rescueFailed() *mockturnSeam_rescueFailed_Call {
+	return &mockturnSeam_rescueFailed_Call{Call: _e.mock.On("rescueFailed")}
+}
+
+func (_c *mockturnSeam_rescueFailed_Call) Run(run func()) *mockturnSeam_rescueFailed_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_rescueFailed_Call) Return() *mockturnSeam_rescueFailed_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_rescueFailed_Call) RunAndReturn(run func()) *mockturnSeam_rescueFailed_Call {
+	_c.Run(run)
 	return _c
 }
 

@@ -24,6 +24,11 @@ type turnState struct {
 	next       uint64
 	projection turnInfoProjection
 	end        core.EvTurnEnd
+	// input is the fresh prompt of the running turn, kept for rescue retries.
+	input *Input
+	// rescuing holds the queue while a failed turn waits for a rescue model.
+	rescuing  bool
+	rescueEnd core.EvTurnEnd
 }
 
 func (s *turnState) snapshotInto(out *Snapshot) {
@@ -48,6 +53,9 @@ func cloneTurn(in LiveTurn) LiveTurn {
 // Submit starts idle work, queues busy work, or steers the running agent.
 // The request context governs command delivery only, never the agent lifetime.
 //
+// Compaction counts as busy: input is queued and runs once it ends. When idle
+// with held queued input, the new input joins the queue and the queue drains.
+//
 // Input.Hidden messages are text-only: they become hidden user context through
 // core.Agent.AppendUserContext, so non-text blocks are skipped with an error
 // note. Steering cannot carry hidden context, so a busy steer with Hidden set
@@ -62,11 +70,15 @@ func (c *Controller) Submit(ctx context.Context, in Input) error {
 			c.turn.projection.LastUserInputAt = c.deps.Clock()
 		}
 		if c.isBusy() {
-			if in.Mode == "steer" && c.turn.agent != nil && len(in.Hidden) == 0 {
+			if in.Mode == "steer" && c.turn.busy && c.turn.agent != nil && len(in.Hidden) == 0 {
 				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: in.HostEvent})
 			} else {
 				c.enqueue(in)
 			}
+		} else if len(c.turn.queue) > 0 {
+			// Held input (e.g. after an aborted rescue) runs first, in order.
+			c.enqueue(in)
+			c.drainQueued()
 		} else {
 			result = c.startTurn(in)
 		}
@@ -77,8 +89,17 @@ func (c *Controller) Submit(ctx context.Context, in Input) error {
 	return result
 }
 
-// Abort cancels active execution and resolves pending interactions.
-func (c *Controller) Abort(ctx context.Context) error { return c.call(ctx, func() { c.cancelTurn() }) }
+// Abort cancels an in-flight compaction, or else the active turn and its
+// pending interactions.
+func (c *Controller) Abort(ctx context.Context) error {
+	return c.call(ctx, func() {
+		if c.compactSeam.compacting() {
+			c.compactSeam.abortCompaction()
+			return
+		}
+		c.cancelTurn()
+	})
+}
 
 // CancelQueued removes one queued input by its published identifier.
 func (c *Controller) CancelQueued(ctx context.Context, id string) error {
@@ -129,8 +150,16 @@ func (c *Controller) publishError(text string) {
 func (c *Controller) startTurn(in Input) error { return c.runTurn(in, false) }
 
 func (c *Controller) runTurn(in Input, continuing bool) error {
-	if c.isBusy() {
+	if c.turn.busy {
 		return ErrBusy
+	}
+	if c.compactSeam.compacting() {
+		if continuing {
+			return ErrBusy
+		}
+		// Compaction owns the transcript; the input runs once it ends.
+		c.enqueue(in)
+		return nil
 	}
 	// Baseline compacts only before fresh input, never between agent-queued messages.
 	if !continuing && c.compactSeam.maybeAutoCompact(in) {
@@ -164,6 +193,12 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	c.turn.busy = true
 	c.turn.live = LiveTurn{Origin: in.Origin}
 	c.turn.end = core.EvTurnEnd{}
+	c.turn.input = nil
+	if !continuing {
+		retry := in
+		retry.Hidden = nil
+		c.turn.input = &retry
+	}
 	c.turn.projection.ContextMax = ag.ContextWindow
 	c.turn.projection.Activity = Activity{Kind: "waiting_model", Since: c.deps.Clock()}
 	c.publishTurnInfo()
@@ -196,6 +231,8 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 }
 func (c *Controller) finishTurn(ctx context.Context, err error) {
 	origin := c.turn.live.Origin
+	failed := c.turn.input
+	c.turn.input = nil
 	// The final assistant message lives in Messages; idle has no live turn.
 	c.turn.live = LiveTurn{}
 	c.turn.busy = false
@@ -245,23 +282,20 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		c.publishQueue()
 	}
 	c.publishTurnInfo()
+	// Baseline offers a model rescue for recoverable provider failures and
+	// retries the prompt; it is not a terminal goal error. rescueTurn waits off
+	// the actor; remaining queued input runs after the retried turn.
+	if err != nil && ctx.Err() == nil && failed != nil && rescueEligible(err) {
+		c.turn.rescuing = true
+		c.turn.rescueEnd = c.turn.end
+		c.turn.rescueEnd.Err = err
+		// Clients see the session busy while the rescue holds the queue.
+		c.publishTurnInfo()
+		c.compactSeam.rescueTurn(err, *failed)
+		return
+	}
 	if len(c.turn.queue) > 0 {
-		index := 0
-		for i, q := range c.turn.queue {
-			if q.Input.Origin != "scheduler" {
-				index = i
-				break
-			}
-		}
-		next := c.turn.queue[index]
-		c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
-		c.publishQueue()
-		if e := c.startTurn(next.Input); e != nil {
-			// Restore the item at its position so a failed start never loses input.
-			c.turn.queue = append(c.turn.queue[:index], append([]QueuedInput{next}, c.turn.queue[index:]...)...)
-			c.publishQueue()
-			c.publishError(e.Error())
-		}
+		c.startQueued()
 		return
 	}
 	if err == nil && ctx.Err() == nil && c.turn.agent.QueuedMessageCount() > 0 {
@@ -276,6 +310,42 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		end.Err = err
 	}
 	c.goalSeam.goalAfterTurn(end)
+}
+
+// startQueued starts the first non-scheduler queued input, or the first item.
+func (c *Controller) startQueued() {
+	index := 0
+	for i, q := range c.turn.queue {
+		if q.Input.Origin != "scheduler" {
+			index = i
+			break
+		}
+	}
+	next := c.turn.queue[index]
+	c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
+	c.publishQueue()
+	if e := c.startTurn(next.Input); e != nil {
+		// Restore the item at its position so a failed start never loses input.
+		c.turn.queue = append(c.turn.queue[:index], append([]QueuedInput{next}, c.turn.queue[index:]...)...)
+		c.publishQueue()
+		c.publishError(e.Error())
+	}
+}
+
+// drainQueued runs on the actor. It is a no-op while busy (turn running or
+// compaction active) and when the queue is empty.
+func (c *Controller) drainQueued() {
+	if c.isBusy() || len(c.turn.queue) == 0 {
+		return
+	}
+	c.startQueued()
+}
+
+// enqueueFront puts in at the head of the queue with a fresh identifier.
+func (c *Controller) enqueueFront(in Input) {
+	c.turn.next++
+	c.turn.queue = append([]QueuedInput{{ID: fmt.Sprint(c.turn.next), Input: in}}, c.turn.queue...)
+	c.publishQueue()
 }
 func (c *Controller) enqueue(in Input) {
 	c.turn.next++
@@ -356,7 +426,20 @@ func projectionChanged(a, b turnInfoProjection) bool {
 	return a.Activity.Kind != b.Activity.Kind || a.Activity.Tool != b.Activity.Tool || a.Usage != b.Usage || a.ContextUsed != b.ContextUsed || a.ContextMax != b.ContextMax
 }
 
-func (c *Controller) isBusy() bool { return c.turn.busy }
+// isBusy reports a running turn, a pending turn rescue or an in-flight compaction.
+func (c *Controller) isBusy() bool {
+	return c.turn.busy || c.turn.rescuing || c.compactSeam.compacting()
+}
+
+// endRescue runs on the actor when the turn rescue completes.
+func (c *Controller) endRescue() { c.turn.rescuing = false }
+
+// rescueFailed reports the failed turn once; a retried turn reports its own end.
+func (c *Controller) rescueFailed() {
+	end := c.turn.rescueEnd
+	c.turn.rescueEnd = core.EvTurnEnd{}
+	c.goalSeam.goalAfterTurn(end)
+}
 func (c *Controller) turnOrigin() InputOrigin {
 	if c.turn.busy {
 		return c.turn.live.Origin
@@ -416,8 +499,9 @@ func (c *Controller) ensureAgent() error {
 
 // setAgent changes the actor-owned agent only when execution has stopped.
 // A nil agent clears the cache so the next access rebuilds through AgentBuilder.
+// Compaction may adopt a rescue agent, so only a running turn blocks it.
 func (c *Controller) setAgent(ag *core.Agent) error {
-	if c.isBusy() {
+	if c.turn.busy {
 		return ErrBusy
 	}
 	c.turn.agent = ag
@@ -511,4 +595,26 @@ func (q *turnCallbacks) add(item turnCallback) {
 	case q.wake <- struct{}{}:
 	default:
 	}
+}
+
+// rescueEligible mirrors modes.classifyRescueError: network, auth, permission,
+// rate-limit and provider-unavailable failures can be fixed by switching
+// models; context overflow has its own compaction path.
+func rescueEligible(err error) bool {
+	if err == nil || provider.IsContextOverflowError(err) {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"timeout", "deadline exceeded", "connection refused", "connection reset", "no such host", "tls handshake", "eof",
+		"http 401", " 401:", "invalid_authentication", "token expired", "api key appears to be invalid",
+		"http 403", " 403:", "permission denied", "forbidden",
+		"http 429", " 429:", "rate limit", "rate_limit", "too many requests", "quota",
+		"http 500", "http 502", "http 503", "http 504", " 500:", " 502:", " 503:", " 504:", "upstream connect error", "service unavailable", "internal server error", "bad gateway", "gateway timeout",
+	} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
 }
