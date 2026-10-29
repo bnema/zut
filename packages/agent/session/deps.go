@@ -170,7 +170,10 @@ type Deps struct {
 	Headless bool
 	// HeadlessOrchestrate marks a headless --orchestrate session: resident
 	// completions use HeadlessCompletionInstruction without a still-running list.
-	HeadlessOrchestrate                                                                             bool
+	HeadlessOrchestrate bool
+	// FirstPromptTransform, when set, rewrites the text of the first user
+	// prompt once (headless pinned-skill preload on fresh sessions).
+	FirstPromptTransform                                                                            func(text string) string
 	AutoCompactThreshold                                                                            *int
 	GoalMaxTokenBudget                                                                              *uint64
 	AutoSubagentsEnabled, WebSearchEnabled, LSPEnabled, SubagentLSPEnabled                          *bool

@@ -187,6 +187,10 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	ag := c.turn.agent
 	if !continuing {
 		ag.ResetRepetitionGuard()
+		if transform := c.deps.FirstPromptTransform; transform != nil && !in.HostEvent && in.Origin == InputOriginUser {
+			c.deps.FirstPromptTransform = nil
+			in.Text = transform(in.Text)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.turn.cancel = cancel
