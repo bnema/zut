@@ -421,8 +421,12 @@ func ResolveLlamaCPPConfig() (baseURL, apiKey string, err error) {
 }
 
 func resolveLlamaCPPConfig(ctx context.Context, commandMode apiKeyCommandMode) (baseURL, apiKey string, err error) {
-	baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
-	apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
+	return resolveLlamaCPPConfigEnv(ctx, commandMode, os.Getenv)
+}
+
+func resolveLlamaCPPConfigEnv(ctx context.Context, commandMode apiKeyCommandMode, getenv func(string) string) (baseURL, apiKey string, err error) {
+	baseURL = strings.TrimSpace(getenv("LLAMA_BASE_URL"))
+	apiKey = strings.TrimSpace(getenv("LLAMA_API_KEY"))
 	if baseURL == "" {
 		creds, loadErr := AuthStoreFor().Load()
 		if loadErr != nil {
@@ -491,6 +495,12 @@ const (
 )
 
 func resolveCredentialFull(ctx context.Context, provider, explicit string, commandMode apiKeyCommandMode) (cred, method, accountID string, err error) {
+	return resolveCredentialFullEnv(ctx, provider, explicit, commandMode, os.Getenv)
+}
+
+// resolveCredentialFullEnv reads provider env vars through getenv so a
+// daemon-owned session can resolve from its client's environment.
+func resolveCredentialFullEnv(ctx context.Context, provider, explicit string, commandMode apiKeyCommandMode, getenv func(string) string) (cred, method, accountID string, err error) {
 	if explicit != "" {
 		return explicit, "apikey", "", nil
 	}
@@ -499,14 +509,14 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		// ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY.
 		// Useful when both are set and the user wants subscription auth
 		// without editing auth.json.
-		if v := os.Getenv("ANTHROPIC_OAUTH_TOKEN"); v != "" {
+		if v := getenv("ANTHROPIC_OAUTH_TOKEN"); v != "" {
 			return v, "oauth", "", nil
 		}
-		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		if v := getenv("ANTHROPIC_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "openai":
-		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		if v := getenv("OPENAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "openai-codex":
@@ -516,28 +526,28 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 	case "openai-responses":
 		// Public OpenAI Responses API. Same env var as the chat-completions
 		// `openai` provider; users pick the wire format by provider id.
-		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		if v := getenv("OPENAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "kimi":
-		if v := os.Getenv("KIMI_API_KEY"); v != "" {
+		if v := getenv("KIMI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
-		if v := os.Getenv("MOONSHOT_API_KEY"); v != "" {
+		if v := getenv("MOONSHOT_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "google":
 		// Both env names are widely-used in the Google ecosystem;
 		// GEMINI_API_KEY is the AI Studio default, GOOGLE_API_KEY
 		// is the older / generic name. Either works.
-		if v := os.Getenv("GEMINI_API_KEY"); v != "" {
+		if v := getenv("GEMINI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
-		if v := os.Getenv("GOOGLE_API_KEY"); v != "" {
+		if v := getenv("GOOGLE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "deepseek":
-		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+		if v := getenv("DEEPSEEK_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	// ollama needs no explicit case: the generic
@@ -554,39 +564,39 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 	case "moonshotai", "moonshotai-cn":
 		// Moonshot direct API (separate from kimi-coding, which is the
 		// Anthropic-Messages-fronted /coding endpoint with subscription OAuth).
-		if v := os.Getenv("MOONSHOT_API_KEY"); v != "" {
+		if v := getenv("MOONSHOT_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "groq":
-		if v := os.Getenv("GROQ_API_KEY"); v != "" {
+		if v := getenv("GROQ_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "xai":
-		if v := os.Getenv("XAI_API_KEY"); v != "" {
+		if v := getenv("XAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "cerebras":
-		if v := os.Getenv("CEREBRAS_API_KEY"); v != "" {
+		if v := getenv("CEREBRAS_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "together":
-		if v := os.Getenv("TOGETHER_API_KEY"); v != "" {
+		if v := getenv("TOGETHER_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "huggingface":
-		if v := os.Getenv("HF_TOKEN"); v != "" {
+		if v := getenv("HF_TOKEN"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "openrouter":
-		if v := os.Getenv("OPENROUTER_API_KEY"); v != "" {
+		if v := getenv("OPENROUTER_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "mistral":
-		if v := os.Getenv("MISTRAL_API_KEY"); v != "" {
+		if v := getenv("MISTRAL_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "zai":
-		if v := os.Getenv("ZAI_API_KEY"); v != "" {
+		if v := getenv("ZAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp":
@@ -599,41 +609,41 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		case "xiaomi-token-plan-sgp":
 			envVar = "XIAOMI_TOKEN_PLAN_SGP_API_KEY"
 		}
-		if v := os.Getenv(envVar); v != "" {
+		if v := getenv(envVar); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "minimax":
-		if v := os.Getenv("MINIMAX_API_KEY"); v != "" {
+		if v := getenv("MINIMAX_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "minimax-cn":
-		if v := os.Getenv("MINIMAX_CN_API_KEY"); v != "" {
+		if v := getenv("MINIMAX_CN_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
-		if v := os.Getenv("MINIMAX_API_KEY"); v != "" {
+		if v := getenv("MINIMAX_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "fireworks":
-		if v := os.Getenv("FIREWORKS_API_KEY"); v != "" {
+		if v := getenv("FIREWORKS_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "vercel-ai-gateway":
-		if v := os.Getenv("AI_GATEWAY_API_KEY"); v != "" {
+		if v := getenv("AI_GATEWAY_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "opencode", "opencode-go":
-		if v := os.Getenv("OPENCODE_API_KEY"); v != "" {
+		if v := getenv("OPENCODE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "github-copilot":
-		if v := os.Getenv("COPILOT_GITHUB_TOKEN"); v != "" {
+		if v := getenv("COPILOT_GITHUB_TOKEN"); v != "" {
 			return v, "apikey", "", nil
 		}
-		if v := os.Getenv("GITHUB_COPILOT_TOKEN"); v != "" {
+		if v := getenv("GITHUB_COPILOT_TOKEN"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "cloudflare-workers-ai", "cloudflare-ai-gateway":
-		if v := os.Getenv("CLOUDFLARE_API_KEY"); v != "" {
+		if v := getenv("CLOUDFLARE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "amazon-bedrock":
@@ -641,17 +651,17 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		// container creds, IRSA, bearer token). We surface a sentinel so
 		// Resolve doesn't error on missing key; the real client (when
 		// implemented) will resolve credentials through aws-sdk-go-v2.
-		if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_PROFILE") != "" ||
-			os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "" {
+		if getenv("AWS_ACCESS_KEY_ID") != "" || getenv("AWS_PROFILE") != "" ||
+			getenv("AWS_BEARER_TOKEN_BEDROCK") != "" {
 			return "<aws>", "apikey", "", nil
 		}
 	case "google-vertex":
-		if v := os.Getenv("GOOGLE_CLOUD_API_KEY"); v != "" {
+		if v := getenv("GOOGLE_CLOUD_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 		// Check for Application Default Credentials (gcloud auth application-default login)
 		// or service account JSON, matching the actual NewVertex client behavior.
-		if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		if getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
 			return "<adc>", "apikey", "", nil
 		}
 		// Check for the platform-specific default ADC path that gcloud writes to.
@@ -661,14 +671,14 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 			}
 		}
 	case "azure-openai-responses":
-		if v := os.Getenv("AZURE_OPENAI_API_KEY"); v != "" {
+		if v := getenv("AZURE_OPENAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	}
 	// Generic env var fallback for custom providers: normalize the
 	// provider id to a shell-friendly env var name (hyphens to
 	// underscores) and check {NAME}_API_KEY before auth.json.
-	if v := os.Getenv(normalizeCustomProviderEnvVar(provider) + "_API_KEY"); v != "" {
+	if v := getenv(normalizeCustomProviderEnvVar(provider) + "_API_KEY"); v != "" {
 		return v, "apikey", "", nil
 	}
 	c, err := AuthStoreFor().Load()
@@ -721,8 +731,30 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 // CredentialAvailable reports whether a provider has a configured credential
 // without executing an api_key_command.
 func CredentialAvailable(provider string) bool {
-	_, _, _, err := resolveCredentialFull(context.Background(), provider, "", apiKeyCommandAvailable)
+	return credentialAvailableEnv(provider, os.Getenv)
+}
+
+func credentialAvailableEnv(provider string, getenv func(string) string) bool {
+	_, _, _, err := resolveCredentialFullEnv(context.Background(), provider, "", apiKeyCommandAvailable, getenv)
 	return err == nil
+}
+
+// argsGetenv returns the lookup Resolve uses for provider credentials and
+// endpoints: the session env captured in args.Env when set, else the process.
+func argsGetenv(args Args) func(string) string {
+	if args.Env == nil {
+		return os.Getenv
+	}
+	env := args.Env
+	return func(key string) string {
+		value := ""
+		for _, kv := range env {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+				value = v
+			}
+		}
+		return value
+	}
 }
 
 func resolveCredentialForBackground(ctx context.Context, provider string) (cred, method string, err error) {
