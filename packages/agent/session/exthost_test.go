@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,4 +162,96 @@ func TestExtensionDetachedDelegation(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+}
+
+func waitClosed(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ch:
+			return
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	t.Fatal("extension dispatcher goroutine still running")
+}
+
+func TestExtensionDomainSaturation(t *testing.T) {
+	c, ctx := extController(t, session.Deps{})
+	p := sessionmocks.NewMockPort(t)
+	require.NoError(t, session.SetExtensionTestPort(c, ctx, p))
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var ran atomic.Int32
+	p.EXPECT().Compact(mock.Anything).RunAndReturn(func(context.Context) error {
+		ran.Add(1)
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		return nil
+	}).Times(65)
+	h := c.ExtensionHooks()
+	h.SubmitSlash("/compact")
+	<-started
+	for i := 0; i < 80; i++ {
+		h.SubmitSlash("/compact") // 64 fit in the queue; the rest are dropped
+	}
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == session.EvNote {
+				n := ev.Data.(session.NoteEvent).Note
+				require.Equal(t, session.Note{Level: "error", Text: "extension extensions overloaded: hook dropped"}, n)
+				close(release)
+				snap, err := c.Snapshot(ctx)
+				require.NoError(t, err)
+				require.Len(t, snap.Notes, 1)
+				// Let the 64 queued compacts drain so mock expectations hold.
+				require.Eventually(t, func() bool { return ran.Load() == 65 }, 5*time.Second, time.Millisecond)
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+func TestExtensionShutdownCancelsRunningDomainOp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loopCtx, stop := context.WithCancel(ctx)
+	c := session.NewController(loopCtx, session.Deps{})
+	p := sessionmocks.NewMockPort(t)
+	require.NoError(t, session.SetExtensionTestPort(c, ctx, p))
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	p.EXPECT().Compact(mock.Anything).RunAndReturn(func(opCtx context.Context) error {
+		close(started)
+		<-opCtx.Done()
+		close(cancelled)
+		return opCtx.Err()
+	}).Once()
+	h := c.ExtensionHooks()
+	h.SubmitSlash("/compact")
+	<-started
+	h.SubmitSlash("/goal pending") // accepted but must never run
+	time.Sleep(10 * time.Millisecond)
+	stop()
+	<-c.Done()
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Fatal("running domain op not cancelled")
+	}
+	waitClosed(t, session.ExtDispatcherDone(c))
+	h.SubmitSlash("/compact")
+	h.Notify("a", "info", "after")
+	session.ExtShutdown(c) // idempotent
 }

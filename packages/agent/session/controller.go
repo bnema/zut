@@ -101,7 +101,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 		deps.Clock = time.Now
 	}
 	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: ID(strconv.FormatUint(controllerIDs.Add(1), 10)), created: deps.Clock()}
-	c.ext.init()
+	c.extInit(ctx)
 	c.turnSeam = c
 	c.confirmSeam = c
 	c.goalSeam = c
@@ -114,6 +114,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	c.updateInfo()
 	go func() {
 		defer close(c.done)
+		defer c.extShutdown()
 		defer func() {
 			for _, s := range c.subs {
 				close(s.events)
@@ -123,11 +124,12 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 		for {
 			select {
 			case <-ctx.Done():
+				c.extShutdown()
 				return
 			case <-c.ext.wake:
-				c.ext.drain()
+				c.extDrain()
 			case fn := <-c.loop:
-				c.ext.drain()
+				c.extDrain()
 				fn()
 			}
 		}

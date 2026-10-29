@@ -15,14 +15,20 @@ import (
 // extState retains terminal-free chrome and extension ownership of notes.
 // Note has no owner field on the public contract, so ownership stays internal.
 type extState struct {
-	mu         sync.Mutex
-	mailbox    []func()
-	wake       chan struct{}
-	port       Port
-	domainTail <-chan struct{}
-	chrome     ExtChrome
-	notes      []ownedExtNote
-	alertOwner string
+	mu             sync.Mutex
+	mailbox        []func()
+	wake           chan struct{}
+	port           Port
+	domainJobs     chan func(context.Context, Port) error
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stopped        bool
+	dispatcherDone chan struct{}
+	overload       string
+	lastOverload   time.Time
+	chrome         ExtChrome
+	notes          []ownedExtNote
+	alertOwner     string
 }
 type ownedExtNote struct {
 	ext  string
@@ -74,52 +80,138 @@ var (
 // ExtensionHooks returns the adapter assembly passes to the extension manager.
 func (c *Controller) ExtensionHooks() extensions.HostHooks { return extHooks{c} }
 
-// mutate never waits for the actor, including when a manager callback originates
-// on that actor. The mailbox is lossless and preserves enqueue order.
-func (h extHooks) mutate(fn func()) {
+// mutate admits at most 1024 hooks without waiting for the actor. Overload
+// reporting has one coalesced slot and is limited to one note per second.
+func (h extHooks) mutate(fn func()) { h.admit("extensions", fn) }
+func (h extHooks) admit(owner string, fn func()) {
 	s := &h.c.ext
 	s.mu.Lock()
-	s.mailbox = append(s.mailbox, fn)
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	if len(s.mailbox) >= 1024 {
+		s.markOverload(owner)
+	} else {
+		s.mailbox = append(s.mailbox, fn)
+	}
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
 	default:
 	}
 }
-func (s *extState) init() { s.wake = make(chan struct{}, 1) }
-func (s *extState) drain() {
+
+// markOverload requires mu. A single slot bounds reporting even under floods.
+func (s *extState) markOverload(owner string) {
+	if s.overload == "" && time.Since(s.lastOverload) >= time.Second {
+		s.overload = owner
+	}
+}
+func (c *Controller) extInit(parent context.Context) {
+	s := &c.ext
+	s.wake = make(chan struct{}, 1)
+	s.domainJobs = make(chan func(context.Context, Port) error, 64)
+	s.dispatcherDone = make(chan struct{})
+	s.ctx, s.cancel = context.WithCancel(parent)
+	go func() {
+		defer close(s.dispatcherDone)
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case job := <-s.domainJobs:
+				s.mu.Lock()
+				if s.stopped || s.ctx.Err() != nil {
+					s.mu.Unlock()
+					return
+				}
+				port := s.port
+				if port == nil {
+					port = c
+				}
+				s.mu.Unlock()
+				if err := job(s.ctx, port); err != nil {
+					extHooks{c}.Notify("extensions", "error", err.Error())
+				}
+			}
+		}
+	}()
+}
+
+// extShutdown closes admission atomically, discards queued hooks and cancels
+// running domain work. Close may call it repeatedly without waiting for work.
+func (c *Controller) extShutdown() {
+	s := &c.ext
 	s.mu.Lock()
+	s.stopped = true
+	s.mailbox = nil
+	s.overload = ""
+	s.cancel()
+	for {
+		select {
+		case <-s.domainJobs:
+		default:
+			s.mu.Unlock()
+			return
+		}
+	}
+}
+func (c *Controller) extDrain() {
+	s := &c.ext
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
 	jobs := s.mailbox
 	s.mailbox = nil
+	owner := s.overload
+	s.overload = ""
+	if owner != "" {
+		s.lastOverload = time.Now()
+	}
 	s.mu.Unlock()
 	for _, job := range jobs {
+		s.mu.Lock()
+		stopped := s.stopped
+		s.mu.Unlock()
+		if stopped {
+			return
+		}
 		job()
+	}
+	if owner != "" {
+		extHooks{c}.note(owner, "error", "extension "+owner+" overloaded: hook dropped", false)
 	}
 }
 
-// domain runs Port calls off-actor, in mailbox order, because Port calls may
-// themselves wait for the actor. Tests use the existing generated Port mock.
-func (h extHooks) domain(fn func(Port) error) {
-	previous := h.c.ext.domainTail
-	done := make(chan struct{})
-	h.c.ext.domainTail = done
-	port := h.c.ext.port
-	if port == nil {
-		port = h.c
+// domain is actor-only and uses one lifetime-owned dispatcher, never one
+// goroutine per request. A full domain queue drops work without blocking.
+func (h extHooks) domain(fn func(context.Context, Port) error) {
+	s := &h.c.ext
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return
 	}
-	go func() {
-		defer close(done)
-		if previous != nil {
-			select {
-			case <-previous:
-			case <-h.c.done:
-				return
-			}
+	select {
+	case s.domainJobs <- fn:
+	default:
+		s.markOverload("extensions")
+		select {
+		case s.wake <- struct{}{}:
+		default:
 		}
-		if err := fn(port); err != nil {
-			h.Notify("extensions", "error", err.Error())
-		}
-	}()
+	}
+}
+func (h extHooks) note(owner, level, text string, prefix bool) {
+	if prefix {
+		text = "[" + owner + "] " + text
+	}
+	n := Note{Level: level, Text: text}
+	h.c.ext.notes = append(h.c.ext.notes, ownedExtNote{owner, n})
+	h.c.publish(EvNote, NoteEvent{Note: n})
 }
 func (h extHooks) chrome() {
 	h.c.publish(EvExtChrome, ExtChromeEvent{ExtChrome: cloneChrome(h.c.ext.chrome)})
@@ -128,17 +220,13 @@ func (h extHooks) Notify(ext, level, text string) {
 	if text == "" {
 		return
 	}
-	h.mutate(func() {
-		n := Note{Level: level, Text: "[" + ext + "] " + text}
-		h.c.ext.notes = append(h.c.ext.notes, ownedExtNote{ext, n})
-		h.c.publish(EvNote, NoteEvent{Note: n})
-	})
+	h.admit(ext, func() { h.note(ext, level, text, true) })
 }
 func (h extHooks) Display(ext, text string) {
 	if text == "" {
 		return
 	}
-	h.mutate(func() {
+	h.admit(ext, func() {
 		h.c.ext.notes = append(h.c.ext.notes, ownedExtNote{ext, Note{Level: "info", Text: "[" + ext + "] " + text}})
 		h.c.publish(EvExtDisplay, ExtDisplayEvent{Ext: ext, Text: text})
 	})
@@ -147,7 +235,7 @@ func (h extHooks) Display(ext, text string) {
 // ClearNotes publishes a snapshot refresh because the event contract has no
 // note-removal payload. It does not alter persisted transcript messages.
 func (h extHooks) ClearNotes(ext string) {
-	h.mutate(func() { h.clearNotes(ext); h.c.publish(EvMessagesReplaced, MessagesReplacedEvent{}) })
+	h.admit(ext, func() { h.clearNotes(ext); h.c.publish(EvMessagesReplaced, MessagesReplacedEvent{}) })
 }
 func (h extHooks) clearNotes(ext string) {
 	var kept []ownedExtNote
@@ -163,8 +251,8 @@ func (h extHooks) Submit(text string) {
 		return
 	}
 	h.mutate(func() {
-		h.domain(func(p Port) error {
-			return p.Submit(context.Background(), Input{Text: text, Origin: InputOriginExtension})
+		h.domain(func(ctx context.Context, p Port) error {
+			return p.Submit(ctx, Input{Text: text, Origin: InputOriginExtension})
 		})
 	})
 }
@@ -185,16 +273,15 @@ func (h extHooks) SubmitSlash(text string) {
 			h.c.publish(EvExtInsert, ExtInsertEvent{Text: text, Submit: true})
 			return
 		}
-		h.domain(func(p Port) error { return h.detachedSlash(p, text) })
+		h.detachedSlash(text)
 	})
 }
-func (h extHooks) detachedSlash(pport Port, text string) error {
+func (h extHooks) detachedSlash(text string) {
 	fields := strings.Fields(text)
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
-	var err error
 	switch fields[0] {
 	case "/compact":
-		err = pport.Compact(context.Background())
+		h.domain(func(ctx context.Context, p Port) error { return p.Compact(ctx) })
 	case "/model":
 		p, m, ok := strings.Cut(arg, "/")
 		if !ok {
@@ -202,10 +289,10 @@ func (h extHooks) detachedSlash(pport Port, text string) error {
 			p = ""
 		}
 		if m == "" {
-			h.Notify("extensions", "info", text)
-			return nil
+			h.note("extensions", "info", text, true)
+			return
 		}
-		err = pport.SetModel(context.Background(), p, m)
+		h.domain(func(ctx context.Context, port Port) error { return port.SetModel(ctx, p, m) })
 	case "/goal":
 		cmd := GoalCommand{Op: "set", Objective: arg}
 		switch arg {
@@ -215,18 +302,17 @@ func (h extHooks) detachedSlash(pport Port, text string) error {
 		if arg == "" {
 			cmd.Op = "status"
 		}
-		err = pport.SetGoal(context.Background(), cmd)
+		h.domain(func(ctx context.Context, p Port) error { return p.SetGoal(ctx, cmd) })
 	default:
-		h.Notify("extensions", "info", text)
-		return nil
+		h.note("extensions", "info", text, true)
+		return
 	}
-	return err
 }
 func (h extHooks) SetStatus(ext, key, level, text string) {
 	if strings.TrimSpace(ext) == "" || strings.TrimSpace(key) == "" {
 		return
 	}
-	h.mutate(func() {
+	h.admit(ext, func() {
 		s := &h.c.ext.chrome
 		if s.Statuses == nil {
 			s.Statuses = map[string]map[string]ExtStatus{}
@@ -250,7 +336,7 @@ func (h extHooks) SetWidget(ext, id, position, title string, lines []string) {
 		return
 	}
 	lines = append([]string(nil), lines...)
-	h.mutate(func() {
+	h.admit(ext, func() {
 		s := &h.c.ext.chrome
 		if s.Widgets == nil {
 			s.Widgets = map[string]map[string]ExtWidget{}
@@ -263,7 +349,7 @@ func (h extHooks) SetWidget(ext, id, position, title string, lines []string) {
 	})
 }
 func (h extHooks) ClearWidget(ext, id string) {
-	h.mutate(func() {
+	h.admit(ext, func() {
 		delete(h.c.ext.chrome.Widgets[ext], id)
 		if len(h.c.ext.chrome.Widgets[ext]) == 0 {
 			delete(h.c.ext.chrome.Widgets, ext)
@@ -274,7 +360,7 @@ func (h extHooks) ClearWidget(ext, id string) {
 func clonePanel(p ExtPanel) ExtPanel { p.Spec.Lines = append([]string(nil), p.Spec.Lines...); return p }
 func (h extHooks) OpenPanel(ext string, spec extproto.PanelSpec) {
 	spec.Lines = append([]string(nil), spec.Lines...)
-	h.mutate(func() {
+	h.admit(ext, func() {
 		p := ExtPanel{Ext: ext, Spec: spec}
 		h.c.ext.chrome.Panels = []ExtPanel{p}
 		h.c.publish(EvExtPanel, ExtPanelEvent{Op: "open", Panel: clonePanel(p)})
@@ -282,7 +368,7 @@ func (h extHooks) OpenPanel(ext string, spec extproto.PanelSpec) {
 }
 func (h extHooks) UpdatePanel(ext, id, title string, lines []string, footer string) {
 	lines = append([]string(nil), lines...)
-	h.mutate(func() {
+	h.admit(ext, func() {
 		for i, p := range h.c.ext.chrome.Panels {
 			if p.Ext == ext && p.Spec.ID == id {
 				p.Spec.Title = title
@@ -295,7 +381,7 @@ func (h extHooks) UpdatePanel(ext, id, title string, lines []string, footer stri
 	})
 }
 func (h extHooks) ClosePanel(ext, id string) {
-	h.mutate(func() {
+	h.admit(ext, func() {
 		for i, p := range h.c.ext.chrome.Panels {
 			if p.Ext == ext && p.Spec.ID == id {
 				h.c.ext.chrome.Panels = append(h.c.ext.chrome.Panels[:i], h.c.ext.chrome.Panels[i+1:]...)
@@ -306,7 +392,7 @@ func (h extHooks) ClosePanel(ext, id string) {
 	})
 }
 func (h extHooks) Alert(ext string, alert extproto.AlertRequest) {
-	h.mutate(func() {
+	h.admit(ext, func() {
 		copy := alert
 		h.c.ext.chrome.Alert = &copy
 		h.c.ext.alertOwner = ext
@@ -314,7 +400,7 @@ func (h extHooks) Alert(ext string, alert extproto.AlertRequest) {
 	})
 }
 func (h extHooks) ClearExtensionChrome(ext string) {
-	h.mutate(func() {
+	h.admit(ext, func() {
 		delete(h.c.ext.chrome.Statuses, ext)
 		delete(h.c.ext.chrome.Widgets, ext)
 		var panels []ExtPanel
