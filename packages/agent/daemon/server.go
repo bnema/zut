@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"sync"
 	"time"
@@ -146,23 +145,6 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 		}
 	}
 	return fmt.Errorf("socket dir %s is accessible by group or others (mode %v)", dir, fi.Mode().Perm())
-}
-
-// fileOwner reads the Unix owner uid from FileInfo.Sys without build-tagged
-// files (syscall.Stat_t does not exist on Windows).
-func fileOwner(fi os.FileInfo) (int, bool) {
-	v := reflect.ValueOf(fi.Sys())
-	if v.Kind() == reflect.Pointer {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return 0, false
-	}
-	f := v.FieldByName("Uid")
-	if !f.IsValid() || !f.CanUint() {
-		return 0, false
-	}
-	return int(f.Uint()), true
 }
 
 // zutOwnedSocketDirs lists the default socket directories that zut owns.
@@ -345,15 +327,9 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		if err := c.checkControl(req.Session); err != nil {
-			return nil, err
-		}
-		return nil, d.closeSession(req.Session, req.Reason)
+		return nil, d.closeSession(c, req.Session, req.Reason)
 	case "clear":
-		if err := c.checkControl(r.Session); err != nil {
-			return nil, err
-		}
-		return d.clear(r.Session)
+		return d.clear(c, r.Session)
 	case "list":
 		return d.List(ctx), nil
 	case "tree":

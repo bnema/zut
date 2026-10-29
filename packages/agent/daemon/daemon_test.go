@@ -19,6 +19,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/core"
 )
 
 // testSession bundles a generated MockHandle with the state its
@@ -119,6 +120,12 @@ func shortSocket(t *testing.T) string {
 
 func startDaemon(t *testing.T, f session.Factory, home string, opts Options) *running {
 	t.Helper()
+	return startDaemonWith(t, f, home, opts, nil)
+}
+
+// startDaemonWith runs configure on the daemon before Run.
+func startDaemonWith(t *testing.T, f session.Factory, home string, opts Options, configure func(*Daemon)) *running {
+	t.Helper()
 	opts.Home = home
 	if opts.SocketPath == "" {
 		opts.SocketPath = shortSocket(t)
@@ -131,6 +138,9 @@ func startDaemon(t *testing.T, f session.Factory, home string, opts Options) *ru
 	opts.Ready = ready
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &running{d: New(f), home: home, sock: opts.SocketPath, cancel: cancel, errc: make(chan error, 1)}
+	if configure != nil {
+		configure(r.d)
+	}
 	go func() { r.errc <- r.d.Run(ctx, opts) }()
 	select {
 	case <-ready:
@@ -890,21 +900,67 @@ func TestRunStateTransitionPersistsRunning(t *testing.T) {
 	s1 := newTestSession(t, "s1")
 	f := sessionmocks.NewMockFactory(t)
 	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
-	r := startDaemon(t, f, home, Options{})
+	r := startDaemonWith(t, f, home, Options{}, func(d *Daemon) { d.runDebounce = 0 })
 	if err := dial(t, r.sock).call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
 		t.Fatal(err)
 	}
+	waitRunning := func(want bool) {
+		t.Helper()
+		for {
+			recv(t, r.d.stateWrites)
+			st := readState(t, home)
+			if len(st.Sessions) == 1 && st.Sessions[0].Running == want {
+				return
+			}
+		}
+	}
 	s1.set(func(i *session.Info) { i.Run = session.RunStateRunning })
-	s1.emit(session.Event{Seq: 1, Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		st := readState(t, home)
-		if len(st.Sessions) == 1 && st.Sessions[0].Running {
-			break
+	s1.emit(session.Event{Seq: 1, Kind: session.EvAgent, Agent: core.EvTurnStart{}})
+	waitRunning(true)
+	s1.set(func(i *session.Info) { i.Run = session.RunStateIdle })
+	s1.emit(session.Event{Seq: 2, Kind: session.EvAgent, Agent: core.EvDone{}})
+	waitRunning(false)
+}
+
+func TestRunTransitionEvent(t *testing.T) {
+	for _, tc := range []struct {
+		ev   session.Event
+		want bool
+	}{
+		{session.Event{Kind: session.EvAgent, Agent: core.EvTurnStart{}}, true},
+		{session.Event{Kind: session.EvAgent, Agent: core.EvTurnEnd{}}, true},
+		{session.Event{Kind: session.EvAgent, Agent: core.EvDone{}}, true},
+		{session.Event{Kind: session.EvAgent, Agent: core.EvError{}}, true},
+		{session.Event{Kind: session.EvAgent, Agent: core.EvTextDelta{}}, false},
+		{session.Event{Kind: session.EvTitle}, false},
+	} {
+		if got := runTransitionEvent(tc.ev); got != tc.want {
+			t.Errorf("%+v: %v", tc.ev, got)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("running flag not persisted: %+v", st)
+	}
+}
+
+func TestDirectorySendToClosedTarget(t *testing.T) {
+	sender, target := newTestSession(t, "a"), newTestSession(t, "b")
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.CWD == "a" })).Return(sender.h, nil).Once()
+	f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.CWD == "b" })).Return(target.h, nil).Once()
+	r := startDaemon(t, f, t.TempDir(), Options{})
+	c := dial(t, r.sock)
+	for _, id := range []string{"a", "b"} {
+		if err := c.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{CWD: id}}, nil); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(10 * time.Millisecond)
+	}
+	sender.set(func(i *session.Info) { i.Attach = session.AttachStateAttached })
+	dst := r.d.lookup("b")
+	// Holding opMu keeps forget from unregistering the ended target, so the
+	// Done check (not the registry check) must reject the delivery.
+	r.d.opMu.Lock()
+	target.once.Do(func() { close(target.done) })
+	err := r.d.enqueueDelivery(context.Background(), dst, session.Input{Text: "x"})
+	r.d.opMu.Unlock()
+	if !errors.Is(err, session.ErrClosed) {
+		t.Fatalf("send to closed target = %v", err)
 	}
 }

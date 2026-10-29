@@ -72,6 +72,11 @@ type Daemon struct {
 	ctx        context.Context // lifecycle context, set by Run
 	stop       context.CancelFunc
 	deliverers map[session.ID]chan session.Input
+	// runDebounce spaces run-state persists (default runPersistDebounce).
+	runDebounce time.Duration
+	// stateWrites receives a non-blocking signal after each state.json
+	// write (cap 1); it lets tests observe persists without polling.
+	stateWrites chan struct{}
 	// runDirty signals a run-state transition to stateLoop (cap 1).
 	runDirty chan struct{}
 }
@@ -88,13 +93,15 @@ type entry struct {
 // capture the daemon as its session.Directory.
 func New(factory session.Factory) *Daemon {
 	return &Daemon{
-		factory:    factory,
-		reg:        make(map[session.ID]*entry),
-		controller: make(map[session.ID]*client),
-		clients:    make(map[uint64]*client),
-		deliverers: make(map[session.ID]chan session.Input),
-		runDirty:   make(chan struct{}, 1),
-		log:        discardLogger(),
+		factory:     factory,
+		reg:         make(map[session.ID]*entry),
+		controller:  make(map[session.ID]*client),
+		clients:     make(map[uint64]*client),
+		deliverers:  make(map[session.ID]chan session.Input),
+		runDirty:    make(chan struct{}, 1),
+		runDebounce: runPersistDebounce,
+		stateWrites: make(chan struct{}, 1),
+		log:         discardLogger(),
 	}
 }
 
@@ -177,7 +184,7 @@ func (d *Daemon) stateLoop(ctx context.Context) {
 			if debounceC != nil {
 				continue // a flush is already scheduled
 			}
-			if wait := runPersistDebounce - time.Since(last); wait > 0 {
+			if wait := d.runDebounce - time.Since(last); wait > 0 {
 				debounce = time.NewTimer(wait)
 				debounceC = debounce.C
 				continue
@@ -207,5 +214,10 @@ func (d *Daemon) persist() {
 	sortState(&st)
 	if err := saveState(d.opts.Home, st); err != nil {
 		d.log.Error("persist daemon state", "err", err)
+		return
+	}
+	select {
+	case d.stateWrites <- struct{}{}:
+	default:
 	}
 }

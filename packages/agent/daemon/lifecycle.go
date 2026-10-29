@@ -14,6 +14,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/internal/flock"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/core"
 )
 
 // ErrUnknownSession reports a request for a session the daemon does not own.
@@ -281,14 +282,12 @@ func (d *Daemon) register(h session.Handle, s stateSession, lock *flock.Lock) er
 	return nil
 }
 
-// watch follows one session: run-state transitions in EvInfo mark state.json
-// dirty (GO-008), and the session ending on its own unregisters it. The
+// watch follows one session: turn start/end events mark state.json dirty, and the session ending on its own unregisters it. The
 // event channel is only read, never waited on from the session loop. If the
 // subscription is dropped (slow consumer) it resubscribes after the last
 // seen sequence; if that is too old the 15s refresh remains the backup.
 func (d *Daemon) watch(ctx context.Context, e *entry) {
 	done := e.h.Done()
-	running := e.h.Info().Run == session.RunStateRunning
 	var seq uint64
 	var events <-chan session.Event
 	subscribe := func() {
@@ -314,24 +313,29 @@ func (d *Daemon) watch(ctx context.Context, e *entry) {
 				continue
 			}
 			seq = ev.Seq
-			if ev.Kind != session.EvInfo {
-				continue
-			}
-			var info session.Info
-			switch p := ev.Data.(type) {
-			case session.InfoEvent:
-				info = p.Info
-			case *session.InfoEvent:
-				info = p.Info
-			default:
-				continue
-			}
-			if now := info.Run == session.RunStateRunning; now != running {
-				running = now
+			if runTransitionEvent(ev) {
 				d.markRunDirty()
 			}
 		}
 	}
+}
+
+// runTransitionEvent reports events the controller publishes when a turn
+// starts or finishes (agent turn_start, turn_end, done, error), plus EvInfo.
+// stateLoop compares the actual Info().Run with the persisted flag, so
+// spurious triggers only cost a comparison.
+func runTransitionEvent(ev session.Event) bool {
+	switch ev.Kind {
+	case session.EvInfo:
+		return true
+	case session.EvAgent:
+		switch ev.Agent.(type) {
+		case core.EvTurnStart, *core.EvTurnStart, core.EvTurnEnd, *core.EvTurnEnd,
+			core.EvDone, *core.EvDone, core.EvError, *core.EvError:
+			return true
+		}
+	}
+	return false
 }
 
 // forget drops a session that ended on its own (for example /exit).
@@ -434,10 +438,14 @@ func (d *Daemon) clientGone(c *client) {
 	}
 }
 
-// closeSession ends id explicitly and removes it from state.json.
-func (d *Daemon) closeSession(id session.ID, reason string) error {
+// closeSession ends id explicitly and removes it from state.json. Control is
+// checked under opMu so a concurrent takeover cannot slip in between.
+func (d *Daemon) closeSession(c *client, id session.ID, reason string) error {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
+	if err := c.checkControl(id); err != nil {
+		return err
+	}
 	return d.closeLocked(id, reason, "")
 }
 
@@ -478,9 +486,12 @@ func (d *Daemon) stopTimeout() time.Duration {
 // and current provider/model/reasoning, close the old session with reason
 // cleared and move the controlling client to the successor. The successor
 // identity reaches the client through the closed notification and result.
-func (d *Daemon) clear(id session.ID) (session.Info, error) {
+func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
+	if err := c.checkControl(id); err != nil {
+		return session.Info{}, err
+	}
 	e := d.lookup(id)
 	if e == nil {
 		return session.Info{}, ErrUnknownSession

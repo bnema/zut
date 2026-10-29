@@ -85,6 +85,11 @@ func (d *Daemon) enqueueDelivery(ctx context.Context, dst *entry, in session.Inp
 	if d.stopping || d.ctx == nil || d.reg[dst.id] != dst {
 		return fmt.Errorf("target %s: %w", dst.id, ErrUnknownSession)
 	}
+	select {
+	case <-dst.h.Done():
+		return fmt.Errorf("target %s: %w", dst.id, session.ErrClosed)
+	default:
+	}
 	q := d.deliverers[dst.id]
 	if q == nil {
 		q = make(chan session.Input, deliveryQueueSize)
