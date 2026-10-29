@@ -69,7 +69,7 @@ func TestRescueDetachedFails(t *testing.T) {
 	confirm.EXPECT().awaitPending(mock.Anything, mock.MatchedBy(func(req PendingRequest) bool { return req.Kind == "rescue" && req.Rescue.Error == "overflow" })).Return(nil, ErrNotAttached).Once()
 
 	require.NoError(t, c.call(ctx, func() { c.confirmSeam = confirm }))
-	_, err := c.rescueCompact(ctx, nil, 0, errors.New("overflow"))
+	_, err := c.rescue(ctx, errors.New("overflow"))
 	require.ErrorIs(t, err, ErrNotAttached)
 }
 func TestCompactMissingAgent(t *testing.T) {

@@ -20,6 +20,8 @@ type turnSeam interface {
 	// turnInfo projects turn-owned status and accounting into Info.
 	turnInfo() turnInfoProjection
 	cancelTurn()
+	// drainQueued starts the next queued input once compaction releases the transcript.
+	drainQueued()
 }
 type confirmSeam interface {
 	// awaitPending registers and publishes a pending request, then waits for an
@@ -48,6 +50,14 @@ type residentSeam interface {
 	residentsRunning() bool
 	residentSummaries() []ResidentSummary
 }
-type compactSeam interface{ maybeAutoCompact(Input) bool }
+type compactSeam interface {
+	maybeAutoCompact(Input) bool
+	// compacting reports an in-flight compaction (busy for Submit/updateInfo).
+	compacting() bool
+	// abortCompaction cancels cleanly: EvCompaction{failed}, transcript unchanged.
+	abortCompaction()
+	// rescueTurn asks for a fallback model off the actor, then retries retry.
+	rescueTurn(cause error, retry Input)
+}
 type settingsSeam interface{ replaceAgent(*core.Agent) }
 type interSeam interface{ deliverInterSession(Sender, string) error }

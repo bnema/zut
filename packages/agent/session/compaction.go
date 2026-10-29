@@ -12,6 +12,9 @@ import (
 type compactState struct {
 	busy     bool
 	skipOnce bool
+	// cancel and aborted belong to the in-flight compaction only.
+	cancel  context.CancelFunc
+	aborted bool
 }
 
 func (s *compactState) snapshotInto(out *Snapshot) {
@@ -74,15 +77,31 @@ func (c *Controller) maybeAutoCompact(next Input) bool {
 func (c *Controller) compactNote(err error) {
 	c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "compaction failed: " + err.Error()}})
 }
+
+// compacting reports whether a compaction owns the transcript.
+func (c *Controller) compacting() bool { return c.compact.busy }
+
+// abortCompaction cancels the in-flight summary; completion publishes
+// EvCompaction{failed} and restores the pre-compaction transcript.
+func (c *Controller) abortCompaction() {
+	if !c.compact.busy || c.compact.aborted {
+		return
+	}
+	c.compact.aborted = true
+	if c.compact.cancel != nil {
+		c.compact.cancel()
+	}
+}
 func (c *Controller) beginCompact(next *Input) error {
 	ag := c.turnSeam.currentAgent()
 	if ag == nil {
 		return errors.New("agent unavailable")
 	}
-	c.compact.busy = true
+	ctx, cancel := context.WithCancel(context.Background())
+	c.compact.busy, c.compact.aborted, c.compact.cancel = true, false, cancel
+	before := ag.Messages()
 	c.publish(EvCompaction, CompactionEvent{Phase: "start"})
 	go func() {
-		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go func() {
 			select {
@@ -91,19 +110,31 @@ func (c *Controller) beginCompact(next *Input) error {
 			case <-ctx.Done():
 			}
 		}()
-		tail := 4
-		if n := ag.MessageCount(); tail >= n {
-			tail = n - 1
-		}
-		summary, err := ag.Compact(ctx, tail, nil)
+		target := ag
+		summary, err := target.Compact(ctx, compactTail(target), nil)
 		if err != nil && ctx.Err() == nil {
-			summary, err = c.rescueCompact(ctx, ag, tail, err)
+			var replacement *core.Agent
+			replacement, err = c.rescue(ctx, err)
+			if err == nil {
+				target = replacement
+				summary, err = target.Compact(ctx, compactTail(target), nil)
+			}
 		}
 		_ = c.call(context.Background(), func() {
-			c.compact.busy = false
+			aborted := c.compact.aborted
+			c.compact.busy, c.compact.aborted, c.compact.cancel = false, false, nil
+			if aborted {
+				// A summary that won the race with cancellation is rolled back.
+				if err == nil {
+					target.RestoreMessages(before)
+				}
+				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
+				return
+			}
 			if err != nil {
 				c.publish(EvCompaction, CompactionEvent{Phase: "failed"})
 				c.compactNote(err)
+				c.turnSeam.drainQueued()
 				return
 			}
 			if c.deps.SessionStore != nil {
@@ -116,17 +147,53 @@ func (c *Controller) beginCompact(next *Input) error {
 				if e := c.turnSeam.startTurn(*next); e != nil {
 					c.compact.skipOnce = false
 					c.compactNote(e)
+				} else {
+					return
 				}
 			}
+			c.turnSeam.drainQueued()
 		})
 	}()
 	return nil
 }
+func compactTail(ag *core.Agent) int {
+	tail := 4
+	if n := ag.MessageCount(); tail >= n {
+		tail = n - 1
+	}
+	return tail
+}
 
-// rescueCompact waits outside the actor; confirm owns request registration and
-// detach handling. Candidates mirror configured quick-model shortcuts because
-// the baseline Deps has no model-discovery boundary.
-func (c *Controller) rescueCompact(ctx context.Context, ag *core.Agent, tail int, cause error) (string, error) {
+// rescueTurn asks the controlling client for a fallback model after a failed
+// turn, adopts it through TURN and retries the prompt. Called on the actor; the
+// wait runs off it. Detached sessions fail with a Note.
+func (c *Controller) rescueTurn(cause error, retry Input) {
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-c.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		_, err := c.rescue(ctx, cause)
+		_ = c.call(context.Background(), func() {
+			if err == nil {
+				err = c.turnSeam.startTurn(retry)
+			}
+			if err != nil {
+				c.publish(EvNote, NoteEvent{Note: Note{Level: "error", Text: "rescue failed: " + err.Error()}})
+			}
+		})
+	}()
+}
+
+// rescue must run off the actor: awaitPending blocks until a client answers.
+// Candidates mirror configured quick-model shortcuts because the baseline Deps
+// has no model-discovery boundary. The adopted agent keeps the transcript.
+func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, error) {
 	var req PendingRequest
 	var seam confirmSeam
 	var builder AgentBuilder
@@ -138,14 +205,14 @@ func (c *Controller) rescueCompact(ctx context.Context, ag *core.Agent, tail int
 		seam = c.confirmSeam
 		builder = c.deps.AgentBuilder
 	}); err != nil {
-		return "", err
+		return nil, err
 	}
 	answers, err := seam.awaitPending(ctx, req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(answers) != 1 {
-		return "", errors.New("rescue requires one model")
+		return nil, errors.New("rescue requires one model")
 	}
 	value := answers[0].Custom
 	if len(answers[0].Selected) == 1 {
@@ -153,25 +220,35 @@ func (c *Controller) rescueCompact(ctx context.Context, ag *core.Agent, tail int
 	}
 	p, m, ok := strings.Cut(value, "/")
 	if !ok || p == "" || m == "" {
-		return "", errors.New("invalid rescue model")
+		return nil, errors.New("invalid rescue model")
 	}
 	if builder == nil {
-		return "", cause
+		return nil, cause
 	}
-	replacement, _, _, err := builder.BuildAgentForRescue(p, m)
+	replacement, actualP, actualM, err := builder.BuildAgentForRescue(p, m)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if replacement == nil {
-		return "", errors.New("rescue builder returned nil")
+		return nil, errors.New("rescue builder returned nil")
 	}
-	replacement.RestoreMessages(ag.Messages())
-	summary, err := replacement.Compact(ctx, tail, nil)
+	if e := c.call(ctx, func() {
+		c.replaceAgent(replacement)
+		if err = c.settings.replaceErr; err != nil {
+			return
+		}
+		c.deps.Provider, c.deps.Model = actualP, actualM
+		if c.deps.SessionStore != nil {
+			c.deps.SessionStore.PersistModel(actualP, actualM)
+		}
+		c.publish(EvInfo, InfoEvent{Info: c.Info()})
+	}); e != nil {
+		return nil, e
+	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	ag.SetMessages(replacement.Messages())
-	return summary, nil
+	return replacement, nil
 }
 
 // maybeGenerateTitle is best effort and runs only for the first real user input.

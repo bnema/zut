@@ -164,6 +164,39 @@ func (_c *mockturnSeam_currentAgent_Call) RunAndReturn(run func() *core.Agent) *
 	return _c
 }
 
+// drainQueued provides a mock function for the type mockturnSeam
+func (_mock *mockturnSeam) drainQueued() {
+	_mock.Called()
+	return
+}
+
+// mockturnSeam_drainQueued_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'drainQueued'
+type mockturnSeam_drainQueued_Call struct {
+	*mock.Call
+}
+
+// drainQueued is a helper method to define mock.On call
+func (_e *mockturnSeam_Expecter) drainQueued() *mockturnSeam_drainQueued_Call {
+	return &mockturnSeam_drainQueued_Call{Call: _e.mock.On("drainQueued")}
+}
+
+func (_c *mockturnSeam_drainQueued_Call) Run(run func()) *mockturnSeam_drainQueued_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockturnSeam_drainQueued_Call) Return() *mockturnSeam_drainQueued_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *mockturnSeam_drainQueued_Call) RunAndReturn(run func()) *mockturnSeam_drainQueued_Call {
+	_c.Run(run)
+	return _c
+}
+
 // enqueue provides a mock function for the type mockturnSeam
 func (_mock *mockturnSeam) enqueue(input Input) {
 	_mock.Called(input)

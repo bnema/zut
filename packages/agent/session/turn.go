@@ -37,6 +37,7 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 func (c *Controller) isBusy() bool            { return false }
 func (c *Controller) turnOrigin() InputOrigin { return "" }
 func (c *Controller) cancelTurn()             {}
+func (c *Controller) drainQueued()            {}
 
 // turnInfoProjection carries turn-owned activity and usage into the actor Info.
 type turnInfoProjection struct {
