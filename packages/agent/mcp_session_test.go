@@ -42,9 +42,16 @@ func TestSessionMCPNoSignalHandlers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "mcp.json"), []byte(`{"mcpServers":{"missing":{"command":"/nonexistent/zut-l2-server"}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	stop, err := startSessionMCP(context.Background(), Args{CWD: home}, []string{})
+	args := Args{CWD: home}
+	manager, stop, err := startSessionMCP(context.Background(), args, []string{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if manager == nil {
+		t.Fatal("session manager not returned")
+	}
+	if args.mcpManager != nil {
+		t.Fatal("session args mutated")
 	}
 	stop()
 }

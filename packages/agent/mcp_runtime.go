@@ -43,13 +43,17 @@ func mcpAllowed(args Args) bool {
 // and resident children) shares the same connections. A server marked
 // required that fails to start aborts the run.
 func startMCP(ctx context.Context, args *Args, version string) (func(), error) {
-	return startMCPWithEnv(ctx, args, version, os.Environ(), true)
+	manager, stop, err := startMCPWithEnv(ctx, args, version, os.Environ(), true)
+	if err == nil {
+		args.mcpManager = manager
+	}
+	return stop, err
 }
 
-func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string, processSignals bool) (func(), error) {
+func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string, processSignals bool) (*mcp.Manager, func(), error) {
 	noop := func() {}
 	if args.mcpManager != nil || !mcpAllowed(*args) {
-		return noop, nil
+		return args.mcpManager, noop, nil
 	}
 	cfg, cfgErrs := mcp.LoadConfig(ZutHome(), args.CWD, env)
 	for _, err := range cfgErrs {
@@ -57,7 +61,7 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	}
 	if len(cfg.Servers) == 0 {
 		reportMCPStartup(*args)
-		return noop, nil
+		return args.mcpManager, noop, nil
 	}
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
@@ -74,7 +78,7 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 		if sig != nil {
 			_ = manager.Close()
 			mcpSignalExit(signalExitCode(sig))
-			return noop, fmt.Errorf("mcp startup interrupted by %v", sig)
+			return nil, noop, fmt.Errorf("mcp startup interrupted by %v", sig)
 		}
 	} else {
 		failures, requiredErr = manager.Start(ctx)
@@ -85,17 +89,17 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	}
 	if requiredErr != nil {
 		_ = manager.Close()
-		return noop, fmt.Errorf("required MCP server failed to start: %w", requiredErr)
+		return nil, noop, fmt.Errorf("required MCP server failed to start: %w", requiredErr)
 	}
-	args.mcpManager = manager
 	reportMCPStartup(*args)
-	return func() { _ = manager.Close() }, nil
+	return manager, func() { _ = manager.Close() }, nil
 }
 
 // startSessionMCP starts session-owned connections without process signal handlers
 // or process termination. The caller owns cancellation and supplies its base env.
-// Args is a value for assembly callers; use the returned cleanup on every exit.
-func startSessionMCP(ctx context.Context, args Args, env []string) (func(), error) {
+// The returned manager is installed by assembly; args is never mutated.
+// Use the returned cleanup on every exit.
+func startSessionMCP(ctx context.Context, args Args, env []string) (*mcp.Manager, func(), error) {
 	return startMCPWithEnv(ctx, &args, "", env, false)
 }
 
