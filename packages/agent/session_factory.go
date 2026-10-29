@@ -118,6 +118,7 @@ func (f *sessionFactory) runScheduler(ctx context.Context) error {
 	if f.engine == nil {
 		return nil
 	}
+	f.engine.OnPersistError(func(err error) { f.log.Error("scheduler save failed", "err", err) })
 	return f.engine.Run(ctx, f.executeTask)
 }
 

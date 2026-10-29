@@ -134,7 +134,8 @@ func (e *Engine) Load() error {
 // Err reports the most recent persistence failure (nil after a successful save).
 // Cancel returns false on save failure, retaining the task unless the error
 // indicates replacement already committed. Completion keeps its updated
-// in-memory state, and Run returns the failure to its host.
+// in-memory state and Run retries the save on its next wake; Run never stops
+// because of a persistence failure.
 func (e *Engine) Err() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -158,6 +159,14 @@ func (e *Engine) update(keepOnError bool, change func(map[string]Task)) error {
 
 // saveSnapshot requires persistMu, but never holds mu during store I/O.
 func (e *Engine) saveSnapshot(candidate map[string]Task, keepOnError bool) error {
+	err := e.persistSnapshot(candidate, keepOnError)
+	// Centralized wake covers failed Add/Cancel as well as completion and Load.
+	e.signalWake()
+	return err
+}
+
+// persistSnapshot saves and commits candidate without waking Run.
+func (e *Engine) persistSnapshot(candidate map[string]Task, keepOnError bool) error {
 	var err error
 	if e.store != nil {
 		tasks := make([]Task, 0, len(candidate))
@@ -169,13 +178,19 @@ func (e *Engine) saveSnapshot(candidate map[string]Task, keepOnError bool) error
 	}
 	var committed *CommittedError
 	e.mu.Lock()
-	if err == nil || keepOnError || errors.As(err, &committed) {
+	durable := err == nil || errors.As(err, &committed)
+	if durable || keepOnError {
 		e.tasks = candidate
+	}
+	if durable {
+		// Any replaced snapshot derives from e.tasks, so it carries prior
+		// unsaved completion state too.
+		e.unsaved = false
+	} else if keepOnError {
+		e.unsaved = true
 	}
 	e.persistErr = err
 	e.mu.Unlock()
-	// Centralized wake covers failed Add/Cancel as well as completion and Load.
-	e.signalWake()
 	return err
 }
 
