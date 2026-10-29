@@ -505,6 +505,7 @@ func (i *Interactive) attachPort(ctx context.Context) error {
 	i.events = events
 	i.hydrateLocked(snap)
 	i.mu.Unlock()
+	i.syncPortDialogs()
 	i.scrollToBottom()
 	i.invalidate()
 	return nil
@@ -998,6 +999,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.hydrateLocked(res.snap)
 	}
 	i.mu.Unlock()
+	i.syncPortDialogs()
 	i.scrollToBottom()
 	i.invalidate()
 	return false
