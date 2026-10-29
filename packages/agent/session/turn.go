@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
@@ -165,7 +166,9 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 			case <-finished:
 			}
 		}()
-		sink := func(ev core.AgentEvent) { _ = c.call(context.Background(), func() { c.applyAgentEvent(ev) }) }
+		callbacks := c.newTurnCallbacks()
+		callbacks.push(func() { c.residentSeam.residentsRunStarted() })
+		sink := func(ev core.AgentEvent) { callbacks.push(func() { c.applyAgentEvent(ev) }) }
 		var err error
 		if continuing {
 			err = ag.Continue(ctx, sink)
@@ -175,9 +178,8 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 		} else {
 			err = ag.Prompt(ctx, in.Text, in.Images, sink)
 		}
-		_ = c.call(context.Background(), func() { c.finishTurn(ctx, err) })
+		callbacks.push(func() { c.residentSeam.residentsRunEnded(); c.finishTurn(ctx, err); close(callbacks.finished) })
 		close(finished)
-		cancel()
 	}()
 	return nil
 }
@@ -383,4 +385,53 @@ func (c *Controller) setAgent(ag *core.Agent) error {
 	}
 	c.turn.agent = ag
 	return nil
+}
+
+// turnCallbacks serializes run callbacks without waiting on the actor. In
+// particular, a reentrant sink called by actor-owned hooks cannot deadlock.
+// One worker preserves sink order and the final run boundary in the same FIFO.
+type turnCallbacks struct {
+	mu       sync.Mutex
+	pending  []func()
+	wake     chan struct{}
+	finished chan struct{}
+}
+
+func (c *Controller) newTurnCallbacks() *turnCallbacks {
+	q := &turnCallbacks{wake: make(chan struct{}, 1), finished: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-q.finished:
+				return
+			case <-q.wake:
+				for {
+					q.mu.Lock()
+					batch := q.pending
+					q.pending = nil
+					q.mu.Unlock()
+					if len(batch) == 0 {
+						break
+					}
+					for _, fn := range batch {
+						if c.call(context.Background(), fn) != nil {
+							return
+						}
+					}
+				}
+			}
+		}
+	}()
+	return q
+}
+func (q *turnCallbacks) push(fn func()) {
+	q.mu.Lock()
+	q.pending = append(q.pending, fn)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
 }

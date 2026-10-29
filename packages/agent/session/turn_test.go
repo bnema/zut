@@ -28,6 +28,12 @@ func turnSeams(t *testing.T, c *Controller, ctx context.Context) {
 func TestTurnStreamAndQueue(t *testing.T) {
 	c, ctx := newTestController(t)
 	turnSeams(t, c, ctx)
+	residents := newMockresidentSeam(t)
+	residents.EXPECT().residentsRunStarted().Return().Twice()
+	residents.EXPECT().residentsRunEnded().Return().Twice()
+	residents.EXPECT().residentSummaries().Return(nil).Maybe()
+	require.NoError(t, c.call(ctx, func() { c.residentSeam = residents }))
+
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("test").Maybe()
 	first := make(chan provider.Event, 8)
@@ -367,4 +373,22 @@ func TestTurnGoalHiddenBeforePrompt(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
+}
+
+func TestTurnCallbacksReentrantAndOrdered(t *testing.T) {
+	c, ctx := newTestController(t)
+	q := c.newTurnCallbacks()
+	require.NoError(t, c.call(ctx, func() {
+		q.push(func() { c.applyAgentEvent(core.EvTextDelta{Delta: "one"}) })
+		q.push(func() { c.applyAgentEvent(core.EvTextDelta{Delta: "two"}) })
+		q.push(func() { close(q.finished) })
+	}))
+	select {
+	case <-q.finished:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "onetwo", snap.Live.AssistantText)
 }
