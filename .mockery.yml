@@ -24,6 +24,14 @@ packages:
       ToolRefresher:
       ExtensionHost:
       ResidentHost:
+        configs:
+          - dir: packages/agent/session/sessionmocks
+            pkgname: sessionmocks
+            filename: ResidentHost_mock.go
+          - dir: packages/agent/session
+            pkgname: session
+            filename: residents_host_mock_test.go
+            structname: mockResidentHostLocal
       SettingsStore:
       ConfirmGate:
       ScheduleHost:

@@ -46,10 +46,10 @@ type schedSeam interface {
 	scheduleCount() int
 }
 type residentSeam interface {
-	residentsRunStarted()
-	residentsRunEnded()
 	// residentsInit wires observers before the actor accepts commands.
 	residentsInit()
+	residentsRunStarted()
+	residentsRunEnded()
 	residentsRunning() bool
 	residentSummaries() []ResidentSummary
 }
