@@ -404,3 +404,42 @@ func writeResidentJournal(t *testing.T, root, childID string, events ...core.Age
 		t.Fatal(err)
 	}
 }
+
+// /subagents kill and send run ResidentAction off the input goroutine and
+// report through the status line once it returns.
+func TestSubagentsSlashActionsRunAsynchronously(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	interactive := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
+	release := make(chan struct{})
+	port.EXPECT().ResidentAction(mock.Anything, session.ResidentCommand{Op: "stop", ChildID: "child"}).RunAndReturn(func(context.Context, session.ResidentCommand) error {
+		<-release
+		return nil
+	}).Once()
+	port.EXPECT().ResidentAction(mock.Anything, session.ResidentCommand{Op: "resume", ChildID: "child", Prompt: "go on"}).Return(errors.New("busy")).Once()
+
+	// Returns while the daemon call is still blocked.
+	interactive.runResidentSubagents(context.Background(), []string{"kill", "child"})
+	close(release)
+	waitSubagentsStatus(t, interactive, func(ok, _ string) bool { return ok == "stopped child" })
+
+	interactive.runResidentSubagents(context.Background(), []string{"send", "child", "go", "on"})
+	waitSubagentsStatus(t, interactive, func(_, errMsg string) bool { return errMsg == "send: busy" })
+}
+
+func waitSubagentsStatus(t *testing.T, interactive *Interactive, done func(ok, errMsg string) bool) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		interactive.mu.Lock()
+		ok, errMsg := interactive.statusOK, interactive.statusErr
+		interactive.mu.Unlock()
+		if done(ok, errMsg) {
+			return
+		}
+		select {
+		case <-interactive.dirty:
+		case <-timeout:
+			t.Fatalf("status = (%q, %q)", ok, errMsg)
+		}
+	}
+}

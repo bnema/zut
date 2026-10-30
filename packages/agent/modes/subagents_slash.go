@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -62,22 +63,14 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
 			return
 		}
-		if err := i.residentPort().ResidentAction(ctx, session.ResidentCommand{Op: "stop", ChildID: rest}); err != nil {
-			i.subagentsStatus("", "kill: "+err.Error())
-			return
-		}
-		i.subagentsStatus("stopped "+rest, "")
+		i.residentActionAsync(ctx, "kill", session.ResidentCommand{Op: "stop", ChildID: rest}, "stopped "+rest)
 	case "send", "prompt", "msg", "resume":
 		id, prompt := splitIDAndRest(rest)
 		if id == "" || prompt == "" {
 			i.subagentsStatus("", "/subagents "+sub+" <id> <prompt>: missing id or prompt")
 			return
 		}
-		if err := i.residentPort().ResidentAction(ctx, session.ResidentCommand{Op: "resume", ChildID: id, Prompt: prompt}); err != nil {
-			i.subagentsStatus("", sub+": "+err.Error())
-			return
-		}
-		i.subagentsStatus("sent follow-up to "+id, "")
+		i.residentActionAsync(ctx, sub, session.ResidentCommand{Op: "resume", ChildID: id, Prompt: prompt}, "sent follow-up to "+id)
 	default:
 		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
 	}
@@ -303,4 +296,26 @@ func (i *Interactive) hasResidentSubagents() bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return len(i.portInfo.Residents) > 0
+}
+
+// residentActionTimeout bounds one slash-command resident action.
+const residentActionTimeout = 30 * time.Second
+
+// residentActionAsync runs a resident action off the input goroutine and
+// reports the outcome on the status line, like the child-view submit.
+func (i *Interactive) residentActionAsync(ctx context.Context, label string, command session.ResidentCommand, ok string) {
+	port := i.residentPort()
+	if port == nil {
+		i.subagentsStatus("", label+": "+i.autoSubagentsUnavailableHint())
+		return
+	}
+	go func() {
+		actionCtx, cancel := context.WithTimeout(ctx, residentActionTimeout)
+		defer cancel()
+		if err := port.ResidentAction(actionCtx, command); err != nil {
+			i.subagentsStatus("", label+": "+err.Error())
+			return
+		}
+		i.subagentsStatus(ok, "")
+	}()
 }
