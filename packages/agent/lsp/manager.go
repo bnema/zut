@@ -304,36 +304,44 @@ func (m *Manager) Open(ctx context.Context, cwd, path string) error {
 			}
 			continue
 		}
-		hash := contentHash(text)
-		m.mu.Lock()
-		if ws.opened[spec.ID] == nil {
-			ws.opened[spec.ID] = make(map[string]string)
-		}
-		old, open := ws.opened[spec.ID][path]
-		m.mu.Unlock()
-		if !open {
-			languageID := spec.LanguageID
-			if languageID == "" {
-				languageID = languageForExtension(filepath.Ext(path))
-			}
-			if clientErr = client.DidOpen(path, languageID, string(text)); clientErr == nil {
-				m.mu.Lock()
-				ws.opened[spec.ID][path] = hash
-				m.mu.Unlock()
-			}
-		} else if old != hash {
-			if clientErr = client.DidChange(path, string(text)); clientErr == nil {
-				m.mu.Lock()
-				ws.opened[spec.ID][path] = hash
-				m.mu.Unlock()
-			}
-		}
+		clientErr = m.syncDocument(ws, spec, client, path, text)
 		if clientErr != nil && err == nil {
 			err = clientErr
 		}
 		m.releaseClient(ws, spec.ID, client)
 	}
 	return err
+}
+
+// syncDocument prepares one document on the caller's leased client. The lease
+// must remain held until any request depending on that document completes.
+func (m *Manager) syncDocument(ws *workspace, spec ServerConfig, client *Client, path string, text []byte) error {
+	var clientErr error
+	hash := contentHash(text)
+	m.mu.Lock()
+	if ws.opened[spec.ID] == nil {
+		ws.opened[spec.ID] = make(map[string]string)
+	}
+	old, open := ws.opened[spec.ID][path]
+	m.mu.Unlock()
+	if !open {
+		languageID := spec.LanguageID
+		if languageID == "" {
+			languageID = languageForExtension(filepath.Ext(path))
+		}
+		if clientErr = client.DidOpen(path, languageID, string(text)); clientErr == nil {
+			m.mu.Lock()
+			ws.opened[spec.ID][path] = hash
+			m.mu.Unlock()
+		}
+	} else if old != hash {
+		if clientErr = client.DidChange(path, string(text)); clientErr == nil {
+			m.mu.Lock()
+			ws.opened[spec.ID][path] = hash
+			m.mu.Unlock()
+		}
+	}
+	return clientErr
 }
 
 func (m *Manager) Save(ctx context.Context, cwd, path string) error {
@@ -494,8 +502,13 @@ func (m *Manager) RequestAll(ctx context.Context, cwd, path, method string, para
 	if err != nil {
 		return []Response{{Error: err}}
 	}
+	var text []byte
 	if path != "" {
-		_ = m.Open(ctx, ws.cwd, path)
+		path, err = absoluteFile(ws.cwd, path)
+		if err == nil {
+			text, err = os.ReadFile(path)
+		}
+		// Preserve best-effort navigation when the file cannot be read.
 	}
 	var responses []Response
 	for _, spec := range m.applicable(ws, path) {
@@ -506,6 +519,9 @@ func (m *Manager) RequestAll(ctx context.Context, cwd, path, method string, para
 		if clientErr != nil {
 			responses = append(responses, Response{Server: spec.ID, Error: clientErr})
 			continue
+		}
+		if path != "" && err == nil {
+			_ = m.syncDocument(ws, spec, client, path, text)
 		}
 		result, requestErr := m.requestWithTimeout(ctx, client, method, params)
 		m.releaseClient(ws, spec.ID, client)
