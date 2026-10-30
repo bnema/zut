@@ -41,20 +41,34 @@ func runUpdateCommand(rawArgs []string, version string) (handled bool, err error
 	if len(rawArgs) == 0 || rawArgs[0] != "update" {
 		return false, nil
 	}
-	// Accept --help/-h for parity with the rest of the CLI.
-	for _, a := range rawArgs[1:] {
+	check, restart, help, err := parseUpdateFlags(rawArgs[1:])
+	if help || err != nil {
+		printUpdateHelp()
+		return true, err
+	}
+	if check {
+		return true, runUpdateCheck(version)
+	}
+	return true, runUpdateWithRestart(version, restart)
+}
+
+func parseUpdateFlags(args []string) (check, restart, help bool, err error) {
+	for _, a := range args {
 		switch a {
 		case "-h", "--help", "help":
-			printUpdateHelp()
-			return true, nil
+			help = true
 		case "--check":
-			return true, runUpdateCheck(version)
+			check = true
+		case "--restart-daemon":
+			restart = true
 		default:
-			printUpdateHelp()
-			return true, fmt.Errorf("unknown update flag: %s", a)
+			return false, false, false, fmt.Errorf("unknown update flag: %s", a)
 		}
 	}
-	return true, runUpdate(version)
+	if check && restart && !help {
+		err = errors.New("--check and --restart-daemon cannot be combined")
+	}
+	return
 }
 
 func printUpdateHelp() {
@@ -62,10 +76,13 @@ func printUpdateHelp() {
 
 usage:
   zut update           download and install the newest release
+  zut update --restart-daemon  install, then restart the daemon (sessions restored idle)
   zut update --check   show what update is available; install nothing
   zut update --help    show this help
 
 notes:
+  * A running daemon keeps its old version until restarted. By default,
+    update only prints a reminder; --restart-daemon opts into a restart.
   * The binary must be writable by the current user. On a system-wide
     install (e.g. /usr/local/bin/zut owned by root) re-run with sudo.
   * Development builds are refused. They typically come from a local
@@ -108,6 +125,10 @@ func runUpdateCheck(version string) error {
 
 // runUpdate is the meat of `zut update`.
 func runUpdate(version string) error {
+	return runUpdateWithRestart(version, false)
+}
+
+func runUpdateWithRestart(version string, restart bool) error {
 	if isDevVersion(version) {
 		return errors.New(devVersionNotice + "; `zut update` is disabled. Build a release tag or download from https://git.bnema.dev/zut/releases")
 	}
@@ -213,6 +234,33 @@ func runUpdate(version string) error {
 	// overall update — the binary swap already succeeded.
 	updateAllExtensions(ZutHome())
 
+	return updateDaemonAfterInstall(os.Stdout, latest, restart, updateDaemonRunning, daemonRestart)
+}
+
+// updateDaemonRunning uses the same status RPC as zut daemon status, without
+// spawning a daemon. An unreachable daemon is treated as not running.
+func updateDaemonRunning(ctx context.Context) bool {
+	c, err := dialExistingDaemon(ctx)
+	if err != nil {
+		return false
+	}
+	defer c.Disconnect()
+	_, err = c.Status(ctx)
+	return err == nil
+}
+
+func updateDaemonAfterInstall(w io.Writer, version string, restart bool, probe func(context.Context) bool, restartDaemon func(io.Writer, string) error) error {
+	if restart {
+		if err := restartDaemon(w, version); err != nil {
+			return fmt.Errorf("binary installed, but daemon restart failed: %w", err)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if probe(ctx) {
+		fmt.Fprintln(w, "zut: a daemon is running an older version; run 'zut daemon restart' to use the new version (sessions are restored idle)")
+	}
 	return nil
 }
 
