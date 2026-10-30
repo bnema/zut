@@ -150,40 +150,6 @@ func (i *Interactive) showSessionInfo() {
 	i.mu.Unlock()
 }
 
-// showMCPStatus appends a display-only MCP server status block.
-func (i *Interactive) showMCPStatus() {
-	i.mu.Lock()
-	statusFn := i.cfg.MCPStatus
-	theme := i.cfg.Theme
-	terminal := i.cfg.Terminal
-	i.mu.Unlock()
-
-	text := "MCP status is unavailable"
-	if statusFn != nil {
-		text = statusFn()
-	}
-	width := 80
-	if terminal != nil {
-		width, _ = terminal.Size()
-	}
-	if width < 20 {
-		width = 20
-	}
-	block := []string{frameHeader(theme, "mcp servers", width), ""}
-	for _, line := range strings.Split(text, "\n") {
-		block = append(block, "  "+theme.FGColor(theme.Muted, sanitizeTimelineLine(line)))
-	}
-	block = append(block, "", frameRule(theme, width), "")
-
-	i.mu.Lock()
-	i.helpBlock = nil
-	i.sessionInfoBlocks = append(i.sessionInfoBlocks, sessionInfoBlock{afterMessage: i.visibleTranscriptCountLocked(), lines: block})
-	i.statusErr = ""
-	i.statusOK = ""
-	i.scrollOffset = 0
-	i.mu.Unlock()
-}
-
 // visibleTranscriptCountLocked anchors a display block after the visible
 // transcript: the session's when attached, else the legacy agent's.
 func (i *Interactive) visibleTranscriptCountLocked() int {

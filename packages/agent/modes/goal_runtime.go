@@ -123,17 +123,6 @@ func (i *Interactive) observeGoalRun(ev core.AgentEvent) {
 	}
 }
 
-// finishGoalRun records accounting exactly once and returns whether the
-// controller should attempt another autonomous continuation. Context-limited
-// turns retain their prior progress classification because output truncation
-// is not evidence that the agent stopped acting. Cancelled runs keep lease
-// cleanup and token accounting but never consume the no-progress allowance:
-// the user interrupted before the model could act. A stale run is discarded
-// without changing a newer goal.
-func (i *Interactive) finishGoalRun(contextLimited bool) bool {
-	return i.finishGoalRunCancelled(contextLimited, false)
-}
-
 func (i *Interactive) stallGoalRun(run *goalContinuationRun, reason string) bool {
 	if run == nil || i.cfg.CurrentGoal == nil || i.cfg.PersistGoal == nil {
 		return false

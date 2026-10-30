@@ -755,7 +755,6 @@ func (i *Interactive) redraw() {
 		PlanTotal:      i.planTotal,
 		Usage:          i.cumUsage,
 		Subscription:   i.cfg.AuthMethod == "oauth",
-		WeeklyUsage:    i.codexWeeklyLabelLocked(time.Now()),
 		ContextUsed:    i.lastCtxInput,
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,

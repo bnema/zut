@@ -298,7 +298,6 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 }
 func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
 	// This runs inside the replacement commit, never during candidate builds.
-	i.resetCodexUsageLocked()
 	// A draining stream is anchored in the old agent's transcript.
 	i.stream.Reset()
 	if ag == nil {

@@ -380,10 +380,6 @@ type InteractiveConfig struct {
 	// no session is open.
 	CurrentSessionPath func() string
 
-	// MCPStatus renders configured MCP server status for /mcp. nil means
-	// MCP status is unavailable in this host.
-	MCPStatus func() string
-
 	// FlushSession writes any in-memory agent messages to the
 	// session file that haven't been persisted yet. Called by
 	// /session export right before reading the file so the
@@ -802,7 +798,7 @@ type Interactive struct {
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
 	// scheduled, runCtx, pending*, compacting*, compactContinuation,
 	// interruptedGoalReturn, goalStatus, goalRun, completionTracker,
-	// turnCoordinator, coordinatorWorkerIDs, cumUsage, codexUsage,
+	// turnCoordinator, coordinatorWorkerIDs, cumUsage,
 	// activity, lastCtxInput, busy, cancelTurn). In Port mode they are
 	// either unused or written only as view projections of session.Info
 	// (busy, cumUsage, lastCtxInput, goalStatus, activity label). L16
@@ -848,7 +844,6 @@ type Interactive struct {
 	helpBlock          []string // rendered above the chat when /help was typed
 	sessionInfoBlocks  []sessionInfoBlock
 	cumUsage           provider.Usage
-	codexUsage         codexUsageState
 	dictation          interactiveDictation
 	pendingDictation   []<-chan struct{}
 	lastCtxInput       int // input_tokens of the most recent turn — approximates current context size
@@ -1568,8 +1563,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// transcript doesn't spin the cpu.
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
-	i.refreshCodexUsage(ctx, time.Now())
-	defer i.resetCodexUsage()
 
 	// Redraw throttle: coalesce bursts of invalidate() calls so we paint
 	// at most once every redrawMinInterval. Huge tool-result dumps can
@@ -1846,7 +1839,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 			requestRedraw()
 		case <-tick.C:
 			now := time.Now()
-			i.refreshCodexUsage(ctx, now)
 			i.refreshDictation()
 			if !appearanceDeadline.IsZero() && !now.Before(appearanceDeadline) {
 				appearanceParser.SetPendingColors(false)
