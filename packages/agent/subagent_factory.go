@@ -99,7 +99,7 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	built := false
 	defer func() {
 		if !built {
-			closeResolvedLSP(resolved)
+			_ = tools.CloseLSPManagers(resolved.ToolRegistry)
 		}
 	}()
 

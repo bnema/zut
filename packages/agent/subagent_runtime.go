@@ -359,7 +359,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		return subagents.ResidentChildSpec{}, fmt.Errorf("resolve resident child model: %w", err)
 	}
 	// The probe only reads tool names; the child resolves its own runtime.
-	defer closeResolvedLSP(resolved)
+	defer func() { _ = tools.CloseLSPManagers(resolved.ToolRegistry) }()
 	// The child-safe catalogue is the intersection of parent-offered tools
 	// and tools available in the resolved child runtime. Parent-only
 	// scheduling/extension tools are never inherited.
