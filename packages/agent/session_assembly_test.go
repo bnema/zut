@@ -581,3 +581,22 @@ func TestSessionSetModelUpdatesLimits(t *testing.T) {
 		require.Equal(t, model.MaxOutput, current.MaxTokens)
 	}
 }
+
+func TestNewSessionDepsHistoricalForkResumesMaterializedBranch(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	cwd := t.TempDir()
+	parent, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
+	require.NoError(t, err)
+	require.NoError(t, parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "historical prompt"}}}))
+	require.NoError(t, parent.Close())
+	history, err := core.ReadSessionHistory(parent.Path)
+	require.NoError(t, err)
+	branch, err := core.BranchSessionHiddenFromHistory(parent.Path, home, cwd, "test", history.Segments[0], 1)
+	require.NoError(t, err)
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: cwd, Env: []string{}, Args: append(sessionAssemblyArgs(server), "--no-yolo", "--tools", "read"), ResumePath: branch, Fork: &session.ForkSpec{ParentPath: parent.Path, Hidden: true}})
+	require.Equal(t, branch, deps.SessionStore.CurrentSessionPath())
+	ag, _, _, err := deps.AgentBuilder.BuildAgent()
+	require.NoError(t, err)
+	require.Len(t, ag.Messages(), 1)
+}

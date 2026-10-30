@@ -481,6 +481,9 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 	if parent == nil {
 		return session.CreateSpec{}, session.ErrForkParentNotFound
 	}
+	fork := *spec.Fork
+	fork.ParentPath = info.SessionPath
+	spec.Fork = &fork
 	spec.CWD = info.CWD
 	if spec.CWD == "" {
 		spec.CWD = parent.spec.CWD
@@ -496,11 +499,13 @@ func normParentPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	if abs, err := filepath.Abs(p); err == nil {
-		p = abs
+	if !filepath.IsAbs(p) {
+		if cwd, err := os.Getwd(); err == nil {
+			p = cwd + string(filepath.Separator) + p
+		}
 	}
 	if r, err := filepath.EvalSymlinks(p); err == nil {
-		p = r
+		return r
 	}
 	return filepath.Clean(p)
 }

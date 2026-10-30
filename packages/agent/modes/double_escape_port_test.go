@@ -208,3 +208,42 @@ func TestPortTreeUnknownParentKeepsSessionAndDraft(t *testing.T) {
 	require.Contains(t, i.statusErr, "parent session not found")
 	require.False(t, i.sessionLoading)
 }
+
+func TestPortHistoricalTreeCarriesOriginalParentIdentity(t *testing.T) {
+	root, cwd := t.TempDir(), t.TempDir()
+	file, err := core.NewSession(root, cwd, "test", "model", "test")
+	require.NoError(t, err)
+	require.NoError(t, file.AppendMessage(portUserMessage("old prompt")))
+	require.NoError(t, file.AppendCompaction([]provider.Message{portUserMessage("summary")}))
+	path := file.Path
+	require.NoError(t, file.Close())
+	client := newMockSessionClient(t)
+	client.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Info, error) {
+		require.NotNil(t, spec.Fork)
+		require.Equal(t, path, spec.Fork.ParentPath)
+		require.True(t, spec.Fork.Hidden)
+		require.NotEmpty(t, spec.ResumePath)
+		require.NotEqual(t, path, spec.ResumePath)
+		snapshot, err := core.ReadSessionSnapshot(spec.ResumePath)
+		require.NoError(t, err)
+		require.Len(t, snapshot.Messages, 1)
+		return session.Info{}, session.ErrForkParentNotFound
+	}).Once()
+	i := NewInteractive(InteractiveConfig{Port: sessionmocks.NewMockPort(t), Client: client, SessionsRoot: root, CWD: cwd})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	i.runCtx = ctx
+	i.mu.Lock()
+	i.hydrateLocked(session.Snapshot{Info: session.Info{ID: "original", CWD: cwd, SessionPath: path, Run: session.RunStateIdle}, Messages: []provider.Message{portUserMessage("summary")}})
+	i.mu.Unlock()
+	i.applySessionTreeTarget(sessionTreeTarget{SourcePath: path, EffectiveIndex: 0, SelectionBoundary: 1, Role: provider.RoleAssistant, Boundary: sessionTreeMessageBoundary, Historical: true, HistorySegment: 0}, 1)
+	select {
+	case res := <-i.sessionResults:
+		require.ErrorIs(t, res.err, session.ErrForkParentNotFound)
+		require.False(t, i.applySessionResult(ctx, res))
+	case <-time.After(5 * time.Second):
+		t.Fatal("historical tree fork did not complete")
+	}
+	require.Equal(t, session.ID("original"), i.SessionID())
+	require.Contains(t, i.statusErr, "parent session not found")
+}

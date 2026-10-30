@@ -1002,11 +1002,12 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		return
 	}
 	// Historical selections already materialize a safe pre-compaction branch
-	// above; resume it through the daemon without extending ForkSpec.
+	// above; retain the original parent identity so the daemon validates and
+	// inherits its policy before resuming the materialized branch.
 	if i.portMode.Load() {
 		cwd := i.SessionInfo().CWD
 		i.portSwitchWithTreeSelection("tree", func(ctx context.Context, client SessionClient) (session.ID, error) {
-			created, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: newPath})
+			created, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: newPath, Fork: &session.ForkSpec{ParentPath: src, Hidden: true}})
 			return session.ID(created.ID), err
 		}, &selection)
 		return
