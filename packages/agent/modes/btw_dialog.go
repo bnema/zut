@@ -706,6 +706,7 @@ func newBtwAgent(main *core.Agent, system, model, origin string) *core.Agent {
 	agent.BeforeTurn = main.BeforeTurn
 	agent.BeforeAssistantMessage = main.BeforeAssistantMessage
 	agent.MaxRetries = main.MaxRetries
+	agent.MaxIdleRetries = main.MaxIdleRetries
 	agent.RetryBaseDelay = main.RetryBaseDelay
 	agent.OnEvent = main.OnEvent
 	agent.SetMessages(main.Messages())

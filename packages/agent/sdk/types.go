@@ -26,6 +26,8 @@ type Event struct {
 	MaxAttempts int    `json:"max_attempts,omitempty"`
 	// DelayMS is set for retry_scheduled, including a valid zero delay.
 	DelayMS *int64 `json:"delay_ms,omitempty"`
+	// Reason is an optional user-visible retry reason for retry_scheduled.
+	Reason string `json:"reason,omitempty"`
 
 	// text_delta
 	Delta string `json:"delta,omitempty"`
@@ -181,6 +183,7 @@ func toEvent(ev core.AgentEvent) Event {
 		out.MaxAttempts = e.MaxAttempts
 		delayMS := e.Delay.Milliseconds()
 		out.DelayMS = &delayMS
+		out.Reason = e.Reason
 	case core.EvUserMessage:
 		out.Message = &Message{Role: string(e.Message.Role), Content: convertContent(e.Message.Content)}
 	case core.EvAssistantMessage:

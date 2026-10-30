@@ -202,7 +202,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `turn_start` | `step` | Beginning of one model call (max-steps loop iteration) |
 | `request_started` | `provider`, `model`, `scope`, `attempt`, `max_attempts` | A provider (`scope=provider`) or agent (`scope=agent`) request attempt started |
 | `cache_diagnostics` | `eligible`, `mode`, `transport`, `continuation` | Sanitized cache-routing state. `eligible` is a conservative local prompt-length estimate; it never includes prompts, IDs, request bodies, or credentials |
-| `retry_scheduled` | `scope`, `attempt`, `max_attempts`, `delay_ms` | The upcoming attempt is delayed; `delay_ms` is a non-negative integer |
+| `retry_scheduled` | `scope`, `attempt`, `max_attempts`, `delay_ms`, optional `reason` | The upcoming attempt is scheduled; `delay_ms` is a non-negative integer and is `0` for immediate retries. `reason` is a human-readable string such as `idle timeout (n/N)` for stream idle-timeout retries |
 | `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
 | `assistant_start` | (none) | Provider connection opened; waiting for assistant streaming |
 | `text_delta` | `delta` | Partial assistant text. Concatenate to build the full reply |

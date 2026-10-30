@@ -744,6 +744,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		maxAttempts := max(a.MaxRetries+1, 1)
 		idleRetries, transientRetries := 0, 0
 		for attempt := 0; ; attempt++ {
+			before := a.MessageCount()
 			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, requestContext, attempt, maxAttempts)
 			sink(EvTurnEnd{Stop: stop, Err: err})
 			if err == nil {
@@ -779,15 +780,15 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 			if !retryable {
 				break
 			}
-			a.dropLastAssistantMessage()
-			delay := a.retryDelay(transientRetries)
-			retryMessage := ""
+			a.dropAssistantMessageAfter(before)
+			var delay time.Duration
+			retryReason := ""
 			if idleTimeout {
 				idleRetries++
 				maxAttempts++
-				delay = 0
-				retryMessage = fmt.Sprintf("idle timeout (%d/%d)", idleRetries, a.MaxIdleRetries)
+				retryReason = fmt.Sprintf("idle timeout (%d/%d)", idleRetries, a.MaxIdleRetries)
 			} else {
+				delay = a.retryDelay(transientRetries)
 				transientRetries++
 			}
 			if retryErr := ctx.Err(); retryErr != nil {
@@ -806,7 +807,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				Attempt:     attempt + 2,
 				MaxAttempts: maxAttempts,
 				Delay:       delay,
-				Message:     retryMessage,
+				Reason:      retryReason,
 			})
 			if sleepErr := sleepRetry(ctx, delay); sleepErr != nil {
 				return sleepErr
@@ -1081,10 +1082,12 @@ func sleepRetry(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (a *Agent) dropLastAssistantMessage() {
+// dropAssistantMessageAfter removes the assistant message a failed attempt
+// appended beyond before; earlier committed replies are left untouched.
+func (a *Agent) dropAssistantMessageAfter(before int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if n := len(a.messages); n > 0 && a.messages[n-1].Role == provider.RoleAssistant {
+	if n := len(a.messages); n > before && a.messages[n-1].Role == provider.RoleAssistant {
 		a.messages = a.messages[:n-1]
 		a.rev++
 	}

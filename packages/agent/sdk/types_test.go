@@ -66,8 +66,11 @@ func TestToEventPreservesPlanUpdate(t *testing.T) {
 
 func TestToEventPreservesActivityAndToolStreamFacts(t *testing.T) {
 	retry := toEvent(core.EvRetryScheduled{
-		Scope: core.RetryScopeProvider, Attempt: 2, MaxAttempts: 3, Delay: 250 * time.Millisecond,
+		Scope: core.RetryScopeProvider, Attempt: 2, MaxAttempts: 3, Delay: 250 * time.Millisecond, Reason: "idle timeout (1/1)",
 	})
+	if retry.Reason != "idle timeout (1/1)" || retry.Message != nil {
+		t.Fatalf("retry reason = %q, message = %#v", retry.Reason, retry.Message)
+	}
 	if retry.Type != "retry_scheduled" || retry.Scope != "provider" || retry.Attempt != 2 || retry.MaxAttempts != 3 || retry.DelayMS == nil || *retry.DelayMS != 250 {
 		t.Fatalf("retry event = %#v", retry)
 	}

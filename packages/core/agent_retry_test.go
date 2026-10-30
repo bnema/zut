@@ -8,6 +8,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -677,37 +678,91 @@ func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
 	}
 }
 
-type idleRetryClient struct {
-	calls  int
-	stalls int
+// scriptedStallClient plays one step per call: "stall", "overload",
+// "continue:<text>", or a final reply. A stalled call fires the injected idle
+// timer, so idle tests need no wall-clock timing.
+type scriptedStallClient struct {
+	mu       sync.Mutex
+	script   []string
+	requests []provider.Request
+	stalled  bool
 }
 
-func (*idleRetryClient) Name() string { return "idle-retry" }
-func (c *idleRetryClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
-	c.calls++
-	if c.calls <= c.stalls {
+func (*scriptedStallClient) Name() string { return "scripted-stall" }
+
+func (c *scriptedStallClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	step := "done"
+	if n := len(c.requests); n < len(c.script) {
+		step = c.script[n]
+	}
+	c.requests = append(c.requests, req)
+	c.stalled = step == "stall"
+	c.mu.Unlock()
+	if step == "stall" {
 		return (silentStreamClient{}).Stream(ctx, req)
 	}
-	return (activeStreamClient{}).Stream(ctx, req)
+	out := make(chan provider.Event, 2)
+	switch {
+	case step == "overload":
+		out <- provider.EventDone{Stop: provider.StopError, Err: errors.New("anthropic overloaded_error: Overloaded")}
+	default:
+		stop, text := provider.StopEnd, step
+		if rest, ok := strings.CutPrefix(step, "continue:"); ok {
+			stop, text = provider.StopContinue, rest
+		}
+		out <- provider.EventDone{Stop: stop, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: text}}}}
+	}
+	close(out)
+	return out, nil
 }
+
+func (c *scriptedStallClient) newAgent(maxRetries, maxIdleRetries int) *Agent {
+	a := NewAgent(c, "model", "", Registry{})
+	a.MaxRetries = maxRetries
+	a.MaxIdleRetries = maxIdleRetries
+	a.RetryBaseDelay = time.Millisecond
+	a.StreamIdleTimeout = time.Hour
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		c.mu.Lock()
+		stalled := c.stalled
+		c.mu.Unlock()
+		fired := make(chan time.Time, 1)
+		if stalled {
+			fired <- time.Time{}
+		}
+		return fired, func() {}, func() {}
+	}
+	return a
+}
+
+func requestHasText(req provider.Request, want string) bool {
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if text, ok := b.(provider.TextBlock); ok && text.Text == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestAgentIdleRetryBudget(t *testing.T) {
 	for _, tc := range []struct {
-		name                  string
-		stalls, budget, calls int
-		fail                  bool
+		name          string
+		script        []string
+		budget, calls int
+		fail          bool
 	}{
-		{"recovers", 1, 1, 2, false}, {"exhausts", 100, 2, 3, true}, {"disabled", 1, 0, 1, true},
+		{"recovers", []string{"stall"}, 1, 2, false},
+		{"exhausts", []string{"stall", "stall", "stall", "stall"}, 2, 3, true},
+		{"disabled", []string{"stall"}, 0, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := &idleRetryClient{stalls: tc.stalls}
-			a := NewAgent(client, "model", "", Registry{})
-			a.StreamIdleTimeout = 5 * time.Millisecond
-			a.MaxRetries = 0
-			a.MaxIdleRetries = tc.budget
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
+			client := &scriptedStallClient{script: tc.script}
+			a := client.newAgent(0, tc.budget)
 			var retries []EvRetryScheduled
-			err := a.Prompt(ctx, "hello", nil, func(ev AgentEvent) {
+			err := a.Prompt(t.Context(), "hello", nil, func(ev AgentEvent) {
 				if e, ok := ev.(EvRetryScheduled); ok {
 					retries = append(retries, e)
 				}
@@ -719,14 +774,14 @@ func TestAgentIdleRetryBudget(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if client.calls != tc.calls {
-				t.Fatalf("calls = %d, want %d", client.calls, tc.calls)
+			if len(client.requests) != tc.calls {
+				t.Fatalf("calls = %d, want %d", len(client.requests), tc.calls)
 			}
 			if len(retries) != tc.calls-1 {
 				t.Fatalf("retries = %v", retries)
 			}
 			for i, e := range retries {
-				if e.Delay != 0 || e.Message != fmt.Sprintf("idle timeout (%d/%d)", i+1, tc.budget) {
+				if e.Delay != 0 || e.Reason != fmt.Sprintf("idle timeout (%d/%d)", i+1, tc.budget) {
 					t.Fatalf("retry = %+v", e)
 				}
 			}
@@ -737,5 +792,52 @@ func TestAgentIdleRetryBudget(t *testing.T) {
 		if a.canRetryError(err, 0) {
 			t.Fatalf("retryable: %v", err)
 		}
+	}
+}
+
+func TestAgentIdleRetryKeepsCommittedContinuation(t *testing.T) {
+	client := &scriptedStallClient{script: []string{"continue:KEEP-ME", "stall", "done"}}
+	a := client.newAgent(0, 1)
+	var appended []string
+	a.OnMessageAppended = func(m provider.Message) {
+		if m.Role == provider.RoleAssistant {
+			appended = append(appended, extractText(m))
+		}
+	}
+	if err := a.Prompt(t.Context(), "hello", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 || !requestHasText(client.requests[2], "KEEP-ME") {
+		t.Fatalf("retried request lost committed reply; calls=%d", len(client.requests))
+	}
+	var live []string
+	for _, m := range a.Messages() {
+		if m.Role == provider.RoleAssistant {
+			live = append(live, extractText(m))
+		}
+	}
+	if !reflect.DeepEqual(live, appended) || !reflect.DeepEqual(live, []string{"KEEP-ME", "done"}) {
+		t.Fatalf("live assistant = %q, appended = %q", live, appended)
+	}
+}
+
+func TestAgentMixesTransientAndIdleRetries(t *testing.T) {
+	client := &scriptedStallClient{script: []string{"overload", "stall", "done"}}
+	a := client.newAgent(1, 1)
+	var got []string
+	err := a.Prompt(t.Context(), "hello", nil, func(ev AgentEvent) {
+		switch e := ev.(type) {
+		case EvRequestStarted:
+			got = append(got, fmt.Sprintf("request:%d/%d", e.Attempt, e.MaxAttempts))
+		case EvRetryScheduled:
+			got = append(got, fmt.Sprintf("retry:%d/%d:%s:%q", e.Attempt, e.MaxAttempts, e.Delay, e.Reason))
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"request:1/2", `retry:2/2:1ms:""`, "request:2/2", `retry:3/3:0s:"idle timeout (1/1)"`, "request:3/3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
 	}
 }

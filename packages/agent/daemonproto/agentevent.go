@@ -26,6 +26,9 @@ func eventProjection(ev core.AgentEvent) map[string]any {
 		m["attempt"] = e.Attempt
 		m["max_attempts"] = e.MaxAttempts
 		m["delay_ms"] = e.Delay.Milliseconds()
+		if e.Reason != "" {
+			m["reason"] = e.Reason
+		}
 	case core.EvUserMessage:
 		m["content"] = contentProjection(e.Message.Content)
 		m["time"] = e.Message.Time
