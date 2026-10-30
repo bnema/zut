@@ -119,18 +119,19 @@ func (i *Interactive) portHasUserQueued() bool {
 
 // portClearQueuedUser is the port-mode Ctrl+C queue clear. Host events stay
 // queued in the session; the QueueEvent it publishes refreshes portQueue.
-// Pinned-skill preloads carried by dropped drafts are released, as on the
-// legacy path. An older daemon without the method gets a status hint.
+// Only after the RPC succeeds are pinned-skill preloads carried by the dropped
+// drafts released, as on the legacy path. An older daemon gets a status hint
+// and is remembered for this session so later presses reach the exit menu.
 func (i *Interactive) portClearQueuedUser(ctx context.Context) {
 	port := i.SessionPort()
 	gen := i.sessionGen
 	i.mu.Lock()
+	var texts []string
 	for _, q := range i.portQueue {
 		if !q.Input.HostEvent {
-			i.skillPins.recall(q.Input.Text)
+			texts = append(texts, q.Input.Text)
 		}
 	}
-	i.statusOK, i.statusErr = "queue cleared", ""
 	i.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
@@ -139,18 +140,22 @@ func (i *Interactive) portClearQueuedUser(ctx context.Context) {
 		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 		err := port.ClearQueuedUser(callCtx)
 		cancel()
-		if err == nil {
-			return
-		}
 		select {
 		case i.loopCalls <- func() {
 			if gen != i.sessionGen {
 				return
 			}
 			i.mu.Lock()
-			if errors.Is(err, session.ErrUnknownRequest) {
+			switch {
+			case err == nil:
+				for _, text := range texts {
+					i.skillPins.recall(text)
+				}
+				i.statusOK, i.statusErr = "queue cleared", ""
+			case errors.Is(err, session.ErrUnknownRequest):
+				i.portClearUnsupportedGen = gen + 1
 				i.statusOK, i.statusErr = "", "daemon too old to clear the queue; run \"zut daemon restart\""
-			} else {
+			default:
 				i.statusOK, i.statusErr = "", fmt.Sprintf("clear queue: %v", err)
 			}
 			i.mu.Unlock()

@@ -765,6 +765,9 @@ type Interactive struct {
 	quitClosing  bool
 	// Run-loop-owned recall operation and abort request.
 	portRecall *portRecallOperation
+	// portClearUnsupportedGen+1 marks the sessionGen whose daemon lacks
+	// ClearQueuedUser (0 = none); Ctrl+C then skips the queue clear.
+	portClearUnsupportedGen uint64
 	// lastSeq is the newest applied event Seq; replayed events at or below
 	// it (already covered by a snapshot) are dropped.
 	lastSeq uint64

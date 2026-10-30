@@ -164,6 +164,11 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 // whole local queue, the daemon queue is shared by every client and its host
 // evidence is not the user's draft to discard (same rule as SlideBackQueued).
 // Clearing an empty queue is not an error.
+//
+// The agent steering queue is cleared too: if a turn has just started, its
+// pending steering input is dropped as well. That queue is not part of the
+// published QueueEvent/Snapshot.Queue (clients' portQueue mirrors only the
+// controller queue), so a clear that only touches it publishes nothing.
 func (c *Controller) ClearQueuedUser(ctx context.Context) error {
 	return c.call(ctx, func() {
 		kept := c.turn.queue[:0:0]

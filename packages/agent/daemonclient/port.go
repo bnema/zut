@@ -433,14 +433,20 @@ func (p *RemotePort) SlideBackQueued(ctx context.Context) (session.Input, error)
 }
 
 // ClearQueuedUser implements session.Port. Daemons predating the method
-// answer "unsupported port method"; that is mapped to ErrUnknownRequest so
-// callers can degrade gracefully.
+// answer daemonproto.UnsupportedPortMethod; that is mapped to
+// ErrUnknownRequest so callers can degrade gracefully.
 func (p *RemotePort) ClearQueuedUser(ctx context.Context) error {
 	err := p.port(ctx, "clear_queued_user", nil, nil)
-	if err != nil && !errors.Is(err, session.ErrUnknownRequest) && strings.Contains(err.Error(), "unsupported port method") {
+	if isUnsupportedPortMethod(err) {
 		return fmt.Errorf("%w: %w", session.ErrUnknownRequest, err)
 	}
 	return err
+}
+
+// isUnsupportedPortMethod reports a daemon rejecting an unknown port method.
+func isUnsupportedPortMethod(err error) bool {
+	var re *daemonproto.RemoteError
+	return err != nil && !errors.Is(err, session.ErrUnknownRequest) && errors.As(err, &re) && strings.Contains(re.Msg, daemonproto.UnsupportedPortMethod)
 }
 
 // AnswerConfirmation implements session.Port.

@@ -10,6 +10,10 @@ import (
 // ProtocolVersion is the required wire protocol version.
 const ProtocolVersion = 1
 
+// UnsupportedPortMethod prefixes the error a daemon returns for a port method
+// it does not implement; clients use it to detect older daemons.
+const UnsupportedPortMethod = "unsupported port method"
+
 // Envelope permits frame dispatch before decoding the concrete frame.
 // IDs are opaque strings echoed by results; notifications omit them.
 type Envelope struct {

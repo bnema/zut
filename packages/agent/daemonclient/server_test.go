@@ -130,7 +130,7 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 			return session.Input{Text: "queued", Mode: session.SubmitMode("queue"), Origin: session.InputOrigin("user")}, nil
 		case "clear_queued_user":
 			if d.version == "old" {
-				return nil, errors.New("unsupported port method \"clear_queued_user\"")
+				return nil, errors.New(daemonproto.UnsupportedPortMethod + " \"clear_queued_user\"")
 			}
 			return nil, nil
 		case "sessions_query":

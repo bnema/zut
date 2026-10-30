@@ -565,12 +565,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	case tui.KeyCtrlC:
 		// Child dialogs have already had the opportunity to consume Ctrl+C.
 		// Preserve idle editor clearing before offering daemon lifecycle choices.
-		if i.port != nil && !i.busy && i.ed.IsEmpty() && i.portHasUserQueued() {
+		portClear := i.port != nil && !i.busy && i.ed.IsEmpty() && i.portHasUserQueued()
+		if portClear && !i.ctrlCExitArmed() && i.portClearUnsupportedGen != i.sessionGen+1 {
 			i.portClearQueuedUser(ctx)
 			i.armCtrlCExit()
 			return false
 		}
-		if i.port != nil && (i.busy || (i.ed.IsEmpty() && len(i.queued) == 0 && (i.agent == nil || i.agent.QueuedMessageCount() == 0))) {
+		if i.port != nil && (i.busy || portClear || (i.ed.IsEmpty() && len(i.queued) == 0 && (i.agent == nil || i.agent.QueuedMessageCount() == 0))) {
 			i.mu.Lock()
 			i.daemonExitMenu = true
 			i.statusOK, i.statusErr = daemonExitPrompt, ""
