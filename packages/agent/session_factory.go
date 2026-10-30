@@ -20,7 +20,7 @@ import (
 // sessionFactory implements session.Factory for the daemon: NewSessionDeps
 // builds the terminal-free resources, the factory adds the daemon-scoped
 // ones (per-session scheduler view, directory, deferred store), starts the
-// controller and binds the late hooks. Create, Restore (D6) and the daemon's
+// controller and binds the late hooks. Create and the daemon's
 // clear (D9, a Create) all go through build.
 type sessionFactory struct {
 	version string
@@ -48,15 +48,6 @@ func newSessionFactory(version, home string, engine *scheduler.Engine, log *slog
 // Create builds a new session with a fresh random ID.
 func (f *sessionFactory) Create(ctx context.Context, spec session.CreateSpec) (session.Handle, error) {
 	return f.build(ctx, spec, session.Options{ID: session.NewID()})
-}
-
-// Restore reopens a persisted session idle under its previous ID.
-func (f *sessionFactory) Restore(ctx context.Context, rs session.RestoreSpec) (session.Handle, error) {
-	if rs.ID == "" {
-		return nil, fmt.Errorf("restore: session id is required")
-	}
-	spec := session.CreateSpec{CWD: rs.CWD, Env: rs.Env, Args: rs.Args, ResumePath: rs.SessionPath, Zutfile: rs.Zutfile.WithoutPre()}
-	return f.build(ctx, spec, session.Options{ID: rs.ID, InterruptedTurn: rs.InterruptedTurn})
 }
 
 // build owns the whole startup; any failure releases what was created. ctx
@@ -113,7 +104,7 @@ func (f *sessionFactory) lookup(id session.ID) *factoryHandle {
 }
 
 // runScheduler routes due tasks to their session until ctx ends. It must
-// start after the daemon restored sessions so restored targets exist.
+// start after the daemon is ready.
 func (f *sessionFactory) runScheduler(ctx context.Context) error {
 	if f.engine == nil {
 		return nil
@@ -124,7 +115,7 @@ func (f *sessionFactory) runScheduler(ctx context.Context) error {
 
 // executeTask submits a due task to its session as queued scheduler input.
 // A task for an unknown session is cancelled, except while the daemon stops
-// (sessions closing for restart keep their schedules, D6).
+// (shutdown does not modify saved schedules).
 func (f *sessionFactory) executeTask(ctx context.Context, task scheduler.Task) error {
 	h := f.lookup(session.ID(task.SessionID))
 	if h == nil {
@@ -152,8 +143,7 @@ func (f *sessionFactory) registered(ctx context.Context, id string) bool {
 }
 
 // beginStop marks the daemon as stopping: from now on a due task whose
-// session is gone keeps its schedule (sessions closing for a restart are
-// restored with their schedules, D6).
+// session is gone keeps its schedule.
 func (f *sessionFactory) beginStop() { f.stopping.Store(true) }
 
 // wait blocks until every session watcher has run its cleanup.
@@ -204,8 +194,8 @@ func (h *factoryHandle) watch() {
 	h.f.mu.Unlock()
 	h.cleanup()
 	reason, _ := h.reason.Load().(string)
-	// A daemon stop or a cancelled daemon context keeps the session open in
-	// state.json; only an explicit close drops its schedules.
+	// Daemon shutdown preserves saved schedules without restoring sessions;
+	// only an explicit close drops the session's schedules.
 	if h.f.engine != nil && reason != "" && reason != daemon.ReasonDaemonStop {
 		if err := h.f.engine.CancelSession(string(h.id)); err != nil {
 			h.f.log.Warn("cancel session schedules", "session", h.id, "err", err)

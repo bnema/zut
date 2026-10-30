@@ -73,10 +73,12 @@ type sessionDialog struct {
 	active bool
 	// live lists the daemon's sessions (port mode) above the on-disk rows.
 	// liveFocus moves the cursor into that section; liveCursor indexes it.
-	live       []session.Info
-	liveSelf   session.ID
-	liveFocus  bool
-	liveCursor int
+	live             []session.Info
+	liveSelf         session.ID
+	liveFocus        bool
+	liveCursor       int
+	selectionTouched bool
+	liveInitialized  bool
 
 	sessions     []core.SessionSummary
 	baseSessions []core.SessionSummary
@@ -189,6 +191,8 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.liveSelf = ""
 	d.liveFocus = false
 	d.liveCursor = 0
+	d.selectionTouched = false
+	d.liveInitialized = false
 	d.cursor = 0
 	d.viewTop = 0
 	d.renaming = false
@@ -780,7 +784,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 			matchCount = d.searchMatches[s.Path].count
 		}
 		plain := "  " + formatSessionSearchRowPlain(s, width-2, matchCount)
-		if i == d.cursor {
+		if !d.liveFocus && i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
 			lines = append(lines, th.FGColor(th.Muted, plain))
@@ -1022,6 +1026,8 @@ func formatRelative(t time.Time) string {
 
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
+	// Any picker interaction prevents late live results from stealing focus.
+	d.selectionTouched = true
 	// Deletion confirmation: y deletes, anything else (including enter and
 	// esc) cancels without closing the picker.
 	if d.deleting {
@@ -1092,6 +1098,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	}
 	if k.Kind == tui.KeyRune && k.Rune == '/' && d.query == "" && !d.searchRequested {
 		d.searchRequested = true
+		d.liveFocus = false
 		return sessionDialogAction{}
 	}
 	if d.searchRequested {
@@ -1111,6 +1118,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 			d.applySearchFilter()
 			return sessionDialogAction{}
 		case tui.KeyBackspace:
+			d.liveFocus = false
 			runes := []rune(d.query)
 			if len(runes) > 0 {
 				d.query = string(runes[:len(runes)-1])
@@ -1127,9 +1135,11 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 			d.scheduleSearchMatch()
 			return sessionDialogAction{StartSearch: d.searchEvents == nil && sessionSearchQuery(d.query)}
 		case tui.KeyPaste:
+			d.liveFocus = false
 			d.query += k.Paste
 		case tui.KeyRune:
 			if k.Rune != 0 {
+				d.liveFocus = false
 				d.query += string(k.Rune)
 			}
 		default:
@@ -1260,10 +1270,31 @@ func (d *sessionDialog) SetLive(infos []session.Info, self session.ID) {
 	if !d.active {
 		return
 	}
+	selected := ""
+	if d.liveFocus && d.liveCursor >= 0 && d.liveCursor < len(d.live) {
+		selected = d.live[d.liveCursor].ID
+	}
 	d.live = append([]session.Info(nil), infos...)
 	d.liveSelf = self
-	d.liveCursor = 0
-	d.liveFocus = len(d.live) > 0
+	if !d.liveInitialized && !d.selectionTouched {
+		d.liveFocus = len(d.live) > 0
+	}
+	d.liveInitialized = true
+	for idx, info := range d.live {
+		if info.ID == selected {
+			d.liveCursor = idx
+			break
+		}
+	}
+	if d.liveCursor >= len(d.live) {
+		d.liveCursor = len(d.live) - 1
+	}
+	if d.liveCursor < 0 {
+		d.liveCursor = 0
+	}
+	if len(d.live) == 0 {
+		d.liveFocus = false
+	}
 }
 
 // liveAttachLabel renders a session's attach state for the live section.
@@ -1309,7 +1340,7 @@ func (d *sessionDialog) handleLiveKey(k tui.Key) (sessionDialogAction, bool) {
 		return sessionDialogAction{}, false
 	}
 	if !d.liveFocus {
-		if k.Kind == tui.KeyUp && d.cursor == 0 {
+		if k.Kind == tui.KeyUp && d.cursor == 0 && !d.searchRequested {
 			d.liveFocus = true
 			d.liveCursor = len(d.live) - 1
 			return sessionDialogAction{}, true

@@ -143,7 +143,7 @@ func newBotTest(t *testing.T, sessions ...*testSession) *botTest {
 	return &botTest{r: r, f: f, tg: tg, logs: logs, c: dial(t, r.sock), home: home}
 }
 
-// waitSubs waits until n subscriptions (daemon watcher + bot) exist.
+// waitSubs waits until n subscriptions (bot) exist.
 func waitSubs(t *testing.T, s *testSession, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -186,11 +186,9 @@ func TestBotStartStopStatusThroughDaemon(t *testing.T) {
 	if err := bt.c.call(t, daemonproto.BotStartRequest{Type: "bot_start", Spec: spec}, nil); err == nil || !strings.Contains(err.Error(), ErrBotRunning.Error()) {
 		t.Fatalf("second start = %v", err)
 	}
-	if got := readState(t, bt.home); len(got.Sessions) != 1 || !got.Sessions[0].Headless || got.Sessions[0].CWD != "/w" {
-		t.Fatalf("bot session state = %+v", got)
-	}
+	assertNoState(t, bt.home)
 
-	waitSubs(t, s1, 2)
+	waitSubs(t, s1, 1)
 	bt.tg.dm("hello bot")
 	in := recv(t, s1.inputs)
 	if in.Text != "hello bot" || in.Origin != session.InputOriginTelegram {
@@ -209,9 +207,6 @@ func TestBotStartStopStatusThroughDaemon(t *testing.T) {
 	}
 	if reason := recv(t, s1.closes); reason != botStopReason {
 		t.Fatalf("close reason = %q", reason)
-	}
-	if rec := loadBotRecord(bt.home); len(rec) != 0 {
-		t.Fatalf("bot record after stop = %v", rec)
 	}
 	st = daemonproto.BotStatusData{}
 	if err := bt.c.call(t, daemonproto.BotStatusRequest{Type: "bot_status", Kind: "telegram"}, &st); err != nil || st.Running {
@@ -259,7 +254,7 @@ func TestTelegramBridgeOnOff(t *testing.T) {
 	}
 
 	// No client is attached: the bridge works detached.
-	waitSubs(t, s1, 2)
+	waitSubs(t, s1, 1)
 	bt.tg.dm("from phone")
 	if in := recv(t, s1.inputs); in.Text != "from phone" || in.Origin != session.InputOriginTelegram {
 		t.Fatalf("bridged input = %+v", in)
@@ -354,18 +349,26 @@ func TestBotStartRacingShutdown(t *testing.T) {
 	}
 	close(release)
 	// The bot never runs (RunBot has no expectation) and its session is
-	// closed instead of being left for restore.
+	// closed instead of being left open.
 	recv(t, s1.closes)
 	r.wait(t)
 	<-errc
-	deadline := time.Now().Add(5 * time.Second)
-	for len(readState(t, home).Sessions) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("bot session kept in state.json: %+v", readState(t, home))
+	assertNoState(t, home)
+}
+
+func TestBotSessionAfterRestartCreatesNewSession(t *testing.T) {
+	home := t.TempDir()
+	spec := daemonproto.BotSpec{CWD: "/w"}
+	for _, id := range []session.ID{"first", "second"} {
+		h := newTestSession(t, string(id))
+		f := newMockBotFactory(t)
+		f.EXPECT().Create(mock.Anything, mock.MatchedBy(func(s session.CreateSpec) bool { return s.Headless && s.CWD == spec.CWD })).Return(h.h, nil).Once()
+		r := startDaemon(t, f, home, Options{})
+		e, err := r.d.botSession(spec)
+		if err != nil || e.id != id {
+			t.Fatalf("bot session = %v, %v", e, err)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if rec := loadBotRecord(home); len(rec) != 0 {
-		t.Fatalf("bot record kept: %v", rec)
+		r.stop(t)
+		assertNoState(t, home)
 	}
 }

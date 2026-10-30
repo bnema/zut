@@ -9,7 +9,9 @@ import (
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -120,6 +122,7 @@ func TestPortSessionsPickLiveAttachesAndReleasesOld(t *testing.T) {
 
 func TestPortSessionsPickDiskCreatesResume(t *testing.T) {
 	client := newMockSessionClient(t)
+	client.EXPECT().List(mock.Anything).Return(nil, nil).Once()
 	s3 := targetPort(t, "s3")
 	client.EXPECT().Create(mock.Anything, session.CreateSpec{CWD: "/w", ResumePath: "/w/old.jsonl"}).Return(session.Info{ID: "s3"}, nil).Once()
 	client.EXPECT().Attach(mock.Anything, session.ID("s3")).Return(s3, nil).Once()
@@ -192,4 +195,27 @@ func TestPortSessionsFailedSwitchDetachReleasesOriginal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("detach hook not called")
 	}
+}
+
+func TestPortSessionsPickLiveOwnedDiskAttachesWithoutCreate(t *testing.T) {
+	client := newMockSessionClient(t)
+	infos := liveInfos()
+	infos[1].SessionPath = "/w/live.jsonl"
+	client.EXPECT().List(mock.Anything).Return(infos, nil).Twice()
+	s2 := targetPort(t, "s2")
+	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(s2, nil).Once()
+	r := startSessionsPort(t, client)
+	r.term.send("/sessions\r")
+	r.waitDialogLive(t, 2)
+	r.i.loopCalls <- func() {
+		r.i.mu.Lock()
+		d := r.i.sessionDialog
+		d.sessions = []core.SessionSummary{{Path: "/w/live.jsonl"}}
+		d.liveFocus = false
+		act := d.HandleKey(tui.Key{Kind: tui.KeyEnter})
+		r.i.mu.Unlock()
+		require.Equal(t, "/w/live.jsonl", act.Path)
+		r.i.applySessionSelection(act.Path)
+	}
+	r.requireSwitched(t, "s2", s2)
 }

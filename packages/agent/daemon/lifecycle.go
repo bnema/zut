@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,6 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/internal/flock"
 	"github.com/bnema/zut/packages/agent/session"
-	"github.com/bnema/zut/packages/core"
 )
 
 // ErrUnknownSession reports a request for a session the daemon does not own.
@@ -53,17 +53,16 @@ type Options struct {
 	Logger *slog.Logger
 	// Clock defaults to time.Now; it drives GC idle accounting.
 	Clock func() time.Time
-	// Ready, when non-nil, is closed once the socket listens and restore ran.
+	// Ready, when non-nil, is closed once startup cleanup finishes and the socket listens.
 	Ready chan<- struct{}
 }
 
 var errRunTwice = errors.New("daemon: Run called twice")
 
 // Run takes the daemon lock (ErrAlreadyRunning if held), writes the PID
-// file, removes a stale socket, listens, restores sessions from state.json
-// idle, and serves until ctx ends or a client sends daemon_stop. Shutdown
-// stops accepting, detaches clients, closes sessions with reason
-// daemon_stop while keeping them in state.json, and releases all locks.
+// file, removes stale daemon session metadata, and listens with an empty registry.
+// It serves until ctx ends or a client sends daemon_stop. Shutdown stops
+// accepting, detaches clients, closes sessions, and releases all locks.
 func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	if opts.Home == "" || opts.SocketPath == "" {
 		return errors.New("daemon: Home and SocketPath are required")
@@ -106,9 +105,8 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	defer ln.close()
 	d.log.Info("daemon started", "pid", os.Getpid(), "version", opts.Version)
 
-	d.restore()
+	d.cleanupPreviousSessions()
 	d.goLoop(d.gcLoop)
-	d.goLoop(d.stateLoop)
 	d.goLoop(func(ctx context.Context) { d.acceptLoop(ctx, ln) })
 	if opts.Ready != nil {
 		close(opts.Ready)
@@ -148,8 +146,6 @@ func (d *Daemon) shutdown() {
 	d.mu.Unlock()
 
 	d.opMu.Lock()
-	// Persist first so turns in flight are recorded and restored interrupted.
-	d.persist()
 	for _, c := range clients {
 		c.close()
 	}
@@ -187,37 +183,15 @@ func (d *Daemon) isStopping() bool {
 	return d.stopping || d.ctx == nil
 }
 
-// restore reopens state.json sessions idle; failures are logged and dropped.
-func (d *Daemon) restore() {
-	st, err := loadState(d.opts.Home)
-	if err != nil {
-		d.log.Error("load daemon state", "err", err)
-		return
+// cleanupPreviousSessions removes metadata owned only by previous daemon sessions.
+// Transcripts and schedules live elsewhere and remain untouched.
+func (d *Daemon) cleanupPreviousSessions() {
+	if err := os.Remove(statePath(d.opts.Home)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.log.Warn("remove previous daemon state", "err", err)
 	}
-	d.opMu.Lock()
-	defer d.opMu.Unlock()
-	for _, s := range st.Sessions {
-		if err := d.restoreOne(s); err != nil {
-			d.log.Warn("restore session dropped", "session", s.ID, "err", err)
-		}
+	if err := os.RemoveAll(filepath.Join(stateDir(d.opts.Home), "sessions")); err != nil {
+		d.log.Warn("remove previous daemon session directories", "err", err)
 	}
-	d.persist()
-}
-
-func (d *Daemon) restoreOne(s stateSession) error {
-	lock, err := lockSessionFile(s.SessionPath)
-	if err != nil {
-		return err
-	}
-	h, err := d.factory.Restore(d.sessCtx, session.RestoreSpec{
-		ID: s.ID, SessionPath: s.SessionPath, CWD: s.CWD, Env: s.Env, Args: s.Args, InterruptedTurn: s.Running, Zutfile: s.Zutfile.WithoutPre(),
-	})
-	if err != nil {
-		_ = lock.Close()
-		return err
-	}
-	s.Running = false
-	return d.register(h, s, lock)
 }
 
 // create builds a new session; callers must not hold opMu.
@@ -256,10 +230,9 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 	if cwd == "" {
 		cwd = info.CWD
 	}
-	if err := d.register(h, stateSession{ID: session.ID(info.ID), SessionPath: info.SessionPath, CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre()}, lock); err != nil {
+	if err := d.register(h, session.CreateSpec{CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre()}, lock); err != nil {
 		return session.Info{}, err
 	}
-	d.persist()
 	return h.Info(), nil
 }
 
@@ -272,11 +245,8 @@ func (d *Daemon) closeHandle(h session.Handle, reason string) {
 }
 
 // register adds h to the registry and starts its exit watcher. Callers hold opMu.
-func (d *Daemon) register(h session.Handle, s stateSession, lock *flock.Lock) error {
+func (d *Daemon) register(h session.Handle, s session.CreateSpec, lock *flock.Lock) error {
 	id := session.ID(h.Info().ID)
-	if s.ID == "" {
-		s.ID = id
-	}
 	d.mu.Lock()
 	if id == "" || d.reg[id] != nil {
 		d.mu.Unlock()
@@ -291,60 +261,13 @@ func (d *Daemon) register(h session.Handle, s stateSession, lock *flock.Lock) er
 	return nil
 }
 
-// watch follows one session: turn start/end events mark state.json dirty, and the session ending on its own unregisters it. The
-// event channel is only read, never waited on from the session loop. If the
-// subscription is dropped (slow consumer) it resubscribes after the last
-// seen sequence; if that is too old the 15s refresh remains the backup.
+// watch unregisters a session when it ends on its own.
 func (d *Daemon) watch(ctx context.Context, e *entry) {
-	done := e.h.Done()
-	var seq uint64
-	var events <-chan session.Event
-	subscribe := func() {
-		ch, err := e.h.Subscribe(ctx, seq)
-		if err != nil {
-			d.log.Debug("session watch subscribe", "session", e.id, "err", err)
-			events = nil
-			return
-		}
-		events = ch
+	select {
+	case <-ctx.Done():
+	case <-e.h.Done():
+		d.forget(e)
 	}
-	subscribe()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-done:
-			d.forget(e)
-			return
-		case ev, ok := <-events:
-			if !ok {
-				subscribe()
-				continue
-			}
-			seq = ev.Seq
-			if runTransitionEvent(ev) {
-				d.markRunDirty()
-			}
-		}
-	}
-}
-
-// runTransitionEvent reports events the controller publishes when a turn
-// starts or finishes (agent turn_start, turn_end, done, error), plus EvInfo.
-// stateLoop compares the actual Info().Run with the persisted flag, so
-// spurious triggers only cost a comparison.
-func runTransitionEvent(ev session.Event) bool {
-	switch ev.Kind {
-	case session.EvInfo:
-		return true
-	case session.EvAgent:
-		switch ev.Agent.(type) {
-		case core.EvTurnStart, *core.EvTurnStart, core.EvTurnEnd, *core.EvTurnEnd,
-			core.EvDone, *core.EvDone, core.EvError, *core.EvError:
-			return true
-		}
-	}
-	return false
 }
 
 // forget drops a session that ended on its own (for example /exit).
@@ -364,7 +287,6 @@ func (d *Daemon) forget(e *entry) {
 	delete(d.controller, e.id)
 	d.mu.Unlock()
 	_ = e.lock.Close()
-	d.persist()
 	if ctrl != nil {
 		ctrl.cancelSub(e.id)
 		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: e.id})
@@ -447,7 +369,7 @@ func (d *Daemon) clientGone(c *client) {
 	}
 }
 
-// closeSession ends id explicitly and removes it from state.json. Control is
+// closeSession ends id explicitly and removes it from the registry. Control is
 // checked under opMu so a concurrent takeover cannot slip in between.
 func (d *Daemon) closeSession(c *client, id session.ID, reason string) error {
 	d.opMu.Lock()
@@ -473,7 +395,6 @@ func (d *Daemon) closeLocked(id session.ID, reason string, successor session.ID)
 	err := e.h.Close(ctx, reason)
 	cancel()
 	_ = e.lock.Close()
-	d.persist()
 	if ctrl != nil {
 		ctrl.cancelSub(id)
 		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor})

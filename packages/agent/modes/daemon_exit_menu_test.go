@@ -80,11 +80,23 @@ func TestDaemonExitMenuForceError(t *testing.T) {
 
 func TestDaemonExitMenuForceTimeout(t *testing.T) {
 	client := newMockSessionClient(t)
-	client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).RunAndReturn(func(ctx context.Context, _ session.ID, _ string) error { <-ctx.Done(); return ctx.Err() }).Once()
+	called := make(chan struct{})
+	client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).RunAndReturn(func(ctx context.Context, _ session.ID, _ string) error {
+		close(called)
+		<-ctx.Done()
+		return ctx.Err()
+	}).Once()
 	i := NewInteractive(InteractiveConfig{Port: sessionmocks.NewMockPort(t), Client: client})
 	i.sessionID = "s1"
 	i.sessionTimeout = time.Millisecond
 	require.False(t, i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlC}))
 	require.True(t, i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlC}))
 	require.Contains(t, i.ExitNotice(), "deadline exceeded")
+	// The forced exit returns on the deadline without waiting for Close; the
+	// Close goroutine may start later, so wait for it before mock cleanup.
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close was never called")
+	}
 }

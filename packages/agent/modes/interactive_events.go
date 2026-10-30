@@ -865,6 +865,8 @@ const (
 	// sessionResultSwitch moves the view to another daemon session
 	// (/sessions pick, /fork). A failure keeps the current session.
 	sessionResultSwitch
+	// sessionResultKeepCurrent leaves the controlling stream untouched.
+	sessionResultKeepCurrent
 )
 
 // sessionResult is the outcome of an async daemon call, applied by the Run
@@ -971,7 +973,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 	if res.gen != i.sessionGen {
 		// A successor or takeover can invalidate an in-flight tree checkout.
 		// Discard its draft and subscription, but release the input gate.
-		if res.kind == sessionResultSwitch && res.treeSelection != nil {
+		if (res.kind == sessionResultSwitch || res.kind == sessionResultKeepCurrent) && res.treeSelection != nil {
 			i.sessionLoading = false
 		}
 		i.mu.Unlock()
@@ -1008,6 +1010,15 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.extNotes = nil
 		i.statusErr, i.statusOK = "", ""
 		i.hydrateLocked(res.snap)
+	case sessionResultKeepCurrent:
+		if res.treeSelection != nil {
+			i.sessionLoading = false
+		}
+		i.sessionDialog.Close()
+		i.statusErr, i.statusOK = "", ""
+		i.mu.Unlock()
+		i.invalidate()
+		return false
 	case sessionResultSwitch:
 		if res.treeSelection != nil {
 			i.sessionLoading = false

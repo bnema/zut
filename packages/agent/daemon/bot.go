@@ -2,11 +2,8 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -76,38 +73,6 @@ func (d *Daemon) botHost() (BotHost, error) {
 	return h, nil
 }
 
-// botRecordPath stores the bot sessions' IDs (no secrets) so a bot_start
-// after a daemon restart reuses the restored session and its context.
-func botRecordPath(home string) string { return filepath.Join(stateDir(home), "bots.json") }
-
-func loadBotRecord(home string) map[string]session.ID {
-	rec := map[string]session.ID{}
-	b, err := os.ReadFile(botRecordPath(home))
-	if err == nil {
-		_ = json.Unmarshal(b, &rec)
-	}
-	return rec
-}
-
-func (d *Daemon) saveBotRecord(kind string, id session.ID) {
-	if d.opts.Home == "" {
-		return
-	}
-	rec := loadBotRecord(d.opts.Home)
-	if id == "" {
-		delete(rec, kind)
-	} else {
-		rec[kind] = id
-	}
-	b, err := json.Marshal(rec)
-	if err == nil {
-		err = writeFileAtomic(botRecordPath(d.opts.Home), b)
-	}
-	if err != nil {
-		d.log.Warn("persist bot record", "kind", kind, "err", err)
-	}
-}
-
 // handleBot serves bot_start, bot_stop, bot_status and telegram_bridge.
 func (c *client) handleBot(ctx context.Context, r daemonproto.Request) (any, error, bool) {
 	d := c.d
@@ -155,7 +120,7 @@ func botKind(kind string) string {
 	return kind
 }
 
-// botStart creates (or reuses after a restart) one headless session and runs
+// botStart creates one headless session and runs
 // the bot service against it until bot_stop, daemon stop or session close.
 func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, error) {
 	kind := botKind(spec.Kind)
@@ -167,7 +132,7 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 		return daemonproto.BotStatusData{}, err
 	}
 	// Hold a shutdown token for the whole start so a start racing shutdown
-	// finishes its cleanup (session close, bot record) before shutdown
+	// finishes its cleanup (session close) before shutdown
 	// returns.
 	d.mu.Lock()
 	if d.ctx == nil || d.stopping {
@@ -197,7 +162,7 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 		st.mu.Unlock()
 	}
 
-	e, err := d.botSession(kind, spec)
+	e, err := d.botSession(spec)
 	if err != nil {
 		release()
 		return daemonproto.BotStatusData{}, err
@@ -207,9 +172,7 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 		d.mu.Unlock()
 		release()
 		// The session was created for this bot; do not leak it into a
-		// stopping daemon (shutdown keeps it in state.json otherwise).
-		// Forget the record first so the closed session is never reused.
-		d.saveBotRecord(kind, "")
+		// stopping daemon.
 		d.closeBotSession(e.id)
 		return daemonproto.BotStatusData{}, ErrStopping
 	}
@@ -245,14 +208,8 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 	return d.botStatus(kind)
 }
 
-// botSession returns the restored bot session recorded for kind, or creates
-// a new headless one.
-func (d *Daemon) botSession(kind string, spec daemonproto.BotSpec) (*entry, error) {
-	if id := loadBotRecord(d.opts.Home)[kind]; id != "" {
-		if e := d.lookup(id); e != nil {
-			return e, nil
-		}
-	}
+// botSession creates a new headless session, including after a daemon restart.
+func (d *Daemon) botSession(spec daemonproto.BotSpec) (*entry, error) {
 	info, err := d.create(session.CreateSpec{CWD: spec.CWD, Env: spec.Env, Args: spec.Args, Headless: true})
 	if err != nil {
 		return nil, err
@@ -261,7 +218,6 @@ func (d *Daemon) botSession(kind string, spec daemonproto.BotSpec) (*entry, erro
 	if e == nil {
 		return nil, ErrUnknownSession
 	}
-	d.saveBotRecord(kind, e.id)
 	return e, nil
 }
 
@@ -285,7 +241,7 @@ func (d *Daemon) serveBot(ctx context.Context, host BotHost, run *botRun, spec d
 			return nil
 		}
 		d.log.Info("bot session ended; starting a new one", "kind", run.kind, "session", e.id)
-		next, nerr := d.botSession(run.kind, spec)
+		next, nerr := d.botSession(spec)
 		if nerr != nil {
 			return nerr
 		}
@@ -298,7 +254,7 @@ func (d *Daemon) serveBot(ctx context.Context, host BotHost, run *botRun, spec d
 }
 
 // closeBotSession closes a bot session created by a start that lost the
-// race with shutdown, and forgets the bot record.
+// race with shutdown.
 func (d *Daemon) closeBotSession(id session.ID) {
 	d.opMu.Lock()
 	err := d.closeLocked(id, ReasonDaemonStop, "")
@@ -331,7 +287,7 @@ func (d *Daemon) botStop(kind string) (daemonproto.BotStatusData, error) {
 	st.mu.Lock()
 	id := run.session
 	st.mu.Unlock()
-	d.saveBotRecord(kind, "")
+
 	d.opMu.Lock()
 	err := d.closeLocked(id, botStopReason, "")
 	d.opMu.Unlock()

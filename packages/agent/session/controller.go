@@ -87,7 +87,6 @@ type Controller struct {
 	res          residentState
 	compact      compactState
 	settings     settingsState
-	ops          opsState
 	inter        interState
 	turnSeam     turnSeam
 	confirmSeam  confirmSeam
@@ -111,13 +110,9 @@ type Controller struct {
 
 // Options configures NewControllerWithOptions.
 type Options struct {
-	// ID is used as-is when set (restore keeps the persisted identity);
+	// ID is used as-is when set;
 	// otherwise a random ID unique across daemon restarts is generated.
 	ID ID
-	// InterruptedTurn marks a session restored after a daemon restart that
-	// stopped an in-flight turn: Info().Activity reads "interrupted" until the
-	// next turn and a warning Note is published and kept in Snapshot.Notes.
-	InterruptedTurn bool
 }
 
 // NewID returns a random session ID (12 lowercase base32 characters).
@@ -130,8 +125,7 @@ func NewController(ctx context.Context, deps Deps) *Controller {
 	return NewControllerWithOptions(ctx, deps, Options{})
 }
 
-// NewControllerWithOptions is NewController with a preset identity and
-// restore marker.
+// NewControllerWithOptions is NewController with an optional preset identity.
 func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Controller {
 	if deps.Clock == nil {
 		deps.Clock = time.Now
@@ -141,7 +135,6 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 		id = NewID()
 	}
 	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), closeReq: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: id, created: deps.Clock()}
-	c.ops.interrupted = opts.InterruptedTurn
 	c.actorBase = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
 	c.extInit(ctx)
 	c.turnSeam = c
@@ -156,10 +149,6 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 	c.residentSeam.residentsInit()
 	c.initConfirm()
 	c.updateInfo()
-	if opts.InterruptedTurn {
-		c.ops.restoreNote = true
-		c.publish(EvNote, NoteEvent{Note: interruptedNote})
-	}
 	go func() {
 		defer close(c.done)
 		defer c.extShutdown()
@@ -276,14 +265,6 @@ func (c *Controller) updateInfo() {
 	if compacting {
 		info.Activity = Activity{Kind: "compacting", Since: info.Activity.Since}
 	}
-	if c.ops.interrupted {
-		if run != RunStateIdle {
-			c.ops.interrupted = false
-			c.ops.restoreNote = false
-		} else if info.Activity.Kind == "idle" || info.Activity.Kind == "" {
-			info.Activity = Activity{Kind: "interrupted"}
-		}
-	}
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()
 	}
@@ -335,7 +316,6 @@ func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
 		c.res.snapshotInto(&out)
 		c.compact.snapshotInto(&out)
 		c.settings.snapshotInto(&out)
-		c.ops.snapshotInto(&out)
 		c.inter.snapshotInto(&out)
 		if buildErr != nil {
 			out.Notes = append(out.Notes, Note{Level: "error", Text: "session history unavailable: " + buildErr.Error()})

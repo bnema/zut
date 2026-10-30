@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -220,7 +219,7 @@ func TestDaemonFactoryNoGoroutineLeak(t *testing.T) {
 	}
 }
 
-func TestDaemonFactoryRestoreIdleInterrupted(t *testing.T) {
+func TestDaemonFactoryRestartStartsEmptyAndTranscriptResumes(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	server := sessionAssemblyProvider(t)
 	socket := daemonTestSocket(t)
@@ -234,38 +233,20 @@ func TestDaemonFactoryRestoreIdleInterrupted(t *testing.T) {
 	_ = c.Disconnect()
 	td.stop()
 
-	// Simulate a daemon that died mid-turn: state.json records it running.
 	statePath := filepath.Join(home, "daemon", "state.json")
-	raw, err := os.ReadFile(statePath)
-	require.NoError(t, err)
-	var st map[string]any
-	require.NoError(t, json.Unmarshal(raw, &st))
-	sessions := st["sessions"].([]any)
-	require.Len(t, sessions, 1)
-	sessions[0].(map[string]any)["running"] = true
-	raw, err = json.Marshal(st)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(statePath, raw, 0o600))
-
+	require.NoFileExists(t, statePath)
 	startFactoryDaemon(t, home, socket)
 	c2 := dialTestDaemon(t, socket)
 	list, err := c2.List(ctx)
 	require.NoError(t, err)
-	require.Len(t, list, 1)
-	got := list[0]
-	require.Equal(t, info.ID, got.ID)
-	require.Equal(t, cwd, got.CWD)
-	require.Equal(t, info.SessionPath, got.SessionPath)
-	require.Equal(t, session.RunStateIdle, got.Run)
-	require.Equal(t, session.AttachStateDetached, got.Attach)
-	require.Equal(t, "interrupted", got.Activity.Kind)
-	snap, err := c2.Snapshot(ctx, session.ID(got.ID))
+	require.Empty(t, list)
+	require.NoFileExists(t, statePath)
+	// Explicit transcript resume remains available, under a fresh live identity.
+	got, err := c2.Create(ctx, session.CreateSpec{CWD: cwd, Env: []string{}, Args: sessionAssemblyArgs(server), ResumePath: info.SessionPath})
 	require.NoError(t, err)
-	require.NotEmpty(t, snap.Notes)
-	// The restored session runs turns on top of its resumed transcript
-	// (the controller builds the agent lazily on the first turn).
+	require.NotEqual(t, info.ID, got.ID)
 	require.Equal(t, "done", submitAndWait(t, ctx, c2, session.ID(got.ID)))
-	snap, err = c2.Snapshot(ctx, session.ID(got.ID))
+	snap, err := c2.Snapshot(ctx, session.ID(got.ID))
 	require.NoError(t, err)
 	users := 0
 	for _, m := range snap.Messages {

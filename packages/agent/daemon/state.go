@@ -1,66 +1,13 @@
 package daemon
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
-
-	"github.com/bnema/zut/packages/agent/session"
 )
 
-const stateVersion = 1
-
-// persistedState is $ZUT_HOME/daemon/state.json: the sessions that are open
-// and must be restored idle after a daemon restart (D6). Env is captured from
-// the creating client and may be sensitive; the file is 0600 in a 0700 dir.
-type persistedState struct {
-	Version  int            `json:"version"`
-	Sessions []stateSession `json:"sessions"`
-}
-
-type stateSession struct {
-	ID          session.ID `json:"id"`
-	SessionPath string     `json:"session_path"`
-	CWD         string     `json:"cwd"`
-	Env         []string   `json:"env"`
-	Args        []string   `json:"args"`
-	Headless    bool       `json:"headless,omitempty"`
-	// Zutfile keeps packaged-agent permissions across restore and clear.
-	Zutfile *session.ZutfileSpec `json:"zutfile,omitempty"`
-	// Running records that a turn was in flight at the last state write; the
-	// restore marks it interrupted.
-	Running bool `json:"running,omitempty"`
-}
-
 func statePath(home string) string { return filepath.Join(stateDir(home), "state.json") }
-
-func loadState(home string) (persistedState, error) {
-	b, err := os.ReadFile(statePath(home))
-	if errors.Is(err, os.ErrNotExist) {
-		return persistedState{Version: stateVersion}, nil
-	}
-	if err != nil {
-		return persistedState{}, fmt.Errorf("read daemon state: %w", err)
-	}
-	var st persistedState
-	if err := json.Unmarshal(b, &st); err != nil {
-		return persistedState{}, fmt.Errorf("decode daemon state: %w", err)
-	}
-	return st, nil
-}
-
-func saveState(home string, st persistedState) error {
-	st.Version = stateVersion
-	b, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode daemon state: %w", err)
-	}
-	return writeFileAtomic(statePath(home), append(b, '\n'))
-}
 
 // writeFileAtomic writes a 0600 file via temp+rename in a 0700 directory and
 // fsyncs the parent directory on Unix so the rename is durable.
@@ -108,8 +55,4 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		}
 	}
 	return nil
-}
-
-func sortState(st *persistedState) {
-	sort.Slice(st.Sessions, func(i, j int) bool { return st.Sessions[i].ID < st.Sessions[j].ID })
 }

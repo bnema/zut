@@ -566,10 +566,12 @@ zut tree [--json]                # sessions and their subagents
 zut attach [id|title-prefix]     # reattach the TUI; no argument picks the latest detached session in this directory
 zut kill <id>...                 # close sessions (exact ID or unique ID prefix)
 zut daemon status                # pid, version, uptime, session count
-zut daemon start|stop|restart    # stopped sessions are restored on next start
+zut daemon start|stop|restart    # each daemon starts with no open sessions
 zut daemon logs [-f]             # print or follow the daemon log
 zut daemon run [--idle-gc-hours N]  # foreground; detached idle sessions close after N hours (default 24, 0 disables)
 ```
+
+Each daemon starts empty, including after a crash or auto-spawn. Previous session transcripts remain available in the resumable sessions list; they are not reopened as detached live sessions. Startup removes old `daemon/state.json` (which could contain client environment secrets) and stale `daemon/sessions/` review journals on a best-effort basis. Saved schedules are untouched.
 
 Agents in different sessions can see and message each other with the `sessions` tool (see [Tools](#tools)).
 
@@ -581,7 +583,7 @@ The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon
 
 Limitations:
 
-- Bot services are not restarted after a daemon restart. Their session is restored idle; run `zut telegram-bot start` again to resume polling.
+- Bot services are not restarted after a daemon restart. Run `zut telegram-bot start` again to create a new session and resume polling.
 - Autospawn on Windows is untested.
 - Access to the socket is controlled only by file permissions (a `0600` socket in a `0700` directory owned by you). The daemon does not check the connecting process's credentials, and on Windows those permission checks are skipped.
 
@@ -1215,7 +1217,7 @@ zut telegram-bot reset     # forget the token and paired user
 # short alias: `zut tg ...` is accepted for every subcommand
 ```
 
-The bot runs as one headless daemon session (visible in `zut ls`) created with the cwd, environment and flags given to `start`. It is not restarted after a daemon restart: its session is restored idle and the next `start` reuses it.
+The bot runs as one headless daemon session (visible in `zut ls`) created with the cwd, environment and flags given to `start`. It is not restarted after a daemon restart: the next `start` creates a new session. Previous transcripts remain available in the resumable sessions list.
 
 Setup flow:
 

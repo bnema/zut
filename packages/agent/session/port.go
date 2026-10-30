@@ -48,10 +48,9 @@ type Directory interface {
 	Send(ctx context.Context, from, to ID, text string) error
 }
 
-// Factory constructs and restores daemon session handles.
+// Factory constructs daemon session handles.
 type Factory interface {
 	Create(context.Context, CreateSpec) (Handle, error)
-	Restore(context.Context, RestoreSpec) (Handle, error)
 }
 
 // Handle extends the client port with daemon lifecycle operations.

@@ -1650,9 +1650,35 @@ func (i *Interactive) portAttachSession(id session.ID) {
 func (i *Interactive) portResumeSession(path string) {
 	cwd := i.SessionInfo().CWD
 	i.portSwitchAsync("resume", func(ctx context.Context, client SessionClient) (session.ID, error) {
+		// Resolve against the daemon, not the possibly empty or stale picker.
+		infos, err := client.List(ctx)
+		if err != nil {
+			return "", fmt.Errorf("list live sessions: %w", err)
+		}
+		if path != "" {
+			normalized := normalizedSessionPath(path)
+			for _, info := range infos {
+				if info.SessionPath != "" && normalizedSessionPath(info.SessionPath) == normalized {
+					return session.ID(info.ID), nil
+				}
+			}
+		}
 		info, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: path})
 		return session.ID(info.ID), err
 	})
+}
+
+// normalizedSessionPath is used only off the input/render loop. Missing or
+// inaccessible paths retain their cleaned absolute spelling for comparison.
+func normalizedSessionPath(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // portForkSession forks the current session file keeping upTo messages.
@@ -1711,6 +1737,7 @@ func (i *Interactive) portSwitchWithTreeSelection(label string, resolve func(con
 	if selection != nil {
 		i.sessionLoading = true
 	}
+	currentID := i.sessionID
 	i.statusOK, i.statusErr = label+": switching session…", ""
 	i.mu.Unlock()
 	i.invalidate()
@@ -1726,6 +1753,11 @@ func (i *Interactive) portSwitchWithTreeSelection(label string, resolve func(con
 		id, err := resolve(callCtx, client)
 		if err != nil {
 			fail(err)
+			return
+		}
+		if id == currentID {
+			res.kind, res.id = sessionResultKeepCurrent, id
+			i.deliverSessionResult(ctx, res)
 			return
 		}
 		port, err := client.Attach(callCtx, id)

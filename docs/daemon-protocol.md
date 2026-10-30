@@ -150,9 +150,8 @@ ends while the service runs (idle GC, `zut kill`), a new session replaces it.
 `bot_stop` stops the service and closes its session (reason `bot_stopped`);
 the session file stays resumable. Stopping a kind that is not running succeeds.
 
-Bot services are not restarted after a daemon restart. The bot session is
-restored idle like any other session, and the next `bot_start` reuses it
-(`$ZUT_HOME/daemon/bots.json` maps kind to session ID; no secrets).
+Bot services are not restarted after a daemon restart. The next `bot_start`
+creates a new session; previous transcripts remain resumable.
 
 `telegram_bridge` with `on:true` mirrors the paired Telegram chat into an
 existing session: DMs are submitted with origin `telegram`, prompts typed by
@@ -223,5 +222,8 @@ and tools types. Session attach state is always `attached` or `detached`.
 Detached confirmation/question requests are denied and recorded for review;
 client disconnect or detach resolves already pending requests the same way.
 Inter-session sending requires an attached sender whose current input origin is
-not `inter_session`. Listing and tree queries are always allowed. Restart restores
-open sessions idle and marks interrupted turns; no core JSONL format changes.
+not `inter_session`. Listing and tree queries are always allowed. Every daemon start begins with an empty session registry. Previous session
+transcripts remain available through the normal resumable sessions list. The
+daemon does not persist open sessions or client environments in `state.json`;
+startup deletes any old `state.json` and stale daemon session review journals
+on a best-effort basis. `schedules.json` and core JSONL transcripts are untouched.

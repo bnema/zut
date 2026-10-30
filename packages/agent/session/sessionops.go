@@ -8,22 +8,6 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
-// interruptedNote is published once when a restored session's previous turn
-// was stopped by a daemon restart (D6).
-var interruptedNote = Note{Level: "warning", Text: "Previous turn was interrupted by a daemon restart; the session was restored idle."}
-
-type opsState struct {
-	// interrupted is actor-owned; it clears once a new turn starts.
-	interrupted bool
-	restoreNote bool
-}
-
-func (s *opsState) snapshotInto(out *Snapshot) {
-	if s.restoreNote {
-		out.Notes = append(out.Notes, interruptedNote)
-	}
-}
-
 // closeReasonDaemonStop is the reason used when the daemon context ends;
 // it equals daemon.ReasonDaemonStop (session cannot import daemon).
 const closeReasonDaemonStop = "daemon_stop"

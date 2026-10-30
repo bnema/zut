@@ -19,7 +19,6 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
-	"github.com/bnema/zut/packages/core"
 )
 
 // testSession bundles a generated MockHandle with the state its
@@ -215,13 +214,11 @@ func (c *testClient) note(t *testing.T, typ string) daemonproto.Notification {
 	}
 }
 
-func readState(t *testing.T, home string) persistedState {
+func assertNoState(t *testing.T, home string) {
 	t.Helper()
-	st, err := loadState(home)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(statePath(home)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state.json should not exist: %v", err)
 	}
-	return st
 }
 
 func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
@@ -251,9 +248,7 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if gotSpec.CWD != "/w" || gotSpec.Env[0] != "A=1" {
 		t.Fatalf("factory spec = %+v", gotSpec)
 	}
-	if st := readState(t, home); len(st.Sessions) != 1 || st.Sessions[0].CWD != "/w" || st.Sessions[0].Env[0] != "A=1" {
-		t.Fatalf("state = %+v", st)
-	}
+	assertNoState(t, home)
 	if err := a.call(t, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, &info); err != nil {
 		t.Fatal(err)
 	}
@@ -313,9 +308,7 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if reason := recv(t, s1.closes); reason != "user_exit" {
 		t.Fatalf("close reason = %q", reason)
 	}
-	if st := readState(t, home); len(st.Sessions) != 0 {
-		t.Fatalf("state after close = %+v", st)
-	}
+	assertNoState(t, home)
 	if err := a.call(t, daemonproto.AttachRequest{Type: "attach", Session: "s1"}, nil); err == nil {
 		t.Fatal("attach to closed session succeeded")
 	}
@@ -381,9 +374,7 @@ func TestDaemonClearRecreatesAndMovesController(t *testing.T) {
 	if st := recv(t, s2.attach); st != session.AttachStateAttached {
 		t.Fatalf("successor attach = %s", st)
 	}
-	if st := readState(t, home); len(st.Sessions) != 1 || st.Sessions[0].ID != "s2" {
-		t.Fatalf("state = %+v", st)
-	}
+	assertNoState(t, home)
 }
 
 func TestClearArgsKeepsTerminator(t *testing.T) {
@@ -393,48 +384,46 @@ func TestClearArgsKeepsTerminator(t *testing.T) {
 	}
 }
 
-func TestDaemonRestoresIdleAndKeepsStateOnStop(t *testing.T) {
+func TestDaemonStartsEmptyAndRemovesPreviousState(t *testing.T) {
 	home := t.TempDir()
-	path := filepath.Join(t.TempDir(), "s1.jsonl")
-	if err := saveState(home, persistedState{Sessions: []stateSession{
-		{ID: "s1", SessionPath: path, CWD: "/w", Env: []string{"A=1"}, Args: []string{"-x"}, Running: true},
-		{ID: "bad", SessionPath: filepath.Join(t.TempDir(), "bad.jsonl")},
-	}}); err != nil {
+	transcript := filepath.Join(home, "sessions", "bucket", "x.jsonl")
+	const transcriptData = "transcript sentinel\n"
+	if err := os.MkdirAll(filepath.Dir(transcript), 0700); err != nil {
 		t.Fatal(err)
 	}
-	s1 := newTestSession(t, "s1")
+	if err := os.WriteFile(transcript, []byte(transcriptData), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(stateDir(home), "sessions", "old")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		statePath(home):                                 `{"version":1,"sessions":[{"id":"old","session_path":"missing.jsonl","env":["SYNTHETIC_KEY=test"],"running":true}]}`,
+		filepath.Join(dir, "deferred.jsonl"):            `{}`,
+		filepath.Join(stateDir(home), "schedules.json"): `{"keep":true}`,
+	} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	f := sessionmocks.NewMockFactory(t)
-	f.EXPECT().Restore(mock.Anything, session.RestoreSpec{ID: "s1", SessionPath: path, CWD: "/w", Env: []string{"A=1"}, Args: []string{"-x"}, InterruptedTurn: true}).Return(s1.h, nil).Once()
-	f.EXPECT().Restore(mock.Anything, mock.MatchedBy(func(s session.RestoreSpec) bool { return s.ID == "bad" })).Return(nil, errors.New("broken")).Once()
 	r := startDaemon(t, f, home, Options{})
-	if _, err := lockSessionFile(path); !errors.Is(err, ErrSessionFileBusy) {
-		t.Fatalf("restored session file lock = %v", err)
+	if got := r.d.List(context.Background()); len(got) != 0 {
+		t.Fatalf("registry = %+v", got)
 	}
-	a := dial(t, r.sock)
-	var list []session.Info
-	if err := a.call(t, daemonproto.ListRequest{Type: "list"}, &list); err != nil || len(list) != 1 || list[0].ID != "s1" || list[0].Run != session.RunStateIdle {
-		t.Fatalf("list = %+v, %v", list, err)
+	assertNoState(t, home)
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale directory remains: %v", err)
 	}
-	if st := readState(t, home); len(st.Sessions) != 1 || st.Sessions[0].Running {
-		t.Fatalf("state after restore = %+v", st)
+	if data, err := os.ReadFile(filepath.Join(stateDir(home), "schedules.json")); err != nil || string(data) != `{"keep":true}` {
+		t.Fatalf("schedules changed: %q, %v", data, err)
 	}
-	s1.set(func(i *session.Info) { i.Run = session.RunStateRunning })
+	if data, err := os.ReadFile(transcript); err != nil || string(data) != transcriptData {
+		t.Fatalf("transcript changed: %q, %v", data, err)
+	}
 	r.stop(t)
-	if reason := recv(t, s1.closes); reason != ReasonDaemonStop {
-		t.Fatalf("stop close reason = %q", reason)
-	}
-	st := readState(t, home)
-	if len(st.Sessions) != 1 || st.Sessions[0].ID != "s1" || !st.Sessions[0].Running {
-		t.Fatalf("state after stop = %+v", st)
-	}
-	l, err := lockSessionFile(path)
-	if err != nil {
-		t.Fatalf("session lock not released: %v", err)
-	}
-	_ = l.Close()
-	if _, err := os.Stat(r.sock); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("socket not removed: %v", err)
-	}
+	assertNoState(t, home)
 }
 
 func TestDaemonCreateRefusesBusySessionFile(t *testing.T) {
@@ -456,9 +445,21 @@ func TestDaemonCreateRefusesBusySessionFile(t *testing.T) {
 func TestDaemonLockPreventsSecondDaemonAndKeepsSocket(t *testing.T) {
 	home := t.TempDir()
 	r := startDaemon(t, sessionmocks.NewMockFactory(t), home, Options{})
+	// Ready has completed cleanup and the first daemon still holds the lock.
+	journal := filepath.Join(stateDir(home), "sessions", "live", "deferred.jsonl")
+	const journalData = "live journal sentinel\n"
+	if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte(journalData), 0600); err != nil {
+		t.Fatal(err)
+	}
 	err := New(sessionmocks.NewMockFactory(t)).Run(context.Background(), Options{Home: home, SocketPath: r.sock})
 	if !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("second Run = %v", err)
+	}
+	if data, err := os.ReadFile(journal); err != nil || string(data) != journalData {
+		t.Fatalf("live journal changed: %q, %v", data, err)
 	}
 	c := dial(t, r.sock)
 	if err := c.call(t, daemonproto.DaemonStatusRequest{Type: "daemon_status"}, nil); err != nil {
@@ -477,7 +478,7 @@ func TestDaemonRemovesStaleSocketAndSetsModes(t *testing.T) {
 	home := t.TempDir()
 	r := startDaemon(t, sessionmocks.NewMockFactory(t), home, Options{SocketPath: sock})
 	if runtime.GOOS != "windows" {
-		for path, want := range map[string]os.FileMode{filepath.Dir(sock): 0o700, sock: 0o600, statePath(home): 0o600, pidPath(home): 0o600, stateDir(home): 0o700} {
+		for path, want := range map[string]os.FileMode{filepath.Dir(sock): 0o700, sock: 0o600, pidPath(home): 0o600, stateDir(home): 0o700} {
 			fi, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
@@ -514,9 +515,7 @@ func TestDaemonForgetsSelfClosedSession(t *testing.T) {
 	}
 	s1.once.Do(func() { close(s1.done) })
 	a.note(t, "closed")
-	if st := readState(t, home); len(st.Sessions) != 0 {
-		t.Fatalf("state still lists self-closed session: %+v", st)
-	}
+	assertNoState(t, home)
 }
 
 func TestGCEligibilityMatrix(t *testing.T) {
@@ -892,51 +891,6 @@ func TestControlNotificationSurvivesEventBurst(t *testing.T) {
 	}
 	if c2.ctx.Err() == nil {
 		t.Fatal("control overflow did not disconnect")
-	}
-}
-
-func TestRunStateTransitionPersistsRunning(t *testing.T) {
-	home := t.TempDir()
-	s1 := newTestSession(t, "s1")
-	f := sessionmocks.NewMockFactory(t)
-	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
-	r := startDaemonWith(t, f, home, Options{}, func(d *Daemon) { d.runDebounce = 0 })
-	if err := dial(t, r.sock).call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	waitRunning := func(want bool) {
-		t.Helper()
-		for {
-			recv(t, r.d.stateWrites)
-			st := readState(t, home)
-			if len(st.Sessions) == 1 && st.Sessions[0].Running == want {
-				return
-			}
-		}
-	}
-	s1.set(func(i *session.Info) { i.Run = session.RunStateRunning })
-	s1.emit(session.Event{Seq: 1, Kind: session.EvAgent, Agent: core.EvTurnStart{}})
-	waitRunning(true)
-	s1.set(func(i *session.Info) { i.Run = session.RunStateIdle })
-	s1.emit(session.Event{Seq: 2, Kind: session.EvAgent, Agent: core.EvDone{}})
-	waitRunning(false)
-}
-
-func TestRunTransitionEvent(t *testing.T) {
-	for _, tc := range []struct {
-		ev   session.Event
-		want bool
-	}{
-		{session.Event{Kind: session.EvAgent, Agent: core.EvTurnStart{}}, true},
-		{session.Event{Kind: session.EvAgent, Agent: core.EvTurnEnd{}}, true},
-		{session.Event{Kind: session.EvAgent, Agent: core.EvDone{}}, true},
-		{session.Event{Kind: session.EvAgent, Agent: core.EvError{}}, true},
-		{session.Event{Kind: session.EvAgent, Agent: core.EvTextDelta{}}, false},
-		{session.Event{Kind: session.EvTitle}, false},
-	} {
-		if got := runTransitionEvent(tc.ev); got != tc.want {
-			t.Errorf("%+v: %v", tc.ev, got)
-		}
 	}
 }
 

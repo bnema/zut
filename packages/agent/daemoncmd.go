@@ -73,7 +73,7 @@ func printDaemonHelp(w io.Writer) {
 Usage:
   zut daemon run [--idle-gc-hours N]  run the daemon in the foreground
   zut daemon status                   show pid, version, uptime and sessions
-  zut daemon stop                     stop the daemon (sessions restore on next start)
+  zut daemon stop                     stop the daemon (next start has no open sessions)
   zut daemon restart                  stop, then start the daemon in the background
   zut daemon start                    start the daemon in the background if needed
   zut daemon install [--now]          install a systemd user unit (Linux)
@@ -140,7 +140,7 @@ type daemonServerOptions struct {
 	Home, SocketPath, Version string
 	IdleGC                    time.Duration
 	Logger                    *slog.Logger
-	// Ready is closed once the daemon listens and restore ran.
+	// Ready is closed once the daemon listens and startup cleanup finishes.
 	Ready chan<- struct{}
 }
 
@@ -183,7 +183,7 @@ func (s *daemonServer) run(ctx context.Context) error {
 		if s.ready != nil {
 			close(s.ready)
 		}
-		// Started after restore so restored sessions receive their tasks.
+		// Started once the daemon is ready to receive tasks.
 		if err := s.factory.runScheduler(schedCtx); err != nil {
 			s.factory.log.Error("scheduler stopped", "err", err)
 		}

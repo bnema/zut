@@ -101,31 +101,6 @@ func TestCloseFromActorReturnsWithoutWaiting(t *testing.T) {
 	<-c.Done()
 }
 
-func TestOptionsPresetIDAndInterruptedTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	c := NewControllerWithOptions(ctx, Deps{}, Options{ID: "restored-1", InterruptedTurn: true})
-	t.Cleanup(func() { cancel(); <-c.Done() })
-	info := c.Info()
-	require.Equal(t, "restored-1", info.ID)
-	require.Equal(t, RunStateIdle, info.Run)
-	require.Equal(t, "interrupted", info.Activity.Kind)
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
-	ev := nextEvent(t, ctx, events, EvNote)
-	require.Equal(t, NoteEvent{Note: interruptedNote}, ev.Data)
-	snap, err := c.Snapshot(ctx)
-	require.NoError(t, err)
-	require.Contains(t, snap.Notes, interruptedNote)
-	require.False(t, c.OnActor(ctx))
-
-	// A new turn clears both the interrupted activity and the restore note.
-	require.NoError(t, c.call(ctx, func() { c.turn.busy = true; c.updateInfo(); c.turn.busy = false; c.updateInfo() }))
-	require.NotEqual(t, "interrupted", c.Info().Activity.Kind)
-	snap, err = c.Snapshot(ctx)
-	require.NoError(t, err)
-	require.NotContains(t, snap.Notes, interruptedNote)
-}
-
 func TestDaemonContextEndClosesAsDaemonStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
