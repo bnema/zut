@@ -31,7 +31,7 @@ jobs:
           cache: true
 
       - name: install Mockery
-        run: go install github.com/vektra/mockery/v3@v3.8.1
+        run: go install github.com/vektra/mockery/v3@v3.9.0
 
       - name: generated mocks check
         shell: bash

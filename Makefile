@@ -95,7 +95,7 @@ NEW_PACKAGES := packages/agent/session packages/agent/daemon packages/agent/daem
 mocks:
 	rm -rf packages/agent/session/sessionmocks packages/provider/providermocks
 	@for dir in $(NEW_PACKAGES); do if [ -d "$$dir" ]; then find "$$dir" -name '*_mock_test.go' -delete; fi; done
-	@if [ "$$($(MOCKERY) version)" = "v3.8.1" ]; then $(MOCKERY); else $(GO) run github.com/vektra/mockery/v3@v3.8.1; fi
+	@if [ "$$($(MOCKERY) version)" = "v3.9.0" ]; then $(MOCKERY); else $(GO) run github.com/vektra/mockery/v3@v3.9.0; fi
 
 mocks-check: mocks
 	git diff --exit-code -- $(MOCK_PATHS)
