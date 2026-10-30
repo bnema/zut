@@ -266,7 +266,7 @@ func (c *Conn) handle(ctx context.Context, r Request) {
 		res.Data, err = marshalPayload(data)
 		if err != nil {
 			res.OK = false
-			res.Error = "encode result data"
+			res.Error = "encode result data: " + err.Error()
 		}
 	}
 	if err = c.write(ctx, res); err != nil {

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,7 +42,14 @@ func (s *turnState) snapshotInto(out *Snapshot) {
 func cloneTurn(in LiveTurn) LiveTurn {
 	in.Tools = append([]LiveTool(nil), in.Tools...)
 	for i := range in.Tools {
-		in.Tools[i].Args = append([]byte(nil), in.Tools[i].Args...)
+		// Args accumulate streamed deltas and stay partial JSON until the call
+		// completes; exposing them would make the snapshot unencodable.
+		if json.Valid(in.Tools[i].Args) {
+			in.Tools[i].Args = append([]byte(nil), in.Tools[i].Args...)
+		} else {
+			in.Tools[i].ArgsPartial = string(in.Tools[i].Args)
+			in.Tools[i].Args = nil
+		}
 		if in.Tools[i].Result != nil {
 			r := *in.Tools[i].Result
 			in.Tools[i].Result = &r

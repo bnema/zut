@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -126,7 +127,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Args = tui.ShortArgs(e.Name, e.Args)
 			i.bumpToolRevisionLocked(tc)
-			if tc.RawJSONBuf == "" {
+			if tc.RawJSONBuf == "" || !json.Valid([]byte(tc.RawJSONBuf)) {
 				tc.RawJSONBuf = string(e.Args)
 			}
 			tc.Streaming = false
@@ -559,7 +560,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 		i.wakeStreamPacer()
 	}
 	for _, lt := range snap.Live.Tools {
-		tc := &tui.ToolCallView{ID: lt.ID, Name: lt.Name, RawJSONBuf: string(lt.Args), Streaming: lt.State == "composing"}
+		tc := &tui.ToolCallView{ID: lt.ID, Name: lt.Name, RawJSONBuf: string(lt.Args) + lt.ArgsPartial, Streaming: lt.State == "composing"}
 		if len(lt.Args) > 0 && lt.State != "composing" {
 			tc.Args = tui.ShortArgs(lt.Name, lt.Args)
 		}

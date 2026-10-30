@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -135,6 +136,33 @@ func TestTurnToolProjection(t *testing.T) {
 	require.Len(t, snap.Live.Tools, 1)
 	require.Equal(t, "done", snap.Live.Tools[0].State)
 	require.Equal(t, "ok", snap.Live.Tools[0].Progress)
+}
+
+func TestTurnSnapshotDropsPartialToolArgs(t *testing.T) {
+	c, ctx := newTestController(t)
+	require.NoError(t, c.call(ctx, func() {
+		c.applyAgentEvent(core.EvToolUseStart{ID: "empty", Name: "bash"})
+		c.applyAgentEvent(core.EvToolUseStart{ID: "x", Name: "bash"})
+		c.applyAgentEvent(core.EvToolUseArgs{ID: "x", Delta: `{"command":"ls`})
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Live.Tools, 2)
+	for _, tool := range snap.Live.Tools {
+		require.Nil(t, tool.Args, tool.ID)
+	}
+	require.Empty(t, snap.Live.Tools[0].ArgsPartial)
+	require.Equal(t, `{"command":"ls`, snap.Live.Tools[1].ArgsPartial)
+	_, err = json.Marshal(snap)
+	require.NoError(t, err)
+	require.NoError(t, c.call(ctx, func() {
+		require.Equal(t, `{"command":"ls`, string(c.tool("x").Args), "internal buffer must keep accumulating")
+		c.applyAgentEvent(core.EvToolUseArgs{ID: "x", Delta: `"}`})
+	}))
+	snap, err = c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"command":"ls"}`, string(snap.Live.Tools[1].Args))
+	require.Empty(t, snap.Live.Tools[1].ArgsPartial)
 }
 
 func TestTurnSteerAndCancelProvider(t *testing.T) {

@@ -107,12 +107,15 @@ type LiveTurn struct {
 
 // LiveTool is a terminal-free session contract payload.
 type LiveTool struct {
-	ID       string           `json:"id"`
-	Name     string           `json:"name"`
-	Args     json.RawMessage  `json:"args"`
-	State    string           `json:"state"`
-	Progress string           `json:"progress"`
-	Result   *core.ToolResult `json:"result"`
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
+	// ArgsPartial carries streamed arguments that are not yet valid JSON
+	// (Args is nil then); a RawMessage cannot encode partial JSON.
+	ArgsPartial string           `json:"args_partial,omitempty"`
+	State       string           `json:"state"`
+	Progress    string           `json:"progress"`
+	Result      *core.ToolResult `json:"result"`
 }
 
 // Input is a terminal-free session contract payload.

@@ -153,6 +153,35 @@ func TestInteractivePortHydratesMidTurn(t *testing.T) {
 	require.Equal(t, "read", r.i.toolCalls["c1"].Name)
 }
 
+func TestInteractivePortHydratesPartialToolArgs(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	events := make(chan session.Event, 4)
+	snap := session.Snapshot{
+		Info: session.Info{ID: "s1", Run: session.RunStateRunning},
+		Seq:  3,
+		Live: session.LiveTurn{TurnID: "t1", Tools: []session.LiveTool{
+			{ID: "c1", Name: "bash", ArgsPartial: `{"command":"l`, State: "composing"},
+		}},
+	}
+	port.EXPECT().Snapshot(mock.Anything).Return(snap, nil).Once()
+	expectPortSubscribe(port, events, nil)
+
+	r := startPortInteractive(t, port, nil)
+	buf := func() string {
+		r.i.mu.Lock()
+		defer r.i.mu.Unlock()
+		if tc := r.i.toolCalls["c1"]; tc != nil {
+			return tc.RawJSONBuf
+		}
+		return ""
+	}
+	require.Eventually(t, func() bool { return buf() == `{"command":"l` }, 5*time.Second, 5*time.Millisecond)
+	events <- session.Event{Seq: 4, Kind: session.EvAgent, Agent: core.EvToolUseArgs{ID: "c1", Delta: `s`}}
+	require.Eventually(t, func() bool { return buf() == `{"command":"ls` }, 5*time.Second, 5*time.Millisecond)
+	events <- session.Event{Seq: 5, Kind: session.EvAgent, Agent: core.EvToolCall{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"ls"}`)}}
+	require.Eventually(t, func() bool { return buf() == `{"command":"ls"}` }, 5*time.Second, 5*time.Millisecond)
+}
+
 func TestInteractivePortResnapshotOnMessagesReplaced(t *testing.T) {
 	port := sessionmocks.NewMockPort(t)
 	events := make(chan session.Event, 4)

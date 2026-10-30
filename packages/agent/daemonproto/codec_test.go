@@ -10,6 +10,7 @@ import (
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +132,20 @@ func TestSnapshotResultCodec(t *testing.T) {
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("snapshot mismatch\n%#v\n%#v", want, got)
+	}
+}
+
+func TestSnapshotResultCodecStreamingToolArgs(t *testing.T) {
+	for name, args := range map[string]string{"empty": ``, "partial": `{"command":"ls`} {
+		t.Run(name, func(t *testing.T) {
+			raw := session.Snapshot{Live: session.LiveTurn{Tools: []session.LiveTool{{ID: "x", Name: "bash", State: "composing", Args: []byte(args)}}}}
+			c, _ := servePair(t, daemonproto.Options{OnRequest: func(ctx context.Context, r daemonproto.Request) (any, error) { return raw, nil }})
+			var got session.Snapshot
+			err := c.Call(context.Background(), daemonproto.SnapshotRequest{Type: "snapshot", Session: "s"}, &got)
+			if err == nil || !strings.Contains(err.Error(), "encode result data: ") {
+				t.Fatalf("want diagnosable encode error, got %v", err)
+			}
+		})
 	}
 }
 
