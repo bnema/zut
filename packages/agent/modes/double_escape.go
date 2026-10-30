@@ -84,11 +84,12 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 	}
 	i.mu.Lock()
 	loginActive := i.dialog != nil && i.dialog.Active()
+	rescueActive := i.rescueDialog != nil && i.rescueDialog.Active()
 	i.mu.Unlock()
 	if loginActive ||
 		i.modelDialog != nil && i.modelDialog.Active() ||
 		i.llamaDialog != nil && i.llamaDialog.Active() ||
-		i.rescueDialog != nil && i.rescueDialog.Active() ||
+		rescueActive ||
 		i.sessionDialog != nil && i.sessionDialog.Active() ||
 		i.residentSubagentsDialog != nil && i.residentSubagentsDialog.Active() ||
 		i.residentChildSession != nil ||

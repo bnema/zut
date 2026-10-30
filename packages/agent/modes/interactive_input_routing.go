@@ -221,19 +221,23 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	i.mu.Lock()
 	if i.rescueDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.rescueDialog.Close()
+			i.mu.Unlock()
 			i.invalidate()
 			return false
 		}
 		act := i.rescueDialog.HandleKey(k)
+		i.mu.Unlock()
 		if act.Select {
 			i.applyRescueSelection(act.Provider, act.Model, act.Prompt)
 		}
 		i.invalidate()
 		return false
 	}
+	i.mu.Unlock()
 	i.mu.Lock()
 	sessionDialogActive := i.sessionDialog.Active()
 	i.mu.Unlock()

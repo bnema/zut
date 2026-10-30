@@ -261,7 +261,9 @@ func (i *Interactive) syncPortDialogs() {
 	for _, id := range i.confirmDialog.prunePortSeen(live) {
 		i.confirmDialog.RemovePending(id)
 		i.questionDialog.RemovePending(id)
+		i.mu.Lock()
 		i.rescueDialog.ClosePending(id)
+		i.mu.Unlock()
 	}
 	opened := false
 	for _, p := range pending {
@@ -296,6 +298,7 @@ func (i *Interactive) syncPortDialogs() {
 			if p.Rescue == nil {
 				continue
 			}
+			i.mu.Lock()
 			i.rescueDialog.OpenPending(id, *p.Rescue, func(answers []tools.QuestionAnswer) {
 				go func() {
 					if err := port.AnswerQuestion(ctx, id, answers); err != nil {
@@ -303,6 +306,7 @@ func (i *Interactive) syncPortDialogs() {
 					}
 				}()
 			})
+			i.mu.Unlock()
 			i.alertNeedsInput(alertRescueRequired)
 		default:
 			continue

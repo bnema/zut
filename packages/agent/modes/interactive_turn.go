@@ -591,8 +591,8 @@ func (i *Interactive) openRescueDialog(activeProvider, failedProvider, failedMod
 	i.mu.Lock()
 	i.pendingRescuePrompt = prompt
 	i.pendingRescueImages = images
-	i.mu.Unlock()
 	i.rescueDialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
+	i.mu.Unlock()
 	i.invalidate()
 }
 func (i *Interactive) applyRescueSelection(prov, model, prompt string) {
