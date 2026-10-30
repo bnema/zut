@@ -338,18 +338,17 @@ func TestTimelineExportIsExclusiveAndPrivate(t *testing.T) {
 }
 
 func TestTimelineSnapshotHidesHostInternalMessages(t *testing.T) {
-	ag := core.NewAgent(nil, "m", "system prompt", nil)
-	ag.SetMessages([]provider.Message{
+	i := newHistoryPortInteractive(t, []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "real prompt"}}},
 		{Role: provider.RoleUser, Meta: map[string]string{goalContinueMetaKey: "true"}, Content: []provider.Content{provider.TextBlock{Text: "hidden goal continuation"}}},
 		{Role: provider.RoleUser, Meta: map[string]string{autoCompactContinueMetaKey: "true"}, Content: []provider.Content{provider.TextBlock{Text: "hidden compact continuation"}}},
 		{Role: provider.RoleUser, Meta: map[string]string{core.RepetitionGuardMetaKey: "true"}, Content: []provider.Content{provider.TextBlock{Text: "hidden repetition guard"}}},
-	})
-	i := &Interactive{agent: ag, timeline: newTimelineView()}
+	}, InteractiveConfig{})
 	i.mu.Lock()
 	data := i.timelineDataLocked()
 	i.mu.Unlock()
-	if data.System != "system prompt" || len(data.Messages) != 1 {
+	// The daemon owns the system prompt; the client snapshot has none.
+	if data.System != "" || len(data.Messages) != 1 {
 		t.Fatalf("snapshot = system %q, %d messages", data.System, len(data.Messages))
 	}
 	for _, e := range buildTimelineEntries(data) {
@@ -360,9 +359,7 @@ func TestTimelineSnapshotHidesHostInternalMessages(t *testing.T) {
 }
 
 func TestTimelineCacheRebuildsOnlyWhenTranscriptChanges(t *testing.T) {
-	ag := core.NewAgent(nil, "m", "sys", nil)
-	ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}}})
-	i := &Interactive{agent: ag, timeline: newTimelineView()}
+	i := newHistoryPortInteractive(t, []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}}}, InteractiveConfig{})
 	i.mu.Lock()
 	data := i.timelineDataLocked()
 	i.timeline.Open(data)
@@ -372,8 +369,8 @@ func TestTimelineCacheRebuildsOnlyWhenTranscriptChanges(t *testing.T) {
 	if &first[0] != &again[0] {
 		t.Fatal("unchanged transcript rebuilt the timeline")
 	}
-	ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "two"}}}})
 	i.mu.Lock()
+	i.applyPortAgentTranscriptLocked(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "two"}}}})
 	updated := i.timeline.entries(i.timelineDataLocked())
 	i.mu.Unlock()
 	if !strings.Contains(updated[len(updated)-1].Summary, "two") {
@@ -409,7 +406,7 @@ func TestTimelineRendersInsideFloatingPane(t *testing.T) {
 }
 
 func TestTimelineKeysAreOwnedByTimelineAndCtrlCCloses(t *testing.T) {
-	i := NewInteractive(InteractiveConfig{Agent: core.NewAgent(nil, "m", "", nil)})
+	i := newHistoryPortInteractive(t, nil, InteractiveConfig{})
 	i.openTimeline()
 	if !i.timeline.Active() || !i.confirmChildActive() {
 		t.Fatal("timeline is not registered as an active overlay")
@@ -573,4 +570,31 @@ func (t schemaTool) Description() string     { return "d" }
 func (t schemaTool) Schema() json.RawMessage { return json.RawMessage(t.schema) }
 func (t schemaTool) Execute(context.Context, json.RawMessage, func(string)) (core.ToolResult, error) {
 	return core.ToolResult{}, nil
+}
+
+// Port twin of the copy-skipping and live-gauge halves above. The prompt and
+// tool-schema halves stay legacy-only: the daemon keeps both.
+func TestPortTimelineSnapshotSkipsCopiesAndKeepsGaugeLive(t *testing.T) {
+	i := newHistoryPortInteractive(t, []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}}}, InteractiveConfig{})
+	snapshot := func() timelineData {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return i.timelineDataLocked()
+	}
+	first := snapshot()
+	again := snapshot()
+	if &first.Messages[0] != &again.Messages[0] || !again.Est.ok {
+		t.Fatal("unchanged transcript was re-copied")
+	}
+	i.mu.Lock()
+	i.applyPortAgentTranscriptLocked(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}}})
+	i.lastCtxInput = 42
+	i.mu.Unlock()
+	next := snapshot()
+	if len(next.Messages) != 2 {
+		t.Fatalf("snapshot kept %d messages after a session append, want 2", len(next.Messages))
+	}
+	if next.ContextUsed != 42 {
+		t.Fatal("context usage was served from the cache")
+	}
 }

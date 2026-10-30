@@ -118,12 +118,18 @@ func (i *Interactive) showSessionInfo() {
 	model := i.cfg.Model
 	theme := i.cfg.Theme
 	terminal := i.cfg.Terminal
+	// The daemon owns the session: read its id and file from the attached
+	// session (L16 SHIM: the legacy agent and path callback otherwise).
+	attached := i.port != nil
+	portID, portPath := string(i.sessionID), i.portInfo.SessionPath
 	i.mu.Unlock()
 
-	sessionID := sessionID(agent)
-	sessionPath := ""
-	if pathFn != nil {
-		sessionPath = pathFn()
+	sessionID, sessionPath := portID, portPath
+	if !attached {
+		sessionID, sessionPath = sessionIDOf(agent), ""
+		if pathFn != nil {
+			sessionPath = pathFn()
+		}
 	}
 
 	width := 80
@@ -131,15 +137,11 @@ func (i *Interactive) showSessionInfo() {
 		width, _ = terminal.Size()
 	}
 	block := renderSessionInfoBlock(theme, width, sessionID, absoluteSessionInfoPath(sessionPath), absoluteSessionInfoPath(cwd), providerName, model)
-	messageCount := 0
-	if agent != nil {
-		messageCount = len(filterHiddenTranscriptMessages(agent.Messages()))
-	}
 
 	i.mu.Lock()
 	i.helpBlock = nil
 	i.sessionInfoBlocks = append(i.sessionInfoBlocks, sessionInfoBlock{
-		afterMessage: messageCount,
+		afterMessage: i.visibleTranscriptCountLocked(),
 		lines:        block,
 	})
 	i.statusErr = ""
@@ -151,7 +153,6 @@ func (i *Interactive) showSessionInfo() {
 // showMCPStatus appends a display-only MCP server status block.
 func (i *Interactive) showMCPStatus() {
 	i.mu.Lock()
-	agent := i.agent
 	statusFn := i.cfg.MCPStatus
 	theme := i.cfg.Theme
 	terminal := i.cfg.Terminal
@@ -173,21 +174,27 @@ func (i *Interactive) showMCPStatus() {
 		block = append(block, "  "+theme.FGColor(theme.Muted, sanitizeTimelineLine(line)))
 	}
 	block = append(block, "", frameRule(theme, width), "")
-	messageCount := 0
-	if agent != nil {
-		messageCount = len(filterHiddenTranscriptMessages(agent.Messages()))
-	}
 
 	i.mu.Lock()
 	i.helpBlock = nil
-	i.sessionInfoBlocks = append(i.sessionInfoBlocks, sessionInfoBlock{afterMessage: messageCount, lines: block})
+	i.sessionInfoBlocks = append(i.sessionInfoBlocks, sessionInfoBlock{afterMessage: i.visibleTranscriptCountLocked(), lines: block})
 	i.statusErr = ""
 	i.statusOK = ""
 	i.scrollOffset = 0
 	i.mu.Unlock()
 }
 
-func sessionID(agent *core.Agent) string {
+// visibleTranscriptCountLocked anchors a display block after the visible
+// transcript: the session's when attached, else the legacy agent's.
+func (i *Interactive) visibleTranscriptCountLocked() int {
+	msgs, _, ok := i.portTranscriptLocked()
+	if !ok {
+		return 0
+	}
+	return len(filterHiddenTranscriptMessages(msgs))
+}
+
+func sessionIDOf(agent *core.Agent) string {
 	if agent == nil {
 		return ""
 	}
