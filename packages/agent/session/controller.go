@@ -317,6 +317,14 @@ func (c *Controller) Info() Info {
 func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
 	var out Snapshot
 	err := c.call(ctx, func() {
+		// The agent is built lazily; a resumed session holds its restored
+		// transcript there, so build it before projecting messages. A failed
+		// build still returns a snapshot so the client can attach (for example
+		// to log in), but reports the failure instead of an empty history.
+		var buildErr error
+		if c.deps.AgentBuilder != nil {
+			buildErr = c.ensureAgent()
+		}
 		c.updateInfo()
 		out = Snapshot{Info: c.Info(), Seq: c.seq}
 		c.turn.snapshotInto(&out)
@@ -329,6 +337,9 @@ func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
 		c.settings.snapshotInto(&out)
 		c.ops.snapshotInto(&out)
 		c.inter.snapshotInto(&out)
+		if buildErr != nil {
+			out.Notes = append(out.Notes, Note{Level: "error", Text: "session history unavailable: " + buildErr.Error()})
+		}
 	})
 	if err != nil {
 		return Snapshot{}, err
