@@ -550,11 +550,8 @@ func TestTurnRepetitionRebuildsQueueOnce(t *testing.T) {
 		c.finishTurn(context.Background(), core.ErrRepetitiveLoop)
 		queue = append(queue, c.turn.queue...)
 	}))
-	// existing-1 starts (compaction intercepts); remaining order is baseline.
-	require.Len(t, queue, 2)
-	require.Equal(t, "existing-2", queue[0].Input.Text)
-	require.Equal(t, "typed", queue[1].Input.Text)
-	require.Equal(t, "3", queue[1].ID, "pending prompts receive fresh IDs")
+	// Stacked user inputs start together as one turn (compaction intercepts).
+	require.Empty(t, queue)
 	events, err := c.Subscribe(ctx, before.Seq)
 	require.NoError(t, err)
 	first := (<-events)
