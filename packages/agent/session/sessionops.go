@@ -101,7 +101,7 @@ func (c *Controller) waitBackground(limit time.Duration) {
 		case <-done:
 		case <-t.C:
 			if c.deps.Logger != nil {
-				c.deps.Logger.Warn(name+" did not stop before close", "session", c.id, "timeout", limit)
+				c.deps.Logger.Warn(name+" did not stop before close", "timeout", limit)
 			}
 			return
 		}

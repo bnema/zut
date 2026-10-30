@@ -100,6 +100,8 @@ func (c *Controller) beginCompact(next *Input) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.compact.busy, c.compact.aborted, c.compact.cancel = true, false, cancel
 	before := ag.Messages()
+	started := c.deps.Clock()
+	c.logger().Info("compaction started", "auto", next != nil)
 	c.publish(EvCompaction, CompactionEvent{Phase: "start"})
 	compactDone := make(chan struct{})
 	c.compactDone = compactDone
@@ -139,6 +141,15 @@ func (c *Controller) beginCompact(next *Input) error {
 		_ = c.call(context.Background(), func() {
 			aborted, rescuing := c.compact.aborted, c.compact.rescuing
 			c.compact.busy, c.compact.aborted, c.compact.cancel, c.compact.rescuing = false, false, nil, false
+			duration := c.deps.Clock().Sub(started)
+			switch {
+			case aborted:
+				c.logger().Info("compaction aborted", "duration", duration)
+			case err != nil:
+				c.logger().Warn("compaction failed", "duration", duration, "error_category", errorCategory(err))
+			default:
+				c.logger().Info("compaction ended", "duration", duration)
+			}
 			switch {
 			case aborted:
 				// A summary that won the race with cancellation is rolled back.

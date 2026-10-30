@@ -579,7 +579,7 @@ In the TUI, `/detach` leaves the session running and prints the `zut attach` com
 
 On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
 
-The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`.
+The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`. Set `ZUT_DAEMON_LOG=debug|info|warn|error` in the daemon's environment to select its log level (default `info`; unrecognized values also use `info`). Restart an already-running daemon to apply a new level. The log rotates at 10 MiB, retaining one backup as `daemon.log.1`, with `0600` file permissions. An oversized existing log rotates on startup; during a run, rotation happens before a write would exceed the limit (individual records are not split).
 
 Limitations:
 

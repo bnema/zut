@@ -76,6 +76,7 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	}
 	deps.DeferredStore = store
 	deps.Directory = f.dir
+	deps.Logger = f.log.With("session", string(opts.ID))
 	var extra []core.Tool
 	if f.engine != nil {
 		deps.Scheduler = sessionSchedule{engine: f.engine, id: string(opts.ID)}
