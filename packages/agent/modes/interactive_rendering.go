@@ -887,7 +887,7 @@ func (i *Interactive) redraw() {
 	var residentSubagentLines []string
 	var bottom []string
 	var inputStartRow int
-	if !residentViewActive && i.cfg.ResidentManager != nil {
+	if !residentViewActive && (i.cfg.ResidentManager != nil || len(i.portInfo.Residents) > 0) {
 		residentCapacity := 0
 		for candidateRows := maxBottomRows; candidateRows > 0; candidateRows-- {
 			candidateBottom, _ := composeBottom(make([]string, candidateRows))
@@ -897,7 +897,14 @@ func (i *Interactive) redraw() {
 			}
 		}
 		if residentCapacity > 0 {
-			residentLines, hiddenResidents := renderResidentSubagentActivityPage(i.cfg.Theme, i.cfg.ResidentManager, i.spin.FrameAt(i.clock()), residentCapacity, mainCols, i.clock())
+			var residentLines []string
+			var hiddenResidents int
+			if i.cfg.ResidentManager != nil {
+				residentLines, hiddenResidents = renderResidentSubagentActivityPage(i.cfg.Theme, i.cfg.ResidentManager, i.spin.FrameAt(i.clock()), residentCapacity, mainCols, i.clock())
+			} else {
+				snapshots, total := residentSnapshotsFromInfo(i.portInfo.Residents, residentCapacity)
+				residentLines, hiddenResidents = renderResidentSubagentActivityLines(i.cfg.Theme, i.spin.FrameAt(i.clock()), snapshots, mainCols, i.clock()), total-len(snapshots)
+			}
 			if len(residentLines) > 0 || hiddenResidents > 0 {
 				residentSubagentLines = fitResidentSubagentActivityLines(i.cfg.Theme, residentLines, hiddenResidents, maxBottomRows, mainCols, func(candidate []string) int {
 					candidateBottom, _ := composeBottom(candidate)

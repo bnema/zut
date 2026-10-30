@@ -6,22 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
 // Without Run: refreshDictation is driven directly with a queued result.
-func TestInteractivePortDictationSubmitsTranscript(t *testing.T) {
-	port := sessionmocks.NewMockPort(t)
-	called := make(chan struct{})
-	var got session.Input
-	port.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, in session.Input) error {
-		got = in
-		close(called)
-		return nil
-	}).Once()
+// The transcript is a draft: it lands in the editor and is never submitted.
+func TestInteractivePortDictationInsertsDraft(t *testing.T) {
+	port := sessionmocks.NewMockPort(t) // no Submit expectation: a call fails the test
 	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, Port: port})
 	events := make(chan dictationEvent, 1)
 	done := make(chan struct{})
@@ -31,12 +24,9 @@ func TestInteractivePortDictationSubmitsTranscript(t *testing.T) {
 	i.dictation = interactiveDictation{phase: "transcribing", events: events, cancel: func() {}, done: done}
 	i.mu.Unlock()
 	i.refreshDictation()
-	waitSignal(t, called, "Submit")
-	require.Equal(t, "hello world", got.Text)
-	require.Equal(t, session.InputOriginUser, got.Origin)
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	require.Equal(t, "", strings.Join(i.ed.Lines, ""))
+	require.Equal(t, "hello world", strings.Join(i.ed.Lines, ""))
 }
 
 func startPortTelegram(t *testing.T) (*mockSessionClient, *portRun) {

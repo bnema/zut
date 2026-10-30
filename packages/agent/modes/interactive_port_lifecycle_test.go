@@ -79,10 +79,13 @@ func TestInteractivePortLifecycleDetachCtrlDEmpty(t *testing.T) {
 	r.requireDetached(t)
 }
 
-func TestInteractivePortLifecycleDetachDoubleCtrlC(t *testing.T) {
-	r := startLifecycle(t, newMockSessionClient(t))
+func TestInteractivePortLifecycleQuitDoubleCtrlC(t *testing.T) {
+	client := newMockSessionClient(t)
+	client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).Return(nil).Once()
+	r := startLifecycle(t, client)
 	r.term.send("\x03\x03")
-	r.requireDetached(t)
+	r.waitExit(t)
+	require.Empty(t, r.detach)
 }
 
 func TestInteractivePortLifecycleExitClosesSession(t *testing.T) {

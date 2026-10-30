@@ -571,7 +571,7 @@ zut daemon run [--idle-gc-hours N]  # foreground; detached idle sessions close a
 
 Agents in different sessions can see and message each other with the `sessions` tool (see [Tools](#tools)).
 
-In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
+In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. In daemon mode, `ctrl+c` opens `Q quit · D detach · Esc cancel` whether idle or busy (after any dialog handling or idle input clearing). Q closes the session like `/exit`, staying open if closing fails; D detaches like `/detach`. Esc or any other key cancels the menu without interrupting a turn. Pressing `ctrl+c` again while the menu is open forces exit after a bounded attempt to close the session; any close error is printed as an exit notice. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
 
 On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
 
@@ -1060,7 +1060,7 @@ ZUT_COMPACT_INPUT=1 zut   # compact, just this run
 
 ## Queued messages
 
-You can keep typing while the agent is working. Pressing `enter` during a turn queues the message, including pasted screenshots, instead of interrupting. It appears above the status bar as `sliding in: <text> [image]` and is delivered at the next safe model-call boundary. Queue as many messages as you want; they run in order. `alt+up` returns the most recently queued user message and its image markers to the input for editing, skipping sub-agent reports and other host events. `esc` cancels the active turn, restores the most recent queued message in the same way, and drops any remaining stale follow-ups; `ctrl+c` while busy arms the exit hint instead of interrupting, and a second `ctrl+c` within two seconds exits zut.
+You can keep typing while the agent is working. Pressing `enter` during a turn queues the message, including pasted screenshots, instead of interrupting. It appears above the status bar as `sliding in: <text> [image]` and is delivered at the next safe model-call boundary. Queue as many messages as you want; they run in order. `alt+up` returns the most recently queued user message and its image markers to the input for editing, skipping sub-agent reports and other host events. `esc` cancels the active turn, restores the most recent queued message in the same way, and drops any remaining stale follow-ups; `ctrl+c` never interrupts a busy turn. In daemon mode it opens the quit/detach menu described above; in in-process mode it arms the exit hint, and a second `ctrl+c` within two seconds exits zut.
 
 To recover your most recently queued message back into the editor (to tweak it before it runs), press `Alt+↑` (`Option+↑` on macOS). In Vev, use `Alt+Shift+↑` because `Alt+↑` is reserved for pane navigation. In VS Code's integrated terminal on macOS, use `Option+Shift+↑`. zut's hint line adapts based on `$TERM_PROGRAM` and appears only when a user message is available to recover.
 
@@ -1078,7 +1078,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `tab` | Complete the selected slash command, file, or path token; otherwise cycle to the next model profile (empty slots open the picker). |
 | `shift+tab` | Cycle to the previous model profile (empty slots open the picker). |
 | `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
-| `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
+| `ctrl+c` | Clear the input and queue while idle. Otherwise, in daemon mode show Q quit / D detach / Esc cancel; Ctrl+C again forces quit. In-process mode: arm the exit hint; press again within 2s to exit. Use `esc` outside the menu to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |

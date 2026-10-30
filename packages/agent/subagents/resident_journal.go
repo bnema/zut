@@ -141,6 +141,20 @@ type residentRecord struct {
 	raw          json.RawMessage   `json:"-"`
 }
 
+// residentToolArgs keeps malformed model arguments as a JSON string. Raw
+// invalid JSON would fail the record encode and drop the call while its error
+// result is still journaled, leaving an orphan result that blocks reload.
+func residentToolArgs(args json.RawMessage) json.RawMessage {
+	if len(args) == 0 {
+		return json.RawMessage("{}")
+	}
+	if json.Valid(args) {
+		return append(json.RawMessage(nil), args...)
+	}
+	quoted, _ := json.Marshal(string(args))
+	return quoted
+}
+
 // RecordAgentEvent persists finalized provider-neutral transcript events. It
 // deliberately excludes streamed deltas and hidden reasoning, keeping the
 // journal authoritative for resumable visible history without an fsync per
@@ -164,7 +178,7 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 		}
 		record = residentRecord{Type: residentRecordAssistant, Message: message}
 	case core.EvToolCall:
-		record = residentRecord{Type: residentRecordToolCall, ToolID: value.ID, ToolName: value.Name, ToolArgs: append(json.RawMessage(nil), value.Args...)}
+		record = residentRecord{Type: residentRecordToolCall, ToolID: value.ID, ToolName: value.Name, ToolArgs: residentToolArgs(value.Args)}
 	case core.EvToolResult:
 		result, err := json.Marshal(value.Result)
 		if err != nil {

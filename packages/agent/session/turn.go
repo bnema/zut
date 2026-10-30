@@ -330,15 +330,47 @@ func (c *Controller) startQueued() {
 			break
 		}
 	}
-	next := c.turn.queue[index]
-	c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
+	// Consecutive plain user inputs stacked during a turn run together as
+	// one turn, so the model sees them all at once.
+	end := index + 1
+	if batchableQueued(c.turn.queue[index].Input) {
+		for end < len(c.turn.queue) && batchableQueued(c.turn.queue[end].Input) {
+			end++
+		}
+	}
+	taken := append([]QueuedInput(nil), c.turn.queue[index:end]...)
+	c.turn.queue = append(c.turn.queue[:index], c.turn.queue[end:]...)
 	c.publishQueue()
-	if e := c.startTurn(next.Input); e != nil {
-		// Restore the item at its position so a failed start never loses input.
-		c.turn.queue = append(c.turn.queue[:index], append([]QueuedInput{next}, c.turn.queue[index:]...)...)
+	if e := c.startTurn(mergeQueued(taken)); e != nil {
+		// Restore the items at their position so a failed start never loses input.
+		c.turn.queue = append(c.turn.queue[:index], append(taken, c.turn.queue[index:]...)...)
 		c.publishQueue()
 		c.publishError(e.Error())
 	}
+}
+
+// batchableQueued reports whether a queued input can merge with its
+// neighbours: user text without hidden context or host provenance.
+func batchableQueued(in Input) bool {
+	return in.Origin == InputOriginUser && !in.HostEvent && len(in.Hidden) == 0 && in.From == nil
+}
+
+// mergeQueued joins queued inputs into one, in order.
+func mergeQueued(items []QueuedInput) Input {
+	if len(items) == 1 {
+		return items[0].Input
+	}
+	merged := items[0].Input
+	texts := make([]string, 0, len(items))
+	merged.Images = nil
+	for _, q := range items {
+		if t := strings.TrimSpace(q.Input.Text); t != "" {
+			texts = append(texts, t)
+		}
+		merged.Images = append(merged.Images, q.Input.Images...)
+	}
+	merged.Text = strings.Join(texts, "\n\n")
+	return merged
 }
 
 // drainQueued runs on the actor. It is a no-op while busy (turn running or

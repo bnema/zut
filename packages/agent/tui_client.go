@@ -53,6 +53,13 @@ func (a *daemonSessionClient) List(ctx context.Context) ([]session.Info, error) 
 }
 
 func (a *daemonSessionClient) Create(ctx context.Context, spec session.CreateSpec) (session.Info, error) {
+	// Picker requests carry a path and cwd, not a shell snapshot. Capture
+	// the client's environment here rather than borrowing the daemon's.
+	// A non-nil environment (including an explicitly empty one) is owned
+	// by the caller and must remain unchanged.
+	if spec.Env == nil {
+		spec.Env = os.Environ()
+	}
 	return a.c.Create(ctx, spec)
 }
 

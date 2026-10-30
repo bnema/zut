@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
@@ -163,6 +164,25 @@ func renderResidentSubagentActivityPage(theme tui.Theme, manager *subagents.Resi
 		hidden = 0
 	}
 	return renderResidentSubagentActivityLines(theme, spinnerGlyph, snapshots, width, now), hidden
+}
+
+// residentSnapshotsFromInfo projects the daemon-published resident summaries
+// for clients without a local ResidentManager. Summaries carry no usage or
+// activity detail, so turn age falls back to UpdatedAt.
+func residentSnapshotsFromInfo(residents []session.ResidentSummary, limit int) ([]subagents.ResidentSnapshot, int) {
+	out := make([]subagents.ResidentSnapshot, 0, len(residents))
+	for _, r := range residents {
+		state := subagents.ResidentState(r.State)
+		if state != subagents.ResidentQueued && state != subagents.ResidentRunning {
+			continue
+		}
+		out = append(out, subagents.ResidentSnapshot{ID: r.ID, Profile: r.Profile, State: state, UpdatedAt: r.UpdatedAt})
+	}
+	total := len(out)
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, total
 }
 
 func fitResidentSubagentActivityLines(theme tui.Theme, lines []string, hidden, maxBottomRows, width int, bottomRows func([]string) int) []string {

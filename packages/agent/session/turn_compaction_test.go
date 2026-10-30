@@ -161,10 +161,10 @@ func TestAbortDuringCompactionRunsTriggeringPromptFirst(t *testing.T) {
 	require.Equal(t, "start", ev.Data.(CompactionEvent).Phase)
 	ev = nextKinds(t, ctx, events, EvCompaction)
 	require.Equal(t, "failed", ev.Data.(CompactionEvent).Phase)
-	require.Equal(t, "first", recv(t, ctx, (<-chan string)(prompts)))
-	require.Equal(t, "second", recv(t, ctx, (<-chan string)(prompts)))
+	// Input stacked behind the trigger joins it, trigger first, in one turn.
+	require.Equal(t, "first\n\nsecond", recv(t, ctx, (<-chan string)(prompts)))
 	waitIdle(t, c, ctx)
-	// The transcript keeps the pre-compaction history ahead of both turns.
+	// The transcript keeps the pre-compaction history ahead of the turn.
 	require.Equal(t, before, ag.Messages()[:len(before)])
 }
 
