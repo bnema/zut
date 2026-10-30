@@ -703,8 +703,8 @@ func (c *scriptedStallClient) Stream(ctx context.Context, req provider.Request) 
 		return (silentStreamClient{}).Stream(ctx, req)
 	}
 	out := make(chan provider.Event, 2)
-	switch {
-	case step == "overload":
+	switch step {
+	case "overload":
 		out <- provider.EventDone{Stop: provider.StopError, Err: errors.New("anthropic overloaded_error: Overloaded")}
 	default:
 		stop, text := provider.StopEnd, step
