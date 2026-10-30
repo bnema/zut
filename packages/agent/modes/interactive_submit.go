@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
@@ -105,6 +107,24 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 // portSlideBackQueued retrieves a draft off-loop, optionally aborting only after
 // retrieval so cancellation cannot discard the draft first.
 func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
+	if i.portRecallPending {
+		if abort {
+			i.portAbort(ctx)
+		}
+		return
+	}
+	if n := len(i.portRecalled); n > 0 {
+		i.restoreQueuedMessageToEditor(i.portRecalled[n-1])
+		i.portRecalled = i.portRecalled[:n-1]
+		i.invalidate()
+		if abort {
+			i.portAbort(ctx)
+		}
+		return
+	}
+	i.portRecallPending = true
+	text := i.ed.Value()
+	images := slices.Clone(i.clipboardImages)
 	port := i.SessionPort()
 	if ctx == nil {
 		ctx = context.Background()
@@ -116,6 +136,25 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 		if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
 			i.ReportError(fmt.Errorf("slide back queued: %w", err))
 		}
+		// Schedule the draft before aborting, but retain the pending flag until
+		// both calls finish so another recall cannot overtake this one.
+		select {
+		case i.loopCalls <- func() {
+			if err == nil && (in.Text != "" || len(in.Images) > 0) {
+				message := core.QueuedMessage{Text: in.Text, Images: in.Images}
+				if i.ed.Value() == text && reflect.DeepEqual(i.clipboardImages, images) {
+					i.restoreQueuedMessageToEditor(message)
+				} else {
+					i.portRecalled = append(i.portRecalled, message)
+					i.mu.Lock()
+					i.statusOK = "recalled draft saved; Alt+Up to restore"
+					i.mu.Unlock()
+				}
+				i.invalidate()
+			}
+		}:
+		case <-ctx.Done():
+		}
 		if abort {
 			callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 			if err := port.Abort(callCtx); err != nil {
@@ -123,14 +162,9 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 			}
 			cancel()
 		}
-		if err == nil && (in.Text != "" || len(in.Images) > 0) {
-			select {
-			case i.loopCalls <- func() {
-				i.restoreQueuedMessageToEditor(core.QueuedMessage{Text: in.Text, Images: in.Images})
-				i.invalidate()
-			}:
-			case <-ctx.Done():
-			}
+		select {
+		case i.loopCalls <- func() { i.portRecallPending = false }:
+		case <-ctx.Done():
 		}
 	}()
 }

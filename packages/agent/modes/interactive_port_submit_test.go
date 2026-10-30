@@ -9,6 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/tui"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -121,7 +122,7 @@ func TestInteractivePortSlideBackRestoresEditor(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			port := sessionmocks.NewMockPort(t)
 			events := make(chan session.Event, 4)
-			port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
+			port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}, Queue: []session.QueuedInput{{Input: session.Input{Text: "queued draft"}}}}, nil).Once()
 			expectPortSubscribe(port, events, nil)
 			slid := make(chan struct{})
 			port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(context.Context) (session.Input, error) {
@@ -161,4 +162,80 @@ func TestInteractivePortSlideBackRestoresEditor(t *testing.T) {
 			}, 5*time.Second, 10*time.Millisecond)
 		})
 	}
+}
+
+// onPortLoop synchronizes test actions with the editor's owner.
+func onPortLoop(t *testing.T, i *Interactive, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	select {
+	case i.loopCalls <- func() { fn(); close(done) }:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop call not accepted")
+	}
+	waitSignal(t, done, "loop call")
+}
+
+func TestInteractivePortRecallKeepsTypingAndSerializes(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	events := make(chan session.Event, 4)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
+	expectPortSubscribe(port, events, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(ctx context.Context) (session.Input, error) {
+		close(entered)
+		select {
+		case <-release:
+			return session.Input{Text: "saved draft"}, nil
+		case <-ctx.Done():
+			return session.Input{}, ctx.Err()
+		}
+	}).Once()
+	aborted := make(chan struct{})
+	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error { close(aborted); return nil }).Once()
+	r, _ := startPortKeys(t, port)
+	ctx := context.Background()
+	onPortLoop(t, r.i, func() { r.i.portSlideBackQueued(ctx, false) })
+	waitSignal(t, entered, "recall")
+	onPortLoop(t, r.i, func() {
+		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyRune, Rune: 'x'})
+		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyUp, Alt: true})
+		// A second recall is ignored, but Escape still aborts immediately.
+		r.i.portSlideBackQueued(ctx, true)
+	})
+	waitSignal(t, aborted, "Abort")
+	// Queue a barrier behind the result and completion callbacks without polling.
+	finished := make(chan struct{})
+	onPortLoop(t, r.i, func() {
+		close(release)
+	})
+	// Observe the pending flag on the loop; requeue until the worker's completion
+	// callback has run (no timing assumptions about goroutine scheduling).
+	var check func()
+	check = func() {
+		if r.i.portRecallPending {
+			r.i.loopCalls <- check
+			return
+		}
+		close(finished)
+	}
+	r.i.loopCalls <- check
+	waitSignal(t, finished, "recall completion")
+	onPortLoop(t, r.i, func() {
+		require.Equal(t, "x", r.i.ed.Value())
+		require.Len(t, r.i.portRecalled, 1)
+		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyUp, Alt: true})
+		require.Equal(t, "saved draft", r.i.ed.Value())
+		require.Empty(t, r.i.portRecalled)
+	})
+}
+
+func TestInteractivePortEmptyQueueAltUpNavigatesEditor(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, Port: port})
+	i.ed.SetValue("first\nsecond")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'X'})
+	require.Equal(t, "firstX\nsecond", i.ed.Value())
+	require.False(t, i.portRecallPending)
 }

@@ -732,15 +732,32 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
 			if i.port != nil {
-				i.portSlideBackQueued(ctx, false)
-				return false
+				if i.portRecallPending || len(i.portRecalled) > 0 {
+					i.portSlideBackQueued(ctx, false)
+					return false
+				}
+				i.mu.Lock()
+				hasQueued := false
+				for _, q := range i.portQueue {
+					if !q.Input.HostEvent {
+						hasQueued = true
+						break
+					}
+				}
+				i.mu.Unlock()
+				if hasQueued {
+					i.portSlideBackQueued(ctx, false)
+					return false
+				}
 			}
-			i.mu.Lock()
-			message, ok := i.popQueuedUserMessageLocked()
-			i.mu.Unlock()
-			if ok && i.restoreQueuedMessageToEditor(message) {
-				i.invalidate()
-				return false
+			if i.port == nil {
+				i.mu.Lock()
+				message, ok := i.popQueuedUserMessageLocked()
+				i.mu.Unlock()
+				if ok && i.restoreQueuedMessageToEditor(message) {
+					i.invalidate()
+					return false
+				}
 			}
 		}
 		// In multi-line / wrapped input, Up first moves inside the editor.
