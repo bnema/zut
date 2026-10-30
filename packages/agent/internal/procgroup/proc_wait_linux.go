@@ -1,6 +1,6 @@
 //go:build linux
 
-package mcp
+package procgroup
 
 import (
 	"errors"
@@ -13,15 +13,15 @@ import (
 
 // waitLeaderExited blocks until pid (our direct child) has exited, leaving it
 // unreaped (a zombie) so its pid, and with it the process-group id, cannot be
-// reused. It reports false if the wait failed.
-func waitLeaderExited(pid int) bool {
+// reused. It returns an error if the wait failed.
+func waitLeaderExited(pid int) error {
 	var info unix.Siginfo
 	for {
 		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
-		return err == nil
+		return err
 	}
 }
 

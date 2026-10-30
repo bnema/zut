@@ -56,9 +56,13 @@ func TestCloseKillsServerChildren(t *testing.T) {
 				if err != nil {
 					return false
 				}
-				state, _, ok := parseProcStat(string(raw))
+				i := strings.LastIndexByte(string(raw), ')')
+				state := byte(0)
+				if i >= 0 && i+2 < len(raw) {
+					state = raw[i+2]
+				}
 				// An orphan zombie may await the host's reaper, but is no longer running.
-				return ok && (state == 'Z' || state == 'X')
+				return state == 'Z' || state == 'X'
 			})
 			if err := client.Close(); err != nil {
 				t.Fatal(err)

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package mcp
+package procgroup
 
 import (
 	"errors"
@@ -11,48 +11,38 @@ import (
 	"time"
 )
 
-// isolateProcess puts the server in its own process group so it does not
-// receive terminal signals aimed at zut and so cleanup can stop its children.
-func isolateProcess(cmd *exec.Cmd) {
+// Isolate puts the server in its own process group so it does not
+// receive terminal signals aimed at zut and so Cleanup can stop its children.
+func Isolate(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// processGuard owns the process group of one stdio server.
+// Guard owns the process group of one stdio server.
 //
 // A process-group id may be reused by an unrelated process as soon as no
 // process uses the number any more. A group stays in use while ANY member
 // exists, and that includes a zombie: the leader's pid (which is the pgid) is
 // not freed until the leader is reaped. So the guard keeps the leader
-// unreaped, as a zombie, until it has cleaned the group, wherever the platform
-// can wait for a child without reaping it (waitLeaderExited; Linux). Only then
-// is the leader reaped by cmd.Wait.
-//
-// Where that is not available (darwin, the BSDs) cleanup runs after the leader
-// was reaped; the id is then only guaranteed to be ours while other group
-// members live, which is the best that can be done and is documented as a
-// residual race. In every case the guard
-//
-//	(a) cleans the group exactly once,
-//	(b) forgets the id as soon as the group is observed empty or cleaned,
-//	(c) is cleaned as soon as the direct child exits, so no stale id stays
-//	    signalable for the life of the transport.
-type processGuard struct {
+// unreaped until group signaling finishes. AwaitLeaderExit must run before
+// cmd.Wait; even if its non-reaping wait fails, it cleans or disarms the guard
+// before returning, so no saved PGID is signalable after the leader is reaped.
+type Guard struct {
 	mu     sync.Mutex
 	pgid   int // 0 once cleaned up or observed gone
 	leader int // pid of the group leader (== original pgid)
 	proc   *os.Process
 	kill   func(pid int, sig syscall.Signal) error // syscall.Kill; replaced in tests
 	// zombie is set once the leader has exited but not been reaped. The pgid
-	// is then reserved, so cleanup always ends with a group SIGKILL; the
+	// is then reserved, so Cleanup always ends with a group SIGKILL; the
 	// process table is read only to end the SIGTERM grace period early.
 	zombie bool
 
 	once sync.Once
 }
 
-// newProcessGuard is called right after cmd.Start.
-func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) {
-	g := &processGuard{kill: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }}
+// New is called right after cmd.Start.
+func New(cmd *exec.Cmd) (*Guard, error) {
+	g := &Guard{kill: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }}
 	if cmd != nil && cmd.Process != nil {
 		g.pgid = cmd.Process.Pid
 		g.leader = cmd.Process.Pid
@@ -61,14 +51,21 @@ func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) {
 	return g, nil
 }
 
-// awaitLeaderExit blocks until the group leader has exited, without reaping
-// it. It reports false when the platform cannot do that, in which case it
-// returns immediately and the caller must Wait first.
-func (g *processGuard) awaitLeaderExit() bool {
+// AwaitLeaderExit blocks until the group leader has exited, without reaping
+// it. The caller must Cleanup before cmd.Wait when it returns true. On wait
+// failure it finishes cleanup (or disarms on ECHILD) before returning false.
+func (g *Guard) AwaitLeaderExit() bool {
 	if g == nil || g.leader == 0 {
 		return false
 	}
-	if !waitLeaderExited(g.leader) {
+	if err := waitLeaderExited(g.leader); err != nil {
+		if errors.Is(err, syscall.ECHILD) {
+			// Somebody else already reaped the leader: never signal its PGID.
+			g.mu.Lock()
+			g.pgid = 0
+			g.mu.Unlock()
+		}
+		g.Cleanup() // still before the caller is allowed to reap
 		return false
 	}
 	g.mu.Lock()
@@ -77,9 +74,9 @@ func (g *processGuard) awaitLeaderExit() bool {
 	return true
 }
 
-// terminate signals the whole group, including descendants that outlive the
+// Terminate signals the whole group, including descendants that outlive the
 // direct child. It does nothing once the group is cleaned up.
-func (g *processGuard) terminate(force bool) {
+func (g *Guard) Terminate(force bool) {
 	if g == nil {
 		return
 	}
@@ -105,7 +102,7 @@ func (g *processGuard) terminate(force bool) {
 }
 
 // alive reports whether the group still has members.
-func (g *processGuard) alive() bool {
+func (g *Guard) alive() bool {
 	if g == nil {
 		return false
 	}
@@ -128,10 +125,10 @@ func (g *processGuard) alive() bool {
 	return true // nil, or EPERM: a member exists that we cannot signal
 }
 
-// cleanup stops every remaining group member (SIGTERM, then SIGKILL for
+// Cleanup stops every remaining group member (SIGTERM, then SIGKILL for
 // survivors) and releases the id. It runs its body once; later and concurrent
 // calls wait for that run and then return.
-func (g *processGuard) cleanup() {
+func (g *Guard) Cleanup() {
 	if g == nil {
 		return
 	}
@@ -149,24 +146,24 @@ func (g *processGuard) cleanup() {
 			// The unreaped leader keeps the pgid ours: give members a grace
 			// period, then kill the group unconditionally. The kernel delivers
 			// a group signal to every member, including ones forked meanwhile.
-			g.terminate(false)
+			g.Terminate(false)
 			g.waitGone(300 * time.Millisecond)
-			g.terminate(true)
+			g.Terminate(true)
 			return
 		}
 		if !g.alive() {
 			return
 		}
-		g.terminate(false)
+		g.Terminate(false)
 		if g.waitGone(300 * time.Millisecond) {
 			return
 		}
-		g.terminate(true)
+		g.Terminate(true)
 		g.waitGone(200 * time.Millisecond)
 	})
 }
 
-func (g *processGuard) waitGone(d time.Duration) bool {
+func (g *Guard) waitGone(d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
 		if !g.alive() {

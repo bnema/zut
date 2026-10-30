@@ -1,6 +1,6 @@
 //go:build windows
 
-package lsp
+package procgroup
 
 import (
 	"errors"
@@ -13,33 +13,33 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// isolateProcess starts the server suspended. The guard assigns it to a Job
+// Isolate starts the server suspended. The guard assigns it to a Job
 // Object before its first instruction runs and then resumes it, so no
 // descendant can be created outside the job.
-func isolateProcess(cmd *exec.Cmd) {
+func Isolate(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
 }
 
-// processGuard owns a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that
+// Guard owns a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that
 // contains the server and all its descendants. The mutex is held across every
 // use of the handle so a concurrent release cannot close it mid-call.
-type processGuard struct {
+type Guard struct {
 	mu   sync.Mutex
 	job  windows.Handle // 0 once released
 	once sync.Once
 }
 
-// newProcessGuard is called right after cmd.Start with the process still
+// New is called right after cmd.Start with the process still
 // suspended. It fails closed: if the job cannot be set up, the child is killed
 // and an error is returned.
-func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) {
+func New(cmd *exec.Cmd) (*Guard, error) {
 	if cmd == nil || cmd.Process == nil {
 		return nil, errors.New("process not started")
 	}
-	fail := func(what string, err error) (*processGuard, error) {
+	fail := func(what string, err error) (*Guard, error) {
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
@@ -69,7 +69,7 @@ func newProcessGuard(cmd *exec.Cmd) (*processGuard, error) {
 		_ = windows.CloseHandle(job) // kills the job's only member
 		return fail("resume server", err)
 	}
-	return &processGuard{job: job}, nil
+	return &Guard{job: job}, nil
 }
 
 // resumeProcess resumes every suspended thread of pid (a CREATE_SUSPENDED
@@ -112,14 +112,14 @@ func resumeProcess(pid uint32) error {
 	return nil
 }
 
-// awaitLeaderExit is not needed on Windows: the Job Object, not a reusable
+// AwaitLeaderExit is not needed on Windows: the Job Object, not a reusable
 // numeric id, identifies the group. It reports false so the caller waits for
 // the process first.
-func (g *processGuard) awaitLeaderExit() bool { return false }
+func (g *Guard) AwaitLeaderExit() bool { return false }
 
-// terminate kills every process in the job. Windows has no graceful group
+// Terminate kills every process in the job. Windows has no graceful group
 // signal, so force is ignored.
-func (g *processGuard) terminate(_ bool) {
+func (g *Guard) Terminate(_ bool) {
 	if g == nil {
 		return
 	}
@@ -130,8 +130,8 @@ func (g *processGuard) terminate(_ bool) {
 	}
 }
 
-// cleanup kills the job and closes its handle, once.
-func (g *processGuard) cleanup() {
+// Cleanup kills the job and closes its handle, once.
+func (g *Guard) Cleanup() {
 	if g == nil {
 		return
 	}
