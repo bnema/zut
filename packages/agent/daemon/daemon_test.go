@@ -24,26 +24,29 @@ import (
 // testSession bundles a generated MockHandle with the state its
 // RunAndReturn closures read.
 type testSession struct {
-	h      *sessionmocks.MockHandle
-	mu     sync.Mutex
-	info   session.Info
-	idle   atomic.Bool
-	subs   []chan session.Event
-	done   chan struct{}
-	once   sync.Once
-	closes chan string
-	attach chan session.AttachState
-	inputs chan session.Input
+	h    *sessionmocks.MockHandle
+	mu   sync.Mutex
+	info session.Info
+	idle atomic.Bool
+	subs []chan session.Event
+	// subscribed is signaled (coalesced) after each Subscribe.
+	subscribed chan struct{}
+	done       chan struct{}
+	once       sync.Once
+	closes     chan string
+	attach     chan session.AttachState
+	inputs     chan session.Input
 }
 
 func newTestSession(t *testing.T, id string) *testSession {
 	s := &testSession{
-		h:      sessionmocks.NewMockHandle(t),
-		info:   session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
-		done:   make(chan struct{}),
-		closes: make(chan string, 4),
-		attach: make(chan session.AttachState, 16),
-		inputs: make(chan session.Input, 4),
+		h:          sessionmocks.NewMockHandle(t),
+		info:       session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
+		done:       make(chan struct{}),
+		subscribed: make(chan struct{}, 1),
+		closes:     make(chan string, 4),
+		attach:     make(chan session.AttachState, 16),
+		inputs:     make(chan session.Input, 4),
 	}
 	s.idle.Store(true)
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
@@ -54,6 +57,10 @@ func newTestSession(t *testing.T, id string) *testSession {
 		s.mu.Lock()
 		s.subs = append(s.subs, ch)
 		s.mu.Unlock()
+		select {
+		case s.subscribed <- struct{}{}:
+		default:
+		}
 		return ch, nil
 	}).Maybe()
 	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, st session.AttachState, _ string) {
@@ -684,8 +691,22 @@ func TestDefaultSocketPathOverride(t *testing.T) {
 	}
 }
 
+// waitDaemonGoroutines waits on the daemon's own WaitGroup, which tracks every
+// goroutine it starts (loops, client connections, writers, subscriptions,
+// bots), instead of counting all process goroutines.
+func waitDaemonGoroutines(t *testing.T, d *Daemon) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { d.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		buf := make([]byte, 1<<16)
+		t.Fatalf("daemon goroutines still running after shutdown:\n%s", buf[:runtime.Stack(buf, true)])
+	}
+}
+
 func TestDaemonShutdownLeaksNoGoroutines(t *testing.T) {
-	before := runtime.NumGoroutine()
 	s1 := newTestSession(t, "s1")
 	f := sessionmocks.NewMockFactory(t)
 	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
@@ -707,14 +728,7 @@ func TestDaemonShutdownLeaksNoGoroutines(t *testing.T) {
 	}
 	r.stop(t)
 	<-served // the daemon closed the connection
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before {
-		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("goroutines %d > %d after shutdown:\n%s", runtime.NumGoroutine(), before, buf[:runtime.Stack(buf, true)])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitDaemonGoroutines(t, r.d)
 }
 
 func TestDaemonSocketLockAcrossHomes(t *testing.T) {
