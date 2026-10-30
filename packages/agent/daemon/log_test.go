@@ -171,8 +171,18 @@ func TestLogKeepsWritingWhenRotationFails(t *testing.T) {
 		log.Info("fill", "kind", big)
 	}
 	log.Info("after failed rotation")
-	if w := closer.(*rotatingLog); w.rotateErr == nil {
+	for range 50 {
+		log.Info("small")
+	}
+	w := closer.(*rotatingLog)
+	if w.rotateErr == nil {
 		t.Fatal("rotation should have failed")
+	}
+	if w.rotations != 1 {
+		t.Fatalf("rotation attempted %d times, want 1 until retryAt", w.rotations)
+	}
+	if got := strings.Count(stderr.String(), "log rotation failed"); got != 1 {
+		t.Fatalf("rotation failure notices = %d, want 1", got)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

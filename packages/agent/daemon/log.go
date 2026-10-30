@@ -23,7 +23,7 @@ func OpenLog(home string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create log dir: %w", err)
 	}
-	w := &rotatingLog{path: path}
+	w := &rotatingLog{path: path, notify: io.MultiWriter(extra...)}
 	if err := w.open(); err != nil {
 		return nil, nil, err
 	}
@@ -58,6 +58,13 @@ type rotatingLog struct {
 	// rotateErr is the last rotation failure; the log keeps growing past
 	// maxLogSize until a later rotation succeeds.
 	rotateErr error
+	// retryAt is the size at which a failed rotation is attempted again, so
+	// a persistent failure does not reopen the file on every record.
+	retryAt int64
+	// rotations counts rotation attempts (tests).
+	rotations int
+	// notify receives a one-line notice when rotation starts failing.
+	notify io.Writer
 }
 
 func (w *rotatingLog) open() error {
@@ -83,10 +90,22 @@ func (w *rotatingLog) open() error {
 // stops; the move error is recorded in rotateErr. It returns an error only
 // when no file could be reopened.
 func (w *rotatingLog) rotate() error {
+	w.rotations++
 	_ = w.file.Close()
 	w.file = nil
+	prev := w.rotateErr
 	w.rotateErr = w.moveToBackup()
-	return w.open()
+	if err := w.open(); err != nil {
+		return err
+	}
+	w.retryAt = 0
+	if w.rotateErr != nil {
+		w.retryAt = w.size + maxLogSize
+		if prev == nil && w.notify != nil {
+			fmt.Fprintf(w.notify, "zut daemon: log rotation failed, appending to %s: %v\n", w.path, w.rotateErr)
+		}
+	}
+	return nil
 }
 
 func (w *rotatingLog) moveToBackup() error {
@@ -107,7 +126,11 @@ func (w *rotatingLog) Write(p []byte) (int, error) {
 	if w.file == nil {
 		return 0, os.ErrClosed
 	}
-	if w.size > 0 && int64(len(p)) > maxLogSize-w.size {
+	limit := maxLogSize
+	if w.retryAt > 0 {
+		limit = w.retryAt
+	}
+	if w.size > 0 && int64(len(p)) > limit-w.size {
 		if err := w.rotate(); err != nil {
 			return 0, err
 		}
