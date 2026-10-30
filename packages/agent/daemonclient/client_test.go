@@ -458,6 +458,15 @@ func TestMapErrForkParentNotFound(t *testing.T) {
 }
 
 func TestMapErrInvalidFork(t *testing.T) {
-	err := mapErr(&daemonproto.RemoteError{Msg: session.ErrInvalidFork.Error()})
-	require.ErrorIs(t, err, session.ErrInvalidFork)
+	for _, msg := range []string{
+		session.ErrInvalidFork.Error(),
+		"fork cannot include resume_path: invalid fork request",
+		"parent transcript unavailable: invalid fork request",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			err := mapErr(&daemonproto.RemoteError{Msg: msg})
+			require.ErrorIs(t, err, session.ErrInvalidFork)
+			require.Equal(t, "zut daemon: "+msg, err.Error())
+		})
+	}
 }

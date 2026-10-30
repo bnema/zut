@@ -469,7 +469,7 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 		return spec, nil
 	}
 	if spec.ResumePath != "" {
-		return session.CreateSpec{}, fmt.Errorf("%w: fork cannot include resume_path", session.ErrInvalidFork)
+		return session.CreateSpec{}, fmt.Errorf("fork cannot include resume_path: %w", session.ErrInvalidFork)
 	}
 	want := normParentPath(spec.Fork.ParentPath)
 	var parent *entry
@@ -488,7 +488,7 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 	fork.ParentPath = parent.parentPath
 	fork.ParentFile, _ = os.Stat(parent.parentPath)
 	if fork.ParentFile == nil {
-		return session.CreateSpec{}, fmt.Errorf("%w: parent transcript unavailable", session.ErrInvalidFork)
+		return session.CreateSpec{}, fmt.Errorf("parent transcript unavailable: %w", session.ErrInvalidFork)
 	}
 	spec.Fork = &fork
 	spec.CWD = info.CWD

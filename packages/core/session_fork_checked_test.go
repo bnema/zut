@@ -26,6 +26,23 @@ func TestBranchSessionCheckedHistoricalSelectionAndIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Messages, 1)
 	require.Equal(t, "old prompt", snapshot.Messages[0].Content[0].(provider.TextBlock).Text)
+	history, err := ReadSessionHistory(parent.Path)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		segment int
+		upTo    int
+		want    string
+	}{
+		{"negative segment", -1, 1, "historical selection not found"},
+		{"segment at length", len(history.Segments), 1, "historical selection not found"},
+		{"negative historical boundary", 0, -1, "upToMessageIdx must be >= 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BranchSessionChecked(context.Background(), parent.Path, root, cwd, "test", tc.upTo, true, &tc.segment, identity)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 	segment = 999
 	_, err = BranchSessionChecked(context.Background(), parent.Path, root, cwd, "test", 1, true, &segment, identity)
 	require.ErrorContains(t, err, "historical selection not found")

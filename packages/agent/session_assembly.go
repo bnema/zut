@@ -275,7 +275,7 @@ func (a *sessionAssembly) runStartupPre(ctx context.Context) error {
 func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.CreateSpec) error {
 	if spec.Fork != nil {
 		if spec.ResumePath != "" {
-			return fmt.Errorf("%w: fork cannot include resume_path", session.ErrInvalidFork)
+			return fmt.Errorf("fork cannot include resume_path: %w", session.ErrInvalidFork)
 		}
 		root := agentSessionsRoot(ZutHome(), a.args)
 		path, err := core.BranchSessionChecked(ctx, spec.Fork.ParentPath, root, a.args.CWD, a.version, spec.Fork.UpToMessage, spec.Fork.Hidden, spec.Fork.HistorySegment, spec.Fork.ParentFile)
