@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/mock"
@@ -24,26 +25,29 @@ import (
 // testSession bundles a generated MockHandle with the state its
 // RunAndReturn closures read.
 type testSession struct {
-	h      *sessionmocks.MockHandle
-	mu     sync.Mutex
-	info   session.Info
-	idle   atomic.Bool
-	subs   []chan session.Event
-	done   chan struct{}
-	once   sync.Once
-	closes chan string
-	attach chan session.AttachState
-	inputs chan session.Input
+	h    *sessionmocks.MockHandle
+	mu   sync.Mutex
+	info session.Info
+	idle atomic.Bool
+	subs []chan session.Event
+	// subscribed is signaled (coalesced) after each Subscribe.
+	subscribed chan struct{}
+	done       chan struct{}
+	once       sync.Once
+	closes     chan string
+	attach     chan session.AttachState
+	inputs     chan session.Input
 }
 
 func newTestSession(t *testing.T, id string) *testSession {
 	s := &testSession{
-		h:      sessionmocks.NewMockHandle(t),
-		info:   session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
-		done:   make(chan struct{}),
-		closes: make(chan string, 4),
-		attach: make(chan session.AttachState, 16),
-		inputs: make(chan session.Input, 4),
+		h:          sessionmocks.NewMockHandle(t),
+		info:       session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
+		done:       make(chan struct{}),
+		subscribed: make(chan struct{}, 1),
+		closes:     make(chan string, 4),
+		attach:     make(chan session.AttachState, 16),
+		inputs:     make(chan session.Input, 4),
 	}
 	s.idle.Store(true)
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
@@ -54,6 +58,10 @@ func newTestSession(t *testing.T, id string) *testSession {
 		s.mu.Lock()
 		s.subs = append(s.subs, ch)
 		s.mu.Unlock()
+		select {
+		case s.subscribed <- struct{}{}:
+		default:
+		}
 		return ch, nil
 	}).Maybe()
 	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything, mock.Anything).Run(func(_ context.Context, st session.AttachState, _ string) {
@@ -684,37 +692,35 @@ func TestDefaultSocketPathOverride(t *testing.T) {
 	}
 }
 
+// TestDaemonShutdownLeaksNoGoroutines runs the daemon, a client connection
+// and a controlled session inside a synctest bubble. synctest.Test returns only
+// once every goroutine started in the bubble has exited, and reports a
+// deadlock if any is left blocked, so any goroutine the daemon leaks
+// (tracked by d.wg or not) fails the test.
 func TestDaemonShutdownLeaksNoGoroutines(t *testing.T) {
-	before := runtime.NumGoroutine()
-	s1 := newTestSession(t, "s1")
-	f := sessionmocks.NewMockFactory(t)
-	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
-	r := startDaemon(t, f, t.TempDir(), Options{IdleGC: time.Hour})
-	nc, err := net.Dial("unix", r.sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := daemonproto.NewConn(nc, daemonproto.Options{})
-	served := make(chan struct{})
-	go func() { _ = conn.Serve(context.Background()); close(served) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := conn.Call(ctx, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
-		t.Fatal(err)
-	}
-	r.stop(t)
-	<-served // the daemon closed the connection
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before {
-		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("goroutines %d > %d after shutdown:\n%s", runtime.NumGoroutine(), before, buf[:runtime.Stack(buf, true)])
+	synctest.Test(t, func(t *testing.T) {
+		s1 := newTestSession(t, "s1")
+		f := sessionmocks.NewMockFactory(t)
+		f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+		r := startDaemon(t, f, t.TempDir(), Options{IdleGC: time.Hour})
+		nc, err := net.Dial("unix", r.sock)
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		conn := daemonproto.NewConn(nc, daemonproto.Options{})
+		served := make(chan struct{})
+		go func() { _ = conn.Serve(context.Background()); close(served) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := conn.Call(ctx, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
+			t.Fatal(err)
+		}
+		r.stop(t)
+		<-served // the daemon closed the connection
+	})
 }
 
 func TestDaemonSocketLockAcrossHomes(t *testing.T) {

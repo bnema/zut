@@ -146,10 +146,14 @@ func TestSubscribeSeqTooOldAfterReconnectEmitsMessagesReplaced(t *testing.T) {
 	require.NoError(t, err)
 	recvSeqs(t, ch, 1)
 
-	d.dropConns()
+	// Retire 2 and 3 before the transport drops: stop delivering to the
+	// connection, publish and trim, then drop it. The re-attach can only
+	// happen after the trim, so it always finds AfterSeq=1 too old.
+	d.unsubscribeAll()
 	d.publish("2")
 	d.publish("3")
 	d.trim(3)
+	d.dropConns()
 	ev := recvSeqs(t, ch, 1)[0]
 	require.Equal(t, session.EvMessagesReplaced, ev.Kind)
 	require.Equal(t, uint64(3), ev.Seq)
@@ -199,6 +203,7 @@ func TestSubscribeRefusedReattachIsTerminal(t *testing.T) {
 
 func TestSubscribeCancelDetachesControllingPort(t *testing.T) {
 	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	d.onDetach = make(chan struct{}, 8)
 	c := dial(t, path, Options{ClientVersion: "v"})
 	ctx, cancel := context.WithCancel(testCtx(t))
 	ch, err := c.Port("s1", true).Subscribe(ctx, 0)
@@ -206,7 +211,12 @@ func TestSubscribeCancelDetachesControllingPort(t *testing.T) {
 	cancel()
 	for range ch {
 	}
-	require.Eventually(t, func() bool { return d.count("detach") == 1 }, 5*time.Second, 10*time.Millisecond)
+	// The best-effort detach is sent after the stream closes.
+	select {
+	case <-d.onDetach:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for detach")
+	}
 
 	ctx2, cancel2 := context.WithCancel(testCtx(t))
 	ch, err = c.Port("s1", false).Subscribe(ctx2, 0)
@@ -256,6 +266,12 @@ func TestSubscribeSlowConsumerIsDropped(t *testing.T) {
 	for i := 0; i < SubscriberBuffer+10; i++ {
 		d.publish("x")
 	}
+	// publish returns once the frames are written, not once the client read
+	// loop routed them; reading ch early would drain it and avoid overflow.
+	// The client reads frames in wire order, so a round trip issued after the
+	// publishes completes only after every event was routed.
+	_, err = c.Status(testCtx(t))
+	require.NoError(t, err)
 	var last session.Event
 	n := 0
 	for ev := range ch {

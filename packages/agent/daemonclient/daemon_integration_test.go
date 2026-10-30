@@ -155,7 +155,8 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 	require.Equal(t, []string{"1", "2"}, titles(got))
 
 	require.NoError(t, c.Detach(ctx, "s1"))
-	require.Eventually(t, func() bool { return s1.h.Info().Attach == session.AttachStateDetached }, 5*time.Second, 10*time.Millisecond)
+	// The daemon releases control (SetAttach) before answering detach.
+	require.Equal(t, session.AttachStateDetached, s1.h.Info().Attach)
 	cancelSub()
 	for range ch {
 	}

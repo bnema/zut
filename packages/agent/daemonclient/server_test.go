@@ -36,6 +36,7 @@ type miniDaemon struct {
 	attachErr error
 	attaches  []daemonproto.AttachRequest
 	onAttach  chan struct{} // optional; signaled after each successful attach
+	onDetach  chan struct{} // optional; signaled after each detach request
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 }
@@ -143,7 +144,18 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 		return nil, nil
 	case "create", "clear":
 		return session.Info{ID: "s2"}, nil
-	case "detach", "close":
+	case "detach":
+		d.mu.Lock()
+		onDetach := d.onDetach
+		d.mu.Unlock()
+		if onDetach != nil {
+			select { // coalesced: never blocks the handler
+			case onDetach <- struct{}{}:
+			default:
+			}
+		}
+		return nil, nil
+	case "close":
 		return nil, nil
 	}
 	return nil, errors.New("unsupported")
@@ -209,6 +221,14 @@ func (d *miniDaemon) trim(seq uint64) {
 		}
 	}
 	d.events = kept
+}
+
+// unsubscribeAll stops event delivery to every attached connection without
+// notifying it or closing the transport.
+func (d *miniDaemon) unsubscribeAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	clear(d.attached)
 }
 
 // dropConns closes every client transport (simulated transport loss).

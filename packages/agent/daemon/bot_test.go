@@ -146,17 +146,15 @@ func newBotTest(t *testing.T, sessions ...*testSession) *botTest {
 // waitSubs waits until n subscriptions (bot) exist.
 func waitSubs(t *testing.T, s *testSession, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		s.mu.Lock()
-		got := len(s.subs)
+		got, changed := len(s.subs), s.subscribed
 		s.mu.Unlock()
 		if got >= n {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		recv(t, changed)
 	}
-	t.Fatalf("subscriptions < %d", n)
 }
 
 func turn(s *testSession, seq uint64, origin session.InputOrigin, user, answer string) {
@@ -344,15 +342,17 @@ func TestBotStartRacingShutdown(t *testing.T) {
 	}()
 	recv(t, inCreate)
 	r.d.Stop()
-	for !r.d.isStopping() {
-		time.Sleep(time.Millisecond)
+	// Stop only cancels Run's context. Shutdown marks the daemon stopping
+	// before closing client connections, so the pending bot_start failing
+	// with the closed connection proves stopping is set before Create returns.
+	if err := recv(t, errc); err == nil {
+		t.Fatal("bot_start succeeded during shutdown")
 	}
 	close(release)
 	// The bot never runs (RunBot has no expectation) and its session is
 	// closed instead of being left open.
 	recv(t, s1.closes)
 	r.wait(t)
-	<-errc
 	assertNoState(t, home)
 }
 

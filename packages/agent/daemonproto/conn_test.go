@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -278,6 +279,10 @@ func orderedWriterGoroutines() int {
 }
 
 func TestConnCloseCompletesWriterAndHandler(t *testing.T) {
+	synctest.Test(t, testConnCloseCompletesWriterAndHandler)
+}
+
+func testConnCloseCompletesWriterAndHandler(t *testing.T) {
 	baseline := orderedWriterGoroutines()
 	entered := make(chan struct{})
 	handlerDone := make(chan struct{})
@@ -296,21 +301,16 @@ func TestConnCloseCompletesWriterAndHandler(t *testing.T) {
 	}
 	s.Close()
 	c.Close()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		handlerExited := false
-		select {
-		case <-handlerDone:
-			handlerExited = true
-		default:
-		}
-		if handlerExited && orderedWriterGoroutines() <= baseline {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutines did not exit: handler=%v writers=%d baseline=%d", handlerExited, orderedWriterGoroutines(), baseline)
-		}
-		time.Sleep(time.Millisecond)
+	// Let the connection's goroutines finish without wall-clock polling.
+	// Wait returns once all goroutines in this bubble have exited or blocked.
+	synctest.Wait()
+	select {
+	case <-handlerDone:
+	default:
+		t.Fatal("handler did not exit")
+	}
+	if writers := orderedWriterGoroutines(); writers > baseline {
+		t.Fatalf("writers did not exit: writers=%d baseline=%d", writers, baseline)
 	}
 	select {
 	case err := <-callDone:
