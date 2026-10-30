@@ -275,13 +275,13 @@ func TestSessionTreeHistoricalSelectionCreatesBranchFromOldSegment(t *testing.T)
 		t.Fatalf("old target = %+v, found=%v", target, found)
 	}
 
-	// Historical rows materialize a pre-compaction branch file locally, then
-	// the daemon resumes it.
+	// Historical rows ask the daemon to fork the selected historical era;
+	// the daemon retains ownership of branch policy and materialization.
 	i, _, client, _ := newTreePortInteractiveAt(t, root, cwd, path)
 	nextPort := sessionmocks.NewMockPort(t)
-	var loaded string
+	var createdSpec session.CreateSpec
 	client.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Info, error) {
-		loaded = spec.ResumePath
+		createdSpec = spec
 		return session.Info{ID: "branch"}, nil
 	}).Once()
 	client.EXPECT().Attach(mock.Anything, session.ID("branch")).Return(nextPort, nil).Once()
@@ -289,19 +289,14 @@ func TestSessionTreeHistoricalSelectionCreatesBranchFromOldSegment(t *testing.T)
 	nextPort.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Once()
 	i.applySessionTreeTarget(target, 1)
 	awaitSessionSwitch(t, i)
-	if loaded == "" {
-		t.Fatalf("historical selection did not resume a branch; status=%q", i.statusErr)
+	if createdSpec.ResumePath != "" || createdSpec.Fork == nil {
+		t.Fatalf("historical selection spec = %+v, want daemon fork", createdSpec)
 	}
-	branch, messages, err := core.OpenSession(loaded)
-	if err != nil {
-		t.Fatal(err)
+	fork := createdSpec.Fork
+	if fork.ParentPath != path || !fork.Hidden || fork.HistorySegment == nil || *fork.HistorySegment != target.HistorySegment || fork.UpToMessage != 2 {
+		t.Fatalf("historical fork = %+v, want old segment through answer", fork)
 	}
-	if err := branch.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if len(messages) != 2 || userMessageText(messages[0]) != "old prompt" || userMessageText(messages[1]) != "old answer" {
-		t.Fatalf("historical branch messages = %+v, want old prompt and answer", messages)
-	}
+
 }
 
 func TestSessionTreeUsesCurrentFamilyAndNoRootFallback(t *testing.T) {
