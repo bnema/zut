@@ -82,7 +82,10 @@ func (f *sessionFactory) Create(ctx context.Context, spec session.CreateSpec) (s
 // is the daemon's session context: it bounds startup in NewSessionDeps and
 // is the controller's lifetime.
 func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opts session.Options) (session.Handle, error) {
-	deps, cleanup, preOutput, err := newSessionDeps(ctx, spec, f.version)
+	started := time.Now()
+	slogger := f.log.With("session", string(opts.ID))
+	timer := newStartupTimer(slogger)
+	deps, cleanup, preOutput, err := newSessionDepsTimed(ctx, spec, f.version, timer)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +143,8 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	f.mu.Unlock()
 	f.wg.Add(1)
 	go h.watch()
+	timer.phase("controller + hooks")
+	slogger.Info("session ready", "total", time.Since(started))
 	return h, nil
 }
 

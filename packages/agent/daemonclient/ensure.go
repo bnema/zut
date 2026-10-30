@@ -18,7 +18,7 @@ import (
 const (
 	spawnDeadline = 5 * time.Second
 	pollMin       = 50 * time.Millisecond
-	pollMax       = 400 * time.Millisecond
+	pollMax       = 100 * time.Millisecond
 	logTailBytes  = 4 << 10
 )
 
@@ -38,6 +38,12 @@ type EnsureOptions struct {
 	Args []string
 	// Home overrides ZutHome(Getenv) for $ZUT_HOME/logs/daemon.log.
 	Home string
+	// OnSpawn, when set, runs right after a cold-start daemon child is
+	// spawned. It is not called when a daemon already listens.
+	OnSpawn func()
+	// OnReady, when set, runs once the post-spawn dial succeeds, with the
+	// time elapsed since the spawn.
+	OnReady func(elapsed time.Duration)
 }
 
 // LogPath returns the daemon log path under home.
@@ -46,7 +52,7 @@ func LogPath(home string) string { return filepath.Join(home, "logs", "daemon.lo
 // EnsureDaemon dials the daemon, spawning `<exe> daemon run` detached when no
 // daemon listens (socket missing or connection refused). The child's
 // stdout/stderr go to $ZUT_HOME/logs/daemon.log. Dialing is retried with
-// 50→400 ms backoff for up to 5 s, even if the child exits early (another
+// 50→100 ms backoff for up to 5 s, even if the child exits early (another
 // daemon may win the start race). On success the child is released; on
 // timeout it is killed and its exit status and the log tail are reported.
 func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
@@ -71,6 +77,10 @@ func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	spawned := time.Now()
+	if opts.OnSpawn != nil {
+		opts.OnSpawn()
+	}
 	ctx, cancel := context.WithTimeout(ctx, spawnDeadline)
 	defer cancel()
 	delay := pollMin
@@ -80,6 +90,9 @@ func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 		c, err = Dial(ctx, path, opts.Options)
 		if err == nil {
 			_ = cmd.Process.Release()
+			if opts.OnReady != nil {
+				opts.OnReady(time.Since(spawned))
+			}
 			return c, nil
 		}
 		if !absent(err) && ctx.Err() == nil {

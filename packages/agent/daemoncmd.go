@@ -99,12 +99,16 @@ func daemonRun(args []string, version string) error {
 		return fmt.Errorf("zut daemon run: unexpected arguments %v", fs.Args())
 	}
 	home := ZutHome()
+	t := time.Now()
 	logger, logCloser, err := daemon.OpenLog(home, stderrUnlessLog(home))
 	if err != nil {
 		return err
 	}
 	defer logCloser.Close()
+	logger.Info("startup phase", "phase", "open log", "duration", time.Since(t), "since_start", time.Since(processStart))
+	t = time.Now()
 	applyConfiguredHTTPProxy()
+	logger.Info("startup phase", "phase", "config http proxy", "duration", time.Since(t))
 
 	signal.Ignore(syscall.SIGHUP)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -116,6 +120,7 @@ func daemonRun(args []string, version string) error {
 		Version:    version,
 		IdleGC:     time.Duration(*idleHours * float64(time.Hour)),
 		Logger:     logger,
+		Started:    processStart,
 	})
 	if err != nil {
 		logger.Error("daemon exited", "err", err)
@@ -140,6 +145,9 @@ type daemonServerOptions struct {
 	Home, SocketPath, Version string
 	IdleGC                    time.Duration
 	Logger                    *slog.Logger
+	// Started is the process start used for the "daemon ready" total; zero
+	// skips that log line.
+	Started time.Time
 	// Ready is closed once the daemon listens and startup cleanup finishes.
 	Ready chan<- struct{}
 }
@@ -151,18 +159,23 @@ type daemonServer struct {
 	daemon  *daemon.Daemon
 	opts    daemon.Options
 	ready   chan<- struct{}
+	started time.Time
 }
 
 func newDaemonServer(o daemonServerOptions) (*daemonServer, error) {
+	t := time.Now()
 	engine, err := scheduler.NewPersistentEngine(time.Now, scheduler.FileStore{Path: filepath.Join(o.Home, "daemon", "schedules.json")})
 	if err != nil {
 		return nil, fmt.Errorf("load schedules: %w", err)
+	}
+	if o.Logger != nil {
+		o.Logger.Info("startup phase", "phase", "load schedules", "duration", time.Since(t))
 	}
 	f := newSessionFactory(o.Version, o.Home, engine, o.Logger)
 	d := daemon.New(f)
 	f.dir = d
 	opts := daemon.Options{SocketPath: o.SocketPath, Home: o.Home, IdleGC: o.IdleGC, Version: o.Version, Logger: o.Logger}
-	return &daemonServer{factory: f, daemon: d, opts: opts, ready: o.Ready}, nil
+	return &daemonServer{factory: f, daemon: d, opts: opts, ready: o.Ready, started: o.Started}, nil
 }
 
 // run serves until ctx ends or a client stops the daemon, then returns once
@@ -179,6 +192,9 @@ func (s *daemonServer) run(ctx context.Context) error {
 		case <-ready:
 		case <-schedCtx.Done():
 			return
+		}
+		if !s.started.IsZero() {
+			s.factory.log.Info("daemon ready", "total", time.Since(s.started))
 		}
 		if s.ready != nil {
 			close(s.ready)
@@ -346,7 +362,7 @@ func daemonRestart(w io.Writer, version string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), daemonClientDeadline)
 	defer cancel()
-	c, err := daemonclient.EnsureDaemon(ctx, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}})
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
 	if err != nil {
 		return err
 	}
@@ -363,7 +379,7 @@ func daemonRestart(w io.Writer, version string) error {
 func daemonStart(w io.Writer, version string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), daemonClientDeadline)
 	defer cancel()
-	c, err := daemonclient.EnsureDaemon(ctx, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}})
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
 	if err != nil {
 		return err
 	}
@@ -374,6 +390,19 @@ func daemonStart(w io.Writer, version string) error {
 	}
 	fmt.Fprintf(w, "zut daemon: running\npid: %d\nsocket: %s\n", st.PID, daemonclient.SocketPath(os.Getenv))
 	return nil
+}
+
+// processStart approximates the daemon process start for startup timing.
+var processStart = time.Now()
+
+// withColdStartFeedback reports a daemon cold start on stderr. Callers must
+// use it before the terminal enters raw or alternate-screen mode.
+func withColdStartFeedback(opts daemonclient.EnsureOptions) daemonclient.EnsureOptions {
+	opts.OnSpawn = func() { fmt.Fprintln(os.Stderr, "Starting zut daemon…") }
+	opts.OnReady = func(d time.Duration) {
+		fmt.Fprintf(os.Stderr, "zut daemon ready (%.1fs)\n", d.Round(100*time.Millisecond).Seconds())
+	}
+	return opts
 }
 
 const daemonLogPollInterval = 250 * time.Millisecond

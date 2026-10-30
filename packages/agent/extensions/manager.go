@@ -273,6 +273,9 @@ type Manager struct {
 	// the freshly-registered extension tools.
 	onReload func()
 
+	// onStartup, when set, receives per-extension startup timings.
+	onStartup func(name, phase string, d time.Duration, err error)
+
 	// activeSession is replayed to extensions loaded after the current
 	// session was opened, such as after /reload-ext.
 	activeSession *sessionEventState
@@ -310,6 +313,12 @@ type Option func(*Manager)
 // WithEnv sets the child environment; an empty slice means no inherited variables.
 func WithEnv(env []string) Option {
 	return func(m *Manager) { m.spawnEnv = append([]string{}, env...) }
+}
+
+// WithStartupObserver reports per-extension startup timings: phase "spawn"
+// (manifest + process start + hello) and "ready" (WaitForReady wait).
+func WithStartupObserver(fn func(name, phase string, d time.Duration, err error)) Option {
+	return func(m *Manager) { m.onStartup = fn }
 }
 
 // WithCWD sets the child working directory instead of the extension install directory.
@@ -385,7 +394,11 @@ func (m *Manager) searchDirs() []string {
 
 // loadOne reads a single extension's manifest and, if enabled,
 // spawns its subprocess + completes the hello handshake.
-func (m *Manager) loadOne(ctx context.Context, dir string) error {
+func (m *Manager) loadOne(ctx context.Context, dir string) (err error) {
+	if m.onStartup != nil {
+		t := time.Now()
+		defer func() { m.onStartup(filepath.Base(dir), "spawn", time.Since(t), err) }()
+	}
 	manifestPath := filepath.Join(dir, "extension.json")
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -647,6 +660,10 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 		wg.Add(1)
 		go func(ext *Extension) {
 			defer wg.Done()
+			if m.onStartup != nil {
+				t := time.Now()
+				defer func() { m.onStartup(ext.Manifest.Name, "ready", time.Since(t), nil) }()
+			}
 			select {
 			case <-ext.readyCh:
 			case <-deadline:

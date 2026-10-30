@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -96,7 +98,7 @@ func (a *daemonSessionClient) detacher(held func() session.ID) func() {
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
 // from spec when attachID is empty) and runs the interactive TUI on it.
 func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
-	c, err := daemonclient.EnsureDaemon(ctx, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}})
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}}))
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
@@ -104,9 +106,31 @@ func runTUIClient(ctx context.Context, attachID session.ID, spec *session.Create
 	return runTUIWithClient(ctx, c, attachID, spec, out)
 }
 
+// clientTimingLog appends TUI startup timings to $ZUT_HOME/logs/client.log;
+// stderr is unusable once the TUI owns the terminal. nil on any error.
+func clientTimingLog() (*slog.Logger, func()) {
+	path := filepath.Join(ZutHome(), "logs", "client.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, func() {}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, func() {}
+	}
+	return slog.New(slog.NewTextHandler(f, nil)), func() { _ = f.Close() }
+}
+
 // runTUIWithClient owns c and disconnects it on return.
 func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
 	defer c.Disconnect()
+	start := time.Now()
+	tlog, closeLog := clientTimingLog()
+	defer closeLog()
+	logPhase := func(name string, attrs ...any) {
+		if tlog != nil {
+			tlog.Info("tui startup", append([]any{"phase", name, "since_daemon", time.Since(start)}, attrs...)...)
+		}
+	}
 	client := newDaemonSessionClient(c)
 	var preOutput string
 	var launch *session.CreateSpec
@@ -122,17 +146,20 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 			return 1
 		}
 		attachID, preOutput = session.ID(created.ID), created.PreOutput
+		logPhase("session created", "session", attachID)
 	}
 	port, err := client.Attach(ctx, attachID)
 	if err != nil {
 		fmt.Fprintln(out, "zut: attach:", err)
 		return 1
 	}
+	logPhase("attached", "session", attachID)
 	cfg := tuiClientConfig(out, launch)
 	var ui *modes.Interactive
 	cfg.Port, cfg.Client = port, client
 	cfg.StartupOutput = preOutput
 	cfg.Detach = client.detacher(func() session.ID { return ui.SessionID() })
+	cfg.OnFirstFrame = func() { logPhase("first frame", "session", attachID) }
 	ui = modes.NewInteractive(cfg)
 	if err := ui.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(out, err)

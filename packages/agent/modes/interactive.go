@@ -62,6 +62,8 @@ type InteractiveConfig struct {
 	Port session.Port
 	// Detach releases control of the session without closing it (D8).
 	Detach func()
+	// OnFirstFrame, when set, runs once after the first frame is drawn.
+	OnFirstFrame func()
 	// Client manages session lifecycle (clear/close/list/create/attach).
 	Client SessionClient
 
@@ -578,8 +580,9 @@ type webSearchSettingsStore interface {
 }
 
 type Interactive struct {
-	cfg  InteractiveConfig
-	view *tui.View
+	firstFrame sync.Once
+	cfg        InteractiveConfig
+	view       *tui.View
 
 	// Port-mode presentation state (L15). All guarded by mu.
 	//   port/client: the attached session and lifecycle client.
@@ -1208,6 +1211,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.rend.Invalidate()
 		}
 		i.redraw()
+		if i.cfg.OnFirstFrame != nil {
+			i.firstFrame.Do(i.cfg.OnFirstFrame)
+		}
 	})
 	defer renderScheduler.stop()
 	term.OnResize(func() {

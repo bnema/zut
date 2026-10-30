@@ -554,7 +554,10 @@ func defaultModelForResolve(providerName string, args Args) string {
 // login flow. requireCred controls whether missing credentials are a
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
+	timer := args.startupTimer
+	timer.reset()
 	cfg, cfgErr := LoadConfig()
+	timer.phase("resolve: config load")
 	profileSlot := cfg.applyActiveModelProfile()
 	repairConfig := false
 	// Programmatic callers historically supplied Tools without the parser's
@@ -633,6 +636,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		cred, method, accountID, credErr = resolveCredentialFullEnv(context.Background(), provName, args.APIKey, apiKeyCommandExecute, argsGetenv(args))
 	}
 
+	timer.phase("resolve: credential lookup", "provider", provName)
 	// Persist --api-key for custom providers so subsequent runs don't
 	// need to pass it again.
 	if !isBuiltinProvider(provName) && !keylessCustom && args.APIKey != "" {
@@ -930,6 +934,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			credErr, envVarName(provName))
 	}
 
+	timer.phase("resolve: model selection", "model", model)
 	sandbox := tools.NewSandbox(args.CWD)
 	if cfg.JailByDefault != nil && *cfg.JailByDefault {
 		sandbox.Lock()
@@ -941,8 +946,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
 	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
 	addMCPTools(reg, args)
+	timer.phase("resolve: tool registry", "tools", len(reg))
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
+	timer.phase("resolve: zut docs install")
 
 	// Skill discovery: scan project + global locations + built-in
 	// skills shipped with the binary. If any are found, register
@@ -969,6 +976,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 	}
 	_ = skillTool
+	timer.phase("resolve: skills discovery", "skills", len(discovered))
 
 	summaries := toolSummaries(reg, args)
 
@@ -976,6 +984,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if !args.NoContextFiles {
 		contextFiles = loadAgentsContext(args.CWD, ZutHome())
 	}
+	timer.phase("resolve: AGENTS.md load", "files", len(contextFiles))
 	append_ := []string(nil)
 	append_ = append(append_, args.AppendSystemPrompt...)
 	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
@@ -1022,6 +1031,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		Append:     append_,
 		ZutDocsDir: docsDir,
 	})
+	timer.phase("resolve: system prompt build")
 
 	reasoning := provider.NormalizeReasoning(firstNonEmpty(args.Reasoning, cfg.Reasoning))
 	temperature := args.Temperature

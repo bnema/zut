@@ -70,11 +70,13 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	if !d.ran.CompareAndSwap(false, true) {
 		return errRunTwice
 	}
+	t := time.Now()
 	lock, err := acquireDaemonLock(opts.Home)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	lockDur := time.Since(t)
 	if opts.GCInterval <= 0 {
 		opts.GCInterval = DefaultGCInterval
 	}
@@ -93,19 +95,26 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	d.started = time.Now()
 	d.mu.Unlock()
 	defer d.sessCancel()
+	d.log.Info("startup phase", "phase", "acquire lock", "duration", lockDur)
 
+	t = time.Now()
 	if err := writePID(opts.Home); err != nil {
 		return err
 	}
 	defer os.Remove(pidPath(opts.Home))
+	d.log.Info("startup phase", "phase", "write pid", "duration", time.Since(t))
+	t = time.Now()
 	ln, err := listenSocket(opts.SocketPath, zutOwnedSocketDirs(opts.Home))
 	if err != nil {
 		return err
 	}
 	defer ln.close()
+	d.log.Info("startup phase", "phase", "socket listen", "duration", time.Since(t))
 	d.log.Info("daemon started", "pid", os.Getpid(), "version", opts.Version)
 
+	t = time.Now()
 	d.cleanupPreviousSessions()
+	d.log.Info("startup phase", "phase", "cleanup previous sessions", "duration", time.Since(t))
 	d.goLoop(d.gcLoop)
 	d.goLoop(func(ctx context.Context) { d.acceptLoop(ctx, ln) })
 	if opts.Ready != nil {

@@ -79,6 +79,9 @@ type Args struct {
 	// mcpManager holds the process-wide MCP connections. Resolve adds its
 	// tools; resident children inherit the pointer and share connections.
 	mcpManager *mcp.Manager
+	// startupTimer, when set, makes Resolve log per-phase durations (daemon
+	// session creation only).
+	startupTimer *startupTimer
 	// zutfile is the `zut run` payload sent in session.CreateSpec.Zutfile.
 	zutfile *session.ZutfileSpec
 	// mcpStartupErrors are non-fatal MCP startup failures shown by

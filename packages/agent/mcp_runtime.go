@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/core"
@@ -39,6 +40,10 @@ func mcpAllowed(args Args) bool {
 // every server. Startup failures are appended to args.mcpStartupErrors; a
 // server marked required that fails to start aborts with an error.
 func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string) (*mcp.Manager, func(), error) {
+	return startMCPWithEnvTimed(ctx, args, version, env, nil)
+}
+
+func startMCPWithEnvTimed(ctx context.Context, args *Args, version string, env []string, timer *startupTimer) (*mcp.Manager, func(), error) {
 	noop := func() {}
 	if args.mcpManager != nil || !mcpAllowed(*args) {
 		return args.mcpManager, noop, nil
@@ -54,6 +59,11 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
+	if timer != nil {
+		manager.SetStartupObserver(func(name string, d time.Duration, err error) {
+			timer.item("mcp", name, d, err)
+		})
+	}
 	failures, requiredErr := manager.Start(ctx)
 
 	for _, err := range failures {
@@ -72,7 +82,12 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 // The returned manager is installed by assembly; args is never mutated.
 // Use the returned cleanup on every exit.
 func startSessionMCP(ctx context.Context, args Args, env []string) (*mcp.Manager, func(), error) {
-	return startMCPWithEnv(ctx, &args, "", env)
+	return startSessionMCPTimed(ctx, args, env, nil)
+}
+
+// startSessionMCPTimed is startSessionMCP with per-server startup timings.
+func startSessionMCPTimed(ctx context.Context, args Args, env []string, timer *startupTimer) (*mcp.Manager, func(), error) {
+	return startMCPWithEnvTimed(ctx, &args, "", env, timer)
 }
 
 // reportMCPStartup prints startup failures for non-interactive modes. The

@@ -51,6 +51,12 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 // newSessionDeps is NewSessionDeps plus the captured zutfile entry.pre shell
 // output, handed to the daemon factory for the create response.
 func newSessionDeps(ctx context.Context, spec session.CreateSpec, version string) (session.Deps, func(), string, error) {
+	return newSessionDepsTimed(ctx, spec, version, nil)
+}
+
+// newSessionDepsTimed is newSessionDeps with optional per-phase startup
+// timing logs (nil logs nothing).
+func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version string, timer *startupTimer) (session.Deps, func(), string, error) {
 	if !filepath.IsAbs(spec.CWD) {
 		return session.Deps{}, nil, "", fmt.Errorf("session cwd must be absolute: %q", spec.CWD)
 	}
@@ -70,8 +76,9 @@ func newSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 		return session.Deps{}, nil, "", errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 	applyZutfileSpec(&args, spec.Zutfile)
+	timer.phase("parse args")
 
-	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings()}
+	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings(), timer: timer}
 	ok := false
 	defer func() {
 		if !ok {
@@ -148,43 +155,58 @@ type sessionAssembly struct {
 	autoInterruptAllowed, fastMode                                     bool
 
 	preOutput   string // captured entry.pre shell output for the create response
+	timer       *startupTimer
 	cleanupOnce sync.Once
 }
 
 func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) error {
 	life := context.WithoutCancel(ctx)
+	timer := a.timer
 	a.initialCfg, _ = LoadConfig()
 	if a.initialCfg.Goals.MaxTokenBudget != nil && *a.initialCfg.Goals.MaxTokenBudget == 0 {
 		return errors.New("goals.max_token_budget must be greater than zero")
 	}
+	timer.phase("config load")
 
-	manager, stopMCP, err := startSessionMCP(life, a.args, a.args.Env)
+	manager, stopMCP, err := startSessionMCPTimed(life, a.args, a.args.Env, timer)
 	if err != nil {
 		return err
 	}
 	a.stopMCP = stopMCP
 	a.args.mcpManager = manager
+	timer.phase("mcp startup (all servers)")
 
+	a.args.startupTimer = timer
 	a.r, err = Resolve(a.args, false)
+	a.args.startupTimer = nil
 	if err != nil {
 		return err
 	}
+	timer.reset()
 	if a.args.PermissionSet != nil && (a.r.Sandbox == nil || a.r.Sandbox.Permissions != a.args.PermissionSet) {
 		return errors.New("zutfile permissions could not be applied to the session sandbox")
 	}
 	a.authMgr = auth.NewManager(AuthStoreFor())
 	a.sandbox = a.r.Sandbox
 	a.provider, a.model = a.r.Provider, a.r.Model
+	timer.phase("auth manager")
 
 	a.attachQuestionAsker(a.r.ToolRegistry)
-	a.extMgr = extensions.New(ZutHome(), a.r.CWD, a.version, a.r.Provider, a.r.Model, a.bind.hooks(),
-		extensions.WithEnv(a.args.Env), extensions.WithCWD(a.r.CWD))
+	extOpts := []extensions.Option{extensions.WithEnv(a.args.Env), extensions.WithCWD(a.r.CWD)}
+	if timer != nil {
+		extOpts = append(extOpts, extensions.WithStartupObserver(func(name, phase string, d time.Duration, err error) {
+			timer.item("extension", name, d, err, "step", phase)
+		}))
+	}
+	a.extMgr = extensions.New(ZutHome(), a.r.CWD, a.version, a.r.Provider, a.r.Model, a.bind.hooks(), extOpts...)
 	var startupErrs []error
 	startupErrs = append(startupErrs, a.extMgr.LoadExplicit(life, a.args.Exts)...)
 	if !a.args.NoExt {
 		startupErrs = append(startupErrs, a.extMgr.Discover(life)...)
 	}
+	timer.phase("extensions spawn (all)")
 	a.extMgr.WaitForReady(3 * time.Second)
+	timer.phase("extensions wait ready (all)")
 	for _, e := range startupErrs {
 		a.bind.hooks().Notify("extensions", "error", e.Error())
 	}
@@ -212,6 +234,7 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 		ActiveProvider:  func() string { a.mu.Lock(); defer a.mu.Unlock(); return a.provider },
 		ActiveModel:     func() string { a.mu.Lock(); defer a.mu.Unlock(); return a.model },
 	})
+	timer.phase("subagent supervisor")
 	a.reloadDone = make(chan struct{})
 	if resident := a.runtime.ResidentManager(); resident != nil {
 		go func() {
@@ -242,10 +265,15 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 		}
 	})
 
+	timer.phase("registry prepare + hooks")
 	if err := a.openSession(ctx, life, spec); err != nil {
 		return err
 	}
-	return a.runStartupPre(life)
+	if err := a.runStartupPre(life); err != nil {
+		return err
+	}
+	timer.phase("zutfile entry.pre", "ran", a.args.StartupPre != "")
+	return nil
 }
 
 // applyZutfileSpec copies `zut run` settings onto args parsed from the spec.
@@ -301,6 +329,7 @@ func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.Cr
 	if a.r.HasCredential() {
 		ag = a.wireAgentExt(life, a.r.newInteractiveAgent())
 	}
+	a.timer.phase("provider client + agent", "has_credential", ag != nil)
 	a.fresh = a.args.NoSess // like openOrCreateSessionState without a session file
 	if !a.args.NoSess && ag != nil {
 		sess, fresh, err := openOrCreateSessionState(ctx, a.args, a.r, ag, a.version)
@@ -324,6 +353,7 @@ func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.Cr
 		}
 		a.sess = sess
 	}
+	a.timer.phase("session file open/resume", "fresh", a.fresh)
 	a.wireAgentPersist(ag)
 	a.next = ag
 	announceSession(a.extMgr, a.sess)

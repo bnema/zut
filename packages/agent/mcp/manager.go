@@ -53,6 +53,14 @@ type Manager struct {
 	mu           sync.Mutex
 	closed       bool
 	stderrOutput *liveStderrWriter
+	// onStarted, when set, receives each server's Start duration.
+	onStarted func(name string, d time.Duration, err error)
+}
+
+// SetStartupObserver reports each server's connect+list duration during
+// Start. Call before Start.
+func (m *Manager) SetStartupObserver(fn func(name string, d time.Duration, err error)) {
+	m.onStarted = fn
 }
 
 // NewManager builds a manager for an already loaded configuration.
@@ -85,8 +93,13 @@ func (m *Manager) Start(ctx context.Context) (failures []error, requiredErr erro
 		wg.Add(1)
 		go func(i int, s *serverEntry) {
 			defer wg.Done()
-			if _, err := m.connect(ctx, s); err != nil {
+			t := time.Now()
+			_, err := m.connect(ctx, s)
+			if err != nil {
 				errs[i] = err
+			}
+			if m.onStarted != nil {
+				m.onStarted(s.name, time.Since(t), err)
 			}
 		}(i, m.servers[name])
 	}
