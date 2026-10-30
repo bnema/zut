@@ -8,6 +8,6 @@ import (
 )
 
 func checkPeerUID(net.Conn, int) (int, error) { return -1, fmt.Errorf("peer credentials unsupported") }
-func secureSocketDir(string) error {
+func secureSocketDir(string, bool) error {
 	return fmt.Errorf("daemon socket protection unsupported on this platform")
 }

@@ -32,4 +32,4 @@ func checkPeerUID(conn net.Conn, expectedUID int) (int, error) {
 	return uid, nil
 }
 
-func secureSocketDir(string) error { return nil }
+func secureSocketDir(string, bool) error { return nil }

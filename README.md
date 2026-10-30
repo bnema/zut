@@ -585,7 +585,7 @@ Limitations:
 
 - Bot services are not restarted after a daemon restart. Run `zut telegram-bot start` again to create a new session and resume polling.
 - Autospawn on Windows is untested.
-- On Linux, macOS, FreeBSD, NetBSD, and OpenBSD, the daemon checks each socket peer’s UID against its own before handling requests, in addition to file permissions (a `0600` socket in a private directory owned by you). On Windows, startup applies and verifies a protected socket-directory DACL granting access only to the current user; there is no per-connection UID check. Other platforms fail closed. These protections do not isolate the daemon from other processes running as the same user or from privileged administrators.
+- On Linux, macOS, FreeBSD, NetBSD, and OpenBSD, the daemon checks each socket peer’s UID against its own before handling requests, in addition to file permissions (a `0600` socket in a private directory owned by you). On Windows, the socket directory must be owned by the current user (or by Administrators when zut runs elevated) and have a protected DACL granting access only to that user; zut applies this DACL only to a directory it creates or to its default socket directory, and refuses to start with a `ZUT_DAEMON_SOCKET` in any other non-private directory. There is no per-connection UID check on Windows. On DragonFly BSD, Solaris, illumos, AIX, Plan 9, js, and wasip1 the daemon refuses to start (fail closed), so daemon-backed modes are unavailable there. These protections do not isolate the daemon from other processes running as the same user or from privileged administrators.
 
 ## Providers
 

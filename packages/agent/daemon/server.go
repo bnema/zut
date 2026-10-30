@@ -106,7 +106,8 @@ func (l *socketListener) close() {
 // prepareSocketDir creates dir 0700 when missing. An existing directory must
 // not be a symlink and, on Unix, must be owned by the current user; a
 // zut-owned default dir is tightened to 0700, any other dir with group/other
-// access is refused. Windows applies and verifies a protected current-user DACL.
+// access is refused. On Windows, a created or zut-owned dir gets a protected
+// current-user DACL; any other dir is only verified (owner and DACL).
 func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -118,7 +119,7 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 				return fmt.Errorf("chmod socket dir: %w", err)
 			}
 		}
-		return secureSocketDir(dir)
+		return secureSocketDir(dir, true)
 	}
 	if err != nil {
 		return fmt.Errorf("stat socket dir: %w", err)
@@ -126,8 +127,9 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("socket dir %s is not a directory", dir)
 	}
+	owned := isZutOwnedDir(dir, zutOwnedDirs)
 	if runtime.GOOS == "windows" {
-		return secureSocketDir(dir)
+		return secureSocketDir(dir, owned)
 	}
 	if uid, ok := fileOwner(fi); ok && uid != os.Getuid() {
 		return fmt.Errorf("socket dir %s is not owned by the current user", dir)
@@ -135,16 +137,24 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	if fi.Mode().Perm()&0o077 == 0 {
 		return nil
 	}
+	if owned {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("chmod socket dir: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("socket dir %s is accessible by group or others (mode %v)", dir, fi.Mode().Perm())
+}
+
+// isZutOwnedDir reports whether dir is one of the zut-owned socket dirs.
+func isZutOwnedDir(dir string, zutOwnedDirs []string) bool {
 	clean := filepath.Clean(dir)
 	for _, owned := range zutOwnedDirs {
 		if owned != "" && filepath.Clean(owned) == clean {
-			if err := os.Chmod(dir, 0o700); err != nil {
-				return fmt.Errorf("chmod socket dir: %w", err)
-			}
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("socket dir %s is accessible by group or others (mode %v)", dir, fi.Mode().Perm())
+	return false
 }
 
 // zutOwnedSocketDirs lists the default socket directories that zut owns.

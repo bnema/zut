@@ -3,8 +3,11 @@
 package daemon
 
 import (
+	"errors"
+	"io"
 	"net"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -54,5 +57,28 @@ func TestDaemonAcceptsSameUID(t *testing.T) {
 	}
 	if hello.ProtocolVersion != daemonproto.ProtocolVersion {
 		t.Fatalf("hello: %+v", hello)
+	}
+}
+
+func TestDaemonRejectsOtherUID(t *testing.T) {
+	r := startDaemonWith(t, sessionmocks.NewMockFactory(t), t.TempDir(), Options{}, func(d *Daemon) { d.peerUID = os.Getuid() + 1 })
+	conn, err := net.DialTimeout("unix", r.sock, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("{}\n")); err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatal(err)
+	}
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || (!errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET)) {
+		t.Fatalf("connection not closed by daemon: n=%d err=%v", n, err)
+	}
+	r.d.mu.Lock()
+	defer r.d.mu.Unlock()
+	if r.d.nextClient != 0 || len(r.d.clients) != 0 {
+		t.Fatalf("client created for rejected peer: next=%d clients=%d", r.d.nextClient, len(r.d.clients))
 	}
 }
