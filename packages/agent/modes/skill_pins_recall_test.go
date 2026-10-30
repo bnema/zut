@@ -21,6 +21,23 @@ func newPinnedRecallInteractive(t *testing.T) *Interactive {
 	})
 }
 
+// newPinnedRecallPortInteractive is newPinnedRecallInteractive on a session
+// port. The pinned expansion of "user draft" reaches the transcript the way
+// the daemon publishes it: as an EvUserMessage.
+func newPinnedRecallPortInteractive(t *testing.T) (*Interactive, string) {
+	t.Helper()
+	i := newHistoryPortInteractive(t, nil, InteractiveConfig{
+		CWD:           t.TempDir(),
+		LoadSkillPins: func(string) (skills.Pins, error) { return skills.Pins{Global: []string{"review"}}, nil },
+		SkillSnapshot: reviewSnapshot, PreloadPinnedSkills: true,
+	})
+	expanded := i.consumePinnedSkills("user draft")
+	i.mu.Lock()
+	i.applyPortAgentTranscriptLocked(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: expanded}}}})
+	i.mu.Unlock()
+	return i, expanded
+}
+
 func TestPinnedQueuedDraftRecallKeepsEditorRawAndRearms(t *testing.T) {
 	for name, key := range map[string]tui.Key{"alt-up": {Kind: tui.KeyUp, Alt: true}, "escape": {Kind: tui.KeyEsc}} {
 		t.Run(name, func(t *testing.T) {
@@ -68,9 +85,7 @@ func TestCtrlCClearsPinnedQueueWithoutLosingPreload(t *testing.T) {
 }
 
 func TestPinnedRecallAndHistorySynchronizeWithHostArming(t *testing.T) {
-	i := newPinnedRecallInteractive(t)
-	expanded := i.consumePinnedSkills("user draft")
-	i.agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: expanded}}}})
+	i, expanded := newPinnedRecallPortInteractive(t)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -87,9 +102,7 @@ func TestPinnedRecallAndHistorySynchronizeWithHostArming(t *testing.T) {
 }
 
 func TestPinnedInputHistoryShowsRawUserText(t *testing.T) {
-	i := newPinnedRecallInteractive(t)
-	expanded := i.consumePinnedSkills("user draft")
-	i.agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: expanded}}}})
+	i, _ := newPinnedRecallPortInteractive(t)
 	if history := i.inputHistory(); len(history) != 1 || history[0] != "user draft" {
 		t.Fatalf("input history contains injected bodies: %#v", history)
 	}

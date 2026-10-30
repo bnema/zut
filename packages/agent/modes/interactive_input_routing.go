@@ -1152,13 +1152,12 @@ func (i *Interactive) handleInputHistoryKey(k tui.Key) bool {
 }
 func (i *Interactive) inputHistory() []string {
 	i.mu.Lock()
-	agent := i.agent
+	msgs, _, ok := i.portTranscriptLocked()
 	expanded, original := i.skillPins.expanded, i.skillPins.original
 	i.mu.Unlock()
-	if agent == nil {
+	if !ok {
 		return nil
 	}
-	msgs := agent.Messages()
 	hist := make([]string, 0, len(msgs))
 	for _, m := range msgs {
 		if !isForkableUserMessage(m) {

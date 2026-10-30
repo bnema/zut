@@ -1,25 +1,43 @@
 package modes
 
 import (
+	"context"
 	"testing"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
+// newHistoryPortInteractive attaches cfg to a mocked session port whose
+// snapshot carries msgs, the transcript input history browses.
+func newHistoryPortInteractive(t *testing.T, msgs []provider.Message, cfg InteractiveConfig) *Interactive {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{
+		Info:     session.Info{ID: "history", Run: session.RunStateIdle},
+		Seq:      1,
+		Messages: msgs,
+	}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(1)).Return(make(chan session.Event), nil).Once()
+	cfg.Port = port
+	i := NewInteractive(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, i.attachPort(ctx))
+	return i
+}
+
 func TestInputHistoryUsesUpDown(t *testing.T) {
-	ag := core.NewAgent(nil, "", "", nil)
-	ag.SetMessages([]provider.Message{
+	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "first"}}},
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "reply"}}},
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "second"}}},
-	})
-	i := &Interactive{
-		agent:             ag,
-		ed:                tui.NewEditor(""),
-		inputHistoryIndex: -1,
 	}
+	i := newHistoryPortInteractive(t, msgs, InteractiveConfig{})
 
 	if !i.handleInputHistoryKey(tui.Key{Kind: tui.KeyUp}) {
 		t.Fatal("expected Up to enter history")
@@ -51,12 +69,11 @@ func TestInputHistoryUsesUpDown(t *testing.T) {
 }
 
 func TestInputHistorySkipsShellEscapeContext(t *testing.T) {
-	ag := core.NewAgent(nil, "", "", nil)
-	ag.SetMessages([]provider.Message{
+	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "$ pwd\n\n/tmp\n\n[exit 0]"}}, Meta: map[string]string{shellEscapeMetaKey: "true"}},
-	})
-	i := &Interactive{agent: ag}
+	}
+	i := newHistoryPortInteractive(t, msgs, InteractiveConfig{})
 
 	history := i.inputHistory()
 	if len(history) != 1 || history[0] != "prompt" {
@@ -65,14 +82,13 @@ func TestInputHistorySkipsShellEscapeContext(t *testing.T) {
 }
 
 func TestInputHistorySkipsCompactionContext(t *testing.T) {
-	ag := core.NewAgent(nil, "", "", nil)
-	ag.SetMessages([]provider.Message{
+	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
 		{Role: provider.RoleUser, Meta: map[string]string{"compaction": "true"}, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)"}}},
 		{Role: provider.RoleUser, Meta: map[string]string{autoCompactContinueMetaKey: "true"}, Content: []provider.Content{provider.TextBlock{Text: "resume internally"}}},
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "new prompt"}}},
-	})
-	i := &Interactive{agent: ag}
+	}
+	i := newHistoryPortInteractive(t, msgs, InteractiveConfig{})
 
 	history := i.inputHistory()
 	if len(history) != 2 || history[0] != "prompt" || history[1] != "new prompt" {
@@ -99,15 +115,10 @@ func TestJumpTargetsSkipInternalUserContext(t *testing.T) {
 }
 
 func TestInputHistoryNoLongerUsesLeftRight(t *testing.T) {
-	ag := core.NewAgent(nil, "", "", nil)
-	ag.SetMessages([]provider.Message{
+	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
-	})
-	i := &Interactive{
-		agent:             ag,
-		ed:                tui.NewEditor(""),
-		inputHistoryIndex: -1,
 	}
+	i := newHistoryPortInteractive(t, msgs, InteractiveConfig{})
 
 	if i.handleInputHistoryKey(tui.Key{Kind: tui.KeyLeft}) {
 		t.Fatal("Left should not browse input history")
@@ -121,15 +132,10 @@ func TestInputHistoryNoLongerUsesLeftRight(t *testing.T) {
 }
 
 func TestInputHistoryDoesNotStealNonEmptyEditor(t *testing.T) {
-	ag := core.NewAgent(nil, "", "", nil)
-	ag.SetMessages([]provider.Message{
+	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
-	})
-	i := &Interactive{
-		agent:             ag,
-		ed:                tui.NewEditor(""),
-		inputHistoryIndex: -1,
 	}
+	i := newHistoryPortInteractive(t, msgs, InteractiveConfig{})
 	i.ed.SetValue("draft")
 
 	if i.handleInputHistoryKey(tui.Key{Kind: tui.KeyUp}) {
