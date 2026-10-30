@@ -1,14 +1,19 @@
 package modes
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
@@ -134,27 +139,34 @@ func TestStableChatCacheTracksViewInvalidation(t *testing.T) {
 func TestStableChatCacheRevealsMessageAfterStreamFlush(t *testing.T) {
 	const finalText = "final message revealed after paced flush"
 
-	agent := &core.Agent{}
-	agent.SetMessages([]provider.Message{{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
-	}})
-	i := &Interactive{
-		agent:             agent,
-		view:              &tui.View{Theme: tui.Dark},
-		renderOutsideLock: true,
-	}
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{
+		Info: session.Info{ID: "render", Run: session.RunStateIdle},
+		Seq:  1,
+		Messages: []provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
+		}},
+	}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(1)).Return(make(chan session.Event), nil).Once()
+	i := NewInteractive(InteractiveConfig{Port: port})
+	i.renderOutsideLock = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, i.attachPort(ctx))
 
 	i.mu.Lock()
 	i.startStreamLocked()
 	i.stream.Push(finalText)
 	i.stream.Finish()
 	i.mu.Unlock()
-	// The agent appends the finished reply while the pacer is still busy.
-	agent.SetMessages(append(agent.Messages(), provider.Message{
+	// The daemon publishes the finished reply while the pacer is still busy.
+	i.mu.Lock()
+	i.applyPortAgentTranscriptLocked(core.EvAssistantMessage{Message: provider.Message{
 		Role:    provider.RoleAssistant,
 		Content: []provider.Content{provider.TextBlock{Text: finalText}},
-	}))
+	}})
+	i.mu.Unlock()
 
 	i.mu.Lock()
 	before := strings.Join(i.cachedChatLocked(80), "\n")
