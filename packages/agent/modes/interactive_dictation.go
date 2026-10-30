@@ -164,13 +164,6 @@ func runDictation(ctx context.Context, cfg DictationConfig, stop <-chan struct{}
 
 // Called only on the main UI loop, including editor insertion.
 func (i *Interactive) refreshDictation() {
-	// portSubmit reads the port under i.mu, so submit after unlocking.
-	var submit []string
-	defer func() {
-		for _, text := range submit {
-			i.portSubmit(i.runCtx, text, nil)
-		}
-	}()
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.dictation.phase == "recording" && i.dictation.recording != nil {
@@ -206,12 +199,9 @@ func (i *Interactive) refreshDictation() {
 				if text == "" {
 					i.statusOK = ""
 					i.statusErr = "No speech detected"
-				} else if i.portMode.Load() {
-					// Daemon client: the transcript is a prompt for the session.
-					i.statusErr = ""
-					i.statusOK = fmt.Sprintf("%d words · %s · %.1f s", len(strings.Fields(text)), i.cfg.Dictation.Service, event.duration.Seconds())
-					submit = append(submit, text)
 				} else {
+					// The transcript is a draft in every mode; the user reviews
+					// and sends it.
 					line := []rune(i.ed.Lines[i.ed.CursorR])
 					if i.ed.CursorC > 0 && !unicode.IsSpace(line[i.ed.CursorC-1]) {
 						text = " " + text
