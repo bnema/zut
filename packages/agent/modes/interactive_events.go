@@ -542,7 +542,14 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	i.resetTranscriptRenderLocked()
 	i.stableChatCacheValid = false
 	i.stream.Reset()
+	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
+	// A snapshot is authoritative for the title: a fresh successor (/clear,
+	// new) is untitled. Run starts the UI before attaching, so show it here.
+	i.sessionTitle = core.NormalizeSessionTitle(snap.Info.Title)
+	if i.interactiveStarted && (i.sessionTitle != prevTitle || i.sessionTitle != "") {
+		i.writeTerminalTitleLocked(i.sessionTitle)
+	}
 	i.portQueue = append([]session.QueuedInput(nil), snap.Queue...)
 	i.portPending = append([]session.PendingRequest(nil), snap.Pending...)
 	i.portDeferred = append([]session.DeferredAction(nil), snap.Deferred...)
