@@ -951,3 +951,67 @@ func assertMessageTexts(t *testing.T, msgs []provider.Message, want []string) {
 		}
 	}
 }
+
+func TestShortIDLookupPrefiltersUnrelatedBody(t *testing.T) {
+	root, cwd := t.TempDir(), t.TempDir()
+	s, err := NewSession(root, cwd, "p", "m", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const alias = "abcdefghijkl"
+	if err := s.AddDaemonID(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "saved"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := NewSession(root, cwd, "p", "m", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unrelated.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "unrelated"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unrelated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(unrelated.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Invalid JSON would make the metadata scanner fail. The byte prefilter
+	// must reject this entire large body before invoking that scanner.
+	if _, err := f.WriteString(strings.Repeat("not JSON at all\n", 100000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if sessionContainsID(context.Background(), unrelated.Path, alias) {
+		t.Fatal("unrelated body passed prefilter")
+	}
+	found, err := FindManagedSessionByID(context.Background(), root, alias)
+	if err != nil || found != s.Path {
+		t.Fatalf("lookup = %q, %v", found, err)
+	}
+	// Still detect duplicate aliases rather than choosing an arbitrary file.
+	other, err := NewSession(root, cwd, "p", "m", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.AddDaemonID(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "duplicate"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindManagedSessionByID(context.Background(), root, alias); err == nil {
+		t.Fatal("duplicate alias accepted")
+	}
+}

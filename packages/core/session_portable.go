@@ -1273,7 +1273,7 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 			match := meta.ID == id
 			// UUID lookup remains header-only and tolerant of corrupt bodies.
 			// Runtime aliases can be appended by later daemon lifetimes.
-			if len(id) == 12 {
+			if len(id) == 12 && sessionContainsID(ctx, path, id) {
 				if latest, err := scanSessionMetaContext(ctx, path); err == nil {
 					for _, alias := range latest.DaemonIDs {
 						if alias == id {
@@ -1288,6 +1288,37 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 		}
 	}
 	return nil
+}
+
+// sessionContainsID is a streaming byte prefilter, not a JSON parser. Most
+// transcripts cannot contain the requested runtime alias; avoid decoding their
+// body rows at all. Read in fixed-size chunks with overlap for split IDs.
+func sessionContainsID(ctx context.Context, path, id string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 32*1024+len(id))
+	carry := 0
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		n, err := f.Read(buf[carry:])
+		data := buf[:carry+n]
+		if bytes.Contains(data, []byte(id)) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		carry = len(id) - 1
+		if carry > len(data) {
+			carry = len(data)
+		}
+		copy(buf, data[len(data)-carry:])
+	}
 }
 
 func isSessionBucketName(name string) bool {
