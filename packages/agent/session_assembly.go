@@ -581,11 +581,6 @@ func (a *sessionAssembly) deps() session.Deps {
 	a.fastMode = a.r.FastMode
 	homeDir, _ := os.UserHomeDir()
 	discovered, _ := subagents.Discover(a.r.CWD, homeDir)
-	shortcuts := make([]session.QuickModelShortcut, len(a.initialCfg.QuickModelShortcuts))
-	for i, s := range a.initialCfg.QuickModelShortcuts {
-		p := normalizedModelProfile(s)
-		shortcuts[i] = session.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
-	}
 	d := session.Deps{
 		AgentBuilder:                      sessionAgentBuilder{a},
 		SessionStore:                      sessionFileStore{a},
@@ -598,7 +593,6 @@ func (a *sessionAssembly) deps() session.Deps {
 		AuthManager:                       a.authMgr,
 		Logger:                            slog.New(slog.DiscardHandler),
 		Env:                               append([]string{}, a.args.Env...),
-		QuickModelShortcuts:               shortcuts,
 		Model:                             a.r.Model,
 		Provider:                          a.r.Provider,
 		Reasoning:                         a.r.Reasoning,

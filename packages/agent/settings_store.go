@@ -33,12 +33,21 @@ func (s configSettingsStore) SetQuickModelShortcut(slot int, providerName, model
 }
 
 func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelShortcut, activeSlot int) error {
-	if slot < 1 || slot > 9 || activeSlot < 0 || activeSlot > 9 {
-		return fmt.Errorf("model profile slot must be between 1 and 9 (active may be 0)")
-	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
+	}
+	if err := setModelProfile(&cfg, slot, QuickModelShortcut{Provider: profile.Provider, Model: profile.Model, Reasoning: profile.Reasoning, FastMode: profile.FastMode}, activeSlot); err != nil {
+		return err
+	}
+	return SaveConfig(cfg)
+}
+
+// setModelProfile writes slot and activeSlot into cfg; activating slot also
+// sets the startup provider, model, reasoning and fast mode.
+func setModelProfile(cfg *Config, slot int, profile QuickModelShortcut, activeSlot int) error {
+	if slot < 1 || slot > 9 || activeSlot < 0 || activeSlot > 9 {
+		return fmt.Errorf("model profile slot must be between 1 and 9 (active may be 0)")
 	}
 	if len(cfg.QuickModelShortcuts) < slot {
 		next := make([]QuickModelShortcut, slot)
@@ -67,7 +76,7 @@ func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelSho
 		}
 		cfg.QuickModelShortcuts = cfg.QuickModelShortcuts[:len(cfg.QuickModelShortcuts)-1]
 	}
-	return SaveConfig(cfg)
+	return nil
 }
 
 func (configSettingsStore) SetInlineImages(enabled bool) error {

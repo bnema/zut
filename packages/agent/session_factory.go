@@ -34,6 +34,11 @@ type sessionFactory struct {
 	live     map[session.ID]*factoryHandle
 	stopping atomic.Bool
 	wg       sync.WaitGroup
+
+	// profiles is the daemon-wide model profile store shared by every
+	// session; fanout tracks the async ProfilesChanged notifications.
+	profiles *modelProfileStore
+	fanout   sync.WaitGroup
 }
 
 var _ session.Factory = (*sessionFactory)(nil)
@@ -42,7 +47,30 @@ func newSessionFactory(version, home string, engine *scheduler.Engine, log *slog
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &sessionFactory{version: version, home: home, engine: engine, log: log, live: make(map[session.ID]*factoryHandle)}
+	f := &sessionFactory{version: version, home: home, engine: engine, log: log, live: make(map[session.ID]*factoryHandle)}
+	f.profiles = &modelProfileStore{onSaved: f.profilesChanged}
+	return f
+}
+
+// profilesChanged notifies every live session asynchronously: Save runs on
+// the saving session's actor, whose unbuffered loop cannot take a
+// synchronous ProfilesChanged without deadlocking. Each notification ends
+// once delivered or when its controller stops; wait drains them.
+func (f *sessionFactory) profilesChanged() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopping.Load() {
+		return
+	}
+	for _, h := range f.live {
+		f.fanout.Add(1)
+		go func(c *session.Controller) {
+			defer f.fanout.Done()
+			// post returns ErrClosed once the controller stops, so this never
+			// outlives the session or the daemon.
+			_ = c.ProfilesChanged(context.Background())
+		}(h.Controller)
+	}
 }
 
 // Create builds a new session with a fresh random ID.
@@ -77,6 +105,12 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	deps.DeferredStore = store
 	deps.Directory = f.dir
 	deps.Logger = f.log.With("session", string(opts.ID))
+	// Hand edits to config.json apply to each new session.
+	if err := f.profiles.Reload(); err != nil {
+		f.log.Warn("reload model profiles", "err", err)
+	}
+	deps.Profiles = f.profiles
+	deps.ActiveProfile = f.profiles.ActiveDefault()
 	var extra []core.Tool
 	if f.engine != nil {
 		deps.Scheduler = sessionSchedule{engine: f.engine, id: string(opts.ID)}
@@ -158,8 +192,15 @@ func (f *sessionFactory) registered(ctx context.Context, id string) bool {
 // session is gone keeps its schedule.
 func (f *sessionFactory) beginStop() { f.stopping.Store(true) }
 
-// wait blocks until every session watcher has run its cleanup.
-func (f *sessionFactory) wait() { f.wg.Wait() }
+// wait blocks until every session watcher has run its cleanup and every
+// profile notification ended.
+func (f *sessionFactory) wait() {
+	f.wg.Wait()
+	f.mu.Lock()
+	f.stopping.Store(true)
+	f.mu.Unlock()
+	f.fanout.Wait()
+}
 
 // factoryHandle is the controller plus its assembly cleanup. Done closes
 // only after cleanup ran, so the daemon never sees a session gone while its
