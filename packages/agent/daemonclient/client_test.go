@@ -146,10 +146,14 @@ func TestSubscribeSeqTooOldAfterReconnectEmitsMessagesReplaced(t *testing.T) {
 	require.NoError(t, err)
 	recvSeqs(t, ch, 1)
 
-	d.dropConns()
+	// Retire 2 and 3 before the transport drops: stop delivering to the
+	// connection, publish and trim, then drop it. The re-attach can only
+	// happen after the trim, so it always finds AfterSeq=1 too old.
+	d.unsubscribeAll()
 	d.publish("2")
 	d.publish("3")
 	d.trim(3)
+	d.dropConns()
 	ev := recvSeqs(t, ch, 1)[0]
 	require.Equal(t, session.EvMessagesReplaced, ev.Kind)
 	require.Equal(t, uint64(3), ev.Seq)

@@ -223,6 +223,14 @@ func (d *miniDaemon) trim(seq uint64) {
 	d.events = kept
 }
 
+// unsubscribeAll stops event delivery to every attached connection without
+// notifying it or closing the transport.
+func (d *miniDaemon) unsubscribeAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	clear(d.attached)
+}
+
 // dropConns closes every client transport (simulated transport loss).
 func (d *miniDaemon) dropConns() {
 	d.mu.Lock()
