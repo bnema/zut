@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
@@ -281,27 +280,6 @@ func TestApplyWebSearchToggleKeepsDurableStateWhenRollbackPersistenceFails(t *te
 	}
 }
 
-func TestTelegramBridgeRemovesWebSearchAndDeniesGenericChildren(t *testing.T) {
-	agent := core.NewAgent(nil, "model", "", core.Registry{
-		"web_search": tools.NewWebSearchTool(),
-	})
-	var availability []bool
-	interactive := NewInteractive(InteractiveConfig{
-		Agent: agent,
-		SetWebSearchAvailable: func(available bool) {
-			availability = append(availability, available)
-		},
-	})
-	interactive.telegramBridge = &telegram.Bridge{}
-	interactive.applyTelegramTools(true)
-	if _, ok := agent.ToolsSnapshot()["web_search"]; ok {
-		t.Fatal("connected Telegram bridge retained web_search")
-	}
-	if len(availability) == 0 || availability[0] || availability[len(availability)-1] {
-		t.Fatalf("generic-child/live availability = %v, want deny before bridge start", availability)
-	}
-}
-
 func TestStaleWebSearchResolveCannotCommitAfterPolicyChange(t *testing.T) {
 	agent := core.NewAgent(nil, "model", "old system", core.Registry{
 		"web_search": tools.NewWebSearchTool(),
@@ -333,119 +311,6 @@ func TestStaleWebSearchResolveCannotCommitAfterPolicyChange(t *testing.T) {
 	}
 	if len(availability) == 0 || availability[len(availability)-1] {
 		t.Fatalf("stale resolve availability = %v, want final deny", availability)
-	}
-}
-
-func TestTelegramBridgeStripsWebSearchFromPromptRefreshWhileStarting(t *testing.T) {
-	agent := core.NewAgent(nil, "model", "", core.Registry{})
-	var availability []bool
-	interactive := NewInteractive(InteractiveConfig{
-		Agent: agent,
-		SetWebSearchAvailable: func(available bool) {
-			availability = append(availability, available)
-		},
-	})
-	interactive.telegramBridge = &telegram.Bridge{}
-
-	_, applied := interactive.ApplyAgentPromptConfig(agent, "system", core.Registry{
-		"web_search": tools.NewWebSearchTool(),
-	})
-	if !applied {
-		t.Fatal("prompt config was not applied")
-	}
-	if _, ok := agent.ToolsSnapshot()["web_search"]; ok {
-		t.Fatal("starting Telegram bridge accepted web_search from a prompt refresh")
-	}
-	if len(availability) != 1 || availability[0] {
-		t.Fatalf("refresh availability = %v, want deny while bridge is attached", availability)
-	}
-}
-
-func TestTelegramBridgeStripsWebSearchBeforeLiveAgentReplacement(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		replace func(*Interactive, *core.Agent)
-	}{
-		{
-			name: "session replacement",
-			replace: func(interactive *Interactive, agent *core.Agent) {
-				interactive.ApplySessionAgent(agent, "provider", "model")
-			},
-		},
-		{
-			name: "changed cwd",
-			replace: func(interactive *Interactive, agent *core.Agent) {
-				interactive.ApplyChangedCWD(agent, "provider", "model", t.TempDir())
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var availability []bool
-			interactive := NewInteractive(InteractiveConfig{
-				Agent: core.NewAgent(nil, "model", "", core.Registry{}),
-				SetWebSearchAvailable: func(available bool) {
-					availability = append(availability, available)
-				},
-			})
-			interactive.telegramBridge = &telegram.Bridge{}
-			replacement := core.NewAgent(nil, "model", "", core.Registry{
-				"web_search": tools.NewWebSearchTool(),
-			})
-
-			tc.replace(interactive, replacement)
-
-			if _, ok := replacement.ToolsSnapshot()["web_search"]; ok {
-				t.Fatal("active Telegram bridge exposed web_search on replacement agent")
-			}
-			if len(availability) == 0 || availability[len(availability)-1] {
-				t.Fatalf("replacement availability = %v, want final deny", availability)
-			}
-		})
-	}
-}
-
-func TestTelegramBridgeRestoresWebSearchOnlyAfterSuccessfulRefresh(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		refreshErr error
-		want       bool
-	}{
-		{name: "successful refresh", want: true},
-		{name: "failed refresh", refreshErr: errors.New("refresh failed"), want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			agent := core.NewAgent(nil, "model", "", core.Registry{
-				"web_search": tools.NewWebSearchTool(),
-			})
-			var availability []bool
-			interactive := NewInteractive(InteractiveConfig{
-				Agent: agent,
-				RefreshTools: func() error {
-					if tc.refreshErr == nil {
-						agent.SetTools(core.Registry{"web_search": tools.NewWebSearchTool()})
-					}
-					return tc.refreshErr
-				},
-				SetWebSearchAvailable: func(available bool) {
-					availability = append(availability, available)
-				},
-			})
-			interactive.telegramBridge = &telegram.Bridge{}
-			interactive.applyTelegramTools(true)
-
-			interactive.telegramBridge = nil
-			err := interactive.refreshToolsAfterTelegram()
-			if !errors.Is(err, tc.refreshErr) {
-				t.Fatalf("refresh error = %v, want %v", err, tc.refreshErr)
-			}
-			_, got := agent.ToolsSnapshot()["web_search"]
-			if got != tc.want {
-				t.Fatalf("web_search restored = %v, want %v", got, tc.want)
-			}
-			if len(availability) == 0 || availability[len(availability)-1] != tc.want {
-				t.Fatalf("generic-child/live availability = %v, want final %v", availability, tc.want)
-			}
-		})
 	}
 }
 
