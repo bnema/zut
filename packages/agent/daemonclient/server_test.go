@@ -146,9 +146,13 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 		return session.Info{ID: "s2"}, nil
 	case "detach":
 		d.mu.Lock()
-		defer d.mu.Unlock()
-		if d.onDetach != nil {
-			d.onDetach <- struct{}{}
+		onDetach := d.onDetach
+		d.mu.Unlock()
+		if onDetach != nil {
+			select { // coalesced: never blocks the handler
+			case onDetach <- struct{}{}:
+			default:
+			}
 		}
 		return nil, nil
 	case "close":

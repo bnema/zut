@@ -329,7 +329,9 @@ func (d *Daemon) takeControl(c *client, e *entry) {
 	e.h.SetAttach(context.Background(), session.AttachStateAttached, "")
 }
 
-// detach releases control (if held by c) and ends c's subscription.
+// detach releases control (if held by c) and ends c's subscription. The
+// session's SetAttach(Detached) runs synchronously, before the detach request
+// is answered, so a client sees the session detached once Detach returns.
 func (d *Daemon) detach(c *client, id session.ID, reason string) error {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()

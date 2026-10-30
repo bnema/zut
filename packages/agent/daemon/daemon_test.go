@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/mock"
@@ -691,44 +692,35 @@ func TestDefaultSocketPathOverride(t *testing.T) {
 	}
 }
 
-// waitDaemonGoroutines waits on the daemon's own WaitGroup, which tracks every
-// goroutine it starts (loops, client connections, writers, subscriptions,
-// bots), instead of counting all process goroutines.
-func waitDaemonGoroutines(t *testing.T, d *Daemon) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() { d.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		buf := make([]byte, 1<<16)
-		t.Fatalf("daemon goroutines still running after shutdown:\n%s", buf[:runtime.Stack(buf, true)])
-	}
-}
-
+// TestDaemonShutdownLeaksNoGoroutines runs the daemon, a client connection
+// and a controlled session inside a synctest bubble. synctest.Test returns only
+// once every goroutine started in the bubble has exited, and reports a
+// deadlock if any is left blocked, so any goroutine the daemon leaks
+// (tracked by d.wg or not) fails the test.
 func TestDaemonShutdownLeaksNoGoroutines(t *testing.T) {
-	s1 := newTestSession(t, "s1")
-	f := sessionmocks.NewMockFactory(t)
-	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
-	r := startDaemon(t, f, t.TempDir(), Options{IdleGC: time.Hour})
-	nc, err := net.Dial("unix", r.sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := daemonproto.NewConn(nc, daemonproto.Options{})
-	served := make(chan struct{})
-	go func() { _ = conn.Serve(context.Background()); close(served) }()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := conn.Call(ctx, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
-		t.Fatal(err)
-	}
-	r.stop(t)
-	<-served // the daemon closed the connection
-	waitDaemonGoroutines(t, r.d)
+	synctest.Test(t, func(t *testing.T) {
+		s1 := newTestSession(t, "s1")
+		f := sessionmocks.NewMockFactory(t)
+		f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+		r := startDaemon(t, f, t.TempDir(), Options{IdleGC: time.Hour})
+		nc, err := net.Dial("unix", r.sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := daemonproto.NewConn(nc, daemonproto.Options{})
+		served := make(chan struct{})
+		go func() { _ = conn.Serve(context.Background()); close(served) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := conn.Call(ctx, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
+			t.Fatal(err)
+		}
+		r.stop(t)
+		<-served // the daemon closed the connection
+	})
 }
 
 func TestDaemonSocketLockAcrossHomes(t *testing.T) {
