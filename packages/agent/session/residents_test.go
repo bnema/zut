@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -150,4 +151,28 @@ func TestResidentQueries(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	_, err = c.ResidentHistory(canceled, "child", "", 0)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestResidentListValidatesUntrustedPaging(t *testing.T) {
+	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().SetAcceptedObserver(mock.Anything)
+	m.EXPECT().SetCompletionObserver(mock.Anything)
+	m.EXPECT().SetUpdateObserver(mock.Anything)
+	m.EXPECT().Snapshot().Return(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewController(ctx, Deps{ResidentManager: m})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	for _, p := range [][2]int{{-1, 1}, {0, -1}} {
+		_, _, err := c.ResidentList(ctx, p[0], p[1])
+		require.ErrorContains(t, err, "must not be negative")
+	}
+	m.EXPECT().RecentSnapshotPage(1, ResidentListMaxLimit).Return(nil, 3).Once()
+	_, total, err := c.ResidentList(ctx, 1, math.MaxInt)
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	m.EXPECT().RecentSnapshotPage(0, 0).Return(nil, 3).Once()
+	rows, total, err := c.ResidentList(ctx, 0, 0)
+	require.NoError(t, err)
+	require.Empty(t, rows)
+	require.Equal(t, 3, total)
 }

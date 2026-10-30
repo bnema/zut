@@ -808,7 +808,8 @@ func (m *ResidentManager) RecentSnapshotPage(offset, limit int) ([]ResidentSnaps
 		return nil, total
 	}
 	end := total
-	if limit > 0 && offset+limit < end {
+	// Compare against the remaining span so a huge limit cannot overflow.
+	if limit > 0 && limit < end-offset {
 		end = offset + limit
 	}
 	result := make([]ResidentSnapshot, 0, end-offset)

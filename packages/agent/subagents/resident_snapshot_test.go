@@ -3,6 +3,7 @@ package subagents
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 )
@@ -51,5 +52,24 @@ func TestResidentManagerActiveSnapshotPageSkipsForeignActiveChildren(t *testing.
 	page, total := manager.ActiveSnapshotPage(1)
 	if total != 2 || len(page) != 1 || page[0].ID != "local-newer" {
 		t.Fatalf("active page = %#v/%d, want bounded same-host active children", page, total)
+	}
+}
+
+func TestResidentManagerRecentSnapshotPageHugeLimitDoesNotOverflow(t *testing.T) {
+	manager := &ResidentManager{children: map[string]*ResidentChild{}, recovered: map[string]ResidentSnapshot{
+		"a": {ID: "a"}, "b": {ID: "b"},
+	}, recoveredSpec: map[string]ResidentChildSpec{}, pending: map[string]struct{}{}}
+	page, total := manager.RecentSnapshotPage(1, math.MaxInt)
+	if total != 2 || len(page) != 1 {
+		t.Fatalf("page/total = %#v/%d", page, total)
+	}
+}
+
+func TestResidentManagerHistoryPageRejectsTraversalChildID(t *testing.T) {
+	manager := NewResidentManager(t.TempDir(), nil)
+	for _, id := range []string{"", ".", "..", "../escape", "a/b", "/etc"} {
+		if _, err := manager.HistoryPage(id, "", 10); err == nil {
+			t.Fatalf("HistoryPage(%q) succeeded, want invalid child ID", id)
+		}
 	}
 }

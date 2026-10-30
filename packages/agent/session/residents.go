@@ -277,11 +277,20 @@ func (c *Controller) residentsInit() {
 
 func (c *Controller) residentInfo() Info { c.updateInfo(); return c.Info() }
 
-// ResidentList exposes the manager's recent-first state projection.
+// ResidentListMaxLimit caps one resident_list page; larger limits are clamped.
+const ResidentListMaxLimit = 200
+
+// ResidentList exposes the manager's recent-first state projection. Paging
+// comes from untrusted clients: a negative offset or limit is rejected, a zero
+// limit returns only the total, and limits above ResidentListMaxLimit clamp.
 func (c *Controller) ResidentList(ctx context.Context, offset, limit int) ([]subagents.ResidentSnapshot, int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
+	if offset < 0 || limit < 0 {
+		return nil, 0, errors.New("resident list: offset and limit must not be negative")
+	}
+	limit = min(limit, ResidentListMaxLimit)
 	m := c.deps.ResidentManager
 	if m == nil {
 		return nil, 0, errors.New("resident manager unavailable")
