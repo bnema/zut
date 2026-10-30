@@ -271,14 +271,46 @@ func TestInteractivePortRecallDropsStaleSessionResult(t *testing.T) {
 	i.portRecall = newer
 	i.ed.SetValue("new session")
 	close(release)
-	for n := 0; n < 2; n++ {
-		select {
-		case fn := <-i.loopCalls:
-			fn()
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing recall callback")
-		}
-		require.Equal(t, "new session", i.ed.Value())
-		require.Same(t, newer, i.portRecall)
+	select {
+	case fn := <-i.loopCalls:
+		fn()
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing recall callback")
 	}
+	require.Equal(t, "new session", i.ed.Value())
+	require.Same(t, newer, i.portRecall)
+}
+
+func TestInteractivePortLateEscBeforeRecallCallbackAborts(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	returned := make(chan struct{})
+	port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(context.Context) (session.Input, error) {
+		close(returned)
+		return session.Input{Text: "queued draft"}, nil
+	}).Once()
+	aborted := make(chan struct{})
+	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
+		close(aborted)
+		return nil
+	}).Once()
+	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, Port: port})
+	i.portInfo.Run = session.RunStateRunning
+	i.portQueue = []session.QueuedInput{{Input: session.Input{Text: "queued draft"}}}
+	ctx := context.Background()
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyUp, Alt: true})
+	waitSignal(t, returned, "SlideBackQueued")
+	var apply func()
+	select {
+	case apply = <-i.loopCalls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing recall callback")
+	}
+	// Retrieval is complete, but its callback has not run. Escape must still
+	// be observed by that callback, not by a worker's earlier one-shot check.
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyEsc})
+	require.True(t, i.portRecall.abortRequested)
+	apply()
+	waitSignal(t, aborted, "Abort")
+	require.Equal(t, "queued draft", i.ed.Value())
+	require.Nil(t, i.portRecall)
 }

@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
@@ -108,7 +107,7 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 
 type portRecallOperation struct {
 	gen            uint64
-	abortRequested atomic.Bool
+	abortRequested bool
 }
 
 // portSlideBackQueued runs on the input loop. The worker retrieves before
@@ -116,12 +115,11 @@ type portRecallOperation struct {
 func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 	if op := i.portRecall; op != nil && op.gen == i.sessionGen {
 		if abort {
-			op.abortRequested.Store(true)
+			op.abortRequested = true
 		}
 		return
 	}
-	op := &portRecallOperation{gen: i.sessionGen}
-	op.abortRequested.Store(abort)
+	op := &portRecallOperation{gen: i.sessionGen, abortRequested: abort}
 	i.portRecall = op
 	text := i.ed.Value()
 	images := slices.Clone(i.clipboardImages)
@@ -133,16 +131,16 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 		in, err := port.SlideBackQueued(callCtx)
 		cancel()
-		if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
-			i.ReportError(fmt.Errorf("slide back queued: %w", err))
-		}
 		select {
 		case i.loopCalls <- func() {
-			if op.gen != i.sessionGen {
+			if op.gen != i.sessionGen || i.portRecall != op {
 				if i.portRecall == op {
 					i.portRecall = nil
 				}
 				return
+			}
+			if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
+				i.ReportError(fmt.Errorf("slide back queued: %w", err))
 			}
 			if err == nil && (in.Text != "" || len(in.Images) > 0) {
 				message := core.QueuedMessage{Text: in.Text, Images: in.Images}
@@ -153,21 +151,16 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 				}
 				i.invalidate()
 			}
-		}:
-		case <-ctx.Done():
-		}
-		if op.abortRequested.Load() {
-			callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
-			if err := port.Abort(callCtx); err != nil {
-				i.ReportError(fmt.Errorf("abort: %w", err))
+			if op.abortRequested {
+				go func() {
+					callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+					defer cancel()
+					if err := port.Abort(callCtx); err != nil {
+						i.ReportError(fmt.Errorf("abort: %w", err))
+					}
+				}()
 			}
-			cancel()
-		}
-		select {
-		case i.loopCalls <- func() {
-			if i.portRecall == op {
-				i.portRecall = nil
-			}
+			i.portRecall = nil
 		}:
 		case <-ctx.Done():
 		}
