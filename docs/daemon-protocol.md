@@ -46,7 +46,22 @@ clients must not place credential values in creation args or env.
 A fork uses `"fork":{"parent_path":"/sessions/parent.jsonl","up_to_message":3,"hidden":false}`.
 `up_to_message` counts message rows copied, matching `core.BranchSession` and
 `BranchSessionHidden`, not a zero-based message index. Root/cwd/version come
-from creation and assembly dependencies.
+from creation and assembly dependencies. Forks require a registered parent and
+inherit its working directory, arguments, environment and zutfile permissions;
+client overrides are replaced. The daemon binds `parent_path` to the matched
+registered transcript path before assembly. Unknown parents fail with
+`parent session not found`.
+
+For historical tree branching, send `fork.history_segment` (a zero-based
+segment index from the parent's history) together with `up_to_message` and
+`hidden: true`. Omit `history_segment` for ordinary effective-transcript forks.
+The daemon/assembly reads and materializes the selection from the validated
+registered parent's transcript with inherited policy. Out-of-range segments
+or message boundaries are rejected. No client-supplied branch is resumed:
+combining `fork` and `resume_path` is rejected with `invalid fork request`.
+The registry retains the resolved parent path at registration, and fork reads
+check the opened file with `os.SameFile` against its identity at lookup.
+This is not full inode pinning against a same-uid local attacker.
 
 `attach` replays events strictly after `after_seq` before live delivery.
 A sequence outside retention fails with `event sequence too old`; an

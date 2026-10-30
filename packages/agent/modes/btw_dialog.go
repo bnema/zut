@@ -3,12 +3,14 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -43,6 +45,11 @@ type btwDialog struct {
 	cancel      context.CancelFunc
 	generation  uint64
 	closeHook   func()
+	// pendingHook shows a forked session's confirmation or question; the
+	// answer callbacks route through the fork's port. resolvedHook removes
+	// a request resolved elsewhere. Both receive dialog-local request IDs.
+	pendingHook  func(localID string, p session.PendingRequest, confirm func(core.ConfirmDecision), answer func([]tools.QuestionAnswer))
+	resolvedHook func(localID string)
 
 	// spin drives the same braille animation as the main status bar. Its
 	// activity label is owned by this dialog under d.mu.
@@ -82,7 +89,14 @@ type btwRemote struct {
 	port    session.Port
 	stop    context.CancelFunc
 	turn    int
+	// pending holds the dialog-local IDs of the fork's open requests.
+	pending    map[string]bool
+	invalidate func()
 }
+
+// errBtwStale rejects an answer for a side session that was closed or
+// replaced since the request was shown.
+var errBtwStale = errors.New("side session closed")
 
 // btwRemoteCloseReason is sent to the daemon when the side chat releases
 // its forked session.
@@ -107,6 +121,111 @@ func (d *btwDialog) setCloseHook(hook func()) {
 	d.mu.Lock()
 	d.closeHook = hook
 	d.mu.Unlock()
+}
+
+// setPendingHooks installs the host callbacks that display and retract the
+// forked session's pending requests.
+func (d *btwDialog) setPendingHooks(pending func(string, session.PendingRequest, func(core.ConfirmDecision), func([]tools.QuestionAnswer)), resolved func(string)) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.pendingHook, d.resolvedHook = pending, resolved
+	d.mu.Unlock()
+}
+
+func btwPendingID(generation uint64, id string) string {
+	return btwOrigin(generation) + ":" + id
+}
+
+// liveRemoteLocked reports whether rem is still the side session of
+// generation. Callers hold d.mu.
+func (d *btwDialog) liveRemoteLocked(rem *btwRemote, generation uint64) bool {
+	return d.active && d.generation == generation && d.remote == rem && rem.port != nil
+}
+
+// answerRemote calls fn on the fork's port only while rem is still the live
+// side session of generation; a closed or replaced fork rejects the answer.
+func (d *btwDialog) answerRemote(rem *btwRemote, generation uint64, id string, fn func(context.Context, session.Port) error) error {
+	d.mu.Lock()
+	if !d.liveRemoteLocked(rem, generation) {
+		d.mu.Unlock()
+		return errBtwStale
+	}
+	port, timeout := rem.port, rem.timeout
+	delete(rem.pending, btwPendingID(generation, id))
+	d.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := fn(ctx, port)
+	if err != nil && !errors.Is(err, errBtwStale) {
+		d.mu.Lock()
+		if d.liveRemoteLocked(rem, generation) {
+			if rem.pending == nil {
+				rem.pending = map[string]bool{}
+			}
+			rem.pending[btwPendingID(generation, id)] = true
+			d.note = "side session: " + err.Error()
+		}
+		d.mu.Unlock()
+		if rem.invalidate != nil {
+			rem.invalidate()
+		}
+	}
+	return err
+}
+
+// handleRemotePending shows or retracts one of the fork's pending requests.
+func (d *btwDialog) handleRemotePending(rem *btwRemote, generation uint64, ev session.Event) {
+	d.mu.Lock()
+	if !d.liveRemoteLocked(rem, generation) {
+		d.mu.Unlock()
+		return
+	}
+	pendingHook, resolvedHook := d.pendingHook, d.resolvedHook
+	switch data := ev.Data.(type) {
+	case session.PendingEvent:
+		p := data.Pending
+		local := btwPendingID(generation, p.ID)
+		if p.ID == "" || rem.pending[local] || pendingHook == nil {
+			d.mu.Unlock()
+			return
+		}
+		if rem.pending == nil {
+			rem.pending = map[string]bool{}
+		}
+		rem.pending[local] = true
+		if p.Kind == "confirm" && p.Confirm != nil {
+			if turnIdx := rem.turn; turnIdx >= 0 && turnIdx < len(d.turns) {
+				if tool := findBtwTool(&d.turns[turnIdx], p.Confirm.ID); tool != nil {
+					tool.Args = p.Confirm.Summary
+					tool.Preview = p.Confirm.Content
+				}
+			}
+			d.activity.activity = activity{kind: activityAwaitingConfirmation, tool: p.Confirm.Name}
+		}
+		d.mu.Unlock()
+		id := p.ID
+		pendingHook(local, p, func(dec core.ConfirmDecision) {
+			_ = d.answerRemote(rem, generation, id, func(ctx context.Context, port session.Port) error {
+				return port.AnswerConfirmation(ctx, id, dec)
+			})
+		}, func(answers []tools.QuestionAnswer) {
+			_ = d.answerRemote(rem, generation, id, func(ctx context.Context, port session.Port) error {
+				return port.AnswerQuestion(ctx, id, answers)
+			})
+		})
+	case session.PendingResolvedEvent:
+		local := btwPendingID(generation, data.ID)
+		known := rem.pending[local]
+		delete(rem.pending, local)
+		d.mu.Unlock()
+		if known && resolvedHook != nil {
+			resolvedHook(local)
+		}
+	default:
+		d.mu.Unlock()
+	}
 }
 
 // Active reports whether the dialog is visible and consuming keys.
@@ -248,7 +367,7 @@ func (d *btwDialog) OpenPort(th tui.Theme, client SessionClient, spec session.Cr
 	d.sideAgent = nil
 	d.cwd = cwd
 	d.note = "starting side session…"
-	rem := &btwRemote{client: client, timeout: timeout, turn: -1}
+	rem := &btwRemote{client: client, timeout: timeout, turn: -1, invalidate: invalidate}
 	d.remote = rem
 	seed = strings.TrimSpace(seed)
 	if seed != "" {
@@ -323,6 +442,13 @@ func (d *btwDialog) startRemote(rem *btwRemote, generation uint64, spec session.
 // pumpRemote routes the forked session's agent events to the current turn.
 func (d *btwDialog) pumpRemote(rem *btwRemote, generation uint64, events <-chan session.Event, invalidate func()) {
 	for ev := range events {
+		if ev.Kind == session.EvPending || ev.Kind == session.EvPendingResolved {
+			d.handleRemotePending(rem, generation, ev)
+			if invalidate != nil {
+				invalidate()
+			}
+			continue
+		}
 		if ev.Kind != session.EvAgent || ev.Agent == nil {
 			continue
 		}
@@ -370,8 +496,20 @@ func (d *btwDialog) Close() {
 	rem := d.remote
 	d.remote = nil
 	d.note = ""
-	closeHook := d.closeHook
+	closeHook, resolvedHook := d.closeHook, d.resolvedHook
+	var retract []string
+	if rem != nil {
+		for id := range rem.pending {
+			retract = append(retract, id)
+		}
+		rem.pending = nil
+	}
 	d.mu.Unlock()
+	if resolvedHook != nil {
+		for _, id := range retract {
+			resolvedHook(id)
+		}
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -835,4 +973,32 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode b
 	out = append(out, bubble...)
 	out = append(out, row(""))
 	return out
+}
+
+// showBtwPending displays a forked /btw session's confirmation or question.
+// Answers go to the fork's port through confirm/answer, never the main port.
+func (i *Interactive) showBtwPending(localID string, p session.PendingRequest, confirm func(core.ConfirmDecision), answer func([]tools.QuestionAnswer)) {
+	switch p.Kind {
+	case "confirm":
+		req := &confirmRequest{pendingID: localID, returnToChild: true, onAnswer: func(dec core.ConfirmDecision) { go confirm(dec) }}
+		if p.Confirm != nil {
+			req.toolName, req.preview = p.Confirm.Name, p.Confirm.Summary
+		}
+		i.confirmDialog.Enqueue(req)
+		i.alertNeedsInput(alertAwaitingConfirmation)
+	case "question":
+		i.questionDialog.EnqueuePending(localID, p.Questions, func(a []tools.QuestionAnswer) { go answer(a) })
+		i.alertNeedsInput(alertAwaitingAnswers)
+	default:
+		return
+	}
+	i.invalidate()
+}
+
+// retractBtwPending drops a fork request resolved elsewhere or orphaned by
+// closing the side chat.
+func (i *Interactive) retractBtwPending(localID string) {
+	i.confirmDialog.RemovePending(localID)
+	i.questionDialog.RemovePending(localID)
+	i.invalidate()
 }

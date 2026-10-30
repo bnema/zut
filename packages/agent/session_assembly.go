@@ -290,12 +290,11 @@ func (a *sessionAssembly) runStartupPre(ctx context.Context) error {
 // runInteractive does, leaving the prepared agent for the first BuildAgent.
 func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.CreateSpec) error {
 	if spec.Fork != nil {
-		root := agentSessionsRoot(ZutHome(), a.args)
-		branch := core.BranchSession
-		if spec.Fork.Hidden {
-			branch = core.BranchSessionHidden
+		if spec.ResumePath != "" {
+			return fmt.Errorf("fork cannot include resume_path: %w", session.ErrInvalidFork)
 		}
-		path, err := branch(spec.Fork.ParentPath, root, a.args.CWD, a.version, spec.Fork.UpToMessage)
+		root := agentSessionsRoot(ZutHome(), a.args)
+		path, err := core.BranchSessionChecked(ctx, spec.Fork.ParentPath, root, a.args.CWD, a.version, spec.Fork.UpToMessage, spec.Fork.Hidden, spec.Fork.HistorySegment, spec.Fork.ParentFile)
 		if err != nil {
 			return fmt.Errorf("fork session: %w", err)
 		}

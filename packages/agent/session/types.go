@@ -6,6 +6,7 @@ import (
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"os"
 	"time"
 )
 
@@ -290,6 +291,10 @@ type ForkSpec struct {
 	ParentPath  string `json:"parent_path"`
 	UpToMessage int    `json:"up_to_message"`
 	Hidden      bool   `json:"hidden"`
+	// HistorySegment selects a zero-based historical era; nil uses the effective transcript.
+	HistorySegment *int `json:"history_segment,omitempty"`
+	// ParentFile is daemon-only identity captured at parent lookup, never client supplied.
+	ParentFile os.FileInfo `json:"-"`
 }
 
 const (

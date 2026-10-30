@@ -233,6 +233,10 @@ func (d *Daemon) createHandleLocked(spec session.CreateSpec) (session.Handle, er
 	if d.isStopping() {
 		return nil, ErrStopping
 	}
+	spec, err := d.forkSpec(spec)
+	if err != nil {
+		return session.Info{}, err
+	}
 	pre, err := lockSessionFile(spec.ResumePath)
 	if err != nil {
 		return nil, err
@@ -282,7 +286,7 @@ func (d *Daemon) register(h session.Handle, s session.CreateSpec, lock *flock.Lo
 		d.closeHandle(h, "duplicate_id")
 		return fmt.Errorf("session id %q is empty or already registered", id)
 	}
-	e := &entry{id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
+	e := &entry{parentPath: normParentPath(h.Info().SessionPath), id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
 	d.reg[id] = e
 	d.mu.Unlock()
 	d.goLoop(func(ctx context.Context) { d.watch(ctx, e) })
@@ -480,6 +484,65 @@ func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 		d.takeControl(ctrl, next)
 	}
 	return next.h.Info(), nil
+}
+
+// forkSpec makes a fork inherit the launch policy of the live session whose
+// transcript it branches: cwd, args (--no-yolo, --tools, extensions, sandbox
+// and model flags), env and zutfile permissions. A fork only inherits:
+// client-supplied args, env and zutfile are replaced, never merged, so a fork
+// cannot widen its parent's policy. When no live session owns the parent
+// path the policy is unknown and the fork is rejected.
+func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
+	if spec.Fork == nil {
+		return spec, nil
+	}
+	if spec.ResumePath != "" {
+		return session.CreateSpec{}, fmt.Errorf("fork cannot include resume_path: %w", session.ErrInvalidFork)
+	}
+	want := normParentPath(spec.Fork.ParentPath)
+	var parent *entry
+	var info session.Info
+	for _, e := range d.entries() {
+		i := e.h.Info()
+		if e.parentPath != "" && e.parentPath == want {
+			parent, info = e, i
+			break
+		}
+	}
+	if parent == nil {
+		return session.CreateSpec{}, session.ErrForkParentNotFound
+	}
+	fork := *spec.Fork
+	fork.ParentPath = parent.parentPath
+	fork.ParentFile, _ = os.Stat(parent.parentPath)
+	if fork.ParentFile == nil {
+		return session.CreateSpec{}, fmt.Errorf("parent transcript unavailable: %w", session.ErrInvalidFork)
+	}
+	spec.Fork = &fork
+	spec.CWD = info.CWD
+	if spec.CWD == "" {
+		spec.CWD = parent.spec.CWD
+	}
+	spec.Args = clearArgs(parent.spec.Args, info)
+	spec.Env = append([]string(nil), parent.spec.Env...)
+	spec.Zutfile = parent.spec.Zutfile.WithoutPre()
+	return spec, nil
+}
+
+// normParentPath resolves symlinks when the path exists and always cleans it.
+func normParentPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		if cwd, err := os.Getwd(); err == nil {
+			p = cwd + string(filepath.Separator) + p
+		}
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // clearArgs drops resume/session selection and model flags from the launch

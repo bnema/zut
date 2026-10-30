@@ -405,7 +405,7 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 	if err := contextErr(ctx); err != nil {
 		return SessionSnapshot{}, err
 	}
-	f, err := os.Open(path)
+	f, err := openForkParent(ctx, path)
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("session snapshot: open %q: %w", path, err)
 	}
@@ -519,7 +519,7 @@ func readSessionHistory(ctx context.Context, path string) (SessionHistory, error
 	if err := contextErr(ctx); err != nil {
 		return SessionHistory{}, err
 	}
-	f, err := os.Open(path)
+	f, err := openForkParent(ctx, path)
 	if err != nil {
 		return SessionHistory{}, fmt.Errorf("session history: open %q: %w", path, err)
 	}

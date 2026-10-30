@@ -74,6 +74,7 @@ type Daemon struct {
 }
 
 type entry struct {
+	parentPath string
 	id         session.ID
 	h          session.Handle
 	spec       session.CreateSpec
