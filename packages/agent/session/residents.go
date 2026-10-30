@@ -72,7 +72,7 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 		if r.OwnedElsewhere {
 			continue
 		}
-		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt})
+		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt, HistoryRev: r.HistoryRev})
 	}
 	return out
 }

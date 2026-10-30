@@ -226,6 +226,8 @@ type ResidentSnapshot struct {
 	ContextUsed       int
 	ContextMax        int
 	Subscription      bool
+	// HistoryRev changes only when finalized history is appended.
+	HistoryRev uint64
 }
 
 func residentSnapshot(child *ResidentChild) ResidentSnapshot {
@@ -238,7 +240,8 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
 		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
 		ActivityUpdatedAt: child.ActivityUpdatedAt(), WaitingForModel: live.WaitingForModel, PendingFollowUps: child.PendingFollowUps(),
-		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription}
+		Usage: live.Usage, ContextUsed: live.ContextUsed, ContextMax: live.ContextMax, Subscription: live.Subscription,
+		HistoryRev: child.HistoryRev()}
 }
 
 func NewResidentManager(root string, factory ResidentFactory) *ResidentManager {

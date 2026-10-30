@@ -273,3 +273,11 @@ and list limits above 200 are clamped to 200. History limit defaults to 200 and
 is capped at 1000. An invalid child ID (empty, `.`, `..`, or containing a path
 separator) is rejected. Older daemons reject these
 additive methods as unsupported; clients report a daemon-restart hint.
+
+Each `session.Info` resident summary carries an optional `history_rev`
+counter. The daemon increments it only when the child's finalized history
+grows (a user, assistant, tool-call, or tool-result record), not on streaming
+deltas. Clients reload `resident_history` only when it or the resident state
+changes. Older daemons omit it; a missing value reads as zero, so such clients
+reload on state changes only. The counter restarts at zero when the daemon
+restarts.

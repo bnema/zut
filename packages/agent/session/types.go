@@ -85,6 +85,10 @@ type ResidentSummary struct {
 	Workspace string    `json:"workspace"`
 	Task      string    `json:"task"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// HistoryRev changes only when the child's finalized history grows, so
+	// clients can skip history reloads on live-only updates. Absent (zero)
+	// from older daemons.
+	HistoryRev uint64 `json:"history_rev,omitempty"`
 }
 
 // Snapshot is a terminal-free session contract payload.

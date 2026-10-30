@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
@@ -112,6 +113,9 @@ type ResidentChild struct {
 	onCompletion  func(ResidentCompletion)
 	onUpdate      func(historyChanged bool)
 	onStateChange func(ResidentState)
+	// historyRev counts finalized transcript appends; readers compare it to
+	// skip history reloads on live-only (streaming) updates.
+	historyRev atomic.Uint64
 
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -173,7 +177,11 @@ func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJour
 		journal.SetEventObserver(func(event core.AgentEvent) {
 			child.live.Apply(event)
 			child.recordActivity()
-			child.notifyUpdate(residentEventChangesHistory(event))
+			historyChanged := residentEventChangesHistory(event)
+			if historyChanged {
+				child.historyRev.Add(1)
+			}
+			child.notifyUpdate(historyChanged)
 		})
 	}
 	go child.run()
@@ -202,6 +210,15 @@ func (c *ResidentChild) setStateObserver(observer func(ResidentState)) {
 	c.mu.Lock()
 	c.onStateChange = observer
 	c.mu.Unlock()
+}
+
+// HistoryRev returns the number of finalized transcript appends observed by
+// this process. It is zero for a recovered child until it records again.
+func (c *ResidentChild) HistoryRev() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.historyRev.Load()
 }
 
 // Live returns an immutable copy of the unfinished visible turn.

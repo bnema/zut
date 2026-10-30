@@ -6,6 +6,9 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestResidentManagerSnapshotPageAndLookupAreBounded(t *testing.T) {
@@ -71,5 +74,42 @@ func TestResidentManagerHistoryPageRejectsTraversalChildID(t *testing.T) {
 		if _, err := manager.HistoryPage(id, "", 10); err == nil {
 			t.Fatalf("HistoryPage(%q) succeeded, want invalid child ID", id)
 		}
+	}
+}
+
+// HistoryRev counts finalized transcript appends only; streaming deltas leave
+// it unchanged so readers can skip history reloads.
+func TestResidentSnapshotHistoryRevCountsFinalizedEventsOnly(t *testing.T) {
+	recorded := make(chan uint64, 1)
+	var manager *ResidentManager
+	manager = NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
+			snapshot, _ := manager.SnapshotFor("child")
+			before := snapshot.HistoryRev
+			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "partial"}); err != nil {
+				return err
+			}
+			if snapshot, _ = manager.SnapshotFor("child"); snapshot.HistoryRev != before {
+				return fmt.Errorf("delta bumped history rev %d -> %d", before, snapshot.HistoryRev)
+			}
+			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "done"}}}}); err != nil {
+				return err
+			}
+			snapshot, _ = manager.SnapshotFor("child")
+			recorded <- snapshot.HistoryRev - before
+			return nil
+		}), nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delta := <-recorded:
+		if delta != 1 {
+			t.Fatalf("finalized message bumped history rev by %d, want 1", delta)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resident turn did not run")
 	}
 }
