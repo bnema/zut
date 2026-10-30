@@ -89,8 +89,7 @@ func toolResultText(res core.ToolResult) string {
 
 func startPooledSessionMCP(t *testing.T, cwd string, pool *mcp.Pool) *mcp.Manager {
 	t.Helper()
-	args := Args{CWD: cwd, mcpPool: pool}
-	m, stop, err := startSessionMCP(context.Background(), args, os.Environ())
+	m, stop, _, err := startSessionMCP(context.Background(), Args{CWD: cwd}, os.Environ(), mcpStartOptions{Pool: pool})
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	t.Cleanup(stop)
@@ -128,7 +127,7 @@ func TestDaemonShutdownClosesPoolAfterSessions(t *testing.T) {
 		require.Eventually(t, func() bool { return !testProcessAlive(pid) }, 10*time.Second, 10*time.Millisecond, "shared process outlived the daemon")
 	}
 	// A non-required failure is reported, not fatal.
-	m2, stop, err := startSessionMCP(context.Background(), Args{CWD: t.TempDir(), mcpPool: pool}, os.Environ())
+	m2, stop, _, err := startSessionMCP(context.Background(), Args{CWD: t.TempDir()}, os.Environ(), mcpStartOptions{Pool: pool})
 	require.NoError(t, err)
 	t.Cleanup(stop)
 	require.Empty(t, m2.ServerTools("fake"))

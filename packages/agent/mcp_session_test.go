@@ -26,7 +26,7 @@ func TestSessionMCPNoSignalHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := Args{CWD: home}
-	manager, stop, err := startSessionMCP(context.Background(), args, []string{})
+	manager, stop, _, err := startSessionMCP(context.Background(), args, []string{}, mcpStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

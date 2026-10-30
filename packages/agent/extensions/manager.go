@@ -660,13 +660,15 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 		wg.Add(1)
 		go func(ext *Extension) {
 			defer wg.Done()
+			var readyErr error
 			if m.onStartup != nil {
 				t := time.Now()
-				defer func() { m.onStartup(ext.Manifest.Name, "ready", time.Since(t), nil) }()
+				defer func() { m.onStartup(ext.Manifest.Name, "ready", time.Since(t), readyErr) }()
 			}
 			select {
 			case <-ext.readyCh:
 			case <-deadline:
+				readyErr = fmt.Errorf("timed out after %s waiting for ready frame", grace)
 				ext.mu.Lock()
 				ext.readyTimedOut = true
 				ext.diagnostics = append(ext.diagnostics, "timed out waiting for ready frame")

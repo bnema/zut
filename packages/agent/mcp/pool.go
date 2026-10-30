@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,17 @@ type Pool struct {
 	mu      sync.Mutex
 	closed  bool
 	entries map[poolKey]*poolEntry
+	// stderr forwards shared servers' redacted stderr lines to log (Debug).
+	stderr *liveStderrWriter
+}
+
+// slogLineWriter writes each "server\x00line" record to log at Debug.
+type slogLineWriter struct{ log *slog.Logger }
+
+func (w slogLineWriter) Write(p []byte) (int, error) {
+	server, line, _ := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\x00")
+	w.log.Debug("mcp server stderr", "server", server, "line", line)
+	return len(p), nil
 }
 
 // NewPool returns a pool whose unreferenced processes stop after idle
@@ -40,7 +52,8 @@ func NewPool(idle time.Duration, log *slog.Logger) *Pool {
 		log = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Pool{idle: idle, log: log, ctx: ctx, cancel: cancel, entries: map[poolKey]*poolEntry{}}
+	return &Pool{idle: idle, log: log, ctx: ctx, cancel: cancel, entries: map[poolKey]*poolEntry{},
+		stderr: newLiveStderrWriter(slogLineWriter{log: log})}
 }
 
 // poolEntry is one shared server process. mu guards every field below it and
@@ -196,7 +209,7 @@ func (p *Pool) acquire(name string, cfg ServerConfig, sessionCWD string, info Cl
 		e.idleTimer = nil
 	}
 	e.subs[lease] = struct{}{}
-	p.log.Info("mcp pool acquire", e.logAttrs("result", result)...)
+	p.log.Debug("mcp pool acquire", e.logAttrs("result", result)...)
 	e.mu.Unlock()
 	return lease, nil
 }
@@ -214,7 +227,7 @@ func (p *Pool) release(lease *poolLease) {
 	}
 	delete(e.subs, lease)
 	e.refs--
-	p.log.Info("mcp pool release", e.logAttrs()...)
+	p.log.Debug("mcp pool release", e.logAttrs()...)
 	stop := e.idleLocked()
 	e.mu.Unlock()
 	p.mu.Unlock()
@@ -344,7 +357,9 @@ func (e *poolEntry) dial(f *poolFlight) {
 	defer f.timer.Stop()
 	ctx := f.ctx
 	refresher := newToolRefresher()
-	client, err := connectWith(ctx, e.name, e.cfg, e.rootsCWD, e.info, nil, refresher.notify, nil)
+	// Live stderr goes to the daemon log, never to one session's output.
+	sink := &stderrSink{output: e.p.stderr, prefix: sanitizeText(e.name, false) + "\x00"}
+	client, err := connectWith(ctx, e.name, e.cfg, e.rootsCWD, e.info, nil, refresher.notify, sink)
 	var tools []Tool
 	if err == nil {
 		tools, err = client.ListTools(ctx)
@@ -443,5 +458,6 @@ func (p *Pool) Close() error {
 		go func() { defer wg.Done(); stop() }()
 	}
 	wg.Wait()
+	p.stderr.shutdown()
 	return nil
 }

@@ -19,7 +19,12 @@ func LogPath(home string) string { return filepath.Join(home, "logs", "daemon.lo
 // ZUT_DAEMON_LOG selects debug, info (default), warn, or error verbosity.
 // The caller closes the returned io.Closer after the daemon stops.
 func OpenLog(home string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
-	path := LogPath(home)
+	return OpenLogFile(LogPath(home), extra...)
+}
+
+// OpenLogFile is OpenLog for any log path: the same 0600/0700 permissions,
+// 10 MiB rotation with one ".1" backup, and ZUT_DAEMON_LOG verbosity.
+func OpenLogFile(path string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create log dir: %w", err)
 	}
@@ -70,16 +75,16 @@ type rotatingLog struct {
 func (w *rotatingLog) open() error {
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("open daemon log: %w", err)
+		return fmt.Errorf("open log: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("secure daemon log: %w", err)
+		return fmt.Errorf("secure log: %w", err)
 	}
 	st, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
-		return fmt.Errorf("stat daemon log: %w", err)
+		return fmt.Errorf("stat log: %w", err)
 	}
 	w.file, w.size = f, st.Size()
 	return nil
@@ -102,7 +107,7 @@ func (w *rotatingLog) rotate() error {
 	if w.rotateErr != nil {
 		w.retryAt = w.size + maxLogSize
 		if prev == nil && w.notify != nil {
-			fmt.Fprintf(w.notify, "zut daemon: log rotation failed, appending to %s: %v\n", w.path, w.rotateErr)
+			fmt.Fprintf(w.notify, "zut: log rotation failed, appending to %s: %v\n", w.path, w.rotateErr)
 		}
 	}
 	return nil
@@ -112,10 +117,10 @@ func (w *rotatingLog) moveToBackup() error {
 	// Remove explicitly because replacing an existing destination via Rename
 	// is not supported on every platform.
 	if err := os.Remove(w.path + ".1"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove daemon log backup: %w", err)
+		return fmt.Errorf("remove log backup: %w", err)
 	}
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
-		return fmt.Errorf("rotate daemon log: %w", err)
+		return fmt.Errorf("rotate log: %w", err)
 	}
 	return nil
 }

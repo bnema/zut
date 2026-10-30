@@ -554,7 +554,11 @@ func defaultModelForResolve(providerName string, args Args) string {
 // login flow. requireCred controls whether missing credentials are a
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
-	timer := args.startupTimer
+	return resolve(args, requireCred, nil)
+}
+
+// resolve is Resolve with optional per-phase timing logs (nil logs nothing).
+func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error) {
 	timer.reset()
 	cfg, cfgErr := LoadConfig()
 	timer.phase("resolve: config load")

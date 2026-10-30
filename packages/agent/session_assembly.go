@@ -77,10 +77,9 @@ func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version s
 		return session.Deps{}, nil, "", errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 	applyZutfileSpec(&args, spec.Zutfile)
-	args.mcpPool = pool
 	timer.phase("parse args")
 
-	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings(), timer: timer}
+	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings(), timer: timer, mcpPool: pool}
 	ok := false
 	defer func() {
 		if !ok {
@@ -183,6 +182,7 @@ type sessionAssembly struct {
 
 	preOutput   string // captured entry.pre shell output for the create response
 	timer       *startupTimer
+	mcpPool     *mcp.Pool
 	cleanupOnce sync.Once
 }
 
@@ -195,9 +195,12 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	}
 	timer.phase("config load")
 
-	mcpArgs := a.args
-	mcpArgs.mcpToolsChanged = func(string) { a.bind.requestToolRefresh() }
-	manager, stopMCP, mcpErrs, err := startSessionMCPBackground(life, mcpArgs, a.args.Env, timer, a.mcpServerReady)
+	manager, stopMCP, mcpErrs, err := startSessionMCP(life, a.args, a.args.Env, mcpStartOptions{
+		Pool:         a.mcpPool,
+		ToolsChanged: func(string) { a.bind.requestToolRefresh() },
+		Timer:        timer,
+		OnReady:      a.mcpServerReady,
+	})
 	if err != nil {
 		return err
 	}
@@ -206,9 +209,7 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	a.args.mcpStartupErrors = append(a.args.mcpStartupErrors, mcpErrs...)
 	timer.phase("mcp startup (required servers)")
 
-	a.args.startupTimer = timer
-	a.r, err = Resolve(a.args, false)
-	a.args.startupTimer = nil
+	a.r, err = resolve(a.args, false, timer)
 	if err != nil {
 		return err
 	}

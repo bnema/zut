@@ -1,9 +1,10 @@
 # MCP servers
 
 zut includes a native [Model Context Protocol](https://modelcontextprotocol.io)
-client. Configured servers start with each session, and their tools appear
-to the model as ordinary tools named `mcp__<server>__<tool>`. In the daemon,
-identical stdio servers are shared between sessions (see
+client. Configured servers start once per zut process, or per session when
+the daemon owns the session, and their tools appear to the model as ordinary
+tools named `mcp__<server>__<tool>`. In the daemon, optional servers start in
+the background, and identical stdio servers are shared between sessions (see
 [Shared servers](#shared-servers)).
 
 ## Configuration
@@ -180,8 +181,9 @@ Set `"shared": false` on a server when sharing is unsafe:
 - A slow tool call can delay the other sessions' calls to that server.
 - A crash affects every session using the process; the next call restarts
   it once for all of them.
-- Live server stderr is not streamed to sessions; startup errors still
-  include its tail.
+- Live server stderr is not streamed to sessions; it goes to the daemon log
+  at debug level (`ZUT_DAEMON_LOG=debug`), redacted, with the server name.
+  Startup errors still include its tail.
 
 ## Tool selection and confirmation
 

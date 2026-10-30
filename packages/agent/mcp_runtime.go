@@ -40,20 +40,30 @@ func mcpAllowed(args Args) bool {
 // every server. Startup failures are appended to args.mcpStartupErrors; a
 // server marked required that fails to start aborts with an error.
 func startMCPWithEnv(ctx context.Context, args *Args, version string, env []string) (*mcp.Manager, func(), error) {
-	return startMCPWithEnvTimed(ctx, args, version, env, nil)
-}
-
-func startMCPWithEnvTimed(ctx context.Context, args *Args, version string, env []string, timer *startupTimer) (*mcp.Manager, func(), error) {
-	return startMCPManager(ctx, args, version, env, timer, nil)
+	return startMCPManager(ctx, args, version, env, mcpStartOptions{})
 }
 
 // mcpReadyFunc receives a background server's start result.
 type mcpReadyFunc func(ctx context.Context, name string, d time.Duration, err error)
 
-// startMCPManager loads the configuration and starts the manager. With a nil
-// onReady every server is awaited (Start); otherwise only required servers
-// are awaited and the rest start in the background (StartBackground).
-func startMCPManager(ctx context.Context, args *Args, version string, env []string, timer *startupTimer, onReady mcpReadyFunc) (*mcp.Manager, func(), error) {
+// mcpStartOptions carries per-start wiring that is not launch configuration.
+// The zero value starts per-process servers and awaits all of them.
+type mcpStartOptions struct {
+	// Pool shares stdio processes across daemon sessions (nil: per-session).
+	Pool *mcp.Pool
+	// ToolsChanged observes tools/list_changed re-listings.
+	ToolsChanged func(server string)
+	// Timer logs per-server startup durations.
+	Timer *startupTimer
+	// OnReady, when set, awaits only required servers and reports the rest
+	// once they finish starting in the background.
+	OnReady mcpReadyFunc
+}
+
+// startMCPManager loads the configuration and starts the manager. Without
+// opts.OnReady every server is awaited (Start); otherwise only required
+// servers are awaited and the rest start in the background.
+func startMCPManager(ctx context.Context, args *Args, version string, env []string, opts mcpStartOptions) (*mcp.Manager, func(), error) {
 	noop := func() {}
 	if args.mcpManager != nil || !mcpAllowed(*args) {
 		return args.mcpManager, noop, nil
@@ -69,19 +79,19 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
-	manager.SetPool(args.mcpPool)
-	if timer != nil {
+	manager.SetPool(opts.Pool)
+	if timer := opts.Timer; timer != nil {
 		manager.SetStartupObserver(func(name string, d time.Duration, err error) {
 			timer.item("mcp", name, d, err)
 		})
 	}
-	if args.mcpToolsChanged != nil {
-		manager.SetToolsChangedObserver(args.mcpToolsChanged)
+	if opts.ToolsChanged != nil {
+		manager.SetToolsChangedObserver(opts.ToolsChanged)
 	}
 	var failures []error
 	var requiredErr error
-	if onReady != nil {
-		failures, requiredErr = manager.StartBackground(ctx, onReady)
+	if opts.OnReady != nil {
+		failures, requiredErr = manager.StartBackground(ctx, opts.OnReady)
 	} else {
 		failures, requiredErr = manager.Start(ctx)
 	}
@@ -98,20 +108,12 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 }
 
 // startSessionMCP starts session-owned connections; it never installs process
-// signal handlers or terminates the process. The caller owns cancellation and supplies its base env.
-// The returned manager is installed by assembly; args is never mutated.
+// signal handlers or terminates the process. The caller owns cancellation and
+// supplies its base env. args is never mutated; startup errors for config and
+// awaited servers are returned (as args.mcpStartupErrors would hold them).
 // Use the returned cleanup on every exit.
-func startSessionMCP(ctx context.Context, args Args, env []string) (*mcp.Manager, func(), error) {
-	return startMCPWithEnvTimed(ctx, &args, "", env, nil)
-}
-
-// startSessionMCPBackground is startSessionMCP that awaits only required
-// servers; onReady reports each other server once its start ends. Startup
-// errors for awaited servers and config are returned in errs, matching
-// args.mcpStartupErrors. This per-session start is the seam a per-daemon
-// connection pool would replace.
-func startSessionMCPBackground(ctx context.Context, args Args, env []string, timer *startupTimer, onReady mcpReadyFunc) (*mcp.Manager, func(), []string, error) {
-	m, stop, err := startMCPManager(ctx, &args, "", env, timer, onReady)
+func startSessionMCP(ctx context.Context, args Args, env []string, opts mcpStartOptions) (*mcp.Manager, func(), []string, error) {
+	m, stop, err := startMCPManager(ctx, &args, "", env, opts)
 	return m, stop, args.mcpStartupErrors, err
 }
 

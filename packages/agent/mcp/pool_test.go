@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -405,5 +406,45 @@ func TestPoolFlightUsesLargestWaiterTimeout(t *testing.T) {
 	}
 	if got := countEvents(events, "start"); got != 1 {
 		t.Fatalf("server starts = %d, want 1", got)
+	}
+}
+
+// lockedBuf is a goroutine-safe log destination.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestPoolForwardsRedactedStderrToLog(t *testing.T) {
+	const secret = "POOLSECRET-abcdefghij"
+	cfg, _ := fakeStdioConfig(t, map[string]string{"FAKE_SECRET": secret})
+	var buf lockedBuf
+	pool := NewPool(time.Minute, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { _ = pool.Close() })
+	m := mustPooled(t, pool, map[string]ServerConfig{"fake": cfg}, t.TempDir())
+	if got := resultText(execTool(t, findTool(t, m, "mcp__fake__stderr_secret"), `{}`)); got != "written" {
+		t.Fatal(got)
+	}
+	eventually(t, "stderr forwarded to the pool log", func() bool {
+		return strings.Contains(buf.String(), `msg="mcp server stderr" server=fake line=after-secret`)
+	})
+	out := buf.String()
+	if strings.Contains(out, "POOLSECRET") || strings.Contains(out, "abcdef") {
+		t.Fatal("secret leaked to the daemon log")
+	}
+	if strings.Contains(out, "-test.run") || strings.Contains(out, fakeServerEnv) {
+		t.Fatal("args or env leaked to the daemon log")
 	}
 }

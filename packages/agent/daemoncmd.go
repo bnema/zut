@@ -105,10 +105,10 @@ func daemonRun(args []string, version string) error {
 		return err
 	}
 	defer logCloser.Close()
-	logger.Info("startup phase", "phase", "open log", "duration", time.Since(t), "since_start", time.Since(processStart))
+	logger.Debug("startup phase", "phase", "open log", "duration", time.Since(t), "since_start", time.Since(processStart))
 	t = time.Now()
 	applyConfiguredHTTPProxy()
-	logger.Info("startup phase", "phase", "config http proxy", "duration", time.Since(t))
+	logger.Debug("startup phase", "phase", "config http proxy", "duration", time.Since(t))
 
 	signal.Ignore(syscall.SIGHUP)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -169,7 +169,7 @@ func newDaemonServer(o daemonServerOptions) (*daemonServer, error) {
 		return nil, fmt.Errorf("load schedules: %w", err)
 	}
 	if o.Logger != nil {
-		o.Logger.Info("startup phase", "phase", "load schedules", "duration", time.Since(t))
+		o.Logger.Debug("startup phase", "phase", "load schedules", "duration", time.Since(t))
 	}
 	f := newSessionFactory(o.Version, o.Home, engine, o.Logger)
 	d := daemon.New(f)
@@ -364,7 +364,7 @@ func daemonRestart(w io.Writer, version string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), daemonClientDeadline)
 	defer cancel()
-	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
 	if err != nil {
 		return err
 	}
@@ -381,7 +381,7 @@ func daemonRestart(w io.Writer, version string) error {
 func daemonStart(w io.Writer, version string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), daemonClientDeadline)
 	defer cancel()
-	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientVersion: version, ClientKind: "cli"}}))
 	if err != nil {
 		return err
 	}
@@ -394,15 +394,17 @@ func daemonStart(w io.Writer, version string) error {
 	return nil
 }
 
-// processStart approximates the daemon process start for startup timing.
+// processStart is set during package init, shortly after the process starts;
+// it is the origin of the daemon startup total.
 var processStart = time.Now()
 
-// withColdStartFeedback reports a daemon cold start on stderr. Callers must
-// use it before the terminal enters raw or alternate-screen mode.
-func withColdStartFeedback(opts daemonclient.EnsureOptions) daemonclient.EnsureOptions {
-	opts.OnSpawn = func() { fmt.Fprintln(os.Stderr, "Starting zut daemon…") }
+// withColdStartFeedback reports a daemon cold start on w (stderr in
+// production). Callers must use it before the terminal enters raw or
+// alternate-screen mode.
+func withColdStartFeedback(w io.Writer, opts daemonclient.EnsureOptions) daemonclient.EnsureOptions {
+	opts.OnSpawn = func() { fmt.Fprintln(w, "Starting zut daemon…") }
 	opts.OnReady = func(d time.Duration) {
-		fmt.Fprintf(os.Stderr, "zut daemon ready (%.1fs)\n", d.Round(100*time.Millisecond).Seconds())
+		fmt.Fprintf(w, "zut daemon ready (%.1fs)\n", d.Round(100*time.Millisecond).Seconds())
 	}
 	return opts
 }

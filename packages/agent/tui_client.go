@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/daemon"
 	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/modes"
@@ -98,7 +99,7 @@ func (a *daemonSessionClient) detacher(held func() session.ID) func() {
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
 // from spec when attachID is empty) and runs the interactive TUI on it.
 func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
-	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}}))
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}}))
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
@@ -106,18 +107,18 @@ func runTUIClient(ctx context.Context, attachID session.ID, spec *session.Create
 	return runTUIWithClient(ctx, c, attachID, spec, out)
 }
 
-// clientTimingLog appends TUI startup timings to $ZUT_HOME/logs/client.log;
-// stderr is unusable once the TUI owns the terminal. nil on any error.
+// clientLogPath returns $ZUT_HOME/logs/client.log.
+func clientLogPath(home string) string { return filepath.Join(home, "logs", "client.log") }
+
+// clientTimingLog appends TUI startup timings to $ZUT_HOME/logs/client.log,
+// rotated and permissioned like daemon.log; stderr is unusable once the TUI
+// owns the terminal. nil on any error.
 func clientTimingLog() (*slog.Logger, func()) {
-	path := filepath.Join(ZutHome(), "logs", "client.log")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, func() {}
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	logger, closer, err := daemon.OpenLogFile(clientLogPath(ZutHome()))
 	if err != nil {
 		return nil, func() {}
 	}
-	return slog.New(slog.NewTextHandler(f, nil)), func() { _ = f.Close() }
+	return logger, func() { _ = closer.Close() }
 }
 
 // runTUIWithClient owns c and disconnects it on return.

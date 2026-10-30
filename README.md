@@ -557,7 +557,7 @@ zut sessions prune --older-than 30d --all --yes       # delete every match witho
 
 ## Daemon and sessions
 
-Sessions are owned by a local background daemon. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc` and the Telegram bot are clients that create or attach to a daemon session. The first client that needs the daemon starts it (`zut daemon run`, detached), so there is nothing to set up.
+Sessions are owned by a local background daemon. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc` and the Telegram bot are clients that create or attach to a daemon session. The first client that needs the daemon starts it (`zut daemon run`, detached), so there is nothing to set up. While it starts, the client prints `Starting zut daemon…` and then `zut daemon ready (1.2s)` on stderr; nothing is printed when a daemon already runs.
 
 ```sh
 zut ls [--json]                  # sessions open in the daemon
@@ -578,7 +578,7 @@ In the TUI, `/detach` leaves the session running and prints the `zut attach` com
 
 On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
 
-The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`. Set `ZUT_DAEMON_LOG=debug|info|warn|error` in the daemon's environment to select its log level (default `info`; unrecognized values also use `info`). Restart an already-running daemon to apply a new level. The log rotates at 10 MiB, retaining one backup as `daemon.log.1`, with `0600` file permissions. An oversized existing log rotates on startup; during a run, rotation happens before a write would exceed the limit (individual records are not split).
+The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`. Set `ZUT_DAEMON_LOG=debug|info|warn|error` in the daemon's environment to select its log level (default `info`; unrecognized values also use `info`). Restart an already-running daemon to apply a new level. The log rotates at 10 MiB, retaining one backup as `daemon.log.1`, with `0600` file permissions. An oversized existing log rotates on startup; during a run, rotation happens before a write would exceed the limit (individual records are not split). The interactive client writes its startup timings (session created, attached, first frame) to `$ZUT_HOME/logs/client.log`, rotated and permissioned the same way. With `ZUT_DAEMON_LOG=debug`, the daemon log also records per-phase timings for daemon startup and session creation (config, MCP servers, extensions, skills, session file) and the stderr of shared MCP servers; at the default level it records `daemon ready total=…` and `session ready total=…`.
 
 Limitations:
 

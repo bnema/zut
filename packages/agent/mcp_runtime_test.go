@@ -88,7 +88,7 @@ func setupMCPHome(t *testing.T, url string) (project string) {
 
 func startTestMCP(t *testing.T, args *Args) {
 	t.Helper()
-	manager, stop, err := startSessionMCP(context.Background(), *args, os.Environ())
+	manager, stop, _, err := startSessionMCP(context.Background(), *args, os.Environ(), mcpStartOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// startupTimer logs one INFO line per startup phase with its duration. A
+// startupTimer logs one DEBUG line per startup phase with its duration. A
 // nil timer or nil logger is a no-op, so non-daemon paths stay silent.
 type startupTimer struct {
 	log  *slog.Logger
@@ -26,7 +26,7 @@ func (t *startupTimer) phase(name string, attrs ...any) {
 		return
 	}
 	now := time.Now()
-	t.log.Info("session phase", append([]any{"phase", name, "duration", now.Sub(t.last)}, attrs...)...)
+	t.log.Debug("session phase", append([]any{"phase", name, "duration", now.Sub(t.last)}, attrs...)...)
 	t.last = now
 }
 
@@ -39,7 +39,7 @@ func (t *startupTimer) item(kind, name string, d time.Duration, err error, attrs
 	if err != nil {
 		attrs = append(attrs, "failed", true)
 	}
-	t.log.Info("session item", attrs...)
+	t.log.Debug("session item", attrs...)
 }
 
 // reset restarts the clock without logging, to exclude unrelated work.
