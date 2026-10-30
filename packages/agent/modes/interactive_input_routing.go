@@ -91,6 +91,10 @@ func (i *Interactive) restoreConfirmFocus() {
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	defer i.restoreConfirmFocus()
 
+	if handled, quit := i.handleDaemonExitMenu(ctx, k); handled {
+		return quit
+	}
+
 	var ok bool
 	if k, ok = i.prepareInputKey(k); !ok {
 		return false
@@ -551,6 +555,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Global keys.
 	switch k.Kind {
 	case tui.KeyCtrlC:
+		// Child dialogs have already had the opportunity to consume Ctrl+C.
+		// Preserve idle editor clearing before offering daemon lifecycle choices.
+		if i.port != nil && (i.busy || (i.ed.IsEmpty() && len(i.queued) == 0 && (i.agent == nil || i.agent.QueuedMessageCount() == 0))) {
+			i.mu.Lock()
+			i.daemonExitMenu = true
+			i.statusOK, i.statusErr = daemonExitPrompt, ""
+			i.mu.Unlock()
+			return false
+		}
 		i.mu.Lock()
 		loadingSession := i.sessionLoading
 		i.mu.Unlock()

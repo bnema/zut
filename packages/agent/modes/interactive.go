@@ -1021,6 +1021,9 @@ type Interactive struct {
 	// within ctrlCExitWindow exits. Mirrors the python-repl convention.
 	lastCtrlC time.Time
 
+	// daemonExitMenu owns the next key after a daemon Ctrl+C.
+	daemonExitMenu bool
+
 	// doubleEscape tracks the optional bare-Escape session-tree gesture.
 	// clock is injectable so the gesture can be tested without sleeping.
 	doubleEscape doubleEscapeTracker
@@ -1862,15 +1865,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// A session picker that is still loading is an exception so
 			// its dialog-local spinner can advance.
 			//
-			i.mu.Lock()
-			busy := i.busy
-			dictating := i.dictation.phase != ""
-			sessionLoading := i.sessionDialog.Loading()
-			sessionSearching := i.sessionDialog.SearchLoading()
-			i.mu.Unlock()
-			if busy || dictating || sessionLoading || sessionSearching || i.btwDialog.Loading() || i.residentAnimating.Load() {
-				requestRedraw()
-			}
+			i.redrawAnimationTick(requestRedraw)
 		}
 	}
 }
