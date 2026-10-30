@@ -28,6 +28,10 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(stdioMCPFakeEnv) == "1" {
+		runStdioMCPFake()
+		os.Exit(0)
+	}
 	code := m.Run()
 	if orchestrationBuildDir != "" {
 		_ = os.RemoveAll(orchestrationBuildDir)

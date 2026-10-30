@@ -16,6 +16,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -51,12 +52,12 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 // newSessionDeps is NewSessionDeps plus the captured zutfile entry.pre shell
 // output, handed to the daemon factory for the create response.
 func newSessionDeps(ctx context.Context, spec session.CreateSpec, version string) (session.Deps, func(), string, error) {
-	return newSessionDepsTimed(ctx, spec, version, nil)
+	return newSessionDepsTimed(ctx, spec, version, nil, nil)
 }
 
 // newSessionDepsTimed is newSessionDeps with optional per-phase startup
 // timing logs (nil logs nothing).
-func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version string, timer *startupTimer) (session.Deps, func(), string, error) {
+func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version string, timer *startupTimer, pool *mcp.Pool) (session.Deps, func(), string, error) {
 	if !filepath.IsAbs(spec.CWD) {
 		return session.Deps{}, nil, "", fmt.Errorf("session cwd must be absolute: %q", spec.CWD)
 	}
@@ -76,6 +77,7 @@ func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version s
 		return session.Deps{}, nil, "", errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 	applyZutfileSpec(&args, spec.Zutfile)
+	args.mcpPool = pool
 	timer.phase("parse args")
 
 	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings(), timer: timer}

@@ -69,6 +69,7 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
+	manager.SetPool(args.mcpPool)
 	if timer != nil {
 		manager.SetStartupObserver(func(name string, d time.Duration, err error) {
 			timer.item("mcp", name, d, err)

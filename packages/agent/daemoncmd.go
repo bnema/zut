@@ -214,6 +214,8 @@ func (s *daemonServer) run(ctx context.Context) error {
 	stopSched()
 	<-schedDone
 	s.factory.wait()
+	// Sessions released their shared MCP servers during cleanup; stop them.
+	s.factory.closePool()
 	return runErr
 }
 

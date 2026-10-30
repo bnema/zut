@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemon"
+	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/scheduler"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -39,6 +40,19 @@ type sessionFactory struct {
 	// session; fanout tracks the async ProfilesChanged notifications.
 	profiles *modelProfileStore
 	fanout   sync.WaitGroup
+	// mcpPool shares stdio MCP processes across this daemon's sessions;
+	// closePool stops it once every session's cleanup ran.
+	mcpPool *mcp.Pool
+}
+
+// mcpPoolIdle is how long an unused shared MCP process stays alive.
+const mcpPoolIdle = 10 * time.Minute
+
+// closePool stops every shared MCP process. Call after wait.
+func (f *sessionFactory) closePool() {
+	if f.mcpPool != nil {
+		_ = f.mcpPool.Close()
+	}
 }
 
 var _ session.Factory = (*sessionFactory)(nil)
@@ -47,7 +61,8 @@ func newSessionFactory(version, home string, engine *scheduler.Engine, log *slog
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	f := &sessionFactory{version: version, home: home, engine: engine, log: log, live: make(map[session.ID]*factoryHandle)}
+	f := &sessionFactory{version: version, home: home, engine: engine, log: log, live: make(map[session.ID]*factoryHandle),
+		mcpPool: mcp.NewPool(mcpPoolIdle, log)}
 	f.profiles = &modelProfileStore{onSaved: f.profilesChanged}
 	return f
 }
@@ -85,7 +100,7 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	started := time.Now()
 	slogger := f.log.With("session", string(opts.ID))
 	timer := newStartupTimer(slogger)
-	deps, cleanup, preOutput, err := newSessionDepsTimed(ctx, spec, f.version, timer)
+	deps, cleanup, preOutput, err := newSessionDepsTimed(ctx, spec, f.version, timer, f.mcpPool)
 	if err != nil {
 		return nil, err
 	}
