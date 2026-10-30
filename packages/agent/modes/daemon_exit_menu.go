@@ -55,6 +55,7 @@ func (i *Interactive) forceDaemonExit(ctx context.Context) bool {
 	if err != nil {
 		i.exitNotice = fmt.Sprintf("exit: close %s: %v", id, err)
 	}
+	i.addResumeHintLocked()
 	i.mu.Unlock()
 	i.markCtrlCExit()
 	return true

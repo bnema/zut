@@ -1311,6 +1311,18 @@ func (i *Interactive) ExitNotice() string {
 	return i.exitNotice
 }
 
+// addResumeHintLocked records quit guidance for the post-restore notice writer.
+// Call only on quit, not detach; i.mu must be held.
+func (i *Interactive) addResumeHintLocked() {
+	if i.sessionID == "" {
+		return
+	}
+	if i.exitNotice != "" {
+		i.exitNotice += "\n"
+	}
+	i.exitNotice += fmt.Sprintf("Resume this session: zut --resume %s", i.sessionID)
+}
+
 func (i *Interactive) writeExitNotice() {
 	i.mu.Lock()
 	notice, term := i.exitNotice, i.cfg.Terminal

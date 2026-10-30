@@ -766,6 +766,7 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 				i.exitNotice += ": " + c.Reason
 			}
 		}
+		i.addResumeHintLocked()
 		i.mu.Unlock()
 		return true
 	}
@@ -1055,6 +1056,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			i.invalidate()
 			return false
 		}
+		i.addResumeHintLocked()
 		i.mu.Unlock()
 		return true
 	}

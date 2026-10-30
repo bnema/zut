@@ -3,6 +3,8 @@ package modes
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,4 +101,26 @@ func TestDaemonExitMenuForceTimeout(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close was never called")
 	}
+}
+
+func TestDaemonQuitPrintsResumeHintAfterCleanup(t *testing.T) {
+	for _, keys := range []string{"\x03q", "\x03Q", "\x03\x03", "/exit\r"} {
+		t.Run(fmt.Sprintf("%q", keys), func(t *testing.T) {
+			client := newMockSessionClient(t)
+			client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).Return(nil).Once()
+			r := startLifecycle(t, client)
+			r.term.send(keys)
+			r.waitExit(t)
+			require.Empty(t, r.detach)
+			require.Equal(t, "Resume this session: zut --resume s1", r.i.ExitNotice())
+			require.True(t, strings.HasSuffix(r.term.String(), tui.SeqShowCursor+r.i.ExitNotice()+"\n"), "hint must follow frame cleanup")
+		})
+	}
+}
+
+func TestDaemonClosedEventPrintsResumeHint(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{Port: sessionmocks.NewMockPort(t)})
+	i.sessionID = "s1"
+	require.True(t, i.handleSessionEvent(context.Background(), session.Event{Kind: session.EvClosed, Data: session.ClosedEvent{Reason: portCloseReasonUserExit}}))
+	require.Contains(t, i.ExitNotice(), "zut --resume s1")
 }
