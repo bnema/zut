@@ -124,35 +124,6 @@ func idleResidentSummaries(count int) []session.ResidentSummary {
 	return residents
 }
 
-func spawnRunningResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {
-	t.Helper()
-	updates := make(chan string, count*2)
-	manager.SetUpdateObserver(func(childID string) {
-		select {
-		case updates <- childID:
-		default:
-		}
-	})
-	spawnResidentIndicatorChildren(t, manager, count)
-	defer manager.SetUpdateObserver(nil)
-
-	running := make(map[string]struct{}, count)
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	for len(running) < count {
-		select {
-		case childID := <-updates:
-			snapshot, ok := manager.SnapshotFor(childID)
-			if ok && snapshot.State == subagents.ResidentRunning {
-				running[childID] = struct{}{}
-			}
-		case <-timer.C:
-			snapshots, _ := manager.ActiveSnapshotPage(0)
-			t.Fatalf("running resident children = %d, want %d; active snapshots=%#v", len(running), count, snapshots)
-		}
-	}
-}
-
 func spawnResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {
 	t.Helper()
 	for index := 0; index < count; index++ {

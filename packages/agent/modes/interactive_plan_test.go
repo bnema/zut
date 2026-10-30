@@ -19,12 +19,6 @@ func interactivePlanCounters(i *Interactive) (current, total int) {
 	return i.planCurrent, i.planTotal
 }
 
-func interactivePlanSnapshotCount(i *Interactive) int {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return len(i.planSnapshots)
-}
-
 func interactivePlanSnapshot(i *Interactive, callID string) core.PlanUpdate {
 	i.mu.Lock()
 	defer i.mu.Unlock()

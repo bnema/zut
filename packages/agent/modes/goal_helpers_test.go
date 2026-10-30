@@ -3,14 +3,8 @@ package modes
 import (
 	"testing"
 
-	"github.com/bnema/zut/packages/agent/tools"
-	"github.com/bnema/zut/packages/core"
 	"github.com/mattn/go-runewidth"
 )
-
-func goalToolRegistry() core.Registry {
-	return core.Registry{tools.UpdateGoalToolName: &tools.UpdateGoalTool{}}
-}
 
 func assertRowsFitWidth(t *testing.T, rows []string, width int) {
 	t.Helper()
@@ -28,12 +22,4 @@ func findSettingsItem(items []settingsItem, key string) *settingsItem {
 		}
 	}
 	return nil
-}
-
-func cloneSessionGoal(goal *core.SessionGoal) *core.SessionGoal {
-	if goal == nil {
-		return nil
-	}
-	copy := *goal
-	return &copy
 }

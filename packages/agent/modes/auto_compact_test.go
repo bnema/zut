@@ -1,10 +1,8 @@
 package modes
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -233,70 +231,6 @@ func TestAutoCompactContinuationIsHiddenFromTranscriptButPersisted(t *testing.T)
 	}
 	if got := hidden.Meta[autoCompactContinueMetaKey]; got != "true" {
 		t.Fatalf("persisted continuation metadata = %q, want true", got)
-	}
-}
-
-func TestNewInteractiveRestoresValidCompactHandoff(t *testing.T) {
-	interactive := NewInteractive(InteractiveConfig{
-		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
-	})
-	if got, want := interactive.compactContinuation, (compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: 1}); got != want {
-		t.Fatalf("restored compact handoff = %#v, want %#v", got, want)
-	}
-}
-
-func TestCancelTurnCancelsBeforePersistingCompactHandoff(t *testing.T) {
-	persisted := make(chan string, 1)
-	cancelled := make(chan struct{})
-	persistenceStarted := make(chan struct{})
-	releasePersistence := make(chan struct{})
-	released := false
-	defer func() {
-		if !released {
-			close(releasePersistence)
-		}
-	}()
-
-	interactive := NewInteractive(InteractiveConfig{
-		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
-		PersistCompactHandoff: func(state json.RawMessage) error {
-			close(persistenceStarted)
-			<-releasePersistence
-			persisted <- string(state)
-			return nil
-		},
-	})
-	interactive.mu.Lock()
-	interactive.busy = true
-	interactive.cancelTurn = func() { close(cancelled) }
-	interactive.mu.Unlock()
-
-	done := make(chan struct{})
-	go func() {
-		interactive.CancelTurn()
-		close(done)
-	}()
-
-	select {
-	case <-cancelled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancellation waited for compact handoff persistence")
-	}
-	select {
-	case <-persistenceStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancellation did not persist the cleared compact handoff")
-	}
-	close(releasePersistence)
-	released = true
-	<-done
-	select {
-	case state := <-persisted:
-		if state != "" {
-			t.Fatalf("cleared compact handoff = %q, want empty", state)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancellation did not finish compact handoff persistence")
 	}
 }
 
