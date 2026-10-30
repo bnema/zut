@@ -109,7 +109,9 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 	defer c.Disconnect()
 	client := newDaemonSessionClient(c)
 	var preOutput string
+	var launch *session.CreateSpec
 	if attachID == "" {
+		launch = spec
 		if spec == nil {
 			fmt.Fprintln(out, "zut: no session to attach or create")
 			return 1
@@ -126,7 +128,7 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 		fmt.Fprintln(out, "zut: attach:", err)
 		return 1
 	}
-	cfg := tuiClientConfig(out)
+	cfg := tuiClientConfig(out, launch)
 	var ui *modes.Interactive
 	cfg.Port, cfg.Client = port, client
 	cfg.StartupOutput = preOutput
@@ -141,7 +143,7 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 
 // tuiClientConfig fills the presentation fields runInteractive derives from
 // config and the terminal. Session/domain state comes from the Port.
-func tuiClientConfig(out io.Writer) modes.InteractiveConfig {
+func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.InteractiveConfig {
 	cfg, _ := LoadConfig()
 	themeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME")))
 	if themeEnv != "" && themeEnv != "auto" && themeEnv != "dark" && themeEnv != "light" {
@@ -156,7 +158,7 @@ func tuiClientConfig(out io.Writer) modes.InteractiveConfig {
 			pref = tui.ResolveThemePreference("", themeEnv)
 		}
 	}
-	return modes.InteractiveConfig{
+	ui := modes.InteractiveConfig{
 		Dictation:                 interactiveDictationConfig(cfg.Dictation),
 		Terminal:                  tui.NewProcTerm(),
 		Theme:                     theme,
@@ -186,6 +188,25 @@ func tuiClientConfig(out io.Writer) modes.InteractiveConfig {
 		SettingsStore:             configSettingsStore{},
 		ZutHome:                   ZutHome(),
 	}
+	// Only project limits of a session this TUI created. For an attachment,
+	// local flags cannot describe the session's grants; the daemon enforces
+	// them and reports any refused update through the normal status path.
+	if launch != nil {
+		args, err := ParseArgs(launch.Args)
+		if err == nil { // Creation already validated these arguments.
+			applyZutfileSpec(&args, launch.Zutfile)
+			web := webSearchToolAllowedForSession(args)
+			spawn, status := autoSubagentsToolAllowed(args), autoSubagentsStatusToolAllowed(args)
+			stop, resume := autoSubagentsStopToolAllowed(args), autoSubagentsResumeToolAllowed(args)
+			interrupt := autoSubagentsInterruptToolAllowed(args)
+			ui.WebSearchToolAllowed = &web
+			ui.WebSearchInvocationOverride = web && (args.ToolsSet || len(args.Tools) > 0)
+			ui.AutoSubagentsToolAllowed, ui.AutoSubagentsStatusToolAllowed = &spawn, &status
+			ui.AutoSubagentsStopToolAllowed, ui.AutoSubagentsResumeToolAllowed = &stop, &resume
+			ui.AutoSubagentsInterruptToolAllowed = &interrupt
+		}
+	}
+	return ui
 }
 
 // runAttachCommand handles `zut attach [id|title-prefix]`. It never spawns a

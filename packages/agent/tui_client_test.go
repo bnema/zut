@@ -167,3 +167,40 @@ func TestDaemonShortIDResumeLookup(t *testing.T) {
 	_, err = buildCreateSpec(ctx, args, nil, cwd, nil, defaultSessionLocator())
 	require.ErrorContains(t, err, "not found")
 }
+
+func TestTUIClientConfigProjectsLaunchToolLimits(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	t.Setenv("ZUT_THEME", "dark")
+	for _, tt := range []struct {
+		name          string
+		args          []string
+		web, override bool
+	}{
+		{"defaults", nil, true, false},
+		{"no tools", []string{"--no-tools"}, false, false},
+		{"read only", []string{"--tools", "read"}, false, false},
+		{"explicit web", []string{"--tools", "web_search"}, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tuiClientConfig(&bytes.Buffer{}, &session.CreateSpec{Args: tt.args})
+			require.NotNil(t, cfg.WebSearchToolAllowed)
+			require.Equal(t, tt.web, *cfg.WebSearchToolAllowed)
+			require.Equal(t, tt.override, cfg.WebSearchInvocationOverride)
+			args, err := ParseArgs(tt.args)
+			require.NoError(t, err)
+			require.Equal(t, autoSubagentsToolAllowed(args), *cfg.AutoSubagentsToolAllowed)
+			require.Equal(t, autoSubagentsStatusToolAllowed(args), *cfg.AutoSubagentsStatusToolAllowed)
+			require.Equal(t, autoSubagentsStopToolAllowed(args), *cfg.AutoSubagentsStopToolAllowed)
+			require.Equal(t, autoSubagentsResumeToolAllowed(args), *cfg.AutoSubagentsResumeToolAllowed)
+			require.Equal(t, autoSubagentsInterruptToolAllowed(args), *cfg.AutoSubagentsInterruptToolAllowed)
+		})
+	}
+	cfg := tuiClientConfig(&bytes.Buffer{}, nil)
+	require.Nil(t, cfg.WebSearchToolAllowed, "attachment must not infer the session's limits")
+	require.Nil(t, cfg.AutoSubagentsToolAllowed)
+	require.Nil(t, cfg.AutoSubagentsStatusToolAllowed)
+	require.Nil(t, cfg.AutoSubagentsStopToolAllowed)
+	require.Nil(t, cfg.AutoSubagentsResumeToolAllowed)
+	require.Nil(t, cfg.AutoSubagentsInterruptToolAllowed)
+	require.False(t, cfg.WebSearchInvocationOverride)
+}
