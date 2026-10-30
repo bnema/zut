@@ -235,7 +235,7 @@ func (d *Daemon) createHandleLocked(spec session.CreateSpec) (session.Handle, er
 	}
 	spec, err := d.forkSpec(spec)
 	if err != nil {
-		return session.Info{}, err
+		return nil, err
 	}
 	pre, err := lockSessionFile(spec.ResumePath)
 	if err != nil {
