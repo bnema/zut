@@ -342,6 +342,16 @@ func runFakeStdioServer() {
 					fmt.Fprintln(os.Stderr, string(data))
 				}
 			}
+			if gate := os.Getenv("FAKE_INIT_GATE"); gate != "" {
+				// Hold initialize until the test creates the gate file.
+				fakeEvent(events, "init-held")
+				for {
+					if _, err := os.Stat(gate); err == nil {
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
 			if ms, _ := time.ParseDuration(os.Getenv("FAKE_INIT_DELAY_MS") + "ms"); ms > 0 {
 				time.Sleep(ms)
 			}

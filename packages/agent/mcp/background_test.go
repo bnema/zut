@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,13 +16,13 @@ type readyResult struct {
 }
 
 func TestStartBackgroundReturnsBeforeSlowOptionalServer(t *testing.T) {
-	slow, _ := fakeStdioConfig(t, map[string]string{"FAKE_INIT_DELAY_MS": "700"})
+	gate := filepath.Join(t.TempDir(), "release")
+	slow, events := fakeStdioConfig(t, map[string]string{"FAKE_INIT_GATE": gate})
 	required, _ := fakeStdioConfig(t, nil)
 	required.Required = true
 	m := NewManager(Config{Servers: map[string]ServerConfig{"slow": slow, "req": required}}, "", ClientInfo{}, nil)
 	t.Cleanup(func() { _ = m.Close() })
 	ready := make(chan readyResult, 2)
-	start := time.Now()
 	failures, reqErr := m.StartBackground(context.Background(), func(_ context.Context, name string, _ time.Duration, err error) {
 		ready <- readyResult{name, err}
 	})
@@ -30,11 +32,19 @@ func TestStartBackgroundReturnsBeforeSlowOptionalServer(t *testing.T) {
 	if len(m.ServerTools("req")) == 0 {
 		t.Fatal("required server must be connected when StartBackground returns")
 	}
-	if len(m.ServerTools("slow")) != 0 {
-		t.Fatal("slow server ready before StartBackground returned")
+	// StartBackground returned while the optional server is still held in
+	// initialize: it never reported ready and has no tools.
+	waitEvent(t, events, "init-held")
+	select {
+	case r := <-ready:
+		t.Fatalf("optional server ready while held: %+v", r)
+	default:
 	}
-	if took := time.Since(start); took >= 700*time.Millisecond {
-		t.Fatalf("StartBackground waited for the optional server (%s)", took)
+	if len(m.ServerTools("slow")) != 0 {
+		t.Fatal("slow server has tools while held")
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	select {
 	case r := <-ready:

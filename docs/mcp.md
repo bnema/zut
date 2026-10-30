@@ -163,15 +163,12 @@ written with `0600` permissions because entries may hold secrets.
 ## Shared servers
 
 In the daemon, sessions share a stdio server process when their launch is
-identical: same resolved command, `args`, child environment and working
-directory. Each session still applies its own `enabledTools`,
-`disabledTools`, `required` and timeouts.
+identical (same resolved command, `args`, child environment and working
+directory) and they run in the same session folder. The server reports that
+folder as its root, so sessions in different folders always get separate
+processes, whatever `cwd` is set to. Each session still applies its own
+`enabledTools`, `disabledTools`, `required` and timeouts.
 
-- A server with no `cwd` or a relative `cwd` runs in, and reports as its
-  root, the session cwd, so it is shared only by sessions in the same
-  directory.
-- A server with an absolute `cwd` (for example `"cwd": "${HOME}"`) is shared
-  by every daemon session and reports no roots.
 - A shared process stops 10 minutes after its last session closes, and when
   the daemon stops.
 - Sharing applies to stdio servers only. HTTP servers and processes started

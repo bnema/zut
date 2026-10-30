@@ -15,10 +15,10 @@ type poolKey [32]byte
 
 // sharedKey hashes everything that makes a stdio process observably
 // different: transport kind, resolved absolute command, arguments, built
-// child environment (sorted), resolved process directory and the roots cwd
-// the server will be told about. rootsCWD is the session cwd when cfg.CWD is
-// empty or relative (the process depends on the session), and "" when cfg.CWD
-// is absolute (the process is session-independent). Name, required, tool
+// child environment (sorted), resolved process directory and the session
+// cwd. The session cwd is always part of the key and is returned as rootsCWD:
+// a shared process answers roots/list with it, so sessions in different
+// folders never share a process even when cfg.CWD is absolute. Name, required, tool
 // filters, timeouts and config source are excluded: they are per-session
 // views over the same process.
 func sharedKey(cfg ServerConfig, sessionCWD string) (key poolKey, rootsCWD string, err error) {
@@ -37,9 +37,7 @@ func sharedKey(cfg ServerConfig, sessionCWD string) (key poolKey, rootsCWD strin
 	if err != nil {
 		return key, "", fmt.Errorf("shared key: resolve dir: %w", err)
 	}
-	if cfg.CWD == "" || !filepath.IsAbs(cfg.CWD) {
-		rootsCWD = sessionCWD
-	}
+	rootsCWD = sessionCWD
 	env := slices.Clone(launch.Env)
 	slices.Sort(env)
 

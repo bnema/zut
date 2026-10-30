@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,12 +16,16 @@ import (
 )
 
 // gatedMCPServer wraps fakeMCPHTTPServer's handler and holds every request
-// until release is closed, simulating a slow-starting server.
-func gatedMCPServer(t *testing.T) (*httptest.Server, chan struct{}) {
+// until release is closed, simulating a slow-starting server. arrived is
+// closed when the first request (initialize) reaches the gate.
+func gatedMCPServer(t *testing.T) (*httptest.Server, chan struct{}, <-chan struct{}) {
 	t.Helper()
 	inner := fakeMCPHTTPServer(t)
 	release := make(chan struct{})
+	arrived := make(chan struct{})
+	var arrivedOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrivedOnce.Do(func() { close(arrived) })
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -61,7 +66,7 @@ func gatedMCPServer(t *testing.T) (*httptest.Server, chan struct{}) {
 			close(release)
 		}
 	})
-	return srv, release
+	return srv, release, arrived
 }
 
 func writeMCPConfig(t *testing.T, home string, servers map[string]mcp.ServerConfig) {
@@ -120,7 +125,7 @@ func createDepsAsync(t *testing.T, spec session.CreateSpec) chan depsResult {
 func TestSessionCreateDoesNotWaitForOptionalMCP(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	provider := sessionAssemblyProvider(t)
-	slow, release := gatedMCPServer(t)
+	slow, release, _ := gatedMCPServer(t)
 	writeMCPConfig(t, home, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: slow.URL, StartupTimeoutSec: 30}})
 
 	var r depsResult
@@ -155,16 +160,28 @@ func TestSessionCreateFailsOnRequiredMCP(t *testing.T) {
 func TestSessionCreateWaitsForRequiredMCP(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	provider := sessionAssemblyProvider(t)
-	slow, release := gatedMCPServer(t)
+	slow, release, arrived := gatedMCPServer(t)
 	writeMCPConfig(t, home, map[string]mcp.ServerConfig{"slow": {Type: "http", URL: slow.URL, Required: true, StartupTimeoutSec: 30}})
 	done := createDepsAsync(t, mcpTestSpec(t, provider.URL))
+	// The required server's initialize is held at the gate: creation must
+	// still be in progress.
+	select {
+	case <-arrived:
+	case r := <-done:
+		if r.cleanup != nil {
+			r.cleanup()
+		}
+		t.Fatalf("creation returned before contacting the required server: %v", r.err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("required server never contacted")
+	}
 	select {
 	case r := <-done:
 		if r.cleanup != nil {
 			r.cleanup()
 		}
-		t.Fatalf("creation returned before the required server was ready: %v", r.err)
-	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("creation returned while the required server was held: %v", r.err)
+	default:
 	}
 	close(release)
 	select {

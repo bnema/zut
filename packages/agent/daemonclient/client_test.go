@@ -375,9 +375,16 @@ func TestEnsureDaemonAutospawns(t *testing.T) {
 		return ""
 	}
 	var warn bytes.Buffer
-	c, err := EnsureDaemon(testCtx(t), EnsureOptions{Options: Options{ClientVersion: "v", Warnings: &warn}, Getenv: getenv, Env: env, Executable: exe})
+	var spawns, readies int
+	var elapsed time.Duration
+	onSpawn := func() { spawns++ }
+	onReady := func(d time.Duration) { readies++; elapsed = d }
+	c, err := EnsureDaemon(testCtx(t), EnsureOptions{Options: Options{ClientVersion: "v", Warnings: &warn}, Getenv: getenv, Env: env, Executable: exe, OnSpawn: onSpawn, OnReady: onReady})
 	require.NoError(t, err)
 	defer c.Disconnect()
+	require.Equal(t, 1, spawns, "OnSpawn runs once on cold start")
+	require.Equal(t, 1, readies, "OnReady runs once on cold start")
+	require.Positive(t, elapsed)
 	require.Equal(t, "child-version", c.DaemonVersion())
 	require.Contains(t, warn.String(), "daemon is running zut child-version")
 	st, err := os.Stat(LogPath(home))
@@ -385,34 +392,9 @@ func TestEnsureDaemonAutospawns(t *testing.T) {
 	if os.PathSeparator == '/' {
 		require.Equal(t, os.FileMode(0o600), st.Mode().Perm())
 	}
-	// A running daemon is only dialed: a bogus executable is never spawned.
-	c2, err := EnsureDaemon(testCtx(t), EnsureOptions{Options: Options{ClientVersion: "child-version"}, Getenv: getenv, Executable: "/nonexistent/zut"})
-	require.NoError(t, err)
-	require.NoError(t, c2.Disconnect())
-	require.NoError(t, c.Stop(testCtx(t), time.Second))
-}
-
-func TestEnsureDaemonColdStartCallbacks(t *testing.T) {
-	path := shortSocket(t)
-	home := t.TempDir()
-	exe, err := os.Executable()
-	require.NoError(t, err)
-	env := append(os.Environ(), "ZUT_TEST_DAEMON=1", "ZUT_DAEMON_SOCKET="+path)
-	var spawns, readies int
-	var elapsed time.Duration
-	opts := EnsureOptions{
-		Options:    Options{ClientVersion: "child-version"},
-		SocketPath: path, Home: home, Env: env, Executable: exe,
-		OnSpawn: func() { spawns++ },
-		OnReady: func(d time.Duration) { readies++; elapsed = d },
-	}
-	c, err := EnsureDaemon(testCtx(t), opts)
-	require.NoError(t, err)
-	require.Equal(t, 1, spawns)
-	require.Equal(t, 1, readies)
-	require.Positive(t, elapsed)
-	// A daemon already listens: neither callback runs.
-	c2, err := EnsureDaemon(testCtx(t), opts)
+	// A running daemon is only dialed: a bogus executable is never spawned
+	// and neither callback runs.
+	c2, err := EnsureDaemon(testCtx(t), EnsureOptions{Options: Options{ClientVersion: "child-version"}, Getenv: getenv, Executable: "/nonexistent/zut", OnSpawn: onSpawn, OnReady: onReady})
 	require.NoError(t, err)
 	require.NoError(t, c2.Disconnect())
 	require.Equal(t, 1, spawns)

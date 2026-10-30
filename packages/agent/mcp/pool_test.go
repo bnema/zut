@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,14 +233,15 @@ func TestPoolToolsListChangedFansOut(t *testing.T) {
 	}
 }
 
-func TestPoolAbsoluteCWDHasNoRoots(t *testing.T) {
+func TestPoolAbsoluteCWDKeepsSessionRoots(t *testing.T) {
 	cfg, _ := fakeStdioConfig(t, nil)
 	cfg.CWD = t.TempDir()
+	session := t.TempDir()
 	pool := newTestPool(t, time.Minute)
-	m := mustPooled(t, pool, map[string]ServerConfig{"fake": cfg}, t.TempDir())
+	m := mustPooled(t, pool, map[string]ServerConfig{"fake": cfg}, session)
 	text := resultText(execTool(t, findTool(t, m, "mcp__fake__ask_roots"), `{}`))
-	if !strings.Contains(text, `roots={"roots":[]}`) {
-		t.Fatalf("roots answer = %q", text)
+	if !strings.Contains(text, "file://") || !strings.Contains(text, filepath.Base(session)) {
+		t.Fatalf("roots answer = %q, want session cwd %q", text, session)
 	}
 }
 

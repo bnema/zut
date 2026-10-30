@@ -88,17 +88,25 @@ func TestSharedKeyIgnoresSessionViewFields(t *testing.T) {
 	}
 }
 
-func TestSharedKeyAbsoluteCWDIsSessionIndependent(t *testing.T) {
-	abs := t.TempDir()
+func TestSharedKeyAbsoluteCWDKeepsSessionRoots(t *testing.T) {
 	cfg := keyCfg(t)
-	cfg.CWD = abs
-	k1, r1 := mustKey(t, cfg, t.TempDir())
-	k2, r2 := mustKey(t, cfg, t.TempDir())
+	cfg.CWD = t.TempDir()
+	session := t.TempDir()
+	k1, r1 := mustKey(t, cfg, session)
+	k2, _ := mustKey(t, cfg, session)
 	if k1 != k2 {
-		t.Fatal("absolute cwd must give the same key across session cwds")
+		t.Fatal("same session cwd must give the same key")
 	}
-	if r1 != "" || r2 != "" {
-		t.Fatalf("rootsCWD = %q, %q; want empty", r1, r2)
+	if r1 != session {
+		t.Fatalf("rootsCWD = %q, want session cwd %q", r1, session)
+	}
+	other := t.TempDir()
+	k3, r3 := mustKey(t, cfg, other)
+	if k3 == k1 {
+		t.Fatal("different session cwd must change the key even with absolute cwd")
+	}
+	if r3 != other {
+		t.Fatalf("rootsCWD = %q, want %q", r3, other)
 	}
 }
 
