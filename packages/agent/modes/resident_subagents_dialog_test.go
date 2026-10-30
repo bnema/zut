@@ -224,3 +224,38 @@ func TestResidentSubagentsDialogInvalidateRefetches(t *testing.T) {
 		t.Fatalf("rows/total = %v/%d after invalidate", dialog.rows, dialog.total)
 	}
 }
+
+// While the next window is in flight the cached rows still belong to the old
+// window; Enter must resolve against them, never misindex into them.
+func TestResidentSubagentsDialogEnterDuringPagingFetch(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	rows := []subagents.ResidentSnapshot{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	port.EXPECT().ResidentList(mock.Anything, 0, 2).Return(rows[:2], 3, nil).Once()
+	release := make(chan struct{})
+	port.EXPECT().ResidentList(mock.Anything, 1, 2).RunAndReturn(func(context.Context, int, int) ([]subagents.ResidentSnapshot, int, error) {
+		<-release
+		return rows[1:], 3, nil
+	}).Once()
+	dialog, loaded := newTestResidentDialog()
+	dialog.lock.Lock()
+	dialog.active, dialog.port, dialog.limit = true, port, 2
+	dialog.schedule()
+	dialog.lock.Unlock()
+	waitDialogFetch(t, loaded)
+
+	dialog.lock.Lock()
+	dialog.HandleKey(tui.Key{Kind: tui.KeyDown})
+	dialog.HandleKey(tui.Key{Kind: tui.KeyDown}) // selects "c": window moves to offset 1
+	if got := dialog.HandleKey(tui.Key{Kind: tui.KeyEnter}); got != "" {
+		t.Fatalf("Enter during paging fetch opened %q, want none", got)
+	}
+	dialog.lock.Unlock()
+
+	close(release)
+	waitDialogFetch(t, loaded)
+	dialog.lock.Lock()
+	defer dialog.lock.Unlock()
+	if got := dialog.HandleKey(tui.Key{Kind: tui.KeyEnter}); got != "c" {
+		t.Fatalf("Enter after fetch opened %q, want c", got)
+	}
+}

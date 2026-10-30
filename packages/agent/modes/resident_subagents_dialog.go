@@ -24,14 +24,17 @@ type residentSubagentsDialog struct {
 	lock   sync.Locker
 	notify func()
 
-	active   bool
-	port     session.Port
-	rows     []subagents.ResidentSnapshot
-	selected int // absolute index in the sorted session projection
-	offset   int
-	total    int
-	err      error
-	loaded   bool
+	active bool
+	port   session.Port
+	rows   []subagents.ResidentSnapshot
+	// rowsOffset is the absolute index of rows[0]. It differs from offset
+	// while a fetch for a moved window is in flight.
+	rowsOffset int
+	selected   int // absolute index in the sorted session projection
+	offset     int
+	total      int
+	err        error
+	loaded     bool
 	// limit is the window size requested by the last Render.
 	limit int
 	// gen identifies the current fetch; stale results are discarded.
@@ -55,7 +58,7 @@ func newResidentSubagentsDialog(lock sync.Locker, notify func()) *residentSubage
 func (d *residentSubagentsDialog) Open(port session.Port) {
 	d.stop()
 	d.active, d.port, d.selected, d.offset, d.total, d.err = true, port, 0, 0, 0, nil
-	d.rows, d.loaded, d.limit = nil, false, residentDialogInitialLimit
+	d.rows, d.rowsOffset, d.loaded, d.limit = nil, 0, false, residentDialogInitialLimit
 	d.schedule()
 }
 
@@ -118,7 +121,7 @@ func (d *residentSubagentsDialog) schedule() {
 		if err != nil {
 			d.rows, d.err = nil, err
 		} else {
-			d.rows, d.total, d.err = rows, total, nil
+			d.rows, d.rowsOffset, d.total, d.err = rows, offset, total, nil
 			if limit == 0 {
 				d.rows = nil
 			}
@@ -169,8 +172,8 @@ func (d *residentSubagentsDialog) HandleKey(k tui.Key) (openID string) {
 			d.selected++
 		}
 	case tui.KeyEnter:
-		if len(d.rows) > 0 && d.selected >= d.offset && d.selected < d.offset+len(d.rows) {
-			return d.rows[d.selected-d.offset].ID
+		if d.selected >= d.rowsOffset && d.selected < d.rowsOffset+len(d.rows) {
+			return d.rows[d.selected-d.rowsOffset].ID
 		}
 	}
 	return ""
@@ -211,7 +214,7 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	}
 	for index, row := range d.rows {
 		marker := "  "
-		if d.offset+index == d.selected {
+		if d.rowsOffset+index == d.selected {
 			marker = theme.AccentBar(theme.Accent) + " "
 		}
 		name := residentDisplayName(row)
@@ -231,7 +234,7 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 		}
 	}
 	if d.total > len(d.rows) {
-		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.offset+1, d.offset+len(d.rows), d.total))
+		lines = append(lines, fmt.Sprintf("  %d-%d of %d", d.rowsOffset+1, d.rowsOffset+len(d.rows), d.total))
 	}
 	return limitResidentSubagentsDialogHeight(lines, height)
 }
