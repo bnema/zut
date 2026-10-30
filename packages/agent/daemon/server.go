@@ -467,28 +467,31 @@ func (c *client) checkControl(id session.ID) error {
 }
 
 type portParams struct {
-	AfterSeq     uint64                    `json:"after_seq"`
-	In           session.Input             `json:"in"`
-	ID           string                    `json:"id"`
-	ReqID        string                    `json:"req_id"`
-	Decision     core.ConfirmDecision      `json:"decision"`
-	Answers      []tools.QuestionAnswer    `json:"answers"`
-	Action       string                    `json:"action"`
-	ProviderName string                    `json:"provider_name"`
-	Model        string                    `json:"model"`
-	Level        string                    `json:"level"`
-	Enabled      bool                      `json:"enabled"`
-	N            int                       `json:"n"`
-	Patch        session.SettingsPatch     `json:"patch"`
-	Command      json.RawMessage           `json:"command"`
-	Path         string                    `json:"path"`
-	Title        string                    `json:"title"`
-	Name         string                    `json:"name"`
-	Global       bool                      `json:"global"`
-	Args         string                    `json:"args"`
-	Ext          string                    `json:"ext"`
-	PanelID      string                    `json:"panel_id"`
-	Key          extproto.PanelKeyFromHost `json:"key"`
+	AfterSeq     uint64                     `json:"after_seq"`
+	In           session.Input              `json:"in"`
+	ID           string                     `json:"id"`
+	ReqID        string                     `json:"req_id"`
+	Decision     core.ConfirmDecision       `json:"decision"`
+	Answers      []tools.QuestionAnswer     `json:"answers"`
+	Action       string                     `json:"action"`
+	ProviderName string                     `json:"provider_name"`
+	Model        string                     `json:"model"`
+	Level        string                     `json:"level"`
+	Enabled      bool                       `json:"enabled"`
+	N            int                        `json:"n"`
+	Slot         int                        `json:"slot"`
+	Profile      session.QuickModelShortcut `json:"profile"`
+	Activate     bool                       `json:"activate"`
+	Patch        session.SettingsPatch      `json:"patch"`
+	Command      json.RawMessage            `json:"command"`
+	Path         string                     `json:"path"`
+	Title        string                     `json:"title"`
+	Name         string                     `json:"name"`
+	Global       bool                       `json:"global"`
+	Args         string                     `json:"args"`
+	Ext          string                     `json:"ext"`
+	PanelID      string                     `json:"panel_id"`
+	Key          extproto.PanelKeyFromHost  `json:"key"`
 }
 
 // port dispatches a snake_case Port method (docs/daemon-protocol.md). Read
@@ -551,6 +554,10 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return nil, h.SetFastMode(ctx, p.Enabled)
 	case "apply_profile":
 		return nil, h.ApplyProfile(ctx, p.N)
+	case "assign_profile":
+		return nil, h.AssignProfile(ctx, p.Slot, p.Profile, p.Activate)
+	case "clear_profile":
+		return nil, h.ClearProfile(ctx, p.Slot)
 	case "apply_settings":
 		return nil, h.ApplySettings(ctx, p.Patch)
 	case "set_goal":

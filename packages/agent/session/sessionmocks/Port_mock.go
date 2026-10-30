@@ -341,6 +341,75 @@ func (_c *MockPort_ApplySettings_Call) RunAndReturn(run func(ctx context.Context
 	return _c
 }
 
+// AssignProfile provides a mock function for the type MockPort
+func (_mock *MockPort) AssignProfile(ctx context.Context, slot int, p session.QuickModelShortcut, activate bool) error {
+	ret := _mock.Called(ctx, slot, p, activate)
+
+	if len(ret) == 0 {
+		panic("no return value specified for AssignProfile")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int, session.QuickModelShortcut, bool) error); ok {
+		r0 = returnFunc(ctx, slot, p, activate)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPort_AssignProfile_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AssignProfile'
+type MockPort_AssignProfile_Call struct {
+	*mock.Call
+}
+
+// AssignProfile is a helper method to define mock.On call
+//   - ctx context.Context
+//   - slot int
+//   - p session.QuickModelShortcut
+//   - activate bool
+func (_e *MockPort_Expecter) AssignProfile(ctx any, slot any, p any, activate any) *MockPort_AssignProfile_Call {
+	return &MockPort_AssignProfile_Call{Call: _e.mock.On("AssignProfile", ctx, slot, p, activate)}
+}
+
+func (_c *MockPort_AssignProfile_Call) Run(run func(ctx context.Context, slot int, p session.QuickModelShortcut, activate bool)) *MockPort_AssignProfile_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 int
+		if args[1] != nil {
+			arg1 = args[1].(int)
+		}
+		var arg2 session.QuickModelShortcut
+		if args[2] != nil {
+			arg2 = args[2].(session.QuickModelShortcut)
+		}
+		var arg3 bool
+		if args[3] != nil {
+			arg3 = args[3].(bool)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPort_AssignProfile_Call) Return(err error) *MockPort_AssignProfile_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPort_AssignProfile_Call) RunAndReturn(run func(ctx context.Context, slot int, p session.QuickModelShortcut, activate bool) error) *MockPort_AssignProfile_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // CancelQueued provides a mock function for the type MockPort
 func (_mock *MockPort) CancelQueued(ctx context.Context, id string) error {
 	ret := _mock.Called(ctx, id)
@@ -451,6 +520,63 @@ func (_c *MockPort_ChangeCWD_Call) Return(err error) *MockPort_ChangeCWD_Call {
 }
 
 func (_c *MockPort_ChangeCWD_Call) RunAndReturn(run func(ctx context.Context, path string) error) *MockPort_ChangeCWD_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ClearProfile provides a mock function for the type MockPort
+func (_mock *MockPort) ClearProfile(ctx context.Context, slot int) error {
+	ret := _mock.Called(ctx, slot)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ClearProfile")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int) error); ok {
+		r0 = returnFunc(ctx, slot)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockPort_ClearProfile_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ClearProfile'
+type MockPort_ClearProfile_Call struct {
+	*mock.Call
+}
+
+// ClearProfile is a helper method to define mock.On call
+//   - ctx context.Context
+//   - slot int
+func (_e *MockPort_Expecter) ClearProfile(ctx any, slot any) *MockPort_ClearProfile_Call {
+	return &MockPort_ClearProfile_Call{Call: _e.mock.On("ClearProfile", ctx, slot)}
+}
+
+func (_c *MockPort_ClearProfile_Call) Run(run func(ctx context.Context, slot int)) *MockPort_ClearProfile_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 int
+		if args[1] != nil {
+			arg1 = args[1].(int)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPort_ClearProfile_Call) Return(err error) *MockPort_ClearProfile_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockPort_ClearProfile_Call) RunAndReturn(run func(ctx context.Context, slot int) error) *MockPort_ClearProfile_Call {
 	_c.Call.Return(run)
 	return _c
 }

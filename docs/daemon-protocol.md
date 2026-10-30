@@ -107,6 +107,15 @@ appended before the prompt by the turn cluster). `ExtInsertEvent.submit` is opti
 when true, the attached client executes the inserted input rather than only
 inserting it into the editor.
 
+`Info.profiles` lists the nine model profile slots as `QuickModelShortcut`
+objects (`provider`, `model`, optional `reasoning` and `fast_mode`, matching
+config.json); an entry with empty `provider` and `model` is unassigned. Older
+daemons omit it. `Info.active_profile` is this session's active slot (1-9),
+omitted when none. While a slot is active, model, reasoning, and fast-mode
+changes are saved into it. `assign_profile` and `clear_profile` may run during
+a turn unless they switch the model; `apply_profile` on an unassigned slot fails
+with `model profile empty`.
+
 | Method | Params | Successful data |
 | --- | --- | --- |
 | info | `{}` | Info |
@@ -124,6 +133,8 @@ inserting it into the editor.
 | set_reasoning | `{"level":"high"}` | omitted |
 | set_fast_mode, set_jail | `{"enabled":true}` | omitted |
 | apply_profile | `{"n":1}` | omitted |
+| assign_profile | `{"slot":1,"profile":{"provider":"openai","model":"gpt-5","reasoning":"high","fast_mode":true},"activate":true}` | omitted |
+| clear_profile | `{"slot":1}` | omitted |
 | apply_settings | `{"patch":SettingsPatch}` | omitted |
 | set_goal | `{"command":{"op":"set","objective":"task"}}` | omitted |
 | change_cwd | `{"path":"/workspace"}` | omitted |
