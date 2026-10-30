@@ -506,6 +506,11 @@ func (d *Daemon) acceptLoop(ctx context.Context, ln net.Listener) {
 			}
 			return
 		}
+		if uid, err := checkPeerUID(nc, os.Getuid()); err != nil {
+			_ = nc.Close()
+			d.log.Warn("reject socket peer", "uid", uid)
+			continue
+		}
 		c := d.newClient(nc)
 		if c == nil {
 			_ = nc.Close()

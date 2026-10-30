@@ -106,7 +106,7 @@ func (l *socketListener) close() {
 // prepareSocketDir creates dir 0700 when missing. An existing directory must
 // not be a symlink and, on Unix, must be owned by the current user; a
 // zut-owned default dir is tightened to 0700, any other dir with group/other
-// access is refused. Windows skips the ownership and mode checks.
+// access is refused. Windows applies and verifies a protected current-user DACL.
 func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -118,7 +118,7 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 				return fmt.Errorf("chmod socket dir: %w", err)
 			}
 		}
-		return nil
+		return secureSocketDir(dir)
 	}
 	if err != nil {
 		return fmt.Errorf("stat socket dir: %w", err)
@@ -127,7 +127,7 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 		return fmt.Errorf("socket dir %s is not a directory", dir)
 	}
 	if runtime.GOOS == "windows" {
-		return nil
+		return secureSocketDir(dir)
 	}
 	if uid, ok := fileOwner(fi); ok && uid != os.Getuid() {
 		return fmt.Errorf("socket dir %s is not owned by the current user", dir)
