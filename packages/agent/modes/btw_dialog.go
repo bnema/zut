@@ -90,7 +90,8 @@ type btwRemote struct {
 	stop    context.CancelFunc
 	turn    int
 	// pending holds the dialog-local IDs of the fork's open requests.
-	pending map[string]bool
+	pending    map[string]bool
+	invalidate func()
 }
 
 // errBtwStale rejects an answer for a side session that was closed or
@@ -156,7 +157,22 @@ func (d *btwDialog) answerRemote(rem *btwRemote, generation uint64, id string, f
 	d.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return fn(ctx, port)
+	err := fn(ctx, port)
+	if err != nil && !errors.Is(err, errBtwStale) {
+		d.mu.Lock()
+		if d.liveRemoteLocked(rem, generation) {
+			if rem.pending == nil {
+				rem.pending = map[string]bool{}
+			}
+			rem.pending[btwPendingID(generation, id)] = true
+			d.note = "side session: " + err.Error()
+		}
+		d.mu.Unlock()
+		if rem.invalidate != nil {
+			rem.invalidate()
+		}
+	}
+	return err
 }
 
 // handleRemotePending shows or retracts one of the fork's pending requests.
@@ -351,7 +367,7 @@ func (d *btwDialog) OpenPort(th tui.Theme, client SessionClient, spec session.Cr
 	d.sideAgent = nil
 	d.cwd = cwd
 	d.note = "starting side session…"
-	rem := &btwRemote{client: client, timeout: timeout, turn: -1}
+	rem := &btwRemote{client: client, timeout: timeout, turn: -1, invalidate: invalidate}
 	d.remote = rem
 	seed = strings.TrimSpace(seed)
 	if seed != "" {

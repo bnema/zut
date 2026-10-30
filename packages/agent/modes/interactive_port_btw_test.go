@@ -64,13 +64,13 @@ func TestPortBtwRunsOnForkedSession(t *testing.T) {
 
 func TestPortBtwCreateErrorShowsNote(t *testing.T) {
 	client := newMockSessionClient(t)
-	client.EXPECT().Create(mock.Anything, btwForkSpec(1)).Return(session.Info{}, errors.New("daemon says no")).Once()
+	client.EXPECT().Create(mock.Anything, btwForkSpec(1)).Return(session.Info{}, session.ErrForkParentNotFound).Once()
 
 	r := startSessionsPort(t, client, portUserMessage("first"))
 	require.Eventually(t, func() bool { return r.i.SessionInfo().ID == "s1" }, 5*time.Second, 10*time.Millisecond)
 	r.term.send("/btw\r")
 	require.Eventually(t, func() bool {
-		return strings.Contains(btwRendered(r), "daemon says no")
+		return strings.Contains(btwRendered(r), "parent session not found")
 	}, 5*time.Second, 10*time.Millisecond)
 	require.True(t, r.i.btwDialog.Active())
 }
@@ -160,4 +160,25 @@ func TestPortBtwClosedForkRejectsStaleAnswer(t *testing.T) {
 		return p.AnswerConfirmation(ctx, "c1", core.ConfirmDecision{Allow: true})
 	})
 	require.ErrorIs(t, err, errBtwStale)
+}
+
+func TestPortBtwAnswerErrorRestoresPendingAndShowsNote(t *testing.T) {
+	r, fork, _, released := startPortBtwFork(t)
+	fork.EXPECT().AnswerConfirmation(mock.Anything, "c1", mock.Anything).Return(errors.New("answer failed")).Once()
+	d := r.i.btwDialog
+	d.mu.Lock()
+	rem, generation := d.remote, d.generation
+	rem.pending = map[string]bool{btwPendingID(generation, "c1"): true}
+	d.mu.Unlock()
+	err := d.answerRemote(rem, generation, "c1", func(ctx context.Context, p session.Port) error {
+		return p.AnswerConfirmation(ctx, "c1", core.ConfirmDecision{Allow: true})
+	})
+	require.EqualError(t, err, "answer failed")
+	d.mu.Lock()
+	pending := rem.pending[btwPendingID(generation, "c1")]
+	d.mu.Unlock()
+	require.True(t, pending)
+	require.Contains(t, btwRendered(r), "answer failed")
+	d.Close()
+	waitSignal(t, released, "Close(forked session)")
 }

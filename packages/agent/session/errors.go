@@ -15,4 +15,7 @@ var (
 	ErrUnknownRequest = errors.New("unknown request")
 	// ErrLoopGuard reports inter-session message loop denied.
 	ErrLoopGuard = errors.New("inter-session message loop denied")
+	// ErrForkParentNotFound reports a fork whose parent transcript is not
+	// owned by a live session, so its policy cannot be inherited.
+	ErrForkParentNotFound = errors.New("parent session not found")
 )

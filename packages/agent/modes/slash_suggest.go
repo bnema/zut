@@ -59,7 +59,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/goal", Desc: "start or control an autonomous goal"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
-	{Name: "/fork", Desc: "pick a user message and fork the current session"},
+	{Name: "/fork", Desc: "pick a user message and fork; inherits parent launch settings"},
 	{Name: "/session", Desc: "inspect, export, import, fork, or browse the current session"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
 	{Name: "/compact", Desc: "summarize and replace the transcript to free up context"},
@@ -81,8 +81,8 @@ var sessionSlashCommands = []slashCommand{
 	{Name: "/session timeline", Desc: "inspect context, messages, and tool calls"},
 	{Name: "/session export", Desc: "write the current session to a .zutsession file"},
 	{Name: "/session import", Desc: "load a .zutsession file into this directory"},
-	{Name: "/session fork", Desc: "branch from a past user message"},
-	{Name: "/session tree", Desc: "switch between session branches"},
+	{Name: "/session fork", Desc: "branch from a past user message; inherits parent launch settings"},
+	{Name: "/session tree", Desc: "switch branches; new forks inherit parent launch settings"},
 }
 
 // slashSuggester renders the popup that appears when the editor starts

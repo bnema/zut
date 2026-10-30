@@ -205,7 +205,10 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 	if d.isStopping() {
 		return session.Info{}, ErrStopping
 	}
-	spec = d.forkSpec(spec)
+	spec, err := d.forkSpec(spec)
+	if err != nil {
+		return session.Info{}, err
+	}
 	pre, err := lockSessionFile(spec.ResumePath)
 	if err != nil {
 		return session.Info{}, err
@@ -456,43 +459,50 @@ func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 }
 
 // forkSpec makes a fork inherit the launch policy of the live session whose
-// transcript it branches: args (--no-yolo, --tools, extensions, sandbox and
-// model flags), env and zutfile permissions. Client-supplied args are
-// replaced, never merged, so a fork cannot widen its parent's policy. When
-// no registered session owns the parent path the policy is unknown and the
-// fork fails closed by requiring confirmation.
-func (d *Daemon) forkSpec(spec session.CreateSpec) session.CreateSpec {
+// transcript it branches: cwd, args (--no-yolo, --tools, extensions, sandbox
+// and model flags), env and zutfile permissions. A fork only inherits:
+// client-supplied args, env and zutfile are replaced, never merged, so a fork
+// cannot widen its parent's policy. When no live session owns the parent
+// path the policy is unknown and the fork is rejected.
+func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 	if spec.Fork == nil {
-		return spec
+		return spec, nil
 	}
+	want := normParentPath(spec.Fork.ParentPath)
 	var parent *entry
+	var info session.Info
 	for _, e := range d.entries() {
-		if p := e.h.Info().SessionPath; p != "" && p == spec.Fork.ParentPath {
-			parent = e
+		i := e.h.Info()
+		if i.SessionPath != "" && normParentPath(i.SessionPath) == want {
+			parent, info = e, i
 			break
 		}
 	}
 	if parent == nil {
-		spec.Args = withNoYolo(spec.Args)
-		return spec
+		return session.CreateSpec{}, session.ErrForkParentNotFound
 	}
-	spec.Args = clearArgs(parent.spec.Args, parent.h.Info())
+	spec.CWD = info.CWD
+	if spec.CWD == "" {
+		spec.CWD = parent.spec.CWD
+	}
+	spec.Args = clearArgs(parent.spec.Args, info)
 	spec.Env = append([]string(nil), parent.spec.Env...)
 	spec.Zutfile = parent.spec.Zutfile.WithoutPre()
-	return spec
+	return spec, nil
 }
 
-// withNoYolo returns args with --no-yolo added before any "--" terminator.
-func withNoYolo(args []string) []string {
-	for i, a := range args {
-		if a == "--no-yolo" {
-			return args
-		}
-		if a == "--" {
-			return append(append(append([]string{}, args[:i]...), "--no-yolo"), args[i:]...)
-		}
+// normParentPath resolves symlinks when the path exists and always cleans it.
+func normParentPath(p string) string {
+	if p == "" {
+		return ""
 	}
-	return append(append([]string{}, args...), "--no-yolo")
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	return filepath.Clean(p)
 }
 
 // clearArgs drops resume/session selection and model flags from the launch

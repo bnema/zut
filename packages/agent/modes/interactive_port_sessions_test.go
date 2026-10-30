@@ -219,3 +219,22 @@ func TestPortSessionsPickLiveOwnedDiskAttachesWithoutCreate(t *testing.T) {
 	}
 	r.requireSwitched(t, "s2", s2)
 }
+
+func TestPortForkUnknownParentKeepsSessionWithNote(t *testing.T) {
+	client := newMockSessionClient(t)
+	client.EXPECT().Create(mock.Anything, session.CreateSpec{CWD: "/w", Fork: &session.ForkSpec{ParentPath: "/w/s1.jsonl", UpToMessage: 1}}).Return(session.Info{}, session.ErrForkParentNotFound).Once()
+	r := startSessionsPort(t, client, portUserMessage("first"))
+	r.term.send("/fork\r")
+	require.Eventually(t, func() bool {
+		r.i.mu.Lock()
+		defer r.i.mu.Unlock()
+		return r.i.jumpDialog.Active() && r.i.pendingFork
+	}, 5*time.Second, 10*time.Millisecond)
+	r.term.send("\r")
+	require.Eventually(t, func() bool {
+		r.i.mu.Lock()
+		defer r.i.mu.Unlock()
+		return strings.Contains(r.i.statusErr, "parent session not found")
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, session.ID("s1"), r.i.SessionID())
+}

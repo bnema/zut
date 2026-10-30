@@ -176,7 +176,7 @@ func (c *Client) call(ctx context.Context, frame, out any) error {
 	return mapErr(conn.Call(ctx, frame, out))
 }
 
-var sentinels = []error{session.ErrSeqTooOld, session.ErrClosed, session.ErrNotAttached, session.ErrBusy, session.ErrUnknownRequest, session.ErrLoopGuard}
+var sentinels = []error{session.ErrSeqTooOld, session.ErrClosed, session.ErrNotAttached, session.ErrBusy, session.ErrUnknownRequest, session.ErrLoopGuard, session.ErrForkParentNotFound}
 
 func mapErr(err error) error {
 	var re *daemonproto.RemoteError
@@ -185,7 +185,11 @@ func mapErr(err error) error {
 	}
 	for _, s := range sentinels {
 		if strings.HasSuffix(re.Msg, s.Error()) {
-			return fmt.Errorf("zut daemon: %s: %w", strings.TrimSuffix(strings.TrimSuffix(re.Msg, s.Error()), ": "), s)
+			prefix := strings.TrimSuffix(strings.TrimSuffix(re.Msg, s.Error()), ": ")
+			if prefix == "" {
+				return fmt.Errorf("zut daemon: %w", s)
+			}
+			return fmt.Errorf("zut daemon: %s: %w", prefix, s)
 		}
 	}
 	return fmt.Errorf("zut daemon: %w", err)

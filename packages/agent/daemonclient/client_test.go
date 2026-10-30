@@ -450,3 +450,9 @@ func TestSocketPathResolution(t *testing.T) {
 		require.Equal(t, tc.want, socketPath(tc.goos, tc.env), tc.goos)
 	}
 }
+
+func TestMapErrForkParentNotFound(t *testing.T) {
+	err := mapErr(&daemonproto.RemoteError{Msg: session.ErrForkParentNotFound.Error()})
+	require.ErrorIs(t, err, session.ErrForkParentNotFound)
+	require.Equal(t, "zut daemon: parent session not found", err.Error())
+}
