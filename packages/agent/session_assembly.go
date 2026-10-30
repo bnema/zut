@@ -398,7 +398,6 @@ func (a *sessionAssembly) wireAgentExt(ctx context.Context, ag *core.Agent) *cor
 		return true, "", r.ReplaceText
 	}
 	ag.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
-	a.runtime.WireRequiredWorkerGate(ag)
 	return ag
 }
 
