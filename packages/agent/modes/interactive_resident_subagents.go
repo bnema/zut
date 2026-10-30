@@ -41,15 +41,18 @@ func (i *Interactive) reloadResidentChildSession(session *residentChildSession) 
 		i.invalidate()
 	}()
 }
-func autoSubagentsAddenda(cfg InteractiveConfig, orchestrating bool) []string {
+
+// residents reports whether a session port (which owns the resident manager)
+// is attached.
+func autoSubagentsAddenda(cfg InteractiveConfig, residents, orchestrating bool) []string {
 	addenda := make([]string, 0, 2)
-	if cfg.ResidentManager != nil && autoSubagentsToolAllowedConfig(cfg) {
+	if residents && autoSubagentsToolAllowedConfig(cfg) {
 		if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
 			addenda = append(addenda, addendum)
 		}
 	}
 	if !orchestrating {
-		if cfg.ResidentManager != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
+		if residents && autoSubagentsAnyToolAllowedConfig(cfg) {
 			if addendum := strings.TrimSpace(cfg.OnDemandSubagentsSystemAddendum); addendum != "" {
 				addenda = append(addenda, addendum)
 			}
@@ -93,7 +96,7 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	}
 	i.managedAutoSubagentsAddenda = nil
 
-	addenda := autoSubagentsAddenda(i.cfg, orchestrating)
+	addenda := autoSubagentsAddenda(i.cfg, i.portMode.Load(), orchestrating)
 	if changed {
 		sys = strings.TrimRight(sys, "\n")
 	}
@@ -118,13 +121,13 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	i.agent.SetSystemPrompt(sys)
 }
 func (i *Interactive) autoSubagentsAvailable() bool {
-	// On the daemon path the session owns the resident manager.
-	return (i.portMode.Load() || i.cfg.ResidentManager != nil) && autoSubagentsAnyToolAllowedConfig(i.cfg)
+	// The session behind the port owns the resident manager.
+	return i.portMode.Load() && autoSubagentsAnyToolAllowedConfig(i.cfg)
 }
 func (i *Interactive) autoSubagentsUnavailableHint() string {
 	var hints []string
-	if !i.portMode.Load() && i.cfg.ResidentManager == nil {
-		hints = append(hints, "resident subagent manager is unavailable in this mode")
+	if !i.portMode.Load() {
+		hints = append(hints, "resident subagents require an attached session")
 	}
 	if !autoSubagentsAnyToolAllowedConfig(i.cfg) {
 		hints = append(hints, "launch-time tool policy excludes every subagent action")
@@ -193,6 +196,8 @@ func (i *Interactive) applyAutoSubagentsTool() {
 	if i.agent == nil {
 		return
 	}
+	// Subagent tools run where the resident manager lives: in the session
+	// behind the port. A local agent never carries a resident facade.
 	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
@@ -200,45 +205,6 @@ func (i *Interactive) applyAutoSubagentsTool() {
 			continue
 		}
 		next[name] = t
-	}
-	if i.autoSubagentsAvailable() {
-		facade := &tools.SubagentTool{}
-		if i.autoSubagentsToolAllowed() {
-			facade.Spawn = &tools.SubagentSpawnTool{
-				ResidentManager:   i.cfg.ResidentManager,
-				BuildResidentSpec: i.cfg.BuildResidentSpec,
-				Enabled:           func() bool { return true },
-				DefaultModel:      func() string { return i.cfg.Model },
-				DefaultProvider:   func() string { return i.cfg.Provider },
-				DefaultReasoning:  func() string { return i.cfg.Reasoning },
-				ResolveSubagent:   i.cfg.ResolveSubagent,
-			}
-		}
-		if i.autoSubagentsStatusToolAllowed() {
-			facade.Status = &tools.SubagentStatusTool{
-				ResidentManager: i.cfg.ResidentManager,
-				Enabled:         func() bool { return true },
-			}
-		}
-		if i.autoSubagentsStopToolAllowed() {
-			facade.Stop = &tools.SubagentStopTool{
-				ResidentManager: i.cfg.ResidentManager,
-				Enabled:         func() bool { return true },
-			}
-		}
-		if i.autoSubagentsResumeToolAllowed() {
-			facade.Resume = &tools.SubagentResumeTool{
-				ResidentManager: i.cfg.ResidentManager,
-				Enabled:         func() bool { return true },
-			}
-		}
-		if i.autoSubagentsInterruptToolAllowed() {
-			facade.Interrupt = &tools.SubagentInterruptTool{
-				ResidentManager: i.cfg.ResidentManager,
-				Enabled:         func() bool { return true },
-			}
-		}
-		next[facade.Name()] = facade
 	}
 	i.agent.SetTools(next)
 }

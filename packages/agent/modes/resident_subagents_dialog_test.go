@@ -2,16 +2,18 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
-	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestResidentSubagentListUsesHumanLabelTerminalStateAndRelativeTime(t *testing.T) {
@@ -31,31 +33,21 @@ func TestResidentSubagentListUsesHumanLabelTerminalStateAndRelativeTime(t *testi
 }
 
 func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
-	completed := make(chan struct{}, 2)
-	manager := subagents.NewResidentManager(t.TempDir(), func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		journal.ConfigureUsage(272_000, true)
-		return subagents.ResidentTurnRunner(func(context.Context, string) error {
-			usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525}
-			return journal.RecordAgentEvent(core.EvUsage{Usage: usage, Cumulative: usage})
-		}), nil
+	usage := provider.Usage{InputTokens: 84_000, OutputTokens: 1_500, CacheReadTokens: 123_000, CacheMeasuredPromptTokens: 207_000, CacheMeasuredReadTokens: 123_000, CostUSD: 0.525}
+	rows := make([]subagents.ResidentSnapshot, 2)
+	for index := range rows {
+		rows[index] = subagents.ResidentSnapshot{ID: fmt.Sprintf("usage-child-%d", index), State: subagents.ResidentIdle, Profile: "reviewer", Provider: "openai-codex", Model: "gpt-test", Usage: usage, ContextUsed: 207_000, ContextMax: 272_000, Subscription: true}
+	}
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, offset, limit int) ([]subagents.ResidentSnapshot, int, error) {
+		end := min(len(rows), offset+limit)
+		if offset >= end {
+			return nil, len(rows), nil
+		}
+		return rows[offset:end], len(rows), nil
 	})
-	manager.SetCompletionObserver(func(subagents.ResidentCompletion) bool { completed <- struct{}{}; return true })
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	for index := range 2 {
-		id := fmt.Sprintf("usage-child-%d", index)
-		if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: id, SessionID: "session-" + id, Profile: "reviewer", Provider: "openai-codex", Model: "gpt-test"}, "task"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for range 2 {
-		select {
-		case <-completed:
-		case <-time.After(time.Second):
-			t.Fatal("resident child did not complete")
-		}
-	}
 	dialog := newResidentSubagentsDialog()
-	dialog.Open(manager)
+	dialog.Open(port)
 	plain := strings.Join(plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 10)), "\n")
 	if !strings.Contains(plain, "\n    ↑84k ↓1.5k R123k/ C59.4% $0.525 (sub) 76.1%/272k") {
 		t.Fatalf("dialog = %q, want usage metadata line", plain)
@@ -115,4 +107,37 @@ func TestResidentResultStatusSanitizesDeprecatedHandoff(t *testing.T) {
 func TestResidentSubagentsDialogRefreshAllowsNilReceiver(t *testing.T) {
 	var dialog *residentSubagentsDialog
 	dialog.refresh(1)
+}
+
+func TestResidentSubagentsDialogListsFromPortAndSelects(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	rows := []subagents.ResidentSnapshot{{ID: "first", State: subagents.ResidentRunning, Model: "m"}, {ID: "second", State: subagents.ResidentIdle, Model: "m"}}
+	port.EXPECT().ResidentList(mock.Anything, 0, 12).Return(rows, 2, nil).Once()
+	dialog := newResidentSubagentsDialog()
+	dialog.Open(port)
+	dialog.HandleKey(tui.Key{Kind: tui.KeyDown})
+	if got := dialog.HandleKey(tui.Key{Kind: tui.KeyEnter}); got != "second" {
+		t.Fatalf("selected = %q, want second", got)
+	}
+}
+
+func TestResidentSubagentsDialogShowsPortError(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return(nil, 0, errors.New("daemon gone"))
+	dialog := newResidentSubagentsDialog()
+	dialog.Open(port)
+	plain := strings.Join(plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 10)), "\n")
+	if !strings.Contains(plain, "unavailable: daemon gone") || strings.Contains(plain, "No resident subagents") {
+		t.Fatalf("dialog = %q, want port error", plain)
+	}
+}
+
+func TestResidentSubagentsDialogCachesWindowBetweenRenders(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentList(mock.Anything, 0, 3).Return([]subagents.ResidentSnapshot{{ID: "a"}}, 1, nil).Once()
+	dialog := newResidentSubagentsDialog()
+	dialog.active, dialog.port = true, port
+	for range 3 {
+		dialog.Render(tui.Dark, 100, 9)
+	}
 }

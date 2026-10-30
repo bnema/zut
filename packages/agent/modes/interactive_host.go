@@ -122,7 +122,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
-	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
+	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.portMode.Load(), i.autoSubagentsEnabledLocked())
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
 	i.armSkillPinsLocked(pinFetch)

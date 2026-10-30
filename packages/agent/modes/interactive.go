@@ -1023,7 +1023,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
+	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.Port != nil, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
 	if cfg.ResidentManager != nil {
 		// Resident updates arrive from the child control goroutine. The
 		// renderer reads its immutable live projection on the next throttled

@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestResidentChildSessionBuildsSharedTranscriptView(t *testing.T) {
@@ -377,7 +380,10 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
 		t.Fatal(err)
 	}
-	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return([]subagents.ResidentSnapshot{{ID: spec.ID, State: subagents.ResidentIdle}}, 1, nil)
+	// The child log view still reads the local manager until it moves to the port.
+	interactive := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
 	interactive.ed.SetValue("draft")
 
 	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})

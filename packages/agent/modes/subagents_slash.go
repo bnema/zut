@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
 )
 
 func (i *Interactive) runSubagents(ctx context.Context, args []string) {
-	if i.cfg.ResidentManager == nil {
+	if i.residentPort() == nil {
 		i.mu.Lock()
 		i.statusErr = i.autoSubagentsUnavailableHint()
 		i.statusOK = ""
@@ -39,7 +40,7 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 		if i.residentSubagentsDialog == nil {
 			i.residentSubagentsDialog = newResidentSubagentsDialog()
 		}
-		i.residentSubagentsDialog.Open(i.cfg.ResidentManager)
+		i.residentSubagentsDialog.Open(i.port)
 		i.mu.Unlock()
 		i.invalidate()
 	case "new", "spawn":
@@ -55,6 +56,10 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents result <id>: missing id")
 			return
 		}
+		if i.cfg.ResidentManager == nil {
+			i.subagentsStatus("", "result: unavailable on a daemon session; use /subagents logs "+rest)
+			return
+		}
 		result, err := i.cfg.ResidentManager.Result(rest)
 		if err != nil {
 			i.subagentsStatus("", "result: "+err.Error())
@@ -66,7 +71,7 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
 			return
 		}
-		if err := i.cfg.ResidentManager.Stop(ctx, rest); err != nil {
+		if err := i.residentPort().ResidentAction(ctx, session.ResidentCommand{Op: "stop", ChildID: rest}); err != nil {
 			i.subagentsStatus("", "kill: "+err.Error())
 			return
 		}
@@ -77,16 +82,11 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents "+sub+" <id> <prompt>: missing id or prompt")
 			return
 		}
-		outcome, err := i.cfg.ResidentManager.ResumeFollowUp(ctx, id, prompt, subagents.ResumeSteer, "", nil)
-		if err != nil {
+		if err := i.residentPort().ResidentAction(ctx, session.ResidentCommand{Op: "resume", ChildID: id, Prompt: prompt}); err != nil {
 			i.subagentsStatus("", sub+": "+err.Error())
 			return
 		}
-		if outcome.Steered {
-			i.subagentsStatus("steered follow-up into the running turn of "+id, "")
-		} else {
-			i.subagentsStatus("queued follow-up for "+id, "")
-		}
+		i.subagentsStatus("sent follow-up to "+id, "")
 	default:
 		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
 	}
@@ -308,4 +308,24 @@ func (i *Interactive) subagentsStatus(ok, errMsg string) {
 	i.statusErr = errMsg
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// residentPort returns the attached session port, which owns residents.
+func (i *Interactive) residentPort() session.Port {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.port
+}
+
+// hasResidentSubagents asks the session whether any resident exists. A zero
+// limit returns only the count.
+func (i *Interactive) hasResidentSubagents(ctx context.Context) bool {
+	port := i.residentPort()
+	if port == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, residentDialogTimeout)
+	defer cancel()
+	_, total, err := port.ResidentList(ctx, 0, 0)
+	return err == nil && total > 0
 }

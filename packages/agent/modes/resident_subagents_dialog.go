@@ -1,29 +1,44 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/tui"
 )
 
 // residentSubagentsDialog is intentionally only a discovery/selection list.
 // Detailed transcript, paging, and composition belong to residentChildSession.
+// Rows come from the session port; the daemon owns the resident manager.
 type residentSubagentsDialog struct {
 	active   bool
-	manager  *subagents.ResidentManager
+	port     session.Port
 	rows     []subagents.ResidentSnapshot
-	selected int // absolute index in the sorted manager projection
+	selected int // absolute index in the sorted session projection
 	offset   int
 	total    int
+	err      error
+	// fetched records the last window so steady renders do not re-query the
+	// daemon every frame; stale windows refresh after residentDialogRefresh.
+	fetchedAt     time.Time
+	fetchedOffset int
+	fetchedLimit  int
 }
+
+const (
+	residentDialogRefresh = 500 * time.Millisecond
+	residentDialogTimeout = 2 * time.Second
+)
 
 func newResidentSubagentsDialog() *residentSubagentsDialog { return &residentSubagentsDialog{} }
 
-func (d *residentSubagentsDialog) Open(manager *subagents.ResidentManager) {
-	d.active, d.manager, d.selected, d.offset, d.total = true, manager, 0, 0, 0
+func (d *residentSubagentsDialog) Open(port session.Port) {
+	d.active, d.port, d.selected, d.offset, d.total, d.err = true, port, 0, 0, 0, nil
+	d.rows, d.fetchedAt = nil, time.Time{}
 	d.refresh(12)
 }
 
@@ -38,36 +53,61 @@ func (d *residentSubagentsDialog) refresh(limit int) {
 	if d == nil {
 		return
 	}
-	if d.manager == nil {
-		d.rows = nil
-		d.total = 0
+	if d.port == nil {
+		d.rows, d.total, d.err = nil, 0, nil
 		return
 	}
 	if limit < 0 {
 		limit = 0
 	}
-	_, total := d.manager.SnapshotPage(0, 0)
-	d.total = total
+	d.clampSelection(limit)
+	if !d.fetchedAt.IsZero() && d.fetchedOffset == d.offset && d.fetchedLimit == limit && time.Since(d.fetchedAt) < residentDialogRefresh {
+		return
+	}
+	d.fetch(limit)
+	// The count may have shrunk since the last fetch; re-anchor once.
+	prev := d.offset
+	d.clampSelection(limit)
+	if d.offset != prev {
+		d.fetch(limit)
+	}
+}
+
+// clampSelection keeps the selection inside the last known total and the
+// visible window inside the selection.
+func (d *residentSubagentsDialog) clampSelection(limit int) {
 	if d.selected >= d.total {
 		d.selected = d.total - 1
 	}
 	if d.selected < 0 || d.total == 0 {
 		d.selected = 0
 	}
-	if limit == 0 {
-		d.rows = nil
-		return
-	}
-	if d.selected < d.offset {
-		d.offset = d.selected
-	}
-	if d.selected >= d.offset+limit {
-		d.offset = d.selected - limit + 1
+	if limit > 0 {
+		if d.selected < d.offset {
+			d.offset = d.selected
+		}
+		if d.selected >= d.offset+limit {
+			d.offset = d.selected - limit + 1
+		}
 	}
 	if d.offset < 0 {
 		d.offset = 0
 	}
-	d.rows, d.total = d.manager.RecentSnapshotPage(d.offset, limit)
+}
+
+func (d *residentSubagentsDialog) fetch(limit int) {
+	ctx, cancel := context.WithTimeout(context.Background(), residentDialogTimeout)
+	defer cancel()
+	rows, total, err := d.port.ResidentList(ctx, d.offset, limit)
+	d.fetchedAt, d.fetchedOffset, d.fetchedLimit = time.Now(), d.offset, limit
+	if err != nil {
+		d.rows, d.err = nil, err
+		return
+	}
+	d.rows, d.total, d.err = rows, total, nil
+	if limit == 0 {
+		d.rows = nil
+	}
 }
 
 func (d *residentSubagentsDialog) HandleKey(k tui.Key) (openID string) {
@@ -103,6 +143,10 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	}
 	d.refresh(maxRows)
 	lines := []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}
+	if d.err != nil {
+		lines = append(lines, "  "+truncateResidentSubagentIndicator("unavailable: "+sanitizeSessionTreeText(d.err.Error()), width-2))
+		return limitResidentSubagentsDialogHeight(lines, height)
+	}
 	if len(d.rows) == 0 {
 		if d.total > 0 {
 			return limitResidentSubagentsDialogHeight(lines, height)

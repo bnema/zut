@@ -2,10 +2,12 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	sessionpkg "github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -362,9 +364,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			residentSession.Scroll(-1)
 		default:
 			session := residentSession
+			i.mu.Lock()
+			port := i.port
+			i.mu.Unlock()
 			if prompt, submit := session.HandleKey(k); submit {
 				go func() {
-					err := i.cfg.ResidentManager.Resume(ctx, session.childID, prompt)
+					err := errors.New("resident subagents require an attached session")
+					if port != nil {
+						err = port.ResidentAction(ctx, sessionpkg.ResidentCommand{Op: "resume", ChildID: session.childID, Prompt: prompt})
+					}
 					session.FinishSubmission(err)
 					i.invalidate()
 				}()
@@ -778,11 +786,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.invalidate()
 				return false
 			}
-			if !k.Alt && i.inputHistoryIndex < 0 && i.cfg.ResidentManager != nil {
-				if _, total := i.cfg.ResidentManager.RecentSnapshotPage(0, 1); total > 0 {
-					i.runResidentSubagents(ctx, nil)
-					return false
-				}
+			if !k.Alt && i.inputHistoryIndex < 0 && i.hasResidentSubagents(ctx) {
+				i.runResidentSubagents(ctx, nil)
+				return false
 			}
 			if !k.Alt && i.handleInputHistoryKey(k) {
 				return false
