@@ -42,7 +42,9 @@ func OpenLog(home string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
 	case "error":
 		level = slog.LevelError
 	}
-	out := io.MultiWriter(append([]io.Writer{w}, extra...)...)
+	// MultiWriter stops at the first failing writer, so the file goes last:
+	// a log file problem never silences stderr.
+	out := io.MultiWriter(append(append([]io.Writer{}, extra...), w)...)
 	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: level})), w, nil
 }
 
@@ -53,6 +55,9 @@ type rotatingLog struct {
 	path string
 	file *os.File
 	size int64
+	// rotateErr is the last rotation failure; the log keeps growing past
+	// maxLogSize until a later rotation succeeds.
+	rotateErr error
 }
 
 func (w *rotatingLog) open() error {
@@ -73,11 +78,18 @@ func (w *rotatingLog) open() error {
 	return nil
 }
 
+// rotate moves the log to the backup and opens a fresh file. When the move
+// fails it reopens the original path and keeps appending, so logging never
+// stops; the move error is recorded in rotateErr. It returns an error only
+// when no file could be reopened.
 func (w *rotatingLog) rotate() error {
-	if err := w.file.Close(); err != nil {
-		return err
-	}
+	_ = w.file.Close()
 	w.file = nil
+	w.rotateErr = w.moveToBackup()
+	return w.open()
+}
+
+func (w *rotatingLog) moveToBackup() error {
 	// Remove explicitly because replacing an existing destination via Rename
 	// is not supported on every platform.
 	if err := os.Remove(w.path + ".1"); err != nil && !os.IsNotExist(err) {
@@ -86,7 +98,7 @@ func (w *rotatingLog) rotate() error {
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
 		return fmt.Errorf("rotate daemon log: %w", err)
 	}
-	return w.open()
+	return nil
 }
 
 func (w *rotatingLog) Write(p []byte) (int, error) {
