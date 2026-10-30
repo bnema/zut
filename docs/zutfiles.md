@@ -275,7 +275,7 @@ Zut checks these requirements before requesting consent. These zutfiles do not h
 
 ### Entry fields
 
-`entry.pre` is auto-submitted once when `zut run` starts, before the initial prompt is applied. Values that begin with `!` use the interactive shell-escape path (or `BashTool` in `--print` / `--stream` / `--json`) and always receive the built-in 600-second (10-minute) timeout. Shell output streams live to the TUI (interactive) or stderr (non-interactive). Other values are sent as a normal user turn; in `--stream` mode that turn's assistant text also streams to stdout. After `pre` finishes, zut reloads extensions and rediscovers skills so anything installed by that command is available for the following turn.
+`entry.pre` is auto-submitted once when `zut run` starts, before the initial prompt is applied. Values that begin with `!` use the interactive shell-escape path (or `BashTool` in `--print` / `--stream` / `--json`) and always receive the built-in 600-second (10-minute) timeout. Shell output is captured during session creation and returned only to the creating client in the daemon create response: the TUI shows it once in the notes area, and non-interactive modes print it to stderr. It is not stored in the session's events or snapshots, so attaching or resyncing later does not show it again. Capture is limited to 64 KiB, with a truncation marker for larger output. Other values are sent as a normal user turn; in `--stream` mode that turn's assistant text also streams to stdout. After `pre` finishes, zut reloads extensions and rediscovers skills so anything installed by that command is available for the following turn.
 
 ```json
 {

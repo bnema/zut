@@ -92,6 +92,10 @@ type InteractiveConfig struct {
 	// before the TUI starts. They are display-only and never enter the transcript.
 	StartupExtensionErrors []string
 
+	// StartupOutput is zutfile entry.pre shell output from the create
+	// response. It is shown once in the notes area, never in the status line.
+	StartupOutput string
+
 	// ShowInstructionsAtStartup controls whether startup resources are visible.
 	// nil means the default, off.
 	ShowInstructionsAtStartup *bool
@@ -1476,6 +1480,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	i.showStartupOutput()
 
 	if i.cfg.StartupPre != "" {
 		i.deferredInitialInput = i.cfg.InitialInput

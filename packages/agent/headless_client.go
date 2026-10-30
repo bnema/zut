@@ -175,10 +175,18 @@ func openHeadlessSession(ctx context.Context, hio headlessIO, args Args, rawArgs
 		return nil, err
 	}
 	spec := session.CreateSpec{CWD: args.CWD, Env: append([]string{}, hio.env...), Args: headlessCreateArgs(rawArgs), Headless: true, Zutfile: args.zutfile}
-	info, err := client.Create(ctx, spec)
+	created, err := client.CreateWithOutput(ctx, spec)
 	if err != nil {
 		_ = client.Disconnect()
 		return nil, fmt.Errorf("create daemon session: %w", err)
+	}
+	info := created.Info
+	// zutfile entry.pre shell output is shown once, to the creating client.
+	if created.PreOutput != "" {
+		fmt.Fprint(hio.stderr, created.PreOutput)
+		if !strings.HasSuffix(created.PreOutput, "\n") {
+			fmt.Fprintln(hio.stderr)
+		}
 	}
 	id := session.ID(info.ID)
 	return &headlessSession{client: client, id: id, port: client.Port(id, true), info: info}, nil

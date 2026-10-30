@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -151,5 +152,67 @@ func TestZutfileClientArgs(t *testing.T) {
 	}
 	if parsed.Prompt != "-default" || parsed.Model != "gpt-5" || len(parsed.AppendSystemPrompt) != 1 {
 		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
+// A startup extension Notify (missing --ext path) fires while the session is
+// created; the pre output still reaches the creator via the create response.
+func TestZutfilePreOutputReachesCreator(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+	cwd := t.TempDir()
+	args := append(sessionAssemblyArgs(server), "--ext", filepath.Join(cwd, "missing-ext"))
+	created, err := c.CreateWithOutput(ctx, session.CreateSpec{CWD: cwd, Env: os.Environ(), Args: args, Zutfile: testZutfileSpec(t, cwd, "!echo pre-client-output")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || !strings.Contains(created.PreOutput, "pre-client-output") {
+		t.Fatalf("create = %+v", created)
+	}
+	snap, err := c.Port(session.ID(created.ID), false).Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range snap.Notes {
+		if strings.Contains(n.Text, "pre-client-output") {
+			t.Fatalf("pre output leaked into snapshot notes: %+v", snap.Notes)
+		}
+	}
+}
+
+// The headless creator prints pre output to its injected stderr.
+func TestZutfilePreOutputHeadlessStderr(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := Args{CWD: cwd, zutfile: testZutfileSpec(t, cwd, "!echo pre-headless-output")}
+	h, err := openHeadlessSession(factoryTestCtx(t), headlessTestIO(td.socket, &stdout, &stderr, os.Environ()), args, sessionAssemblyArgs(server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.end(false) })
+	if !strings.Contains(stderr.String(), "pre-headless-output") || stdout.Len() != 0 {
+		t.Fatalf("stderr = %q stdout = %q", stderr.String(), stdout.String())
+	}
+}
+
+// A prompt-turn entry.pre (no leading !) produces no shell output.
+func TestZutfilePromptPreHasNoOutput(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	cwd := t.TempDir()
+	created, err := c.CreateWithOutput(factoryTestCtx(t), session.CreateSpec{CWD: cwd, Env: os.Environ(), Args: sessionAssemblyArgs(server), Zutfile: testZutfileSpec(t, cwd, "say hello")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.PreOutput != "" {
+		t.Fatalf("create = %+v", created)
 	}
 }
