@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -89,4 +91,120 @@ func TestDaemonProfileAssignReachesOtherSessions(t *testing.T) {
 	cfg, err := LoadConfig()
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
+}
+
+// Two sessions saving profiles while settings writes run concurrently must
+// keep every update.
+func TestConcurrentProfileAndSettingsWritesKeepAllUpdates(t *testing.T) {
+	sessionAssemblyEnv(t)
+	s := &modelProfileStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	a := session.NewController(ctx, session.Deps{Profiles: s})
+	b := session.NewController(ctx, session.Deps{Profiles: s})
+	t.Cleanup(func() { cancel(); <-a.Done(); <-b.Done() })
+	var wg sync.WaitGroup
+	for slot := 1; slot <= 9; slot++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := a
+			if slot%2 == 0 {
+				c = b
+			}
+			require.NoError(t, c.AssignProfile(ctx, slot, session.QuickModelShortcut{Provider: "openai", Model: "gpt-5"}, false))
+		}()
+	}
+	store := configSettingsStore{}
+	wg.Add(4)
+	go func() { defer wg.Done(); require.NoError(t, store.SetFastMode(true)) }()
+	go func() { defer wg.Done(); require.NoError(t, store.SetReasoning("high")) }()
+	go func() { defer wg.Done(); require.NoError(t, store.SetAutoSubagents(true)) }()
+	go func() { defer wg.Done(); require.NoError(t, store.SetJailByDefault(true)) }()
+	wg.Wait()
+	cfg, err := LoadConfig()
+	require.NoError(t, err)
+	require.Len(t, cfg.QuickModelShortcuts, 9)
+	for i, p := range cfg.QuickModelShortcuts {
+		require.Equal(t, "gpt-5", p.Model)
+		require.Equal(t, p.Model, s.Profiles()[i].Model)
+	}
+	require.True(t, *cfg.FastMode)
+	require.Equal(t, "high", cfg.Reasoning)
+	require.True(t, *cfg.AutoSubagentsEnabled)
+	require.True(t, *cfg.JailByDefault)
+}
+
+func TestSaveConfigAtomicReplace(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	big := Config{QuickModelShortcuts: make([]QuickModelShortcut, 9)}
+	for i := range big.QuickModelShortcuts {
+		big.QuickModelShortcuts[i] = QuickModelShortcut{Provider: "openai", Model: strings.Repeat("m", 4096)}
+	}
+	require.NoError(t, SaveConfig(big))
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_, err := LoadConfig()
+			require.NoError(t, err, "reader saw a partial config.json")
+		}
+	}()
+	for n := 0; n < 50; n++ {
+		require.NoError(t, SaveConfig(big))
+		require.NoError(t, SaveConfig(Config{Model: "small"}))
+	}
+	close(done)
+	wg.Wait()
+	info, err := os.Stat(ConfigPath())
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	entries, err := os.ReadDir(home)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.False(t, strings.Contains(e.Name(), ".tmp-"), "leftover temp file %s", e.Name())
+	}
+}
+
+func TestProfileFanoutDrainsOnShutdown(t *testing.T) {
+	f := newSessionFactory("test", t.TempDir(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	live := session.NewController(ctx, session.Deps{})
+	closed := session.NewController(ctx, session.Deps{})
+	require.NoError(t, closed.Close(context.Background(), "test"))
+	<-closed.Done()
+	require.ErrorIs(t, closed.ProfilesChanged(context.Background()), session.ErrClosed)
+	events, err := live.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	f.mu.Lock()
+	f.live["live"] = &factoryHandle{Controller: live}
+	f.live["closed"] = &factoryHandle{Controller: closed}
+	f.mu.Unlock()
+
+	f.profilesChanged()
+	select {
+	case ev := <-events:
+		require.Equal(t, session.EvInfo, ev.Kind)
+	case <-time.After(5 * time.Second):
+		t.Fatal("live session not notified")
+	}
+	// The closed controller answers ErrClosed; wait drains both goroutines.
+	waited := make(chan struct{})
+	go func() { f.wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wait did not drain profile notifications")
+	}
+	// After shutdown no new notification starts.
+	f.profilesChanged()
+	f.fanout.Wait()
+	cancel()
+	<-live.Done()
 }

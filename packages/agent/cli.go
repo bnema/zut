@@ -99,16 +99,11 @@ func newPersistModelCallback(persistMu *sync.Mutex, sess **core.Session, activeP
 			return
 		}
 
-		cfg, err := LoadConfig()
-		if err != nil {
-			if notify != nil {
-				notify("model changed for this run, but config could not be read: " + err.Error())
-			}
-			return
-		}
-		cfg.Provider = providerName
-		cfg.Model = model
-		if err := SaveConfig(cfg); err != nil && notify != nil {
+		if err := updateConfig(func(cfg *Config) error {
+			cfg.Provider = providerName
+			cfg.Model = model
+			return nil
+		}); err != nil && notify != nil {
 			notify("model changed for this run, but config could not be saved: " + err.Error())
 		}
 	}

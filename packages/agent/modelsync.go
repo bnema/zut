@@ -283,11 +283,20 @@ func isGatewayRoutedModelID(model string) bool {
 // Silent on success; one stderr line per repair. Errors loading or
 // saving the file are non-fatal — the caller continues with defaults.
 func ValidateAndRepairConfig() {
-	cfg, err := LoadConfig()
+	err := updateConfig(func(c *Config) error {
+		if !repairConfigModel(c) {
+			return errConfigUnchanged
+		}
+		return nil
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "zut: config.json: %v (using defaults)\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "zut: config.json: %v\n", err)
 	}
+}
+
+// repairConfigModel fixes an unknown provider or model in cfg and reports
+// whether anything changed.
+func repairConfigModel(cfg *Config) bool {
 	changed := false
 
 	if cfg.Provider != "" && !isKnownProvider(cfg.Provider) {
@@ -328,11 +337,7 @@ func ValidateAndRepairConfig() {
 		}
 	}
 
-	if changed {
-		if err := SaveConfig(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "zut: config.json: failed to persist repair: %v\n", err)
-		}
-	}
+	return changed
 }
 
 // RefreshModelsAsync kicks a background discovery for every provider

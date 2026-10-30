@@ -8,8 +8,8 @@ import (
 )
 
 // modelProfileStore is the daemon-wide session.ProfileStore over config.json.
-// One instance serialises every load-modify-save, so concurrent sessions never
-// lose each other's slot updates.
+// Writes go through updateConfig, which serialises them with every other
+// in-process config update; mu orders store writes and cache refreshes.
 type modelProfileStore struct {
 	mu     sync.Mutex
 	slots  [session.ProfileSlots]session.QuickModelShortcut
@@ -24,7 +24,9 @@ var _ session.ProfileStore = (*modelProfileStore)(nil)
 func (s *modelProfileStore) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	configMu.Lock()
 	cfg, err := LoadConfig()
+	configMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -88,26 +90,27 @@ func (s *modelProfileStore) save(slot int, p session.QuickModelShortcut, makeDef
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cfg, err := LoadConfig()
+	var saved Config
+	err := updateConfig(func(cfg *Config) error {
+		active := cfg.ActiveModelProfile
+		switch {
+		case makeDefault:
+			active = slot
+		case empty && active == slot:
+			active = 0
+		}
+		if active < 0 || active > session.ProfileSlots {
+			active = 0
+		}
+		if err := setModelProfile(cfg, slot, QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}, active); err != nil {
+			return err
+		}
+		saved = *cfg
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	active := cfg.ActiveModelProfile
-	switch {
-	case makeDefault:
-		active = slot
-	case empty && active == slot:
-		active = 0
-	}
-	if active < 0 || active > session.ProfileSlots {
-		active = 0
-	}
-	if err := setModelProfile(&cfg, slot, QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}, active); err != nil {
-		return err
-	}
-	if err := SaveConfig(cfg); err != nil {
-		return err
-	}
-	s.cache(cfg)
+	s.cache(saved)
 	return nil
 }

@@ -143,12 +143,13 @@ func ShouldShowChangelog(currentVersion string, cfg Config) bool {
 // actually shown (e.g. fetch failed) so we don't keep retrying.
 func MarkChangelogShown(version string) error {
 	v := semverOnly(version)
-	cfg, _ := LoadConfig()
-	if semverOnly(cfg.LastChangelogShown) == v {
+	return updateConfig(func(cfg *Config) error {
+		if semverOnly(cfg.LastChangelogShown) == v {
+			return errConfigUnchanged
+		}
+		cfg.LastChangelogShown = v
 		return nil
-	}
-	cfg.LastChangelogShown = v
-	return SaveConfig(cfg)
+	})
 }
 
 // SeedChangelogVersion sets LastChangelogShown if it's currently
@@ -160,13 +161,11 @@ func SeedChangelogVersion(version string) {
 		return
 	}
 	version = semverOnly(version)
-	cfg, err := LoadConfig()
-	if err != nil {
-		return
-	}
-	if cfg.LastChangelogShown != "" {
-		return
-	}
-	cfg.LastChangelogShown = version
-	_ = SaveConfig(cfg)
+	_ = updateConfig(func(cfg *Config) error {
+		if cfg.LastChangelogShown != "" {
+			return errConfigUnchanged
+		}
+		cfg.LastChangelogShown = version
+		return nil
+	})
 }
