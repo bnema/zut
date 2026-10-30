@@ -113,7 +113,6 @@ func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, provid
 	i.skillPins.disarm()
 	i.cfg.Provider = providerName
 	i.cfg.Model = model
-	i.cfg.detachMismatchedModelProfile()
 	i.view.Messages = filterHiddenTranscriptMessages(ag.Messages())
 	i.cumUsage = ag.Cost()
 	last := ag.LastTurnUsage()
@@ -208,7 +207,6 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	}
 	i.cfg.Provider = provider
 	i.cfg.Model = model
-	i.cfg.detachMismatchedModelProfile()
 	titleCancel := i.resetSessionTitleLocked()
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil

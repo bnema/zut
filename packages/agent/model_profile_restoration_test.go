@@ -2,10 +2,6 @@ package agent
 
 import (
 	"testing"
-
-	"github.com/bnema/zut/packages/agent/modes"
-	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/tui"
 )
 
 func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
@@ -73,7 +69,7 @@ func TestResolveExplicitFallbackDoesNotRepairFavorite(t *testing.T) {
 	}
 }
 
-func TestModelProfileStartupClampsReasoningAndPreservesAutosave(t *testing.T) {
+func TestModelProfileStartupClampsReasoning(t *testing.T) {
 	for _, tc := range []struct {
 		profile QuickModelShortcut
 		want    string
@@ -93,19 +89,6 @@ func TestModelProfileStartupClampsReasoningAndPreservesAutosave(t *testing.T) {
 			}
 			if r.Reasoning != tc.want {
 				t.Fatalf("startup reasoning=%q, want %q", r.Reasoning, tc.want)
-			}
-			i := modes.NewInteractive(modes.InteractiveConfig{
-				Theme: tui.Dark, Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning,
-				Agent: core.NewAgent(nil, r.Model, "", nil), SettingsStore: configSettingsStore{},
-				QuickModelShortcuts: interactiveQuickModelShortcuts(cfg.QuickModelShortcuts), ActiveModelProfile: 1,
-			})
-			i.SubmitSlash("/model " + r.Model)
-			saved, err := LoadConfig()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if saved.QuickModelShortcuts[0].Reasoning != tc.want {
-				t.Fatalf("clamped active profile failed to autosave: %+v", saved.QuickModelShortcuts[0])
 			}
 		})
 	}

@@ -997,15 +997,6 @@ func webSearchToolAllowedForSession(args Args) bool {
 	return true
 }
 
-func interactiveQuickModelShortcuts(shortcuts []QuickModelShortcut) []modes.QuickModelShortcut {
-	result := make([]modes.QuickModelShortcut, len(shortcuts))
-	for idx, s := range shortcuts {
-		p := normalizedModelProfile(s)
-		result[idx] = modes.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
-	}
-	return result
-}
-
 func agentSessionsRoot(root string, args Args) string {
 	if args.AgentName == "" {
 		return root

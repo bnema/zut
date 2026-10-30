@@ -172,10 +172,6 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	if a.args.PermissionSet != nil && (a.r.Sandbox == nil || a.r.Sandbox.Permissions != a.args.PermissionSet) {
 		return errors.New("zutfile permissions could not be applied to the session sandbox")
 	}
-	if resolvedCfg, err := LoadConfig(); err == nil {
-		a.initialCfg.QuickModelShortcuts = resolvedCfg.QuickModelShortcuts
-		a.initialCfg.ActiveModelProfile = resolvedCfg.ActiveModelProfile
-	}
 	a.authMgr = auth.NewManager(AuthStoreFor())
 	a.sandbox = a.r.Sandbox
 	a.provider, a.model = a.r.Provider, a.r.Model

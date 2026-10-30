@@ -537,53 +537,13 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	i.modelDialog.Open(current, loggedIn, reasoning)
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
-	if i.portMode.Load() {
-		i.portAssignProfile(slot, providerName, model)
-		return
-	}
-	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
-	if slot <= len(i.cfg.QuickModelShortcuts) && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
-		fastMode = i.cfg.QuickModelShortcuts[slot-1].FastMode
-	}
-	p := QuickModelShortcut{Provider: providerName, Model: model, Reasoning: i.modelDialog.reasoning, FastMode: fastMode}
-	if i.quickModelActivate {
-		i.activateModelProfile(slot, p)
-	} else {
-		i.setQuickModelProfile(slot, p)
-	}
-	i.quickModelActivate = false
+	i.portAssignProfile(slot, providerName, model)
 }
 func (i *Interactive) applyQuickModelShortcut(slot int) {
 	if slot < 1 || slot > 9 {
 		return
 	}
-	if i.portMode.Load() {
-		i.portApplyProfile(slot)
-		return
-	}
-	if i.busy {
-		i.mu.Lock()
-		i.statusErr = "cannot switch model while a turn is running"
-		i.statusOK = ""
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	p := QuickModelShortcut{}
-	if slot <= len(i.cfg.QuickModelShortcuts) {
-		p = i.cfg.QuickModelShortcuts[slot-1]
-	}
-	if p.Provider == "" && p.Model == "" {
-		i.openQuickModelPicker(slot)
-		i.quickModelActivate = true
-		i.mu.Lock()
-		i.statusErr = ""
-		i.statusOK = fmt.Sprintf("choose a model for profile %d; Enter saves and activates", slot)
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	i.activateModelProfile(slot, p)
+	i.portApplyProfile(slot)
 }
 
 // cycleModelProfile moves to the next (+1) or previous (-1) profile slot
@@ -610,7 +570,7 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	if err != nil || slot < 1 || slot > 9 {
 		return
 	}
-	if i.portMode.Load() && value == "" {
+	if value == "" {
 		i.portClearProfile(slot)
 		return
 	}
@@ -624,27 +584,8 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	i.setQuickModelShortcut(slot, providerName, model)
 }
 func (i *Interactive) setQuickModelShortcut(slot int, providerName, model string) {
-	if i.portMode.Load() {
-		i.quickModelActivate = false
-		i.portAssignProfile(slot, providerName, model)
-		return
-	}
-	i.setQuickModelProfile(slot, QuickModelShortcut{
-		Provider: providerName, Model: model, Reasoning: i.cfg.Reasoning,
-		FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,
-	})
-}
-func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
-	if i.settingsDialog == nil || !i.settingsDialog.Active() || len(i.settingsDialog.items) == 0 {
-		return
-	}
-	key := "quick_model_" + strconv.Itoa(slot)
-	for idx, it := range i.settingsDialog.items {
-		if it.key == key {
-			i.settingsDialog.items[idx] = i.quickModelSettingItem(slot)
-			return
-		}
-	}
+	i.quickModelActivate = false
+	i.portAssignProfile(slot, providerName, model)
 }
 func (i *Interactive) resetSettingsToggle(key string, value bool) {
 	if i.settingsDialog == nil {
@@ -902,25 +843,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 			i.statusErr = "settings: " + err.Error()
 			i.mu.Unlock()
 			return
-		}
-		if slot := i.cfg.ActiveModelProfile; slot > 0 {
-			_, profileStore := i.cfg.SettingsStore.(modelProfileSettingsStore)
-			if i.cfg.SettingsStore == nil || profileStore {
-				p := QuickModelShortcut{
-					Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: i.cfg.Reasoning,
-					FastMode: value,
-				}
-				if !i.persistModelProfile(slot, p, slot) {
-					i.resetSettingsToggle(key, previous)
-					return
-				}
-				i.setLiveFastMode(value)
-				i.mu.Lock()
-				i.statusOK = "fast mode " + onOff(value) + fmt.Sprintf(" — profile %d updated", slot)
-				i.statusErr = ""
-				i.mu.Unlock()
-				return
-			}
 		}
 		if store, ok := i.cfg.SettingsStore.(fastModeSettingsStore); ok {
 			if err := store.SetFastMode(value); err != nil {
@@ -1260,15 +1182,7 @@ func (i *Interactive) applyReasoningSetting(level string) {
 		})
 		return
 	}
-	if slot := i.cfg.ActiveModelProfile; slot > 0 {
-		p := QuickModelShortcut{
-			Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: level,
-			FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,
-		}
-		if !i.persistModelProfile(slot, p, slot) {
-			return
-		}
-	} else if i.cfg.SettingsStore != nil {
+	if i.cfg.SettingsStore != nil {
 		if err := i.cfg.SettingsStore.SetReasoning(level); err != nil {
 			i.mu.Lock()
 			i.statusErr = "settings: " + err.Error()
@@ -1283,9 +1197,6 @@ func (i *Interactive) applyReasoningSetting(level string) {
 		label = "off"
 	}
 	i.statusOK = "reasoning level " + label
-	if i.cfg.ActiveModelProfile > 0 {
-		i.statusOK += fmt.Sprintf(" — profile %d updated", i.cfg.ActiveModelProfile)
-	}
 	i.statusErr = ""
 	i.mu.Unlock()
 }
