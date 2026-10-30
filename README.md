@@ -128,12 +128,10 @@ Run `zut` and type `/login`. Pick one of two methods:
 The interactive status bar combines the model and reasoning level and rounds cache/context percentages and costs:
 
 ```text
-gpt-6-astra:medium  ↑261k ↓34k R12M C98% $8.52 weekly:69% plan:2/3 ctx31%/500k
+gpt-6-astra:medium  ↑261k ↓34k R12M C98% $8.52 plan:2/3 ctx31%/500k
 ```
 
 `↑` / `↓` are session input/output tokens, `R` is cache-read tokens, `C` is the measured cache-hit rate, `plan` is the current step / total steps while a plan is active, and `ctx` is context used / model capacity. Key status values use stronger contrast than their labels for quicker scanning in both dark and light terminals. The provider prefix and `(sub)` tag are omitted from this compact view. For subscription sessions, the dollar amount is an API-equivalent estimate, **not an additional charge**. Detailed session/subagent surfaces retain their existing precision and billing labels; `/session info` shows the provider.
-
-For the default `openai-codex` subscription route, `weekly:69%` means **69% of the account's seven-day allowance remains**, across clients—not just this session. zut reads ChatGPT's usage endpoint asynchronously at startup and every five minutes while Codex is selected. Requests time out after ten seconds and are canceled when the session exits or leaves Codex. `weekly:?` means loading, unavailable, stale, or no seven-day window was reported; it never means zero remaining. The meter only reads stored credentials; if the token expires, it stays unavailable until a normal model request or login refreshes it. Custom endpoints and other providers do not receive these usage requests. The meter does not show the separate short-term limit or model-specific allowances and is not a guarantee that the next request will be accepted.
 
 ### Token refresh
 
@@ -342,7 +340,6 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/fast` | Toggle fast mode for subsequent model calls; when a model profile is active, save the preference to that profile. |
 | `/orchestrator` | Toggle proactive subagent delegation. When disabled, subagent tools remain available for explicit delegation. |
-| `/mcp` | Show MCP server connection state, tool counts, and startup errors; see [docs/mcp.md](docs/mcp.md). |
 | `/goal <objective>` | Start an autonomous interactive-session mission. Use `/goal` for status, `/goal history` for prior goals, and `/goal pause`, `resume`, or `clear` for control. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session. The picker opens in this-directory scope; press `Tab` for all sessions in the active namespace, or `/` to search user/assistant text. It omits branches created only for tree navigation. |
