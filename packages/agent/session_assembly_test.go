@@ -542,3 +542,42 @@ func TestMoveDaemonAliasRollsBackOnWriteFailure(t *testing.T) {
 	require.Contains(t, old.Meta.DaemonIDs, id)
 	require.NotContains(t, next.Meta.DaemonIDs, id)
 }
+
+// Exercise the controller's set_model path with the daemon's real builder;
+// catalog metadata must reach the replacement agent, not just session.Info.
+func TestSessionSetModelUpdatesLimits(t *testing.T) {
+	sessionAssemblyEnv(t)
+	preserveProviderCatalog(t)
+	models := []provider.Model{
+		{Provider: "openai", ID: "fixture-small", ContextWindow: 32000, MaxOutput: 4000},
+		{Provider: "openai", ID: "fixture-large", ContextWindow: 256000, MaxOutput: 24000},
+	}
+	provider.SetLiveModels(models)
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{
+		CWD: t.TempDir(), Env: []string{},
+		Args: []string{"--provider", "openai", "--model", models[0].ID,
+			"--base-url", "http://127.0.0.1:1", "--api-key", "test-key",
+			"--no-ext", "--no-mcp", "--no-lsp", "--no-context-files"},
+	})
+	assembly := deps.AgentBuilder.(sessionAgentBuilder).a
+	ctx := factoryTestCtx(t)
+	controller := session.NewController(ctx, deps)
+	t.Cleanup(func() { require.NoError(t, controller.Close(context.Background(), "user_exit")) })
+	_, err := controller.Snapshot(ctx) // Initialize the controller's lazy agent.
+	require.NoError(t, err)
+	initial := assembly.liveAgent()
+	require.Equal(t, models[0].ContextWindow, initial.ContextWindow)
+	require.Equal(t, models[0].MaxOutput, initial.MaxTokens)
+	// Switch up and back down to catch stale or monotonically growing limits.
+	for _, model := range []provider.Model{models[1], models[0]} {
+		require.NoError(t, controller.SetModel(ctx, model.Provider, model.ID))
+		require.Equal(t, model.ID, controller.Info().Model)
+		var current *core.Agent
+		require.NoError(t, controller.Do(ctx, func(context.Context) {
+			current = assembly.liveAgent()
+		}))
+		require.NotSame(t, initial, current)
+		require.Equal(t, model.ContextWindow, current.ContextWindow)
+		require.Equal(t, model.MaxOutput, current.MaxTokens)
+	}
+}
