@@ -54,7 +54,6 @@ func startMCPWithEnv(ctx context.Context, args *Args, version string, env []stri
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
-	manager.SetEnv(env)
 	failures, requiredErr := manager.Start(ctx)
 
 	for _, err := range failures {

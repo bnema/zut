@@ -76,17 +76,29 @@ func resolve(windows bool, name, cwd string, env []string, isExecutable func(str
 // LookupEnv returns the last value for key in env. Keys compare
 // case-insensitively on Windows, matching the process environment there.
 func LookupEnv(env []string, key string) string {
-	return lookupEnv(runtime.GOOS == "windows", env, key)
+	value, _ := LookupEnvOK(env, key)
+	return value
+}
+
+// LookupEnvOK returns the last value for key in env and whether it is present.
+// Keys compare case-insensitively on Windows. Nil env contains no entries.
+func LookupEnvOK(env []string, key string) (string, bool) {
+	return lookupEnvOK(runtime.GOOS == "windows", env, key)
 }
 
 func lookupEnv(windows bool, env []string, key string) string {
+	value, _ := lookupEnvOK(windows, env, key)
+	return value
+}
+
+func lookupEnvOK(windows bool, env []string, key string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		k, v, ok := strings.Cut(env[i], "=")
 		if ok && (k == key || windows && strings.EqualFold(k, key)) {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // pathExts normalizes a PATHEXT value like os/exec: lowercased, empty entries
