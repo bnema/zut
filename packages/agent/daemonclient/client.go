@@ -193,9 +193,16 @@ func mapErr(err error) error {
 
 // Create creates a session from spec.
 func (c *Client) Create(ctx context.Context, spec session.CreateSpec) (session.Info, error) {
-	var info session.Info
-	err := c.call(ctx, daemonproto.CreateRequest{Type: "create", Spec: spec}, &info)
-	return info, err
+	data, err := c.CreateWithOutput(ctx, spec)
+	return data.Info, err
+}
+
+// CreateWithOutput creates a session and also returns the zutfile entry.pre
+// output the daemon captured (empty from older daemons).
+func (c *Client) CreateWithOutput(ctx context.Context, spec session.CreateSpec) (daemonproto.CreateData, error) {
+	var data daemonproto.CreateData
+	err := c.call(ctx, daemonproto.CreateRequest{Type: "create", Spec: spec}, &data)
+	return data, err
 }
 
 // Attach sends a raw attach request. Event notifications are delivered only to

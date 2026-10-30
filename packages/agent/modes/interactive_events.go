@@ -1092,3 +1092,19 @@ func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port ses
 	i.mu.Unlock()
 	return i.attachPort(ctx)
 }
+
+// showStartupOutput adds the create-time entry.pre output to the notes area
+// once; later snapshots never carry it.
+func (i *Interactive) showStartupOutput() {
+	text := strings.TrimRight(i.cfg.StartupOutput, "\n")
+	i.cfg.StartupOutput = ""
+	if text == "" {
+		return
+	}
+	i.mu.Lock()
+	for _, line := range strings.Split(text, "\n") {
+		i.extNotes = append(i.extNotes, "  "+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, line))
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}

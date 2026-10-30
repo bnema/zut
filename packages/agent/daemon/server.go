@@ -370,11 +370,11 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		info, err := d.create(req.Spec)
+		data, err := d.createData(req.Spec)
 		if err == nil {
-			c.logLifecycle("create", session.ID(info.ID), "headless", req.Spec.Headless)
+			c.logLifecycle("create", session.ID(data.ID), "headless", req.Spec.Headless)
 		}
-		return info, err
+		return data, err
 	case "attach":
 		req, err := decodeFrame[daemonproto.AttachRequest](r)
 		if err != nil {

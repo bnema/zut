@@ -194,25 +194,53 @@ func (d *Daemon) cleanupPreviousSessions() {
 	}
 }
 
+// PreOutputSource is optionally implemented by session handles that captured
+// zutfile entry.pre output during creation.
+type PreOutputSource interface {
+	PreOutput() string
+}
+
 // create builds a new session; callers must not hold opMu.
 func (d *Daemon) create(spec session.CreateSpec) (session.Info, error) {
+	data, err := d.createData(spec)
+	return data.Info, err
+}
+
+// createData is create plus the entry.pre output for the create response.
+func (d *Daemon) createData(spec session.CreateSpec) (daemonproto.CreateData, error) {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
-	return d.createLocked(spec)
+	h, err := d.createHandleLocked(spec)
+	if err != nil {
+		return daemonproto.CreateData{}, err
+	}
+	data := daemonproto.CreateData{Info: h.Info()}
+	if src, ok := h.(PreOutputSource); ok {
+		data.PreOutput = src.PreOutput()
+	}
+	return data, nil
 }
 
 func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
+	h, err := d.createHandleLocked(spec)
+	if err != nil {
+		return session.Info{}, err
+	}
+	return h.Info(), nil
+}
+
+func (d *Daemon) createHandleLocked(spec session.CreateSpec) (session.Handle, error) {
 	if d.isStopping() {
-		return session.Info{}, ErrStopping
+		return nil, ErrStopping
 	}
 	pre, err := lockSessionFile(spec.ResumePath)
 	if err != nil {
-		return session.Info{}, err
+		return nil, err
 	}
 	h, err := d.factory.Create(d.sessCtx, spec)
 	if err != nil {
 		_ = pre.Close()
-		return session.Info{}, err
+		return nil, err
 	}
 	info := h.Info()
 	lock := pre
@@ -221,7 +249,7 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 		if err != nil {
 			_ = pre.Close()
 			d.closeHandle(h, "session_lock_failed")
-			return session.Info{}, err
+			return nil, err
 		}
 		_ = pre.Close()
 		lock = l
@@ -231,9 +259,9 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 		cwd = info.CWD
 	}
 	if err := d.register(h, session.CreateSpec{CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre()}, lock); err != nil {
-		return session.Info{}, err
+		return nil, err
 	}
-	return h.Info(), nil
+	return h, nil
 }
 
 func (d *Daemon) closeHandle(h session.Handle, reason string) {

@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRunZutfileStartupPreShellFailure(t *testing.T) {
@@ -39,5 +40,38 @@ func TestRunZutfileStartupPreShellStreams(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "streamed-pre") {
 		t.Fatalf("shell output not streamed: %q", out.String())
+	}
+}
+
+func TestZutfilePreOutputBound(t *testing.T) {
+	for _, size := range []int{0, startupPreOutputLimit, startupPreOutputLimit + 1} {
+		var out startupPreOutput
+		input := strings.Repeat("x", size)
+		n, err := out.Write([]byte(input))
+		if err != nil || n != size {
+			t.Fatalf("Write = %d, %v", n, err)
+		}
+		if out.Len() > startupPreOutputLimit {
+			t.Fatalf("retained %d bytes", out.Len())
+		}
+		if strings.Contains(out.String(), "truncated") != (size > startupPreOutputLimit) {
+			t.Fatalf("truncation for %d bytes", size)
+		}
+		n, err = out.Write([]byte("more"))
+		if err != nil || n != 4 {
+			t.Fatalf("continued Write = %d, %v", n, err)
+		}
+	}
+}
+
+func TestZutfilePreOutputTruncatesOnRuneBoundary(t *testing.T) {
+	var out startupPreOutput
+	// "é" is two bytes; an odd prefix makes the limit fall inside a rune.
+	input := "x" + strings.Repeat("é", startupPreOutputLimit/2)
+	if _, err := out.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(out.Bytes()) || out.Len() != startupPreOutputLimit-1 {
+		t.Fatalf("retained %d bytes, valid=%v", out.Len(), utf8.Valid(out.Bytes()))
 	}
 }

@@ -5,6 +5,7 @@ package daemonproto
 import (
 	"encoding/json"
 	"github.com/bnema/zut/packages/agent/session"
+	"reflect"
 )
 
 // ProtocolVersion is the required wire protocol version.
@@ -140,6 +141,31 @@ type ClosedNotification struct {
 	Type      string     `json:"type"`
 	Session   session.ID `json:"session"`
 	Successor session.ID `json:"successor,omitempty"`
+}
+
+// CreateData is successful create result data: the session info plus,
+// for zutfile sessions, the captured entry.pre shell output. Clients show
+// PreOutput once; older daemons omit it.
+type CreateData struct {
+	session.Info
+	PreOutput string `json:"pre_output,omitempty"`
+}
+
+// UnmarshalJSON decodes the flat Info fields with the payload codec (the
+// codec does not flatten embedded structs) and pre_output from the same map.
+func (d *CreateData) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	if err := hydrate(b, reflect.ValueOf(&d.Info).Elem()); err != nil {
+		return err
+	}
+	d.PreOutput = ""
+	if raw, ok := m["pre_output"]; ok {
+		return json.Unmarshal(raw, &d.PreOutput)
+	}
+	return nil
 }
 
 // HelloData is successful hello result data. Version skew is a warning;

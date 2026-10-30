@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
@@ -42,12 +44,19 @@ import (
 // factory. The factory must call BindSessionHooks once the controller exists
 // so extension hooks, confirmations and questions reach it.
 func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string) (session.Deps, func(), error) {
+	deps, cleanup, _, err := newSessionDeps(ctx, spec, version)
+	return deps, cleanup, err
+}
+
+// newSessionDeps is NewSessionDeps plus the captured zutfile entry.pre shell
+// output, handed to the daemon factory for the create response.
+func newSessionDeps(ctx context.Context, spec session.CreateSpec, version string) (session.Deps, func(), string, error) {
 	if !filepath.IsAbs(spec.CWD) {
-		return session.Deps{}, nil, fmt.Errorf("session cwd must be absolute: %q", spec.CWD)
+		return session.Deps{}, nil, "", fmt.Errorf("session cwd must be absolute: %q", spec.CWD)
 	}
 	args, err := ParseArgs(spec.Args)
 	if err != nil {
-		return session.Deps{}, nil, fmt.Errorf("parse session args: %w", err)
+		return session.Deps{}, nil, "", fmt.Errorf("parse session args: %w", err)
 	}
 	// The creating client owns cwd and env; ParseArgs' process defaults are
 	// replaced so no process state leaks into the session.
@@ -58,7 +67,7 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 		args.Continue, args.Resume, args.ResumeSessionID = false, false, ""
 	}
 	if args.Resume && args.ResumeSessionID == "" {
-		return session.Deps{}, nil, errors.New("resume requires a session id or ResumePath; pick on the client")
+		return session.Deps{}, nil, "", errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 	applyZutfileSpec(&args, spec.Zutfile)
 
@@ -70,7 +79,7 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 		}
 	}()
 	if err := a.build(ctx, spec); err != nil {
-		return session.Deps{}, nil, err
+		return session.Deps{}, nil, "", err
 	}
 	ok = true
 	deps := a.deps()
@@ -82,7 +91,9 @@ func NewSessionDeps(ctx context.Context, spec session.CreateSpec, version string
 			return preloadSkillPins(pinArgs, true, prompt, bundled, os.Stderr)
 		}
 	}
-	return deps, a.cleanup, nil
+	preOutput := a.preOutput
+	a.preOutput = "" // handed off; the assembly keeps no copy
+	return deps, a.cleanup, preOutput, nil
 }
 
 // BindSessionHooks connects late-bound placeholders to the controller built
@@ -136,6 +147,7 @@ type sessionAssembly struct {
 	autoAllowed, autoStatusAllowed, autoStopAllowed, autoResumeAllowed bool
 	autoInterruptAllowed, fastMode                                     bool
 
+	preOutput   string // captured entry.pre shell output for the create response
 	cleanupOnce sync.Once
 }
 
@@ -255,13 +267,17 @@ func applyZutfileSpec(args *Args, z *session.ZutfileSpec) {
 
 // runStartupPre runs zutfile entry.pre once on the prepared agent, as the
 // in-process modes did, then reloads extensions, skills and tools it may
-// have installed. Output reaches the transcript, not a terminal.
+// have installed. Shell output is returned to the creating client only.
 func (a *sessionAssembly) runStartupPre(ctx context.Context) error {
 	if a.args.StartupPre == "" {
 		return nil
 	}
-	if err := runZutfileStartupPreEnv(ctx, a.args.StartupPre, a.r.CWD, a.args.Env, a.sandbox, a.next, nil, nil); err != nil {
+	var out startupPreOutput
+	if err := runZutfileStartupPreEnv(ctx, a.args.StartupPre, a.r.CWD, a.args.Env, a.sandbox, a.next, nil, &out); err != nil {
 		return err
+	}
+	if out.Len() > 0 {
+		a.preOutput = out.String()
 	}
 	if a.next == nil {
 		return nil
@@ -1271,3 +1287,37 @@ var (
 	_ extensions.AlertHostHooks           = (*lateHostHooks)(nil)
 	_ extensions.ExtensionChromeHooks     = (*lateHostHooks)(nil)
 )
+
+// startupPreOutput drains all shell chunks while retaining at most 64 KiB.
+const startupPreOutputLimit = 64 * 1024
+
+type startupPreOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *startupPreOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.truncated {
+		return n, nil
+	}
+	if remaining := startupPreOutputLimit - b.Len(); len(p) > remaining {
+		// Step back so a multi-byte rune is never split at the limit.
+		cut := remaining
+		for cut > 0 && cut > remaining-utf8.UTFMax && !utf8.RuneStart(p[cut]) {
+			cut--
+		}
+		p = p[:cut]
+		b.truncated = true
+	}
+	_, _ = b.Buffer.Write(p)
+	return n, nil
+}
+
+func (b *startupPreOutput) String() string {
+	text := b.Buffer.String()
+	if b.truncated {
+		text += "\n[zutfile entry.pre output truncated at 64 KiB]\n"
+	}
+	return text
+}

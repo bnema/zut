@@ -54,7 +54,7 @@ func (f *sessionFactory) Create(ctx context.Context, spec session.CreateSpec) (s
 // is the daemon's session context: it bounds startup in NewSessionDeps and
 // is the controller's lifetime.
 func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opts session.Options) (session.Handle, error) {
-	deps, cleanup, err := NewSessionDeps(ctx, spec, f.version)
+	deps, cleanup, preOutput, err := newSessionDeps(ctx, spec, f.version)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 		deps.ToolRefresher = extraToolsRefresher{ToolRefresher: deps.ToolRefresher, builder: builder}
 	}
 	ctrl := session.NewControllerWithOptions(ctx, deps, opts)
-	h := &factoryHandle{Controller: ctrl, f: f, id: opts.ID, cleanup: cleanup, done: make(chan struct{})}
+	h := &factoryHandle{Controller: ctrl, f: f, id: opts.ID, cleanup: cleanup, done: make(chan struct{}), preOutput: preOutput}
 	confirmer, asker := ctrl.HookBindings()
 	if err := BindSessionHooks(deps, ctrl.ExtensionHooks(), confirmer, asker); err != nil {
 		_ = ctrl.Close(context.Background(), "bind_failed")
@@ -171,6 +171,17 @@ type factoryHandle struct {
 	cleanup func()
 	reason  atomic.Value // string
 	done    chan struct{}
+	// preOutput is zutfile entry.pre shell output, returned once in the
+	// create response (see daemon.PreOutputSource).
+	preOutput string
+}
+
+// PreOutput implements daemon.PreOutputSource. It returns the output once
+// and clears it; the daemon calls it under opMu right after Create.
+func (h *factoryHandle) PreOutput() string {
+	out := h.preOutput
+	h.preOutput = ""
+	return out
 }
 
 // Close records the reason (deciding whether schedules survive) and closes

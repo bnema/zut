@@ -70,7 +70,7 @@ Go error objects. Result data contracts:
 | Request | Successful `data` |
 | --- | --- |
 | hello | `HelloData`: `protocol_version`, `daemon_version` |
-| create | `session.Info` for the new session |
+| create | `CreateData`: the `session.Info` fields for the new session, plus optional `pre_output` (zutfile `entry.pre` shell output: up to 64 KiB of captured output plus a truncation marker, shown once by the creating client; omitted when empty or by older daemons) |
 | attach | `session.Info` for the attached session |
 | detach, close, daemon_stop | omitted |
 | clear | `session.Info` for the successor |
