@@ -113,6 +113,11 @@ type rpcBridge struct {
 	token   string
 	authed  bool
 
+	// alertMu serializes hello and alerts so live alerts cannot overtake the flush.
+	alertMu       sync.Mutex
+	helloDone     bool
+	pendingAlerts []map[string]any
+
 	writeMu sync.Mutex
 	mu      sync.Mutex
 	// active is closed when the running prompt/compact reaches idle.
@@ -216,7 +221,7 @@ func (b *rpcBridge) pump(port session.Port, events <-chan session.Event, done ch
 			}
 		case session.EvExtAlert:
 			if a, ok := ev.Data.(session.ExtAlertEvent); ok {
-				b.write(map[string]any{"type": "ext_alert", "extension": a.Ext, "kind": a.Alert.Kind, "reason": a.Alert.Reason})
+				b.writeAlert(map[string]any{"type": "ext_alert", "extension": a.Ext, "kind": a.Alert.Kind, "reason": a.Alert.Reason})
 			}
 		case session.EvPending:
 			if p, ok := ev.Data.(session.PendingEvent); ok {
@@ -338,8 +343,15 @@ func (b *rpcBridge) dispatch(ctx context.Context, cmd, id string, raw []byte) {
 	port := b.h.port
 	switch cmd {
 	case "hello":
+		b.alertMu.Lock()
 		info := b.currentInfo()
 		b.writeResponse(id, cmd, map[string]any{"protocol_version": 1, "version": b.version, "provider": info.Provider, "model": info.Model})
+		b.helloDone = true
+		for _, frame := range b.pendingAlerts {
+			b.write(frame)
+		}
+		b.pendingAlerts = nil
+		b.alertMu.Unlock()
 	case "ping":
 		b.writeResponse(id, cmd, map[string]any{"pong": true})
 	case "prompt":
@@ -517,6 +529,21 @@ func (b *rpcBridge) writeError(id, cmd, msg string) {
 	frame := map[string]any{"type": "response", "command": cmd, "success": false, "error": msg}
 	if id != "" {
 		frame["id"] = id
+	}
+	b.write(frame)
+}
+
+func (b *rpcBridge) writeAlert(frame map[string]any) {
+	b.alertMu.Lock()
+	defer b.alertMu.Unlock()
+	if !b.helloDone {
+		const maxPendingAlerts = 64
+		if len(b.pendingAlerts) == maxPendingAlerts {
+			copy(b.pendingAlerts, b.pendingAlerts[1:])
+			b.pendingAlerts = b.pendingAlerts[:maxPendingAlerts-1]
+		}
+		b.pendingAlerts = append(b.pendingAlerts, frame)
+		return
 	}
 	b.write(frame)
 }

@@ -45,6 +45,7 @@ func offlineBridge(out *bytes.Buffer, info session.Info) *rpcBridge {
 func TestRPCBridgeExtAlertIsJSONOnly(t *testing.T) {
 	var out bytes.Buffer
 	b := offlineBridge(&out, session.Info{})
+	b.helloDone = true
 	events := make(chan session.Event, 1)
 	events <- session.Event{Kind: session.EvExtAlert, Data: session.ExtAlertEvent{Ext: "notify", Alert: extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "question_ready"}}}
 	close(events)
@@ -232,4 +233,45 @@ func TestRPCBridgeSettingsAndClearOnDaemon(t *testing.T) {
 	require.Empty(t, data(send("7", `{"id":"7","type":"get_messages"}`))["messages"], "clear kept the transcript")
 	require.NoError(t, feed.Close())
 	require.NoError(t, <-done, "stderr: %s", stderr.String())
+}
+
+func TestRPCBridgeAlertsWaitForHello(t *testing.T) {
+	for _, token := range []string{"", "synthetic-token"} {
+		t.Run("token="+token, func(t *testing.T) {
+			var out bytes.Buffer
+			b := offlineBridge(&out, session.Info{})
+			b.token = token
+			alert := func(reason string) {
+				events := make(chan session.Event, 1)
+				events <- session.Event{Kind: session.EvExtAlert, Data: session.ExtAlertEvent{Ext: "notify", Alert: extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}}}
+				close(events)
+				b.pump(nil, events, make(chan struct{}))
+			}
+			for i := 0; i < 66; i++ {
+				alert(fmt.Sprint(i))
+			}
+			require.Empty(t, out.String(), "alerts must not precede hello")
+			if token != "" {
+				require.Error(t, b.handleLine(context.Background(), `{"type":"hello","token":"wrong"}`))
+				require.Len(t, rpcFrames(t, out.String()), 1, "bad auth must not flush alerts")
+				out.Reset()
+			}
+			hello := fmt.Sprintf(`{"type":"hello","token":%q}`, token)
+			require.NoError(t, b.handleLine(context.Background(), hello))
+			frames := rpcFrames(t, out.String())
+			require.Len(t, frames, 65)
+			require.Equal(t, "hello", frames[0]["command"])
+			for i, frame := range frames[1:] {
+				require.Equal(t, "ext_alert", frame["type"])
+				require.Equal(t, fmt.Sprint(i+2), frame["reason"])
+			}
+			out.Reset()
+			alert("live")
+			require.NoError(t, b.handleLine(context.Background(), hello))
+			frames = rpcFrames(t, out.String())
+			require.Len(t, frames, 2, "repeated hello must not replay alerts")
+			require.Equal(t, "live", frames[0]["reason"])
+			require.NotContains(t, out.String(), "\a")
+		})
+	}
 }
