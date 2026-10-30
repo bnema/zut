@@ -786,6 +786,16 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	}
 
+	// A tree checkout must finish before Enter can send to the new daemon session.
+	if i.portMode.Load() && k.Kind == tui.KeyEnter {
+		i.mu.Lock()
+		loading := i.sessionLoading
+		i.mu.Unlock()
+		if loading {
+			return false
+		}
+	}
+
 	// Slash suggestions: intercept up/down/tab/enter when the popup is visible.
 	if i.suggest.Active(i.ed.Value()) {
 		switch k.Kind {

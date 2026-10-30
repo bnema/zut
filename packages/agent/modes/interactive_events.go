@@ -870,14 +870,15 @@ const (
 // sessionResult is the outcome of an async daemon call, applied by the Run
 // loop only when gen still matches the attached session.
 type sessionResult struct {
-	kind   sessionResultKind
-	gen    uint64
-	id     session.ID
-	port   session.Port
-	snap   session.Snapshot
-	events <-chan session.Event
-	cancel context.CancelFunc
-	err    error
+	treeSelection *sessionTreeSelectionResult
+	kind          sessionResultKind
+	gen           uint64
+	id            session.ID
+	port          session.Port
+	snap          session.Snapshot
+	events        <-chan session.Event
+	cancel        context.CancelFunc
+	err           error
 }
 
 func (i *Interactive) sessionCallTimeout() time.Duration {
@@ -968,6 +969,11 @@ func (i *Interactive) reattachSuccessor(ctx context.Context, successor session.I
 func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult) (done bool) {
 	i.mu.Lock()
 	if res.gen != i.sessionGen {
+		// A successor or takeover can invalidate an in-flight tree checkout.
+		// Discard its draft and subscription, but release the input gate.
+		if res.kind == sessionResultSwitch && res.treeSelection != nil {
+			i.sessionLoading = false
+		}
 		i.mu.Unlock()
 		if res.cancel != nil {
 			res.cancel()
@@ -1003,6 +1009,9 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.statusErr, i.statusOK = "", ""
 		i.hydrateLocked(res.snap)
 	case sessionResultSwitch:
+		if res.treeSelection != nil {
+			i.sessionLoading = false
+		}
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
 			i.mu.Unlock()
@@ -1019,6 +1028,15 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.extNotes = nil
 		i.statusErr, i.statusOK = "", "switched to session "+string(res.id)
 		i.hydrateLocked(res.snap)
+		if selection := res.treeSelection; selection != nil {
+			i.ed.Clear()
+			i.clipboardImages = nil
+			if selection.restoreDraft {
+				i.ed.SetValue(selection.draftText)
+				i.clipboardImages = selection.images
+			}
+			i.statusOK = "checked out selection; edit and send to branch"
+		}
 	case sessionResultExit:
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""

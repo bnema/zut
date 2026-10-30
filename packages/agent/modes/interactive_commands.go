@@ -1693,6 +1693,10 @@ func (i *Interactive) portOpenFork() {
 // snapshots and subscribes off the render loop. The loop applies the switch
 // (sessionResultSwitch), which releases the old session.
 func (i *Interactive) portSwitchAsync(label string, resolve func(context.Context, SessionClient) (session.ID, error)) {
+	i.portSwitchWithTreeSelection(label, resolve, nil)
+}
+
+func (i *Interactive) portSwitchWithTreeSelection(label string, resolve func(context.Context, SessionClient) (session.ID, error), selection *sessionTreeSelectionResult) {
 	client := i.SessionClient()
 	if client == nil {
 		i.ReportError(fmt.Errorf("%s: no session client", label))
@@ -1704,12 +1708,15 @@ func (i *Interactive) portSwitchAsync(label string, resolve func(context.Context
 	}
 	i.mu.Lock()
 	gen := i.sessionGen
+	if selection != nil {
+		i.sessionLoading = true
+	}
 	i.statusOK, i.statusErr = label+": switching session…", ""
 	i.mu.Unlock()
 	i.invalidate()
 	timeout := i.sessionCallTimeout()
 	go func() {
-		res := sessionResult{kind: sessionResultSwitch, gen: gen}
+		res := sessionResult{kind: sessionResultSwitch, gen: gen, treeSelection: selection}
 		callCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		fail := func(err error) {

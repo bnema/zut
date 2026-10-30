@@ -9,6 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -979,6 +980,14 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		i.setSessionTreeError("tree: " + err.Error())
 		return
 	}
+	if i.portMode.Load() && !target.Historical {
+		cwd := i.SessionInfo().CWD
+		i.portSwitchWithTreeSelection("tree", func(ctx context.Context, client SessionClient) (session.ID, error) {
+			created, err := client.Create(ctx, session.CreateSpec{CWD: cwd, Fork: &session.ForkSpec{ParentPath: src, UpToMessage: selection.upTo, Hidden: true}})
+			return session.ID(created.ID), err
+		}, &selection)
+		return
+	}
 	if i.cfg.FlushSession != nil {
 		i.cfg.FlushSession()
 	}
@@ -990,6 +999,16 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	}
 	if err != nil {
 		i.setSessionTreeError("tree: " + err.Error())
+		return
+	}
+	// Historical selections already materialize a safe pre-compaction branch
+	// above; resume it through the daemon without extending ForkSpec.
+	if i.portMode.Load() {
+		cwd := i.SessionInfo().CWD
+		i.portSwitchWithTreeSelection("tree", func(ctx context.Context, client SessionClient) (session.ID, error) {
+			created, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: newPath})
+			return session.ID(created.ID), err
+		}, &selection)
 		return
 	}
 	i.markSessionTitleSwitching()

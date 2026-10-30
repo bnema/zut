@@ -405,6 +405,8 @@ Inspect the current session with `/session info` or `/session timeline`, or expo
 
   Selecting a user-message row creates a navigation branch before that message and restores the complete editable draft, including text blocks and image attachments; no provider request is made until you submit it. Selecting an assistant-message row checks out a safe message boundary, and selecting an empty or detached boundary checks out that branch point with an empty editor. Navigation branches are hidden from `/sessions` but remain in the tree.
 
+  The tree and double-Escape shortcut also work when attached to a daemon: selecting a user message checks out a hidden branch through the daemon and restores its draft only after the new session is attached. Press Enter after editing to resend through that session.
+
   `/session tree` and the double-Escape shortcut use the same checks: a complete current session family must be readable, and no turn, shell escape, compaction, startup/session load, dialog, picker, suggestion, or queued message may be active. The shortcut is two parsed, unmodified bare `Esc` events within 500 ms from an idle editor with no visible text or pending image. Dialogs, confirmations, panels, pickers, and suggestions keep their existing Escape behavior; busy Escape still cancels, modified Escape is not part of the gesture, and any intervening key or timeout resets it. The shortcut depends on the terminal input path producing those parsed events; `/session tree` is the explicit equivalent when it is unavailable.
 
 ### `/jump`

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -57,7 +59,13 @@ func (i *Interactive) sessionTreeEscapeNow() time.Time {
 // --no-session) is a supported mode, so callers must treat a missing
 // callback exactly like an empty path rather than invoking it blindly.
 func (i *Interactive) currentSessionPath() string {
-	if i == nil || i.cfg.CurrentSessionPath == nil {
+	if i == nil {
+		return ""
+	}
+	if i.portMode.Load() {
+		return i.SessionInfo().SessionPath
+	}
+	if i.cfg.CurrentSessionPath == nil {
 		return ""
 	}
 	return i.cfg.CurrentSessionPath()
@@ -114,7 +122,7 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 // the user would never receive the gate's status error.
 func (i *Interactive) canArmSessionTreeEscape() bool {
 	if i == nil || i.ed == nil || i.cfg.CWD == "" || i.sessionsRoot() == "" ||
-		i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil {
+		(!i.portMode.Load() && (i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil)) {
 		return false
 	}
 	if !i.ed.IsEmpty() || len(i.clipboardImages) != 0 || i.sessionTreeEscapeBlocked() {
@@ -126,7 +134,7 @@ func (i *Interactive) canArmSessionTreeEscape() bool {
 	ag := i.agent
 	pendingFork := i.pendingFork
 	i.mu.Unlock()
-	if busy || queued || pendingFork || ag == nil || ag.QueuedMessageCount() != 0 {
+	if busy || queued || pendingFork || !i.sessionTreeBackendReady(ag) {
 		return false
 	}
 	return i.currentSessionPath() != ""
@@ -138,7 +146,7 @@ func (i *Interactive) canArmSessionTreeEscape() bool {
 // asynchronous dialog loader validates the family after the overlay opens.
 func (i *Interactive) canOpenSessionTree() bool {
 	if i == nil || i.ed == nil || i.cfg.CWD == "" || i.sessionsRoot() == "" ||
-		i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil {
+		(!i.portMode.Load() && (i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil)) {
 		return false
 	}
 	if !i.ed.IsEmpty() || len(i.clipboardImages) != 0 || i.sessionTreeEscapeBlocked() {
@@ -151,10 +159,7 @@ func (i *Interactive) canOpenSessionTree() bool {
 	ag := i.agent
 	pendingFork := i.pendingFork
 	i.mu.Unlock()
-	if busy || queued || pendingFork || ag == nil {
-		return false
-	}
-	if ag.QueuedMessageCount() != 0 {
+	if busy || queued || pendingFork || !i.sessionTreeBackendReady(ag) {
 		return false
 	}
 
@@ -166,7 +171,7 @@ func (i *Interactive) canOpenSessionTree() bool {
 // reusing canOpenSessionTree here would reject every Enter selection because
 // the dialog is itself an overlay.
 func (i *Interactive) canCommitSessionTreeSelection() bool {
-	if i == nil || i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil || i.sessionsRoot() == "" || i.cfg.CWD == "" {
+	if i == nil || (!i.portMode.Load() && (i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil)) || i.sessionsRoot() == "" || i.cfg.CWD == "" {
 		return false
 	}
 	i.mu.Lock()
@@ -174,10 +179,20 @@ func (i *Interactive) canCommitSessionTreeSelection() bool {
 	queued := len(i.queued) != 0
 	ag := i.agent
 	i.mu.Unlock()
-	if busy || queued || ag == nil || ag.QueuedMessageCount() != 0 {
+	if busy || queued || !i.sessionTreeBackendReady(ag) {
 		return false
 	}
 	return i.currentSessionPath() != ""
+}
+
+// sessionTreeBackendReady uses daemon state instead of requiring a local agent.
+func (i *Interactive) sessionTreeBackendReady(ag *core.Agent) bool {
+	if i.portMode.Load() {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return i.client != nil && i.portInfo.Run == session.RunStateIdle && len(i.portQueue) == 0
+	}
+	return ag != nil && ag.QueuedMessageCount() == 0
 }
 
 func (i *Interactive) setSessionTreeError(message string) {
