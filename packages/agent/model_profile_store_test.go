@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -84,10 +85,23 @@ func TestDaemonProfileAssignReachesOtherSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, b.Profiles, 9)
 
+	bh := td.server.factory.lookup(session.ID(b.ID))
+	events, err := bh.Subscribe(ctx, 0)
+	require.NoError(t, err)
 	prof := session.QuickModelShortcut{Provider: "openai", Model: "gpt-5-mini"}
 	require.NoError(t, c.Port(session.ID(a.ID), true).AssignProfile(ctx, 5, prof, false))
-	bh := td.server.factory.lookup(session.ID(b.ID))
-	require.Eventually(t, func() bool { return bh.Info().Profiles[4].Model == "gpt-5-mini" }, 10*time.Second, 10*time.Millisecond)
+
+waitInfo:
+	for {
+		select {
+		case ev := <-events:
+			if info, ok := ev.Data.(session.InfoEvent); ok && info.Info.Profiles[4].Model == "gpt-5-mini" {
+				break waitInfo
+			}
+		case <-ctx.Done():
+			t.Fatal("profile info event not received: ", ctx.Err())
+		}
+	}
 	cfg, err := LoadConfig()
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
@@ -177,7 +191,9 @@ func TestSaveConfigAtomicReplace(t *testing.T) {
 	wg.Wait()
 	info, err := os.Stat(ConfigPath())
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 	entries, err := os.ReadDir(home)
 	require.NoError(t, err)
 	for _, e := range entries {

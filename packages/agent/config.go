@@ -343,7 +343,7 @@ func normalizedModelProfile(p QuickModelShortcut) QuickModelShortcut {
 func (c *Config) applyActiveModelProfile() int {
 	slot := c.ActiveModelProfile
 	if slot < 1 || slot > 9 {
-		slot = 1
+		return 0
 	}
 	if slot > len(c.QuickModelShortcuts) {
 		return 0

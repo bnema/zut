@@ -102,10 +102,7 @@ func TestModelProfileConfigLegacyAndInvalidActiveSlots(t *testing.T) {
 		copy := cfg
 		copy.ActiveModelProfile = slot
 		copy.applyActiveModelProfile()
-		want := "gpt-5.6-sol" // missing/out-of-range active slot defaults to 1
-		if slot == 2 {
-			want = "gpt-5.5"
-		} // valid but unassigned slot
+		want := "gpt-5.5" // invalid or unassigned active slots preserve plain settings
 		if copy.Model != want {
 			t.Fatalf("active slot %d: model %s, want %s", slot, copy.Model, want)
 		}

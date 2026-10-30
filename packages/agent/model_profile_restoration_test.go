@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
@@ -11,7 +14,7 @@ func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
 		profile QuickModelShortcut
 	}{
 		{"missing model", 2, QuickModelShortcut{Provider: "openai", Model: "removed-model", Reasoning: "high"}},
-		{"missing provider default slot", 0, QuickModelShortcut{Provider: "removed-provider", Model: "removed-model", Reasoning: "high"}},
+		{"missing provider active slot", 1, QuickModelShortcut{Provider: "removed-provider", Model: "removed-model", Reasoning: "high"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ZUT_HOME", t.TempDir())
@@ -91,5 +94,35 @@ func TestModelProfileStartupClampsReasoning(t *testing.T) {
 				t.Fatalf("startup reasoning=%q, want %q", r.Reasoning, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveWithoutActiveProfilePreservesPlainSettings(t *testing.T) {
+	for _, active := range []int{0, -1, 10} {
+		for _, model := range []string{"gpt-5", "removed-model"} {
+			t.Run(fmt.Sprintf("active=%d/model=%s", active, model), func(t *testing.T) {
+				t.Setenv("ZUT_HOME", t.TempDir())
+				favorite := QuickModelShortcut{Provider: "removed-provider", Model: "removed-favorite", Reasoning: "max", FastMode: true}
+				fast := false
+				cfg := Config{Provider: "openai", Model: model, Reasoning: "low", FastMode: &fast, ActiveModelProfile: active, QuickModelShortcuts: []QuickModelShortcut{favorite}}
+				require.Equal(t, 0, cfg.applyActiveModelProfile())
+				require.Equal(t, model, cfg.Model)
+				require.NoError(t, SaveConfig(cfg))
+				resolved, err := Resolve(Args{APIKey: "synthetic-test-key"}, false)
+				require.NoError(t, err)
+				require.Equal(t, "openai", resolved.Provider)
+				require.Equal(t, "low", resolved.Reasoning)
+				if model == "gpt-5" {
+					require.Equal(t, model, resolved.Model)
+				}
+				saved, err := LoadConfig()
+				require.NoError(t, err)
+				require.Equal(t, active, saved.ActiveModelProfile)
+				require.Equal(t, []QuickModelShortcut{favorite}, saved.QuickModelShortcuts)
+				require.Equal(t, "low", saved.Reasoning)
+				require.Equal(t, &fast, saved.FastMode)
+				require.Equal(t, resolved.Model, saved.Model)
+			})
+		}
 	}
 }
