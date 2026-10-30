@@ -786,7 +786,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.invalidate()
 				return false
 			}
-			if !k.Alt && i.inputHistoryIndex < 0 && i.hasResidentSubagents(ctx) {
+			if !k.Alt && i.inputHistoryIndex < 0 && i.hasResidentSubagents() {
 				i.runResidentSubagents(ctx, nil)
 				return false
 			}

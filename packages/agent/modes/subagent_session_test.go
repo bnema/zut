@@ -298,7 +298,7 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	port := sessionmocks.NewMockPort(t)
 	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return([]subagents.ResidentSnapshot{{ID: spec.ID, State: subagents.ResidentIdle}}, 1, nil)
 	port.EXPECT().ResidentHistory(mock.Anything, spec.ID, "", 200).Return(subagents.ResidentHistoryPage{}, nil).Maybe()
-	interactive := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
+	interactive := newQueuePortInteractive(t, port, session.Snapshot{Info: session.Info{ID: "s", Residents: []session.ResidentSummary{{ID: spec.ID, State: string(subagents.ResidentIdle)}}}}, InteractiveConfig{Theme: tui.Dark})
 	interactive.ed.SetValue("draft")
 
 	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
@@ -321,6 +321,15 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 
 // waitResidentDialogLoaded consumes redraw requests until the picker's async
 // list fetch has landed.
+func TestInteractiveInputDownWithoutResidentsDoesNotCallPort(t *testing.T) {
+	// No ResidentList expectation: the gate must read session info only.
+	interactive := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
+	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
+	if interactive.residentSubagentsDialog.Active() {
+		t.Fatal("Down opened the picker without residents")
+	}
+}
+
 func waitResidentDialogLoaded(t *testing.T, interactive *Interactive) {
 	t.Helper()
 	timeout := time.After(5 * time.Second)

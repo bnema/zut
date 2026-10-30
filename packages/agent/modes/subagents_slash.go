@@ -297,15 +297,10 @@ func (i *Interactive) residentPort() session.Port {
 	return i.port
 }
 
-// hasResidentSubagents asks the session whether any resident exists. A zero
-// limit returns only the count.
-func (i *Interactive) hasResidentSubagents(ctx context.Context) bool {
-	port := i.residentPort()
-	if port == nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(ctx, residentDialogTimeout)
-	defer cancel()
-	_, total, err := port.ResidentList(ctx, 0, 0)
-	return err == nil && total > 0
+// hasResidentSubagents reads the session-published resident summaries; it
+// never calls the port, so the key handler cannot block on the daemon.
+func (i *Interactive) hasResidentSubagents() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.portInfo.Residents) > 0
 }
