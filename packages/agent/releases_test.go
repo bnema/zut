@@ -363,7 +363,7 @@ func TestUpdateChecksumMismatchStopsInstall(t *testing.T) {
 	old := http.DefaultTransport
 	http.DefaultTransport = releaseTestTransport{server.URL}
 	defer func() { http.DefaultTransport = old }()
-	err := runUpdate("1.0.0")
+	err := runUpdateWithRestart("1.0.0", false)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum rejection before extraction/replacement: %v", err)
 	}
