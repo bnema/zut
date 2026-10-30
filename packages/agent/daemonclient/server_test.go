@@ -36,6 +36,7 @@ type miniDaemon struct {
 	attachErr error
 	attaches  []daemonproto.AttachRequest
 	onAttach  chan struct{} // optional; signaled after each successful attach
+	onDetach  chan struct{} // optional; signaled after each detach request
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 }
@@ -143,7 +144,14 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 		return nil, nil
 	case "create", "clear":
 		return session.Info{ID: "s2"}, nil
-	case "detach", "close":
+	case "detach":
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.onDetach != nil {
+			d.onDetach <- struct{}{}
+		}
+		return nil, nil
+	case "close":
 		return nil, nil
 	}
 	return nil, errors.New("unsupported")
