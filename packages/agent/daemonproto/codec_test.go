@@ -175,3 +175,34 @@ func TestToolResultDetailsExactLargeInteger(t *testing.T) {
 		t.Fatalf("round trip changed number:\n%s\n%s", raw, again)
 	}
 }
+
+func TestAgentCancellationIdentity(t *testing.T) {
+	for _, ev := range []core.AgentEvent{core.EvTurnEnd{Stop: provider.StopError, Err: context.Canceled}, core.EvError{Err: context.Canceled}} {
+		kind, raw, err := daemonproto.EncodeAgentEvent(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := daemonproto.DecodeAgentEvent(kind, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got error
+		switch e := decoded.(type) {
+		case core.EvTurnEnd:
+			got = e.Err
+		case core.EvError:
+			got = e.Err
+		}
+		if !errors.Is(got, context.Canceled) || got.Error() != context.Canceled.Error() {
+			t.Fatalf("decoded error = %v", got)
+		}
+	}
+	// Old payloads remain valid and retain their text without inventing identity.
+	ev, err := daemonproto.DecodeAgentEvent("turn_end", json.RawMessage(`{"type":"turn_end","value":{"Stop":"error","Error":"old error"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ev.(core.EvTurnEnd).Err; got.Error() != "old error" || errors.Is(got, context.Canceled) {
+		t.Fatalf("legacy error = %v", got)
+	}
+}

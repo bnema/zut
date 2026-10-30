@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
@@ -112,7 +113,11 @@ func TestCancelledMainTurnDoesNotBell(t *testing.T) {
 		term := &alertTestTerminal{}
 		i, ctx := newPortAlertInteractive(t, term)
 		seq := uint64(1)
-		runPortTurn(ctx, i, &seq, nil, core.EvTurnStart{}, end)
+		kind, raw, err := daemonproto.EncodeAgentEvent(end)
+		require.NoError(t, err)
+		decoded, err := daemonproto.DecodeAgentEvent(kind, raw)
+		require.NoError(t, err)
+		runPortTurn(ctx, i, &seq, nil, core.EvTurnStart{}, decoded)
 		i.redraw()
 		require.Empty(t, term.String(), "cancelled main turn must not ring (%+v)", end)
 	}

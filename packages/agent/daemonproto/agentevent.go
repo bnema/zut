@@ -1,6 +1,7 @@
 package daemonproto
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,8 +146,8 @@ func nullableReasoningTokens(usage provider.Usage) any {
 }
 
 // EncodeAgentEvent extends the existing headless projection with a typed value
-// for fields the display projection omits. Error identity is intentionally reduced
-// to its string. Durations in the projection are milliseconds.
+// for fields the display projection omits. Errors preserve their text and
+// cancellation identity. Durations in the projection are milliseconds.
 func EncodeAgentEvent(ev core.AgentEvent) (string, json.RawMessage, error) {
 	if ev == nil {
 		return "", nil, fmt.Errorf("nil agent event")
@@ -171,16 +172,20 @@ func EncodeAgentEvent(ev core.AgentEvent) (string, json.RawMessage, error) {
 			msg = &s
 		}
 		value = struct {
-			Stop  provider.StopReason
-			Error *string
-		}{e.Stop, msg}
+			Stop     provider.StopReason
+			Error    *string
+			Canceled bool `json:",omitempty"`
+		}{e.Stop, msg, errors.Is(e.Err, context.Canceled)}
 	case core.EvError:
 		var msg *string
 		if e.Err != nil {
 			s := e.Err.Error()
 			msg = &s
 		}
-		value = struct{ Error *string }{msg}
+		value = struct {
+			Error    *string
+			Canceled bool `json:",omitempty"`
+		}{msg, errors.Is(e.Err, context.Canceled)}
 		if msg != nil {
 			m["message"] = *msg
 		}
@@ -219,8 +224,9 @@ func DecodeAgentEvent(kind string, data json.RawMessage) (core.AgentEvent, error
 	switch kind {
 	case "turn_end", "error":
 		var v struct {
-			Stop  provider.StopReason
-			Error *string
+			Stop     provider.StopReason
+			Error    *string
+			Canceled bool
 		}
 		if err = json.Unmarshal(w.Value, &v); err != nil {
 			return nil, err
@@ -228,6 +234,9 @@ func DecodeAgentEvent(kind string, data json.RawMessage) (core.AgentEvent, error
 		var e error
 		if v.Error != nil {
 			e = errors.New(*v.Error)
+			if v.Canceled {
+				e = canceledEventError{message: *v.Error}
+			}
 		}
 		if kind == "turn_end" {
 			return core.EvTurnEnd{Stop: v.Stop, Err: e}, nil
@@ -289,3 +298,9 @@ func agentTarget(kind string) (any, error) {
 		return nil, fmt.Errorf("unknown agent event %q", kind)
 	}
 }
+
+// canceledEventError retains diagnostic text while restoring errors.Is semantics.
+type canceledEventError struct{ message string }
+
+func (e canceledEventError) Error() string { return e.message }
+func (e canceledEventError) Unwrap() error { return context.Canceled }

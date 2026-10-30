@@ -149,6 +149,9 @@ with `model profile empty`.
 Types from `core`, `tools`, and `provider` retain their existing JSON field
 spelling; the lossless codecs preserve interface-valued content. The panel key
 is the existing `extproto.PanelKeyFromHost` (no additional key type).
+Agent `turn_end` and `error` typed values may include optional `Canceled: true`;
+new clients restore `context.Canceled` identity while retaining the error text.
+Older peers can omit or ignore this field.
 `append_shell_context` appends client-run `!command` output as user context
 marked `shell_escape` (at most 64 KiB, refused while busy); clients surface an
 older daemon's `unsupported port method` error with a `zut daemon restart` hint.
