@@ -161,7 +161,18 @@ func buildStdioEnvFor(windows bool, cfg ServerConfig) []string {
 	return out
 }
 
-func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*stdioTransport, error) {
+// stdioLaunch is the fully resolved process launch of one stdio server:
+// the executable, its arguments, the built child environment and the
+// working directory. It is what startStdio runs and what sharedKey hashes.
+type stdioLaunch struct {
+	Command, Dir string
+	Args, Env    []string
+}
+
+// resolveStdioLaunch resolves cfg against the session cwd: a relative cfg.CWD
+// joins cwd, the command is looked up in that directory and cfg.BaseEnv, and
+// the environment is the filtered child environment.
+func resolveStdioLaunch(cfg ServerConfig, cwd string) (stdioLaunch, error) {
 	dir := cwd
 	if cfg.CWD != "" {
 		dir = cfg.CWD
@@ -171,18 +182,26 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 	}
 	command, err := execpath.Resolve(cfg.Command, dir, cfg.BaseEnv)
 	if err != nil {
+		return stdioLaunch{}, err
+	}
+	return stdioLaunch{Command: command, Dir: dir, Args: append([]string(nil), cfg.Args...), Env: buildStdioEnv(cfg)}, nil
+}
+
+func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*stdioTransport, error) {
+	launch, err := resolveStdioLaunch(cfg, cwd)
+	if err != nil {
 		return nil, err
 	}
 	var cmd *exec.Cmd
 	if cfg.BaseEnv == nil {
-		cmd = exec.Command(command, cfg.Args...)
+		cmd = exec.Command(launch.Command, launch.Args...)
 	} else {
 		// Session lookup already produced a concrete absolute file, so any
 		// os/exec re-resolution is a no-op; build the Cmd directly anyway.
-		cmd = &exec.Cmd{Path: command, Args: append([]string{cfg.Command}, cfg.Args...)}
+		cmd = &exec.Cmd{Path: launch.Command, Args: append([]string{cfg.Command}, launch.Args...)}
 	}
-	cmd.Env = buildStdioEnv(cfg)
-	cmd.Dir = dir
+	cmd.Env = launch.Env
+	cmd.Dir = launch.Dir
 	procgroup.Isolate(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

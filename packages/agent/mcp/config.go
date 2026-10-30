@@ -59,6 +59,15 @@ type ServerConfig struct {
 	DisabledTools     []string `json:"disabledTools,omitempty"`
 	StartupTimeoutSec float64  `json:"startupTimeoutSec,omitempty"`
 	ToolTimeoutSec    float64  `json:"toolTimeoutSec,omitempty"`
+	// Shared lets sessions with an identical launch share one stdio process.
+	// nil means the default (shared); see ShareEnabled.
+	Shared *bool `json:"shared,omitempty"`
+}
+
+// ShareEnabled reports whether sessions may share this server's process:
+// stdio servers only, on unless shared is explicitly false.
+func (s ServerConfig) ShareEnabled() bool {
+	return s.Kind() == "stdio" && (s.Shared == nil || *s.Shared)
 }
 
 // Config is the merged MCP configuration.
@@ -250,6 +259,9 @@ func ValidateServer(name string, srv ServerConfig) (ServerConfig, error) {
 		}
 		if srv.Command != "" || len(srv.Args) > 0 || len(srv.Env) > 0 || len(srv.EnvVars) > 0 || srv.CWD != "" {
 			return srv, &ConfigError{Server: name, Message: "command, args, env, envVars, and cwd apply only to stdio servers"}
+		}
+		if srv.Shared != nil && *srv.Shared {
+			return srv, &ConfigError{Server: name, Message: "shared applies only to stdio servers"}
 		}
 	case "sse":
 		return srv, &ConfigError{Server: name, Message: "legacy sse transport is not supported; use the server's streamable http endpoint"}
