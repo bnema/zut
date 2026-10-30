@@ -20,6 +20,9 @@ import (
 type residentAgentRuntime struct {
 	agent *core.Agent
 	run   func(context.Context, string) error
+	// tools is the child's complete resolved registry. It owns the child's
+	// LSP manager even when the exact child tool list omits every LSP tool.
+	tools core.Registry
 
 	mu      sync.Mutex
 	running bool
@@ -60,6 +63,16 @@ func (r *residentAgentRuntime) Steer(prompt string) bool {
 
 func (r *residentAgentRuntime) PendingSteers() int { return r.agent.QueuedMessageCount() }
 
+// Close stops the language servers owned by the child's resolved registry.
+// The resident child calls it once its control loop has stopped running
+// turns, so no tool can still be using the manager.
+func (r *residentAgentRuntime) Close() error {
+	if r == nil {
+		return nil
+	}
+	return tools.CloseLSPManagers(r.tools)
+}
+
 func (r *residentAgentRuntime) DrainSteers() []string {
 	drained := r.agent.DrainQueuedMessages()
 	out := make([]string, 0, len(drained))
@@ -81,6 +94,14 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 	if err != nil {
 		return nil, fmt.Errorf("resolve resident child %q: %w", spec.ID, err)
 	}
+	// Every failed construction below discards the resolved registry; its
+	// LSP manager must not outlive the child that was never created.
+	built := false
+	defer func() {
+		if !built {
+			closeResolvedLSP(resolved)
+		}
+	}()
 
 	registry, err := residentChildRegistry(resolved.ToolRegistry, spec.Tools)
 	if err != nil {
@@ -187,7 +208,8 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		}
 		return err
 	}
-	return &residentAgentRuntime{agent: agent, run: run}, nil
+	built = true
+	return &residentAgentRuntime{agent: agent, run: run, tools: resolved.ToolRegistry}, nil
 }
 
 // A compaction recovery never rewrites a transcript with nothing worth

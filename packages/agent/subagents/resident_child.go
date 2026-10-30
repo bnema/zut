@@ -27,6 +27,19 @@ type ResidentRuntime interface {
 	DrainSteers() []string
 }
 
+// residentRuntimeCloser is implemented by runtimes that own resources, such
+// as language-server processes, which must not outlive the child.
+type residentRuntimeCloser interface {
+	Close() error
+}
+
+func closeResidentRuntime(runtime ResidentRuntime) error {
+	if closer, ok := runtime.(residentRuntimeCloser); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // ResidentTurnRunner is a runtime that runs turns but cannot be steered, so
 // every follow-up becomes a separate queued turn.
 type ResidentTurnRunner func(context.Context, string) error
@@ -433,6 +446,10 @@ func (c *ResidentChild) Close(ctx context.Context) error {
 func (c *ResidentChild) run() {
 	defer close(c.done)
 	defer func() {
+		// Every return path below has collected the running turn, so the
+		// runtime is idle and its processes can be stopped before the
+		// workspace they may be watching is removed.
+		_ = closeResidentRuntime(c.runtime)
 		if c.journal != nil {
 			_ = c.journal.Close()
 		}

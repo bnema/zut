@@ -392,6 +392,10 @@ type scheduledRuntime struct {
 
 func (r scheduledRuntime) Run(ctx context.Context, prompt string) error { return r.run(ctx, prompt) }
 
+// Close forwards to the wrapped runtime so the child can release resources
+// such as language servers that the runtime owns.
+func (r scheduledRuntime) Close() error { return closeResidentRuntime(r.ResidentRuntime) }
+
 func (m *ResidentManager) scheduledRunner(childID string, runtime ResidentRuntime) ResidentRuntime {
 	return scheduledRuntime{ResidentRuntime: runtime, run: m.scheduledRun(childID, runtime)}
 }

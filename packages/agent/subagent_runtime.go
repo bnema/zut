@@ -301,6 +301,10 @@ func (rt *subagentRuntime) SetActiveSession(sessionID string) {
 	rt.settingsMu.Unlock()
 }
 
+// residentProbeResolve resolves the catalogue probe of a resident child spec.
+// It is a variable so tests can observe the discarded registry.
+var residentProbeResolve = Resolve
+
 func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request tools.ResidentSpawnRequest, catalogue core.Registry) (subagents.ResidentChildSpec, error) {
 	if rt == nil {
 		return subagents.ResidentChildSpec{}, errors.New("resident runtime is unavailable")
@@ -350,10 +354,12 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		spec.InheritProjectContext = request.Profile.InheritProjectContext
 		spec.InheritSkills = request.Profile.InheritSkills
 	}
-	resolved, err := Resolve(residentChildArgs(rt.args, rt.credentialProvider, spec), false)
+	resolved, err := residentProbeResolve(residentChildArgs(rt.args, rt.credentialProvider, spec), false)
 	if err != nil {
 		return subagents.ResidentChildSpec{}, fmt.Errorf("resolve resident child model: %w", err)
 	}
+	// The probe only reads tool names; the child resolves its own runtime.
+	defer closeResolvedLSP(resolved)
 	// The child-safe catalogue is the intersection of parent-offered tools
 	// and tools available in the resolved child runtime. Parent-only
 	// scheduling/extension tools are never inherited.

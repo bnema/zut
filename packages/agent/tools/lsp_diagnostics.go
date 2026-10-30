@@ -14,7 +14,7 @@ import (
 const writeDiagnosticsTimeout = 2 * time.Second
 
 // CloseLSPManagers closes every manager referenced by the registry. Write,
-// edit, and lsp share one manager in normal runs, so de-duplicate pointers
+// edit, ast, and lsp share one manager in normal runs, so de-duplicate pointers
 // before closing them. This is used by mode owners when an agent or registry
 // is replaced; LSP processes should not outlive the session that created them.
 func CloseLSPManagers(reg core.Registry) error {
@@ -30,6 +30,11 @@ func CloseLSPManagers(reg core.Registry) error {
 				managers[value.LSP] = struct{}{}
 			}
 		case *EditTool:
+			if value != nil && value.LSP != nil {
+				managers[value.LSP] = struct{}{}
+			}
+		case *ASTTool:
+			// A registry filtered to ast alone still owns the manager.
 			if value != nil && value.LSP != nil {
 				managers[value.LSP] = struct{}{}
 			}
