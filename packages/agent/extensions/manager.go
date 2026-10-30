@@ -898,13 +898,6 @@ func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
 // Returns when stdout closes.
 func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 	defer func() {
-		// The peer is gone: disconnect the transport so every pending
-		// synchronous call (including deadline-free interactive tools)
-		// observes the disconnect instead of waiting for a reply that
-		// can never arrive.
-		if ext.stdin != nil {
-			_ = ext.stdin.Close()
-		}
 		// On close, drop every command + tool this extension owned so
 		// future invocations don't dangle. The subprocess is gone; we
 		// won't hear back about its commands or tool calls anymore.
@@ -920,6 +913,12 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		}
 		m.mu.Unlock()
+		// Remove registrations before waking pending calls: callers observing
+		// the disconnect must not still discover tools owned by this peer.
+		// Closing the transport also releases deadline-free interactive calls.
+		if ext.stdin != nil {
+			_ = ext.stdin.Close()
+		}
 		if hooks, ok := m.hooks.(ExtensionChromeHooks); ok {
 			hooks.ClearExtensionChrome(ext.Manifest.Name)
 		}
