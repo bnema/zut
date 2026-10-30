@@ -819,6 +819,10 @@ func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 	a.mu.Lock()
 	newStates := copyExtensionStates(candidate.session.ExtensionState)
 	var oldCloseErr error
+	if err := moveDaemonAlias(oldSess, candidate.session, a.daemonID); err != nil {
+		a.mu.Unlock()
+		return fmt.Errorf("move daemon alias: %w", err)
+	}
 	if oldSess != nil {
 		oldCloseErr = oldSess.Close()
 	}
@@ -891,6 +895,21 @@ func (a *sessionAssembly) stageWorkspace(cwd string, changed bool) func() {
 	}
 }
 
+// moveDaemonAlias stages ownership before closing the old transcript. On
+// failure both open sessions retain their original aliases.
+func moveDaemonAlias(old, next *core.Session, id string) error {
+	if id == "" || old == next {
+		return nil
+	}
+	if err := next.AddDaemonID(id); err != nil {
+		return err
+	}
+	if err := old.RemoveDaemonID(id); err != nil {
+		return errors.Join(err, next.RemoveDaemonID(id))
+	}
+	return nil
+}
+
 // ChangeCWD mirrors runInteractive's changeCWD: a relative path resolves
 // against the session cwd, never the process cwd, and a fresh session file
 // opens in the new workspace. The rebuilt agent is staged for BuildAgent.
@@ -952,6 +971,15 @@ func (s sessionFileStore) ChangeCWD(path string) error {
 			closeAgentLSP(newAg)
 			return err
 		}
+	}
+	if err := moveDaemonAlias(a.sess, newSess, a.daemonID); err != nil {
+		a.mu.Unlock()
+		err = joinSessionCloseError(fmt.Errorf("move daemon alias: %w", err), newSess)
+		rollback()
+		closeAgentLSP(newAg)
+		return err
+	}
+	if a.sess != nil {
 		oldCloseErr = a.sess.Close()
 	}
 	a.sess = newSess

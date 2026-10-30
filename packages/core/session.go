@@ -1243,6 +1243,30 @@ func (s *Session) AddDaemonID(id string) error {
 	return nil
 }
 
+// RemoveDaemonID releases the current runtime alias when ownership moves to
+// another transcript. Historical daemon identities remain on this transcript.
+func (s *Session) RemoveDaemonID(id string) error {
+	if s == nil || id == "" {
+		return nil
+	}
+	old := s.Meta.DaemonIDs
+	next := make([]string, 0, len(old))
+	for _, alias := range old {
+		if alias != id {
+			next = append(next, alias)
+		}
+	}
+	if len(next) == len(old) {
+		return nil
+	}
+	s.Meta.DaemonIDs = next
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.DaemonIDs = old
+		return err
+	}
+	return nil
+}
+
 // UpdateModel records a provider/model switch in the session file.
 // The reader keeps the most recent meta entry, so the session resumes
 // with the updated model.

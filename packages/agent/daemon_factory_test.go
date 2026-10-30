@@ -452,3 +452,30 @@ func TestDaemonStatusProbeWithoutLock(t *testing.T) {
 	// Status never creates the daemon lock.
 	require.NoFileExists(t, filepath.Join(home, "daemon", "daemon.lock"))
 }
+
+func TestDaemonResumeAliasMovesWithCWD(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+	info, err := c.Create(ctx, session.CreateSpec{CWD: t.TempDir(), Env: []string{}, Args: sessionAssemblyArgs(server)})
+	require.NoError(t, err)
+	id := session.ID(info.ID)
+	require.Equal(t, "done", submitAndWait(t, ctx, c, id))
+	old := td.server.factory.lookup(id).Info().SessionPath
+	port := c.Port(id, true)
+	_, err = port.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, port.ChangeCWD(ctx, t.TempDir()))
+	require.Equal(t, "done", submitAndWait(t, ctx, c, id))
+	final := td.server.factory.lookup(id).Info().SessionPath
+	require.NotEqual(t, old, final)
+	require.NoError(t, c.Close(ctx, id, "user_exit"))
+	found, err := core.FindManagedSessionByID(ctx, home, string(id))
+	require.NoError(t, err)
+	require.Equal(t, final, found)
+	snapshot, err := core.ReadSessionSnapshot(old)
+	require.NoError(t, err)
+	require.NotContains(t, snapshot.Meta.DaemonIDs, string(id))
+}

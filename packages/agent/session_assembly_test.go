@@ -21,6 +21,7 @@ import (
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/stretchr/testify/require"
 )
 
 // sessionAssemblyProvider is an OpenAI-compatible streaming endpoint; the
@@ -526,4 +527,18 @@ func TestSessionAgentPersistsRetryLifecycle(t *testing.T) {
 		record.Attempt != 1 || record.MaxAttempts != 1 || record.Reason != core.RetryReasonServer || !record.Terminal {
 		t.Fatalf("retry lifecycle record = %#v", record)
 	}
+}
+
+func TestMoveDaemonAliasRollsBackOnWriteFailure(t *testing.T) {
+	const id = "abcdefghijkl"
+	old, err := core.NewSession(t.TempDir(), t.TempDir(), "p", "m", "test")
+	require.NoError(t, err)
+	require.NoError(t, old.AddDaemonID(id))
+	require.NoError(t, old.Close()) // force the source metadata write to fail
+	next, err := core.NewSession(t.TempDir(), t.TempDir(), "p", "m", "test")
+	require.NoError(t, err)
+	defer next.Close()
+	require.Error(t, moveDaemonAlias(old, next, id))
+	require.Contains(t, old.Meta.DaemonIDs, id)
+	require.NotContains(t, next.Meta.DaemonIDs, id)
 }
