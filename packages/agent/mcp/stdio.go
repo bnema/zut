@@ -127,6 +127,12 @@ type stdioTransport struct {
 
 // buildStdioEnv returns the restricted child environment.
 func buildStdioEnv(cfg ServerConfig) []string {
+	return buildStdioEnvFor(runtime.GOOS == "windows", cfg)
+}
+
+// buildStdioEnvFor builds the child environment. On Windows, explicit
+// cfg.Env entries replace inherited keys that differ only in case.
+func buildStdioEnvFor(windows bool, cfg ServerConfig) []string {
 	env := map[string]string{}
 	base := cfg.BaseEnv
 	if base == nil {
@@ -138,6 +144,13 @@ func buildStdioEnv(cfg ServerConfig) []string {
 		}
 	}
 	for k, v := range cfg.Env {
+		if windows {
+			for existing := range env {
+				if existing != k && strings.EqualFold(existing, k) {
+					delete(env, existing)
+				}
+			}
+		}
 		env[k] = v
 	}
 	out := make([]string, 0, len(env))

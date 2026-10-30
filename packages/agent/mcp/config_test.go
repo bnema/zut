@@ -291,6 +291,21 @@ func TestWriteConfigFileRoundTripAndPerms(t *testing.T) {
 	}
 }
 
+func TestBuildStdioEnvWindowsOverrideReplacesCaseVariant(t *testing.T) {
+	cfg := ServerConfig{
+		BaseEnv: []string{"PATH=/inherited"},
+		Env:     map[string]string{"Path": "/override"},
+	}
+	got := strings.Join(buildStdioEnvFor(true, cfg), "\n")
+	if strings.Contains(got, "/inherited") || !strings.Contains(got, "Path=/override") {
+		t.Fatalf("windows env = %q, want only Path=/override", got)
+	}
+	got = strings.Join(buildStdioEnvFor(false, cfg), "\n")
+	if !strings.Contains(got, "PATH=/inherited") || !strings.Contains(got, "Path=/override") {
+		t.Fatalf("unix env = %q, want both case-distinct keys", got)
+	}
+}
+
 func TestBuildStdioEnv(t *testing.T) {
 	t.Setenv("SECRET_API_KEY", "do-not-leak")
 	t.Setenv("MCP_T_EXTRA", "passed")
