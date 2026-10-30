@@ -449,11 +449,12 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	i.agent.SetSystemPrompt(sys)
 }
 func (i *Interactive) autoSubagentsAvailable() bool {
-	return i.cfg.ResidentManager != nil && autoSubagentsAnyToolAllowedConfig(i.cfg)
+	// On the daemon path the session owns the resident manager.
+	return (i.portMode.Load() || i.cfg.ResidentManager != nil) && autoSubagentsAnyToolAllowedConfig(i.cfg)
 }
 func (i *Interactive) autoSubagentsUnavailableHint() string {
 	var hints []string
-	if i.cfg.ResidentManager == nil {
+	if !i.portMode.Load() && i.cfg.ResidentManager == nil {
 		hints = append(hints, "resident subagent manager is unavailable in this mode")
 	}
 	if !autoSubagentsAnyToolAllowedConfig(i.cfg) {

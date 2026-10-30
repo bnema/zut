@@ -718,3 +718,54 @@ func (_c *MockSettingsStore_SetTheme_Call) RunAndReturn(run func(name string) er
 	_c.Call.Return(run)
 	return _c
 }
+
+// SetWebSearchEnabled provides a mock function for the type MockSettingsStore
+func (_mock *MockSettingsStore) SetWebSearchEnabled(enabled bool) error {
+	ret := _mock.Called(enabled)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SetWebSearchEnabled")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(bool) error); ok {
+		r0 = returnFunc(enabled)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSettingsStore_SetWebSearchEnabled_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetWebSearchEnabled'
+type MockSettingsStore_SetWebSearchEnabled_Call struct {
+	*mock.Call
+}
+
+// SetWebSearchEnabled is a helper method to define mock.On call
+//   - enabled bool
+func (_e *MockSettingsStore_Expecter) SetWebSearchEnabled(enabled any) *MockSettingsStore_SetWebSearchEnabled_Call {
+	return &MockSettingsStore_SetWebSearchEnabled_Call{Call: _e.mock.On("SetWebSearchEnabled", enabled)}
+}
+
+func (_c *MockSettingsStore_SetWebSearchEnabled_Call) Run(run func(enabled bool)) *MockSettingsStore_SetWebSearchEnabled_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 bool
+		if args[0] != nil {
+			arg0 = args[0].(bool)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSettingsStore_SetWebSearchEnabled_Call) Return(err error) *MockSettingsStore_SetWebSearchEnabled_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSettingsStore_SetWebSearchEnabled_Call) RunAndReturn(run func(enabled bool) error) *MockSettingsStore_SetWebSearchEnabled_Call {
+	_c.Call.Return(run)
+	return _c
+}

@@ -1,283 +1,195 @@
 package modes
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-type recordingWebSearchSettingsStore struct {
-	SettingsStore
-	values   []bool
-	calls    int
-	err      error
-	failures map[int]error
+// newPortSettingsInteractive is a daemon-path TUI with the settings dialog
+// open. The daemon persists daemon-owned toggles and refreshes its tools
+// (session TestApplySettingsPersistsAndRefreshes); the TUI only applies the
+// launch-time limits and mirrors the applied value.
+func newPortSettingsInteractive(t *testing.T, cfg InteractiveConfig) (*Interactive, *sessionmocks.MockPort) {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	cfg.Port = port
+	cfg.Terminal = &alertTestTerminal{}
+	i := NewInteractive(cfg)
+	i.rend = nil
+	i.openSettingsDialog()
+	return i, port
 }
 
-func (s *recordingWebSearchSettingsStore) SetWebSearchEnabled(enabled bool) error {
-	s.calls++
-	if s.err != nil {
-		return s.err
+// expectApplySettings records each patch and returns the scripted errors.
+func expectApplySettings(port *sessionmocks.MockPort, errs ...error) <-chan session.SettingsPatch {
+	got := make(chan session.SettingsPatch, len(errs))
+	for _, err := range errs {
+		port.EXPECT().ApplySettings(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, p session.SettingsPatch) error {
+			got <- p
+			return err
+		}).Once()
 	}
-	if err := s.failures[s.calls]; err != nil {
-		return err
-	}
-	s.values = append(s.values, enabled)
-	return nil
+	return got
+}
+
+func settingsRow(t *testing.T, i *Interactive, key string) settingsItem {
+	t.Helper()
+	item := findSettingsItem(i.settingsDialog.items, key)
+	require.NotNil(t, item, "settings dialog is missing %s", key)
+	return *item
+}
+
+func waitStatus(t *testing.T, i *Interactive, ok func(statusOK, statusErr string) bool) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return ok(i.statusOK, i.statusErr)
+	}, 5*time.Second, 5*time.Millisecond)
 }
 
 func TestSettingsDialogOffersWebSearchEnabledByDefault(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{}
-	interactive := NewInteractive(InteractiveConfig{
-		SettingsStore: store,
-		RefreshTools:  func() error { return nil },
-	})
-	interactive.openSettingsDialog()
-
-	item := findSettingsItem(interactive.settingsDialog.items, "web_search_enabled")
-	if item == nil {
-		t.Fatal("settings dialog is missing web search")
-	}
-	if !item.value {
-		t.Fatal("web search should be enabled when the config value is absent")
-	}
-	if item.disabled {
-		t.Fatal("web search should be available with persistence and refresh capabilities")
-	}
+	i, _ := newPortSettingsInteractive(t, InteractiveConfig{})
+	item := settingsRow(t, i, "web_search_enabled")
+	require.True(t, item.value, "web search should be enabled when the config value is absent")
+	require.False(t, item.disabled, "the daemon persists and refreshes web search")
 }
 
 func TestSettingsDialogDisablesWebSearchAtInvocationCapabilityCeiling(t *testing.T) {
 	allowed := false
-	store := &recordingWebSearchSettingsStore{}
-	refreshCalls := 0
-	interactive := NewInteractive(InteractiveConfig{
-		WebSearchToolAllowed: &allowed,
-		SettingsStore:        store,
-		RefreshTools: func() error {
-			refreshCalls++
-			return nil
-		},
-	})
-	interactive.rend = nil
-	interactive.openSettingsDialog()
+	i, _ := newPortSettingsInteractive(t, InteractiveConfig{WebSearchToolAllowed: &allowed})
+	item := settingsRow(t, i, "web_search_enabled")
+	require.False(t, item.value, "web search was reported enabled despite the invocation ceiling")
+	require.True(t, item.disabled)
+	require.Contains(t, item.hint, "launch-time tool capability ceiling")
 
-	item := findSettingsItem(interactive.settingsDialog.items, "web_search_enabled")
-	if item == nil {
-		t.Fatal("settings dialog is missing web search")
-	}
-	if item.value {
-		t.Fatal("web search was reported enabled despite the invocation ceiling")
-	}
-	if !item.disabled || !strings.Contains(item.hint, "launch-time tool capability ceiling") {
-		t.Fatalf("ceiling item = disabled %v hint %q", item.disabled, item.hint)
-	}
-
-	interactive.applySettingToggle("web_search_enabled", true)
-	if store.calls != 0 || refreshCalls != 0 {
-		t.Fatalf("ceiling toggle persisted %d times and refreshed %d times", store.calls, refreshCalls)
-	}
+	// The strict mock fails on any ApplySettings call.
+	i.applySettingToggle("web_search_enabled", true)
+	require.Contains(t, i.statusErr, "web search unavailable")
 }
 
 func TestSettingsDialogExplainsExplicitWebSearchInvocationOverride(t *testing.T) {
 	persisted := false
-	store := &recordingWebSearchSettingsStore{}
-	refreshCalls := 0
-	interactive := NewInteractive(InteractiveConfig{
-		WebSearchEnabled:            &persisted,
-		WebSearchInvocationOverride: true,
-		SettingsStore:               store,
-		RefreshTools: func() error {
-			refreshCalls++
-			return nil
-		},
-	})
-	interactive.rend = nil
-	interactive.openSettingsDialog()
+	i, _ := newPortSettingsInteractive(t, InteractiveConfig{WebSearchEnabled: &persisted, WebSearchInvocationOverride: true})
+	item := settingsRow(t, i, "web_search_enabled")
+	require.True(t, item.value)
+	require.True(t, item.disabled)
+	require.Contains(t, item.hint, "explicit --tools web_search")
+	require.Contains(t, item.hint, "without --tools")
 
-	item := findSettingsItem(interactive.settingsDialog.items, "web_search_enabled")
-	if item == nil {
-		t.Fatal("settings dialog is missing web search")
-	}
-	if !item.value || !item.disabled {
-		t.Fatalf("explicit override item = value %v disabled %v, want true and true", item.value, item.disabled)
-	}
-	if !strings.Contains(item.hint, "explicit --tools web_search") || !strings.Contains(item.hint, "without --tools") {
-		t.Fatalf("explicit override hint = %q", item.hint)
-	}
-
-	interactive.applySettingToggle("web_search_enabled", false)
-	if store.calls != 0 || refreshCalls != 0 {
-		t.Fatalf("explicit override toggle persisted %d times and refreshed %d times", store.calls, refreshCalls)
-	}
-	if interactive.statusErr == "" {
-		t.Fatal("explicit override toggle should explain why the row is read-only")
-	}
+	i.applySettingToggle("web_search_enabled", false)
+	require.NotEmpty(t, i.statusErr, "explicit override toggle should explain why the row is read-only")
 }
 
-func TestSettingsDialogDisablesWebSearchWithoutCapabilities(t *testing.T) {
-	cases := []struct {
-		name string
-		cfg  InteractiveConfig
-	}{
-		{name: "neither capability", cfg: InteractiveConfig{}},
-		{name: "persistence only", cfg: InteractiveConfig{SettingsStore: &recordingWebSearchSettingsStore{}}},
-		{name: "refresh only", cfg: InteractiveConfig{RefreshTools: func() error { return nil }}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			interactive := NewInteractive(tc.cfg)
-			interactive.openSettingsDialog()
-
-			item := findSettingsItem(interactive.settingsDialog.items, "web_search_enabled")
-			if item == nil {
-				t.Fatal("settings dialog is missing web search")
-			}
-			if !item.disabled {
-				t.Fatal("web search should be disabled without both capabilities")
-			}
-			if item.hint == "" {
-				t.Fatal("disabled web search should explain why it is unavailable")
-			}
-		})
-	}
+func TestSettingsDialogEnablesWebSearchWithoutLocalCapabilities(t *testing.T) {
+	// Production never gives the daemon client a SettingsStore web-search
+	// setter or RefreshTools: availability must not depend on them.
+	i, _ := newPortSettingsInteractive(t, InteractiveConfig{})
+	item := settingsRow(t, i, "web_search_enabled")
+	require.False(t, item.disabled)
+	require.Empty(t, item.hint)
 }
 
 func TestApplyWebSearchToggleRefreshesAndPersists(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{}
-	refreshCalls := 0
-	interactive := NewInteractive(InteractiveConfig{
-		SettingsStore: store,
-		RefreshTools: func() error {
-			refreshCalls++
-			return nil
-		},
-	})
-	interactive.rend = nil
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	got := expectApplySettings(port, nil, nil)
 
-	interactive.applySettingToggle("web_search_enabled", false)
-	if interactive.webSearchEnabled() {
-		t.Fatal("web search remained enabled after disabling it")
-	}
-	interactive.applySettingToggle("web_search_enabled", true)
-	if !interactive.webSearchEnabled() {
-		t.Fatal("web search remained disabled after enabling it")
-	}
-	if refreshCalls != 2 {
-		t.Fatalf("refresh calls = %d, want 2", refreshCalls)
-	}
-	if len(store.values) != 2 || store.values[0] || !store.values[1] {
-		t.Fatalf("persisted values = %v, want [false true]", store.values)
-	}
-	if interactive.statusErr != "" {
-		t.Fatalf("unexpected status error: %q", interactive.statusErr)
-	}
+	i.applySettingChange(settingsAction{Toggle: true, Key: "web_search_enabled", Value: false})
+	p := <-got
+	require.NotNil(t, p.WebSearchEnabled)
+	require.False(t, *p.WebSearchEnabled)
+	waitStatus(t, i, func(ok, _ string) bool { return ok == "web search disabled" })
+	require.False(t, i.webSearchEnabled())
+
+	i.applySettingChange(settingsAction{Toggle: true, Key: "web_search_enabled", Value: true})
+	p = <-got
+	require.True(t, *p.WebSearchEnabled)
+	waitStatus(t, i, func(ok, _ string) bool { return ok == "web search enabled" })
+	require.True(t, i.webSearchEnabled())
 }
 
-func TestApplyWebSearchToggleRollsBackWhenRefreshFails(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{}
-	refreshCalls := 0
-	interactive := NewInteractive(InteractiveConfig{
-		SettingsStore: store,
-		RefreshTools: func() error {
-			refreshCalls++
-			if refreshCalls == 1 {
-				return errors.New("refresh failed")
-			}
-			return nil
-		},
-	})
-	interactive.rend = nil
+func TestApplyWebSearchToggleKeepsAppliedStateWhenRefreshFails(t *testing.T) {
+	// The daemon stores the value before refreshing (session.refreshApplied):
+	// a refresh failure keeps the persisted setting and reports the error.
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	expectApplySettings(port, errors.New("setting applied, but refresh tools: refresh failed"))
 
-	interactive.applySettingToggle("web_search_enabled", false)
-	if !interactive.webSearchEnabled() {
-		t.Fatal("web search stayed disabled after refresh rollback")
-	}
-	if refreshCalls != 2 {
-		t.Fatalf("refresh calls = %d, want initial refresh and rollback refresh", refreshCalls)
-	}
-	if len(store.values) != 2 || store.values[0] || !store.values[1] {
-		t.Fatalf("persisted rollback values = %v, want [false true]", store.values)
-	}
-	if !strings.Contains(interactive.statusErr, "refresh failed") {
-		t.Fatalf("status error = %q, want refresh failure", interactive.statusErr)
-	}
+	i.applySettingChange(settingsAction{Toggle: true, Key: "web_search_enabled", Value: false})
+	waitStatus(t, i, func(_, e string) bool { return strings.Contains(e, "refresh failed") })
+	require.False(t, i.webSearchEnabled())
 }
 
-func TestApplyWebSearchToggleFailsClosedWhenRollbackRefreshFails(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{}
-	agent := core.NewAgent(nil, "model", "", core.Registry{
-		"web_search": tools.NewWebSearchTool(),
-	})
-	var availability []bool
-	interactive := NewInteractive(InteractiveConfig{
-		Agent:         agent,
-		SettingsStore: store,
-		RefreshTools:  func() error { return errors.New("refresh failed") },
-		SetWebSearchAvailable: func(available bool) {
-			availability = append(availability, available)
-		},
-	})
-	interactive.rend = nil
+func TestApplyWebSearchToggleKeepsStateWhenPersistenceFails(t *testing.T) {
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	expectApplySettings(port, errors.New("disk full"))
 
-	interactive.applySettingToggle("web_search_enabled", false)
-	if !interactive.webSearchEnabled() {
-		t.Fatal("persisted setting did not roll back to its prior value")
-	}
-	if _, ok := agent.ToolsSnapshot()["web_search"]; ok {
-		t.Fatal("rollback refresh failure left web_search callable")
-	}
-	if len(availability) == 0 || availability[len(availability)-1] {
-		t.Fatalf("generic-child/live availability = %v, want final deny", availability)
-	}
-	if !strings.Contains(interactive.statusErr, "rollback refresh") {
-		t.Fatalf("status error = %q, want rollback refresh failure", interactive.statusErr)
-	}
+	i.applySettingChange(settingsAction{Toggle: true, Key: "web_search_enabled", Value: false})
+	waitStatus(t, i, func(_, e string) bool { return strings.Contains(e, "disk full") })
+	require.True(t, i.webSearchEnabled(), "web search changed despite persistence failure")
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.True(t, findSettingsItem(i.settingsDialog.items, "web_search_enabled").value, "dialog row not reverted")
 }
 
-func TestApplyWebSearchToggleKeepsDurableStateWhenRollbackPersistenceFails(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{
-		failures: map[int]error{2: errors.New("rollback disk full")},
-	}
-	refreshCalls := 0
-	agent := core.NewAgent(nil, "model", "", core.Registry{
-		"web_search": tools.NewWebSearchTool(),
-	})
-	var availability []bool
-	interactive := NewInteractive(InteractiveConfig{
-		Agent:         agent,
-		SettingsStore: store,
-		RefreshTools: func() error {
-			refreshCalls++
-			return errors.New("refresh failed")
-		},
-		SetWebSearchAvailable: func(available bool) {
-			availability = append(availability, available)
-		},
-	})
-	interactive.rend = nil
+func TestApplyAutoSubagentsToggleOnDaemonPath(t *testing.T) {
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	item := settingsRow(t, i, "auto_subagents_enabled")
+	require.False(t, item.disabled, "the daemon session owns the resident manager")
+	got := expectApplySettings(port, nil)
 
-	interactive.applySettingToggle("web_search_enabled", false)
-	if interactive.webSearchEnabled() {
-		t.Fatal("in-memory setting reverted despite rollback persistence failure")
-	}
-	if len(store.values) != 1 || store.values[0] {
-		t.Fatalf("durable writes = %v, want only the successful disable", store.values)
-	}
-	if refreshCalls != 1 {
-		t.Fatalf("refresh calls = %d, want only the failed refresh", refreshCalls)
-	}
-	if _, ok := agent.ToolsSnapshot()["web_search"]; ok {
-		t.Fatal("failed rollback left the old callable web_search registry in place")
-	}
-	if len(availability) == 0 || availability[len(availability)-1] {
-		t.Fatalf("generic-child/live availability = %v, want final deny", availability)
-	}
-	if !strings.Contains(interactive.statusErr, "rollback disk full") {
-		t.Fatalf("status error = %q, want rollback failure", interactive.statusErr)
-	}
+	i.applySettingChange(settingsAction{Toggle: true, Key: "auto_subagents_enabled", Value: true})
+	p := <-got
+	require.NotNil(t, p.AutoSubagentsEnabled)
+	require.True(t, *p.AutoSubagentsEnabled)
+	waitStatus(t, i, func(ok, _ string) bool { return ok == "subagent orchestrator enabled" })
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.True(t, *i.cfg.AutoSubagentsEnabled)
+}
+
+func TestApplyAutoSubagentsToggleKeepsStateWhenPersistenceFails(t *testing.T) {
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	expectApplySettings(port, errors.New("disk full"))
+	i.applySettingToggle("auto_subagents_enabled", true)
+	waitStatus(t, i, func(_, e string) bool { return strings.Contains(e, "disk full") })
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.False(t, i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled)
+	require.False(t, findSettingsItem(i.settingsDialog.items, "auto_subagents_enabled").value)
+}
+
+func TestApplyWebSearchToggleExplainsOldDaemon(t *testing.T) {
+	i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+	expectApplySettings(port, errors.New(`unsupported port method "apply_settings"`))
+	i.applySettingToggle("web_search_enabled", false)
+	waitStatus(t, i, func(_, e string) bool { return strings.Contains(e, "restart the daemon") })
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.True(t, i.webSearchEnabled())
+	require.True(t, findSettingsItem(i.settingsDialog.items, "web_search_enabled").value)
+}
+
+func TestAutoSubagentsToggleHonorsLaunchToolPolicyOnDaemonPath(t *testing.T) {
+	deny := false
+	i, _ := newPortSettingsInteractive(t, InteractiveConfig{
+		AutoSubagentsToolAllowed: &deny, AutoSubagentsStatusToolAllowed: &deny, AutoSubagentsStopToolAllowed: &deny,
+		AutoSubagentsResumeToolAllowed: &deny, AutoSubagentsInterruptToolAllowed: &deny,
+	})
+	item := settingsRow(t, i, "auto_subagents_enabled")
+	require.True(t, item.disabled)
+	require.Contains(t, item.hint, "launch-time tool policy")
+	i.applySettingToggle("auto_subagents_enabled", true)
+	require.Contains(t, i.statusErr, "subagent orchestrator unavailable")
 }
 
 func TestStaleWebSearchResolveCannotCommitAfterPolicyChange(t *testing.T) {
@@ -311,29 +223,5 @@ func TestStaleWebSearchResolveCannotCommitAfterPolicyChange(t *testing.T) {
 	}
 	if len(availability) == 0 || availability[len(availability)-1] {
 		t.Fatalf("stale resolve availability = %v, want final deny", availability)
-	}
-}
-
-func TestApplyWebSearchToggleKeepsStateWhenPersistenceFails(t *testing.T) {
-	store := &recordingWebSearchSettingsStore{err: errors.New("disk full")}
-	refreshCalls := 0
-	interactive := NewInteractive(InteractiveConfig{
-		SettingsStore: store,
-		RefreshTools: func() error {
-			refreshCalls++
-			return nil
-		},
-	})
-	interactive.rend = nil
-
-	interactive.applySettingToggle("web_search_enabled", false)
-	if !interactive.webSearchEnabled() {
-		t.Fatal("web search changed despite persistence failure")
-	}
-	if refreshCalls != 0 {
-		t.Fatalf("refresh calls = %d, want none", refreshCalls)
-	}
-	if !strings.Contains(interactive.statusErr, "disk full") {
-		t.Fatalf("status error = %q, want persistence failure", interactive.statusErr)
 	}
 }

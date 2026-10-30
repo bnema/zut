@@ -88,11 +88,12 @@ func TestApplyProfileSwapsModelAndReasoning(t *testing.T) {
 func TestApplySettingsPersistsAndRefreshes(t *testing.T) {
 	settings := sessionmocks.NewMockSettingsStore(t)
 	settings.EXPECT().SetAutoSubagents(true).Return(nil).Once()
+	settings.EXPECT().SetWebSearchEnabled(false).Return(nil).Once()
 	refresh := sessionmocks.NewMockToolRefresher(t)
 	refresh.EXPECT().SetWebSearchAvailable(false).Once()
 	refresh.EXPECT().RefreshTools().Return(nil).Once()
-	auto, threshold := false, 85
-	deps := session.Deps{SettingsStore: settings, ToolRefresher: refresh, AutoSubagentsEnabled: &auto, AutoCompactThreshold: &threshold}
+	auto, web, threshold := false, true, 85
+	deps := session.Deps{SettingsStore: settings, ToolRefresher: refresh, AutoSubagentsEnabled: &auto, WebSearchEnabled: &web, AutoCompactThreshold: &threshold}
 	h := session.NewLane9Harness(t, deps, opsAgent(t, "m"))
 	bad := 101
 	require.Error(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoCompactThreshold: &bad}))
@@ -100,6 +101,7 @@ func TestApplySettingsPersistsAndRefreshes(t *testing.T) {
 	require.NoError(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoSubagentsEnabled: &on, WebSearchEnabled: &off, AutoCompactThreshold: &ninety}))
 	// Assembly-owned pointers are updated in place.
 	require.True(t, auto)
+	require.False(t, web)
 	require.Equal(t, 90, threshold)
 }
 
@@ -311,4 +313,15 @@ func TestAppendShellContextAppendsTaggedUserContext(t *testing.T) {
 func TestAppendShellContextRejectsOversizedText(t *testing.T) {
 	h := session.NewLane9Harness(t, session.Deps{}, opsAgent(t, "m"))
 	require.ErrorContains(t, h.C.AppendShellContext(h.Ctx, strings.Repeat("x", session.MaxShellContextBytes+1)), "limit")
+}
+
+func TestApplySettingsWebSearchPersistFailureKeepsSettingAndTools(t *testing.T) {
+	settings := sessionmocks.NewMockSettingsStore(t)
+	settings.EXPECT().SetWebSearchEnabled(false).Return(errors.New("disk full")).Once()
+	refresh := sessionmocks.NewMockToolRefresher(t)
+	web := true
+	h := session.NewLane9Harness(t, session.Deps{SettingsStore: settings, ToolRefresher: refresh, WebSearchEnabled: &web}, opsAgent(t, "m"))
+	off := false
+	require.ErrorContains(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{WebSearchEnabled: &off}), "disk full")
+	require.True(t, web)
 }

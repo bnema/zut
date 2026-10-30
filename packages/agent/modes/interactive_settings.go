@@ -608,6 +608,11 @@ func (i *Interactive) webSearchEffectiveEnabled() bool {
 	return i.webSearchToolAllowed() && (i.cfg.WebSearchInvocationOverride || i.webSearchEnabled())
 }
 func (i *Interactive) webSearchSettingsAvailable() bool {
+	if i.portMode.Load() {
+		// The daemon persists the setting and refreshes its tools; only the
+		// launch-time limits apply here.
+		return i.webSearchToolAllowed() && !i.cfg.WebSearchInvocationOverride
+	}
 	_, persistent := i.cfg.SettingsStore.(webSearchSettingsStore)
 	return i.webSearchToolAllowed() && !i.cfg.WebSearchInvocationOverride && persistent && i.cfg.RefreshTools != nil
 }
@@ -716,6 +721,9 @@ func (i *Interactive) stripWebSearchTool() {
 func (i *Interactive) applySettingToggle(key string, value bool) {
 	if i.portMode.Load() {
 		if patch, ok := portSettingsPatch(key, value); ok {
+			if blocked := i.portSettingToggleBlocked(key, value); blocked {
+				return
+			}
 			i.portApplySettings(key, patch)
 			return
 		}
@@ -1202,7 +1210,7 @@ func (i *Interactive) applyReasoningSetting(level string) {
 }
 
 // portSettingsCall runs a session-port settings call off the render loop.
-// Local state is not touched: the view follows the next EvInfo.
+// Most state follows the next EvInfo; callers mirror settings absent from Info.
 func (i *Interactive) portSettingsCall(label string, call func(context.Context, session.Port) error) {
 	parent := i.runCtx
 	if parent == nil {
@@ -1224,8 +1232,79 @@ func (i *Interactive) portSettingsCall(label string, call func(context.Context, 
 
 func (i *Interactive) portApplySettings(key string, patch session.SettingsPatch) {
 	i.portSettingsCall("settings: "+key, func(ctx context.Context, port session.Port) error {
-		return port.ApplySettings(ctx, patch)
+		err := port.ApplySettings(ctx, patch)
+		i.mirrorPortSetting(key, patch, err)
+		if err != nil && strings.Contains(err.Error(), "unsupported port method") {
+			return fmt.Errorf("%w; restart the daemon to enable settings updates", err)
+		}
+		return err
 	})
+}
+
+// portSettingToggleBlocked applies the launch-time limits the daemon cannot
+// lift, reverting the dialog row like the in-process toggles.
+func (i *Interactive) portSettingToggleBlocked(key string, value bool) bool {
+	var hint string
+	switch key {
+	case "web_search_enabled":
+		if !i.webSearchSettingsAvailable() {
+			hint = "web search unavailable: " + i.webSearchUnavailableHint()
+			i.resetSettingsToggle(key, i.webSearchEffectiveEnabled())
+		}
+	case "auto_subagents_enabled":
+		if value && !i.autoSubagentsAvailable() {
+			hint = "subagent orchestrator unavailable: " + i.autoSubagentsUnavailableHint()
+			i.resetSettingsToggle(key, false)
+		}
+	}
+	if hint == "" {
+		return false
+	}
+	i.mu.Lock()
+	i.statusOK = ""
+	i.statusErr = hint
+	i.mu.Unlock()
+	return true
+}
+
+// mirrorPortSetting keeps the client's copy of daemon-owned toggles that
+// Info does not carry, so the dialog reopens with the applied value. A
+// failed apply reverts the dialog row instead.
+func (i *Interactive) mirrorPortSetting(key string, patch session.SettingsPatch, err error) {
+	var dst **bool
+	var val *bool
+	switch key {
+	case "web_search_enabled":
+		dst, val = &i.cfg.WebSearchEnabled, patch.WebSearchEnabled
+	case "auto_subagents_enabled":
+		dst, val = &i.cfg.AutoSubagentsEnabled, patch.AutoSubagentsEnabled
+	default:
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	// The daemon persists and stores the value before refreshing tools; a
+	// refresh failure still leaves it applied (session.refreshApplied).
+	if err != nil && !strings.Contains(err.Error(), "setting applied") {
+		previous := *dst != nil && **dst
+		if key == "web_search_enabled" {
+			previous = i.webSearchEffectiveEnabled()
+		}
+		i.resetSettingsToggle(key, previous)
+		return
+	}
+	v := *val
+	*dst = &v
+	if err == nil {
+		i.statusOK, i.statusErr = settingStatusLabel(key)+" "+onOff(v), ""
+	}
+}
+
+func settingStatusLabel(key string) string {
+	if key == "web_search_enabled" {
+		return "web search"
+	}
+	return "subagent orchestrator"
 }
 
 // portSettingsPatch maps daemon-owned setting toggles to a SettingsPatch.

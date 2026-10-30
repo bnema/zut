@@ -100,6 +100,7 @@ type SettingsStore interface {
 	SetQuickModelShortcut(slot int, providerName, model string) error
 	SetInlineImages(enabled bool) error
 	SetAutoSubagents(enabled bool) error
+	SetWebSearchEnabled(enabled bool) error
 	SetJailByDefault(enabled bool) error
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error

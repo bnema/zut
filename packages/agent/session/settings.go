@@ -161,6 +161,11 @@ func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 			}
 		}
 		setSetting(&c.deps.JailByDefault, p.JailByDefault)
+		if p.WebSearchEnabled != nil && c.deps.SettingsStore != nil {
+			if err := c.deps.SettingsStore.SetWebSearchEnabled(*p.WebSearchEnabled); err != nil {
+				return err
+			}
+		}
 		setSetting(&c.deps.WebSearchEnabled, p.WebSearchEnabled)
 		setSetting(&c.deps.LSPEnabled, p.LSPEnabled)
 		setSetting(&c.deps.SubagentLSPEnabled, p.SubagentLSPEnabled)
