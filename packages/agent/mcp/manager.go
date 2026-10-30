@@ -249,7 +249,7 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	pool := m.pool
 	m.mu.Unlock()
 	if pool != nil && s.cfg.ShareEnabled() {
-		return m.connectPooled(ctx, startCtx, pool, s)
+		return m.connectPooled(ctx, pool, s)
 	}
 	s.mu.Lock()
 	stale := s.client
@@ -369,7 +369,7 @@ func (m *Manager) refreshTools(ctx context.Context, s *serverEntry, client *Clie
 // a lease (released by Close), the process start is shared, and the raw
 // tools are filtered with this Manager's own config. Callers hold
 // s.connectMu.
-func (m *Manager) connectPooled(ctx, startCtx context.Context, pool *Pool, s *serverEntry) (*Client, error) {
+func (m *Manager) connectPooled(ctx context.Context, pool *Pool, s *serverEntry) (*Client, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -401,9 +401,10 @@ func (m *Manager) connectPooled(ctx, startCtx context.Context, pool *Pool, s *se
 		s.lease = lease
 	}
 	m.mu.Unlock()
-	client, raw, err := lease.entry.connect(startCtx, s.cfg.StartupTimeout())
+	client, raw, err := lease.entry.connect(ctx, s.cfg.StartupTimeout())
 	if err != nil {
-		// The pool's dial error already names the timeout it used.
+		// Startup-budget errors already name the timeout; caller ctx errors
+		// are returned as is.
 		err = fmt.Errorf("mcp server %q: %w", s.name, err)
 		s.mu.Lock()
 		s.err = err

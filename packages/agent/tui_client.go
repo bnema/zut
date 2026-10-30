@@ -110,11 +110,11 @@ func runTUIClient(ctx context.Context, attachID session.ID, spec *session.Create
 // clientLogPath returns $ZUT_HOME/logs/client.log.
 func clientLogPath(home string) string { return filepath.Join(home, "logs", "client.log") }
 
-// clientTimingLog appends TUI startup timings to $ZUT_HOME/logs/client.log,
-// rotated and permissioned like daemon.log; stderr is unusable once the TUI
+// clientTimingLog appends TUI startup timings to $ZUT_HOME/logs/client.log
+// (0600, rotated at open like daemon.log); stderr is unusable once the TUI
 // owns the terminal. nil on any error.
 func clientTimingLog() (*slog.Logger, func()) {
-	logger, closer, err := daemon.OpenLogFile(clientLogPath(ZutHome()))
+	logger, closer, err := daemon.OpenSharedLogFile(clientLogPath(ZutHome()))
 	if err != nil {
 		return nil, func() {}
 	}

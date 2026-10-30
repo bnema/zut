@@ -30,7 +30,22 @@ type Pool struct {
 	closed  bool
 	entries map[poolKey]*poolEntry
 	// stderr forwards shared servers' redacted stderr lines to log (Debug).
+	// Created on the first server start (see stderrWriter); guarded by mu.
 	stderr *liveStderrWriter
+}
+
+// stderrWriter returns the pool's stderr forwarder, starting it on first
+// use. nil after Close.
+func (p *Pool) stderrWriter() *liveStderrWriter {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	if p.stderr == nil {
+		p.stderr = newLiveStderrWriter(slogLineWriter{log: p.log})
+	}
+	return p.stderr
 }
 
 // slogLineWriter writes each "server\x00line" record to log at Debug.
@@ -52,8 +67,7 @@ func NewPool(idle time.Duration, log *slog.Logger) *Pool {
 		log = slog.New(slog.DiscardHandler)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Pool{idle: idle, log: log, ctx: ctx, cancel: cancel, entries: map[poolKey]*poolEntry{},
-		stderr: newLiveStderrWriter(slogLineWriter{log: log})}
+	return &Pool{idle: idle, log: log, ctx: ctx, cancel: cancel, entries: map[poolKey]*poolEntry{}}
 }
 
 // poolEntry is one shared server process. mu guards every field below it and
@@ -79,8 +93,8 @@ type poolEntry struct {
 }
 
 // poolFlight is one in-progress connect shared by every concurrent caller.
-// Its deadline is the largest startup timeout among the callers that joined
-// it, counted from the flight's start.
+// Its deadline is the latest of the callers' deadlines, each counted from the
+// moment that caller joined (join time + its startup timeout).
 type poolFlight struct {
 	done   chan struct{}
 	client *Client
@@ -91,15 +105,15 @@ type poolFlight struct {
 	cancel context.CancelFunc
 
 	mu       sync.Mutex
-	started  time.Time
-	timeout  time.Duration
+	deadline time.Time
+	timeout  time.Duration // timeout of the waiter that set deadline
 	timer    *time.Timer
 	timedOut bool
 }
 
 func newPoolFlight(parent context.Context, timeout time.Duration) *poolFlight {
 	ctx, cancel := context.WithCancel(parent)
-	f := &poolFlight{done: make(chan struct{}), ctx: ctx, cancel: cancel, started: time.Now(), timeout: timeout}
+	f := &poolFlight{done: make(chan struct{}), ctx: ctx, cancel: cancel, deadline: time.Now().Add(timeout), timeout: timeout}
 	f.timer = time.AfterFunc(timeout, func() {
 		f.mu.Lock()
 		f.timedOut = true
@@ -109,17 +123,18 @@ func newPoolFlight(parent context.Context, timeout time.Duration) *poolFlight {
 	return f
 }
 
-// extend raises the flight deadline to timeout (from the flight start) when
-// it is larger than the current one and the deadline has not passed.
+// extend moves the flight deadline to now+timeout when that is later than
+// the current deadline and the deadline has not passed.
 func (f *poolFlight) extend(timeout time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.timedOut || timeout <= f.timeout {
+	next := time.Now().Add(timeout)
+	if f.timedOut || !next.After(f.deadline) {
 		return
 	}
 	if f.timer.Stop() {
-		f.timeout = timeout
-		f.timer.Reset(time.Until(f.started.Add(timeout)))
+		f.deadline, f.timeout = next, timeout
+		f.timer.Reset(time.Until(next))
 	}
 }
 
@@ -305,6 +320,10 @@ func (e *poolEntry) liveLocked() *Client {
 // timeout among the callers waiting for it. Each caller waits only as long
 // as its own ctx allows. Failures are returned to the callers of that
 // attempt and not cached.
+//
+// The waiter's own startup budget is applied here; ctx is the caller's
+// context. Only an expired startup budget yields the startupTimeoutSec hint;
+// a caller deadline or cancellation returns ctx's error unchanged.
 func (e *poolEntry) connect(ctx context.Context, timeout time.Duration) (*Client, []Tool, error) {
 	e.mu.Lock()
 	if e.closed {
@@ -336,18 +355,18 @@ func (e *poolEntry) connect(ctx context.Context, timeout time.Duration) (*Client
 		}()
 	}
 	e.mu.Unlock()
+	budget := time.NewTimer(timeout)
+	defer budget.Stop()
 	select {
 	case <-f.done:
 		if f.err != nil {
 			return nil, nil, f.err
 		}
 		return f.client, append([]Tool(nil), f.tools...), nil
+	case <-budget.C:
+		return nil, nil, timeoutError(timeout, context.DeadlineExceeded)
 	case <-ctx.Done():
-		err := ctx.Err()
-		if errors.Is(err, context.DeadlineExceeded) {
-			err = timeoutError(timeout, err)
-		}
-		return nil, nil, err
+		return nil, nil, ctx.Err()
 	}
 }
 
@@ -358,7 +377,7 @@ func (e *poolEntry) dial(f *poolFlight) {
 	ctx := f.ctx
 	refresher := newToolRefresher()
 	// Live stderr goes to the daemon log, never to one session's output.
-	sink := &stderrSink{output: e.p.stderr, prefix: sanitizeText(e.name, false) + "\x00"}
+	sink := &stderrSink{output: e.p.stderrWriter(), prefix: sanitizeText(e.name, false) + "\x00"}
 	client, err := connectWith(ctx, e.name, e.cfg, e.rootsCWD, e.info, nil, refresher.notify, sink)
 	var tools []Tool
 	if err == nil {
@@ -458,6 +477,9 @@ func (p *Pool) Close() error {
 		go func() { defer wg.Done(); stop() }()
 	}
 	wg.Wait()
-	p.stderr.shutdown()
+	p.mu.Lock()
+	stderr := p.stderr
+	p.mu.Unlock()
+	stderr.shutdown() // nil-safe: no server ever started
 	return nil
 }

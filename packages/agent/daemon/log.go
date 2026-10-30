@@ -25,10 +25,21 @@ func OpenLog(home string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
 // OpenLogFile is OpenLog for any log path: the same 0600/0700 permissions,
 // 10 MiB rotation with one ".1" backup, and ZUT_DAEMON_LOG verbosity.
 func OpenLogFile(path string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
+	return openLogFile(path, false, extra...)
+}
+
+// OpenSharedLogFile is OpenLogFile for a log several processes append to at
+// once (client.log): it rotates only when opened, never while writing, so
+// concurrent writers cannot race on renaming the file.
+func OpenSharedLogFile(path string, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
+	return openLogFile(path, true, extra...)
+}
+
+func openLogFile(path string, openOnly bool, extra ...io.Writer) (*slog.Logger, io.Closer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create log dir: %w", err)
 	}
-	w := &rotatingLog{path: path, notify: io.MultiWriter(extra...)}
+	w := &rotatingLog{path: path, notify: io.MultiWriter(extra...), openOnly: openOnly}
 	if err := w.open(); err != nil {
 		return nil, nil, err
 	}
@@ -70,6 +81,8 @@ type rotatingLog struct {
 	rotations int
 	// notify receives a one-line notice when rotation starts failing.
 	notify io.Writer
+	// openOnly disables rotation during writes (multi-process logs).
+	openOnly bool
 }
 
 func (w *rotatingLog) open() error {
@@ -135,7 +148,7 @@ func (w *rotatingLog) Write(p []byte) (int, error) {
 	if w.retryAt > 0 {
 		limit = w.retryAt
 	}
-	if w.size > 0 && int64(len(p)) > limit-w.size {
+	if !w.openOnly && w.size > 0 && int64(len(p)) > limit-w.size {
 		if err := w.rotate(); err != nil {
 			return 0, err
 		}

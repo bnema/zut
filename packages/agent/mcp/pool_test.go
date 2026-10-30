@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -446,5 +447,44 @@ func TestPoolForwardsRedactedStderrToLog(t *testing.T) {
 	}
 	if strings.Contains(out, "-test.run") || strings.Contains(out, fakeServerEnv) {
 		t.Fatal("args or env leaked to the daemon log")
+	}
+}
+
+func TestPoolCallerDeadlineHasNoStartupHint(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "release")
+	cfg, events := fakeStdioConfig(t, map[string]string{"FAKE_INIT_GATE": gate})
+	cfg.StartupTimeoutSec = 30
+	pool := newTestPool(t, time.Minute)
+	m := NewManager(Config{Servers: map[string]ServerConfig{"fake": cfg}}, t.TempDir(), ClientInfo{}, nil)
+	m.SetPool(pool)
+	t.Cleanup(func() { _ = m.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan []error, 1)
+	go func() { f, _ := m.Start(ctx); done <- f }()
+	waitEvent(t, events, "init-held")
+	cancel() // the caller gives up; the 30s startup budget has not expired
+	select {
+	case failures := <-done:
+		if len(failures) != 1 || !errors.Is(failures[0], context.Canceled) {
+			t.Fatalf("failures = %v, want context.Canceled", failures)
+		}
+		if strings.Contains(failures[0].Error(), "startupTimeoutSec") {
+			t.Fatalf("caller cancellation must not suggest startupTimeoutSec: %v", failures[0])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled caller did not return")
+	}
+}
+
+func TestPoolStderrWriterStartsLazily(t *testing.T) {
+	pool := NewPool(time.Minute, nil)
+	if pool.stderr != nil {
+		t.Fatal("stderr forwarder started before any server")
+	}
+	if err := pool.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if pool.stderrWriter() != nil {
+		t.Fatal("closed pool must not start a forwarder")
 	}
 }

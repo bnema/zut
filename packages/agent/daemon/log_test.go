@@ -195,3 +195,40 @@ func TestLogKeepsWritingWhenRotationFails(t *testing.T) {
 		t.Fatal("stderr went quiet")
 	}
 }
+
+func TestSharedLogRotatesOnlyAtOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "client.log")
+	log, closer, err := OpenSharedLogFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Writing well past the limit never rotates while open.
+	for range 120 {
+		log.Info("record", "kind", strings.Repeat("x", 100000))
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("rotated while writing: %v", err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() <= maxLogSize {
+		t.Fatalf("size %d did not exceed the limit", st.Size())
+	}
+	if os.PathSeparator == '/' && st.Mode().Perm() != 0o600 {
+		t.Fatalf("perm = %o", st.Mode().Perm())
+	}
+	// The next open rotates the oversized file.
+	_, closer, err = OpenSharedLogFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = closer.Close()
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("not rotated at open: %v", err)
+	}
+}
