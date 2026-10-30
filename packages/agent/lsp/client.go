@@ -58,6 +58,7 @@ type Client struct {
 	Root    string
 	Command string
 	cmd     *exec.Cmd
+	guard   *processGuard
 	stdin   io.WriteCloser
 	stdout  io.ReadCloser
 	stderr  io.ReadCloser
@@ -103,6 +104,7 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 		return nil, fmt.Errorf("%s: %w", spec.ID, err)
 	}
 	cmd := exec.Command(command, spec.Args...)
+	isolateProcess(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = root
 	cmd.Env = mergedEnvironment(spec.Env, options.Env)
@@ -127,8 +129,16 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 		_ = stderr.Close()
 		return nil, fmt.Errorf("start %s: %w", spec.ID, err)
 	}
+	guard, err := newProcessGuard(cmd)
+	if err != nil {
+		_ = cmd.Wait()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return nil, fmt.Errorf("guard %s: %w", spec.ID, err)
+	}
 	c := &Client{
-		Spec: spec, Root: root, Command: command, cmd: cmd,
+		Spec: spec, Root: root, Command: command, cmd: cmd, guard: guard,
 		stdin: stdin, stdout: stdout, stderr: stderr,
 		pending: make(map[int64]chan rpcResponse), done: make(chan struct{}),
 		options: options, docs: make(map[string]int),
@@ -550,17 +560,27 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 		c.writeMu.Unlock()
 		killed := false
-		process := c.cmd.Process
 		exited := make(chan error, 1)
-		go func() { exited <- c.cmd.Wait() }()
+		go func() {
+			// On Linux retain the leader until group cleanup so its pgid
+			// cannot be reused. Other platforms clean up immediately after Wait.
+			reserved := c.guard.awaitLeaderExit()
+			if reserved {
+				c.guard.cleanup()
+			}
+			err := c.cmd.Wait()
+			if !reserved {
+				c.guard.cleanup()
+			}
+			exited <- err
+		}()
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {
 		case waitErr = <-exited:
 			timer.Stop()
 		case <-timer.C:
-			if process != nil {
-				killed = process.Kill() == nil
-			}
+			c.guard.terminate(true)
+			killed = true
 			waitErr = <-exited
 		}
 		if killed {
