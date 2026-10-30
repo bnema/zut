@@ -175,6 +175,23 @@ type client struct {
 
 	mu   sync.Mutex
 	subs map[session.ID]context.CancelFunc
+	// kind is the hello client_kind (tui, headless, cli, bot), for logs.
+	kind string
+}
+
+func (c *client) clientKind() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.kind == "" {
+		return "unknown"
+	}
+	return c.kind
+}
+
+// logLifecycle records a successful client lifecycle operation with IDs and
+// kinds only.
+func (c *client) logLifecycle(op string, id session.ID, attrs ...any) {
+	c.d.log.Info("client "+op, append([]any{"client", c.id, "client_kind", c.clientKind(), "session", id}, attrs...)...)
 }
 
 func (d *Daemon) newClient(nc net.Conn) *client {
@@ -307,29 +324,52 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 		if req.ProtocolVersion != daemonproto.ProtocolVersion {
 			return nil, fmt.Errorf("protocol version %d unsupported (daemon speaks %d)", req.ProtocolVersion, daemonproto.ProtocolVersion)
 		}
+		c.mu.Lock()
+		c.kind = req.ClientKind
+		c.mu.Unlock()
 		return daemonproto.HelloData{ProtocolVersion: daemonproto.ProtocolVersion, DaemonVersion: d.opts.Version}, nil
 	case "create":
 		req, err := decodeFrame[daemonproto.CreateRequest](r)
 		if err != nil {
 			return nil, err
 		}
-		return d.create(req.Spec)
+		info, err := d.create(req.Spec)
+		if err == nil {
+			c.logLifecycle("create", session.ID(info.ID), "headless", req.Spec.Headless)
+		}
+		return info, err
 	case "attach":
 		req, err := decodeFrame[daemonproto.AttachRequest](r)
 		if err != nil {
 			return nil, err
 		}
-		return d.attach(c, req.Session, req.AfterSeq, req.Controlling)
+		info, err := d.attach(c, req.Session, req.AfterSeq, req.Controlling)
+		if err == nil {
+			c.logLifecycle("attach", req.Session, "controlling", req.Controlling)
+		}
+		return info, err
 	case "detach":
-		return nil, d.detach(c, r.Session, ReasonClientDetached)
+		err := d.detach(c, r.Session, ReasonClientDetached)
+		if err == nil {
+			c.logLifecycle("detach", r.Session)
+		}
+		return nil, err
 	case "close":
 		req, err := decodeFrame[daemonproto.CloseRequest](r)
 		if err != nil {
 			return nil, err
 		}
-		return nil, d.closeSession(c, req.Session, req.Reason)
+		err = d.closeSession(c, req.Session, req.Reason)
+		if err == nil {
+			c.logLifecycle("kill", req.Session)
+		}
+		return nil, err
 	case "clear":
-		return d.clear(c, r.Session)
+		info, err := d.clear(c, r.Session)
+		if err == nil {
+			c.logLifecycle("clear", r.Session, "successor", info.ID)
+		}
+		return info, err
 	case "list":
 		return d.List(ctx), nil
 	case "tree":
