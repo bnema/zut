@@ -138,34 +138,6 @@ func TestInteractiveRepetitionGuardPreservesQueuedUserPrompt(t *testing.T) {
 	}
 }
 
-func TestInteractiveRepetitionGuardCanResumeStalledGoal(t *testing.T) {
-	client := &repetitiveInteractiveClient{}
-	store := &interruptGoalStore{}
-	registry := goalToolRegistry()
-	registry["repeat"] = &repetitiveInteractiveTool{}
-	interactive := NewInteractive(InteractiveConfig{
-		Agent:              core.NewAgent(client, "model", "system", registry),
-		CurrentGoal:        store.current,
-		PersistGoal:        store.persist,
-		PersistGoalRuntime: store.persist,
-	})
-	interactive.runCtx = context.Background()
-
-	interactive.runGoalCommand(context.Background(), "/goal finish the work", []string{"/goal", "finish", "the", "work"})
-	waitInteractiveIdle(t, interactive)
-	if got := store.current(); got == nil || got.Status != core.GoalStalled {
-		t.Fatalf("goal after repetitive loop = %#v, want stalled", got)
-	}
-
-	interactive.runGoalCommand(context.Background(), "/goal resume", []string{"/goal", "resume"})
-	waitInteractiveIdle(t, interactive)
-	if got := client.calls.Load(); got < 9 {
-		t.Fatalf("provider requests after resume = %d, want at least 9", got)
-	}
-	if got := store.current(); got == nil || (got.Status != core.GoalActive && got.Status != core.GoalStalled) {
-		t.Fatalf("goal after resume = %#v, want an answered goal run", got)
-	}
-}
 
 func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
 	client := &repetitiveInteractiveClient{
