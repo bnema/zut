@@ -186,7 +186,7 @@ func TestSkillPinCallbacksRunOutsideInteractiveMutex(t *testing.T) {
 	})
 }
 
-func TestSkillPinRecallAndDiscardDoNoIOAndRestoreExactSelection(t *testing.T) {
+func TestSkillPinRecallDoesNoIOAndRestoresExactSelection(t *testing.T) {
 	i, p := newProbedInteractive(t, true)
 	expanded := i.consumePinnedSkills("draft")
 	p.reset()
@@ -213,13 +213,6 @@ func TestSkillPinRecallAndDiscardDoNoIOAndRestoreExactSelection(t *testing.T) {
 		t.Fatalf("recalled selection differs:\n%q\n%q", next, expanded)
 	}
 
-	i.agent.QueuePrompt(core.QueuedMessage{Text: expanded})
-	i.mu.Lock()
-	i.discardQueuedMessagesLocked(false)
-	i.mu.Unlock()
-	if next := i.consumePinnedSkills("again"); strings.Count(next, "Inspect carefully.") != 1 {
-		t.Fatalf("discard lost pins: %q", next)
-	}
 	if len(p.calls) != 0 {
 		t.Fatalf("recall did IO: %v", p.calls)
 	}

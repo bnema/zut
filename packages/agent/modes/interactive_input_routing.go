@@ -619,18 +619,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// follow-up messages); a second press within ctrlCExitWindow
 		// exits. With both an empty editor and no queue the first
 		// press still just arms — require a deliberate double-tap.
-		ag := i.agent
-		pending := 0
-		if ag != nil {
-			pending = ag.QueuedMessageCount()
-		}
-		hadInput := !i.ed.IsEmpty() || len(i.queued) > 0 || pending > 0
+		hadInput := !i.ed.IsEmpty()
 		if hadInput {
 			i.ed.Clear()
 			i.clipboardImages = nil
 			i.suggest.Reset()
 			i.mu.Lock()
-			i.discardQueuedMessagesLocked(false)
 			i.statusOK = "input cleared"
 			i.statusErr = ""
 			i.mu.Unlock()

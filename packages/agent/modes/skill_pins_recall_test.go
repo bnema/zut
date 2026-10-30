@@ -79,31 +79,6 @@ func TestPinnedQueuedDraftRecallKeepsEditorRawAndRearms(t *testing.T) {
 	}
 }
 
-func TestDiscardPinnedQueuedDraftRearmsNextUser(t *testing.T) {
-	for _, preserveHost := range []bool{false, true} {
-		i := newPinnedRecallInteractive(t)
-		expanded := i.consumePinnedSkills("discarded draft")
-		i.agent.QueuePrompt(core.QueuedMessage{Text: expanded})
-		i.agent.QueuePrompt(core.QueuedMessage{Text: "host report", HostEvent: true})
-		i.mu.Lock()
-		i.discardQueuedMessagesLocked(preserveHost)
-		i.mu.Unlock()
-		if next := i.consumePinnedSkills("new draft"); strings.Count(next, "Inspect carefully.") != 1 || !strings.HasSuffix(next, "new draft") {
-			t.Fatalf("discard lost pins: %q", next)
-		}
-	}
-}
-
-func TestCtrlCClearsPinnedQueueWithoutLosingPreload(t *testing.T) {
-	i := newPinnedRecallInteractive(t)
-	expanded := i.consumePinnedSkills("discarded draft")
-	i.agent.QueuePrompt(core.QueuedMessage{Text: expanded})
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlC})
-	if next := i.consumePinnedSkills("next draft"); strings.Count(next, "Inspect carefully.") != 1 {
-		t.Fatalf("clearing queue lost pins: %q", next)
-	}
-}
-
 func TestPinnedRecallAndHistorySynchronizeWithHostArming(t *testing.T) {
 	i, expanded := newPinnedRecallPortInteractive(t)
 	var wg sync.WaitGroup
