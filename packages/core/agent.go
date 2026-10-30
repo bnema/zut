@@ -25,7 +25,8 @@ const (
 	DefaultStreamMaxRetries  = 5
 )
 
-// QueuedMessage is a user prompt waiting for the next safe model-call boundary.
+// QueuedMessage waits for the next model-call boundary. Ordinary user input
+// skips unstarted calls in the current tool batch after its first call finishes.
 type QueuedMessage struct {
 	Text   string
 	Images []provider.ImageBlock
@@ -688,7 +689,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 	for step := 1; a.MaxSteps <= 0 || step <= a.MaxSteps; step++ {
 		// Messages queued while the agent was busy are delivered
 		// before the next model call. This is the safe boundary:
-		// any previous tool batch has already completed and its
+		// any previous tool batch has completed (or skipped unstarted calls) and its
 		// results have been appended, but no new provider request has
 		// started yet.
 		if pending := a.drainQueuedMessages(); len(pending) > 0 {
@@ -810,7 +811,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		}
 		if stop == provider.StopToolUse {
 			// Execute each tool call, append a single tool-results message, continue.
-			toolMsg, hadError := a.executeTools(ctx, assistantMsg, sink)
+			toolMsg, hadError, observations := a.executeToolsWithObservations(ctx, assistantMsg, sink)
 			a.mu.Lock()
 			a.messages = append(a.messages, toolMsg)
 			a.rev++
@@ -846,7 +847,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				return err
 			}
 			_ = hadError
-			for _, observation := range repetitionCallObservations(assistantMsg, toolMsg) {
+			for _, observation := range observations {
 				decision := a.observeRepetition(observation.fingerprint, observation.kind, observation.toolName)
 				if decision.stage != "" && a.handleRepetitionDecision(decision, sink) {
 					return a.repetitiveLoopError()
@@ -1392,9 +1393,16 @@ func toolResultCommitMessage(err error) string {
 	return "tool result state could not be persisted"
 }
 
-// executeTools runs every tool call in the assistant message and returns
+// executeTools runs or skips each tool call in the assistant message and returns
 // a single tool-role message carrying all results.
 func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink func(AgentEvent)) (provider.Message, bool) {
+	result, hadError, _ := a.executeToolsWithObservations(ctx, msg, sink)
+	return result, hadError
+}
+
+func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.Message, sink func(AgentEvent)) (provider.Message, bool, []repetitionObservation) {
+	var executed provider.Message
+	skipping := false
 	var results []provider.Content
 	var addedTools []string
 	hadError := false
@@ -1405,7 +1413,26 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if !ok {
 			continue
 		}
-		res := a.runOneTool(ctx, tc, tools, sink)
+		if len(results) > 0 && !skipping {
+			a.mu.Lock()
+			for _, queued := range a.queued {
+				if !queued.message.HostEvent {
+					skipping = true
+					break
+				}
+			}
+			a.mu.Unlock()
+		}
+		var res ToolResult
+		if skipping {
+			res = ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: "Skipped: the user sent a new message before this tool ran. Read it, then re-run this tool if still needed."}},
+				IsError: true,
+			}
+		} else {
+			executed.Content = append(executed.Content, tc)
+			res = a.runOneTool(ctx, tc, tools, sink)
+		}
 		// A plan tool result carries the parsed operation, not the resulting
 		// checklist: core validates it against the current plan and materializes
 		// what would be stored. Nothing mutates state here; that happens only
@@ -1469,12 +1496,13 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		sink(EvToolResult{ID: tc.ID, Result: res})
 	}
 
-	return provider.Message{
+	toolMessage := provider.Message{
 		Role:           provider.RoleTool,
 		Content:        results,
 		Time:           time.Now(),
 		AddedToolNames: addedTools,
-	}, hadError
+	}
+	return toolMessage, hadError, repetitionCallObservations(executed, toolMessage)
 }
 
 func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) (res ToolResult) {
