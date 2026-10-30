@@ -13,7 +13,7 @@ func TestResidentMessagesMissingFields(t *testing.T) {
 		var list ResidentListParams
 		var history ResidentHistoryParams
 		var data ResidentListData
-		var page subagents.ResidentHistoryPage
+		var page ResidentHistoryData
 		require.NoError(t, json.Unmarshal([]byte(raw), &list))
 		require.NoError(t, json.Unmarshal([]byte(raw), &history))
 		require.NoError(t, json.Unmarshal([]byte(raw), &data))
@@ -23,4 +23,11 @@ func TestResidentMessagesMissingFields(t *testing.T) {
 		require.Zero(t, data)
 		require.Zero(t, page)
 	}
+}
+
+func TestResidentHistoryDataUsesSnakeCase(t *testing.T) {
+	raw, err := json.Marshal(ResidentHistoryData{Items: []subagents.ResidentHistoryItem{{Type: "message.user"}}, OlderCursor: "c"})
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"items":[`)
+	require.Contains(t, string(raw), `"older_cursor":"c"`)
 }

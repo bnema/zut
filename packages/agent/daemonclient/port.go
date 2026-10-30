@@ -625,7 +625,7 @@ func (p *RemotePort) ResidentList(ctx context.Context, offset, limit int) ([]sub
 
 // ResidentHistory implements session.Port.
 func (p *RemotePort) ResidentHistory(ctx context.Context, childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error) {
-	var page subagents.ResidentHistoryPage
-	err := p.port(ctx, "resident_history", daemonproto.ResidentHistoryParams{ChildID: childID, OlderCursor: olderCursor, Limit: limit}, &page)
-	return page, err
+	var data daemonproto.ResidentHistoryData
+	err := p.port(ctx, "resident_history", daemonproto.ResidentHistoryParams{ChildID: childID, OlderCursor: olderCursor, Limit: limit}, &data)
+	return subagents.ResidentHistoryPage{Items: data.Items, OlderCursor: data.OlderCursor}, err
 }

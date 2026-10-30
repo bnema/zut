@@ -527,7 +527,8 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		if err := unmarshalOptional(req.Params, &params); err != nil {
 			return nil, err
 		}
-		return h.ResidentHistory(ctx, params.ChildID, params.OlderCursor, params.Limit)
+		page, err := h.ResidentHistory(ctx, params.ChildID, params.OlderCursor, params.Limit)
+		return daemonproto.ResidentHistoryData{Items: page.Items, OlderCursor: page.OlderCursor}, err
 	case "sessions_query":
 		return h.SessionsQuery(ctx)
 	case "subscribe":

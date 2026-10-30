@@ -21,3 +21,11 @@ type ResidentHistoryParams struct {
 	OlderCursor string `json:"older_cursor,omitempty"`
 	Limit       int    `json:"limit,omitempty"`
 }
+
+// ResidentHistoryData is the resident_history reply: finalized items (see
+// subagents.ResidentHistoryItem) and the opaque cursor for the next older page.
+// An empty cursor means the page reaches the oldest finalized content.
+type ResidentHistoryData struct {
+	Items       []subagents.ResidentHistoryItem `json:"items,omitempty"`
+	OlderCursor string                          `json:"older_cursor,omitempty"`
+}
