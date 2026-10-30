@@ -586,15 +586,24 @@ func TestResidentManagerRetainsFailedWorktree(t *testing.T) {
 		return ResidentTurnRunner(func(context.Context, string) error { return errors.New("turn failed") }), nil
 	})
 	defer manager.Close(context.Background())
+	// The completion report is emitted after capture and the terminal state
+	// transition, so it is the event that ends the turn. Polling Snapshot
+	// raced the queued->running transition and could exit before the turn ran.
+	completed := make(chan ResidentCompletion, 1)
+	manager.SetCompletionObserver(func(completion ResidentCompletion) bool {
+		completed <- completion
+		return true
+	})
 	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "failed-worktree", SessionID: "child-session", Provider: "openai", Model: "gpt-5", RepositoryRoot: "/repo", WorkspaceMode: WorkspaceWorktree}, "task"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for manager.Snapshot()[0].State == ResidentRunning || manager.Snapshot()[0].State == ResidentQueued {
-		if time.Now().After(deadline) {
-			t.Fatal("turn did not finish")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not finish")
+	}
+	if state := manager.Snapshot()[0].State; state != ResidentFailed {
+		t.Fatalf("state = %q, want failed", state)
 	}
 	// Non-canceled failures capture partial work for recovery, but the
 	// worktree is retained (never cleaned) until an explicit stop or close.
