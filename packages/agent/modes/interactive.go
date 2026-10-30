@@ -217,11 +217,12 @@ type InteractiveConfig struct {
 	// above or below the main input.
 	TUIWorkingPosition string
 
-	// QuickModelShortcuts maps slots 1-9 to model profiles. The shortcuts
-	// are Ctrl+1..9. Cmd+1..9 may also work when the terminal forwards
-	// Command/Super keypresses, but Ctrl is the displayed chord.
+	// QuickModelShortcuts mirrors the daemon's model profile slots (Ctrl+1..9;
+	// Cmd+1..9 may also work when the terminal forwards Super) and
+	// ActiveModelProfile the session's active slot (0 none). Both are
+	// refreshed from session Info.
 	QuickModelShortcuts []QuickModelShortcut
-	ActiveModelProfile  int // 0 means no active profile; otherwise 1–9
+	ActiveModelProfile  int
 
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
@@ -598,12 +599,6 @@ type SettingsStore interface {
 	SetTUIWorkingPosition(position string) error
 	SetReasoning(level string) error
 	SetTheme(name string) error
-}
-
-// Optional so existing SettingsStore implementations remain source-compatible.
-// Stores without this method retain model-only shortcuts.
-type modelProfileSettingsStore interface {
-	SetModelProfile(slot int, profile QuickModelShortcut, activeSlot int) error
 }
 
 type terminalAlertsSettingsStore interface {
@@ -1136,21 +1131,6 @@ type startupPreResult struct {
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
-	if cfg.ActiveModelProfile < 1 || cfg.ActiveModelProfile > 9 {
-		cfg.ActiveModelProfile = 1
-	}
-	// An unassigned default remains active so subsequent model/reasoning
-	// edits save into slot 1. Explicit overrides must not overwrite a favorite.
-	if slot := cfg.ActiveModelProfile; slot <= len(cfg.QuickModelShortcuts) {
-		if p := cfg.QuickModelShortcuts[slot-1]; p.Provider != "" || p.Model != "" {
-			cfg.detachMismatchedModelProfile()
-		}
-	}
-	if cfg.SettingsStore != nil {
-		if _, ok := cfg.SettingsStore.(modelProfileSettingsStore); !ok {
-			cfg.ActiveModelProfile = 0
-		}
-	}
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
 	startupAgentName := ""

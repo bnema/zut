@@ -504,6 +504,22 @@ func (p *RemotePort) ApplyProfile(ctx context.Context, n int) error {
 	}{n}, nil)
 }
 
+// AssignProfile implements session.Port.
+func (p *RemotePort) AssignProfile(ctx context.Context, slot int, profile session.QuickModelShortcut, activate bool) error {
+	return p.port(ctx, "assign_profile", struct {
+		Slot     int                        `json:"slot"`
+		Profile  session.QuickModelShortcut `json:"profile"`
+		Activate bool                       `json:"activate"`
+	}{slot, profile, activate}, nil)
+}
+
+// ClearProfile implements session.Port.
+func (p *RemotePort) ClearProfile(ctx context.Context, slot int) error {
+	return p.port(ctx, "clear_profile", struct {
+		Slot int `json:"slot"`
+	}{slot}, nil)
+}
+
 // ApplySettings implements session.Port.
 func (p *RemotePort) ApplySettings(ctx context.Context, patch session.SettingsPatch) error {
 	return p.port(ctx, "apply_settings", struct {

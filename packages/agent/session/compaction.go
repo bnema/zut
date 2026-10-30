@@ -250,7 +250,10 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 	var builder AgentBuilder
 	if err := c.call(ctx, func() {
 		req = PendingRequest{Kind: "rescue", Rescue: &RescueOptions{Error: cause.Error()}}
-		for _, p := range c.deps.QuickModelShortcuts {
+		for _, p := range c.settings.profiles {
+			if p.empty() {
+				continue
+			}
 			req.Rescue.Candidates = append(req.Rescue.Candidates, p.Provider+"/"+p.Model)
 		}
 		seam = c.confirmSeam
@@ -290,6 +293,8 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 			return
 		}
 		c.deps.Provider, c.deps.Model = actualP, actualM
+		// A rescue swap detaches the active profile instead of autosaving.
+		c.settings.activeProfile = 0
 		if c.deps.SessionStore != nil {
 			c.deps.SessionStore.PersistModel(actualP, actualM)
 		}

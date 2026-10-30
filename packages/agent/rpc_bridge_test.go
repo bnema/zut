@@ -155,14 +155,22 @@ func TestResolveRPCModelUsesKnownModelMetadata(t *testing.T) {
 
 // syncWriter lets the test read bridge output while the bridge writes it.
 type syncWriter struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	changed chan struct{}
 }
 
 func (w *syncWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.buf.Write(p)
+	n, err := w.buf.Write(p)
+	if w.changed != nil {
+		select {
+		case w.changed <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
 }
 
 func (w *syncWriter) String() string {
@@ -186,7 +194,7 @@ func TestRPCBridgeSettingsAndClearOnDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	in, feed := io.Pipe()
-	stdout, stderr := &syncWriter{}, &bytes.Buffer{}
+	stdout, stderr := &syncWriter{changed: make(chan struct{}, 1)}, &bytes.Buffer{}
 	hio := headlessIO{stdout: stdout, stderr: stderr, env: parityEnv(),
 		ensure: daemonclient.EnsureOptions{SocketPath: td.socket, Options: daemonclient.Options{ClientVersion: "test", ClientKind: "headless"}}}
 	done := make(chan error, 1)
@@ -194,17 +202,18 @@ func TestRPCBridgeSettingsAndClearOnDaemon(t *testing.T) {
 
 	frame := func(match func(map[string]any) bool) map[string]any {
 		t.Helper()
-		var found map[string]any
-		require.Eventually(t, func() bool {
+		for {
 			for _, f := range rpcFrames(t, stdout.String()) {
 				if match(f) {
-					found = f
-					return true
+					return f
 				}
 			}
-			return false
-		}, 30*time.Second, 10*time.Millisecond, "stdout: %s", stdout.String())
-		return found
+			select {
+			case <-stdout.changed:
+			case <-ctx.Done():
+				t.Fatalf("waiting for RPC frame: %v; stdout: %s", ctx.Err(), stdout.String())
+			}
+		}
 	}
 	send := func(id, line string) map[string]any {
 		t.Helper()
@@ -218,16 +227,13 @@ func TestRPCBridgeSettingsAndClearOnDaemon(t *testing.T) {
 
 	require.Equal(t, "max", data(send("1", `{"id":"1","type":"set_reasoning","reasoning":"max"}`))["reasoning"])
 	require.Equal(t, "gpt-5-mini", data(send("2", `{"id":"2","type":"set_model","model":"  gpt-5-mini  "}`))["model"])
-	// Info reaches the bridge as an event after the setting response.
-	n := 0
-	require.Eventually(t, func() bool {
-		n++
-		id := fmt.Sprintf("3.%d", n)
-		st := data(send(id, `{"id":"`+id+`","type":"get_state"}`))
-		return st["model"] == "gpt-5-mini" && st["reasoning"] == "max"
-	}, 10*time.Second, 20*time.Millisecond)
 	send("4", `{"id":"4","type":"prompt","message":"hello"}`)
 	frame(func(f map[string]any) bool { return f["type"] == "done" })
+	// done is emitted after the pump consumes the idle Info event, so the
+	// bridge's state includes the preceding model and reasoning changes.
+	st := data(send("3", `{"id":"3","type":"get_state"}`))
+	require.Equal(t, "gpt-5-mini", st["model"])
+	require.Equal(t, "max", st["reasoning"])
 	require.Len(t, data(send("5", `{"id":"5","type":"get_messages"}`))["messages"], 3, "time context, prompt and reply")
 	send("6", `{"id":"6","type":"clear"}`)
 	require.Empty(t, data(send("7", `{"id":"7","type":"get_messages"}`))["messages"], "clear kept the transcript")

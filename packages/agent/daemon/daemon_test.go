@@ -281,6 +281,20 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
 		t.Fatalf("submit by kicked client = %v", err)
 	}
+	for _, m := range []string{"assign_profile", "clear_profile"} {
+		if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: m, Params: json.RawMessage(`{"slot":1}`)}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+			t.Fatalf("%s by kicked client = %v", m, err)
+		}
+	}
+	prof := session.QuickModelShortcut{Provider: "openai", Model: "gpt-5", Reasoning: "high", FastMode: true}
+	s1.h.EXPECT().AssignProfile(mock.Anything, 2, prof, true).Return(nil).Once()
+	s1.h.EXPECT().ClearProfile(mock.Anything, 3).Return(nil).Once()
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "assign_profile", Params: json.RawMessage(`{"slot":2,"profile":{"provider":"openai","model":"gpt-5","reasoning":"high","fast_mode":true},"activate":true}`)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_profile", Params: json.RawMessage(`{"slot":3}`)}, nil); err != nil {
+		t.Fatal(err)
+	}
 	var got session.Info
 	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "info"}, &got); err != nil || got.ID != "s1" {
 		t.Fatalf("read by non-controller = %+v, %v", got, err)

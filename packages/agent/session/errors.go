@@ -20,4 +20,6 @@ var (
 	// ErrForkParentNotFound reports a fork whose parent transcript is not
 	// owned by a live session, so its policy cannot be inherited.
 	ErrForkParentNotFound = errors.New("parent session not found")
+	// ErrProfileEmpty reports an unassigned model profile slot.
+	ErrProfileEmpty = errors.New("model profile empty")
 )

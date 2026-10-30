@@ -838,16 +838,30 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if repairConfig {
 		// Repair the source favorite as well as legacy defaults, but never
 		// overwrite it because an explicit CLI override required fallback.
-		if profileSlot > 0 && args.Provider == "" && args.Model == "" {
+		repairProfile := profileSlot > 0 && args.Provider == "" && args.Model == ""
+		if repairProfile {
 			cfg.Provider, cfg.Model = provName, model
 			cfg.Reasoning = provider.ClampReasoningForModel(resolvedModel, cfg.Reasoning)
-			cfg.QuickModelShortcuts[profileSlot-1] = QuickModelShortcut{
-				Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
-				FastMode: cfg.FastMode != nil && *cfg.FastMode,
-			}
-			cfg.ActiveModelProfile = profileSlot
 		}
-		_ = SaveConfig(cfg)
+		// Apply only the repaired fields to the current file so concurrent
+		// config updates are kept.
+		_ = updateConfig(func(disk *Config) error {
+			disk.Provider, disk.Model = cfg.Provider, cfg.Model
+			if repairProfile {
+				disk.Reasoning = cfg.Reasoning
+				if len(disk.QuickModelShortcuts) < profileSlot {
+					next := make([]QuickModelShortcut, profileSlot)
+					copy(next, disk.QuickModelShortcuts)
+					disk.QuickModelShortcuts = next
+				}
+				disk.QuickModelShortcuts[profileSlot-1] = QuickModelShortcut{
+					Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
+					FastMode: cfg.FastMode != nil && *cfg.FastMode,
+				}
+				disk.ActiveModelProfile = profileSlot
+			}
+			return nil
+		})
 	}
 
 	// Discovered custom-provider models inherit the user's models.json

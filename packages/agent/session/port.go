@@ -28,6 +28,11 @@ type Port interface {
 	SetReasoning(ctx context.Context, level string) error
 	SetFastMode(ctx context.Context, enabled bool) error
 	ApplyProfile(ctx context.Context, n int) error
+	// AssignProfile stores p in slot (1-9); activate, or an active slot,
+	// also switches the session to it.
+	AssignProfile(ctx context.Context, slot int, p QuickModelShortcut, activate bool) error
+	// ClearProfile empties slot; an active slot detaches without a model change.
+	ClearProfile(ctx context.Context, slot int) error
 	ApplySettings(ctx context.Context, patch SettingsPatch) error
 	SetGoal(ctx context.Context, command GoalCommand) error
 	ChangeCWD(ctx context.Context, path string) error

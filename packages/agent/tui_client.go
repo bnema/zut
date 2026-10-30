@@ -170,8 +170,6 @@ func tuiClientConfig(out io.Writer) modes.InteractiveConfig {
 		AutoCompactThreshold:      cfg.AutoCompactThreshold,
 		GoalMaxTokenBudget:        cfg.Goals.MaxTokenBudget,
 		JailByDefault:             cfg.JailByDefault,
-		QuickModelShortcuts:       interactiveQuickModelShortcuts(cfg.QuickModelShortcuts),
-		ActiveModelProfile:        cfg.ActiveModelProfile,
 		RecursiveFileSuggest:      cfg.RecursiveFileSuggest,
 		RespectGitignore:          cfg.RespectGitignore,
 		CompactMode:               cfg.CompactMode,

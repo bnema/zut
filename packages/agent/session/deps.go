@@ -108,6 +108,7 @@ type SettingsStore interface {
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error
 	SetReasoning(level string) error
+	SetFastMode(enabled bool) error
 	SetTheme(name string) error
 }
 
@@ -134,10 +135,21 @@ type DeferredStore interface {
 	Remove(string) error
 }
 
-// QuickModelShortcut mirrors the existing model profile slot.
+// QuickModelShortcut mirrors the existing model profile slot; the JSON shape
+// matches config.json. An empty Provider and Model means unassigned.
 type QuickModelShortcut struct {
-	Provider, Model, Reasoning string
-	FastMode                   bool
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning,omitempty"`
+	FastMode  bool   `json:"fast_mode,omitempty"`
+}
+
+// ProfileStore persists the shared model profile slots (one-based).
+type ProfileStore interface {
+	Profiles() []QuickModelShortcut
+	// Save writes slot; an empty p clears it. makeDefault also makes slot
+	// the default active profile and model for new sessions.
+	Save(slot int, p QuickModelShortcut, makeDefault bool) error
 }
 
 // Deps contains session-owned domain resources, never terminal resources.
@@ -157,14 +169,17 @@ type Deps struct {
 	Directory                                                      Directory
 	Scheduler                                                      ScheduleHost
 	DeferredStore                                                  DeferredStore
+	Profiles                                                       ProfileStore
 	Clock                                                          func() time.Time
 	Logger                                                         *slog.Logger
 	Env                                                            []string
 	QuickModelShortcuts                                            []QuickModelShortcut
 	Model, Provider, Reasoning, CWD, SystemPrompt, WritingGuidance string
 	MaxSteps                                                       int
-	Version, ZutHome, SessionsRoot                                 string
-	NoYolo                                                         bool
+	// ActiveProfile is the initial one-based active profile slot (0 none).
+	ActiveProfile                  int
+	Version, ZutHome, SessionsRoot string
+	NoYolo                         bool
 	// Headless marks a session created for a headless run (print, stream,
 	// json): it never generates a title, as the in-process headless modes.
 	Headless bool

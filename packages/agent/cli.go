@@ -99,16 +99,11 @@ func newPersistModelCallback(persistMu *sync.Mutex, sess **core.Session, activeP
 			return
 		}
 
-		cfg, err := LoadConfig()
-		if err != nil {
-			if notify != nil {
-				notify("model changed for this run, but config could not be read: " + err.Error())
-			}
-			return
-		}
-		cfg.Provider = providerName
-		cfg.Model = model
-		if err := SaveConfig(cfg); err != nil && notify != nil {
+		if err := updateConfig(func(cfg *Config) error {
+			cfg.Provider = providerName
+			cfg.Model = model
+			return nil
+		}); err != nil && notify != nil {
 			notify("model changed for this run, but config could not be saved: " + err.Error())
 		}
 	}
@@ -995,15 +990,6 @@ func webSearchToolAllowedForSession(args Args) bool {
 		return toolListContains(args.Tools, "web_search")
 	}
 	return true
-}
-
-func interactiveQuickModelShortcuts(shortcuts []QuickModelShortcut) []modes.QuickModelShortcut {
-	result := make([]modes.QuickModelShortcut, len(shortcuts))
-	for idx, s := range shortcuts {
-		p := normalizedModelProfile(s)
-		result[idx] = modes.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
-	}
-	return result
 }
 
 func agentSessionsRoot(root string, args Args) string {

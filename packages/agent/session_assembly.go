@@ -172,10 +172,6 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	if a.args.PermissionSet != nil && (a.r.Sandbox == nil || a.r.Sandbox.Permissions != a.args.PermissionSet) {
 		return errors.New("zutfile permissions could not be applied to the session sandbox")
 	}
-	if resolvedCfg, err := LoadConfig(); err == nil {
-		a.initialCfg.QuickModelShortcuts = resolvedCfg.QuickModelShortcuts
-		a.initialCfg.ActiveModelProfile = resolvedCfg.ActiveModelProfile
-	}
 	a.authMgr = auth.NewManager(AuthStoreFor())
 	a.sandbox = a.r.Sandbox
 	a.provider, a.model = a.r.Provider, a.r.Model
@@ -581,11 +577,6 @@ func (a *sessionAssembly) deps() session.Deps {
 	a.fastMode = a.r.FastMode
 	homeDir, _ := os.UserHomeDir()
 	discovered, _ := subagents.Discover(a.r.CWD, homeDir)
-	shortcuts := make([]session.QuickModelShortcut, len(a.initialCfg.QuickModelShortcuts))
-	for i, s := range a.initialCfg.QuickModelShortcuts {
-		p := normalizedModelProfile(s)
-		shortcuts[i] = session.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
-	}
 	d := session.Deps{
 		AgentBuilder:                      sessionAgentBuilder{a},
 		SessionStore:                      sessionFileStore{a},
@@ -598,7 +589,6 @@ func (a *sessionAssembly) deps() session.Deps {
 		AuthManager:                       a.authMgr,
 		Logger:                            slog.New(slog.DiscardHandler),
 		Env:                               append([]string{}, a.args.Env...),
-		QuickModelShortcuts:               shortcuts,
 		Model:                             a.r.Model,
 		Provider:                          a.r.Provider,
 		Reasoning:                         a.r.Reasoning,

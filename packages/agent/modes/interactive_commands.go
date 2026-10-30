@@ -1373,11 +1373,7 @@ func (i *Interactive) applyRescueModelSelection(prov, model string) {
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
 	var replaced bool
 	swap := func() {
-		var success bool
-		replaced, success = i.swapModelUnserialized(prov, model, builder, rescue)
-		if success {
-			i.saveActiveModelProfile()
-		}
+		replaced, _ = i.swapModelUnserialized(prov, model, builder, rescue)
 	}
 	if i.cfg.SessionTransition != nil {
 		i.cfg.SessionTransition(swap)
@@ -1541,7 +1537,6 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
-			i.cfg.detachMismatchedModelProfile()
 			i.statusErr = ""
 			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 			i.mu.Unlock()

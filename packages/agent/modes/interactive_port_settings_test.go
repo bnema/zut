@@ -54,7 +54,8 @@ func TestInteractivePortFastTogglesFromInfo(t *testing.T) {
 }
 
 func TestInteractivePortProfileAppliesProfile(t *testing.T) {
-	port, _, term := startPortSettings(t, session.Info{})
+	port, r, term := startPortSettings(t, profileInfo(0, map[int]session.QuickModelShortcut{2: profSol}))
+	require.Eventually(t, func() bool { return len(r.i.SessionInfo().Profiles) == 9 }, 5*time.Second, 10*time.Millisecond)
 	called := make(chan struct{})
 	port.EXPECT().ApplyProfile(mock.Anything, 2).RunAndReturn(func(context.Context, int) error {
 		close(called)
@@ -65,7 +66,8 @@ func TestInteractivePortProfileAppliesProfile(t *testing.T) {
 }
 
 func TestInteractivePortProfileErrorShown(t *testing.T) {
-	port, r, term := startPortSettings(t, session.Info{})
+	port, r, term := startPortSettings(t, profileInfo(0, map[int]session.QuickModelShortcut{3: profSol}))
+	require.Eventually(t, func() bool { return len(r.i.SessionInfo().Profiles) == 9 }, 5*time.Second, 10*time.Millisecond)
 	port.EXPECT().ApplyProfile(mock.Anything, 3).Return(errors.New("daemonrefused")).Once()
 	term.send("/profile 3\r")
 	r.waitOutput(t, "profile 3: daemonrefused")

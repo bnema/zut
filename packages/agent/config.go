@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	providerpkg "github.com/bnema/zut/packages/provider"
@@ -342,7 +343,7 @@ func normalizedModelProfile(p QuickModelShortcut) QuickModelShortcut {
 func (c *Config) applyActiveModelProfile() int {
 	slot := c.ActiveModelProfile
 	if slot < 1 || slot > 9 {
-		slot = 1
+		return 0
 	}
 	if slot > len(c.QuickModelShortcuts) {
 		return 0
@@ -376,8 +377,42 @@ func validateSubagentConfig(cfg SubagentsConfig) error {
 	return nil
 }
 
-// SaveConfig writes the config file, creating parent dirs.
+// configMu serialises every in-process read-modify-write of config.json, so
+// concurrent daemon sessions never lose each other's updates.
+var configMu sync.Mutex
+
+// errConfigUnchanged lets an updateConfig callback skip the write.
+var errConfigUnchanged = errors.New("config unchanged")
+
+// updateConfig loads config.json, applies fn and saves the result under
+// configMu. fn may return errConfigUnchanged to skip saving.
+func updateConfig(fn func(*Config) error) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if err := fn(&cfg); err != nil {
+		if errors.Is(err, errConfigUnchanged) {
+			return nil
+		}
+		return err
+	}
+	return writeConfig(cfg)
+}
+
+// SaveConfig writes the config file, creating parent dirs. Read-modify-write
+// callers use updateConfig instead.
 func SaveConfig(c Config) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	return writeConfig(c)
+}
+
+// writeConfig replaces config.json atomically: readers see the old or the
+// new file, never a partial one.
+func writeConfig(c Config) error {
 	if err := validateDictationSettings(c.Dictation); err != nil {
 		return err
 	}
@@ -388,7 +423,42 @@ func SaveConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ConfigPath(), b, 0o644)
+	return writeFileAtomic(ConfigPath(), b, 0o600)
+}
+
+// writeFileAtomic writes data to a temp file beside path, syncs it and
+// renames it over path.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() {
+		if name != "" {
+			_ = os.Remove(name)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	name = ""
+	return nil
 }
 
 // applyConfiguredHTTPProxy makes the persisted proxy available to Go's

@@ -174,6 +174,13 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 	}
 	require.Equal(t, []string{"1", "2", "3", "4", "5"}, titles(got))
 
+	// Model profile slots round-trip, including the empty-slot sentinel.
+	prof := session.QuickModelShortcut{Provider: "openai", Model: "gpt-5", Reasoning: "high", FastMode: true}
+	s1.h.EXPECT().AssignProfile(mock.Anything, 2, prof, false).Return(nil).Once()
+	s1.h.EXPECT().ClearProfile(mock.Anything, 4).Return(session.ErrProfileEmpty).Once()
+	require.NoError(t, port.AssignProfile(ctx, 2, prof, false))
+	require.ErrorIs(t, port.ClearProfile(ctx, 4), session.ErrProfileEmpty)
+
 	// Close requires control.
 	other := dial(t, path, Options{ClientVersion: "daemon-v"})
 	require.ErrorContains(t, other.Close(ctx, "s1", "user_exit"), daemon.ErrNotController.Error())
