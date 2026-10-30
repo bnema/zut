@@ -185,24 +185,59 @@ func TestResidentSubagentsDialogRenderReadsCacheOnly(t *testing.T) {
 	}
 }
 
+// signalLocker reports every Unlock so a test can wait until another
+// goroutine has finished a critical section.
+type signalLocker struct {
+	sync.Mutex
+	unlocked chan struct{}
+}
+
+func (l *signalLocker) Unlock() {
+	l.Mutex.Unlock()
+	select {
+	case l.unlocked <- struct{}{}:
+	default:
+	}
+}
+
+// A fetch that completes after Close must not publish into the dialog. The
+// fetch goroutine takes the dialog lock exactly once after the port returns,
+// either to discard (stale generation) or to apply; the test waits for that
+// unlock before inspecting, so the check cannot pass vacuously.
 func TestResidentSubagentsDialogCloseDiscardsInFlightFetch(t *testing.T) {
 	port := sessionmocks.NewMockPort(t)
-	started := make(chan struct{})
-	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _, _ int) ([]subagents.ResidentSnapshot, int, error) {
+	started, release := make(chan struct{}), make(chan struct{})
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(context.Context, int, int) ([]subagents.ResidentSnapshot, int, error) {
 		close(started)
-		<-ctx.Done()
-		return nil, 0, ctx.Err()
+		<-release
+		return []subagents.ResidentSnapshot{{ID: "late"}}, 1, nil
 	}).Once()
-	dialog, loaded := newTestResidentDialog()
-	dialog.lock.Lock()
+	lock := &signalLocker{unlocked: make(chan struct{}, 1)}
+	notified := make(chan struct{}, 1)
+	dialog := newResidentSubagentsDialog(lock, func() { notified <- struct{}{} })
+	lock.Lock()
 	dialog.Open(port)
-	dialog.lock.Unlock()
+	lock.Unlock()
 	<-started
-	dialog.lock.Lock()
+	lock.Lock()
 	dialog.Close()
-	dialog.lock.Unlock()
+	lock.Unlock()
+	<-lock.unlocked // drain the test's own unlocks; capacity 1 keeps the last
+	close(release)
 	select {
-	case <-loaded:
+	case <-lock.unlocked: // the fetch goroutine's single critical section
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetch goroutine never took the dialog lock")
+	}
+	// Bypass signalLocker.Unlock so this read sends no signal.
+	lock.Lock()
+	gotRows, gotTotal, gotLoaded := dialog.rows, dialog.total, dialog.loaded
+	lock.Mutex.Unlock()
+	if gotLoaded || gotTotal != 0 || len(gotRows) != 0 {
+		t.Fatalf("closed dialog applied a stale fetch: rows=%v total=%d loaded=%v", gotRows, gotTotal, gotLoaded)
+	}
+	select {
+	case <-notified:
 		t.Fatal("closed dialog published a stale fetch")
 	default:
 	}
