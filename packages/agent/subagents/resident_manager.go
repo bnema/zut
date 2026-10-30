@@ -612,6 +612,9 @@ func (m *ResidentManager) resumeWithTurn(ctx context.Context, childID, prompt, t
 			return fmt.Errorf("resident manager rebuild child: %w", err)
 		}
 		child = newJournaledResidentChildWithWorkspace(spec, journal, workspace, m.scheduledRunner(spec.ID, runner), m.reportCompletion)
+		// Continue the stopped child's revision so it only increases within
+		// this process; readers would otherwise miss a reload after resume.
+		child.historyRev.Store(snapshot.HistoryRev)
 		child.setUpdateObserver(func(historyChanged bool) { m.notifyUpdate(spec.ID, historyChanged) })
 		child.setStateObserver(func(state ResidentState) { m.notifyActivity(spec.ID, state) })
 		m.mu.Lock()

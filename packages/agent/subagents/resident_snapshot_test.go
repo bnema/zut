@@ -113,3 +113,43 @@ func TestResidentSnapshotHistoryRevCountsFinalizedEventsOnly(t *testing.T) {
 		t.Fatal("resident turn did not run")
 	}
 }
+
+// A child rebuilt by Resume after Stop continues its history revision, so
+// the revision a reader saw never repeats within one process.
+func TestResidentResumeAfterStopContinuesHistoryRev(t *testing.T) {
+	turns := make(chan struct{}, 2)
+	manager := NewResidentManager(t.TempDir(), func(_ ResidentChildSpec, journal *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(context.Context, string) error {
+			defer func() { turns <- struct{}{} }()
+			return journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "done"}}}})
+		}), nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	waitTurn := func() {
+		t.Helper()
+		select {
+		case <-turns:
+		case <-time.After(5 * time.Second):
+			t.Fatal("resident turn did not run")
+		}
+	}
+	if _, err := manager.Spawn(context.Background(), ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
+		t.Fatal(err)
+	}
+	waitTurn()
+	if err := manager.Stop(context.Background(), "child"); err != nil {
+		t.Fatal(err)
+	}
+	stopped, _ := manager.SnapshotFor("child")
+	if stopped.HistoryRev == 0 {
+		t.Fatal("stopped snapshot lost its history revision")
+	}
+	if err := manager.Resume(context.Background(), "child", "again"); err != nil {
+		t.Fatal(err)
+	}
+	waitTurn()
+	resumed, _ := manager.SnapshotFor("child")
+	if resumed.HistoryRev <= stopped.HistoryRev {
+		t.Fatalf("history rev after resume = %d, want > %d", resumed.HistoryRev, stopped.HistoryRev)
+	}
+}
