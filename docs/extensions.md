@@ -177,7 +177,9 @@ manifest tells zut how to launch it:
    focused.
 6. **Shutdown**: when zut exits, it sends `shutdown` and waits up to
    2s for the extension to send `shutdown_ack`. Holdouts are
-   SIGTERM'd, then SIGKILL'd.
+   SIGTERM'd, then SIGKILL'd. Child termination and reaping run concurrently,
+   so multiple holdouts do not add one termination grace period each; the host
+   still waits for every extension process before completing cleanup.
 
 A crashing extension does not bring down zut. The slash command it
 owned simply stops working until the extension is fixed and zut is

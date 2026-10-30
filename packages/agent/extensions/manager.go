@@ -1650,33 +1650,45 @@ func stopExtensions(exts []*Extension, gracePeriod time.Duration) {
 		_ = ext.stdin.Close()
 	}
 
+	// Each child has an independent termination grace. Reap concurrently so
+	// unresponsive extensions cost one grace period, not one per process.
+	var wg sync.WaitGroup
 	for _, ext := range exts {
-		if ext.cmd == nil {
-			if ext.logFile != nil {
-				_ = ext.logFile.Close()
-			}
-			continue
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			remaining = 100 * time.Millisecond
-		}
-		done := make(chan struct{})
-		go func() { _ = ext.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(remaining):
-			_ = ext.cmd.Process.Signal(syscall.SIGTERM)
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				_ = ext.cmd.Process.Kill()
-				<-done
-			}
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stopExtension(ext, deadline)
+		}()
+	}
+	wg.Wait()
+}
+
+func stopExtension(ext *Extension, deadline time.Time) {
+	if ext.cmd == nil {
 		if ext.logFile != nil {
 			_ = ext.logFile.Close()
 		}
+		return
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		remaining = 100 * time.Millisecond
+	}
+	done := make(chan struct{})
+	go func() { _ = ext.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(remaining):
+		_ = ext.cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			_ = ext.cmd.Process.Kill()
+			<-done
+		}
+	}
+	if ext.logFile != nil {
+		_ = ext.logFile.Close()
 	}
 }
 
