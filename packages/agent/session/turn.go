@@ -209,7 +209,7 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	c.turn.live = LiveTurn{Origin: in.Origin}
 	c.turn.end = core.EvTurnEnd{}
 	c.turn.started = c.deps.Clock()
-	c.logger().Info("turn started", "origin", string(in.Origin), "continuing", continuing)
+	c.logger().Info("turn started", "origin", logOrigin(in.Origin), "continuing", continuing)
 	c.turn.input = nil
 	if !continuing {
 		retry := in
@@ -258,9 +258,9 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		if cause == nil {
 			cause = ctx.Err()
 		}
-		c.logger().Warn("turn failed", "origin", string(origin), "duration", duration, "error_category", errorCategory(cause))
+		c.logger().Warn("turn failed", "origin", logOrigin(origin), "duration", duration, "error_category", errorCategory(cause))
 	default:
-		c.logger().Info("turn ended", "origin", string(origin), "duration", duration)
+		c.logger().Info("turn ended", "origin", logOrigin(origin), "duration", duration)
 	}
 	c.restoreScheduledGuard()
 	failed := c.turn.input
