@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/execpath"
+	"github.com/bnema/zut/packages/agent/internal/procgroup"
 )
 
 type rpcError struct {
@@ -58,7 +59,7 @@ type Client struct {
 	Root    string
 	Command string
 	cmd     *exec.Cmd
-	guard   *processGuard
+	guard   *procgroup.Guard
 	stdin   io.WriteCloser
 	stdout  io.ReadCloser
 	stderr  io.ReadCloser
@@ -104,7 +105,7 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 		return nil, fmt.Errorf("%s: %w", spec.ID, err)
 	}
 	cmd := exec.Command(command, spec.Args...)
-	isolateProcess(cmd)
+	procgroup.Isolate(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = root
 	cmd.Env = mergedEnvironment(spec.Env, options.Env)
@@ -129,7 +130,7 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 		_ = stderr.Close()
 		return nil, fmt.Errorf("start %s: %w", spec.ID, err)
 	}
-	guard, err := newProcessGuard(cmd)
+	guard, err := procgroup.New(cmd)
 	if err != nil {
 		_ = cmd.Wait()
 		_ = stdin.Close()
@@ -562,15 +563,15 @@ func (c *Client) Close() error {
 		killed := false
 		exited := make(chan error, 1)
 		go func() {
-			// On Linux retain the leader until group cleanup so its pgid
-			// cannot be reused. Other platforms clean up immediately after Wait.
-			reserved := c.guard.awaitLeaderExit()
+			// On Unix retain the leader until group cleanup so its pgid
+			// cannot be reused. Windows Job Objects remain safe after Wait.
+			reserved := c.guard.AwaitLeaderExit()
 			if reserved {
-				c.guard.cleanup()
+				c.guard.Cleanup()
 			}
 			err := c.cmd.Wait()
 			if !reserved {
-				c.guard.cleanup()
+				c.guard.Cleanup()
 			}
 			exited <- err
 		}()
@@ -579,7 +580,7 @@ func (c *Client) Close() error {
 		case waitErr = <-exited:
 			timer.Stop()
 		case <-timer.C:
-			c.guard.terminate(true)
+			c.guard.Terminate(true)
 			killed = true
 			waitErr = <-exited
 		}

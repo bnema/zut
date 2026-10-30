@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/internal/execpath"
+	"github.com/bnema/zut/packages/agent/internal/procgroup"
 )
 
 // maxStdioFrame bounds one newline-delimited JSON-RPC message from a server.
@@ -84,7 +85,7 @@ const (
 type stdioTransport struct {
 	name  string
 	cmd   *exec.Cmd
-	guard *processGuard
+	guard *procgroup.Guard
 	red   *redactor
 	live  *stderrSink
 
@@ -182,7 +183,7 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 	}
 	cmd.Env = buildStdioEnv(cfg)
 	cmd.Dir = dir
-	isolateProcess(cmd)
+	procgroup.Isolate(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -212,7 +213,7 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 	}
 	outW.Close()
 	errW.Close()
-	guard, err := newProcessGuard(cmd)
+	guard, err := procgroup.New(cmd)
 	if err != nil {
 		// Fail closed: never run a server that cannot be contained.
 		_ = stdin.Close()
@@ -248,9 +249,9 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 		// Wait for the leader to exit WITHOUT reaping it, clean the group
 		// while the leader is a zombie (its pid, the pgid, cannot be reused
 		// yet), and only then reap it.
-		leaderGone := t.guard.awaitLeaderExit()
+		leaderGone := t.guard.AwaitLeaderExit()
 		if leaderGone {
-			t.guard.cleanup()
+			t.guard.Cleanup()
 			if h := beforeReapHook.Load(); h != nil {
 				(*h)(cmd.Process.Pid)
 			}
@@ -271,8 +272,9 @@ func startStdio(name string, cfg ServerConfig, cwd string, sink *stderrSink) (*s
 		}
 		t.fail(fmt.Errorf("server process ended: %w", waitErr))
 		if !leaderGone {
-			// No wait-without-reap on this platform: clean up after the fact.
-			t.guard.cleanup()
+			// Windows owns a stable Job Object; Unix wait failures have
+			// already cleaned or disarmed the guard before Wait.
+			t.guard.Cleanup()
 		}
 	}()
 	return t, nil
@@ -644,13 +646,13 @@ func (t *stdioTransport) closeWithGrace(eofGrace, termGrace, killGrace, drainGra
 	t.fail(errors.New("connection closed"))
 	_ = t.stdin.Close() // also unblocks a writer stuck on a full pipe
 	if !t.waitExit(eofGrace) {
-		t.guard.terminate(false)
+		t.guard.Terminate(false)
 		if !t.waitExit(termGrace) {
-			t.guard.terminate(true)
+			t.guard.Terminate(true)
 			t.waitExit(killGrace)
 		}
 	}
-	t.guard.cleanup()
+	t.guard.Cleanup()
 	// With the child gone its stderr hits EOF once buffered data is read; give
 	// the reader a moment so diagnostics are complete. A descendant holding the
 	// pipe open only costs the timeout.
