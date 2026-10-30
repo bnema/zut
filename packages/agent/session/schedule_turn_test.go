@@ -7,36 +7,37 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/providermocks"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
-// scriptedClient answers each request from script in order, then with text.
-type scriptedClient struct {
-	calls  atomic.Int32
-	script func(call int) provider.Message
-}
-
-func (c *scriptedClient) Name() string { return "scripted" }
-
-func (c *scriptedClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
-	call := int(c.calls.Add(1))
-	msg := c.script(call)
-	stop := provider.StopEnd
-	for _, content := range msg.Content {
-		if _, ok := content.(provider.ToolCallBlock); ok {
-			stop = provider.StopToolUse
+// scriptedClient returns a generated provider mock answering each request
+// from script in order; calls counts the requests.
+func scriptedClient(t *testing.T, script func(call int) provider.Message) (*providermocks.MockClient, *atomic.Int32) {
+	t.Helper()
+	calls := &atomic.Int32{}
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("scripted").Maybe()
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+		msg := script(int(calls.Add(1)))
+		stop := provider.StopEnd
+		for _, content := range msg.Content {
+			if _, ok := content.(provider.ToolCallBlock); ok {
+				stop = provider.StopToolUse
+			}
 		}
-	}
-	out := make(chan provider.Event, 2)
-	out <- provider.EventStart{Provider: c.Name(), Model: req.Model}
-	out <- provider.EventDone{Stop: stop, Message: msg}
-	close(out)
-	return out, nil
+		out := make(chan provider.Event, 2)
+		out <- provider.EventStart{Provider: "scripted", Model: req.Model}
+		out <- provider.EventDone{Stop: stop, Message: msg}
+		close(out)
+		return out, nil
+	})
+	return client, calls
 }
 
 type repeatTool struct{}
@@ -74,16 +75,36 @@ func scheduleTurnController(t *testing.T, ag *core.Agent) (*Controller, context.
 }
 
 // runToIdle submits in and waits for the turn to finish, returning its end.
+// finishTurn publishes idle info on the actor; it may then start a follow-up
+// turn, so each idle info is confirmed on the actor before returning.
 func runToIdle(t *testing.T, c *Controller, ctx context.Context, in Input) core.EvTurnEnd {
 	t.Helper()
+	subCtx, unsubscribe := context.WithCancel(ctx)
+	defer unsubscribe()
+	events, err := c.Subscribe(subCtx, 0)
+	require.NoError(t, err)
 	require.NoError(t, c.Submit(ctx, in))
-	var end core.EvTurnEnd
-	require.Eventually(t, func() bool {
-		idle := false
-		require.NoError(t, c.call(ctx, func() { idle = !c.turn.busy; end = c.turn.end }))
-		return idle
-	}, 10*time.Second, 5*time.Millisecond)
-	return end
+	for {
+		select {
+		case ev, ok := <-events:
+			require.True(t, ok, "subscription closed")
+			info, isInfo := ev.Data.(InfoEvent)
+			if !isInfo {
+				continue
+			}
+			if info.Info.Run != RunStateIdle {
+				continue
+			}
+			var end core.EvTurnEnd
+			idle := false
+			require.NoError(t, c.call(ctx, func() { idle = !c.isBusy(); end = c.turn.end }))
+			if idle {
+				return end
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
 }
 
 func repetitionWarned(ag *core.Agent) bool {
@@ -99,26 +120,26 @@ func repetitionWarned(ag *core.Agent) bool {
 // scheduler did; the guard is back for the next user turn.
 func TestScheduledTurnDisablesRepetitionGuard(t *testing.T) {
 	const repeats = 10 // beyond the guard's stop threshold
-	client := &scriptedClient{script: repeatingScript(repeats)}
+	client, calls := scriptedClient(t, repeatingScript(repeats))
 	ag := core.NewAgent(client, "model", "", core.Registry{"repeat": repeatTool{}})
 	c, ctx := scheduleTurnController(t, ag)
 
 	end := runToIdle(t, c, ctx, Input{Origin: InputOriginScheduler, Mode: SubmitModeQueue, Text: "scheduled task"})
 	require.NoError(t, end.Err)
-	require.EqualValues(t, repeats+1, client.calls.Load(), "scheduled turn stopped early")
+	require.EqualValues(t, repeats+1, calls.Load(), "scheduled turn stopped early")
 	require.False(t, repetitionWarned(ag), "scheduled turn injected a repetition warning")
 	require.False(t, ag.DisableRepetitionGuard, "guard left disabled after the scheduled turn")
 
 	// The same loop from the user is stopped by the guard.
-	client.calls.Store(0)
+	calls.Store(0)
 	runToIdle(t, c, ctx, Input{Origin: InputOriginUser, Text: "do it again"})
-	require.Less(t, client.calls.Load(), int32(repeats+1), "user turn ran without the guard")
+	require.Less(t, calls.Load(), int32(repeats+1), "user turn ran without the guard")
 	require.True(t, repetitionWarned(ag))
 }
 
 // A scheduled turn keeps an operator's --allow-repetition choice.
 func TestScheduledTurnKeepsExplicitGuardOptOut(t *testing.T) {
-	client := &scriptedClient{script: repeatingScript(1)}
+	client, _ := scriptedClient(t, repeatingScript(1))
 	ag := core.NewAgent(client, "model", "", core.Registry{"repeat": repeatTool{}})
 	ag.DisableRepetitionGuard = true
 	c, ctx := scheduleTurnController(t, ag)
@@ -129,14 +150,14 @@ func TestScheduledTurnKeepsExplicitGuardOptOut(t *testing.T) {
 // A plan change made by a scheduled turn goes through the agent's commit hook
 // (the session store's persistence) and reaches the agent plan and snapshot.
 func TestScheduledTurnPersistsPlanMutation(t *testing.T) {
-	client := &scriptedClient{script: func(call int) provider.Message {
+	client, _ := scriptedClient(t, func(call int) provider.Message {
 		if call == 1 {
 			return provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{
 				ID: "plan-call-1", Name: tools.PlanToolName, Arguments: json.RawMessage(`{"action":"set","steps":[{"step":"one","status":"pending"}]}`),
 			}}}
 		}
 		return provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "done"}}}
-	}}
+	})
 	ag := core.NewAgent(client, "model", "", core.Registry{tools.PlanToolName: &tools.PlanTool{}})
 	var mu sync.Mutex
 	var committed []core.ToolResult

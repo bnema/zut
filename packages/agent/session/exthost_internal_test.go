@@ -102,10 +102,24 @@ func ExtDomainQueueLen(ctx context.Context, c *Controller) (int, error) {
 	return n, err
 }
 
+// extNoteEvents returns the retained note events, read on the actor. Reading
+// the ring after an actor barrier avoids a live subscriber, whose bounded
+// buffer is closed as a slow consumer when the reader lags a 1024-hook drain.
+func extNoteEvents(t *testing.T, c *Controller, ctx context.Context) []Note {
+	t.Helper()
+	var notes []Note
+	require.NoError(t, c.call(ctx, func() {
+		for _, entry := range c.ring.entries {
+			if entry.event.Kind == EvNote {
+				notes = append(notes, entry.event.Data.(NoteEvent).Note)
+			}
+		}
+	}))
+	return notes
+}
+
 func TestExtensionMailboxOverflowReportsOnce(t *testing.T) {
 	c, ctx := newTestController(t)
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
 	release := make(chan struct{})
 	blocked := make(chan struct{})
 	require.NoError(t, c.post(ctx, func() { close(blocked); <-release }))
@@ -118,21 +132,14 @@ func TestExtensionMailboxOverflowReportsOnce(t *testing.T) {
 	require.Len(t, c.ext.mailbox, 1024)
 	c.ext.mu.Unlock()
 	close(release)
+	// The actor drains the mailbox before running the barrier.
 	var notes, overloads int
-	for notes+overloads < 1025 {
-		select {
-		case ev := <-events:
-			if ev.Kind != EvNote {
-				continue
-			}
-			if ev.Data.(NoteEvent).Note.Text == "extension flood overloaded: hook dropped" {
-				require.Equal(t, "error", ev.Data.(NoteEvent).Note.Level)
-				overloads++
-			} else {
-				notes++
-			}
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+	for _, n := range extNoteEvents(t, c, ctx) {
+		if n.Text == "extension flood overloaded: hook dropped" {
+			require.Equal(t, "error", n.Level)
+			overloads++
+		} else {
+			notes++
 		}
 	}
 	require.Equal(t, 1024, notes)
@@ -191,25 +198,16 @@ func TestExtensionNotesCapped(t *testing.T) {
 
 func TestExtensionOverloadDuringDrainReportedOnNextWake(t *testing.T) {
 	c, ctx := newTestController(t)
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
 	h := extHooks{c}
 	h.admit("x", func() {
 		for i := 0; i < 1025; i++ {
 			h.ClearWidget("x", "none")
 		}
 	})
-	for {
-		select {
-		case ev := <-events:
-			if ev.Kind == EvNote {
-				require.Equal(t, Note{Level: "error", Text: "extension x overloaded: hook dropped"}, ev.Data.(NoteEvent).Note)
-				return
-			}
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-	}
+	// The first barrier's drain runs the flood (overload marked mid-drain);
+	// the second barrier's drain reports it.
+	require.NoError(t, c.call(ctx, func() {}))
+	require.Equal(t, []Note{{Level: "error", Text: "extension x overloaded: hook dropped"}}, extNoteEvents(t, c, ctx))
 }
 
 func TestExtensionOverloadRateLimited(t *testing.T) {

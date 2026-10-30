@@ -28,16 +28,24 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			c := NewController(ctx, Deps{ResidentManager: m})
 			t.Cleanup(func() { cancel(); <-c.Done() })
+			events, err := c.Subscribe(ctx, 0)
+			require.NoError(t, err)
 			require.False(t, completed(subagents.ResidentCompletion{ChildID: "unknown", TurnID: "turn"}))
 			accepted(subagents.ResidentChildSpec{ID: "child", Workspace: "/workspace"}, "turn", strings.Repeat("界", 130)+"\nignored")
 			accepted(subagents.ResidentChildSpec{ID: "child"}, "turn", "duplicate")
 			update("child")
-			var snapshot Snapshot
-			require.Eventually(t, func() bool {
-				var err error
-				snapshot, err = c.Snapshot(ctx)
-				return err == nil && snapshot.Info.Residents[0].Workspace != ""
-			}, time.Second, time.Millisecond)
+			// Acceptance publishes info once the actor ran it.
+			for accepted := false; !accepted; {
+				select {
+				case ev := <-events:
+					info, ok := ev.Data.(InfoEvent)
+					accepted = ok && len(info.Info.Residents) > 0 && info.Info.Residents[0].Workspace != ""
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			snapshot, err := c.Snapshot(ctx)
+			require.NoError(t, err)
 			require.Equal(t, "/workspace", snapshot.Info.Residents[0].Workspace)
 			require.Len(t, []rune(snapshot.Info.Residents[0].Task), 120)
 			completion := subagents.ResidentCompletion{ChildID: "child", TurnID: "turn", Summary: "finished"}

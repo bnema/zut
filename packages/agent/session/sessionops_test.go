@@ -128,14 +128,17 @@ func TestDaemonContextEndClosesAsDaemonStop(t *testing.T) {
 func TestCloseMidTurnWaitsForTurnGoroutine(t *testing.T) {
 	c, ctx := newTestController(t)
 	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	proceed := make(chan struct{})
 	returned := make(chan struct{})
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
 	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(sctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
 		close(started)
 		<-sctx.Done()
-		// The agent keeps going briefly after cancellation.
-		time.Sleep(50 * time.Millisecond)
+		close(cancelled)
+		// The agent keeps going after cancellation until the test lets it.
+		<-proceed
 		close(returned)
 		return nil, sctx.Err()
 	}).Once()
@@ -148,7 +151,16 @@ func TestCloseMidTurnWaitsForTurnGoroutine(t *testing.T) {
 	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.settings.title = "t" }))
 	require.NoError(t, c.Submit(ctx, Input{Text: "hi"}))
 	<-started
-	require.NoError(t, c.Close(ctx, "user_exit"))
+	closed := make(chan error, 1)
+	go func() { closed <- c.Close(ctx, "user_exit") }()
+	<-cancelled
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the turn goroutine was still running")
+	default:
+	}
+	close(proceed)
+	require.NoError(t, <-closed)
 	select {
 	case <-returned:
 	default:

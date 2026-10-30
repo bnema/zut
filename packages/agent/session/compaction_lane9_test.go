@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/bnema/zut/packages/agent/tools"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,11 +65,13 @@ func TestAbortCompactionFailsWithoutReplacingMessages(t *testing.T) {
 	require.Equal(t, "failed", ev.Data.(CompactionEvent).Phase)
 	require.NoError(t, c.call(ctx, func() { require.False(t, c.compacting()) }))
 	require.Equal(t, before, ag.Messages())
-	// No note and no message replacement after an explicit abort.
+	// No note and no message replacement after an explicit abort. Events are
+	// published on the actor, so an actor barrier flushes any late one.
+	require.NoError(t, c.call(ctx, func() {}))
 	select {
 	case ev := <-events:
 		t.Fatalf("unexpected event %s", ev.Kind)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 
@@ -184,13 +185,13 @@ func TestTitleGenerationCancelledOnClose(t *testing.T) {
 	c := NewController(cctx, Deps{})
 	turn := lane9Turn(t, c, ctx)
 	streaming := make(chan struct{})
-	var cancelled atomic.Bool
+	cancelled := make(chan struct{})
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
 	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(sctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
 		close(streaming)
 		<-sctx.Done()
-		cancelled.Store(true)
+		close(cancelled)
 		return nil, sctx.Err()
 	}).Once()
 	turn.EXPECT().currentAgent().Return(core.NewAgent(client, "m", "", nil)).Maybe()
@@ -198,13 +199,12 @@ func TestTitleGenerationCancelledOnClose(t *testing.T) {
 	<-streaming
 	stop()
 	<-c.Done()
-	// Well under the 10s title timeout: only close-driven cancellation passes.
-	deadline := time.Now().Add(2 * time.Second)
-	for !cancelled.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("title generation not cancelled on close")
-		}
-		time.Sleep(5 * time.Millisecond)
+	// Close cancels the title context; nothing else can before the 10s title
+	// timeout, which outlives the test context.
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Fatal("title generation not cancelled on close")
 	}
 }
 
