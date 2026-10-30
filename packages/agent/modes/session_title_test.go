@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
@@ -73,18 +72,4 @@ func TestLoadedSessionTitleIsRestoredWithoutGeneration(t *testing.T) {
 	term := &alertTestTerminal{}
 	newPortTitleInteractive(t, term, "Existing work", nil)
 	require.Equal(t, "\x1b]0;zut: Existing work\x07", term.String())
-}
-func waitInteractiveIdle(t *testing.T, i *Interactive) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		i.mu.Lock()
-		busy := i.busy
-		i.mu.Unlock()
-		if !busy {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("interactive turn did not finish")
 }

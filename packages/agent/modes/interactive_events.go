@@ -254,10 +254,8 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// EvTurnEnd fires after every step in a multi-step tool loop,
 		// so a transient 503 / network blip would briefly paint a red
 		// banner over the still-streaming chat before the agent loop
-		// either retries or exits. The final error (if any) is set by
-		// startTurnWithImages once Prompt() returns, and recoverable
-		// failures are routed to the rescue picker instead — which
-		// keeps the chat clean while the agent is working.
+		// either retries or exits. Final errors and recoverable failures
+		// arrive through the daemon session state and pending requests.
 		_ = e.Err
 	}
 }

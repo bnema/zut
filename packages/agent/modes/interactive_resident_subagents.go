@@ -86,24 +86,7 @@ func (i *Interactive) ensureCoordinatorLocked() *orchestration.Coordinator {
 	}
 	return i.turnCoordinator
 }
-func (i *Interactive) coordinatorAcceptsUserInput() bool {
-	if i == nil {
-		return false
-	}
-	i.completionDeliveryMu.Lock()
-	accepts := i.ensureCoordinatorLocked().AcceptsUserInput()
-	i.completionDeliveryMu.Unlock()
-	return accepts
-}
-func (i *Interactive) coordinatorHasPendingWorkers() bool {
-	if i == nil {
-		return false
-	}
-	i.completionDeliveryMu.Lock()
-	pending := i.ensureCoordinatorLocked().HasPendingWorkers()
-	i.completionDeliveryMu.Unlock()
-	return pending
-}
+
 func (i *Interactive) applyCoordinator(event orchestration.Event) []orchestration.Action {
 	if i == nil {
 		return nil
@@ -201,16 +184,6 @@ func (i *Interactive) executeCoordinatorActions(actions []orchestration.Action) 
 		}
 		if prompt != "" || len(action.Images) != 0 {
 			i.submitOrQueueMessage(core.QueuedMessage{Text: prompt, Images: action.Images, HostEvent: len(action.Completions) != 0}, false)
-		} else if action.Reason == orchestration.WakeGoal {
-			// Esc-armed reassessment keeps the next turn for user input.
-			if i.interruptedPromptPending() {
-				continue
-			}
-			parent := i.runCtx
-			if parent == nil {
-				parent = context.Background()
-			}
-			i.requestGoalContinuationIfIdle(parent)
 		}
 	}
 }
@@ -230,92 +203,7 @@ func (i *Interactive) requestCompletionDelivery() {
 
 	go i.deliverCompletionUpdates()
 }
-func (i *Interactive) beginCompletionDeliveryHold() func() {
-	if i == nil {
-		return func() {}
-	}
-	i.completionDeliveryMu.Lock()
-	if i.completionDeliveryHolds == 0 {
-		// A wave starts only from zero holds. Bumping the generation here lets a
-		// release that drained an older wave detect that a newer wave replaced
-		// it while it sampled goal state.
-		i.completionDeliveryGeneration++
-	}
-	i.ensureCoordinatorLocked().Apply(orchestration.Event{Kind: orchestration.EventManagerStarted})
-	i.completionDeliveryHolds++
-	i.completionDeliveryMu.Unlock()
-	return i.releaseCompletionDeliveryHold
-}
-func (i *Interactive) releaseCompletionDeliveryHold() {
-	if i == nil {
-		return
-	}
-	i.completionDeliveryMu.Lock()
-	sealing := false
-	var sealingGeneration uint64
-	if i.completionDeliveryHolds > 0 {
-		i.completionDeliveryHolds--
-		if i.completionDeliveryHolds == 0 {
-			sealing = true
-			sealingGeneration = i.completionDeliveryGeneration
-		}
-	}
-	if !sealing {
-		// A nested or duplicate release only returns a hold; it must not sample
-		// goal state or seal a wave it does not own. Starting pending delivery
-		// stays available because that is the existing behaviour whenever the
-		// wave is already idle.
-		start := i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning
-		if start {
-			i.completionDeliveryRunning = true
-		}
-		i.completionDeliveryMu.Unlock()
-		if start {
-			go i.deliverCompletionUpdates()
-		}
-		return
-	}
-	i.completionDeliveryMu.Unlock()
 
-	// Only the release that drained the last hold seals the wave, so this
-	// snapshot belongs to exactly that wave. Read the goal and interruption
-	// state before taking completionDeliveryMu: both helpers acquire i.mu, and
-	// callers legitimately hold i.mu while they read coordinator state, so
-	// acquiring i.mu while holding completionDeliveryMu would invert the lock
-	// order and deadlock.
-	//
-	// The coordinator must observe the goal before sealing the wave, so a
-	// pending worker wins the wake decision instead of a direct continuation.
-	// An Esc-armed reassessment prompt suppresses the wake: the next ordinary
-	// user message owns the turn, not autonomous work.
-	_, goalActive := i.goalContinuationMessage()
-	if i.interruptedPromptPending() {
-		goalActive = false
-	}
-
-	start := false
-	var actions []orchestration.Action
-	i.completionDeliveryMu.Lock()
-	// A newer wave may have replaced this one while goal state was sampled, so
-	// the hold count alone is not enough: a newer hold can begin and fully
-	// drain, leaving the count at zero, and sealing then would re-apply this
-	// stale snapshot over the wave that already sealed. The captured generation
-	// identifies exactly the wave this release drained.
-	if i.completionDeliveryHolds == 0 && i.completionDeliveryGeneration == sealingGeneration {
-		coordinator := i.ensureCoordinatorLocked()
-		coordinator.Apply(orchestration.Event{Kind: orchestration.EventGoalChanged, GoalActive: goalActive})
-		actions = coordinator.Apply(orchestration.Event{Kind: orchestration.EventManagerFinished}).Actions
-	}
-	if i.completionDeliveryHolds == 0 && i.completionDeliveryRequest && !i.completionDeliveryRunning {
-		i.completionDeliveryRunning = true
-		start = true
-	}
-	i.completionDeliveryMu.Unlock()
-	i.executeCoordinatorActions(actions)
-	if start {
-		go i.deliverCompletionUpdates()
-	}
-}
 func (i *Interactive) completionWaitContext() context.Context {
 	i.mu.Lock()
 	ctx := i.runCtx
@@ -802,7 +690,7 @@ func (i *Interactive) doSessionImport(src string) {
 		return
 	}
 	i.restoreLoadedSessionTitle()
-	state := i.restoreCurrentCompactHandoff()
+	i.restoreCurrentCompactHandoff()
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
@@ -820,9 +708,6 @@ func (i *Interactive) doSessionImport(src string) {
 	}
 	i.mu.Unlock()
 	i.invalidate()
-	if state.reason != compactContinuationNone {
-		i.startRestoredCompactHandoff(i.runCtx)
-	}
 }
 func defaultExportDir() string {
 	home, err := os.UserHomeDir()
@@ -1019,7 +904,7 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		i.setSessionTreeError("tree: checkout failed: " + err.Error())
 		return
 	}
-	state := i.restoreCurrentCompactHandoff()
+	i.restoreCurrentCompactHandoff()
 
 	// LoadSession is intentionally the old func(string) error callback: the
 	// CLI and embedders already own agent/session swapping. Refresh the view
@@ -1052,13 +937,8 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	i.mu.Unlock()
 	i.scrollToBottom()
 	// Selection does not submit, start, or queue the restored user draft; only
-	// a later explicit Enter does that. An inherited compact handoff may resume
-	// its hidden continuation below when this branch has the complete effective
-	// transcript, without submitting the restored draft.
+	// a later explicit Enter does that.
 	i.invalidate()
-	if state.reason != compactContinuationNone {
-		i.startRestoredCompactHandoff(i.runCtx)
-	}
 }
 func (i *Interactive) applyForkSelection(msgIdx int) {
 	i.pendingFork = false
@@ -1105,16 +985,13 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		i.invalidate()
 		return
 	}
-	state := i.restoreCurrentCompactHandoff()
+	i.restoreCurrentCompactHandoff()
 	i.resetSessionTitleForFreshBranch()
 	i.mu.Lock()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
-	if state.reason != compactContinuationNone {
-		i.startRestoredCompactHandoff(i.runCtx)
-	}
 }
 func formatInt(n int) string {
 	return fmt.Sprintf("%d", n)

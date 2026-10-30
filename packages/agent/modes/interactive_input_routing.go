@@ -229,11 +229,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.invalidate()
 			return false
 		}
-		act := i.rescueDialog.HandleKey(k)
+		i.rescueDialog.HandleKey(k)
 		i.mu.Unlock()
-		if act.Select {
-			i.applyRescueSelection(act.Provider, act.Model, act.Prompt)
-		}
 		i.invalidate()
 		return false
 	}
@@ -1013,61 +1010,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return i.runSlash(ctx, text)
 		}
 
-		if i.port != nil {
-			clearSubmittedInput()
-			i.portSubmit(ctx, text, images)
-			return false
-		}
-		if i.agent == nil {
-			i.mu.Lock()
-			i.statusErr = "not logged in. type /login first."
-			i.mu.Unlock()
-			return false
-		}
-		// Mirror the user's typed prompt into the paired Telegram
-		// chat (when the bridge is active) so the Telegram thread
-		// stays a complete record of the session, not just the half
-		// that originated on the phone. On a goroutine so the
-		// network write doesn't delay the local turn.
-		if i.telegramBridge != nil && i.telegramBridge.Active() {
-			go i.telegramBridge.OnUserTyped(text)
-		}
-		i.maybeStartSessionTitle(ctx, text)
-		// This is the explicit user boundary for pinned skills: the first
-		// genuine prompt carries them whether it starts a turn or is queued
-		// behind a startup command, shell escape, or running turn.
-		text = i.consumePinnedSkills(text)
-		// If a turn is already in flight, queue this prompt inside the
-		// agent loop so it is delivered at the next safe model-call
-		// boundary instead of waiting for the whole run to finish.
-		i.mu.Lock()
-		busy := i.busy
-		compacting := i.compacting
-		ag := i.agent
-		i.mu.Unlock()
-		if busy {
-			clearSubmittedInput()
-			var handoff json.RawMessage
-			var persistHandoff bool
-			if ag != nil && !compacting {
-				i.mu.Lock()
-				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				ag.QueueMessage(text, images)
-				i.mu.Unlock()
-			} else {
-				i.mu.Lock()
-				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				i.queued = append(i.queued, core.QueuedMessage{Text: text, Images: images})
-				i.mu.Unlock()
-			}
-			if persistHandoff {
-				i.persistCompactHandoff(handoff)
-			}
-			i.invalidate()
-			return false
-		}
 		clearSubmittedInput()
-		i.startTurnWithImages(ctx, text, images)
+		i.portSubmit(ctx, text, images)
 	}
 	return false
 }

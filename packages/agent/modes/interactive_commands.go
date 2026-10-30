@@ -431,32 +431,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// Dispatched through the normal queue-or-start path so it
 		// behaves identically to typing the prompt by hand.
 		studyPrompt := buildStudyPrompt(strings.TrimSpace(strings.TrimPrefix(cmd, parts[0])), i.cfg.CWD)
-		i.mu.Lock()
-		busy := i.busy
-		compacting := i.compacting
-		ag := i.agent
-		i.mu.Unlock()
-		if busy {
-			var handoff json.RawMessage
-			var persistHandoff bool
-			if ag != nil && !compacting {
-				i.mu.Lock()
-				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				ag.QueueMessage(studyPrompt, nil)
-				i.mu.Unlock()
-			} else {
-				i.mu.Lock()
-				handoff, persistHandoff = i.resetCompactContinuationLocked()
-				i.queued = append(i.queued, core.QueuedMessage{Text: studyPrompt})
-				i.mu.Unlock()
-			}
-			if persistHandoff {
-				i.persistCompactHandoff(handoff)
-			}
-			i.invalidate()
-			break
-		}
-		i.startTurn(ctx, studyPrompt)
+		i.portSubmit(ctx, studyPrompt, nil)
 	case "/cd":
 		// Hidden command: switch the running session's cwd. Not in
 		// slash_suggest, not in /help. Used by the workspaces
@@ -1095,38 +1070,7 @@ func (i *Interactive) openPortBtwDialog(args []string) {
 	i.invalidate()
 }
 func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
-	i.mu.Lock()
-	if i.agent == nil {
-		i.statusErr = "not logged in. type /login first."
-		i.statusOK = ""
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	// A typed /skill:name command is a genuine user prompt.
-	prompt = i.skillPins.consume(prompt)
-	if i.busy {
-		// Keep the mutex held while enqueueing so the turn-completion
-		// goroutine cannot publish idle and inspect an empty queue between
-		// this check and the append.
-		var handoff json.RawMessage
-		var persistHandoff bool
-		if i.compacting {
-			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.queued = append(i.queued, core.QueuedMessage{Text: prompt})
-		} else {
-			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.agent.QueueMessage(prompt, nil)
-		}
-		i.mu.Unlock()
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
-		}
-		i.invalidate()
-		return
-	}
-	i.mu.Unlock()
-	i.startTurn(ctx, prompt)
+	i.portSubmit(ctx, prompt, nil)
 }
 func (i *Interactive) openSkillsDialog() {
 	i.openSkillsDialogWithPins()
@@ -1351,9 +1295,6 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 	}
 	i.mu.Unlock()
 	i.invalidate()
-	if state.reason != compactContinuationNone {
-		i.startRestoredCompactHandoff(i.runCtx)
-	}
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
@@ -1363,13 +1304,7 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 	}
 	i.swapModel(prov, model, i.cfg.BuildAgentFor, false)
 }
-func (i *Interactive) applyRescueModelSelection(prov, model string) {
-	builder := i.cfg.BuildAgentForRescue
-	if builder == nil {
-		builder = i.cfg.BuildAgentFor
-	}
-	i.swapModel(prov, model, builder, true)
-}
+
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
 	var replaced bool
 	swap := func() {

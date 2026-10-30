@@ -8,7 +8,6 @@ import (
 	"github.com/bnema/zut/packages/agent/session"
 	agenttools "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/provider"
 )
 
 const goalContinueMetaKey = "zut_goal_continue"
@@ -21,13 +20,11 @@ const goalInterruptReassessMetaKey = "zut_goal_interrupt_reassess"
 // interruptedGoalState is transient controller state recording that Esc
 // cancelled the running turn of an active goal. nextPromptArmed means the
 // immediately following ordinary user prompt must carry the hidden
-// reassessment instruction; returnAfterTurn means that prompt completed
-// cleanly and the same goal may resume once via requestGoalContinuationIfIdle.
+// reassessment instruction.
 type interruptedGoalState struct {
 	goalID          string
 	missionID       string
 	nextPromptArmed bool
-	returnAfterTurn bool
 }
 
 func (i *Interactive) goalUpdatesAvailable() bool {
@@ -37,32 +34,6 @@ func (i *Interactive) goalUpdatesAvailable() bool {
 	}
 	_, ok := ag.ToolsSnapshot()[agenttools.UpdateGoalToolName]
 	return ok
-}
-
-func (i *Interactive) goalContinuationMessage() (provider.Message, bool) {
-	if i.cfg.CurrentGoal == nil || !i.goalUpdatesAvailable() {
-		return provider.Message{}, false
-	}
-	goal := i.cfg.CurrentGoal()
-	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
-		return provider.Message{}, false
-	}
-	text := goal.Objective +
-		"\n\nContinue working autonomously toward this active goal. Do not stop at a progress update. Continue until the goal is complete or blocked, then call update_goal. If the current objective has become invalid and a replacement is necessary, you may supersede it only with a concrete objective inside the same mission; never use superseded to avoid difficult work or broaden scope."
-	if goal.ConsecutiveNoProgressTurns > 0 {
-		text += " You ended the prior continuation without taking a concrete action. Inspect the current state and take the next action now; do not merely say that you will continue."
-	}
-	if goal.ID != "" {
-		text += " When superseding this goal, use goal_id " + goal.ID + "."
-	}
-	if goal.MissionID != "" {
-		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
-	}
-	return provider.Message{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: text}},
-		Meta:    map[string]string{goalContinueMetaKey: "true"},
-	}, true
 }
 
 // armInterruptedGoalReturn records a transient return intent when Esc cancels
@@ -86,26 +57,6 @@ func (i *Interactive) armInterruptedGoalReturn() {
 	i.mu.Unlock()
 }
 
-// interruptedGoalMatchesLocked reports whether transient interruption state
-// still targets the currently persisted active goal. Callers must hold i.mu.
-func (i *Interactive) interruptedGoalMatchesLocked() bool {
-	state := i.interruptedGoalReturn
-	if state == nil || i.cfg.CurrentGoal == nil {
-		return false
-	}
-	goal := i.cfg.CurrentGoal()
-	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
-		return false
-	}
-	if state.goalID != "" && goal.ID != "" && state.goalID != goal.ID {
-		return false
-	}
-	if state.missionID != "" && goal.MissionID != "" && state.missionID != goal.MissionID {
-		return false
-	}
-	return true
-}
-
 // clearInterruptedGoalReturn drops transient interruption state without
 // touching the persisted goal.
 func (i *Interactive) clearInterruptedGoalReturn() {
@@ -114,250 +65,12 @@ func (i *Interactive) clearInterruptedGoalReturn() {
 	i.mu.Unlock()
 }
 
-// consumeInterruptedGoalPrompt binds pending interruption state to the
-// ordinary user turn that is actually starting. It appends the hidden
-// reassessment instruction before that prompt and records that a clean
-// completion of this turn owns one automatic return to the same goal.
-func (i *Interactive) consumeInterruptedGoalPrompt() {
-	i.mu.Lock()
-	state := i.interruptedGoalReturn
-	matches := i.interruptedGoalMatchesLocked()
-	if state == nil || !state.nextPromptArmed || !matches {
-		// Stale or mismatched state must never leak into an unrelated turn.
-		if state != nil && (!state.nextPromptArmed && !state.returnAfterTurn || !matches) {
-			i.interruptedGoalReturn = nil
-		}
-		i.mu.Unlock()
-		return
-	}
-	state.nextPromptArmed = false
-	state.returnAfterTurn = true
-	i.mu.Unlock()
-
-	message, ok := i.goalInterruptReassessmentMessage()
-	if !ok {
-		i.mu.Lock()
-		if i.interruptedGoalReturn == state {
-			i.interruptedGoalReturn = nil
-		}
-		i.mu.Unlock()
-		return
-	}
-	ag := i.Agent()
-	if ag == nil {
-		i.mu.Lock()
-		if i.interruptedGoalReturn == state {
-			i.interruptedGoalReturn = nil
-		}
-		i.mu.Unlock()
-		return
-	}
-	ag.AppendUserContext(userMessageText(message), message.Meta)
-}
-
-// goalInterruptReassessmentMessage builds the hidden instruction appended
-// immediately before the next ordinary user prompt after Esc. It requires
-// handling the latest user message first and resuming incidental work
-// autonomously; update_goal is reserved for genuine lifecycle transitions.
-func (i *Interactive) goalInterruptReassessmentMessage() (provider.Message, bool) {
-	if i.cfg.CurrentGoal == nil {
-		return provider.Message{}, false
-	}
-	goal := i.cfg.CurrentGoal()
-	if goal == nil || goal.Status != core.GoalActive || strings.TrimSpace(goal.Objective) == "" {
-		return provider.Message{}, false
-	}
-	text := "The previous turn was interrupted by the user; the autonomous goal below remains active. " +
-		"Handle the latest user message first. Classify it as changing, settling, blocking, or incidental to that goal. " +
-		"If it is incidental, answer it briefly and then continue the goal autonomously without waiting for the user to say continue. " +
-		"Call update_goal only for a genuine complete, blocked, or superseded transition.\n\nActive goal: " + goal.Objective
-	if goal.ID != "" {
-		text += " When superseding this goal, use goal_id " + goal.ID + "."
-	}
-	if goal.MissionID != "" {
-		text += " When setting a next goal, use mission_id " + goal.MissionID + " and keep it within the same user mission."
-	}
-	return provider.Message{
-		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: text}},
-		Meta:    map[string]string{goalInterruptReassessMetaKey: "true"},
-	}, true
-}
-
-func (i *Interactive) goalIdleLocked() bool {
-	return !i.busy && i.agent != nil && len(i.queued) == 0 && i.agent.QueuedMessageCount() == 0
-}
-
-// interruptedPromptPendingLocked reports whether Esc armed a reassessment
-// prompt that has not yet started. While set, autonomous goal wakes must
-// yield so the next ordinary user message is handled first. Callers must
-// hold i.mu.
-func (i *Interactive) interruptedPromptPendingLocked() bool {
-	state := i.interruptedGoalReturn
-	return state != nil && state.nextPromptArmed
-}
-
-// interruptedPromptPending reports whether Esc armed a reassessment prompt
-// that has not yet started.
-func (i *Interactive) interruptedPromptPending() bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.interruptedPromptPendingLocked()
-}
-
-func (i *Interactive) requestGoalContinuationIfIdle(parent context.Context) bool {
-	message, ok := i.goalContinuationMessage()
-	if !ok || i.coordinatorHasPendingWorkers() || i.cfg.CurrentGoal == nil || i.interruptedPromptPending() {
-		return false
-	}
-	goal := copySessionGoal(i.cfg.CurrentGoal())
-	if goal == nil || i.limitGoalBeforeRun(goal) {
-		return false
-	}
-	i.mu.Lock()
-	if !i.goalIdleLocked() {
-		i.mu.Unlock()
-		return false
-	}
-	i.busy = true
-	i.mu.Unlock()
-	run, err := i.startGoalRun(goal)
-	if err != nil {
-		i.mu.Lock()
-		i.busy = false
-		i.mu.Unlock()
-		i.ReportError(err)
-		return false
-	}
-	if run == nil {
-		i.mu.Lock()
-		i.busy = false
-		i.mu.Unlock()
-		return false
-	}
-	i.startGoalContinuation(parent, message, run)
-	return true
-}
-
-// startReservedGoalContinuation starts a goal turn after another controller
-// has already reserved the interactive turn slot by setting busy. It is used
-// by compact handoffs so a fresh-context continuation receives the same lease,
-// accounting, and no-progress policy as an ordinary idle goal turn.
-func (i *Interactive) startReservedGoalContinuation(parent context.Context) {
-	message, ok := i.goalContinuationMessage()
-	if !ok || i.cfg.CurrentGoal == nil || i.interruptedPromptPending() {
-		i.mu.Lock()
-		i.busy = false
-		i.mu.Unlock()
-		i.resetCompactHandoff()
-		i.invalidate()
-		return
-	}
-	goal := copySessionGoal(i.cfg.CurrentGoal())
-	if goal == nil || i.limitGoalBeforeRun(goal) {
-		i.mu.Lock()
-		i.busy = false
-		i.mu.Unlock()
-		i.resetCompactHandoff()
-		i.invalidate()
-		return
-	}
-	run, err := i.startGoalRun(goal)
-	if err != nil || run == nil {
-		i.mu.Lock()
-		i.busy = false
-		i.mu.Unlock()
-		if err != nil {
-			i.ReportError(err)
-		}
-		i.invalidate()
-		return
-	}
-	i.startGoalContinuation(parent, message, run)
-}
-
-func (i *Interactive) startGoalContinuation(parent context.Context, message provider.Message, run *goalContinuationRun) {
-	goalMessage, goalActive := i.goalContinuationMessage()
-	i.mu.Lock()
-	ag := i.agent
-	if ag == nil {
-		i.busy = false
-		pendingIdleWork := i.takePendingIdleWorkLocked()
-		i.mu.Unlock()
-		runPendingIdleWork(pendingIdleWork)
-		i.abandonGoalRun(run)
-		i.invalidate()
-		return
-	}
-	if len(i.queued) > 0 {
-		next := i.queued[0]
-		i.queued = i.queued[1:]
-		i.mu.Unlock()
-		i.abandonGoalRun(run)
-		i.startTurnWithImages(parent, next.Text, next.Images)
-		return
-	}
-	if ag.QueuedMessageCount() > 0 {
-		i.mu.Unlock()
-		i.abandonGoalRun(run)
-		i.startTurnRequest(parent, "", nil, true, false)
-		return
-	}
-	if !goalActive || userMessageText(goalMessage) != userMessageText(message) {
-		i.busy = false
-		pendingIdleWork := i.takePendingIdleWorkLocked()
-		i.mu.Unlock()
-		runPendingIdleWork(pendingIdleWork)
-		// The objective may have been replaced while the prior turn was
-		// finishing. Re-evaluate it now instead of waiting for another event;
-		// the idle gate still gives queued user work priority.
-		i.abandonGoalRun(run)
-		i.requestGoalContinuationIfIdle(parent)
-		i.invalidate()
-		return
-	}
-	i.mu.Unlock()
-	ag.AppendUserContext(userMessageText(message), message.Meta)
-
-	// Persistence callbacks run synchronously from AppendUserContext, so never
-	// hold the TUI mutex across it. Re-check user work that may have arrived
-	// while the hidden continuation was being persisted.
-	i.mu.Lock()
-	if len(i.queued) > 0 {
-		next := i.queued[0]
-		i.queued = i.queued[1:]
-		i.mu.Unlock()
-		i.abandonGoalRun(run)
-		i.startTurnWithImages(parent, next.Text, next.Images)
-		return
-	}
-	i.mu.Unlock()
-	i.startTurnRequest(parent, "", nil, true, false)
-}
-
 func copySessionGoal(goal *core.SessionGoal) *core.SessionGoal {
 	if goal == nil {
 		return nil
 	}
 	copyGoal := *goal
 	return &copyGoal
-}
-
-func (i *Interactive) updateActiveGoal(status core.GoalStatus, reason string) {
-	if i.cfg.CurrentGoal == nil || i.cfg.PersistGoal == nil {
-		return
-	}
-	goal := copySessionGoal(i.cfg.CurrentGoal())
-	if goal == nil || goal.Status != core.GoalActive {
-		return
-	}
-	goal.Status = status
-	goal.Reason = reason
-	if err := i.cfg.PersistGoal(goal); err != nil {
-		i.ReportError(fmt.Errorf("persist goal: %w", err))
-		return
-	}
-	i.setGoalStatus(goal)
 }
 
 func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []string) {
@@ -489,9 +202,6 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 	i.setGoalCommandStatus(fmt.Sprintf("autonomous goal %s: %s", current.Status, current.Objective))
 	if startTitle {
 		i.maybeStartSessionTitle(ctx, current.Objective)
-	}
-	if startIfIdle {
-		i.requestGoalContinuationIfIdle(ctx)
 	}
 }
 

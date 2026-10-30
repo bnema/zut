@@ -79,15 +79,6 @@ func (i *Interactive) emitAlertLocked(alert extproto.AlertRequest) {
 // scheduleMainAlert defers a main-session alert until the next redraw
 // commits the final frame. Keeping this deferred even when no paced text is
 // pending avoids racing the pacer's final state transition.
-func (i *Interactive) scheduleMainAlert(reason alertReason) {
-	if reason == "" {
-		return
-	}
-	i.mu.Lock()
-	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: string(reason)}
-	i.mu.Unlock()
-	i.invalidate()
-}
 
 // ClearNotes removes every note line owned by extName from the
 // bottom-sticky ext-notes block. Extensions use this to retract a

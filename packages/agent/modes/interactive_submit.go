@@ -78,12 +78,15 @@ func (i *Interactive) portRunning() bool {
 // portSubmit sends a user prompt to the session port without blocking the
 // render loop. The resulting transcript arrives through session events.
 func (i *Interactive) portSubmit(ctx context.Context, text string, images []provider.ImageBlock) {
+	i.portSubmitInput(ctx, session.Input{Text: text, Images: images, Mode: session.SubmitModeAuto, Origin: session.InputOriginUser})
+}
+
+func (i *Interactive) portSubmitInput(ctx context.Context, in session.Input) {
 	port := i.SessionPort()
 	if port == nil {
 		i.ReportError(errors.New("submit: no session attached"))
 		return
 	}
-	in := session.Input{Text: text, Images: images, Mode: session.SubmitModeAuto, Origin: session.InputOriginUser}
 	go func() {
 		if ctx == nil {
 			ctx = context.Background()

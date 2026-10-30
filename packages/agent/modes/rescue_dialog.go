@@ -370,21 +370,3 @@ func containsAny(haystack string, needles ...string) bool {
 	}
 	return false
 }
-
-// extractFailedProvider tries to pull the failing provider name out
-// of an error string ("kimi: http 401: ...", "openai: http 503: ...").
-// Returns "" when nothing recognisable is found.
-func extractFailedProvider(err error) string {
-	if err == nil {
-		return ""
-	}
-	msg := err.Error()
-	if i := strings.Index(msg, ":"); i > 0 {
-		head := strings.TrimSpace(msg[:i])
-		switch head {
-		case "anthropic", "openai", "openai-codex", "kimi", "google", "ollama":
-			return head
-		}
-	}
-	return ""
-}

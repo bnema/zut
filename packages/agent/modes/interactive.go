@@ -629,10 +629,7 @@ type webSearchSettingsStore interface {
 type compactContinuationOrigin uint8
 
 type compactContinuationRequest struct {
-	origin    compactContinuationOrigin
-	force     bool
-	lastStop  provider.StopReason
-	turnError error
+	origin compactContinuationOrigin
 }
 
 const (
@@ -723,11 +720,6 @@ func encodeCompactHandoff(state compactContinuationState) json.RawMessage {
 		return nil
 	}
 	return encoded
-}
-
-type scheduledFollowUp struct {
-	text     string
-	accepted chan error
 }
 
 type Interactive struct {
@@ -836,7 +828,6 @@ type Interactive struct {
 	planTotal          int
 	planSnapshots      map[string]core.PlanUpdate
 	planRevision       uint64
-	goalRun            *goalContinuationRun
 	reloadStatusSeq    uint64
 	extStatuses        map[string]map[string]extensionStatus
 	extWidgets         map[string]map[string]extensionWidget
@@ -896,28 +887,10 @@ type Interactive struct {
 	// above the status bar as "sliding in: ..." chips.
 	queued []core.QueuedMessage
 
-	// scheduled holds prompt-only follow-ups injected by the in-process
-	// scheduler. Unlike agent.QueueMessage, these always wait until the
-	// current turn has completed before starting their own turn.
-	scheduled []scheduledFollowUp
-
 	// runCtx is the top-level context passed to Run(). Follow-up turns
 	// drained from `queued` are started against this context so they
 	// survive past the ctx of the key event that enqueued them.
 	runCtx context.Context
-
-	// pendingPostCompactNote is a status_ok message to surface after
-	// a successful auto-compact pass triggered by a 413 or by the
-	// pre-turn fraction guard. Cleared by runCompact once shown.
-	pendingPostCompactNote string
-
-	// A pre-turn compaction must preserve the complete pending request,
-	// including images. Overflow recovery instead continues the user message
-	// already appended to the agent transcript, avoiding a duplicate message.
-	pendingCompactPrompt    string
-	pendingCompactImages    []provider.ImageBlock
-	hasPendingCompactPrompt bool
-	continueAfterCompact    bool
 
 	// compacting is true for both manual and automatic compaction. Prompts
 	// submitted while it is set stay in the host queue because Compact does
@@ -1089,13 +1062,6 @@ type Interactive struct {
 	// sessionTreeLoads delivers asynchronously-read tree rows. Like the flat
 	// picker, the main loop is the sole owner of dialog mutation and rendering.
 	sessionTreeLoads <-chan sessionTreeLoadEvent
-
-	// pendingRescuePrompt / pendingRescueImages stash the prompt and
-	// images that should be re-run after the user picks a model in
-	// the rescue dialog. Cleared once applyRescueSelection consumes
-	// them (or when the dialog is dismissed via esc).
-	pendingRescuePrompt string
-	pendingRescueImages []provider.ImageBlock
 
 	clipboardImages []clipboardImageAttachment
 }
@@ -1471,9 +1437,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 	} else {
 		if i.cfg.InitialInput != "" {
 			i.ed.SetValue(i.cfg.InitialInput)
-		}
-		if i.port == nil {
-			i.startRestoredCompactHandoff(ctx)
 		}
 	}
 
@@ -2146,17 +2109,9 @@ const modalBackdropDimPercent = 50
 // callback and snaps the viewport to the bottom (the latest message)
 // so the user lands at the live tail of the resumed conversation.
 
-// applyRescueModelSelection is like applyModelSelection but routes
-// through BuildAgentForRescue so launch-time --api-key / --base-url
-// overrides are dropped before the new agent is built. Falls back to
-// the regular builder when the host doesn't wire a rescue builder.
-
 // swapModel applies a /model selection (or a rescue selection) using
 // the supplied builder. rescue=true tags the success message so the
 // user can see that launch-time overrides were ignored.
-
-// clearPendingCompactTurnLocked drops work that only makes sense after the
-// current compaction. The caller must hold i.mu.
 
 // compactHandoffLocked returns a self-contained persistence snapshot. The
 // caller must hold i.mu.
@@ -2173,33 +2128,7 @@ const modalBackdropDimPercent = 50
 // instruction defining recovery completion criteria.
 const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Inspect the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. A progress report, plan update, or statement of future work is not completion: if required work remains, take the next concrete action now. Only finish when the request is actually complete or when a specific user decision is required. If nothing remains, give a brief truthful completion; do not invent work or force a tool call.`
 
-type compactHandoffResume uint8
-
-const (
-	compactHandoffDiscard compactHandoffResume = iota
-	compactHandoffContinueExisting
-	compactHandoffAppendPrompt
-)
-
-// classifyCompactHandoffResume validates that the persisted checkpoint still
-// describes the effective transcript. A normal assistant reply or a newer
-// explicit user message supersedes the checkpoint; tool activity remains an
-// unfinished existing turn. No hidden prompt means the process stopped after
-// recording the handoff but before appending its context message.
-
-// startRestoredCompactHandoff resumes a handoff checkpoint restored from the
-// active session. When its hidden context message was already persisted, the
-// agent continues that existing turn rather than appending it again.
-
-// startAutoCompactContinuation adds an internal user turn that tells the
-// model to resume the task after threshold compaction. Provider requests
-// cannot continue from an assistant tail on every supported API, so the
-// continuation must be represented as a user message. It is hidden from
-// the rendered transcript but remains in the persisted/model context.
-
-// runCompact invokes core.Agent.Compact and reflects the progress in
-// the tui. It runs in a goroutine so the ui stays responsive; esc/ctrl+c
-// cancel via the same cancelTurn channel used for normal turns.
+// runCompact asks the daemon to compact; session events project progress.
 //
 // When auto is true the spinner message is pinned to "condensing
 // history" and the status bar surfaces "(auto)" next to the context
@@ -2226,25 +2155,6 @@ const ShellEscapeTimeoutSeconds = 600
 // it refuses to start while a turn or another shell escape is already
 // in flight. Its terminal-log output is appended to the transcript as
 // user context without automatically starting a model turn.
-
-// startTurnRequest starts a new prompt or continues an existing user turn.
-// continueExisting selects Agent.Continue so callers can retry a transcript
-// message without appending it twice. overflowRecoveryAttempted suppresses
-// the pre-turn threshold guard and the one-shot overflow recovery path; a
-// normal post-compaction continuation leaves it false so a still-too-large
-// rebuilt context can recover once more.
-
-// openRescueDialog surfaces the rescue model picker after a recoverable
-// provider failure. The pending prompt + images are stashed on the
-// Interactive so a later applyRescueSelection can re-run the same turn
-// against the freshly-picked model. activeProvider/failedProvider are
-// usually the same, but some clients embed different prefixes in their
-// errors than the configured provider id, so we accept both.
-
-// applyRescueSelection switches model (cross-provider if needed) and
-// re-runs the same prompt+images that just failed. Mirrors
-// applyModelSelection's transcript-carry logic so the user keeps full
-// session continuity across the swap.
 
 // autoCompactNoteLine returns a styled chat-area note for the
 // inline auto-compact heads-up. Lives in extNotes so it survives
@@ -2348,17 +2258,13 @@ type telegramSenderAdapter struct {
 // durably accepted a resident child prompt and before it is scheduled.
 
 // registerCoordinatorWorker associates a tracker registration with the open
-// manager wave. Direct embedders that register a worker outside startTurn get
+// manager wave. Direct embedders that register a worker outside a manager turn get
 // a one-worker sealed wave, retaining the exported tracker API's old behavior.
 
 // requestCompletionDelivery starts at most one waiter for the current active
 // set. A request arriving while that waiter is formatting or submitting is
 // picked up before the waiter exits, so a later worker cannot be lost in the
 // handoff between batches.
-
-// beginCompletionDeliveryHold marks the owning parent turn's registration
-// boundary. Results slide into an active turn; release seals the remaining
-// worker wave for idle-parent batching rather than delaying active delivery.
 
 // autoSubagentsAddenda returns the prompt blocks owned by subagent prompting,
 // in the same order Resolve appends them to a new agent. The profile manifest

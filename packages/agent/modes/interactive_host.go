@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +9,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extproto"
-	"github.com/bnema/zut/packages/agent/internal/orchestration"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -50,7 +49,7 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 		if strings.TrimSpace(resp.Prompt) == "" {
 			return
 		}
-		i.startTurn(i.runCtx, resp.Prompt)
+		i.portSubmit(i.runCtx, resp.Prompt, nil)
 	case "insert":
 		if err := i.queueEditorInsert(resp.Insert); err != nil {
 			i.mu.Lock()
@@ -179,66 +178,15 @@ func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, u
 	i.submitOrQueueMessage(core.QueuedMessage{Text: text, Images: images}, userInput)
 }
 func (i *Interactive) submitOrQueueMessage(message core.QueuedMessage, userInput bool) {
-	text, images := message.Text, message.Images
-	if cmd, ok := shellEscapeCommand(text); ok {
+	if cmd, ok := shellEscapeCommand(message.Text); ok {
 		i.startShellEscape(i.runCtx, cmd)
 		return
 	}
-	i.mu.Lock()
-	if i.agent == nil {
-		i.statusErr = "not logged in. type /login first."
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	i.mu.Unlock()
-	if userInput && i.cfg.EnsureMission != nil {
-		if err := i.cfg.EnsureMission(text); err != nil {
-			i.ReportError(fmt.Errorf("persist mission: %w", err))
-			return
-		}
-	}
-	// User input is an orchestration event, not merely a queue append. When
-	// the manager is dormant behind a sealed worker wave, the coordinator makes
-	// this the next manager turn and carries any completed worker summary with it.
-	if userInput && i.coordinatorAcceptsUserInput() {
-		actions := i.applyCoordinator(orchestration.Event{Kind: orchestration.EventUserInput, Text: text, Images: images})
-		i.executeCoordinatorActions(actions)
-		// The coordinator has accepted the input for its sealed worker wave.
-		// It may intentionally defer an action until pending workers finish;
-		// falling through would start a normal turn and discard that wave.
-		return
-	}
-	i.maybeStartSessionTitle(i.runCtx, text)
+	origin := session.InputOriginResident
 	if userInput {
-		// Only genuine user input carries pinned skills. Host evidence and
-		// scheduler/extension prompts (userInput=false) never consume them.
-		message.Text = i.consumePinnedSkills(message.Text)
+		origin = session.InputOriginUser
 	}
-	i.mu.Lock()
-	if i.busy {
-		// Keep the interactive mutex held through Agent.QueueMessage so turn teardown
-		// cannot inspect the agent queue between the busy check and enqueue.
-		// Compaction uses the host queue because it has no active agent loop
-		// to drain Agent.QueueMessage entries.
-		var handoff json.RawMessage
-		var persistHandoff bool
-		if i.agent != nil && !i.compacting {
-			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.agent.QueuePrompt(message)
-		} else {
-			handoff, persistHandoff = i.resetCompactContinuationLocked()
-			i.queued = append(i.queued, message)
-		}
-		i.mu.Unlock()
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
-		}
-		i.invalidate()
-		return
-	}
-	i.mu.Unlock()
-	i.startQueuedTurn(i.runCtx, message)
+	i.portSubmitInput(i.runCtx, session.Input{Text: message.Text, Images: message.Images, HostEvent: message.HostEvent, Mode: session.SubmitModeAuto, Origin: origin})
 }
 
 // popQueuedUserMessageLocked leaves host reports queued for the agent.
@@ -260,38 +208,6 @@ func (i *Interactive) popQueuedUserMessageLocked() (core.QueuedMessage, bool) {
 		return message, true
 	}
 	return core.QueuedMessage{}, false
-}
-
-func (i *Interactive) takeQueuedMessagesLocked() []core.QueuedMessage {
-	var pending []core.QueuedMessage
-	if i.agent != nil {
-		pending = i.agent.DrainQueuedMessages()
-	}
-	pending = append(pending, i.queued...)
-	i.queued = nil
-	return pending
-}
-
-func (i *Interactive) discardQueuedMessagesLocked(preserveHostEvents bool) {
-	pending := i.takeQueuedMessagesLocked()
-	for _, message := range pending {
-		if !message.HostEvent {
-			i.skillPins.recall(message.Text)
-		}
-	}
-	if !preserveHostEvents {
-		return
-	}
-	for _, message := range pending {
-		if !message.HostEvent {
-			continue
-		}
-		if i.agent != nil {
-			i.agent.QueuePrompt(message)
-		} else {
-			i.queued = append(i.queued, message)
-		}
-	}
 }
 
 func (i *Interactive) ChangelogVersion() string {
