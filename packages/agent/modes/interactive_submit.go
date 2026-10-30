@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
+	"sync/atomic"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
@@ -104,25 +106,23 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 	}()
 }
 
-// portSlideBackQueued retrieves a draft off-loop, optionally aborting only after
-// retrieval so cancellation cannot discard the draft first.
+type portRecallOperation struct {
+	gen            uint64
+	abortRequested atomic.Bool
+}
+
+// portSlideBackQueued runs on the input loop. The worker retrieves before
+// aborting, and all editor changes are applied by the loop for this session only.
 func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
-	if i.portRecallPending {
+	if op := i.portRecall; op != nil && op.gen == i.sessionGen {
 		if abort {
-			i.portAbort(ctx)
+			op.abortRequested.Store(true)
 		}
 		return
 	}
-	if n := len(i.portRecalled); n > 0 {
-		i.restoreQueuedMessageToEditor(i.portRecalled[n-1])
-		i.portRecalled = i.portRecalled[:n-1]
-		i.invalidate()
-		if abort {
-			i.portAbort(ctx)
-		}
-		return
-	}
-	i.portRecallPending = true
+	op := &portRecallOperation{gen: i.sessionGen}
+	op.abortRequested.Store(abort)
+	i.portRecall = op
 	text := i.ed.Value()
 	images := slices.Clone(i.clipboardImages)
 	port := i.SessionPort()
@@ -136,26 +136,27 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 		if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
 			i.ReportError(fmt.Errorf("slide back queued: %w", err))
 		}
-		// Schedule the draft before aborting, but retain the pending flag until
-		// both calls finish so another recall cannot overtake this one.
 		select {
 		case i.loopCalls <- func() {
+			if op.gen != i.sessionGen {
+				if i.portRecall == op {
+					i.portRecall = nil
+				}
+				return
+			}
 			if err == nil && (in.Text != "" || len(in.Images) > 0) {
 				message := core.QueuedMessage{Text: in.Text, Images: in.Images}
 				if i.ed.Value() == text && reflect.DeepEqual(i.clipboardImages, images) {
 					i.restoreQueuedMessageToEditor(message)
 				} else {
-					i.portRecalled = append(i.portRecalled, message)
-					i.mu.Lock()
-					i.statusOK = "recalled draft saved; Alt+Up to restore"
-					i.mu.Unlock()
+					i.appendRecalledMessageToEditor(message)
 				}
 				i.invalidate()
 			}
 		}:
 		case <-ctx.Done():
 		}
-		if abort {
+		if op.abortRequested.Load() {
 			callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 			if err := port.Abort(callCtx); err != nil {
 				i.ReportError(fmt.Errorf("abort: %w", err))
@@ -163,23 +164,39 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 			cancel()
 		}
 		select {
-		case i.loopCalls <- func() { i.portRecallPending = false }:
+		case i.loopCalls <- func() {
+			if i.portRecall == op {
+				i.portRecall = nil
+			}
+		}:
 		case <-ctx.Done():
 		}
 	}()
 }
 
-// portAbort asks the session port to abort the running turn off the render loop.
-func (i *Interactive) portAbort(ctx context.Context) {
-	port := i.SessionPort()
-	go func() {
-		if ctx == nil {
-			ctx = context.Background()
+// appendRecalledMessageToEditor preserves current input and attachment markers.
+func (i *Interactive) appendRecalledMessageToEditor(message core.QueuedMessage) {
+	text := i.ed.Value()
+	i.mu.Lock()
+	recalled := i.skillPins.rawPrompt(message.Text)
+	i.mu.Unlock()
+	if text != "" {
+		text += "\n"
+	}
+	text += recalled
+	for _, image := range message.Images {
+		n := 1
+		marker := fmt.Sprintf("[clipboard image #%d]", n)
+		for strings.Contains(text, marker) {
+			n++
+			marker = fmt.Sprintf("[clipboard image #%d]", n)
 		}
-		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
-		defer cancel()
-		if err := port.Abort(callCtx); err != nil {
-			i.ReportError(fmt.Errorf("abort: %w", err))
+		if text != "" {
+			text += " "
 		}
-	}()
+		text += marker
+		i.clipboardImages = append(i.clipboardImages, clipboardImageAttachment{Marker: marker, Image: image})
+	}
+	i.ed.SetValue(text)
+	i.inputHistoryIndex = -1
 }

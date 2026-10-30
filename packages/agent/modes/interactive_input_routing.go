@@ -732,7 +732,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
 			if i.port != nil {
-				if i.portRecallPending || len(i.portRecalled) > 0 {
+				if i.portRecall != nil && i.portRecall.gen == i.sessionGen {
 					i.portSlideBackQueued(ctx, false)
 					return false
 				}

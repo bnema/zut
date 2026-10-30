@@ -9,6 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -182,38 +183,55 @@ func TestInteractivePortRecallKeepsTypingAndSerializes(t *testing.T) {
 	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
 	expectPortSubscribe(port, events, nil)
 	entered, release := make(chan struct{}), make(chan struct{})
+	returned := make(chan struct{})
 	port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(ctx context.Context) (session.Input, error) {
 		close(entered)
 		select {
 		case <-release:
-			return session.Input{Text: "saved draft"}, nil
+			close(returned)
+			return session.Input{Text: "saved draft", Images: []provider.ImageBlock{{}}}, nil
 		case <-ctx.Done():
 			return session.Input{}, ctx.Err()
 		}
 	}).Once()
 	aborted := make(chan struct{})
-	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error { close(aborted); return nil }).Once()
+	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
+		select {
+		case <-returned:
+		default:
+			t.Error("Abort ran before SlideBackQueued returned")
+		}
+		close(aborted)
+		return nil
+	}).Once()
 	r, _ := startPortKeys(t, port)
 	ctx := context.Background()
 	onPortLoop(t, r.i, func() { r.i.portSlideBackQueued(ctx, false) })
 	waitSignal(t, entered, "recall")
 	onPortLoop(t, r.i, func() {
 		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyRune, Rune: 'x'})
+		r.i.ed.SetValue("x [clipboard image #1]")
+		r.i.clipboardImages = []clipboardImageAttachment{{Marker: "[clipboard image #1]", Image: provider.ImageBlock{}}}
 		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyUp, Alt: true})
-		// A second recall is ignored, but Escape still aborts immediately.
+		// A second recall is ignored; Escape requests an ordered abort.
 		r.i.portSlideBackQueued(ctx, true)
 	})
-	waitSignal(t, aborted, "Abort")
+	select {
+	case <-aborted:
+		t.Fatal("Abort ran before recall returned")
+	default:
+	}
 	// Queue a barrier behind the result and completion callbacks without polling.
 	finished := make(chan struct{})
 	onPortLoop(t, r.i, func() {
 		close(release)
 	})
+	waitSignal(t, aborted, "Abort")
 	// Observe the pending flag on the loop; requeue until the worker's completion
 	// callback has run (no timing assumptions about goroutine scheduling).
 	var check func()
 	check = func() {
-		if r.i.portRecallPending {
+		if r.i.portRecall != nil {
 			r.i.loopCalls <- check
 			return
 		}
@@ -222,11 +240,8 @@ func TestInteractivePortRecallKeepsTypingAndSerializes(t *testing.T) {
 	r.i.loopCalls <- check
 	waitSignal(t, finished, "recall completion")
 	onPortLoop(t, r.i, func() {
-		require.Equal(t, "x", r.i.ed.Value())
-		require.Len(t, r.i.portRecalled, 1)
-		r.i.handleKey(ctx, tui.Key{Kind: tui.KeyUp, Alt: true})
-		require.Equal(t, "saved draft", r.i.ed.Value())
-		require.Empty(t, r.i.portRecalled)
+		require.Equal(t, "x [clipboard image #1]\nsaved draft [clipboard image #2]", r.i.ed.Value())
+		require.Len(t, r.i.clipboardImages, 2)
 	})
 }
 
@@ -237,5 +252,33 @@ func TestInteractivePortEmptyQueueAltUpNavigatesEditor(t *testing.T) {
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'X'})
 	require.Equal(t, "firstX\nsecond", i.ed.Value())
-	require.False(t, i.portRecallPending)
+	require.Nil(t, i.portRecall)
+}
+
+func TestInteractivePortRecallDropsStaleSessionResult(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(context.Context) (session.Input, error) {
+		close(entered)
+		<-release
+		return session.Input{Text: "old session"}, nil
+	}).Once()
+	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, Port: port})
+	i.portSlideBackQueued(context.Background(), false)
+	waitSignal(t, entered, "recall")
+	i.sessionGen++
+	newer := &portRecallOperation{gen: i.sessionGen}
+	i.portRecall = newer
+	i.ed.SetValue("new session")
+	close(release)
+	for n := 0; n < 2; n++ {
+		select {
+		case fn := <-i.loopCalls:
+			fn()
+		case <-time.After(5 * time.Second):
+			t.Fatal("missing recall callback")
+		}
+		require.Equal(t, "new session", i.ed.Value())
+		require.Same(t, newer, i.portRecall)
+	}
 }
