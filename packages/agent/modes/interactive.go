@@ -1552,11 +1552,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.handleAuthEvent(ev)
 			i.invalidate()
 		case result := <-i.modelRefresh:
-			i.mu.Lock()
-			i.modelRefreshing = false
-			i.mu.Unlock()
-			i.openModelPickerAfterRefresh(result.err)
-			i.invalidate()
+			if i.handleModelRefreshResult(ctx, result) {
+				i.invalidate()
+			}
 		case result := <-i.startupPreDone:
 			i.applyStartupPreResult(result)
 			i.invalidate()
@@ -2158,3 +2156,18 @@ type telegramHost struct{ iv *Interactive }
 // the callbacks themselves must fire on message arrival so
 // downstream observers (session persistence, telegram, cost panels)
 // don't wait on a UI animation to catch up.
+
+// handleModelRefreshResult applies a background model refresh. The receiver is
+// authoritative: a result received after ctx is cancelled is discarded, since
+// the sender's select may still pick the send over ctx.Done. It reports
+// whether the picker was opened.
+func (i *Interactive) handleModelRefreshResult(ctx context.Context, result modelRefreshResult) bool {
+	i.mu.Lock()
+	i.modelRefreshing = false
+	i.mu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	i.openModelPickerAfterRefresh(result.err)
+	return true
+}

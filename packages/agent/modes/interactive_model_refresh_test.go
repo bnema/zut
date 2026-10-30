@@ -116,7 +116,8 @@ func TestModelPickerRefreshDoesNotLeakWhenContextCancelled(t *testing.T) {
 				return nil
 			},
 		},
-		// Unbuffered and never read: delivery must give up on ctx.Done.
+		// Unbuffered: the test's parked reader below must lose to ctx.Done,
+		// so the goroutine exits instead of delivering a cancelled result.
 		modelRefresh: make(chan modelRefreshResult),
 		modelDialog:  newModelDialog(),
 	}
@@ -132,5 +133,20 @@ func TestModelPickerRefreshDoesNotLeakWhenContextCancelled(t *testing.T) {
 	case r := <-i.modelRefresh:
 		t.Fatalf("result delivered after cancellation: %+v", r)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestModelRefreshResultDiscardedAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	i := &Interactive{modelDialog: newModelDialog(), modelRefreshing: true}
+	if i.handleModelRefreshResult(ctx, modelRefreshResult{}) {
+		t.Fatal("result applied after cancellation")
+	}
+	if i.modelDialog.Active() {
+		t.Fatal("picker opened after cancellation")
+	}
+	if i.modelRefreshing {
+		t.Fatal("refreshing flag not cleared")
 	}
 }

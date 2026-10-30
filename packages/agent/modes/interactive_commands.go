@@ -320,8 +320,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			i.mu.Unlock()
 			go func() {
 				err := i.refreshModelCatalogs(ctx)
-				// select picks randomly among ready cases, so a reader
-				// could still receive after cancellation; check first.
+				// select picks randomly among ready cases; this check
+				// narrows the window; Run discards results received after
+				// cancellation.
 				if ctx.Err() != nil {
 					return
 				}
