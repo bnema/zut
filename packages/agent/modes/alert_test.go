@@ -323,33 +323,6 @@ func TestConfirmationAlertsAtEnqueue(t *testing.T) {
 	}
 }
 
-func TestGoalTransitionAlerts(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
-			for _, tool := range []bool{true, false} {
-				term := &alertTestTerminal{}
-				i := &Interactive{cfg: InteractiveConfig{Terminal: term, TerminalAlertsEnabled: &enabled}, goalStatus: core.GoalActive}
-				apply := func() {
-					if tool {
-						i.handleEvent(core.EvToolResult{Result: core.ToolResult{Details: toolspkg.GoalUpdate{Status: status, Reason: "needs help"}}})
-					} else {
-						i.setGoalStatus(&core.SessionGoal{Status: status})
-					}
-				}
-				apply()
-				apply() // repeated status is not another transition
-				want := ""
-				if enabled {
-					want = "\a"
-				}
-				if term.String() != want {
-					t.Fatalf("status=%s tool=%v enabled=%v: %q", status, tool, enabled, term.String())
-				}
-			}
-		}
-	}
-}
-
 func TestLoginActionAlertDeduplicated(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		for _, manual := range []bool{true, false} {
@@ -427,18 +400,6 @@ func TestBtwGoalUpdateDoesNotAlertMainSession(t *testing.T) {
 		}
 		if term.String() != "" {
 			t.Fatalf("side-chat goal rang: %q", term.String())
-		}
-	}
-}
-
-func TestGoalAlertDeduplicatedAcrossEntryPoints(t *testing.T) {
-	for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
-		term := &alertTestTerminal{}
-		i := &Interactive{cfg: InteractiveConfig{Terminal: term}, goalStatus: core.GoalActive}
-		i.handleEvent(core.EvToolResult{Result: core.ToolResult{Details: toolspkg.GoalUpdate{Status: status, Reason: "needs help"}}})
-		i.setGoalStatus(&core.SessionGoal{Status: status})
-		if term.String() != "\a" {
-			t.Fatalf("mixed entry points emitted %q", term.String())
 		}
 	}
 }

@@ -220,8 +220,6 @@ func (i *Interactive) CancelTurn() {
 	cancel := i.cancelTurn
 	i.mu.Unlock()
 	if cancel != nil {
-		i.cancelCoordinator()
-
 		cancel()
 		i.confirmDialog.CancelAll("turn cancelled")
 	}

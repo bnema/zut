@@ -161,33 +161,6 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			tc.Result = text.String()
 			i.bumpToolRevisionLocked(tc)
 		}
-		if update, ok := toolspkg.GoalUpdateFromResult(e.Result); ok && i.port == nil {
-			if update.Status == core.GoalSuperseded && i.cfg.CurrentGoal != nil {
-				if current := i.cfg.CurrentGoal(); current != nil {
-					i.goalStatus = current.Status
-				}
-				// A superseding replacement owns its own lifecycle; a pending
-				// Esc return for the replaced goal must not fire.
-				i.interruptedGoalReturn = nil
-			} else if update.Status == core.GoalActive {
-				// Persistence runs before this event. Reflect a manager resume or
-				// newly active goal, but do not let a stale result undo a user pause.
-				if i.cfg.CurrentGoal != nil {
-					if current := i.cfg.CurrentGoal(); current != nil {
-						i.goalStatus = current.Status
-					}
-				} else if i.goalStatus != core.GoalPaused {
-					i.goalStatus = core.GoalActive
-				}
-			} else if i.goalStatus == core.GoalActive {
-				i.alertGoalTransitionLocked(i.goalStatus, update.Status)
-				i.goalStatus = update.Status
-				// Paused and terminal goals must not inherit an Esc-armed return.
-				if update.Status == core.GoalPaused || update.Status == core.GoalDone || update.Status == core.GoalBlocked {
-					i.interruptedGoalReturn = nil
-				}
-			}
-		}
 	case core.EvPlanUpdate:
 		i.planCurrent, i.planTotal = planProgress(e.Update.Plan)
 		// Copy-on-write: the live view may still reference the previous map while
@@ -833,6 +806,11 @@ func (i *Interactive) applySessionViewEventLocked(ev session.Event) {
 	switch d := ev.Data.(type) {
 	case session.InfoEvent:
 		if d.Info.ID != "" {
+			status := core.GoalStatus("")
+			if d.Info.Goal != nil {
+				status = core.GoalStatus(d.Info.Goal.Status)
+			}
+			i.alertGoalTransitionLocked(i.goalStatus, status)
 			i.applyInfoLocked(d.Info)
 		}
 	case session.QueueEvent:
@@ -884,7 +862,9 @@ func (i *Interactive) applySessionViewEventLocked(ev session.Event) {
 		i.planSnapshots = d.Plan
 		i.planRevision++
 	case session.GoalEvent:
-		i.goalStatus = core.GoalStatus(d.Status)
+		status := core.GoalStatus(d.Status)
+		i.alertGoalTransitionLocked(i.goalStatus, status)
+		i.goalStatus = status
 	case session.TitleEvent:
 		i.sessionTitle = core.NormalizeSessionTitle(d.Title)
 		i.writeTerminalTitleLocked(i.sessionTitle)

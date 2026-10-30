@@ -11,7 +11,6 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
-	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
@@ -428,17 +427,6 @@ type InteractiveConfig struct {
 	// after a manual rename has already been written to disk.
 	OnSessionTitleChanged func(title string)
 
-	// CurrentGoal and PersistGoal expose the autonomous goal attached to the
-	// current session. CurrentGoal must return a copy, not the live session
-	// pointer, so failed persistence cannot mutate in-memory state. The callbacks
-	// follow session switches without coupling the TUI to the session file owner.
-	CurrentGoal        func() *core.SessionGoal
-	CurrentGoalHistory func() []core.SessionGoal
-	EnsureMission      func(objective string) error
-	PersistGoal        func(goal *core.SessionGoal) error
-	// PersistGoalRuntime records execution bookkeeping without adding a mission
-	// transition to goal history.
-	PersistGoalRuntime func(goal *core.SessionGoal) error
 	// CurrentPlan returns a copy of the agent-owned checklist. PersistPlan
 	// writes it as a session meta transition. They let the TUI seed its plan
 	// counters and snapshot map on resume and clear them on /clear without
@@ -773,8 +761,7 @@ type Interactive struct {
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
 	// scheduled, runCtx, pending*, compacting*, compactContinuation,
-	// interruptedGoalReturn, goalStatus, goalRun, completionTracker,
-	// turnCoordinator, coordinatorWorkerIDs, cumUsage,
+	// goalStatus, cumUsage,
 	// activity, lastCtxInput, busy, cancelTurn). In Port mode they are
 	// either unused or written only as view projections of session.Info
 	// (busy, cumUsage, lastCtxInput, goalStatus, activity label). L16
@@ -891,12 +878,6 @@ type Interactive struct {
 	// inferred from rendered transcript rows.
 	compactContinuation compactContinuationState
 
-	// interruptedGoalReturn records an active goal whose running turn was
-	// cancelled by Esc. It is transient controller state, never persisted:
-	// the goal itself stays active and the next ordinary user turn owns a
-	// single automatic return to the same goal after it completes cleanly.
-	interruptedGoalReturn *interruptedGoalState
-
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
@@ -932,25 +913,6 @@ type Interactive struct {
 	// skillPins preload state is guarded by mu; its fixed callbacks run
 	// outside mu, serialized by skillPins.ioMu.
 	skillPins skillPinState
-
-	// completionTracker collects resident child terminal turns for delivery to
-	// the parent orchestration wave.
-	// turnCoordinator seals worker waves at manager-turn boundaries and decides
-	// the next wake without relying on timing or polling.
-	completionTracker         *subagents.CompletionTracker
-	turnCoordinator           *orchestration.Coordinator
-	coordinatorWorkerIDs      map[string][]string
-	coordinatorWorkerSeq      uint64
-	completionDeliveryMu      sync.Mutex
-	completionDeliveryRunning bool
-	completionDeliveryRequest bool
-	completionDeliveryHolds   int
-	// completionDeliveryGeneration identifies the current hold wave. It is
-	// bumped whenever a new wave starts (a first hold, an implicit one-worker
-	// wave, or a coordinator replacement after cancellation), so a release can
-	// tell whether a newer wave replaced the one it drained while it sampled
-	// goal state.
-	completionDeliveryGeneration uint64
 
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
@@ -1085,12 +1047,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	startupContextPaths := []string(nil)
 	startupExtensionNames := []string(nil)
 	startupSkillNames := []string(nil)
-	initialGoalStatus := core.GoalStatus("")
-	if cfg.CurrentGoal != nil {
-		if goal := cfg.CurrentGoal(); goal != nil {
-			initialGoalStatus = goal.Status
-		}
-	}
 	if cfg.ShowInstructionsAtStartup != nil && *cfg.ShowInstructionsAtStartup {
 		startupAgentName = cfg.StartupAgentName
 		startupContextPaths = append(startupContextPaths, cfg.StartupContextPaths...)
@@ -1177,7 +1133,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		spin:                    newSpinner(cfg.Theme),
 		inputHistoryIndex:       -1,
 		clock:                   time.Now,
-		goalStatus:              initialGoalStatus,
 		reloadErrors:            append([]string(nil), cfg.StartupExtensionErrors...),
 		compactContinuation:     decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
@@ -1233,7 +1188,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.titleGenerationStarted = i.titleRealPromptSeen
 	}
 	i.applyAutoSubagentsTool()
-	i.recoverGoalRun()
 	if cfg.PreloadPinnedSkills {
 		i.SetPinnedSkillsPending(true)
 	}
@@ -2227,18 +2181,6 @@ var _ = fmt.Sprintf
 type telegramSenderAdapter struct {
 	bridge *telegram.Bridge
 }
-
-// TrackResidentSubagent reserves completion delivery after the manager has
-// durably accepted a resident child prompt and before it is scheduled.
-
-// registerCoordinatorWorker associates a tracker registration with the open
-// manager wave. Direct embedders that register a worker outside a manager turn get
-// a one-worker sealed wave, retaining the exported tracker API's old behavior.
-
-// requestCompletionDelivery starts at most one waiter for the current active
-// set. A request arriving while that waiter is formatting or submitting is
-// picked up before the waiter exits, so a later worker cannot be lost in the
-// handoff between batches.
 
 // autoSubagentsAddenda returns the prompt blocks owned by subagent prompting,
 // in the same order Resolve appends them to a new agent. The profile manifest

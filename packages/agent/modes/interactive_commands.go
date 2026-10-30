@@ -215,7 +215,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 
 	switch strings.ToLower(parts[0]) {
 	case "/goal":
-		i.runGoalCommand(ctx, cmd, parts)
+		i.portGoalCommand(cmd, parts)
 	case "/exit":
 		if i.port != nil {
 			i.portExit(ctx)
