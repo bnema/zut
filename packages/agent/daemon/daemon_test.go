@@ -297,6 +297,13 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if in := recv(t, s1.inputs); in.Origin != session.InputOriginUser || in.From != nil {
 		t.Fatalf("client-forged origin not overridden: %+v", in)
 	}
+	s1.h.EXPECT().ClearQueuedUser(mock.Anything).Return(nil).Once()
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_queued_user"}, nil); err != nil {
+		t.Fatalf("clear_queued_user = %v", err)
+	}
+	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_queued_user"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+		t.Fatalf("clear_queued_user by non-controller = %v", err)
+	}
 	if err := a.call(t, daemonproto.CloseRequest{Type: "close", Session: "s1"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
 		t.Fatalf("close by non-controller = %v", err)
 	}

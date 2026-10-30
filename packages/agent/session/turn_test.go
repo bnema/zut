@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -657,4 +658,38 @@ func TestSlideBackQueuedPreservesHostEventsAndFallsBackToAgent(t *testing.T) {
 	require.Len(t, snap.Queue, 1)
 	require.Equal(t, "controller host", snap.Queue[0].Input.Text)
 	require.Equal(t, 1, ag.QueuedMessageCount())
+}
+
+func TestClearQueuedUserKeepsHostEventsAndPublishes(t *testing.T) {
+	c, ctx := newTestController(t)
+	ag := core.NewAgent(nil, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() {
+		c.turn.agent = ag
+		c.turn.busy = true
+		ag.QueuePrompt(core.QueuedMessage{Text: "core draft"})
+		ag.QueuePrompt(core.QueuedMessage{Text: "core host", HostEvent: true})
+	}))
+	require.NoError(t, c.Submit(ctx, Input{Text: "controller draft", Mode: SubmitModeAuto}))
+	require.NoError(t, c.Submit(ctx, Input{Text: "controller host", HostEvent: true}))
+	before, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	events, err := c.Subscribe(ctx, before.Seq)
+	require.NoError(t, err)
+	require.NoError(t, c.ClearQueuedUser(ctx))
+	var ev Event
+	require.Eventually(t, func() bool {
+		select {
+		case ev = <-events:
+			return ev.Kind == EvQueue
+		default:
+			return false
+		}
+	}, 5*time.Second, time.Millisecond)
+	q := ev.Data.(QueueEvent).Queue
+	require.Len(t, q, 1)
+	require.Equal(t, "controller host", q[0].Input.Text)
+	require.Equal(t, 1, ag.QueuedMessageCount())
+	_, ok := ag.PopQueuedUserMessage()
+	require.False(t, ok)
+	require.NoError(t, c.ClearQueuedUser(ctx), "empty clear is not an error")
 }

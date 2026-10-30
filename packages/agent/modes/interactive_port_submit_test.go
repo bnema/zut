@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,4 +356,88 @@ func TestInteractivePortRecallAbortsOriginalSessionAfterSwitch(t *testing.T) {
 	require.Equal(t, "new session input", i.ed.Value())
 	require.Nil(t, i.portRecall)
 	// The new port has no expected Abort or recall calls.
+}
+
+func TestInteractivePortCtrlCClearsSessionQueue(t *testing.T) {
+	for name, clearErr := range map[string]error{"ok": nil, "old daemon": session.ErrUnknownRequest} {
+		t.Run(name, func(t *testing.T) {
+			port := sessionmocks.NewMockPort(t)
+			events := make(chan session.Event, 4)
+			queue := []session.QueuedInput{{ID: "1", Input: session.Input{Text: "queued draft"}}, {ID: "2", Input: session.Input{Text: "report", HostEvent: true}}}
+			port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateIdle}, Queue: queue}, nil).Once()
+			expectPortSubscribe(port, events, nil)
+			called := make(chan struct{})
+			port.EXPECT().ClearQueuedUser(mock.Anything).RunAndReturn(func(context.Context) error {
+				close(called)
+				if clearErr == nil {
+					events <- session.Event{Seq: 1, Kind: session.EvQueue, Data: session.QueueEvent{Queue: queue[1:]}}
+				}
+				return clearErr
+			}).Once()
+			r, term := startPortKeys(t, port)
+			require.Eventually(t, r.i.portHasUserQueued, 5*time.Second, 10*time.Millisecond)
+			term.send("\x03")
+			waitSignal(t, called, "ClearQueuedUser")
+			if clearErr == nil {
+				require.Eventually(t, func() bool { return !r.i.portHasUserQueued() }, 5*time.Second, 10*time.Millisecond)
+				r.i.mu.Lock()
+				defer r.i.mu.Unlock()
+				require.False(t, r.i.daemonExitMenu)
+				require.Len(t, r.i.portQueue, 1)
+				return
+			}
+			r.waitOutput(t, "daemon too old to clear the queue")
+		})
+	}
+}
+
+func TestInteractivePortCtrlCOldDaemonStillReachesExitMenu(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	events := make(chan session.Event, 4)
+	queue := []session.QueuedInput{{ID: "1", Input: session.Input{Text: "queued draft"}}}
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateIdle}, Queue: queue}, nil).Once()
+	expectPortSubscribe(port, events, nil)
+	port.EXPECT().ClearQueuedUser(mock.Anything).Return(session.ErrUnknownRequest).Once()
+	r, term := startPortKeys(t, port)
+	require.Eventually(t, r.i.portHasUserQueued, 5*time.Second, 10*time.Millisecond)
+	term.send("\x03")
+	r.waitOutput(t, "daemon too old to clear the queue")
+	term.send("\x03")
+	require.Eventually(t, func() bool {
+		r.i.mu.Lock()
+		defer r.i.mu.Unlock()
+		return r.i.daemonExitMenu
+	}, 5*time.Second, 10*time.Millisecond)
+	got := make(chan bool, 1)
+	r.i.loopCalls <- func() { got <- r.i.portClearUnsupportedGen == r.i.sessionGen+1 }
+	require.True(t, <-got, "unsupported clear must be remembered for this session")
+}
+
+func TestPortClearQueuedUserReleasesPinsOnlyOnSuccess(t *testing.T) {
+	for name, clearErr := range map[string]error{"success": nil, "failure": errors.New("boom")} {
+		t.Run(name, func(t *testing.T) {
+			port := sessionmocks.NewMockPort(t)
+			port.EXPECT().ClearQueuedUser(mock.Anything).Return(clearErr).Once()
+			i := newPinnedRecallInteractive(t)
+			i.port = port
+			expanded := i.consumePinnedSkills("queued draft")
+			i.portQueue = []session.QueuedInput{{ID: "1", Input: session.Input{Text: expanded}}}
+			i.portClearQueuedUser(context.Background())
+			select {
+			case fn := <-i.loopCalls:
+				fn()
+			case <-time.After(5 * time.Second):
+				t.Fatal("no loop call")
+			}
+			next := i.consumePinnedSkills("next draft")
+			if clearErr == nil {
+				require.Equal(t, 1, strings.Count(next, "Inspect carefully."))
+				require.Equal(t, "queue cleared", i.statusOK)
+			} else {
+				require.Equal(t, "next draft", next, "failed clear must keep pins consumed by the queued draft")
+				require.Contains(t, i.statusErr, "clear queue: boom")
+				require.Empty(t, i.statusOK)
+			}
+		})
+	}
 }

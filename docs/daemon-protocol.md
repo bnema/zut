@@ -101,6 +101,7 @@ inserting it into the editor.
 | abort, compact, reload_extensions, reload_credentials | `{}` | omitted |
 | cancel_queued | `{"id":"q1"}` | omitted |
 | slide_back_queued | `{}` | Input |
+| clear_queued_user | `{}` | omitted; drops queued user input, keeps host events, publishes `queue` (older daemons reply `unsupported port method`) |
 | answer_confirmation | `{"req_id":"r1","decision":ConfirmDecision}` | omitted |
 | answer_question | `{"req_id":"r1","answers":[QuestionAnswer]}` | omitted |
 | resolve_deferred | `{"id":"d1","action":"dismiss"}` | omitted |
