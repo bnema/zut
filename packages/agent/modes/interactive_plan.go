@@ -7,8 +7,8 @@ import "github.com/bnema/zut/packages/core"
 // commits a loaded session; this reads it back and installs the snapshots the
 // CLI reconstructed from the session's full transcript.
 //
-// It mirrors RefreshGoal: the CLI owns agent/session swapping and calls this
-// once the swap is committed. snapshots must come from the untrimmed transcript:
+// The CLI calls this once the swap is committed.
+// snapshots must come from the untrimmed transcript:
 // a resumed agent only holds the trim window, and replaying a delta against an
 // empty base rebuilds the wrong checklist.
 func (i *Interactive) RefreshPlan(snapshots map[string]core.PlanUpdate) {

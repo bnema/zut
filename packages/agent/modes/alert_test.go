@@ -375,8 +375,10 @@ func TestLoginActionAlertDeduplicated(t *testing.T) {
 func TestLoadedGoalsDoNotAlert(t *testing.T) {
 	for _, status := range []core.GoalStatus{core.GoalBlocked, core.GoalPaused} {
 		term := &alertTestTerminal{}
-		i := &Interactive{cfg: InteractiveConfig{Terminal: term, CurrentGoal: func() *core.SessionGoal { return &core.SessionGoal{Status: status} }}, goalStatus: core.GoalActive}
-		i.RefreshGoal()
+		i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{
+			Info: session.Info{Goal: &session.GoalSummary{Status: string(status)}},
+		}, InteractiveConfig{Terminal: term})
+		require.Equal(t, status, i.goalStatus)
 		if term.String() != "" {
 			t.Fatal("loading a session rang")
 		}

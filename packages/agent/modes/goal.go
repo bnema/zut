@@ -495,18 +495,6 @@ func (i *Interactive) runGoalCommand(ctx context.Context, cmd string, parts []st
 	}
 }
 
-// RefreshGoal reloads the status badge after the CLI commits a session switch.
-func (i *Interactive) RefreshGoal() {
-	// A session replacement invalidates transient interruption state: the next
-	// prompt in the new session must not inherit the prior goal's return.
-	i.clearInterruptedGoalReturn()
-	if i.cfg.CurrentGoal == nil {
-		i.setGoalStatus(nil)
-		return
-	}
-	i.setGoalStatusWithAlert(i.cfg.CurrentGoal(), false)
-}
-
 func (i *Interactive) setGoalStatus(goal *core.SessionGoal) {
 	i.setGoalStatusWithAlert(goal, true)
 }

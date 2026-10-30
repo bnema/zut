@@ -96,72 +96,6 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 	// until it is dismissed rather than letting it answer the tool call.
 	i.confirmDialog.Blur()
 }
-func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model string) {
-	i.ApplySessionAgentWithCompactHandoff(ag, providerName, model, nil)
-}
-func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, providerName, model string, compactHandoff json.RawMessage) {
-	if ag == nil {
-		return
-	}
-	i.agentMu.Lock()
-	defer i.agentMu.Unlock()
-	i.mu.Lock()
-	i.prepareReplacementAgentLocked(ag)
-	i.compactContinuation = decodeCompactHandoff(compactHandoff)
-	i.agent = ag
-	// Resumed, imported and forked conversations already have context.
-	i.skillPins.disarm()
-	i.cfg.Provider = providerName
-	i.cfg.Model = model
-	i.view.Messages = filterHiddenTranscriptMessages(ag.Messages())
-	i.cumUsage = ag.Cost()
-	last := ag.LastTurnUsage()
-	i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
-	if len(i.view.Messages) > initialResumeTailLimit {
-		i.view.TailLimit = initialResumeTailLimit
-	} else {
-		i.view.TailLimit = 0
-	}
-	i.view.InvalidateRenderCache()
-	i.toolCalls = map[string]*tui.ToolCallView{}
-	i.toolOrder = nil
-	i.stream.Reset()
-	i.helpBlock = nil
-	i.sessionInfoBlocks = nil
-	i.extNotes = nil
-	i.parkedTurn = 0
-	i.parkedTotal = 0
-	i.mu.Unlock()
-	i.invalidate()
-}
-
-// ApplySessionAgentWithCWD commits a resumed agent together with its stored
-// workspace. Unlike a fresh /cd transition it preserves the session's compact
-// handoff and title while rebinding picker and terminal cwd state.
-func (i *Interactive) ApplySessionAgentWithCWD(ag *core.Agent, providerName, model, cwd string, compactHandoff json.RawMessage) {
-	i.ApplySessionAgentWithCompactHandoff(ag, providerName, model, compactHandoff)
-	if cwd == "" {
-		return
-	}
-	home, _ := os.UserHomeDir()
-	profiles, _ := subagents.Discover(cwd, home)
-	i.mu.Lock()
-	i.cfg.CWD = cwd
-	i.cfg.SubagentsSystemAddendum = subagents.SystemPromptAddendum(profiles)
-	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
-	i.cfg.StartupContextPaths = nil
-	i.view.StartupContextPaths = nil
-	if i.cfg.Terminal != nil {
-		if seq := tui.ReportCWD(cwd); seq != "" {
-			_, _ = i.cfg.Terminal.Write([]byte(seq))
-		}
-	}
-	i.mu.Unlock()
-	i.fileSuggest.Reset()
-	i.fileSuggest.SetCWD(cwd)
-	i.invalidate()
-}
-
 func (i *Interactive) SetSubagentSessionScope(_ string) {
 	i.invalidate()
 }
@@ -241,43 +175,6 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 	i.submitOrQueue(text, images, true)
 }
 
-// SubmitFollowUp submits a scheduler-owned prompt without interpreting shell
-// escapes or steering an active agent loop. A busy interactive waits for its
-// current turn to end, then starts this prompt as a distinct follow-up turn.
-func (i *Interactive) SubmitFollowUp(ctx context.Context, text string) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return fmt.Errorf("scheduled prompt is empty")
-	}
-	i.mu.Lock()
-	if i.agent == nil {
-		i.mu.Unlock()
-		return fmt.Errorf("no agent running; log in first")
-	}
-	if i.busy {
-		accepted := make(chan error, 1)
-		i.scheduled = append(i.scheduled, scheduledFollowUp{text: text, accepted: accepted})
-		i.mu.Unlock()
-		i.invalidate()
-		select {
-		case err := <-accepted:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	i.mu.Unlock()
-	// The active turn can finish before the busy check above, landing
-	// here instead of the scheduled path. runCtx is only set by Run, so
-	// fall back like the turn-completion handler does rather than
-	// panicking in context.WithCancel.
-	parent := i.runCtx
-	if parent == nil {
-		parent = context.Background()
-	}
-	i.startTurn(parent, text)
-	return nil
-}
 func (i *Interactive) submitOrQueue(text string, images []provider.ImageBlock, userInput bool) {
 	i.submitOrQueueMessage(core.QueuedMessage{Text: text, Images: images}, userInput)
 }

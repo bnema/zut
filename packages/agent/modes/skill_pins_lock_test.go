@@ -180,7 +180,6 @@ func TestSkillPinCallbacksRunOutsideInteractiveMutex(t *testing.T) {
 		i, p := newProbedInteractive(t, true)
 		p.reset()
 		i.SetPinnedSkillsPending(false)
-		i.ApplySessionAgent(core.NewAgent(nil, "test-model", "", nil), "p", "m")
 		if len(p.calls) != 0 {
 			t.Fatalf("disarm did IO: %v", p.calls)
 		}
@@ -281,10 +280,9 @@ func (b *blockingSnapshot) snapshot() []*skills.Skill {
 	return reviewSnapshot()
 }
 
-func TestStaleSkillPinArmDroppedAfterDisarmOrSessionReplacement(t *testing.T) {
+func TestStaleSkillPinArmDroppedAfterDisarm(t *testing.T) {
 	for name, overtake := range map[string]func(*Interactive){
-		"disarm":              func(i *Interactive) { i.SetPinnedSkillsPending(false) },
-		"session replacement": func(i *Interactive) { i.ApplySessionAgent(core.NewAgent(nil, "test-model", "", nil), "p", "m") },
+		"disarm": func(i *Interactive) { i.SetPinnedSkillsPending(false) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := &blockingSnapshot{entered: make(chan struct{}, 1), release: make(chan struct{}), block: true}

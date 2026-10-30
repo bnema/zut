@@ -1974,10 +1974,6 @@ const ctrlCExitWindow = 2 * time.Second
 // holds an interface, not a concrete *Interactive, so these methods
 // are the only thing the manager sees.
 
-// ApplySessionAgent swaps the live agent after a validated session resume.
-// Unlike ApplyChangedCWD it does not mutate cwd-scoped resources or startup
-// context; the session loader is changing the transcript/provider only.
-
 // SetSubagentSessionScope redraws after a host session transition. Resident
 // children retain their explicit parent session in their durable journal.
 

@@ -3,7 +3,6 @@ package modes
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,91 +135,4 @@ func TestInteractiveRepetitionGuardPreservesQueuedUserPrompt(t *testing.T) {
 	if got := client.calls.Load(); got != 9 {
 		t.Fatalf("provider calls = %d, want 9 including the user prompt", got)
 	}
-}
-
-func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
-	client := &repetitiveInteractiveClient{
-		entered: make(chan struct{}),
-		resume:  make(chan struct{}),
-	}
-	defer func() {
-		select {
-		case <-client.resume:
-		default:
-			close(client.resume)
-		}
-	}()
-	agent := core.NewAgent(client, "model", "system", core.Registry{"repeat": &repetitiveInteractiveTool{}})
-	interactive := NewInteractive(InteractiveConfig{Agent: agent})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	interactive.startTurn(ctx, "start")
-	select {
-	case <-client.entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("eighth provider request did not start")
-	}
-	followUp := make(chan error, 1)
-	go func() { followUp <- interactive.SubmitFollowUp(ctx, "scheduled task") }()
-
-	// SubmitFollowUp blocks until teardown resolves it. Hold the eighth
-	// provider call until the scheduled prompt is actually registered, not
-	// merely until its goroutine has been launched.
-	deadline := time.NewTimer(3 * time.Second)
-	defer deadline.Stop()
-	poll := time.NewTicker(time.Millisecond)
-	defer poll.Stop()
-	for {
-		interactive.mu.Lock()
-		queued := len(interactive.scheduled) == 1
-		interactive.mu.Unlock()
-		if queued {
-			break
-		}
-		select {
-		case <-deadline.C:
-			t.Fatal("scheduled follow-up did not enter the queue")
-		case <-poll.C:
-		}
-	}
-	close(client.resume)
-
-	select {
-	case err := <-followUp:
-		if !errors.Is(err, core.ErrRepetitiveLoop) {
-			t.Fatalf("scheduled follow-up error = %v, want ErrRepetitiveLoop", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("scheduled follow-up remained blocked after repetitive loop stop")
-	}
-	waitInteractiveIdle(t, interactive)
-	if got := client.calls.Load(); got != 8 {
-		t.Fatalf("provider calls = %d, want 8", got)
-	}
-}
-
-// SubmitFollowUp on an idle interactive without a Run context must start a
-// turn instead of panicking in context.WithCancel(nil parent). This pins the
-// fallback deterministically; the racy busy-to-idle interleaving behind the
-// Windows CI panic needs no timing to cover the nil-parent path itself.
-func TestSubmitFollowUpWithoutRunContextStartsTurn(t *testing.T) {
-	client := &repetitiveInteractiveClient{requests: make(chan repetitiveInteractiveRequest, 16)}
-	agent := core.NewAgent(client, "model", "system", core.Registry{"repeat": &repetitiveInteractiveTool{}})
-	interactive := NewInteractive(InteractiveConfig{Agent: agent})
-	if interactive.runCtx != nil {
-		t.Fatalf("runCtx = %#v, want nil without Run", interactive.runCtx)
-	}
-	if err := interactive.SubmitFollowUp(context.Background(), "scheduled task"); err != nil {
-		t.Fatalf("SubmitFollowUp = %v, want nil", err)
-	}
-	select {
-	case request := <-client.requests:
-		if request.call != 1 {
-			t.Fatalf("provider request = %#v, want first call", request)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("provider request was not observed")
-	}
-	waitInteractiveIdle(t, interactive)
 }

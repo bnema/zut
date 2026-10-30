@@ -136,10 +136,6 @@ func TestPinnedSkillsAbsentWithoutArming(t *testing.T) {
 			h.i.SetPinnedSkillsPending(true)
 			h.i.SetPinnedSkillsPending(false)
 		},
-		"session applied": func(h *pinTurnHarness) {
-			h.i.SetPinnedSkillsPending(true)
-			h.i.ApplySessionAgent(core.NewAgent(h.client, "test-model", "", nil), "anthropic", "claude-sonnet-4-5-20250929")
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newPinTurnHarness(t, false)
@@ -162,16 +158,8 @@ func (h *pinTurnHarness) pinsPending() bool {
 func TestPinnedSkillsIgnoreNonUserStarts(t *testing.T) {
 	h := newPinTurnHarness(t, true)
 
-	// Scheduler follow-up, extension prompt and host evidence are not user
-	// input: they must neither carry the pins nor consume them.
-	if err := h.i.SubmitFollowUp(context.Background(), "scheduled tick"); err != nil {
-		t.Fatal(err)
-	}
-	if got := lastUserText(receiveRequest(t, h.client.requests)); got != "scheduled tick" {
-		t.Fatalf("scheduled prompt = %q", got)
-	}
-	waitInteractiveIdle(t, h.i)
-
+	// Extension prompts and host evidence are not user input: they must
+	// neither carry the pins nor consume them.
 	h.i.startTurn(context.Background(), "extension prompt") // invokeExtensionCommand "prompt" action
 	if got := lastUserText(receiveRequest(t, h.client.requests)); got != "extension prompt" {
 		t.Fatalf("extension prompt = %q", got)
