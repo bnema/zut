@@ -19,6 +19,7 @@ import (
 func TestDaemonForkInheritsParentConfirmationPolicy(t *testing.T) {
 	s1, s2 := newTestSession(t, "s1"), newTestSession(t, "s2")
 	s1.set(func(i *session.Info) { i.Provider, i.Model = "p", "m" })
+	require.NoError(t, os.WriteFile(s1.h.Info().SessionPath, nil, 0o600))
 	perms := &tools.PermissionSet{}
 	f := sessionmocks.NewMockFactory(t)
 	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
@@ -45,7 +46,8 @@ func TestDaemonForkInheritsParentConfirmationPolicy(t *testing.T) {
 	require.Equal(t, "agent", got.Zutfile.Name)
 	require.Empty(t, got.Zutfile.Pre, "a fork must not rerun the parent's entry.pre")
 	require.NotNil(t, got.Zutfile.Permissions)
-	require.Equal(t, fork.Fork, got.Fork)
+	require.Equal(t, fork.Fork.ParentPath, got.Fork.ParentPath)
+	require.NotNil(t, got.Fork.ParentFile)
 	require.True(t, got.Headless)
 }
 
@@ -98,6 +100,7 @@ func TestDaemonForkMatchesNormalisedParentPath(t *testing.T) {
 func TestDaemonHistoricalForkInheritsPolicyAndRejectsUnknownParent(t *testing.T) {
 	s1, s2 := newTestSession(t, "s1"), newTestSession(t, "s2")
 	s1.set(func(i *session.Info) { i.CWD = "/parent" })
+	require.NoError(t, os.WriteFile(s1.h.Info().SessionPath, nil, 0o600))
 	f := sessionmocks.NewMockFactory(t)
 	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
 	specs := make(chan session.CreateSpec, 1)
@@ -109,16 +112,22 @@ func TestDaemonHistoricalForkInheritsPolicyAndRejectsUnknownParent(t *testing.T)
 	a := dial(t, r.sock)
 	launch := session.CreateSpec{CWD: "/parent", Args: []string{"--no-yolo", "--tools", "read"}, Env: []string{"POLICY=parent"}, Zutfile: &session.ZutfileSpec{Name: "restricted", Permissions: &tools.PermissionSet{}}}
 	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: launch}, nil))
-	spec := session.CreateSpec{CWD: "/hostile", ResumePath: filepath.Join(t.TempDir(), "history.jsonl"), Args: []string{"-y"}, Env: []string{"POLICY=hostile"}, Fork: &session.ForkSpec{ParentPath: s1.h.Info().SessionPath, Hidden: true}}
+	segment := 0
+	spec := session.CreateSpec{CWD: "/hostile", Args: []string{"-y"}, Env: []string{"POLICY=hostile"}, Fork: &session.ForkSpec{ParentPath: s1.h.Info().SessionPath, Hidden: true, HistorySegment: &segment}}
 	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: spec}, nil))
 	got := recv(t, specs)
 	require.Equal(t, launch.Args, got.Args)
 	require.Equal(t, launch.Env, got.Env)
 	require.Equal(t, launch.Zutfile, got.Zutfile)
 	require.Equal(t, launch.CWD, got.CWD)
-	require.Equal(t, spec.ResumePath, got.ResumePath)
-	spec.Fork.ParentPath = "/unknown/parent.jsonl"
+	require.Empty(t, got.ResumePath)
+	require.Equal(t, &segment, got.Fork.HistorySegment)
+	spec.ResumePath = "/arbitrary.jsonl"
 	err := a.call(t, daemonproto.CreateRequest{Type: "create", Spec: spec}, nil)
+	require.ErrorContains(t, err, session.ErrInvalidFork.Error())
+	spec.ResumePath = ""
+	spec.Fork.ParentPath = "/unknown/parent.jsonl"
+	err = a.call(t, daemonproto.CreateRequest{Type: "create", Spec: spec}, nil)
 	require.ErrorContains(t, err, session.ErrForkParentNotFound.Error())
 }
 
@@ -144,4 +153,31 @@ func TestDaemonForkSymlinkDotDotDoesNotMatchLexicalParent(t *testing.T) {
 	require.Equal(t, filepath.Join(dir, "other", "p.jsonl"), normParentPath(rel+"/link/../p.jsonl"))
 	err = a.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{Fork: &session.ForkSpec{ParentPath: alias}}}, nil)
 	require.ErrorContains(t, err, session.ErrForkParentNotFound.Error())
+}
+
+func TestDaemonRegistrationPinsResolvedParentPath(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.jsonl")
+	alias := filepath.Join(dir, "alias.jsonl")
+	require.NoError(t, os.WriteFile(real, nil, 0o600))
+	require.NoError(t, os.Symlink(real, alias))
+	s1, s2 := newTestSession(t, "s1"), newTestSession(t, "s2")
+	s1.set(func(i *session.Info) { i.SessionPath = alias })
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	specs := make(chan session.CreateSpec, 1)
+	f.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Handle, error) {
+		specs <- spec
+		return s2.h, nil
+	}).Once()
+	r := startDaemon(t, f, t.TempDir(), Options{})
+	a := dial(t, r.sock)
+	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{CWD: dir}}, nil))
+	require.NoError(t, os.Remove(alias))
+	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{Fork: &session.ForkSpec{ParentPath: real}}}, nil))
+	got := recv(t, specs)
+	require.Equal(t, real, got.Fork.ParentPath)
+	identity, err := os.Stat(real)
+	require.NoError(t, err)
+	require.True(t, os.SameFile(identity, got.Fork.ParentFile))
 }

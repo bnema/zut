@@ -333,6 +333,10 @@ func branchSession(ctx context.Context, parentPath, root, cwd, version string, u
 // kept separate from the effective snapshot so normal resume semantics remain
 // unchanged while older fork points stay usable.
 func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segment SessionHistorySegment, upToMessageIdx int) (string, error) {
+	return branchSessionHiddenFromHistory(context.Background(), parentPath, root, cwd, version, segment, upToMessageIdx)
+}
+
+func branchSessionHiddenFromHistory(ctx context.Context, parentPath, root, cwd, version string, segment SessionHistorySegment, upToMessageIdx int) (string, error) {
 	if parentPath == "" {
 		return "", errors.New("branch: parent path is empty")
 	}
@@ -343,7 +347,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 		return "", fmt.Errorf("branch: upToMessageIdx %d exceeds historical message count %d", upToMessageIdx, len(segment.Messages))
 	}
 
-	snapshot, err := ReadSessionSnapshot(parentPath)
+	snapshot, err := readSessionSnapshot(ctx, parentPath)
 	if err != nil {
 		return "", fmt.Errorf("branch: read parent snapshot: %w", err)
 	}
@@ -351,7 +355,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 	if limit > 0 && limit < len(segment.Messages) && messageHasToolCalls(segment.Messages[limit-1]) && segment.Messages[limit].Role == provider.RoleTool {
 		limit++
 	}
-	extensionState, err := readExtensionStateAtFork(context.Background(), parentPath, limit)
+	extensionState, err := readExtensionStateAtFork(ctx, parentPath, limit)
 	if err != nil {
 		return "", err
 	}
@@ -363,7 +367,7 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 // provider messages, but its timeline still follows the effective message
 // stream across compaction rows.
 func readExtensionStateAtFork(ctx context.Context, path string, limit int) (map[string]json.RawMessage, error) {
-	f, err := os.Open(path)
+	f, err := openForkParent(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("branch: open parent for extension state: %w", err)
 	}
@@ -1413,4 +1417,40 @@ func slugify(s string, max int) string {
 		}
 	}
 	return strings.TrimRight(out.String(), "-")
+}
+
+// BranchSessionChecked materializes a fork from the registered parent, checking
+// each opened parent file against the daemon's lookup identity when supplied.
+func BranchSessionChecked(ctx context.Context, parentPath, root, cwd, version string, upTo int, hidden bool, historySegment *int, expected os.FileInfo) (string, error) {
+	if expected != nil {
+		ctx = context.WithValue(ctx, forkParentIdentityKey{}, expected)
+	}
+	if historySegment == nil {
+		return branchSession(ctx, parentPath, root, cwd, version, upTo, hidden)
+	}
+	history, err := readSessionHistory(ctx, parentPath)
+	if err != nil {
+		return "", err
+	}
+	if *historySegment < 0 || *historySegment >= len(history.Segments) {
+		return "", errors.New("branch: historical selection not found")
+	}
+	return branchSessionHiddenFromHistory(ctx, parentPath, root, cwd, version, history.Segments[*historySegment], upTo)
+}
+
+type forkParentIdentityKey struct{}
+
+func openForkParent(ctx context.Context, path string) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if expected, ok := ctx.Value(forkParentIdentityKey{}).(os.FileInfo); ok {
+		actual, err := f.Stat()
+		if err != nil || !os.SameFile(expected, actual) {
+			_ = f.Close()
+			return nil, errors.New("branch: parent transcript identity changed")
+		}
+	}
+	return f, nil
 }

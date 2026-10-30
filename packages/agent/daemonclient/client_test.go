@@ -456,3 +456,8 @@ func TestMapErrForkParentNotFound(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrForkParentNotFound)
 	require.Equal(t, "zut daemon: parent session not found", err.Error())
 }
+
+func TestMapErrInvalidFork(t *testing.T) {
+	err := mapErr(&daemonproto.RemoteError{Msg: session.ErrInvalidFork.Error()})
+	require.ErrorIs(t, err, session.ErrInvalidFork)
+}

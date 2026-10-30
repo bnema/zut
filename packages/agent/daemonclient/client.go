@@ -176,7 +176,7 @@ func (c *Client) call(ctx context.Context, frame, out any) error {
 	return mapErr(conn.Call(ctx, frame, out))
 }
 
-var sentinels = []error{session.ErrSeqTooOld, session.ErrClosed, session.ErrNotAttached, session.ErrBusy, session.ErrUnknownRequest, session.ErrLoopGuard, session.ErrForkParentNotFound}
+var sentinels = []error{session.ErrSeqTooOld, session.ErrClosed, session.ErrNotAttached, session.ErrBusy, session.ErrUnknownRequest, session.ErrLoopGuard, session.ErrForkParentNotFound, session.ErrInvalidFork}
 
 func mapErr(err error) error {
 	var re *daemonproto.RemoteError

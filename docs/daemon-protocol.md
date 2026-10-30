@@ -52,12 +52,16 @@ client overrides are replaced. The daemon binds `parent_path` to the matched
 registered transcript path before assembly. Unknown parents fail with
 `parent session not found`.
 
-For a historical tree selection already materialized into a hidden branch,
-set both `resume_path` to that branch and `fork.parent_path` to its original
-parent transcript (`fork.hidden: true`). This uses existing fields: `fork`
-still requires parent validation and policy inheritance, while a nonempty
-`resume_path` tells assembly to open the materialized branch rather than copy
-current parent messages. Historical branches must not be sent as plain resumes.
+For historical tree branching, send `fork.history_segment` (a zero-based
+segment index from the parent's history) together with `up_to_message` and
+`hidden: true`. Omit `history_segment` for ordinary effective-transcript forks.
+The daemon/assembly reads and materializes the selection from the validated
+registered parent's transcript with inherited policy. Out-of-range segments
+or message boundaries are rejected. No client-supplied branch is resumed:
+combining `fork` and `resume_path` is rejected with `invalid fork request`.
+The registry retains the resolved parent path at registration, and fork reads
+check the opened file with `os.SameFile` against its identity at lookup.
+This is not full inode pinning against a same-uid local attacker.
 
 `attach` replays events strictly after `after_seq` before live delivery.
 A sequence outside retention fails with `event sequence too old`; an

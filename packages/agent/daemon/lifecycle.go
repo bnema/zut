@@ -258,7 +258,7 @@ func (d *Daemon) register(h session.Handle, s session.CreateSpec, lock *flock.Lo
 		d.closeHandle(h, "duplicate_id")
 		return fmt.Errorf("session id %q is empty or already registered", id)
 	}
-	e := &entry{id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
+	e := &entry{parentPath: normParentPath(h.Info().SessionPath), id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
 	d.reg[id] = e
 	d.mu.Unlock()
 	d.goLoop(func(ctx context.Context) { d.watch(ctx, e) })
@@ -468,12 +468,15 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 	if spec.Fork == nil {
 		return spec, nil
 	}
+	if spec.ResumePath != "" {
+		return session.CreateSpec{}, fmt.Errorf("%w: fork cannot include resume_path", session.ErrInvalidFork)
+	}
 	want := normParentPath(spec.Fork.ParentPath)
 	var parent *entry
 	var info session.Info
 	for _, e := range d.entries() {
 		i := e.h.Info()
-		if i.SessionPath != "" && normParentPath(i.SessionPath) == want {
+		if e.parentPath != "" && e.parentPath == want {
 			parent, info = e, i
 			break
 		}
@@ -482,7 +485,11 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 		return session.CreateSpec{}, session.ErrForkParentNotFound
 	}
 	fork := *spec.Fork
-	fork.ParentPath = info.SessionPath
+	fork.ParentPath = parent.parentPath
+	fork.ParentFile, _ = os.Stat(parent.parentPath)
+	if fork.ParentFile == nil {
+		return session.CreateSpec{}, fmt.Errorf("%w: parent transcript unavailable", session.ErrInvalidFork)
+	}
 	spec.Fork = &fork
 	spec.CWD = info.CWD
 	if spec.CWD == "" {

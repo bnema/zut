@@ -582,7 +582,7 @@ func TestSessionSetModelUpdatesLimits(t *testing.T) {
 	}
 }
 
-func TestNewSessionDepsHistoricalForkResumesMaterializedBranch(t *testing.T) {
+func TestNewSessionDepsHistoricalForkMaterializesRegisteredParent(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	server := sessionAssemblyProvider(t)
 	cwd := t.TempDir()
@@ -590,12 +590,11 @@ func TestNewSessionDepsHistoricalForkResumesMaterializedBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "historical prompt"}}}))
 	require.NoError(t, parent.Close())
-	history, err := core.ReadSessionHistory(parent.Path)
+	segment := 0
+	identity, err := os.Stat(parent.Path)
 	require.NoError(t, err)
-	branch, err := core.BranchSessionHiddenFromHistory(parent.Path, home, cwd, "test", history.Segments[0], 1)
-	require.NoError(t, err)
-	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: cwd, Env: []string{}, Args: append(sessionAssemblyArgs(server), "--no-yolo", "--tools", "read"), ResumePath: branch, Fork: &session.ForkSpec{ParentPath: parent.Path, Hidden: true}})
-	require.Equal(t, branch, deps.SessionStore.CurrentSessionPath())
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: cwd, Env: []string{}, Args: append(sessionAssemblyArgs(server), "--no-yolo", "--tools", "read"), Fork: &session.ForkSpec{ParentPath: parent.Path, Hidden: true, UpToMessage: 1, HistorySegment: &segment, ParentFile: identity}})
+	require.NotEqual(t, parent.Path, deps.SessionStore.CurrentSessionPath())
 	ag, _, _, err := deps.AgentBuilder.BuildAgent()
 	require.NoError(t, err)
 	require.Len(t, ag.Messages(), 1)
