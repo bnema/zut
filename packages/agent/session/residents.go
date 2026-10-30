@@ -68,6 +68,10 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 	snapshots := c.deps.ResidentManager.Snapshot()
 	out := make([]ResidentSummary, 0, len(snapshots))
 	for _, r := range snapshots {
+		// Children leased by another session are not ours to show.
+		if r.OwnedElsewhere {
+			continue
+		}
 		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt})
 	}
 	return out
