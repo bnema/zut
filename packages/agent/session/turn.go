@@ -29,6 +29,8 @@ type turnState struct {
 	// rescuing holds the queue while a failed turn waits for a rescue model.
 	rescuing  bool
 	rescueEnd core.EvTurnEnd
+	// started is when the running turn began, for duration logging.
+	started time.Time
 }
 
 func (s *turnState) snapshotInto(out *Snapshot) {
@@ -206,6 +208,8 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 	c.turn.busy = true
 	c.turn.live = LiveTurn{Origin: in.Origin}
 	c.turn.end = core.EvTurnEnd{}
+	c.turn.started = c.deps.Clock()
+	c.logger().Info("turn started", "origin", string(in.Origin), "continuing", continuing)
 	c.turn.input = nil
 	if !continuing {
 		retry := in
@@ -247,6 +251,17 @@ func (c *Controller) runTurn(in Input, continuing bool) error {
 }
 func (c *Controller) finishTurn(ctx context.Context, err error) {
 	origin := c.turn.live.Origin
+	duration := c.deps.Clock().Sub(c.turn.started)
+	switch {
+	case err != nil || ctx.Err() != nil:
+		cause := err
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		c.logger().Warn("turn failed", "origin", string(origin), "duration", duration, "error_category", errorCategory(cause))
+	default:
+		c.logger().Info("turn ended", "origin", string(origin), "duration", duration)
+	}
 	c.restoreScheduledGuard()
 	failed := c.turn.input
 	c.turn.input = nil

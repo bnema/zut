@@ -225,6 +225,7 @@ func (c *Controller) residentsInit() {
 		if !s.tracker.TrackResident(spec.ID, turnID) {
 			return
 		}
+		c.logger().Info("subagent spawned", "agent", spec.ID, "turn", turnID)
 		c.postResidentLocked(func() {
 			if _, exists := s.specs[spec.ID]; !exists {
 				s.specs[spec.ID] = spec
@@ -251,9 +252,11 @@ func (c *Controller) residentsInit() {
 		if s.closed {
 			return false
 		}
-		if !s.tracker.Report(completion.Completion()) {
+		done := completion.Completion()
+		if !s.tracker.Report(done) {
 			return false
 		}
+		c.logger().Info("subagent finished", "agent", done.AgentID, "turn", done.TurnID, "status", done.Status)
 		batch, _ := s.tracker.WaitReady(context.Background())
 		return c.postResidentLocked(func() {
 			for _, item := range batch {
