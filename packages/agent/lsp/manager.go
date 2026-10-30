@@ -36,7 +36,14 @@ type Response struct {
 	Error  error
 }
 
+type clientUsage struct {
+	inUse    int
+	lastUsed time.Time
+}
+
 type workspace struct {
+	usage          map[string]*clientUsage
+	retiring       map[*Client]bool
 	cwd            string
 	rootReal       string
 	config         Config
@@ -52,13 +59,14 @@ type workspace struct {
 }
 
 // Manager owns per-workspace LSP processes. A process is cached by cwd and
-// server ID until Close or Reload, so a series of model calls does not spawn a
-// new language server for every request.
+// server ID until idle eviction, Close or Reload, so a series of model calls
+// does not spawn a new language server for every request.
 type Manager struct {
 	mu         sync.Mutex
 	workspaces map[string]*workspace
 	options    ManagerOptions
 	closed     bool
+	sweepStop  chan struct{}
 }
 
 var errManagerClosed = errors.New("LSP manager is closed")
@@ -106,7 +114,7 @@ func (m *Manager) workspace(cwd string) (*workspace, error) {
 	if resolved, resolveErr := filepath.EvalSymlinks(cwd); resolveErr == nil {
 		rootReal = resolved
 	}
-	value := &workspace{cwd: cwd, rootReal: rootReal, config: config, clients: make(map[string]*Client), starting: make(map[string]chan struct{}), statuses: make(map[string]string), errors: make(map[string]string), diagnostics: make(map[string]map[string][]Diagnostic), cliDiagnostics: make(map[string][]Diagnostic), opened: make(map[string]map[string]string), surfaced: make(map[string]map[string]bool)}
+	value := &workspace{usage: make(map[string]*clientUsage), retiring: make(map[*Client]bool), cwd: cwd, rootReal: rootReal, config: config, clients: make(map[string]*Client), starting: make(map[string]chan struct{}), statuses: make(map[string]string), errors: make(map[string]string), diagnostics: make(map[string]map[string][]Diagnostic), cliDiagnostics: make(map[string][]Diagnostic), opened: make(map[string]map[string]string), surfaced: make(map[string]map[string]bool)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -144,6 +152,7 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 			return nil, errManagerClosed
 		}
 		if client := ws.clients[spec.ID]; client != nil {
+			ws.usage[spec.ID].inUse++
 			m.mu.Unlock()
 			return client, nil
 		}
@@ -201,12 +210,9 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 			_ = client.Close()
 			return nil, errManagerClosed
 		}
-		if existing := ws.clients[spec.ID]; existing != nil {
-			m.mu.Unlock()
-			_ = client.Close()
-			return existing, nil
-		}
 		ws.clients[spec.ID] = client
+		ws.usage[spec.ID] = &clientUsage{inUse: 1, lastUsed: time.Now()}
+		m.startSweeperLocked()
 		ws.statuses[spec.ID] = "ready"
 		delete(ws.errors, spec.ID)
 		m.mu.Unlock()
@@ -325,6 +331,7 @@ func (m *Manager) Open(ctx context.Context, cwd, path string) error {
 		if clientErr != nil && err == nil {
 			err = clientErr
 		}
+		m.releaseClient(ws, spec.ID, client)
 	}
 	return err
 }
@@ -347,11 +354,10 @@ func (m *Manager) Save(ctx context.Context, cwd, path string) error {
 		if spec.Kind != "lsp" {
 			continue
 		}
-		m.mu.Lock()
-		client := ws.clients[spec.ID]
-		m.mu.Unlock()
+		client := m.acquireCachedClient(ws, spec.ID)
 		if client != nil {
 			_ = client.DidSave(path, string(text))
+			m.releaseClient(ws, spec.ID, client)
 		}
 	}
 	return openErr
@@ -380,13 +386,12 @@ func (m *Manager) DiagnosticsWithOptions(ctx context.Context, cwd, path string, 
 		if spec.Kind != "lsp" {
 			continue
 		}
-		m.mu.Lock()
-		client := ws.clients[spec.ID]
-		m.mu.Unlock()
+		client := m.acquireCachedClient(ws, spec.ID)
 		if client != nil {
 			if waitErr := client.WaitForDiagnostics(ctx, m.options.DiagnosticDelay); waitErr != nil && firstErr == nil && !errors.Is(waitErr, context.Canceled) {
 				firstErr = waitErr
 			}
+			m.releaseClient(ws, spec.ID, client)
 		}
 	}
 	if runCLI {
@@ -469,6 +474,7 @@ func (m *Manager) Request(ctx context.Context, cwd, server, method string, param
 	if err != nil {
 		return nil, err
 	}
+	defer m.releaseClient(ws, spec.ID, client)
 	return m.requestWithTimeout(ctx, client, method, params)
 }
 
@@ -502,6 +508,7 @@ func (m *Manager) RequestAll(ctx context.Context, cwd, path, method string, para
 			continue
 		}
 		result, requestErr := m.requestWithTimeout(ctx, client, method, params)
+		m.releaseClient(ws, spec.ID, client)
 		responses = append(responses, Response{Server: spec.ID, Result: result, Error: requestErr})
 	}
 	return responses
@@ -599,12 +606,6 @@ func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (m
 		if spec.Kind != "lsp" || spec.IsLinter {
 			return nil, fmt.Errorf("%s is not a navigable LSP server", spec.ID)
 		}
-		m.mu.Lock()
-		client := ws.clients[spec.ID]
-		m.mu.Unlock()
-		if client != nil {
-			return client, nil
-		}
 		return m.ensureClient(ctx, ws, spec)
 	}
 	if server != "" {
@@ -616,6 +617,7 @@ func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (m
 		if err != nil {
 			return nil, err
 		}
+		defer m.releaseClient(ws, spec.ID, client)
 		return map[string]json.RawMessage{server: client.Capabilities()}, nil
 	}
 	statuses, err := m.Status(cwd, path)
@@ -645,6 +647,7 @@ func (m *Manager) Capabilities(ctx context.Context, cwd, path, server string) (m
 		if capabilities := client.Capabilities(); len(capabilities) > 0 {
 			out[status.ID] = capabilities
 		}
+		m.releaseClient(ws, spec.ID, client)
 	}
 	return out, firstErr
 }
@@ -678,6 +681,9 @@ func (m *Manager) clientsSnapshot(ws *workspace) []*Client {
 	for _, client := range ws.clients {
 		clients = append(clients, client)
 	}
+	for client := range ws.retiring {
+		clients = append(clients, client)
+	}
 	return clients
 }
 
@@ -688,6 +694,9 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	if m.sweepStop != nil {
+		close(m.sweepStop)
+	}
 	workspaces := make([]*workspace, 0, len(m.workspaces))
 	for _, ws := range m.workspaces {
 		workspaces = append(workspaces, ws)

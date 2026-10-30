@@ -35,10 +35,13 @@ func TestFakeLSPProcess(t *testing.T) {
 		switch message.Method {
 		case "initialize":
 			if os.Getenv("ZUT_FAKE_LSP_HANG_INITIALIZE") == "1" {
+				_ = WriteMessage(os.Stdout, []byte(`{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"initializing"}}`))
 				continue
 			}
 			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"capabilities":{"definitionProvider":true}}}`)
 			_ = WriteMessage(os.Stdout, response)
+		case "test/block":
+			_ = WriteMessage(os.Stdout, []byte(`{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"blocked"}}`))
 		case "test/echo":
 			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"echo":true}}`)
 			_ = WriteMessage(os.Stdout, response)

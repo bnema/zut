@@ -17,7 +17,8 @@ import (
 // Command is resolved relative to the workspace before it is started.
 type ServerConfig struct {
 	ID                    string            `json:"-"`
-	Kind                  string            `json:"kind,omitempty"` // "lsp" or "cli"
+	IdleTimeoutSeconds    int               `json:"idleTimeoutSeconds,omitempty"` // 0: 300 seconds; negative: disabled
+	Kind                  string            `json:"kind,omitempty"`               // "lsp" or "cli"
 	Command               string            `json:"command"`
 	Args                  []string          `json:"args,omitempty"`
 	FileTypes             []string          `json:"fileTypes,omitempty"`

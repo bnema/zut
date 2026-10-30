@@ -66,11 +66,20 @@ Useful server fields are:
 | `settings` | Values returned for `workspace/configuration` requests |
 | `initializationOptions` | Values sent during LSP initialization |
 | `env` | Extra environment variables for the child process |
+| `idleTimeoutSeconds` | Stop an idle LSP server after this many seconds; omitted or `0` means 300 (5 minutes), negative disables idle shutdown. Ignored for CLI linters. |
 
 CLI providers may use `{files}` as an argument or inside an argument. It is
 expanded to project-relative paths touched by the diagnostics request; an
 embedded placeholder produces one argument per path. CLI output is capped
 before parsing.
+
+Language servers shut down automatically after five minutes without use and
+restart lazily on the next request. Startup and in-flight requests, notifications,
+and diagnostic waits are protected from idle shutdown; the idle period starts
+when the last active operation finishes. Cleanup is checked once per second.
+For example, `{"servers":{"gopls":{"idleTimeoutSeconds":600}}}` keeps gopls
+alive for ten idle minutes. Restarted servers receive fresh document-open state.
+Status inspection does not keep a server alive.
 
 ## Tool actions
 
