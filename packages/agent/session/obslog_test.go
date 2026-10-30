@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
@@ -115,4 +116,64 @@ func TestErrorCategory(t *testing.T) {
 	require.Equal(t, "rate_limit", errorCategory(errors.New("HTTP 429 secret body")))
 	require.Equal(t, "auth", errorCategory(errors.New("http 401 token")))
 	require.Equal(t, "other", errorCategory(errors.New("sk-secret")))
+}
+
+func TestLogOrigin(t *testing.T) {
+	require.Equal(t, "user", logOrigin(InputOriginUser))
+	require.Equal(t, "scheduler", logOrigin(InputOriginScheduler))
+	require.Equal(t, "inter_session", logOrigin(InputOriginInterSession))
+	require.Equal(t, "none", logOrigin(""))
+	require.Equal(t, "other", logOrigin("sk-forged origin"))
+}
+
+func newLogBuffer() (*lockedBuffer, *slog.Logger) {
+	buf := &lockedBuffer{}
+	return buf, slog.New(slog.NewTextHandler(buf, nil)).With("session", "s-log")
+}
+
+func TestSessionLogsCompaction(t *testing.T) {
+	buf, logger := newLogBuffer()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	c := NewController(ctx, Deps{Logger: logger})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	turn := lane9Turn(t, c, ctx)
+	ag := lane9Agent(t)
+	next := Input{Text: "sk-COMPACTSECRET", Origin: InputOriginUser}
+	turn.EXPECT().currentAgent().Return(ag).Maybe()
+	continued := make(chan struct{})
+	turn.EXPECT().startTurn(next).RunAndReturn(func(Input) error { close(continued); return nil }).Once()
+	turn.EXPECT().drainQueued().Return().Once()
+	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+	select {
+	case <-continued:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	out := buf.String()
+	require.Contains(t, out, `msg="compaction started" session=s-log auto=true`)
+	require.Regexp(t, `msg="compaction ended" session=s-log duration=\S+`, out)
+	require.NotContains(t, out, "COMPACTSECRET")
+	require.NotContains(t, out, "summary")
+}
+
+func TestSessionLogsSubagentLifecycle(t *testing.T) {
+	buf, logger := newLogBuffer()
+	m := newMockResidentHostLocal(t)
+	var accepted func(subagents.ResidentChildSpec, string, string)
+	var completed func(subagents.ResidentCompletion) bool
+	m.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { accepted = f })
+	m.EXPECT().SetCompletionObserver(mock.Anything).Run(func(f func(subagents.ResidentCompletion) bool) { completed = f })
+	m.EXPECT().SetUpdateObserver(mock.Anything)
+	m.EXPECT().Snapshot().Return(nil).Maybe()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	c := NewController(ctx, Deps{Logger: logger, ResidentManager: m})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	accepted(subagents.ResidentChildSpec{ID: "child-1"}, "turn-1", "task with sk-TASKSECRET")
+	require.True(t, completed(subagents.ResidentCompletion{ChildID: "child-1", TurnID: "turn-1", Summary: "report sk-SUMMARYSECRET", Err: errors.New("sk-ERRSECRET")}))
+	out := buf.String()
+	require.Contains(t, out, `msg="subagent spawned" session=s-log agent=child-1 turn=turn-1`)
+	require.Contains(t, out, `msg="subagent finished" session=s-log agent=child-1 turn=turn-1 status=failed`)
+	for _, secret := range []string{"TASKSECRET", "SUMMARYSECRET", "ERRSECRET"} {
+		require.NotContains(t, out, secret)
+	}
 }

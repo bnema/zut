@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -61,5 +62,46 @@ func TestDaemonLogsClientLifecycleWithoutSecrets(t *testing.T) {
 	}
 	if strings.Contains(out, "CREATESECRET") {
 		t.Fatalf("log leaked secret:\n%s", out)
+	}
+}
+
+func TestDaemonFailedClientOperationsLogNothing(t *testing.T) {
+	s1 := newTestSession(t, "s1")
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(nil, errors.New("boom")).Once()
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	buf := &syncBuffer{}
+	r := startDaemon(t, f, t.TempDir(), Options{Logger: slog.New(slog.NewTextHandler(buf, nil))})
+	a, b := dial(t, r.sock), dial(t, r.sock)
+	if err := a.call(t, daemonproto.CreateRequest{Type: "create"}, nil); err == nil {
+		t.Fatal("create should fail")
+	}
+	if err := a.call(t, daemonproto.AttachRequest{Type: "attach", Session: "missing"}, nil); err == nil {
+		t.Fatal("attach to unknown session should fail")
+	}
+	if err := a.call(t, daemonproto.DetachRequest{Type: "detach", Session: "missing"}, nil); err == nil {
+		t.Fatal("detach of unknown session should fail")
+	}
+	// Session s1 exists but b does not control it.
+	if err := a.call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.call(t, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, s1.attach)
+	before := buf.String()
+	if err := b.call(t, daemonproto.CloseRequest{Type: "close", Session: "s1"}, nil); err == nil {
+		t.Fatal("close by non-controller should fail")
+	}
+	if err := b.call(t, daemonproto.ClearRequest{Type: "clear", Session: "s1"}, nil); err == nil {
+		t.Fatal("clear by non-controller should fail")
+	}
+	out := buf.String()
+	if strings.Count(out, `msg="client `) != 2 {
+		t.Fatalf("want only the successful create and attach logged:\n%s", out)
+	}
+	if after := strings.TrimPrefix(out, before); strings.Contains(after, `msg="client `) {
+		t.Fatalf("failed close/clear logged:\n%s", after)
 	}
 }
