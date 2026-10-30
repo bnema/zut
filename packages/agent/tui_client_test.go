@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -95,4 +97,28 @@ func TestAttachNoDaemon(t *testing.T) {
 	var out, errb bytes.Buffer
 	require.Equal(t, 1, runAttachCommand([]string{"abc"}, &out, &errb))
 	require.Contains(t, errb.String(), daemonNotRunningMsg)
+}
+
+func TestDaemonSessionClientResumeStoredSession(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-resume-key")
+	require.NoError(t, SaveConfig(Config{Provider: "openai", Model: "gpt-5"}))
+	cwd := t.TempDir()
+	stored, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
+	require.NoError(t, err)
+	require.NoError(t, stored.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "persisted history"}}}))
+	path := stored.Path
+	require.NoError(t, stored.Close())
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+	client := newDaemonSessionClient(c)
+	info, err := client.Create(ctx, session.CreateSpec{CWD: cwd, ResumePath: path})
+	require.NoError(t, err)
+	require.Equal(t, path, info.SessionPath)
+	port, err := client.Attach(ctx, session.ID(info.ID))
+	require.NoError(t, err)
+	snap, err := port.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Messages, 1)
 }
