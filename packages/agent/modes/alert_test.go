@@ -10,11 +10,15 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/auth"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 type alertTestTerminal struct {
@@ -72,97 +76,119 @@ func TestInteractiveAlertRespectsDisabledPolicy(t *testing.T) {
 	}
 }
 
-type alertBlockingClient struct{}
+// newPortAlertInteractive attaches an idle daemon session; tests then feed
+// the daemon's turn events through handleSessionEvent.
+func newPortAlertInteractive(t *testing.T, term *alertTestTerminal) (*Interactive, context.Context) {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "alert", Run: session.RunStateIdle}, Seq: 1}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(0x1)).Return(make(chan session.Event), nil).Once()
+	i := NewInteractive(InteractiveConfig{Port: port, Terminal: term})
+	i.rend = tui.NewRenderer(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, i.attachPort(ctx))
+	return i, ctx
+}
 
-func (alertBlockingClient) Name() string { return "alert-blocking" }
-func (alertBlockingClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
-	out := make(chan provider.Event, 1)
-	go func() {
-		defer close(out)
-		<-ctx.Done()
-		out <- provider.EventDone{Stop: provider.StopAborted, Err: ctx.Err()}
-	}()
-	return out, nil
+// runPortTurn plays one daemon turn: running Info, the agent events, idle Info.
+func runPortTurn(ctx context.Context, i *Interactive, seq *uint64, queue []session.QueuedInput, agentEvents ...core.AgentEvent) {
+	next := func() uint64 { *seq++; return *seq }
+	i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "alert", Run: session.RunStateRunning}}})
+	for _, ev := range agentEvents {
+		i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvAgent, Agent: ev})
+	}
+	if queue != nil {
+		i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvQueue, Data: session.QueueEvent{Queue: queue}})
+	}
+	i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "alert", Run: session.RunStateIdle}}})
 }
 
 func TestCancelledMainTurnDoesNotBell(t *testing.T) {
-	term := &alertTestTerminal{}
-	ag := core.NewAgent(alertBlockingClient{}, "test-model", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: ag, Terminal: term})
-	i.startTurn(context.Background(), "question")
-
-	deadline := time.Now().Add(time.Second)
-	started := false
-	for time.Now().Before(deadline) {
-		i.mu.Lock()
-		busy := i.busy
-		i.mu.Unlock()
-		if busy {
-			started = true
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if !started {
-		t.Fatal("turn did not enter busy state")
-	}
-	i.CancelTurn()
-
-	deadline = time.Now().Add(time.Second)
-	stopped := false
-	for time.Now().Before(deadline) {
-		i.mu.Lock()
-		busy := i.busy
-		i.mu.Unlock()
-		if !busy {
-			stopped = true
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if !stopped {
-		t.Fatal("turn did not finish after cancellation")
-	}
-	if got := term.String(); got != "" {
-		t.Fatalf("cancelled main turn alert output = %q, want empty", got)
+	for _, end := range []core.EvTurnEnd{
+		{Stop: provider.StopAborted},
+		{Stop: provider.StopError, Err: context.Canceled},
+	} {
+		term := &alertTestTerminal{}
+		i, ctx := newPortAlertInteractive(t, term)
+		seq := uint64(1)
+		runPortTurn(ctx, i, &seq, nil, core.EvTurnStart{}, end)
+		i.redraw()
+		require.Empty(t, term.String(), "cancelled main turn must not ring (%+v)", end)
 	}
 }
 
 func TestMainTurnEmitsBellAfterVisibleResponse(t *testing.T) {
 	term := &alertTestTerminal{}
-	client := &streamTestClient{events: []provider.Event{
-		provider.EventTextDelta{Delta: "answer"},
-		provider.EventDone{
-			Stop: provider.StopEnd,
-			Message: provider.Message{
-				Role:    provider.RoleAssistant,
-				Content: []provider.Content{provider.TextBlock{Text: "answer"}},
-			},
-		},
-	}}
-	ag := core.NewAgent(client, "test-model", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: ag, Terminal: term})
-	i.rend = tui.NewRenderer(io.Discard)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	i.runCtx = ctx
-	go i.runStreamPacer(ctx)
-	i.startTurn(ctx, "question")
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		i.mu.Lock()
-		ready := i.pendingAlert != nil && !i.stream.Active()
+	i, ctx := newPortAlertInteractive(t, term)
+	seq := uint64(1)
+	reply := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer"}}}
+	runPortTurn(ctx, i, &seq, nil,
+		core.EvTurnStart{}, core.EvAssistantStart{}, core.EvTextDelta{Delta: "answer"},
+		core.EvAssistantMessage{Message: reply}, core.EvTurnEnd{Stop: provider.StopEnd}, core.EvDone{})
+	i.mu.Lock()
+	for i.stream.Active() {
+		// Paced text is still typing: the bell must wait for the final frame.
 		i.mu.Unlock()
-		if ready {
+		i.redraw()
+		require.Empty(t, term.String(), "bell rang before the response finished painting")
+		i.mu.Lock()
+		i.stream.Tick()
+	}
+	i.mu.Unlock()
+	i.redraw()
+	require.Equal(t, "\a", term.String())
+	i.redraw()
+	require.Equal(t, "\a", term.String(), "bell must ring once per turn")
+}
+
+func TestPortMainTurnAlertPolicy(t *testing.T) {
+	tests := []struct {
+		name  string
+		end   core.EvTurnEnd
+		queue []session.QueuedInput
+		want  string
+	}{
+		{name: "error", end: core.EvTurnEnd{Stop: provider.StopError, Err: errors.New("boom")}, want: "\a"},
+		{name: "length", end: core.EvTurnEnd{Stop: provider.StopLength}, want: "\a"},
+		{name: "queued follow-up", end: core.EvTurnEnd{Stop: provider.StopEnd}, queue: []session.QueuedInput{{ID: "1", Input: session.Input{Text: "next"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			term := &alertTestTerminal{}
+			i, ctx := newPortAlertInteractive(t, term)
+			seq := uint64(1)
+			runPortTurn(ctx, i, &seq, tt.queue, core.EvTurnStart{}, tt.end)
 			i.redraw()
-			break
-		}
-		time.Sleep(time.Millisecond)
+			require.Equal(t, tt.want, term.String())
+		})
 	}
-	if got := term.String(); got != "\a" {
-		t.Fatalf("main turn alert output = %q, want BEL after response redraw", got)
-	}
+	t.Run("disabled", func(t *testing.T) {
+		term := &alertTestTerminal{}
+		i, ctx := newPortAlertInteractive(t, term)
+		disabled := false
+		i.cfg.TerminalAlertsEnabled = &disabled
+		seq := uint64(1)
+		runPortTurn(ctx, i, &seq, nil, core.EvTurnStart{}, core.EvTurnEnd{Stop: provider.StopEnd})
+		i.redraw()
+		require.Empty(t, term.String())
+	})
+	t.Run("rescue pending", func(t *testing.T) {
+		// The daemon holds a recoverable failure as a rescue request
+		// instead of ending the turn; it needs the user now.
+		term := &alertTestTerminal{}
+		i, ctx := newPortAlertInteractive(t, term)
+		i.handleSessionEvent(ctx, session.Event{Seq: 2, Kind: session.EvPending, Data: session.PendingEvent{Pending: session.PendingRequest{ID: "r1", Kind: "rescue", Rescue: &session.RescueOptions{Error: "boom", Candidates: []string{"openai/gpt-x"}}}}})
+		require.Equal(t, "\a", term.String())
+	})
+	t.Run("idle info without a turn", func(t *testing.T) {
+		term := &alertTestTerminal{}
+		i, ctx := newPortAlertInteractive(t, term)
+		seq := uint64(1)
+		runPortTurn(ctx, i, &seq, nil)
+		i.redraw()
+		require.Empty(t, term.String())
+	})
 }
 
 func TestMainAlertWaitsForPacedText(t *testing.T) {

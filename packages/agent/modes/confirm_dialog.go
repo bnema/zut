@@ -303,6 +303,7 @@ func (i *Interactive) syncPortDialogs() {
 					}
 				}()
 			})
+			i.alertNeedsInput(alertRescueRequired)
 		default:
 			continue
 		}

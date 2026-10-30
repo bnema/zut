@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
 	toolspkg "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -615,6 +616,10 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 	busy := info.Run == session.RunStateRunning || info.Run == session.RunStateCompacting
 	if busy && !i.busy {
 		i.spin.Start()
+		i.pendingAlert = nil
+	}
+	if !busy && i.busy {
+		i.schedulePortTurnAlertLocked()
 	}
 	i.busy = busy
 	i.autoCompacting = info.Run == session.RunStateCompacting
@@ -645,6 +650,28 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 			go runPendingIdleWork(work)
 		}
 	}
+}
+
+// schedulePortTurnAlertLocked applies the in-process turn-end bell rule
+// (mainAlertReason) when the daemon reports the session went idle. Queued
+// input means another turn follows, so the bell waits for that one.
+func (i *Interactive) schedulePortTurnAlertLocked() {
+	end := i.portTurnEnd
+	i.portTurnEnd = nil
+	if end == nil {
+		return
+	}
+	ctx := context.Background()
+	if errors.Is(end.Err, context.Canceled) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		cancel()
+	}
+	reason := mainAlertReason(ctx, nil, end.Err, end.Stop, false, len(i.portQueue) > 0, false, false, false)
+	if reason == "" {
+		return
+	}
+	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: string(reason)}
 }
 
 func (i *Interactive) applyExtChromeLocked(ch session.ExtChrome) {
@@ -737,6 +764,12 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 		}
 		i.mu.Lock()
 		i.applyPortAgentTranscriptLocked(ev.Agent)
+		switch e := ev.Agent.(type) {
+		case core.EvTurnStart:
+			i.portTurnEnd = nil
+		case core.EvTurnEnd:
+			i.portTurnEnd = &e
+		}
 		i.mu.Unlock()
 		i.handleEventForPresentation(ev.Agent)
 		return false

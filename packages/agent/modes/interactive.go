@@ -824,8 +824,11 @@ type Interactive struct {
 	stream       streamPresenter
 	streamWake   chan struct{}
 	pendingAlert *extproto.AlertRequest
-	toolCalls    map[string]*tui.ToolCallView
-	toolOrder    []string
+	// portTurnEnd is the daemon's last EvTurnEnd of the running turn; the
+	// turn-end bell is decided from it when Info reports idle.
+	portTurnEnd *core.EvTurnEnd
+	toolCalls   map[string]*tui.ToolCallView
+	toolOrder   []string
 	// toolRenderRevision is monotonic for the lifetime of the interactive
 	// view. Per-call counters would let unrelated tools alias the same rendered
 	// cache frame when they reach the same local revision.
