@@ -52,12 +52,6 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			return
 		}
 		i.openResidentChildSession(rest)
-	case "result", "inspect":
-		if rest == "" {
-			i.subagentsStatus("", "/subagents result <id>: missing id")
-			return
-		}
-		i.subagentsStatus("", "result: unavailable on a daemon session; use /subagents logs "+rest)
 	case "kill", "stop":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
@@ -72,7 +66,7 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 		}
 		i.residentActionAsync(ctx, sub, session.ResidentCommand{Op: "resume", ChildID: id, Prompt: prompt}, "sent follow-up to "+id)
 	default:
-		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / result / kill / send / resume")
+		i.subagentsStatus("", "/subagents: resident child sessions support list / new / logs / kill / send / resume")
 	}
 }
 

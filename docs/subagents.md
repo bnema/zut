@@ -324,7 +324,7 @@ Each row leads with the profile (or model), shows a human terminal state such
 as `completed`, a relative update time, and a short ID. Press Down from the
 main composer to open this list without clearing a draft when a child exists.
 Use arrows and Enter to open a child session; `/subagents new <task>` creates a child; `/subagents logs <id>`
-opens its history; `/subagents result <id>` shows the bounded final summary;
+opens its history (including its final summary);
 `kill <id>` stops it; and `resume <id> <prompt>` continues it. A prompt sent
 from the child composer or `resume` to a running child steers its current turn.
 

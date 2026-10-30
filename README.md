@@ -347,7 +347,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/session` | Four ops on the current session: `export` to a portable `.zutsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. `Esc` `Esc` from an idle, empty editor is a shortcut for `/session tree` when the terminal supplies two parsed bare Escape events. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
-| `/subagents` | Spawn, inspect, and chat with resident background subagents. Each has a durable journal, structured results, and optional Git worktree isolation. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
+| `/subagents` | Spawn, inspect, and chat with resident background subagents. Each has a durable journal and optional Git worktree isolation. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
 | `/compact` | Summarize the transcript into one message to free up context. |
 | `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zut/main.go`. |
@@ -442,7 +442,6 @@ Resident subagents run alongside the main session as independent in-process agen
 /subagents new --reasoning high <task>          # set child reasoning
 /subagents logs <id>                            # open one agent's transcript
 /subagents send <id> <text>                     # send a follow-up turn
-/subagents result <id>                          # show the bounded final summary
 /subagents resume <id> <text>                   # explicitly continue a child session
 /subagents kill <id>                            # stop a live child
 ```

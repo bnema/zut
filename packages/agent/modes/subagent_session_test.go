@@ -426,6 +426,16 @@ func TestSubagentsSlashActionsRunAsynchronously(t *testing.T) {
 	waitSubagentsStatus(t, interactive, func(_, errMsg string) bool { return errMsg == "send: busy" })
 }
 
+func TestSubagentsSlashResultSubcommandRemoved(t *testing.T) {
+	interactive := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
+	interactive.runResidentSubagents(context.Background(), []string{"result", "child"})
+	interactive.mu.Lock()
+	defer interactive.mu.Unlock()
+	if !strings.Contains(interactive.statusErr, "list / new / logs / kill / send / resume") {
+		t.Fatalf("status = %q, want usage without result", interactive.statusErr)
+	}
+}
+
 func waitSubagentsStatus(t *testing.T, interactive *Interactive, done func(ok, errMsg string) bool) {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
