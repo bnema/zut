@@ -114,8 +114,7 @@ zut mcp remove docs [--project]
 `zut mcp add` writes the global file unless `--project` is given. Files are
 written with `0600` permissions because entries may hold secrets.
 
-In the interactive TUI, `/mcp` shows connection state, tool counts, and
-startup errors.
+`zut mcp status` shows connection state, tool names, and connection errors.
 
 ## Runtime behavior
 
