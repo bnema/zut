@@ -134,8 +134,6 @@ func TestTurnRecoveryExhaustionSurfacesIncompleteError(t *testing.T) {
 	}
 }
 
-
-
 func TestTurnRecoveryEventJSONEncoding(t *testing.T) {
 	encoded := EventToJSON(core.EvTurnRecovery{Reason: core.TurnRecoveryReasonMissingAnswer, Attempt: 1})
 	raw, err := json.Marshal(encoded)

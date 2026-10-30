@@ -138,7 +138,6 @@ func TestInteractiveRepetitionGuardPreservesQueuedUserPrompt(t *testing.T) {
 	}
 }
 
-
 func TestInteractiveRepetitionGuardResolvesScheduledFollowUp(t *testing.T) {
 	client := &repetitiveInteractiveClient{
 		entered: make(chan struct{}),
