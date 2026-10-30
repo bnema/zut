@@ -4,7 +4,6 @@ The protocol uses UTF-8 NDJSON over a local AF_UNIX socket: one JSON object
 per line, no pretty-printing. Each request has an opaque string `id`; exactly
 one `result` echoes it. Notifications have no `id`. Unknown optional fields
 are ignored. Frame size is limited to 32 MiB by the transport implementation.
-This document specifies contracts; transport and lossless codecs belong to L11.
 
 ## Connection and versions
 
