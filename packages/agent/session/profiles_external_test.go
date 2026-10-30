@@ -143,3 +143,10 @@ func TestAssignProfileDuringTurnSavesWithoutActivating(t *testing.T) {
 	require.ErrorIs(t, h.C.AssignProfile(h.Ctx, 3, p, true), session.ErrBusy)
 	require.ErrorIs(t, h.C.ApplyProfile(h.Ctx, 3), session.ErrBusy)
 }
+
+func TestActiveProfileClampedReasoningStaysAttached(t *testing.T) {
+	// gpt-5-mini tops out at high: a "max" slot runs at high and still matches.
+	store := profileStore(t, profileSlots(map[int]session.QuickModelShortcut{3: {Provider: "openai", Model: "gpt-5-mini", Reasoning: "max"}}))
+	h := session.NewLane9Harness(t, session.Deps{Provider: "openai", Model: "gpt-5-mini", Reasoning: "high", Profiles: store, ActiveProfile: 3}, opsAgent(t, "gpt-5-mini"))
+	require.Equal(t, 3, h.C.Info().ActiveProfile)
+}

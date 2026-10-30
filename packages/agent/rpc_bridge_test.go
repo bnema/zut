@@ -218,15 +218,13 @@ func TestRPCBridgeSettingsAndClearOnDaemon(t *testing.T) {
 
 	require.Equal(t, "max", data(send("1", `{"id":"1","type":"set_reasoning","reasoning":"max"}`))["reasoning"])
 	require.Equal(t, "gpt-5-mini", data(send("2", `{"id":"2","type":"set_model","model":"  gpt-5-mini  "}`))["model"])
-	// Info reaches the bridge as an event after the setting response. The
-	// session autosaves into its active profile slot, which clamps reasoning
-	// to the new model (gpt-5-mini tops out at high).
+	// Info reaches the bridge as an event after the setting response.
 	n := 0
 	require.Eventually(t, func() bool {
 		n++
 		id := fmt.Sprintf("3.%d", n)
 		st := data(send(id, `{"id":"`+id+`","type":"get_state"}`))
-		return st["model"] == "gpt-5-mini" && st["reasoning"] == "high"
+		return st["model"] == "gpt-5-mini" && st["reasoning"] == "max"
 	}, 10*time.Second, 20*time.Millisecond)
 	send("4", `{"id":"4","type":"prompt","message":"hello"}`)
 	frame(func(f map[string]any) bool { return f["type"] == "done" })

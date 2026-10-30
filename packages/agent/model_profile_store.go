@@ -56,13 +56,13 @@ func (s *modelProfileStore) Profiles() []session.QuickModelShortcut {
 	return append([]session.QuickModelShortcut(nil), s.slots[:]...)
 }
 
-// ActiveDefault is the configured active slot for new sessions, or 1 when
-// the config holds none or an invalid one.
+// ActiveDefault is the configured active slot for new sessions, or 0 (none)
+// when the config holds none or an invalid one.
 func (s *modelProfileStore) ActiveDefault() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active < 1 || s.active > session.ProfileSlots {
-		return 1
+		return 0
 	}
 	return s.active
 }

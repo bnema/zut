@@ -74,7 +74,9 @@ func (c *Controller) detachOnMismatch() {
 	if p.empty() {
 		return
 	}
-	p.Reasoning = provider.NormalizeReasoning(p.Reasoning)
+	// Applying a slot clamps its reasoning to the model, so compare clamped
+	// levels: an over-high slot level still matches its live model.
+	p.Reasoning = clampReasoning(p.Provider, p.Model, p.Reasoning)
 	if p != c.liveProfile() {
 		c.settings.activeProfile = 0
 	}

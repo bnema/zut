@@ -48,7 +48,7 @@ func TestModelProfileStoreClearConfigActiveZeroes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
 	require.Empty(t, cfg.QuickModelShortcuts)
-	require.Equal(t, 1, s.ActiveDefault(), "invalid active falls back to slot 1")
+	require.Equal(t, 0, s.ActiveDefault(), "no slot is active without a configured default")
 }
 
 func TestModelProfileStoreConcurrentSaves(t *testing.T) {
@@ -91,6 +91,19 @@ func TestDaemonProfileAssignReachesOtherSessions(t *testing.T) {
 	cfg, err := LoadConfig()
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
+}
+
+func TestNewSessionsStartWithoutDefaultSlot(t *testing.T) {
+	sessionAssemblyEnv(t)
+	s := &modelProfileStore{}
+	require.NoError(t, s.Reload())
+	require.Equal(t, 0, s.ActiveDefault())
+	require.NoError(t, SaveConfig(Config{ActiveModelProfile: 12}))
+	require.NoError(t, s.Reload())
+	require.Equal(t, 0, s.ActiveDefault())
+	require.NoError(t, SaveConfig(Config{ActiveModelProfile: 4}))
+	require.NoError(t, s.Reload())
+	require.Equal(t, 4, s.ActiveDefault())
 }
 
 // Two sessions saving profiles while settings writes run concurrently must
