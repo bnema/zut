@@ -124,13 +124,15 @@ type SessionGoal struct {
 
 // SessionMeta is written as the first line of every session file.
 type SessionMeta struct {
-	ID       string    `json:"id"`
-	CWD      string    `json:"cwd"`
-	Model    string    `json:"model"`
-	Provider string    `json:"provider"`
-	Started  time.Time `json:"started"`
-	Version  string    `json:"version"`
-	Title    string    `json:"title,omitempty"`
+	// DaemonIDs are runtime identities that have owned this saved transcript.
+	DaemonIDs []string  `json:"daemon_ids,omitempty"`
+	ID        string    `json:"id"`
+	CWD       string    `json:"cwd"`
+	Model     string    `json:"model"`
+	Provider  string    `json:"provider"`
+	Started   time.Time `json:"started"`
+	Version   string    `json:"version"`
+	Title     string    `json:"title,omitempty"`
 	// Timezone and TimezoneOffset capture the local semantics at session
 	// start. They are optional so older session headers remain compatible.
 	Timezone       string `json:"timezone,omitempty"`
@@ -1220,6 +1222,25 @@ func (s *Session) AppendCompactionWithUsage(messages []provider.Message, cumulat
 		Usage:      &cumulative,
 		Cumulative: &cumulative,
 	})
+}
+
+// AddDaemonID preserves resume aliases without changing the transcript UUID.
+func (s *Session) AddDaemonID(id string) error {
+	if s == nil || id == "" {
+		return nil
+	}
+	for _, old := range s.Meta.DaemonIDs {
+		if old == id {
+			return nil
+		}
+	}
+	old := s.Meta.DaemonIDs
+	s.Meta.DaemonIDs = append(append([]string(nil), old...), id)
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.DaemonIDs = old
+		return err
+	}
+	return nil
 }
 
 // UpdateModel records a provider/model switch in the session file.

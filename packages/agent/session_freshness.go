@@ -58,7 +58,15 @@ func openOrCreateSessionState(ctx context.Context, args Args, r Resolved, ag *co
 		}
 		if path != "" {
 			sess, messages, err = core.OpenSession(path)
-			if err == nil && args.ResumeSessionID != "" && sess.ID != args.ResumeSessionID {
+			matches := err == nil && sess.ID == args.ResumeSessionID
+			if err == nil {
+				for _, alias := range sess.Meta.DaemonIDs {
+					if alias == args.ResumeSessionID {
+						matches = true
+					}
+				}
+			}
+			if err == nil && args.ResumeSessionID != "" && !matches {
 				return nil, false, errors.Join(fmt.Errorf("session %q changed during resume", args.ResumeSessionID), sess.Close())
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/term"
 )
+
+var daemonResumeID = regexp.MustCompile(`^[a-z2-7]{12}$`)
 
 // Mode is the CLI run mode.
 type Mode string
@@ -206,6 +209,9 @@ func ParseArgs(in []string) (Args, error) {
 			if i+1 < len(in) {
 				if id, err := uuid.Parse(in[i+1]); err == nil {
 					a.ResumeSessionID = id.String()
+					i++
+				} else if daemonResumeID.MatchString(in[i+1]) {
+					a.ResumeSessionID = in[i+1]
 					i++
 				}
 			}
@@ -505,7 +511,7 @@ func PrintHelp(version string) {
 		row{"--system-prompt TEXT", "replace the default system prompt"},
 		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},
 		row{"-c, --continue", "continue the most recent session for this cwd"},
-		row{"-r, --resume [UUID]", "pick a session, or resume the persisted UUID"},
+		row{"-r, --resume [ID]", "pick a session, or resume a daemon ID or transcript UUID"},
 		row{"--session PATH", "resume a specific session file"},
 		row{"--no-session", "do not read or write a session file"},
 		row{"--keep-session", "headless modes: keep the daemon session open after the run"},

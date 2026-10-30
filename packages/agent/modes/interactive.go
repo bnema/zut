@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -761,6 +762,7 @@ type Interactive struct {
 	events       <-chan session.Event
 	subCancel    context.CancelFunc
 	exitNotice   string
+	quitClosing  bool
 	// Run-loop-owned recall operation and abort request.
 	portRecall *portRecallOperation
 	// lastSeq is the newest applied event Seq; replayed events at or below
@@ -1312,9 +1314,13 @@ func (i *Interactive) ExitNotice() string {
 }
 
 // addResumeHintLocked records quit guidance for the post-restore notice writer.
-// Call only on quit, not detach; i.mu must be held.
+// Call only after successful Client.Close (which awaits daemon cleanup), not
+// from the earlier EvClosed event or detach; i.mu must be held.
 func (i *Interactive) addResumeHintLocked() {
-	if i.sessionID == "" {
+	if i.sessionID == "" || i.portInfo.SessionPath == "" {
+		return
+	}
+	if info, err := os.Stat(i.portInfo.SessionPath); err != nil || !info.Mode().IsRegular() {
 		return
 	}
 	if i.exitNotice != "" {
@@ -1663,6 +1669,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 				i.mu.Lock()
 				if i.events == sessionEvents {
 					i.events = nil
+					if i.quitClosing {
+						i.mu.Unlock()
+						break
+					}
 					if i.exitNotice == "" {
 						i.exitNotice = "detached: session stream ended"
 					}

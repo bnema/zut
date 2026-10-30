@@ -749,6 +749,12 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 		}
 		return false
 	case session.EvClosed:
+		i.mu.Lock()
+		closing := i.quitClosing
+		i.mu.Unlock()
+		if closing {
+			return false
+		}
 		c, _ := ev.Data.(session.ClosedEvent)
 		if c.Successor != "" {
 			if err := i.reattachSuccessor(ctx, c.Successor); err != nil {
@@ -766,7 +772,6 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 				i.exitNotice += ": " + c.Reason
 			}
 		}
-		i.addResumeHintLocked()
 		i.mu.Unlock()
 		return true
 	}
@@ -1050,6 +1055,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			i.statusOK = "checked out selection; edit and send to branch"
 		}
 	case sessionResultExit:
+		i.quitClosing = false
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
 			i.mu.Unlock()

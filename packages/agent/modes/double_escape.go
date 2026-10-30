@@ -420,6 +420,9 @@ func (i *Interactive) portExit(ctx context.Context) {
 		i.ReportError(fmt.Errorf("exit: no session client"))
 		return
 	}
+	i.mu.Lock()
+	i.quitClosing = true
+	i.mu.Unlock()
 	timeout := i.sessionCallTimeout()
 	go func() {
 		callCtx, cancel := context.WithTimeout(ctx, timeout)

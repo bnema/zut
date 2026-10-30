@@ -90,6 +90,14 @@ func (i *Interactive) restoreConfirmFocus() {
 }
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	defer i.restoreConfirmFocus()
+	// A requested quit owns lifecycle completion; do not race it with detach
+	// or a second close while persistence and child cleanup finish.
+	i.mu.Lock()
+	closing := i.quitClosing
+	i.mu.Unlock()
+	if closing {
+		return false
+	}
 
 	if handled, quit := i.handleDaemonExitMenu(ctx, k); handled {
 		return quit

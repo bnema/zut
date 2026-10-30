@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,4 +122,48 @@ func TestDaemonSessionClientResumeStoredSession(t *testing.T) {
 	snap, err := port.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Len(t, snap.Messages, 1)
+}
+
+func TestDaemonShortIDResumeLookup(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	t.Setenv("OPENAI_API_KEY", "test-resume-key")
+	require.NoError(t, SaveConfig(Config{Provider: "openai", Model: "gpt-5"}))
+	cwd := t.TempDir()
+	stored, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
+	require.NoError(t, err)
+	require.NoError(t, stored.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "saved"}}}))
+	path, uuid := stored.Path, stored.ID
+	require.NoError(t, stored.Close())
+	td := startFactoryDaemon(t, home, daemonTestSocket(t))
+	c := dialTestDaemon(t, td.socket)
+	ctx := factoryTestCtx(t)
+	info, err := c.Create(ctx, session.CreateSpec{CWD: cwd, Env: []string{"OPENAI_API_KEY=test-resume-key"}, ResumePath: path})
+	require.NoError(t, err)
+	_, err = c.Port(session.ID(info.ID), true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Close(ctx, session.ID(info.ID), "user_exit"))
+	list, err := c.List(ctx)
+	require.NoError(t, err)
+	for _, live := range list {
+		require.NotEqual(t, info.ID, live.ID)
+	}
+	// This is the exact command emitted by the TUI's exit notice.
+	command := "Resume this session: zut --resume " + info.ID
+	args, err := ParseArgs(strings.Fields(strings.TrimPrefix(command, "Resume this session: zut ")))
+	require.NoError(t, err)
+	require.Equal(t, info.ID, args.ResumeSessionID)
+	spec, err := buildCreateSpec(ctx, args, []string{"--resume", info.ID}, cwd, []string{"OPENAI_API_KEY=test-resume-key"}, defaultSessionLocator())
+	require.NoError(t, err)
+	require.Equal(t, path, spec.ResumePath)
+	reopened, err := c.Create(ctx, *spec)
+	require.NoError(t, err)
+	require.NotEqual(t, info.ID, reopened.ID)
+	require.Equal(t, path, reopened.SessionPath)
+	found, err := core.FindManagedSessionByID(ctx, home, uuid)
+	require.NoError(t, err)
+	require.Equal(t, path, found)
+	args, err = ParseArgs([]string{"--resume", "aaaaaaaaaaaa"})
+	require.NoError(t, err)
+	_, err = buildCreateSpec(ctx, args, nil, cwd, nil, defaultSessionLocator())
+	require.ErrorContains(t, err, "not found")
 }

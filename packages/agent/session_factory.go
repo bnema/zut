@@ -58,6 +58,17 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	if err != nil {
 		return nil, err
 	}
+	// Persist the live ID as an alias before publishing the controller.
+	if store, ok := deps.SessionStore.(sessionFileStore); ok {
+		store.a.mu.Lock()
+		store.a.daemonID = string(opts.ID)
+		err := store.a.sess.AddDaemonID(string(opts.ID))
+		store.a.mu.Unlock()
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("persist daemon session id: %w", err)
+		}
+	}
 	store, err := session.NewFileDeferredStore(f.home, opts.ID)
 	if err != nil {
 		cleanup()

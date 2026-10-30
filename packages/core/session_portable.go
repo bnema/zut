@@ -1181,7 +1181,7 @@ func FindSessionByID(root, cwd, id string) string {
 	return ""
 }
 
-// FindManagedSessionByID looks up a session UUID across zut's managed
+// FindManagedSessionByID looks up a transcript UUID or daemon ID across zut's managed
 // session stores, independent of cwd. A nil error and empty path mean no
 // matching session was found. Directory enumeration, cancellation, and
 // duplicate-ID failures are returned to the caller. Candidate files that
@@ -1270,7 +1270,19 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 			if err != nil || meta.CWD == "" || filepath.Clean(SessionsDir(root, meta.CWD)) != filepath.Clean(bucketPath) {
 				continue
 			}
-			if meta.ID == id {
+			match := meta.ID == id
+			// UUID lookup remains header-only and tolerant of corrupt bodies.
+			// Runtime aliases can be appended by later daemon lifetimes.
+			if len(id) == 12 {
+				if latest, err := scanSessionMetaContext(ctx, path); err == nil {
+					for _, alias := range latest.DaemonIDs {
+						if alias == id {
+							match = true
+						}
+					}
+				}
+			}
+			if match {
 				*matches = append(*matches, path)
 			}
 		}

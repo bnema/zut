@@ -224,7 +224,7 @@ zut --json "refactor main.go"    # newline-delimited json events, exit
 zut -p --orchestrate --provider openai --model gpt-5 "implement and synthesize"
 zut --continue                   # resume the most recent session for this cwd
 zut --resume                     # pick a session to resume
-zut --resume <UUID>              # resume a persisted session by UUID
+zut --resume <ID>                # load a saved session by daemon ID or transcript UUID
 zut --list-models                # show supported models
 zut --help
 ```
@@ -246,7 +246,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON; incompatible with `--orchestrate`. |
 | `--orchestrate` | In print, stream, or JSON mode, enable bounded headless delegation and final synthesis. It is not implicit. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
-| `-r`, `--resume [UUID]` | Pick a session to resume, or resume a persisted session by UUID. |
+| `-r`, `--resume [ID]` | Pick a session to resume, or load a saved session by daemon ID or transcript UUID. |
 | `--session <path>` | Resume a specific session file. |
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |
@@ -575,7 +575,7 @@ Each daemon starts empty, including after a crash or auto-spawn. Previous sessio
 
 Agents in different sessions can see and message each other with the `sessions` tool (see [Tools](#tools)).
 
-In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. In daemon mode, `ctrl+c` opens `Q quit · D detach · Esc cancel` whether idle or busy (after any dialog handling or idle input clearing). Q closes the session like `/exit`, staying open if closing fails; after terminal restoration, quitting prints `zut --resume <session-id>` to resume the saved session. D detaches like `/detach`. Esc or any other key cancels the menu without interrupting a turn. Pressing `ctrl+c` again while the menu is open forces exit after a bounded attempt to close the session; any close error is printed as an exit notice. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
+In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. In daemon mode, `ctrl+c` opens `Q quit · D detach · Esc cancel` whether idle or busy (after any dialog handling or idle input clearing). Q closes the session like `/exit`, staying open if closing fails; after cleanup and terminal restoration, quitting prints `zut --resume <daemon-id>` only if the transcript survived. This loads the saved transcript as a new live session; older transcripts still resume by UUID. No hint is printed with `--no-session` or when an empty transcript is deleted. D detaches like `/detach`. Esc or any other key cancels the menu without interrupting a turn. Pressing `ctrl+c` again while the menu is open forces exit after a bounded attempt to close the session; any close error is printed as an exit notice. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
 
 On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
 

@@ -104,9 +104,10 @@ func BindSessionHooks(deps session.Deps, hooks extensions.HostHooks, confirmer c
 // sessionAssembly owns the per-session state shared by the Deps adapters. mu
 // mirrors runInteractive's persistMu and transition its sessionTransitionMu.
 type sessionAssembly struct {
-	args    Args
-	version string
-	bind    *sessionBindings
+	daemonID string
+	args     Args
+	version  string
+	bind     *sessionBindings
 
 	r          Resolved
 	sandbox    *tools.Sandbox
@@ -527,6 +528,9 @@ func (a *sessionAssembly) cleanup() {
 		a.transition.Lock()
 		a.mu.Lock()
 		if a.sess != nil {
+			if err := a.sess.AddDaemonID(a.daemonID); err != nil {
+				errs = append(errs, fmt.Errorf("persist daemon id: %w", err))
+			}
 			if live != nil {
 				var err error
 				if a.baseline, err = writeNewTranscriptLocked(live, a.sess, a.baseline); err != nil {

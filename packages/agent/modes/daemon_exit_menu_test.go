@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +117,11 @@ func TestDaemonQuitPrintsResumeHintAfterCleanup(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", keys), func(t *testing.T) {
 			client := newMockSessionClient(t)
 			client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).Return(nil).Once()
-			r := startLifecycle(t, client)
+			stored, err := core.NewSession(t.TempDir(), t.TempDir(), "test", "test", "test")
+			require.NoError(t, err)
+			require.NoError(t, stored.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "saved"}}}))
+			require.NoError(t, stored.Close())
+			r := startLifecyclePath(t, client, stored.Path)
 			r.term.send(keys)
 			r.waitExit(t)
 			require.Empty(t, r.detach)
@@ -124,9 +131,53 @@ func TestDaemonQuitPrintsResumeHintAfterCleanup(t *testing.T) {
 	}
 }
 
-func TestDaemonClosedEventPrintsResumeHint(t *testing.T) {
+func TestDaemonClosedEventDoesNotClaimPersistence(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{Port: sessionmocks.NewMockPort(t)})
 	i.sessionID = "s1"
 	require.True(t, i.handleSessionEvent(context.Background(), session.Event{Kind: session.EvClosed, Data: session.ClosedEvent{Reason: portCloseReasonUserExit}}))
-	require.Contains(t, i.ExitNotice(), "zut --resume s1")
+	require.NotContains(t, i.ExitNotice(), "--resume")
+}
+
+func TestDaemonQuitWithoutSurvivingTranscript(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprint(empty), func(t *testing.T) {
+			path := ""
+			var stored *core.Session
+			if empty {
+				var err error
+				stored, err = core.NewSessionAtPath(filepath.Join(t.TempDir(), "empty.jsonl"), t.TempDir(), "test", "test", "test")
+				require.NoError(t, err)
+				path = stored.Path
+			}
+			client := newMockSessionClient(t)
+			client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).RunAndReturn(func(context.Context, session.ID, string) error {
+				if stored != nil {
+					return stored.Close()
+				}
+				return nil
+			}).Once()
+			r := startLifecyclePath(t, client, path)
+			r.term.send("\x03q")
+			r.waitExit(t)
+			require.NotContains(t, r.i.ExitNotice(), "--resume")
+			require.Empty(t, r.detach)
+		})
+	}
+}
+
+func TestDaemonQuitWaitsForCleanupBeforeHint(t *testing.T) {
+	client := newMockSessionClient(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	client.EXPECT().Close(mock.Anything, session.ID("s1"), portCloseReasonUserExit).RunAndReturn(func(context.Context, session.ID, string) error { close(started); <-release; return nil }).Once()
+	r := startLifecycle(t, client)
+	r.term.send("\x03q")
+	waitSignal(t, started, "Close started")
+	require.False(t, r.i.handleSessionEvent(context.Background(), session.Event{Kind: session.EvClosed}))
+	require.Empty(t, r.i.ExitNotice())
+	// Neither D nor a repeated quit may turn the in-flight close into detach.
+	require.False(t, r.i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'd'}))
+	require.Empty(t, r.detach)
+	close(release)
+	r.waitExit(t)
+	require.NotContains(t, r.i.ExitNotice(), "--resume")
 }

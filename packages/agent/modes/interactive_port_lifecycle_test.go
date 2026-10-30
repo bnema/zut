@@ -24,9 +24,14 @@ type lifecycleRun struct {
 
 func startLifecycle(t *testing.T, client SessionClient) *lifecycleRun {
 	t.Helper()
+	return startLifecyclePath(t, client, "")
+}
+
+func startLifecyclePath(t *testing.T, client SessionClient, path string) *lifecycleRun {
+	t.Helper()
 	port := sessionmocks.NewMockPort(t)
 	events := make(chan session.Event, 4)
-	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateIdle}}, nil).Once()
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", SessionPath: path, Run: session.RunStateIdle}}, nil).Once()
 	expectPortSubscribe(port, events, nil)
 	term := &keyTerminal{in: make(chan byte, 64)}
 	r := &lifecycleRun{term: term, done: make(chan error, 1), detach: make(chan struct{}, 4)}
