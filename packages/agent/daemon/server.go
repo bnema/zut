@@ -111,15 +111,7 @@ func (l *socketListener) close() {
 func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create socket dir: %w", err)
-		}
-		if runtime.GOOS != "windows" {
-			if err := os.Chmod(dir, 0o700); err != nil {
-				return fmt.Errorf("chmod socket dir: %w", err)
-			}
-		}
-		return secureSocketDir(dir, true)
+		return createSocketDir(dir)
 	}
 	if err != nil {
 		return fmt.Errorf("stat socket dir: %w", err)
@@ -144,6 +136,34 @@ func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 		return nil
 	}
 	return fmt.Errorf("socket dir %s is accessible by group or others (mode %v)", dir, fi.Mode().Perm())
+}
+
+// createSocketDir creates missing parents 0700, then creates dir itself
+// private from the start (0700, or a protected current-user DACL on Windows),
+// verifies it, and refuses it if anything appeared inside meanwhile.
+func createSocketDir(dir string) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return fmt.Errorf("create socket dir parent: %w", err)
+	}
+	if err := mkdirPrivate(dir); err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("chmod socket dir: %w", err)
+		}
+	}
+	if err := secureSocketDir(dir, true); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read socket dir: %w", err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("newly created socket dir %s is not empty", dir)
+	}
+	return nil
 }
 
 // isZutOwnedDir reports whether dir is one of the zut-owned socket dirs.

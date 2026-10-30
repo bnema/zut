@@ -5,6 +5,7 @@ package daemon
 import (
 	"fmt"
 	"net"
+	"os"
 )
 
 // checkPeerUID returns only the peer UID for rejection diagnostics. Unknown
@@ -31,5 +32,7 @@ func checkPeerUID(conn net.Conn, expectedUID int) (int, error) {
 	}
 	return uid, nil
 }
+
+func mkdirPrivate(dir string) error { return os.Mkdir(dir, 0o700) }
 
 func secureSocketDir(string, bool) error { return nil }

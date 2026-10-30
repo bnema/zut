@@ -51,13 +51,25 @@ func TestSecureSocketDirWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A missing dir is created and protected.
-	created := filepath.Join(t.TempDir(), "run")
+	// A missing dir (and its parents) is created and protected.
+	created := filepath.Join(t.TempDir(), "a", "run")
 	if err := prepareSocketDir(created, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := secureSocketDir(created, false); err != nil {
 		t.Fatalf("created dir not private: %v", err)
+	}
+
+	// mkdirPrivate yields a private DACL directly, with no tightening step.
+	direct := filepath.Join(t.TempDir(), "direct")
+	if err := mkdirPrivate(direct); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureSocketDir(direct, false); err != nil {
+		t.Fatalf("mkdirPrivate dir not private: %v", err)
+	}
+	if err := mkdirPrivate(direct); err == nil {
+		t.Fatal("mkdirPrivate succeeded on an existing dir")
 	}
 
 	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)

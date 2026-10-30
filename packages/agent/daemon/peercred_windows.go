@@ -5,6 +5,7 @@ package daemon
 import (
 	"fmt"
 	"net"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -13,6 +14,37 @@ import (
 // Windows AF_UNIX has no peer UID check. Access is guarded by the verified
 // directory owner and DACL, inherited by the socket and lock file.
 func checkPeerUID(net.Conn, int) (int, error) { return -1, nil }
+
+// privateDirSD is a protected DACL granting inheritable full control to sid only.
+func privateDirSD(sid *windows.SID) (*windows.SECURITY_DESCRIPTOR, error) {
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + sid.String() + ")")
+	if err != nil {
+		return nil, fmt.Errorf("build socket directory DACL: %w", err)
+	}
+	return sd, nil
+}
+
+// mkdirPrivate creates dir with the private DACL atomically, so it never
+// carries the parent's inherited DACL.
+func mkdirPrivate(dir string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("get socket owner SID: %w", err)
+	}
+	sd, err := privateDirSD(user.User.Sid)
+	if err != nil {
+		return err
+	}
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return err
+	}
+	sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	if err := windows.CreateDirectory(p, sa); err != nil {
+		return &os.PathError{Op: "mkdir", Path: dir, Err: err}
+	}
+	return nil
+}
 
 // secureSocketDir applies a protected current-user DACL when tighten is set
 // (dir created by zut or zut-owned), then verifies owner and DACL. Other dirs
@@ -24,9 +56,9 @@ func secureSocketDir(dir string, tighten bool) error {
 		return fmt.Errorf("get socket owner SID: %w", err)
 	}
 	if tighten {
-		sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + user.User.Sid.String() + ")")
+		sd, err := privateDirSD(user.User.Sid)
 		if err != nil {
-			return fmt.Errorf("build socket directory DACL: %w", err)
+			return err
 		}
 		acl, _, err := sd.DACL()
 		if err != nil {
