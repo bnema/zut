@@ -79,6 +79,9 @@ type Args struct {
 	// mcpManager holds the process-wide MCP connections. Resolve adds its
 	// tools; resident children inherit the pointer and share connections.
 	mcpManager *mcp.Manager
+	// mcpToolsChanged, when set, observes tools/list_changed re-listings of
+	// the session's MCP manager (daemon sessions refresh their agent).
+	mcpToolsChanged func(server string)
 	// startupTimer, when set, makes Resolve log per-phase durations (daemon
 	// session creation only).
 	startupTimer *startupTimer

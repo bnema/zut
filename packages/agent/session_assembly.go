@@ -193,7 +193,9 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	}
 	timer.phase("config load")
 
-	manager, stopMCP, mcpErrs, err := startSessionMCPBackground(life, a.args, a.args.Env, timer, a.mcpServerReady)
+	mcpArgs := a.args
+	mcpArgs.mcpToolsChanged = func(string) { a.bind.requestToolRefresh(life) }
+	manager, stopMCP, mcpErrs, err := startSessionMCPBackground(life, mcpArgs, a.args.Env, timer, a.mcpServerReady)
 	if err != nil {
 		return err
 	}

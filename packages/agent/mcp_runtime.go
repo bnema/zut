@@ -74,6 +74,9 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 			timer.item("mcp", name, d, err)
 		})
 	}
+	if args.mcpToolsChanged != nil {
+		manager.SetToolsChangedObserver(args.mcpToolsChanged)
+	}
 	var failures []error
 	var requiredErr error
 	if onReady != nil {

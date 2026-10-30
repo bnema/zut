@@ -37,6 +37,9 @@ type serverEntry struct {
 	tools     []Tool
 	err       error
 	refresher *toolRefresher
+	// lease is this Manager's reference to a shared pool process (guarded by
+	// Manager.mu). The client it yields is never closed by this Manager.
+	lease *poolLease
 }
 
 // Manager owns the MCP connections of one zut process. It is safe for
@@ -58,6 +61,37 @@ type Manager struct {
 	// bg tracks background starts; bgCancel cancels them on Close.
 	bg       sync.WaitGroup
 	bgCancel context.CancelFunc
+	// pool, when set, shares stdio processes with other Managers.
+	pool *Pool
+	// onToolsChanged, when set, runs after a server's tool list changed.
+	onToolsChanged func(server string)
+}
+
+// SetPool makes shareable stdio servers (ServerConfig.ShareEnabled) use
+// processes from p instead of per-Manager processes. Call before Start; nil
+// keeps per-Manager processes.
+func (m *Manager) SetPool(p *Pool) {
+	m.mu.Lock()
+	m.pool = p
+	m.mu.Unlock()
+}
+
+// SetToolsChangedObserver registers fn to run (off any lock) after a
+// server's tool list was re-read following tools/list_changed, for shared
+// and per-Manager servers alike. Call before Start.
+func (m *Manager) SetToolsChangedObserver(fn func(server string)) {
+	m.mu.Lock()
+	m.onToolsChanged = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) toolsChanged(server string) {
+	m.mu.Lock()
+	fn := m.onToolsChanged
+	m.mu.Unlock()
+	if fn != nil {
+		fn(server)
+	}
 }
 
 // SetStartupObserver reports each server's connect+list duration during
@@ -203,6 +237,12 @@ func (m *Manager) connect(ctx context.Context, s *serverEntry) (*Client, error) 
 	if c := s.live(); c != nil {
 		return c, nil // another caller reconnected while we waited
 	}
+	m.mu.Lock()
+	pool := m.pool
+	m.mu.Unlock()
+	if pool != nil && s.cfg.ShareEnabled() {
+		return m.connectPooled(ctx, startCtx, pool, s)
+	}
 	s.mu.Lock()
 	stale := s.client
 	s.client = nil
@@ -307,10 +347,68 @@ func (m *Manager) refreshTools(ctx context.Context, s *serverEntry, client *Clie
 		return
 	}
 	s.mu.Lock()
-	if s.client == client {
+	current := s.client == client
+	if current {
 		s.tools = filterTools(s.cfg, tools)
 	}
 	s.mu.Unlock()
+	if current {
+		m.toolsChanged(s.name)
+	}
+}
+
+// connectPooled connects s through the shared pool: the first connect takes
+// a lease (released by Close), the process start is shared, and the raw
+// tools are filtered with this Manager's own config. Callers hold
+// s.connectMu.
+func (m *Manager) connectPooled(ctx, startCtx context.Context, pool *Pool, s *serverEntry) (*Client, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
+	}
+	lease := s.lease
+	if lease == nil {
+		var err error
+		lease, err = pool.acquire(s.name, s.cfg, m.cwd, m.info, func(raw []Tool) {
+			s.mu.Lock()
+			s.tools = filterTools(s.cfg, raw)
+			s.mu.Unlock()
+			m.toolsChanged(s.name)
+		})
+		if err != nil {
+			m.mu.Unlock()
+			err = fmt.Errorf("mcp server %q: %w", s.name, err)
+			s.mu.Lock()
+			s.err = err
+			s.mu.Unlock()
+			return nil, err
+		}
+		s.lease = lease
+	}
+	m.mu.Unlock()
+	client, raw, err := lease.entry.connect(startCtx)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start: %w", s.cfg.StartupTimeout(), err)
+		}
+		err = fmt.Errorf("mcp server %q: %w", s.name, err)
+		s.mu.Lock()
+		s.err = err
+		s.mu.Unlock()
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, fmt.Errorf("mcp server %q: manager closed", s.name)
+	}
+	s.mu.Lock()
+	s.client = client
+	s.tools = filterTools(s.cfg, raw)
+	s.err = nil
+	s.mu.Unlock()
+	return client, nil
 }
 
 // toolRefresher coalesces list_changed notifications for one connection into
@@ -492,6 +590,19 @@ func (m *Manager) Close() error {
 	var wg sync.WaitGroup
 	for _, name := range m.order {
 		s := m.servers[name]
+		m.mu.Lock()
+		lease := s.lease
+		s.lease = nil
+		pool := m.pool
+		m.mu.Unlock()
+		if lease != nil {
+			// Shared process: drop the reference; the pool owns the client.
+			s.mu.Lock()
+			s.client = nil
+			s.mu.Unlock()
+			pool.release(lease)
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

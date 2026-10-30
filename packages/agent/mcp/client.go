@@ -256,6 +256,11 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	return c.t.request(ctx, c.next.Add(1), method, params)
 }
 
+// handleIncoming answers server-to-client requests. A Client may be shared
+// by several sessions through Pool, so it must only answer requests whose
+// reply is session independent (ping, roots from the pool key's rootsCWD).
+// Shared connections must not gain session-specific server->client handlers
+// such as sampling or elicitation; those need a per-session connection.
 func (c *Client) handleIncoming(msg message) (any, *RPCError) {
 	switch msg.Method {
 	case "ping":
