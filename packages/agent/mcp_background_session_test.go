@@ -141,7 +141,7 @@ func TestSessionCreateDoesNotWaitForOptionalMCP(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-ctrl.Done() })
 	confirmer, asker := ctrl.HookBindings()
 	require.NoError(t, BindSessionHooks(r.deps, ctrl.ExtensionHooks(), confirmer, asker))
-	require.NoError(t, BindToolRefresh(r.deps, ctrl.RefreshToolsWhenIdle))
+	require.NoError(t, BindToolRefresh(r.deps, ctrl.RequestToolRefresh))
 	require.False(t, hasToolPrefix(liveToolNames(t, r.deps), "mcp__slow__"), "tools present before the server was ready")
 
 	close(release)

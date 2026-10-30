@@ -190,16 +190,31 @@ func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 	})
 }
 
-// RefreshToolsWhenIdle asks the session to rebuild its tool registry and
-// system prompt, e.g. after a background MCP server became ready. It never
-// blocks on the actor's work: the refresh runs on the actor when the session
-// is idle, otherwise right after the running turn or compaction ends, so a
-// turn never sees its tools change mid-flight.
-func (c *Controller) RefreshToolsWhenIdle(ctx context.Context) error {
-	return c.post(ctx, func() {
-		c.settings.toolsDirty = true
-		c.flushToolRefresh()
-	})
+// RequestToolRefresh asks the session to rebuild its tool registry and
+// system prompt, e.g. after a background MCP server became ready or changed
+// its tools. It never blocks: the request is handed to the actor from a
+// goroutine bound to the session lifetime. Requests made while one is still
+// queued coalesce into it; a request made after the queued one reached the
+// actor (even mid-rebuild) queues another, so no update is lost. The rebuild
+// runs when the session is idle, otherwise right after the running turn or
+// compaction ends, so a turn never sees its tools change mid-flight.
+func (c *Controller) RequestToolRefresh() {
+	if !c.refreshQueued.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		err := c.post(c.actorBase, func() {
+			c.refreshQueued.Store(false)
+			c.settings.toolsDirty = true
+			c.flushToolRefresh()
+		})
+		if err != nil {
+			c.refreshQueued.Store(false)
+			if !errors.Is(err, ErrClosed) {
+				c.logger().Debug("tool refresh request dropped", "err", err)
+			}
+		}
+	}()
 }
 
 // flushToolRefresh runs a deferred tool refresh when idle (actor only).

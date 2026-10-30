@@ -97,7 +97,15 @@ func (m *Manager) toolsChanged(server string) {
 // SetStartupObserver reports each server's connect+list duration during
 // Start. Call before Start.
 func (m *Manager) SetStartupObserver(fn func(name string, d time.Duration, err error)) {
+	m.mu.Lock()
 	m.onStarted = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) startObserver() func(name string, d time.Duration, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onStarted
 }
 
 // NewManager builds a manager for an already loaded configuration.
@@ -135,8 +143,8 @@ func (m *Manager) Start(ctx context.Context) (failures []error, requiredErr erro
 			if err != nil {
 				errs[i] = err
 			}
-			if m.onStarted != nil {
-				m.onStarted(s.name, time.Since(t), err)
+			if fn := m.startObserver(); fn != nil {
+				fn(s.name, time.Since(t), err)
 			}
 		}(i, m.servers[name])
 	}
@@ -201,8 +209,8 @@ func (m *Manager) StartBackground(ctx context.Context, onReady func(ctx context.
 			defer wg.Done()
 			t := time.Now()
 			_, err := m.connect(ctx, s)
-			if m.onStarted != nil {
-				m.onStarted(s.name, time.Since(t), err)
+			if fn := m.startObserver(); fn != nil {
+				fn(s.name, time.Since(t), err)
 			}
 			if err != nil {
 				mu.Lock()
@@ -371,6 +379,12 @@ func (m *Manager) connectPooled(ctx, startCtx context.Context, pool *Pool, s *se
 	if lease == nil {
 		var err error
 		lease, err = pool.acquire(s.name, s.cfg, m.cwd, m.info, func(raw []Tool) {
+			m.mu.Lock()
+			closed := m.closed
+			m.mu.Unlock()
+			if closed {
+				return // late fan-out after Close
+			}
 			s.mu.Lock()
 			s.tools = filterTools(s.cfg, raw)
 			s.mu.Unlock()
@@ -387,11 +401,9 @@ func (m *Manager) connectPooled(ctx, startCtx context.Context, pool *Pool, s *se
 		s.lease = lease
 	}
 	m.mu.Unlock()
-	client, raw, err := lease.entry.connect(startCtx)
+	client, raw, err := lease.entry.connect(startCtx, s.cfg.StartupTimeout())
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start: %w", s.cfg.StartupTimeout(), err)
-		}
+		// The pool's dial error already names the timeout it used.
 		err = fmt.Errorf("mcp server %q: %w", s.name, err)
 		s.mu.Lock()
 		s.err = err

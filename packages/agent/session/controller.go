@@ -68,34 +68,36 @@ type subscription struct {
 // Controller serializes session mutations on a single actor loop. Cluster
 // operations are placeholders until their owning implementation lanes land.
 type Controller struct {
-	deps         Deps
-	loop         chan func()
-	done         chan struct{}
-	seq          uint64
-	ring         *eventRing
-	subs         map[uint64]*subscription
-	nextSub      uint64
-	attach       AttachState
-	id           ID
-	created      time.Time
-	info         atomic.Value
-	turn         turnState
-	confirm      confirmState
-	ext          extState
-	goal         goalState
-	sched        schedState
-	res          residentState
-	compact      compactState
-	settings     settingsState
-	inter        interState
-	turnSeam     turnSeam
-	confirmSeam  confirmSeam
-	goalSeam     goalSeam
-	schedSeam    schedSeam
-	residentSeam residentSeam
-	compactSeam  compactSeam
-	settingsSeam settingsSeam
-	interSeam    interSeam
+	// refreshQueued is set while a RequestToolRefresh post is in flight.
+	refreshQueued atomic.Bool
+	deps          Deps
+	loop          chan func()
+	done          chan struct{}
+	seq           uint64
+	ring          *eventRing
+	subs          map[uint64]*subscription
+	nextSub       uint64
+	attach        AttachState
+	id            ID
+	created       time.Time
+	info          atomic.Value
+	turn          turnState
+	confirm       confirmState
+	ext           extState
+	goal          goalState
+	sched         schedState
+	res           residentState
+	compact       compactState
+	settings      settingsState
+	inter         interState
+	turnSeam      turnSeam
+	confirmSeam   confirmSeam
+	goalSeam      goalSeam
+	schedSeam     schedSeam
+	residentSeam  residentSeam
+	compactSeam   compactSeam
+	settingsSeam  settingsSeam
+	interSeam     interSeam
 	// actorBase is the parent of every actor context handed out by Do; it
 	// carries actorKey so Close and SetAttach never wait on the actor.
 	actorBase context.Context

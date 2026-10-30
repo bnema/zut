@@ -149,7 +149,7 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	confirmer, asker := ctrl.HookBindings()
 	err = BindSessionHooks(deps, ctrl.ExtensionHooks(), confirmer, asker)
 	if err == nil {
-		err = BindToolRefresh(deps, ctrl.RefreshToolsWhenIdle)
+		err = BindToolRefresh(deps, ctrl.RequestToolRefresh)
 	}
 	if err != nil {
 		_ = ctrl.Close(context.Background(), "bind_failed")

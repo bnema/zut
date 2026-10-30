@@ -9,7 +9,7 @@ import (
 )
 
 // ToolRefreshHarness lets external tests (which own sessionmocks) drive the
-// actor-only busy state around RefreshToolsWhenIdle.
+// actor-only busy state around RequestToolRefresh.
 type ToolRefreshHarness struct {
 	C   *Controller
 	Ctx context.Context
@@ -32,6 +32,18 @@ func (h *ToolRefreshHarness) SetBusy(t *testing.T, busy bool) {
 		}
 	}))
 }
+
+// BlockActor occupies the actor until the returned release is called, so
+// requests made meanwhile queue up deterministically.
+func (h *ToolRefreshHarness) BlockActor(t *testing.T) (release func()) {
+	entered, gate := make(chan struct{}), make(chan struct{})
+	require.NoError(t, h.C.post(h.Ctx, func() { close(entered); <-gate }))
+	<-entered
+	return func() { close(gate) }
+}
+
+// Queued reports whether a RequestToolRefresh hand-off is still in flight.
+func (h *ToolRefreshHarness) Queued() bool { return h.C.refreshQueued.Load() }
 
 // Pending reports whether a deferred refresh is recorded.
 func (h *ToolRefreshHarness) Pending(t *testing.T) bool {

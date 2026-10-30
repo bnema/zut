@@ -114,14 +114,14 @@ func (a *sessionAssembly) mcpServerReady(ctx context.Context, name string, d tim
 		a.bind.hooks().Notify("mcp", "error", err.Error())
 		return
 	}
-	a.bind.requestToolRefresh(ctx)
+	a.bind.requestToolRefresh()
 }
 
-// BindToolRefresh connects the session's idle-time tool refresh (normally
-// session.Controller.RefreshToolsWhenIdle) so tools of MCP servers that
-// finish starting after creation reach the agent. A request made before
-// binding runs once at bind time.
-func BindToolRefresh(deps session.Deps, refresh func(context.Context) error) error {
+// BindToolRefresh connects the session's non-blocking, coalescing tool
+// refresh (normally session.Controller.RequestToolRefresh) so tools of MCP
+// servers that finish starting, or change, after creation reach the agent.
+// A request made before binding runs once at bind time.
+func BindToolRefresh(deps session.Deps, refresh func()) error {
 	host, ok := deps.Extensions.(*sessionExtensionHost)
 	if !ok || host == nil || host.bind == nil {
 		return errors.New("session deps were not built by NewSessionDeps")
@@ -196,7 +196,7 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	timer.phase("config load")
 
 	mcpArgs := a.args
-	mcpArgs.mcpToolsChanged = func(string) { a.bind.requestToolRefresh(life) }
+	mcpArgs.mcpToolsChanged = func(string) { a.bind.requestToolRefresh() }
 	manager, stopMCP, mcpErrs, err := startSessionMCPBackground(life, mcpArgs, a.args.Env, timer, a.mcpServerReady)
 	if err != nil {
 		return err
@@ -1178,24 +1178,25 @@ type sessionBindings struct {
 	adapter   *lateHostHooks
 	// refresh is the bound idle-time tool refresh; refreshPending records a
 	// request made before binding.
-	refresh        func(context.Context) error
+	refresh        func()
 	refreshPending bool
 }
 
-func (b *sessionBindings) setToolRefresh(fn func(context.Context) error) {
+func (b *sessionBindings) setToolRefresh(fn func()) {
 	b.mu.Lock()
 	b.refresh = fn
 	pending := b.refreshPending
 	b.refreshPending = false
 	b.mu.Unlock()
 	if pending && fn != nil {
-		_ = fn(context.Background())
+		fn()
 	}
 }
 
 // requestToolRefresh asks the bound session to refresh its tools, or
-// remembers the request until binding.
-func (b *sessionBindings) requestToolRefresh(ctx context.Context) {
+// remembers the request until binding. It never blocks: the bound refresh
+// hands off asynchronously and coalesces.
+func (b *sessionBindings) requestToolRefresh() {
 	b.mu.Lock()
 	fn := b.refresh
 	if fn == nil {
@@ -1203,7 +1204,7 @@ func (b *sessionBindings) requestToolRefresh(ctx context.Context) {
 	}
 	b.mu.Unlock()
 	if fn != nil {
-		_ = fn(ctx)
+		fn()
 	}
 }
 

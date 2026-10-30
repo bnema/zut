@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -309,5 +310,100 @@ func TestPoolWithStartBackground(t *testing.T) {
 	}
 	if serverPID(t, managers[0]) != serverPID(t, managers[1]) {
 		t.Fatal("background starts must share one process")
+	}
+}
+
+func TestPoolSlowSubscriberDoesNotDelayOthers(t *testing.T) {
+	cfg, _ := fakeStdioConfig(t, nil)
+	cwd := t.TempDir()
+	pool := newTestPool(t, time.Minute)
+	block := make(chan struct{})
+	slowEntered := make(chan struct{}, 1)
+	fastFired := make(chan struct{}, 1)
+	start := func(observer func(string)) *Manager {
+		m := NewManager(Config{Servers: map[string]ServerConfig{"fake": cfg}}, cwd, ClientInfo{}, nil)
+		m.SetPool(pool)
+		m.SetToolsChangedObserver(observer)
+		t.Cleanup(func() { _ = m.Close() })
+		if failures, err := m.Start(context.Background()); len(failures) != 0 || err != nil {
+			t.Fatal(failures, err)
+		}
+		return m
+	}
+	slow := start(func(string) {
+		select {
+		case slowEntered <- struct{}{}:
+		default:
+		}
+		<-block
+	})
+	fast := start(func(string) {
+		select {
+		case fastFired <- struct{}{}:
+		default:
+		}
+	})
+	defer close(block)
+	_ = execTool(t, findTool(t, slow, "mcp__fake__add_tool"), `{}`)
+	for _, w := range []struct {
+		ch   chan struct{}
+		what string
+	}{{slowEntered, "slow callback entered"}, {fastFired, "fast callback while slow blocked"}} {
+		select {
+		case <-w.ch:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out: " + w.what)
+		}
+	}
+	if !hasTool(fast, "mcp__fake__extra") {
+		t.Fatal("fast manager missing the new tool while slow is blocked")
+	}
+}
+
+func TestPoolFlightUsesLargestWaiterTimeout(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "release")
+	cfg, events := fakeStdioConfig(t, map[string]string{"FAKE_INIT_GATE": gate})
+	short := cfg
+	short.StartupTimeoutSec = 0.2
+	long := cfg
+	long.StartupTimeoutSec = 30
+	cwd := t.TempDir()
+	pool := newTestPool(t, time.Minute)
+	type result struct{ failures []error }
+	start := func(c ServerConfig) chan result {
+		ch := make(chan result, 1)
+		m := NewManager(Config{Servers: map[string]ServerConfig{"fake": c}}, cwd, ClientInfo{}, nil)
+		m.SetPool(pool)
+		t.Cleanup(func() { _ = m.Close() })
+		go func() { f, _ := m.Start(context.Background()); ch <- result{f} }()
+		return ch
+	}
+	shortDone := start(short)
+	waitEvent(t, events, "init-held")
+	longDone := start(long)
+	// The short waiter gives up with its own timeout in the message.
+	select {
+	case r := <-shortDone:
+		if len(r.failures) != 1 || !strings.Contains(r.failures[0].Error(), "timed out after 200ms") {
+			t.Fatalf("short failures = %v", r.failures)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("short waiter did not time out")
+	}
+	// The shared dial lives on with the long timeout: release it and the
+	// long waiter succeeds on the same process.
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-longDone:
+		if len(r.failures) != 0 {
+			t.Fatalf("long failures = %v", r.failures)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("long waiter never finished")
+	}
+	if got := countEvents(events, "start"); got != 1 {
+		t.Fatalf("server starts = %d, want 1", got)
 	}
 }

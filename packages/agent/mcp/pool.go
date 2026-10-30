@@ -66,18 +66,102 @@ type poolEntry struct {
 }
 
 // poolFlight is one in-progress connect shared by every concurrent caller.
+// Its deadline is the largest startup timeout among the callers that joined
+// it, counted from the flight's start.
 type poolFlight struct {
 	done   chan struct{}
 	client *Client
 	tools  []Tool
 	err    error
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	mu       sync.Mutex
+	started  time.Time
+	timeout  time.Duration
+	timer    *time.Timer
+	timedOut bool
+}
+
+func newPoolFlight(parent context.Context, timeout time.Duration) *poolFlight {
+	ctx, cancel := context.WithCancel(parent)
+	f := &poolFlight{done: make(chan struct{}), ctx: ctx, cancel: cancel, started: time.Now(), timeout: timeout}
+	f.timer = time.AfterFunc(timeout, func() {
+		f.mu.Lock()
+		f.timedOut = true
+		f.mu.Unlock()
+		cancel()
+	})
+	return f
+}
+
+// extend raises the flight deadline to timeout (from the flight start) when
+// it is larger than the current one and the deadline has not passed.
+func (f *poolFlight) extend(timeout time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.timedOut || timeout <= f.timeout {
+		return
+	}
+	if f.timer.Stop() {
+		f.timeout = timeout
+		f.timer.Reset(time.Until(f.started.Add(timeout)))
+	}
+}
+
+// expired reports whether the flight hit its deadline and which one.
+func (f *poolFlight) expired() (bool, time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.timedOut, f.timeout
+}
+
+func timeoutError(d time.Duration, err error) error {
+	return fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start: %w", d, err)
 }
 
 // poolLease is one Manager's reference to an entry. onTools receives the
-// raw tool list after each tools/list_changed re-listing.
+// raw tool list after each tools/list_changed re-listing, on the lease's own
+// goroutine so one slow Manager never delays the others; deliveries are
+// ordered and coalesced to the latest list.
 type poolLease struct {
 	entry   *poolEntry
 	onTools func(raw []Tool)
+
+	mu      sync.Mutex
+	latest  []Tool
+	pending bool
+	running bool
+}
+
+// deliver hands raw to the lease without blocking the caller.
+func (l *poolLease) deliver(raw []Tool) {
+	if l.onTools == nil {
+		return
+	}
+	l.mu.Lock()
+	l.latest, l.pending = raw, true
+	if l.running {
+		l.mu.Unlock()
+		return
+	}
+	l.running = true
+	l.mu.Unlock()
+	go func() {
+		for {
+			l.mu.Lock()
+			if !l.pending {
+				l.running = false
+				l.mu.Unlock()
+				return
+			}
+			tools := l.latest
+			l.latest, l.pending = nil, false
+			l.mu.Unlock()
+			l.onTools(tools)
+		}
+	}()
 }
 
 func (e *poolEntry) logAttrs(extra ...any) []any {
@@ -204,10 +288,11 @@ func (e *poolEntry) liveLocked() *Client {
 
 // connect returns the shared client and its raw tools, starting (or
 // restarting after a crash) the process once for all concurrent callers.
-// The connect itself runs on the pool's context with the server's startup
-// timeout; each caller waits only as long as its own ctx allows. Failures
-// are returned to the callers of that attempt and not cached.
-func (e *poolEntry) connect(ctx context.Context) (*Client, []Tool, error) {
+// The connect runs on the pool's context; its deadline is the largest
+// timeout among the callers waiting for it. Each caller waits only as long
+// as its own ctx allows. Failures are returned to the callers of that
+// attempt and not cached.
+func (e *poolEntry) connect(ctx context.Context, timeout time.Duration) (*Client, []Tool, error) {
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -219,8 +304,10 @@ func (e *poolEntry) connect(ctx context.Context) (*Client, []Tool, error) {
 		return c, tools, nil
 	}
 	f := e.flight
-	if f == nil {
-		f = &poolFlight{done: make(chan struct{})}
+	if f != nil {
+		f.extend(timeout)
+	} else {
+		f = newPoolFlight(e.p.ctx, timeout)
 		e.flight = f
 		stale, staleRefresher := e.client, e.refresher
 		e.client, e.refresher = nil, nil
@@ -243,14 +330,19 @@ func (e *poolEntry) connect(ctx context.Context) (*Client, []Tool, error) {
 		}
 		return f.client, append([]Tool(nil), f.tools...), nil
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+		err := ctx.Err()
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = timeoutError(timeout, err)
+		}
+		return nil, nil, err
 	}
 }
 
 func (e *poolEntry) dial(f *poolFlight) {
 	defer close(f.done)
-	ctx, cancel := withTimeout(e.p.ctx, e.cfg.StartupTimeout())
-	defer cancel()
+	defer f.cancel()
+	defer f.timer.Stop()
+	ctx := f.ctx
 	refresher := newToolRefresher()
 	client, err := connectWith(ctx, e.name, e.cfg, e.rootsCWD, e.info, nil, refresher.notify, nil)
 	var tools []Tool
@@ -260,8 +352,10 @@ func (e *poolEntry) dial(f *poolFlight) {
 			_ = closeStartupTransport(client.t)
 		}
 	}
-	if err != nil && errors.Is(err, context.DeadlineExceeded) && e.p.ctx.Err() == nil {
-		err = fmt.Errorf("timed out after %s; raise startupTimeoutSec if the server is slow to start: %w", e.cfg.StartupTimeout(), err)
+	if err != nil {
+		if hit, d := f.expired(); hit && e.p.ctx.Err() == nil {
+			err = timeoutError(d, err)
+		}
 	}
 	e.p.mu.Lock()
 	e.mu.Lock()
@@ -319,9 +413,7 @@ func (e *poolEntry) relist(ctx context.Context, client *Client) {
 	}
 	e.mu.Unlock()
 	for _, l := range subs {
-		if l.onTools != nil {
-			l.onTools(append([]Tool(nil), tools...))
-		}
+		l.deliver(append([]Tool(nil), tools...))
 	}
 }
 
