@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -44,19 +46,8 @@ func (t *residentIndicatorTerminal) Reset() {
 }
 
 func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAllows(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
-			<-ctx.Done()
-			return ctx.Err()
-		}), nil
-	})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnRunningResidentIndicatorChildren(t, manager, 10)
-
 	term := &residentIndicatorTerminal{cols: 80, rows: 40}
-	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
-	interactive.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
-	interactive.rend.Resize(term.cols, term.rows)
+	interactive := newResidentIndicatorPortInteractive(t, term, 10)
 	term.Reset()
 	interactive.redraw()
 
@@ -67,9 +58,10 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 		}
 	}
 
-	if err := manager.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	// The daemon reports the children finished.
+	interactive.mu.Lock()
+	interactive.applyInfoLocked(session.Info{Run: session.RunStateIdle, Residents: idleResidentSummaries(10)})
+	interactive.mu.Unlock()
 	term.Reset()
 	interactive.redraw()
 	plain = stripANSIBytes(term.String())
@@ -79,19 +71,8 @@ func TestInteractiveResidentSubagentActivityRendersAllActiveChildrenWhenHeightAl
 }
 
 func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeight(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
-			<-ctx.Done()
-			return ctx.Err()
-		}), nil
-	})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnRunningResidentIndicatorChildren(t, manager, 6)
-
 	term := &residentIndicatorTerminal{cols: 80, rows: 8}
-	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
-	interactive.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
-	interactive.rend.Resize(term.cols, term.rows)
+	interactive := newResidentIndicatorPortInteractive(t, term, 6)
 	term.Reset()
 	interactive.redraw()
 
@@ -105,19 +86,8 @@ func TestInteractiveResidentSubagentActivitySummarizesBoundedPageUnderShortHeigh
 }
 
 func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeightFits(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
-			<-ctx.Done()
-			return ctx.Err()
-		}), nil
-	})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnRunningResidentIndicatorChildren(t, manager, 2)
-
 	term := &residentIndicatorTerminal{cols: 80, rows: 8}
-	interactive := NewInteractive(InteractiveConfig{Terminal: term, ResidentManager: manager, Theme: tui.Dark})
-	interactive.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
-	interactive.rend.Resize(term.cols, term.rows)
+	interactive := newResidentIndicatorPortInteractive(t, term, 2)
 	term.Reset()
 	interactive.redraw()
 
@@ -130,6 +100,28 @@ func TestInteractiveResidentSubagentActivityShowsAllActiveChildrenWhenShortHeigh
 	if strings.Contains(plain, "more active subagents") {
 		t.Fatalf("interactive output summarized fitting active children:\n%s", plain)
 	}
+}
+
+// newResidentIndicatorPortInteractive attaches to a session whose Info lists
+// count running resident children, as the daemon publishes them.
+func newResidentIndicatorPortInteractive(t *testing.T, term *residentIndicatorTerminal, count int) *Interactive {
+	t.Helper()
+	residents := make([]session.ResidentSummary, count)
+	for index := range residents {
+		residents[index] = session.ResidentSummary{ID: fmt.Sprintf("child-%02d", index), Profile: fmt.Sprintf("agent-%02d", index), State: string(subagents.ResidentRunning)}
+	}
+	i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{Info: session.Info{Run: session.RunStateIdle, Residents: residents}}, InteractiveConfig{Terminal: term, Theme: tui.Dark})
+	i.clock = func() time.Time { return time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC) }
+	i.rend.Resize(term.cols, term.rows)
+	return i
+}
+
+func idleResidentSummaries(count int) []session.ResidentSummary {
+	residents := make([]session.ResidentSummary, count)
+	for index := range residents {
+		residents[index] = session.ResidentSummary{ID: fmt.Sprintf("child-%02d", index), Profile: fmt.Sprintf("agent-%02d", index), State: string(subagents.ResidentIdle)}
+	}
+	return residents
 }
 
 func spawnRunningResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {

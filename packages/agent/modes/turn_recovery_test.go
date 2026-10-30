@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -60,14 +61,8 @@ func answerContent(text string) []provider.Content {
 }
 
 func TestTurnRecoveryModeRendersOneRecoveryStatus(t *testing.T) {
-	client := &turnRecoveryModeClient{turns: [][]provider.Content{
-		commentaryContent("still working on it"),
-		answerContent("finished"),
-	}}
-	ag := core.NewAgent(client, "test-model", "", nil)
 	i := newNotesTestInteractive()
-	i.cfg.Agent = ag
-	i.agent = ag
+	i.port = sessionmocks.NewMockPort(t)
 
 	i.handleEvent(core.EvTurnRecovery{Reason: core.TurnRecoveryReasonCommentaryOnly, Attempt: 1})
 

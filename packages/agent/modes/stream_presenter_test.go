@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -64,14 +65,27 @@ func countVisible(i *Interactive, text string) int {
 func newStreamRaceInteractive(t *testing.T, client provider.Client, tools core.Registry) (*Interactive, *core.Agent) {
 	t.Helper()
 	ag := core.NewAgent(client, "test-model", "", tools)
+	// The daemon runs the agent and streams its events; the client keeps
+	// only the projected transcript.
 	i := &Interactive{
-		agent:     ag,
+		port:      sessionmocks.NewMockPort(t),
 		view:      &tui.View{Theme: tui.Dark},
 		toolCalls: map[string]*tui.ToolCallView{},
 		dirty:     make(chan struct{}, 1),
 		busy:      true,
 	}
 	return i, ag
+}
+
+// sessionSink is the daemon-to-client path: the transcript projection is
+// applied before presentation, as handleSessionEvent does for EvAgent.
+func sessionSink(i *Interactive) func(core.AgentEvent) {
+	return func(ev core.AgentEvent) {
+		i.mu.Lock()
+		i.applyPortAgentTranscriptLocked(ev)
+		i.mu.Unlock()
+		i.handleEvent(ev)
+	}
 }
 
 // Race 1: the agent appends the finished reply and persists it before the UI
@@ -93,7 +107,7 @@ func TestStreamReplyNotDuplicatedWhileMessageIsPersisted(t *testing.T) {
 		i.mu.Unlock()
 		seen = append(seen, countVisible(i, "alpha"))
 	}
-	if err := ag.Prompt(context.Background(), "question", nil, i.handleEvent); err != nil {
+	if err := ag.Prompt(context.Background(), "question", nil, sessionSink(i)); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 1 || seen[0] != 1 {
@@ -125,7 +139,7 @@ func TestStreamReplyNotDuplicatedWhenToolResultArrivesEarly(t *testing.T) {
 		i.mu.Unlock()
 		seen = append(seen, countVisible(i, "let me"))
 	}
-	if err := ag.Prompt(context.Background(), "question", nil, i.handleEvent); err != nil {
+	if err := ag.Prompt(context.Background(), "question", nil, sessionSink(i)); err != nil {
 		t.Fatal(err)
 	}
 	if !sawLive {
@@ -167,7 +181,7 @@ func TestStreamRevealsTranscriptWhenPacerDrains(t *testing.T) {
 	const reply = "one two three four five six seven eight nine ten"
 	client := &scriptedTurnsClient{turns: [][]provider.Event{textTurn(reply, provider.StopEnd)}}
 	i, ag := newStreamRaceInteractive(t, client, nil)
-	if err := ag.Prompt(context.Background(), "question", nil, i.handleEvent); err != nil {
+	if err := ag.Prompt(context.Background(), "question", nil, sessionSink(i)); err != nil {
 		t.Fatal(err)
 	}
 
