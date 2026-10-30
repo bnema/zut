@@ -13,7 +13,7 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// Submit feeds text through the agent loop as if the user had typed it.
+// Submit sends user input to the attached session (or runs a local shell escape).
 func (i *Interactive) Submit(text string) {
 	if cmd, ok := shellEscapeCommand(text); ok {
 		i.startShellEscape(i.runCtx, cmd)
@@ -23,20 +23,7 @@ func (i *Interactive) Submit(text string) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	if i.port != nil {
-		i.portSubmit(parent, text, nil)
-		return
-	}
-	i.mu.Lock()
-	awaitingStartupPre := i.awaitingStartupPre
-	i.mu.Unlock()
-	if !awaitingStartupPre {
-		i.maybeStartSessionTitle(parent, text)
-		// Initial and deferred input are user prompts; the startup command
-		// itself is not and leaves the pins pending.
-		text = i.consumePinnedSkills(text)
-	}
-	i.startTurn(parent, text)
+	i.portSubmit(parent, text, nil)
 }
 
 // completeStartupPre applies deferred InitialInput after entry.pre finishes.
@@ -92,6 +79,10 @@ func (i *Interactive) portRunning() bool {
 // render loop. The resulting transcript arrives through session events.
 func (i *Interactive) portSubmit(ctx context.Context, text string, images []provider.ImageBlock) {
 	port := i.SessionPort()
+	if port == nil {
+		i.ReportError(errors.New("submit: no session attached"))
+		return
+	}
 	in := session.Input{Text: text, Images: images, Mode: session.SubmitModeAuto, Origin: session.InputOriginUser}
 	go func() {
 		if ctx == nil {

@@ -441,3 +441,30 @@ func TestPortClearQueuedUserReleasesPinsOnlyOnSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitUsesSessionPort(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	submitted := make(chan session.Input, 1)
+	port.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, in session.Input) error {
+		submitted <- in
+		return nil
+	}).Once()
+	i := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{})
+	i.Submit("user request")
+	select {
+	case in := <-submitted:
+		require.Equal(t, "user request", in.Text)
+		require.Equal(t, session.InputOriginUser, in.Origin)
+		require.Equal(t, session.SubmitModeAuto, in.Mode)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Submit did not reach the session")
+	}
+}
+
+func TestSubmitWithoutSessionReportsError(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	i.Submit("user request")
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.Contains(t, i.statusErr, "no session attached")
+}
