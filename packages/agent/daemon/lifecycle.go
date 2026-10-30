@@ -205,6 +205,7 @@ func (d *Daemon) createLocked(spec session.CreateSpec) (session.Info, error) {
 	if d.isStopping() {
 		return session.Info{}, ErrStopping
 	}
+	spec = d.forkSpec(spec)
 	pre, err := lockSessionFile(spec.ResumePath)
 	if err != nil {
 		return session.Info{}, err
@@ -452,6 +453,46 @@ func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 		d.takeControl(ctrl, next)
 	}
 	return next.h.Info(), nil
+}
+
+// forkSpec makes a fork inherit the launch policy of the live session whose
+// transcript it branches: args (--no-yolo, --tools, extensions, sandbox and
+// model flags), env and zutfile permissions. Client-supplied args are
+// replaced, never merged, so a fork cannot widen its parent's policy. When
+// no registered session owns the parent path the policy is unknown and the
+// fork fails closed by requiring confirmation.
+func (d *Daemon) forkSpec(spec session.CreateSpec) session.CreateSpec {
+	if spec.Fork == nil {
+		return spec
+	}
+	var parent *entry
+	for _, e := range d.entries() {
+		if p := e.h.Info().SessionPath; p != "" && p == spec.Fork.ParentPath {
+			parent = e
+			break
+		}
+	}
+	if parent == nil {
+		spec.Args = withNoYolo(spec.Args)
+		return spec
+	}
+	spec.Args = clearArgs(parent.spec.Args, parent.h.Info())
+	spec.Env = append([]string(nil), parent.spec.Env...)
+	spec.Zutfile = parent.spec.Zutfile.WithoutPre()
+	return spec
+}
+
+// withNoYolo returns args with --no-yolo added before any "--" terminator.
+func withNoYolo(args []string) []string {
+	for i, a := range args {
+		if a == "--no-yolo" {
+			return args
+		}
+		if a == "--" {
+			return append(append(append([]string{}, args[:i]...), "--no-yolo"), args[i:]...)
+		}
+	}
+	return append(append([]string{}, args...), "--no-yolo")
 }
 
 // clearArgs drops resume/session selection and model flags from the launch

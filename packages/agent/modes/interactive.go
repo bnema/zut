@@ -1253,6 +1253,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	i.btwDialog.setCloseHook(func() {
 		i.confirmDialog.CancelChildConfirmations("side chat closed")
 	})
+	i.btwDialog.setPendingHooks(i.showBtwPending, i.retractBtwPending)
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.fileSuggest.SetRespectGitignore(cfg.RespectGitignore == nil || *cfg.RespectGitignore)
 	if cfg.LlamaCPPConfig != nil {
