@@ -3,8 +3,8 @@
 package procgroup
 
 import (
+	"github.com/stretchr/testify/mock"
 	"os"
-	"sync"
 	"syscall"
 	"testing"
 )
@@ -46,24 +46,18 @@ func TestLiveGroupMembersSeesSelfOnly(t *testing.T) {
 // end with a group SIGKILL even when the (non-atomic) /proc scan sees no live
 // member: a descendant may have forked between the scan and its end.
 func TestReservedGroupIsKilledDespiteEmptyScan(t *testing.T) {
-	var mu sync.Mutex
 	var sigs []syscall.Signal
-	g := &Guard{pgid: 1 << 30, leader: 1 << 30, zombie: true,
-		kill: func(pid int, sig syscall.Signal) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if pid != -(1 << 30) {
-				t.Errorf("signal to %d, want group", pid)
-			}
-			sigs = append(sigs, sig)
-			return nil
-		}}
+	k := newMockSignaler(t)
+	k.EXPECT().Kill(-(1 << 30), mock.Anything).RunAndReturn(func(_ int, sig syscall.Signal) error {
+		sigs = append(sigs, sig)
+		return nil
+	})
+	g := &Guard{pgid: 1 << 30, leader: 1 << 30, zombie: true, sender: k}
 	g.Cleanup()
-	mu.Lock()
-	defer mu.Unlock()
-	if len(sigs) == 0 || sigs[len(sigs)-1] != syscall.SIGKILL {
-		t.Fatalf("signals = %v, want a final group SIGKILL", sigs)
+	if len(sigs) != 2 || sigs[0] != syscall.SIGTERM || sigs[1] != syscall.SIGKILL {
+		t.Fatalf("signals = %v", sigs)
 	}
+
 	if g.pgid != 0 {
 		t.Error("pgid retained after cleanup")
 	}

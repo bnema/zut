@@ -3,90 +3,67 @@
 package procgroup
 
 import (
+	"github.com/stretchr/testify/mock"
 	"os/exec"
-	"sync"
 	"syscall"
 	"testing"
 )
 
-// fakeKill records signals and answers from a script.
-type fakeKill struct {
-	mu    sync.Mutex
-	calls []int // pids passed, in order (negative = group)
-	err   error
-}
-
-func (f *fakeKill) kill(pid int, _ syscall.Signal) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, pid)
-	return f.err
-}
-
-func (f *fakeKill) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.calls)
-}
-
-func newGuardForTest(pgid int, k *fakeKill) *Guard {
-	return &Guard{pgid: pgid, kill: k.kill}
-}
-
 func TestGuardForgetsGroupOnceGone(t *testing.T) {
-	k := &fakeKill{err: syscall.ESRCH}
-	g := newGuardForTest(4242, k)
+	k := newMockSignaler(t)
+	k.EXPECT().Kill(-4242, syscall.Signal(0)).RunAndReturn(func(int, syscall.Signal) error { return syscall.ESRCH }).Once()
+	g := &Guard{pgid: 4242, sender: k}
 	if g.alive() {
 		t.Fatal("ESRCH means the group is gone")
 	}
-	before := k.count()
-	// A gone group is never probed or signalled again: its number may belong
-	// to somebody else by now.
 	g.Terminate(false)
 	g.Terminate(true)
 	if g.alive() {
-		t.Error("alive after gone")
+		t.Fatal("alive after gone")
 	}
 	g.Cleanup()
-	if k.count() != before {
-		t.Errorf("signals sent to a group already observed gone: %v", k.calls)
-	}
 }
 
 func TestGuardCleanupIsOneShot(t *testing.T) {
-	k := &fakeKill{} // every probe/signal "succeeds": the group never empties
-	g := newGuardForTest(4243, k)
-	g.Cleanup() // escalates SIGTERM then SIGKILL, then gives up
-	after := k.count()
+	k := newMockSignaler(t)
+	var sigs []syscall.Signal
+	k.EXPECT().Kill(-4243, mock.Anything).RunAndReturn(func(_ int, sig syscall.Signal) error {
+		sigs = append(sigs, sig)
+		return nil
+	})
+	g := &Guard{pgid: 4243, sender: k}
+	g.Cleanup()
+	after := len(sigs)
 	if after == 0 {
-		t.Fatal("cleanup sent nothing to a live group")
+		t.Fatal("cleanup sent nothing")
 	}
 	for i := 0; i < 3; i++ {
 		g.Cleanup()
 		g.Terminate(true)
 		g.alive()
 	}
-	if k.count() != after {
-		t.Errorf("signals after cleanup: %d more", k.count()-after)
+	if len(sigs) != after {
+		t.Fatal("signals after cleanup")
+	}
+	var signals []syscall.Signal
+	for _, sig := range sigs {
+		if sig != 0 {
+			signals = append(signals, sig)
+		}
+	}
+	if len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+		t.Fatalf("signal order = %v", signals)
 	}
 	if g.pgid != 0 {
-		t.Error("process group id retained after cleanup")
+		t.Fatal("group retained after cleanup")
 	}
 }
 
 func TestGuardNoSignalWhenAlreadyEmpty(t *testing.T) {
-	k := &fakeKill{err: syscall.ESRCH}
-	g := newGuardForTest(4244, k)
+	k := newMockSignaler(t)
+	k.EXPECT().Kill(-4244, syscall.Signal(0)).RunAndReturn(func(int, syscall.Signal) error { return syscall.ESRCH }).Once()
+	g := &Guard{pgid: 4244, sender: k}
 	g.Cleanup()
-	for _, pid := range k.calls {
-		if pid != -4244 {
-			t.Errorf("unexpected target %d", pid)
-		}
-	}
-	// Only the liveness probe ran, and nothing after it.
-	if k.count() != 1 {
-		t.Errorf("calls = %v, want a single probe", k.calls)
-	}
 }
 
 // The second non-reaping wait must still observe our child after Cleanup.
@@ -128,11 +105,8 @@ func TestRepeatedCleanupDoesNotSignalAfterReap(t *testing.T) {
 		g.Cleanup()
 	}
 	_ = cmd.Wait()
-	k := &fakeKill{}
-	g.kill = k.kill
+	k := newMockSignaler(t)
+	g.sender = k
 	g.Cleanup()
 	g.Terminate(true)
-	if k.count() != 0 {
-		t.Fatal("signaled group after leader was reaped")
-	}
 }

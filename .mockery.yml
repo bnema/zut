@@ -124,3 +124,12 @@ packages:
       filename: '{{.InterfaceName}}_mock.go'
     interfaces:
       Client:
+  github.com/bnema/zut/packages/agent/internal/procgroup:
+    interfaces:
+      signaler:
+        config:
+          dir: packages/agent/internal/procgroup
+          pkgname: procgroup
+          filename: signaler_mock_test.go
+          structname: mockSignaler
+          build-tags: '!windows'

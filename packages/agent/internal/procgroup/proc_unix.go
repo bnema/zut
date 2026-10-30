@@ -17,6 +17,16 @@ func Isolate(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+type signaler interface {
+	Kill(pid int, sig syscall.Signal) error
+}
+
+type syscallSignaler struct{}
+
+func (syscallSignaler) Kill(pid int, sig syscall.Signal) error {
+	return syscall.Kill(pid, sig)
+}
+
 // Guard owns the process group of one stdio server.
 //
 // A process-group id may be reused by an unrelated process as soon as no
@@ -31,7 +41,7 @@ type Guard struct {
 	pgid   int // 0 once cleaned up or observed gone
 	leader int // pid of the group leader (== original pgid)
 	proc   *os.Process
-	kill   func(pid int, sig syscall.Signal) error // syscall.Kill; replaced in tests
+	sender signaler
 	// zombie is set once the leader has exited but not been reaped. The pgid
 	// is then reserved, so Cleanup always ends with a group SIGKILL; the
 	// process table is read only to end the SIGTERM grace period early.
@@ -42,7 +52,7 @@ type Guard struct {
 
 // New is called right after cmd.Start.
 func New(cmd *exec.Cmd) (*Guard, error) {
-	g := &Guard{kill: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) }}
+	g := &Guard{sender: syscallSignaler{}}
 	if cmd != nil && cmd.Process != nil {
 		g.pgid = cmd.Process.Pid
 		g.leader = cmd.Process.Pid
@@ -89,7 +99,7 @@ func (g *Guard) Terminate(force bool) {
 	if force {
 		sig = syscall.SIGKILL
 	}
-	err := g.kill(-g.pgid, sig)
+	err := g.sender.Kill(-g.pgid, sig)
 	switch {
 	case err == nil:
 	case errors.Is(err, syscall.ESRCH):
@@ -117,7 +127,7 @@ func (g *Guard) alive() bool {
 		live, known := liveGroupMembers(g.pgid)
 		return live || !known
 	}
-	err := g.kill(-g.pgid, 0)
+	err := g.sender.Kill(-g.pgid, 0)
 	if errors.Is(err, syscall.ESRCH) {
 		g.pgid = 0
 		return false
