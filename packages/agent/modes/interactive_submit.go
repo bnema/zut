@@ -107,6 +107,7 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 
 type portRecallOperation struct {
 	gen            uint64
+	port           session.Port
 	abortRequested bool
 }
 
@@ -119,48 +120,45 @@ func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
 		}
 		return
 	}
-	op := &portRecallOperation{gen: i.sessionGen, abortRequested: abort}
+	op := &portRecallOperation{gen: i.sessionGen, port: i.SessionPort(), abortRequested: abort}
 	i.portRecall = op
 	text := i.ed.Value()
 	images := slices.Clone(i.clipboardImages)
-	port := i.SessionPort()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	go func() {
 		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
-		in, err := port.SlideBackQueued(callCtx)
+		in, err := op.port.SlideBackQueued(callCtx)
 		cancel()
 		select {
 		case i.loopCalls <- func() {
-			if op.gen != i.sessionGen || i.portRecall != op {
-				if i.portRecall == op {
-					i.portRecall = nil
+			if op.gen == i.sessionGen && i.portRecall == op {
+				if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
+					i.ReportError(fmt.Errorf("slide back queued: %w", err))
 				}
-				return
-			}
-			if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
-				i.ReportError(fmt.Errorf("slide back queued: %w", err))
-			}
-			if err == nil && (in.Text != "" || len(in.Images) > 0) {
-				message := core.QueuedMessage{Text: in.Text, Images: in.Images}
-				if i.ed.Value() == text && reflect.DeepEqual(i.clipboardImages, images) {
-					i.restoreQueuedMessageToEditor(message)
-				} else {
-					i.appendRecalledMessageToEditor(message)
+				if err == nil && (in.Text != "" || len(in.Images) > 0) {
+					message := core.QueuedMessage{Text: in.Text, Images: in.Images}
+					if i.ed.Value() == text && reflect.DeepEqual(i.clipboardImages, images) {
+						i.restoreQueuedMessageToEditor(message)
+					} else {
+						i.appendRecalledMessageToEditor(message)
+					}
+					i.invalidate()
 				}
-				i.invalidate()
 			}
 			if op.abortRequested {
 				go func() {
 					callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 					defer cancel()
-					if err := port.Abort(callCtx); err != nil {
+					if err := op.port.Abort(callCtx); err != nil {
 						i.ReportError(fmt.Errorf("abort: %w", err))
 					}
 				}()
 			}
-			i.portRecall = nil
+			if i.portRecall == op {
+				i.portRecall = nil
+			}
 		}:
 		case <-ctx.Done():
 		}

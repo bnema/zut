@@ -314,3 +314,45 @@ func TestInteractivePortLateEscBeforeRecallCallbackAborts(t *testing.T) {
 	require.Equal(t, "queued draft", i.ed.Value())
 	require.Nil(t, i.portRecall)
 }
+
+func TestInteractivePortRecallAbortsOriginalSessionAfterSwitch(t *testing.T) {
+	oldPort := sessionmocks.NewMockPort(t)
+	newPort := sessionmocks.NewMockPort(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	oldPort.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(ctx context.Context) (session.Input, error) {
+		close(entered)
+		select {
+		case <-release:
+			return session.Input{Text: "old draft"}, nil
+		case <-ctx.Done():
+			return session.Input{}, ctx.Err()
+		}
+	}).Once()
+	aborted := make(chan struct{})
+	oldPort.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
+		close(aborted)
+		return nil
+	}).Once()
+	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, Port: oldPort})
+	i.portInfo.Run = session.RunStateRunning
+	ctx := context.Background()
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyEsc})
+	waitSignal(t, entered, "old session recall")
+	// Apply the port/generation replacement performed by the session switch.
+	i.mu.Lock()
+	i.sessionGen++
+	i.port = newPort
+	i.mu.Unlock()
+	i.ed.SetValue("new session input")
+	close(release)
+	select {
+	case apply := <-i.loopCalls:
+		apply()
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing old session callback")
+	}
+	waitSignal(t, aborted, "old session Abort")
+	require.Equal(t, "new session input", i.ed.Value())
+	require.Nil(t, i.portRecall)
+	// The new port has no expected Abort or recall calls.
+}
