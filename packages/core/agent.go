@@ -128,8 +128,11 @@ type Agent struct {
 
 	// MaxRetries controls reconnection attempts for transient failures after the
 	// provider stream opens. Zero disables this retry layer.
-	// RetryBaseDelay is doubled for each attempt; zero uses 2s.
-	MaxRetries     int
+	MaxRetries int
+	// MaxIdleRetries bounds idle-timeout retries independently of MaxRetries.
+	// Zero disables idle retries; NewAgent defaults to one, without backoff.
+	MaxIdleRetries int
+	// RetryBaseDelay is doubled for each transient retry; zero uses 2s.
 	RetryBaseDelay time.Duration
 	// StreamIdleTimeout cancels an individual provider stream when it emits no
 	// events for this duration. Zero leaves the stream unbounded.
@@ -214,6 +217,7 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 		Tools:             tools,
 		MaxSteps:          0, // 0 = unlimited
 		MaxRetries:        DefaultStreamMaxRetries,
+		MaxIdleRetries:    1,
 		RetryBaseDelay:    2 * time.Second,
 		StreamIdleTimeout: DefaultStreamIdleTimeout,
 		timeContext:       newAgentTimeContext(time.Now()),
@@ -736,14 +740,21 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 			assistantMsg provider.Message
 			err          error
 		)
+		// Idle retries extend the visible attempt budget only when used.
 		maxAttempts := max(a.MaxRetries+1, 1)
+		idleRetries, transientRetries := 0, 0
 		for attempt := 0; ; attempt++ {
 			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, requestContext, attempt, maxAttempts)
 			sink(EvTurnEnd{Stop: stop, Err: err})
 			if err == nil {
 				break
 			}
-			retryable := a.canRetryError(err, attempt)
+			idleTimeout := errors.Is(err, ErrStreamIdleTimeout)
+			retryCount := transientRetries
+			if idleTimeout {
+				retryCount = idleRetries
+			}
+			retryable := a.canRetryError(err, retryCount)
 			var retryCtxErr error
 			if retryable {
 				retryCtxErr = ctx.Err()
@@ -769,7 +780,16 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				break
 			}
 			a.dropLastAssistantMessage()
-			delay := a.retryDelay(attempt)
+			delay := a.retryDelay(transientRetries)
+			retryMessage := ""
+			if idleTimeout {
+				idleRetries++
+				maxAttempts++
+				delay = 0
+				retryMessage = fmt.Sprintf("idle timeout (%d/%d)", idleRetries, a.MaxIdleRetries)
+			} else {
+				transientRetries++
+			}
 			if retryErr := ctx.Err(); retryErr != nil {
 				return retryErr
 			}
@@ -786,9 +806,15 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				Attempt:     attempt + 2,
 				MaxAttempts: maxAttempts,
 				Delay:       delay,
+				Message:     retryMessage,
 			})
 			if sleepErr := sleepRetry(ctx, delay); sleepErr != nil {
 				return sleepErr
+			}
+			// A retry is also a safe boundary for follow-ups queued during
+			// the failed stream; do not leave them for turn completion.
+			if pending := a.drainQueuedMessages(); len(pending) > 0 {
+				a.appendQueuedAsUser(pending, sink)
 			}
 		}
 		if err != nil {
@@ -906,18 +932,17 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 }
 
 func (a *Agent) canRetryError(err error, attempt int) bool {
-	if err == nil || a.MaxRetries <= 0 || attempt >= a.MaxRetries {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	var openErr *requestOpenError
 	if errors.As(err, &openErr) {
 		return false
 	}
-	// An idle timeout already bounds a full period without provider progress.
-	// Retrying it would restart that deadline for every attempt, allowing one
-	// silent model continuation to keep an agent running for more than thirty
-	// minutes under the default retry policy.
-	if errors.Is(err, ErrStreamIdleTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, ErrStreamIdleTimeout) {
+		return attempt < a.MaxIdleRetries
+	}
+	if a.MaxRetries <= 0 || attempt >= a.MaxRetries {
 		return false
 	}
 	msg := strings.ToLower(err.Error())

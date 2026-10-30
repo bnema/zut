@@ -69,3 +69,19 @@ func TestAgentActivityClearsDiscardedToolCallsOnAgentRetry(t *testing.T) {
 		t.Fatalf("label = %q, want %q", got, want)
 	}
 }
+
+func TestAgentActivityIdleRetryMessage(t *testing.T) {
+	a := newAgentActivity("provider", "model")
+	a.apply(core.EvRetryScheduled{Scope: core.RetryScopeAgent, Message: "idle timeout (1/1)"})
+	if got := a.label(); got != "Retrying request: idle timeout (1/1)" {
+		t.Fatalf("label = %q", got)
+	}
+	a.apply(core.EvRetryScheduled{Scope: core.RetryScopeAgent, Attempt: 2, MaxAttempts: 3, Delay: time.Second})
+	if got := a.label(); got != "Retrying request in 1s (attempt 2/3)" {
+		t.Fatalf("label = %q", got)
+	}
+	event := EventToJSON(core.EvRetryScheduled{Message: "idle timeout (1/1)"})
+	if event["message"] != "idle timeout (1/1)" {
+		t.Fatalf("event = %v", event)
+	}
+}

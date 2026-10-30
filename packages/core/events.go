@@ -103,6 +103,7 @@ type EvRetryScheduled struct {
 	Attempt     int
 	MaxAttempts int
 	Delay       time.Duration
+	Message     string // Optional user-visible retry reason.
 }
 
 func (EvRetryScheduled) Type() string { return "retry_scheduled" }

@@ -91,6 +91,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["attempt"] = e.Attempt
 		m["max_attempts"] = e.MaxAttempts
 		m["delay_ms"] = e.Delay.Milliseconds()
+		if e.Message != "" {
+			m["message"] = e.Message
+		}
 	case core.EvUserMessage:
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time

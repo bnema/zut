@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -100,5 +102,72 @@ func TestResidentAgentRuntimeDeliversSteerMidTurn(t *testing.T) {
 	}
 	if len(users) != 2 || users[1] != "stop investigating and report now" {
 		t.Fatalf("journaled user messages = %#v", users)
+	}
+}
+
+// The handshake queues steering before the first idle timer starts, without sleeps.
+type stalledSteerClient struct {
+	started   chan struct{}
+	release   chan struct{}
+	calls     int
+	delivered bool
+}
+
+func (*stalledSteerClient) Name() string { return "stalled-steer" }
+func (c *stalledSteerClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.calls++
+	out := make(chan provider.Event, 1)
+	if c.calls == 1 {
+		close(c.started)
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+		}
+		go func() { <-ctx.Done(); close(out) }()
+		return out, nil
+	}
+	for _, m := range req.Messages {
+		for _, b := range m.Content {
+			if text, ok := b.(provider.TextBlock); ok && text.Text == "report now" {
+				c.delivered = true
+			}
+		}
+	}
+	out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "done"}}}}
+	close(out)
+	return out, nil
+}
+func TestResidentAgentRuntimeDeliversSteerOnIdleRetry(t *testing.T) {
+	client := &stalledSteerClient{started: make(chan struct{}), release: make(chan struct{})}
+	a := core.NewAgent(client, "model", "", core.Registry{})
+	a.StreamIdleTimeout = 5 * time.Millisecond
+	a.MaxRetries = 0
+	runtime := &residentAgentRuntime{agent: a, run: func(ctx context.Context, prompt string) error { return a.Prompt(ctx, prompt, nil, nil) }}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx, "investigate") }()
+	select {
+	case <-client.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if !runtime.Steer("report now") {
+		t.Fatal("steer rejected")
+	}
+	close(client.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if client.calls != 2 || !client.delivered {
+		t.Fatalf("calls=%d delivered=%v", client.calls, client.delivered)
+	}
+	if pending := runtime.DrainSteers(); len(pending) != 0 {
+		t.Fatalf("undelivered: %v", pending)
 	}
 }

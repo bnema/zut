@@ -31,13 +31,14 @@ const (
 )
 
 type activity struct {
-	kind     activityKind
-	provider string
-	model    string
-	tool     string
-	attempt  int
-	maxTries int
-	retryIn  time.Duration
+	kind         activityKind
+	provider     string
+	model        string
+	tool         string
+	attempt      int
+	maxTries     int
+	retryIn      time.Duration
+	retryMessage string
 }
 
 func (a activity) label() string {
@@ -59,6 +60,9 @@ func (a activity) label() string {
 	case activitySendingToolResults:
 		return "Sending tool results to " + activityText(a.provider, "provider")
 	case activityRetryingRequest:
+		if a.retryMessage != "" {
+			return "Retrying request: " + a.retryMessage
+		}
 		if a.attempt <= 0 || a.maxTries <= 0 {
 			return "Retrying request"
 		}
@@ -171,5 +175,6 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 		a.attempt = e.Attempt
 		a.maxTries = e.MaxAttempts
 		a.retryIn = e.Delay
+		a.retryMessage = e.Message
 	}
 }

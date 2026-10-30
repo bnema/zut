@@ -189,15 +189,16 @@ func TestAgentResetsIdleDeadlineForEveryStreamEvent(t *testing.T) {
 	}
 }
 
-func TestAgentDoesNotRetrySilentStream(t *testing.T) {
+func TestAgentRetriesSilentStream(t *testing.T) {
 	client := &retryFakeClient{firstErr: ErrStreamIdleTimeout}
 	a := NewAgent(client, "fake-model", "system", Registry{})
 	a.RetryBaseDelay = time.Millisecond
-	if err := a.Prompt(context.Background(), "hello", nil, nil); !errors.Is(err, ErrStreamIdleTimeout) {
-		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
+	a.MaxRetries = 0
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatal(err)
 	}
-	if got := atomic.LoadInt32(&client.calls); got != 1 {
-		t.Fatalf("Stream calls = %d; want no reconnect after idle deadline", got)
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("calls = %d, want 2", got)
 	}
 }
 
@@ -225,8 +226,8 @@ func TestAgentFailsSilentContinuationAfterToolResult(t *testing.T) {
 	if !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("Prompt error = %v, want ErrStreamIdleTimeout", err)
 	}
-	if got := client.calls.Load(); got != 2 {
-		t.Fatalf("provider calls = %d, want tool request plus one bounded continuation", got)
+	if got := client.calls.Load(); got != 3 {
+		t.Fatalf("provider calls = %d, want tool request plus two bounded continuation attempts", got)
 	}
 	if len(durable) == 0 {
 		t.Fatal("agent emitted no durable events")
@@ -673,5 +674,68 @@ func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
 	}
 	if len(lifecycle) != 1 || lifecycle[0].Event != RetryLifecycleRequestFailed || !lifecycle[0].Terminal {
 		t.Fatalf("retry lifecycle = %#v, want one terminal failure after cancellation", lifecycle)
+	}
+}
+
+type idleRetryClient struct {
+	calls  int
+	stalls int
+}
+
+func (*idleRetryClient) Name() string { return "idle-retry" }
+func (c *idleRetryClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.calls++
+	if c.calls <= c.stalls {
+		return (silentStreamClient{}).Stream(ctx, req)
+	}
+	return (activeStreamClient{}).Stream(ctx, req)
+}
+func TestAgentIdleRetryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		stalls, budget, calls int
+		fail                  bool
+	}{
+		{"recovers", 1, 1, 2, false}, {"exhausts", 100, 2, 3, true}, {"disabled", 1, 0, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &idleRetryClient{stalls: tc.stalls}
+			a := NewAgent(client, "model", "", Registry{})
+			a.StreamIdleTimeout = 5 * time.Millisecond
+			a.MaxRetries = 0
+			a.MaxIdleRetries = tc.budget
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			var retries []EvRetryScheduled
+			err := a.Prompt(ctx, "hello", nil, func(ev AgentEvent) {
+				if e, ok := ev.(EvRetryScheduled); ok {
+					retries = append(retries, e)
+				}
+			})
+			if tc.fail {
+				if !errors.Is(err, ErrStreamIdleTimeout) {
+					t.Fatalf("error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if client.calls != tc.calls {
+				t.Fatalf("calls = %d, want %d", client.calls, tc.calls)
+			}
+			if len(retries) != tc.calls-1 {
+				t.Fatalf("retries = %v", retries)
+			}
+			for i, e := range retries {
+				if e.Delay != 0 || e.Message != fmt.Sprintf("idle timeout (%d/%d)", i+1, tc.budget) {
+					t.Fatalf("retry = %+v", e)
+				}
+			}
+		})
+	}
+	a := NewAgent(nil, "", "", nil)
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, errors.Join(ErrStreamIdleTimeout, context.Canceled), errors.Join(ErrStreamIdleTimeout, context.DeadlineExceeded)} {
+		if a.canRetryError(err, 0) {
+			t.Fatalf("retryable: %v", err)
+		}
 	}
 }
