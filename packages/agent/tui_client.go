@@ -170,7 +170,6 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		LSPEnabled:                cfg.LSPEnabled,
 		SubagentLSPEnabled:        cfg.SubagentLSPEnabled,
 		AutoCompactThreshold:      cfg.AutoCompactThreshold,
-		GoalMaxTokenBudget:        cfg.Goals.MaxTokenBudget,
 		JailByDefault:             cfg.JailByDefault,
 		RecursiveFileSuggest:      cfg.RecursiveFileSuggest,
 		RespectGitignore:          cfg.RespectGitignore,

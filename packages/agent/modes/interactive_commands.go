@@ -1145,7 +1145,7 @@ func (i *Interactive) canResumeSessionSelection() bool {
 		return false
 	}
 	i.mu.Lock()
-	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
+	busy := i.busy || i.stream.Active() || i.shellRunning || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
 	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	i.mu.Unlock()

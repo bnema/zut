@@ -53,7 +53,7 @@ const detachedByOtherNotice = "detached: attached from another terminal"
 //
 // Port, Detach and Client are the daemon-client contract: when Port is set
 // the TUI renders only from Port snapshots/events. The remaining domain
-// fields (Agent, Build*, Persist*, Current*, ResidentManager, ConfirmGate,
+// fields (Agent, Build*, Persist*, Current*, ResidentManager,
 // ...) are L16 SHIMS kept so the in-process command/dialog code compiles
 // until L16/L18 delete it; Port-mode rendering never reads them.
 type InteractiveConfig struct {
@@ -71,12 +71,8 @@ type InteractiveConfig struct {
 	Model           string
 	Provider        string
 	AuthMethod      string // "apikey" | "oauth" — distinguishes API charges from subscription estimates
-	BaseURL         string
 	Reasoning       string
-	SystemPrompt    string
 	WritingGuidance string
-	Tools           core.Registry
-	MaxSteps        int
 	CWD             string
 
 	// Startup resource fields are loaded inputs available to list before the
@@ -303,15 +299,6 @@ type InteractiveConfig struct {
 	// If providerOverride is empty, the current provider is kept.
 	BuildAgentFor func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
 
-	// BuildAgentForRescue rebuilds the agent for the rescue picker that
-	// opens after a recoverable provider failure. Unlike BuildAgentFor,
-	// this builder drops launch-time --api-key and --base-url overrides
-	// because those are usually the reason rescue triggered. Re-resolves
-	// credentials from env vars / auth.json / provider defaults so the
-	// retry has a real chance of succeeding. Falls back to BuildAgentFor
-	// when nil so embedders that don't wire it keep working.
-	BuildAgentForRescue func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
-
 	// LoggedInProviders returns the list of provider names that
 	// currently have credentials. Used by /model to filter the
 	// picker to only show reachable models.
@@ -435,8 +422,6 @@ type InteractiveConfig struct {
 	// rebuild the wrong checklist. When nil, the constructor derives snapshots
 	// from the agent's own messages.
 	InitialPlanSnapshots map[string]core.PlanUpdate
-	// GoalMaxTokenBudget is optional. Nil means autonomous goals are unlimited.
-	GoalMaxTokenBudget *uint64
 
 	OnAssistant func(m provider.Message)
 
@@ -495,13 +480,6 @@ type InteractiveConfig struct {
 	// tool until the user picks yes / always-this-tool /
 	// always-all / no. When false (default), tools run freely.
 	NoYolo bool
-
-	// ConfirmGate is the session-scoped gate wrapping this
-	// interactive's Confirmer. When non-nil, /yolo can call
-	// AllowAll() on it to disable confirmation for the rest of the
-	// session. When nil (yolo mode), /yolo reports that there's
-	// nothing to disable.
-	ConfirmGate *core.ConfirmGate
 }
 
 // ChangelogPayload mirrors agent.ChangelogInfo without the import
@@ -669,7 +647,7 @@ type Interactive struct {
 
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
-	// runCtx, pending*, compacting*,
+	// runCtx, pending*, autoCompacting,
 	// goalStatus, cumUsage,
 	// activity, lastCtxInput, busy, cancelTurn). In Port mode they are
 	// either unused or written only as view projections of session.Info
@@ -771,11 +749,6 @@ type Interactive struct {
 	// drained from `queued` are started against this context so they
 	// survive past the ctx of the key event that enqueued them.
 	runCtx context.Context
-
-	// compacting is true for both manual and automatic compaction. Prompts
-	// submitted while it is set stay in the host queue because Compact does
-	// not run the agent loop that drains the agent-owned queue.
-	compacting bool
 
 	// autoCompacting is true while a model-triggered compaction is in
 	// flight. Surfaced in the status bar so the user can tell a

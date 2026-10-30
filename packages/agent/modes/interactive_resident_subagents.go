@@ -547,7 +547,7 @@ func (i *Interactive) doSessionFork() {
 		return
 	}
 	i.mu.Lock()
-	busy := i.busy || i.shellRunning || i.compacting || i.autoCompacting || i.sessionLoading
+	busy := i.busy || i.shellRunning || i.autoCompacting || i.sessionLoading
 	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	i.mu.Unlock()
