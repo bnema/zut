@@ -103,6 +103,31 @@ func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version s
 	return deps, a.cleanup, preOutput, nil
 }
 
+// mcpServerReady runs when a background MCP server finished starting. A
+// failure is surfaced like a startup failure; a success asks the session to
+// rebuild its tools once idle (before binding, the request is remembered).
+func (a *sessionAssembly) mcpServerReady(ctx context.Context, name string, d time.Duration, err error) {
+	a.timer.item("mcp", name, d, err, "background", true)
+	if err != nil {
+		a.bind.hooks().Notify("mcp", "error", err.Error())
+		return
+	}
+	a.bind.requestToolRefresh(ctx)
+}
+
+// BindToolRefresh connects the session's idle-time tool refresh (normally
+// session.Controller.RefreshToolsWhenIdle) so tools of MCP servers that
+// finish starting after creation reach the agent. A request made before
+// binding runs once at bind time.
+func BindToolRefresh(deps session.Deps, refresh func(context.Context) error) error {
+	host, ok := deps.Extensions.(*sessionExtensionHost)
+	if !ok || host == nil || host.bind == nil {
+		return errors.New("session deps were not built by NewSessionDeps")
+	}
+	host.bind.setToolRefresh(refresh)
+	return nil
+}
+
 // BindSessionHooks connects late-bound placeholders to the controller built
 // from deps. hooks receives extension host callbacks (buffered until bound),
 // confirmer answers the confirmation gate and asker answers ask_user_question.
@@ -168,13 +193,14 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	}
 	timer.phase("config load")
 
-	manager, stopMCP, err := startSessionMCPTimed(life, a.args, a.args.Env, timer)
+	manager, stopMCP, mcpErrs, err := startSessionMCPBackground(life, a.args, a.args.Env, timer, a.mcpServerReady)
 	if err != nil {
 		return err
 	}
 	a.stopMCP = stopMCP
 	a.args.mcpManager = manager
-	timer.phase("mcp startup (all servers)")
+	a.args.mcpStartupErrors = append(a.args.mcpStartupErrors, mcpErrs...)
+	timer.phase("mcp startup (required servers)")
 
 	a.args.startupTimer = timer
 	a.r, err = Resolve(a.args, false)
@@ -1146,6 +1172,35 @@ type sessionBindings struct {
 	dropped   int
 	ask       tools.QuestionAsker
 	adapter   *lateHostHooks
+	// refresh is the bound idle-time tool refresh; refreshPending records a
+	// request made before binding.
+	refresh        func(context.Context) error
+	refreshPending bool
+}
+
+func (b *sessionBindings) setToolRefresh(fn func(context.Context) error) {
+	b.mu.Lock()
+	b.refresh = fn
+	pending := b.refreshPending
+	b.refreshPending = false
+	b.mu.Unlock()
+	if pending && fn != nil {
+		_ = fn(context.Background())
+	}
+}
+
+// requestToolRefresh asks the bound session to refresh its tools, or
+// remembers the request until binding.
+func (b *sessionBindings) requestToolRefresh(ctx context.Context) {
+	b.mu.Lock()
+	fn := b.refresh
+	if fn == nil {
+		b.refreshPending = true
+	}
+	b.mu.Unlock()
+	if fn != nil {
+		_ = fn(ctx)
+	}
 }
 
 func newSessionBindings() *sessionBindings {

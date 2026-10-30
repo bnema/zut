@@ -125,6 +125,10 @@ written with `0600` permissions because entries may hold secrets.
   zut. A server that started and later dropped (a crashed stdio process or an
   expired HTTP session) reconnects on the next call to one of its tools; the
   failed call itself is not retried.
+- In daemon sessions, only `required` servers delay session creation. Other
+  servers start in the background; their tools join the session when the
+  server is ready, between turns, so a prompt sent before that point runs
+  without them.
 - zut negotiates protocol `2025-06-18` and accepts `2025-03-26` and
   `2024-11-05`. It answers `ping` and `roots/list` (the zut cwd) and follows
   `tools/list` pagination.

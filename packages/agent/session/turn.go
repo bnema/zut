@@ -316,6 +316,8 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 	if c.deps.SessionStore != nil {
 		c.deps.SessionStore.FlushSession()
 	}
+	// Apply tools that became available during the turn before the next.
+	c.flushToolRefresh()
 	// Match interactive_turn: repetition stops autonomous work but preserves
 	// explicit prompts; ordinary errors preserve host reports without running
 	// them immediately; cancellation discards both. Scheduled work is separate.
@@ -442,6 +444,7 @@ func mergeQueued(items []QueuedInput) Input {
 // drainQueued runs on the actor. It is a no-op while busy (turn running or
 // compaction active) and when the queue is empty.
 func (c *Controller) drainQueued() {
+	c.flushToolRefresh()
 	if c.isBusy() || len(c.turn.queue) == 0 {
 		return
 	}

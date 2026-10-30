@@ -132,7 +132,11 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 	ctrl := session.NewControllerWithOptions(ctx, deps, opts)
 	h := &factoryHandle{Controller: ctrl, f: f, id: opts.ID, cleanup: cleanup, done: make(chan struct{}), preOutput: preOutput}
 	confirmer, asker := ctrl.HookBindings()
-	if err := BindSessionHooks(deps, ctrl.ExtensionHooks(), confirmer, asker); err != nil {
+	err = BindSessionHooks(deps, ctrl.ExtensionHooks(), confirmer, asker)
+	if err == nil {
+		err = BindToolRefresh(deps, ctrl.RefreshToolsWhenIdle)
+	}
+	if err != nil {
 		_ = ctrl.Close(context.Background(), "bind_failed")
 		<-ctrl.Done()
 		cleanup()

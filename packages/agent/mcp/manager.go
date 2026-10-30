@@ -55,6 +55,9 @@ type Manager struct {
 	stderrOutput *liveStderrWriter
 	// onStarted, when set, receives each server's Start duration.
 	onStarted func(name string, d time.Duration, err error)
+	// bg tracks background starts; bgCancel cancels them on Close.
+	bg       sync.WaitGroup
+	bgCancel context.CancelFunc
 }
 
 // SetStartupObserver reports each server's connect+list duration during
@@ -115,6 +118,67 @@ func (m *Manager) Start(ctx context.Context) (failures []error, requiredErr erro
 		}
 	}
 	return failures, errors.Join(required...)
+}
+
+// StartBackground connects servers marked required synchronously, exactly as
+// Start does for them, and starts every other server in the background.
+// onReady (optional) runs once per background server when its start ends,
+// with err nil when its tools are available; it is not called once Close
+// began, and its ctx ends when Close begins so it must not block past that. The startup observer only sees required servers. Close cancels pending
+// background starts and waits for them, so no child process outlives it.
+// The returned values cover required servers only.
+func (m *Manager) StartBackground(ctx context.Context, onReady func(ctx context.Context, name string, d time.Duration, err error)) (failures []error, requiredErr error) {
+	if m.Empty() {
+		return nil, nil
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errors.New("mcp: manager closed")
+	}
+	bgCtx, cancel := context.WithCancel(ctx)
+	m.bgCancel = cancel
+	for _, name := range m.order {
+		s := m.servers[name]
+		if s.cfg.Required {
+			continue
+		}
+		m.bg.Add(1)
+		go func() {
+			defer m.bg.Done()
+			t := time.Now()
+			_, err := m.connect(bgCtx, s)
+			d := time.Since(t)
+			if onReady != nil && bgCtx.Err() == nil {
+				onReady(bgCtx, s.name, d, err)
+			}
+		}()
+	}
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, name := range m.order {
+		s := m.servers[name]
+		if !s.cfg.Required {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.Now()
+			_, err := m.connect(ctx, s)
+			if m.onStarted != nil {
+				m.onStarted(s.name, time.Since(t), err)
+			}
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return failures, errors.Join(failures...)
 }
 
 // connect returns a live client for s, connecting (or reconnecting after a
@@ -416,8 +480,15 @@ func (m *Manager) Close() error {
 	}
 	m.closed = true
 	output := m.stderrOutput
+	cancelBG := m.bgCancel
 	m.mu.Unlock()
 	defer output.shutdown()
+	if cancelBG != nil {
+		cancelBG()
+	}
+	// A background start that finishes its handshake after closed is set
+	// closes its own transport (see connect); wait so none outlives Close.
+	defer m.bg.Wait()
 	var wg sync.WaitGroup
 	for _, name := range m.order {
 		s := m.servers[name]

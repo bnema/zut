@@ -18,6 +18,9 @@ type settingsState struct {
 	title         string
 	titleStarted  bool
 	replaceErr    error
+	// toolsDirty defers a RefreshToolsWhenIdle request until no turn or
+	// compaction runs.
+	toolsDirty bool
 }
 
 func (s *settingsState) snapshotInto(out *Snapshot) { out.Info.Title = s.title }
@@ -185,6 +188,34 @@ func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 		}
 		return nil
 	})
+}
+
+// RefreshToolsWhenIdle asks the session to rebuild its tool registry and
+// system prompt, e.g. after a background MCP server became ready. It never
+// blocks on the actor's work: the refresh runs on the actor when the session
+// is idle, otherwise right after the running turn or compaction ends, so a
+// turn never sees its tools change mid-flight.
+func (c *Controller) RefreshToolsWhenIdle(ctx context.Context) error {
+	return c.post(ctx, func() {
+		c.settings.toolsDirty = true
+		c.flushToolRefresh()
+	})
+}
+
+// flushToolRefresh runs a deferred tool refresh when idle (actor only).
+func (c *Controller) flushToolRefresh() {
+	if !c.settings.toolsDirty || c.isBusy() || c.compact.busy {
+		return
+	}
+	c.settings.toolsDirty = false
+	if c.deps.ToolRefresher == nil {
+		return
+	}
+	if err := c.deps.ToolRefresher.RefreshTools(); err != nil {
+		c.logger().Warn("deferred tool refresh failed", "err", err)
+	}
+	c.updateInfo()
+	c.publish(EvInfo, InfoEvent{Info: c.Info()})
 }
 
 // validCompactThreshold matches the levels maybeAutoCompact honours.
