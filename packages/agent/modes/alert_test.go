@@ -204,21 +204,14 @@ func TestMainAlertWaitsForPacedText(t *testing.T) {
 	i.stream.Push("final answer")
 	i.stream.Finish()
 	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "agent_done"}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go i.runStreamPacer(ctx)
-
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		i.mu.Lock()
-		ready := !i.stream.Active() && i.pendingAlert != nil
-		i.mu.Unlock()
-		if ready {
-			i.redraw()
-			break
-		}
-		time.Sleep(time.Millisecond)
+	for ticks := 0; i.stream.Active(); ticks++ {
+		require.Less(t, ticks, 100, "presenter did not settle")
+		i.redraw()
+		require.Empty(t, term.String(), "bell rang while text was still paced")
+		i.stream.Tick()
 	}
+	require.NotNil(t, i.pendingAlert, "alert must wait for the final redraw")
+	i.redraw()
 	if got := term.String(); got != "\a" {
 		t.Fatalf("paced alert output = %q, want BEL after final redraw", got)
 	}
