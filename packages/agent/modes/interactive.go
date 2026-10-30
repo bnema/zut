@@ -761,6 +761,8 @@ type Interactive struct {
 	events       <-chan session.Event
 	subCancel    context.CancelFunc
 	exitNotice   string
+	// Run-loop-owned recall operation and abort request.
+	portRecall *portRecallOperation
 	// lastSeq is the newest applied event Seq; replayed events at or below
 	// it (already covered by a snapshot) are dropped.
 	lastSeq uint64

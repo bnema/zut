@@ -2,9 +2,14 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -100,17 +105,89 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 	}()
 }
 
-// portAbort asks the session port to abort the running turn off the render loop.
-func (i *Interactive) portAbort(ctx context.Context) {
-	port := i.SessionPort()
-	go func() {
-		if ctx == nil {
-			ctx = context.Background()
+type portRecallOperation struct {
+	gen            uint64
+	port           session.Port
+	abortRequested bool
+}
+
+// portSlideBackQueued runs on the input loop. The worker retrieves before
+// aborting, and all editor changes are applied by the loop for this session only.
+func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
+	if op := i.portRecall; op != nil && op.gen == i.sessionGen {
+		if abort {
+			op.abortRequested = true
 		}
+		return
+	}
+	op := &portRecallOperation{gen: i.sessionGen, port: i.SessionPort(), abortRequested: abort}
+	i.portRecall = op
+	text := i.ed.Value()
+	images := slices.Clone(i.clipboardImages)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
 		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
-		defer cancel()
-		if err := port.Abort(callCtx); err != nil {
-			i.ReportError(fmt.Errorf("abort: %w", err))
+		in, err := op.port.SlideBackQueued(callCtx)
+		cancel()
+		select {
+		case i.loopCalls <- func() {
+			if op.gen == i.sessionGen && i.portRecall == op {
+				if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
+					i.ReportError(fmt.Errorf("slide back queued: %w", err))
+				}
+				if err == nil && (in.Text != "" || len(in.Images) > 0) {
+					message := core.QueuedMessage{Text: in.Text, Images: in.Images}
+					if i.ed.Value() == text && reflect.DeepEqual(i.clipboardImages, images) {
+						i.restoreQueuedMessageToEditor(message)
+					} else {
+						i.appendRecalledMessageToEditor(message)
+					}
+					i.invalidate()
+				}
+			}
+			if op.abortRequested {
+				go func() {
+					callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+					defer cancel()
+					if err := op.port.Abort(callCtx); err != nil {
+						i.ReportError(fmt.Errorf("abort: %w", err))
+					}
+				}()
+			}
+			if i.portRecall == op {
+				i.portRecall = nil
+			}
+		}:
+		case <-ctx.Done():
 		}
 	}()
+}
+
+// appendRecalledMessageToEditor preserves current input and attachment markers.
+func (i *Interactive) appendRecalledMessageToEditor(message core.QueuedMessage) {
+	text := i.ed.Value()
+	i.mu.Lock()
+	recalled := i.skillPins.rawPrompt(message.Text)
+	i.mu.Unlock()
+	if text != "" {
+		text += "\n"
+	}
+	text += recalled
+	for _, image := range message.Images {
+		n := 1
+		marker := fmt.Sprintf("[clipboard image #%d]", n)
+		for strings.Contains(text, marker) {
+			n++
+			marker = fmt.Sprintf("[clipboard image #%d]", n)
+		}
+		if text != "" {
+			text += " "
+		}
+		text += marker
+		i.clipboardImages = append(i.clipboardImages, clipboardImageAttachment{Marker: marker, Image: image})
+	}
+	i.ed.SetValue(text)
+	i.inputHistoryIndex = -1
 }

@@ -126,14 +126,22 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 	var in Input
 	var result error
 	err := c.call(ctx, func() {
-		n := len(c.turn.queue)
-		if n == 0 {
-			result = ErrUnknownRequest
+		for n := len(c.turn.queue) - 1; n >= 0; n-- {
+			if c.turn.queue[n].Input.HostEvent {
+				continue
+			}
+			in = c.turn.queue[n].Input
+			c.turn.queue = append(c.turn.queue[:n], c.turn.queue[n+1:]...)
+			c.publishQueue()
 			return
 		}
-		in = c.turn.queue[n-1].Input
-		c.turn.queue = c.turn.queue[:n-1]
-		c.publishQueue()
+		if c.turn.agent != nil {
+			if message, ok := c.turn.agent.PopQueuedUserMessage(); ok {
+				in = Input{Text: message.Text, Images: message.Images, Origin: InputOriginUser}
+				return
+			}
+		}
+		result = ErrUnknownRequest
 	})
 	if err != nil {
 		return Input{}, err
