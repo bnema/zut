@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/provider"
@@ -46,19 +48,19 @@ func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 		}
 		return rows[offset:end], len(rows), nil
 	})
-	dialog := newResidentSubagentsDialog()
-	dialog.Open(port)
-	plain := strings.Join(plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 10)), "\n")
+	dialog, loaded := newTestResidentDialog()
+	openResidentDialog(t, dialog, port, loaded)
+	plain := strings.Join(plainResidentIndicatorLines(renderDialog(dialog, 100, 10)), "\n")
 	if !strings.Contains(plain, "\n    ↑84k ↓1.5k R123k/ C59.4% $0.525 (sub) 76.1%/272k") {
 		t.Fatalf("dialog = %q, want usage metadata line", plain)
 	}
 	for _, height := range []int{3, 4} {
-		if lines := dialog.Render(tui.Dark, 100, height); len(lines) > height {
+		if lines := renderDialog(dialog, 100, height); len(lines) > height {
 			t.Fatalf("height %d rendered %d lines: %q", height, len(lines), plainResidentIndicatorLines(lines))
 		}
 	}
 	for width := 1; width <= 3; width++ {
-		for _, line := range plainResidentIndicatorLines(dialog.Render(tui.Dark, width, 10)) {
+		for _, line := range plainResidentIndicatorLines(renderDialog(dialog, width, 10)) {
 			if line == "    " {
 				t.Fatalf("width %d rendered an empty metadata row", width)
 			}
@@ -67,8 +69,10 @@ func TestResidentSubagentsDialogShowsUsageMetadata(t *testing.T) {
 }
 
 func TestResidentSubagentsDialogBoundsEmptyStateByHeight(t *testing.T) {
-	dialog := newResidentSubagentsDialog()
+	dialog, _ := newTestResidentDialog()
+	dialog.lock.Lock()
 	dialog.Open(nil)
+	dialog.lock.Unlock()
 	tests := []struct {
 		height int
 		want   []string
@@ -79,23 +83,63 @@ func TestResidentSubagentsDialogBoundsEmptyStateByHeight(t *testing.T) {
 		{height: 3, want: []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn", "  No resident subagents."}},
 	}
 	for _, test := range tests {
-		if got := plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, test.height)); !slices.Equal(got, test.want) {
+		if got := plainResidentIndicatorLines(renderDialog(dialog, 100, test.height)); !slices.Equal(got, test.want) {
 			t.Errorf("height %d rendered %q, want %q", test.height, got, test.want)
 		}
 	}
 }
 
-func TestResidentSubagentsDialogRefreshAllowsNilReceiver(t *testing.T) {
+func TestResidentSubagentsDialogNilReceiver(t *testing.T) {
 	var dialog *residentSubagentsDialog
-	dialog.refresh(1)
+	dialog.Invalidate()
+	dialog.Close()
+}
+
+// newTestResidentDialog returns a dialog whose fetch completions are signalled
+// on loaded, so tests synchronize without sleeping.
+func newTestResidentDialog() (*residentSubagentsDialog, chan struct{}) {
+	loaded := make(chan struct{}, 8)
+	notify := func() {
+		select {
+		case loaded <- struct{}{}:
+		default:
+		}
+	}
+	return newResidentSubagentsDialog(&sync.Mutex{}, notify), loaded
+}
+
+// renderDialog renders under the owner lock, as Interactive.redraw does.
+func renderDialog(dialog *residentSubagentsDialog, width, height int) []string {
+	dialog.lock.Lock()
+	defer dialog.lock.Unlock()
+	return dialog.Render(tui.Dark, width, height)
+}
+
+func waitDialogFetch(t *testing.T, loaded <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-loaded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("resident list fetch did not complete")
+	}
+}
+
+func openResidentDialog(t *testing.T, dialog *residentSubagentsDialog, port session.Port, loaded <-chan struct{}) {
+	t.Helper()
+	dialog.lock.Lock()
+	dialog.Open(port)
+	dialog.lock.Unlock()
+	waitDialogFetch(t, loaded)
 }
 
 func TestResidentSubagentsDialogListsFromPortAndSelects(t *testing.T) {
 	port := sessionmocks.NewMockPort(t)
 	rows := []subagents.ResidentSnapshot{{ID: "first", State: subagents.ResidentRunning, Model: "m"}, {ID: "second", State: subagents.ResidentIdle, Model: "m"}}
-	port.EXPECT().ResidentList(mock.Anything, 0, 12).Return(rows, 2, nil).Once()
-	dialog := newResidentSubagentsDialog()
-	dialog.Open(port)
+	port.EXPECT().ResidentList(mock.Anything, 0, residentDialogInitialLimit).Return(rows, 2, nil).Once()
+	dialog, loaded := newTestResidentDialog()
+	openResidentDialog(t, dialog, port, loaded)
+	dialog.lock.Lock()
+	defer dialog.lock.Unlock()
 	dialog.HandleKey(tui.Key{Kind: tui.KeyDown})
 	if got := dialog.HandleKey(tui.Key{Kind: tui.KeyEnter}); got != "second" {
 		t.Fatalf("selected = %q, want second", got)
@@ -104,21 +148,79 @@ func TestResidentSubagentsDialogListsFromPortAndSelects(t *testing.T) {
 
 func TestResidentSubagentsDialogShowsPortError(t *testing.T) {
 	port := sessionmocks.NewMockPort(t)
-	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return(nil, 0, errors.New("daemon gone"))
-	dialog := newResidentSubagentsDialog()
-	dialog.Open(port)
-	plain := strings.Join(plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 10)), "\n")
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return(nil, 0, errors.New("daemon gone")).Once()
+	dialog, loaded := newTestResidentDialog()
+	openResidentDialog(t, dialog, port, loaded)
+	plain := strings.Join(plainResidentIndicatorLines(renderDialog(dialog, 100, 2*residentDialogInitialLimit+3)), "\n")
 	if !strings.Contains(plain, "unavailable: daemon gone") || strings.Contains(plain, "No resident subagents") {
 		t.Fatalf("dialog = %q, want port error", plain)
 	}
 }
 
-func TestResidentSubagentsDialogCachesWindowBetweenRenders(t *testing.T) {
+// Render must never call the port: it shows "Loading" until the async fetch
+// lands, and steady renders reuse the cached window.
+func TestResidentSubagentsDialogRenderReadsCacheOnly(t *testing.T) {
 	port := sessionmocks.NewMockPort(t)
-	port.EXPECT().ResidentList(mock.Anything, 0, 3).Return([]subagents.ResidentSnapshot{{ID: "a"}}, 1, nil).Once()
-	dialog := newResidentSubagentsDialog()
+	release := make(chan struct{})
+	port.EXPECT().ResidentList(mock.Anything, 0, 3).RunAndReturn(func(context.Context, int, int) ([]subagents.ResidentSnapshot, int, error) {
+		<-release
+		return []subagents.ResidentSnapshot{{ID: "a", Model: "m"}}, 1, nil
+	}).Once()
+	dialog, loaded := newTestResidentDialog()
+	dialog.lock.Lock()
+	// Open without the initial fetch so the render below sizes the window.
 	dialog.active, dialog.port = true, port
+	if lines := plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 9)); !containsLine(lines, "Loading") {
+		t.Fatalf("render before fetch = %q, want loading", lines)
+	}
+	dialog.lock.Unlock()
+	close(release)
+	waitDialogFetch(t, loaded)
+	dialog.lock.Lock()
+	defer dialog.lock.Unlock()
 	for range 3 {
-		dialog.Render(tui.Dark, 100, 9)
+		if lines := plainResidentIndicatorLines(dialog.Render(tui.Dark, 100, 9)); !containsLine(lines, " a") {
+			t.Fatalf("render = %q", lines)
+		}
+	}
+}
+
+func TestResidentSubagentsDialogCloseDiscardsInFlightFetch(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	started := make(chan struct{})
+	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _, _ int) ([]subagents.ResidentSnapshot, int, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, 0, ctx.Err()
+	}).Once()
+	dialog, loaded := newTestResidentDialog()
+	dialog.lock.Lock()
+	dialog.Open(port)
+	dialog.lock.Unlock()
+	<-started
+	dialog.lock.Lock()
+	dialog.Close()
+	dialog.lock.Unlock()
+	select {
+	case <-loaded:
+		t.Fatal("closed dialog published a stale fetch")
+	default:
+	}
+}
+
+func TestResidentSubagentsDialogInvalidateRefetches(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentList(mock.Anything, 0, residentDialogInitialLimit).Return(nil, 0, nil).Once()
+	port.EXPECT().ResidentList(mock.Anything, 0, residentDialogInitialLimit).Return([]subagents.ResidentSnapshot{{ID: "new"}}, 1, nil).Once()
+	dialog, loaded := newTestResidentDialog()
+	openResidentDialog(t, dialog, port, loaded)
+	dialog.lock.Lock()
+	dialog.Invalidate()
+	dialog.lock.Unlock()
+	waitDialogFetch(t, loaded)
+	dialog.lock.Lock()
+	defer dialog.lock.Unlock()
+	if dialog.total != 1 || len(dialog.rows) != 1 {
+		t.Fatalf("rows/total = %v/%d after invalidate", dialog.rows, dialog.total)
 	}
 }

@@ -38,7 +38,7 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 	case "", "list", "ls", "ps":
 		i.mu.Lock()
 		if i.residentSubagentsDialog == nil {
-			i.residentSubagentsDialog = newResidentSubagentsDialog()
+			i.residentSubagentsDialog = newResidentSubagentsDialog(&i.mu, i.invalidate)
 		}
 		i.residentSubagentsDialog.Open(i.port)
 		i.mu.Unlock()

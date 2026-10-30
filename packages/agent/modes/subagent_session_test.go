@@ -308,6 +308,7 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	if got := interactive.ed.Value(); got != "draft" {
 		t.Fatalf("editor value = %q, want draft preserved", got)
 	}
+	waitResidentDialogLoaded(t, interactive)
 	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
 	if interactive.residentSubagentsDialog.Active() {
 		t.Fatal("Enter left the resident subagent picker open")
@@ -316,6 +317,26 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 		t.Fatalf("resident child session = %#v, want %q", interactive.residentChildSession, spec.ID)
 	}
 	waitResidentLoadDone(t, interactive.residentChildSession)
+}
+
+// waitResidentDialogLoaded consumes redraw requests until the picker's async
+// list fetch has landed.
+func waitResidentDialogLoaded(t *testing.T, interactive *Interactive) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		interactive.mu.Lock()
+		loaded := interactive.residentSubagentsDialog.loaded
+		interactive.mu.Unlock()
+		if loaded {
+			return
+		}
+		select {
+		case <-interactive.dirty:
+		case <-timeout:
+			t.Fatal("resident picker fetch did not complete")
+		}
+	}
 }
 
 func waitResidentLoadDone(t *testing.T, child *residentChildSession) {

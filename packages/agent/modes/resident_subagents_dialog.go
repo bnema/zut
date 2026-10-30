@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
@@ -14,7 +15,15 @@ import (
 // residentSubagentsDialog is intentionally only a discovery/selection list.
 // Detailed transcript, paging, and composition belong to residentChildSession.
 // Rows come from the session port; the daemon owns the resident manager.
+//
+// Every method runs under the owner's lock (Interactive.mu). Port reads never
+// run there: Open, paging, and Invalidate start one asynchronous fetch whose
+// result is stored under that lock and followed by notify. Render only reads
+// the cached window.
 type residentSubagentsDialog struct {
+	lock   sync.Locker
+	notify func()
+
 	active   bool
 	port     session.Port
 	rows     []subagents.ResidentSnapshot
@@ -22,55 +31,105 @@ type residentSubagentsDialog struct {
 	offset   int
 	total    int
 	err      error
-	// fetched records the last window so steady renders do not re-query the
-	// daemon every frame; stale windows refresh after residentDialogRefresh.
-	fetchedAt     time.Time
-	fetchedOffset int
-	fetchedLimit  int
+	loaded   bool
+	// limit is the window size requested by the last Render.
+	limit int
+	// gen identifies the current fetch; stale results are discarded.
+	gen     uint64
+	pending bool
+	// fetched is the window the cache holds; stale forces a refetch.
+	fetchedOffset, fetchedLimit int
+	stale                       bool
+	cancel                      context.CancelFunc
 }
 
 const (
-	residentDialogRefresh = 500 * time.Millisecond
-	residentDialogTimeout = 2 * time.Second
+	residentDialogTimeout      = 2 * time.Second
+	residentDialogInitialLimit = 12
 )
 
-func newResidentSubagentsDialog() *residentSubagentsDialog { return &residentSubagentsDialog{} }
+func newResidentSubagentsDialog(lock sync.Locker, notify func()) *residentSubagentsDialog {
+	return &residentSubagentsDialog{lock: lock, notify: notify}
+}
 
 func (d *residentSubagentsDialog) Open(port session.Port) {
+	d.stop()
 	d.active, d.port, d.selected, d.offset, d.total, d.err = true, port, 0, 0, 0, nil
-	d.rows, d.fetchedAt = nil, time.Time{}
-	d.refresh(12)
+	d.rows, d.loaded, d.limit = nil, false, residentDialogInitialLimit
+	d.schedule()
 }
 
 func (d *residentSubagentsDialog) Active() bool { return d != nil && d.active }
 func (d *residentSubagentsDialog) Close() {
 	if d != nil {
 		d.active = false
+		d.stop()
 	}
 }
 
-func (d *residentSubagentsDialog) refresh(limit int) {
-	if d == nil {
+// Invalidate marks the cached window stale (a resident info event arrived)
+// and refetches it if the dialog is open.
+func (d *residentSubagentsDialog) Invalidate() {
+	if d == nil || !d.active {
 		return
 	}
-	if d.port == nil {
-		d.rows, d.total, d.err = nil, 0, nil
+	d.stale = true
+	d.schedule()
+}
+
+func (d *residentSubagentsDialog) stop() {
+	d.gen++
+	d.pending = false
+	if d.cancel != nil {
+		d.cancel()
+		d.cancel = nil
+	}
+}
+
+// schedule starts a fetch of the current window unless the cache already
+// holds it or the same window is in flight.
+func (d *residentSubagentsDialog) schedule() {
+	if d == nil || !d.active || d.port == nil {
 		return
 	}
-	if limit < 0 {
-		limit = 0
-	}
+	limit := max(d.limit, 0)
 	d.clampSelection(limit)
-	if !d.fetchedAt.IsZero() && d.fetchedOffset == d.offset && d.fetchedLimit == limit && time.Since(d.fetchedAt) < residentDialogRefresh {
+	if !d.stale && d.loaded && d.fetchedOffset == d.offset && d.fetchedLimit == limit {
 		return
 	}
-	d.fetch(limit)
-	// The count may have shrunk since the last fetch; re-anchor once.
-	prev := d.offset
-	d.clampSelection(limit)
-	if d.offset != prev {
-		d.fetch(limit)
+	if d.pending && d.fetchedOffset == d.offset && d.fetchedLimit == limit && !d.stale {
+		return
 	}
+	d.stop()
+	d.pending, d.stale = true, false
+	d.fetchedOffset, d.fetchedLimit = d.offset, limit
+	gen, port, offset := d.gen, d.port, d.offset
+	ctx, cancel := context.WithTimeout(context.Background(), residentDialogTimeout)
+	d.cancel = cancel
+	go func() {
+		defer cancel()
+		rows, total, err := port.ResidentList(ctx, offset, limit)
+		d.lock.Lock()
+		if d.gen != gen {
+			d.lock.Unlock()
+			return
+		}
+		d.pending, d.cancel, d.loaded = false, nil, true
+		if err != nil {
+			d.rows, d.err = nil, err
+		} else {
+			d.rows, d.total, d.err = rows, total, nil
+			if limit == 0 {
+				d.rows = nil
+			}
+			// The count may have shrunk; re-anchor and refetch if needed.
+			d.schedule()
+		}
+		d.lock.Unlock()
+		if d.notify != nil {
+			d.notify()
+		}
+	}()
 }
 
 // clampSelection keeps the selection inside the last known total and the
@@ -95,25 +154,11 @@ func (d *residentSubagentsDialog) clampSelection(limit int) {
 	}
 }
 
-func (d *residentSubagentsDialog) fetch(limit int) {
-	ctx, cancel := context.WithTimeout(context.Background(), residentDialogTimeout)
-	defer cancel()
-	rows, total, err := d.port.ResidentList(ctx, d.offset, limit)
-	d.fetchedAt, d.fetchedOffset, d.fetchedLimit = time.Now(), d.offset, limit
-	if err != nil {
-		d.rows, d.err = nil, err
-		return
-	}
-	d.rows, d.total, d.err = rows, total, nil
-	if limit == 0 {
-		d.rows = nil
-	}
-}
-
 func (d *residentSubagentsDialog) HandleKey(k tui.Key) (openID string) {
 	if d == nil {
 		return ""
 	}
+	defer d.schedule()
 	switch k.Kind {
 	case tui.KeyUp:
 		if d.selected > 0 {
@@ -141,11 +186,17 @@ func (d *residentSubagentsDialog) Render(theme tui.Theme, width, height int) []s
 	if maxRows < 0 {
 		maxRows = 0
 	}
-	d.refresh(maxRows)
+	if maxRows != d.limit {
+		d.limit = maxRows
+		d.schedule()
+	}
 	lines := []string{"  Resident subagents", "  Enter: open   Esc: close   /subagents new <task>: spawn"}
 	if d.err != nil {
 		lines = append(lines, "  "+truncateResidentSubagentIndicator("unavailable: "+sanitizeSessionTreeText(d.err.Error()), width-2))
 		return limitResidentSubagentsDialogHeight(lines, height)
+	}
+	if !d.loaded && d.port != nil {
+		return limitResidentSubagentsDialogHeight(append(lines, "  Loading…"), height)
 	}
 	if len(d.rows) == 0 {
 		if d.total > 0 {

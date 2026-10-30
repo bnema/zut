@@ -35,6 +35,7 @@ func (i *Interactive) reloadOpenResidentChildSession(childID string) {
 // each; otherwise only a changed summary (state transition) reloads. Reloads
 // coalesce in the child session: at most one in flight plus one pending.
 func (i *Interactive) residentInfoChangedLocked() {
+	i.residentSubagentsDialog.Invalidate()
 	child := i.residentChildSession
 	if child == nil {
 		return
