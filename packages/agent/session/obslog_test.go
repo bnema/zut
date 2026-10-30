@@ -142,10 +142,18 @@ func TestSessionLogsCompaction(t *testing.T) {
 	turn.EXPECT().currentAgent().Return(ag).Maybe()
 	continued := make(chan struct{})
 	turn.EXPECT().startTurn(next).RunAndReturn(func(Input) error { close(continued); return nil }).Once()
-	turn.EXPECT().drainQueued().Return().Once()
+	drained := make(chan struct{})
+	turn.EXPECT().drainQueued().RunAndReturn(func() { close(drained) }).Once()
 	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
 	select {
 	case <-continued:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	// startTurn runs before drainQueued; wait for the completion callback's
+	// final seam call before mock expectations are checked during cleanup.
+	select {
+	case <-drained:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
