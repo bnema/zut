@@ -53,9 +53,10 @@ func (i *Interactive) forceDaemonExit(ctx context.Context) bool {
 	}
 	i.mu.Lock()
 	if err != nil {
-		i.exitNotice = fmt.Sprintf("exit: close %s: %v", id, err)
+		i.exitNotice = fmt.Sprintf("exit: close %s: %v\nCheck zut ls; if the session is still running, attach with: zut attach %s", id, err, id)
+	} else {
+		i.addResumeHintLocked()
 	}
-	i.addResumeHintLocked()
 	i.mu.Unlock()
 	i.markCtrlCExit()
 	return true

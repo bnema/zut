@@ -77,6 +77,9 @@ func TestDaemonExitMenuForceError(t *testing.T) {
 	r.term.send("\x03\x03\x03")
 	r.waitExit(t)
 	require.Contains(t, r.i.ExitNotice(), "boom")
+	require.NotContains(t, r.i.ExitNotice(), "--resume")
+	require.Contains(t, r.i.ExitNotice(), "Check zut ls")
+	require.Contains(t, r.i.ExitNotice(), "zut attach s1")
 	require.Empty(t, r.detach)
 }
 
@@ -94,6 +97,9 @@ func TestDaemonExitMenuForceTimeout(t *testing.T) {
 	require.False(t, i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlC}))
 	require.True(t, i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlC}))
 	require.Contains(t, i.ExitNotice(), "deadline exceeded")
+	require.NotContains(t, i.ExitNotice(), "--resume")
+	require.Contains(t, i.ExitNotice(), "Check zut ls")
+	require.Contains(t, i.ExitNotice(), "zut attach s1")
 	// The forced exit returns on the deadline without waiting for Close; the
 	// Close goroutine may start later, so wait for it before mock cleanup.
 	select {
