@@ -338,6 +338,13 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 			}
 		case <-conn.Done():
 		}
+		// The old connection is gone and the reconnect re-attaches after the
+		// last Seq, so a drop signalled on it is stale. Drain it before the
+		// new attach so a drop raised on the new connection is kept.
+		select {
+		case <-s.resub:
+		default:
+		}
 		delay := reconnectMin
 		for {
 			if err == nil || transient(err) {
@@ -347,12 +354,6 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 					err = s.reattach(ctx, next)
 					if err == nil {
 						conn = next
-						// The reconnect re-attached after the last Seq, so a
-						// drop signalled before the close is already handled.
-						select {
-						case <-s.resub:
-						default:
-						}
 						break
 					}
 				}
