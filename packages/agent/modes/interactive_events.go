@@ -569,8 +569,9 @@ func toolResultText(r core.ToolResult) string {
 
 // applyInfoLocked projects session.Info onto the status-bar view state.
 func (i *Interactive) applyInfoLocked(info session.Info) {
+	previousResidents := i.portInfo.Residents
 	i.portInfo = info
-	i.residentInfoChangedLocked()
+	i.residentInfoChangedLocked(previousResidents)
 	if info.Provider != "" {
 		i.cfg.Provider = info.Provider
 	}

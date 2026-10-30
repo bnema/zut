@@ -70,14 +70,16 @@ func (s *residentChildSession) setTheme(theme tui.Theme) {
 }
 
 // SetSummary records the session-published summary shown in the header and
-// reports whether it changed since the last call.
+// reports whether the history may have changed since the last call: the
+// child appeared or vanished, changed state, or appended finalized history.
+// Other summary fields (timestamps) update the header without a reload.
 func (s *residentChildSession) SetSummary(summary session.ResidentSummary, ok bool) bool {
 	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	changed := ok != s.hasSummary || summary != s.summary
+	changed := ok != s.hasSummary || summary.State != s.summary.State || summary.HistoryRev != s.summary.HistoryRev
 	s.summary, s.hasSummary = summary, ok
 	return changed
 }
@@ -106,13 +108,6 @@ func (s *residentChildSession) LoadRecent(limit int) error {
 	}
 	s.replaceRecent(messages, page.OlderCursor)
 	return nil
-}
-
-// ReloadRecent replaces only the newest bounded history page. Any older
-// pages already loaded by PgUp remain intact, so following a completed turn
-// does not discard the user's scrollback.
-func (s *residentChildSession) ReloadRecent(limit int) error {
-	return s.LoadRecent(limit)
 }
 
 // LoadAll progressively installs the newest page then prepends every older
@@ -155,18 +150,41 @@ func (s *residentChildSession) LoadAll(limit int, progressed func()) error {
 	}
 }
 
-// ReloadAll rebuilds from one journal generation instead of replacing a
-// projected-message suffix whose page boundary may not match tool projection.
-func (s *residentChildSession) ReloadAll(limit int, progressed func()) error {
+// ReloadRecent refreshes the transcript after the child's finalized history
+// grew. It reads the newest page and, when the transcript spans more pages,
+// the older ones, assembling the result off-lock; the visible messages are
+// replaced only once the new transcript is complete, so the view never
+// empties during a refresh. Pages share one journal generation, which
+// avoids splicing a suffix whose page boundary moved with the append.
+func (s *residentChildSession) ReloadRecent(limit int) error {
+	page, err := s.historyPage("", limit)
+	if err != nil {
+		return err
+	}
+	items := page.Items
+	for cursor := page.OlderCursor; cursor != ""; {
+		if s.loadCtx != nil && s.loadCtx.Err() != nil {
+			return s.loadCtx.Err()
+		}
+		older, err := s.historyPage(cursor, limit)
+		if err != nil {
+			return err
+		}
+		items = append(append([]subagents.ResidentHistoryItem(nil), older.Items...), items...)
+		cursor = older.OlderCursor
+	}
+	messages, err := subagents.ResidentHistoryMessages(items)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
-	s.view.Messages = nil
+	s.view.Messages = messages
 	s.view.MessagesRevision++
 	s.olderCursor = ""
-	s.recentRows = 0
-	// Keep a reader's bottom-relative viewport across a durable reload.
-	// Render clamps it against the rebuilt rows; a tail follower remains at 0.
+	s.recentRows = len(messages)
+	s.err = ""
 	s.mu.Unlock()
-	return s.LoadAll(limit, progressed)
+	return nil
 }
 
 func (s *residentChildSession) replaceRecent(messages []provider.Message, olderCursor string) {

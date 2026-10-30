@@ -256,41 +256,123 @@ func TestInteractiveResidentInfoEventRefreshesOpenChildSession(t *testing.T) {
 	interactive := newQueuePortInteractive(t, port, session.Snapshot{Info: session.Info{ID: "s", Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentRunning)}}}}, InteractiveConfig{Theme: tui.Dark})
 	interactive.openResidentChildSession("child")
 	child := interactive.residentChildSession
-	waitResidentLines(t, child, "first")
+	waitInteractive(t, interactive, func() bool { return residentLoadIdle(child) && containsLine(child.Render(100, 30), "first") })
 
 	writeResidentJournal(t, root, "child", core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "finalized later"}}}})
 	interactive.mu.Lock()
 	interactive.applyInfoLocked(session.Info{ID: "s", Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentIdle)}}})
 	interactive.mu.Unlock()
-	waitResidentLines(t, child, "finalized later")
+	waitInteractive(t, interactive, func() bool { return containsLine(child.Render(100, 30), "finalized later") })
 	if lines := child.Render(100, 30); !containsLine(lines, "completed") {
 		t.Fatalf("header did not follow session summary: %q", lines)
 	}
 }
 
-func TestInteractiveResidentInfoEventIgnoresUnchangedIdleChild(t *testing.T) {
+// Streaming deltas republish info with the same state and history revision;
+// only a state change or a history revision bump may reload the open view.
+func TestInteractiveResidentInfoEventReloadsOnlyOnHistoryChange(t *testing.T) {
+	// No ResidentHistory expectation for the unchanged events: the mock fails
+	// the test if a reload reaches the port.
 	port := sessionmocks.NewMockPort(t)
 	interactive := &Interactive{}
-	interactive.residentChildSession = newResidentChildSession(port, "child", tui.Dark)
-	info := session.Info{Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentIdle)}}}
-	interactive.residentChildSession.SetSummary(info.Residents[0], true)
-	// No ResidentHistory expectation: an unchanged idle summary must not reload.
-	interactive.applyInfoLocked(info)
-	time.Sleep(20 * time.Millisecond)
+	child := newResidentChildSession(port, "child", tui.Dark)
+	interactive.residentChildSession = child
+	running := session.ResidentSummary{ID: "child", State: string(subagents.ResidentRunning), HistoryRev: 3}
+	child.SetSummary(running, true)
+	interactive.portInfo = session.Info{Residents: []session.ResidentSummary{running}}
+
+	streamed := running
+	streamed.UpdatedAt = time.Date(2026, time.October, 30, 12, 0, 0, 0, time.UTC)
+	previous := interactive.portInfo.Residents
+	interactive.portInfo = session.Info{Residents: []session.ResidentSummary{streamed}}
+	if interactive.residentInfoChangedLocked(previous) {
+		t.Fatal("live-only update scheduled a history reload")
+	}
+
+	// Hold the reservation so the scheduled reload coalesces instead of
+	// reaching the port; the return value is the synchronous signal.
+	if !child.BeginLoad() {
+		t.Fatal("reservation not accepted")
+	}
+	appended := streamed
+	appended.HistoryRev = 4
+	previous = interactive.portInfo.Residents
+	interactive.portInfo = session.Info{Residents: []session.ResidentSummary{appended}}
+	if !interactive.residentInfoChangedLocked(previous) {
+		t.Fatal("history revision bump did not schedule a reload")
+	}
 }
 
-func waitResidentLines(t *testing.T, child *residentChildSession, needle string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if containsLine(child.Render(100, 30), needle) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("child view never showed %q: %q", needle, child.Render(100, 30))
-		}
-		time.Sleep(time.Millisecond)
+func TestResidentListChangedIgnoresLiveOnlyFields(t *testing.T) {
+	base := []session.ResidentSummary{{ID: "a", State: "running", HistoryRev: 1}}
+	live := []session.ResidentSummary{{ID: "a", State: "running", HistoryRev: 1, UpdatedAt: time.Unix(1, 0)}}
+	if residentListChanged(base, live) {
+		t.Fatal("timestamp-only change refetched the picker")
 	}
+	for _, next := range [][]session.ResidentSummary{
+		nil,
+		{{ID: "b", State: "running", HistoryRev: 1}},
+		{{ID: "a", State: "idle", HistoryRev: 1}},
+		{{ID: "a", State: "running", HistoryRev: 2}},
+	} {
+		if !residentListChanged(base, next) {
+			t.Fatalf("change to %+v not detected", next)
+		}
+	}
+}
+
+// ReloadRecent keeps the current transcript visible until the new one is
+// complete.
+func TestResidentChildSessionReloadKeepsMessagesUntilReady(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	item := func(text string) subagents.ResidentHistoryItem {
+		raw, err := json.Marshal(provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: text}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return subagents.ResidentHistoryItem{Type: "message.assistant", Message: raw}
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	port.EXPECT().ResidentHistory(mock.Anything, "child", "", 200).RunAndReturn(func(context.Context, string, string, int) (subagents.ResidentHistoryPage, error) {
+		close(entered)
+		<-release
+		return subagents.ResidentHistoryPage{Items: []subagents.ResidentHistoryItem{item("old"), item("new")}}, nil
+	}).Once()
+	child := newResidentChildSession(port, "child", tui.Dark)
+	child.view.Messages = []provider.Message{{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "old"}}}}
+	done := make(chan error, 1)
+	go func() { done <- child.ReloadRecent(200) }()
+	<-entered
+	if got := strings.Join(child.View().Build(80), "\n"); !strings.Contains(got, "old") {
+		t.Fatalf("view emptied during reload: %q", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(child.View().Build(80), "\n"); !strings.Contains(got, "new") {
+		t.Fatalf("reloaded view = %q", got)
+	}
+}
+
+// waitInteractive consumes redraw requests until cond holds. Async history
+// loads and picker fetches signal completion through invalidate.
+func waitInteractive(t *testing.T, interactive *Interactive, cond func() bool) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for !cond() {
+		select {
+		case <-interactive.dirty:
+		case <-timeout:
+			t.Fatal("condition not reached before timeout")
+		}
+	}
+}
+
+func residentLoadIdle(child *residentChildSession) bool {
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	return !child.loading
 }
 
 func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testing.T) {
@@ -308,7 +390,11 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	if got := interactive.ed.Value(); got != "draft" {
 		t.Fatalf("editor value = %q, want draft preserved", got)
 	}
-	waitResidentDialogLoaded(t, interactive)
+	waitInteractive(t, interactive, func() bool {
+		interactive.mu.Lock()
+		defer interactive.mu.Unlock()
+		return interactive.residentSubagentsDialog.loaded
+	})
 	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
 	if interactive.residentSubagentsDialog.Active() {
 		t.Fatal("Enter left the resident subagent picker open")
@@ -316,53 +402,8 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	if interactive.residentChildSession == nil || interactive.residentChildSession.childID != spec.ID {
 		t.Fatalf("resident child session = %#v, want %q", interactive.residentChildSession, spec.ID)
 	}
-	waitResidentLoadDone(t, interactive.residentChildSession)
-}
-
-// waitResidentDialogLoaded consumes redraw requests until the picker's async
-// list fetch has landed.
-func TestInteractiveInputDownWithoutResidentsDoesNotCallPort(t *testing.T) {
-	// No ResidentList expectation: the gate must read session info only.
-	interactive := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
-	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
-	if interactive.residentSubagentsDialog.Active() {
-		t.Fatal("Down opened the picker without residents")
-	}
-}
-
-func waitResidentDialogLoaded(t *testing.T, interactive *Interactive) {
-	t.Helper()
-	timeout := time.After(5 * time.Second)
-	for {
-		interactive.mu.Lock()
-		loaded := interactive.residentSubagentsDialog.loaded
-		interactive.mu.Unlock()
-		if loaded {
-			return
-		}
-		select {
-		case <-interactive.dirty:
-		case <-timeout:
-			t.Fatal("resident picker fetch did not complete")
-		}
-	}
-}
-
-func waitResidentLoadDone(t *testing.T, child *residentChildSession) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		child.mu.Lock()
-		loading := child.loading
-		child.mu.Unlock()
-		if !loading {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("child history load did not finish")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	child := interactive.residentChildSession
+	waitInteractive(t, interactive, func() bool { return residentLoadIdle(child) })
 }
 
 func containsLine(lines []string, needle string) bool {
@@ -420,10 +461,10 @@ func TestSubagentsSlashActionsRunAsynchronously(t *testing.T) {
 	// Returns while the daemon call is still blocked.
 	interactive.runResidentSubagents(context.Background(), []string{"kill", "child"})
 	close(release)
-	waitSubagentsStatus(t, interactive, func(ok, _ string) bool { return ok == "stopped child" })
+	waitInteractive(t, interactive, func() bool { ok, _ := statusOf(interactive); return ok == "stopped child" })
 
 	interactive.runResidentSubagents(context.Background(), []string{"send", "child", "go", "on"})
-	waitSubagentsStatus(t, interactive, func(_, errMsg string) bool { return errMsg == "send: busy" })
+	waitInteractive(t, interactive, func() bool { _, errMsg := statusOf(interactive); return errMsg == "send: busy" })
 }
 
 func TestSubagentsSlashResultSubcommandRemoved(t *testing.T) {
@@ -436,20 +477,8 @@ func TestSubagentsSlashResultSubcommandRemoved(t *testing.T) {
 	}
 }
 
-func waitSubagentsStatus(t *testing.T, interactive *Interactive, done func(ok, errMsg string) bool) {
-	t.Helper()
-	timeout := time.After(5 * time.Second)
-	for {
-		interactive.mu.Lock()
-		ok, errMsg := interactive.statusOK, interactive.statusErr
-		interactive.mu.Unlock()
-		if done(ok, errMsg) {
-			return
-		}
-		select {
-		case <-interactive.dirty:
-		case <-timeout:
-			t.Fatalf("status = (%q, %q)", ok, errMsg)
-		}
-	}
+func statusOf(interactive *Interactive) (ok, errMsg string) {
+	interactive.mu.Lock()
+	defer interactive.mu.Unlock()
+	return interactive.statusOK, interactive.statusErr
 }

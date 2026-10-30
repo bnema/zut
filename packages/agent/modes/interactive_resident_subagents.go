@@ -9,7 +9,6 @@ import (
 
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/session"
-	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -29,23 +28,41 @@ func (i *Interactive) reloadOpenResidentChildSession(childID string) {
 	i.reloadResidentChildSession(session)
 }
 
-// residentInfoChangedLocked refreshes the open child view from session info
-// events, the only trigger (no timer). The session publishes one coalesced
-// info event per resident update, so a queued or running child reloads on
-// each; otherwise only a changed summary (state transition) reloads. Reloads
-// coalesce in the child session: at most one in flight plus one pending.
-func (i *Interactive) residentInfoChangedLocked() {
-	i.residentSubagentsDialog.Invalidate()
+// residentInfoChangedLocked reacts to a session info event, the only refresh
+// trigger (no timer). The session publishes an info event for every resident
+// update, including streaming deltas, so both consumers gate on what they
+// show: the picker refetches only when the resident set, a state, or a
+// history revision changed; the open child view reloads only when its own
+// state or history revision changed. It reports whether a child reload was
+// scheduled. Reloads coalesce in the child session.
+func (i *Interactive) residentInfoChangedLocked(previous []session.ResidentSummary) bool {
+	if residentListChanged(previous, i.portInfo.Residents) {
+		i.residentSubagentsDialog.Invalidate()
+	}
 	child := i.residentChildSession
 	if child == nil {
-		return
+		return false
 	}
 	summary, ok := residentSummaryFor(i.portInfo.Residents, child.childID)
-	changed := child.SetSummary(summary, ok)
-	active := ok && (summary.State == string(subagents.ResidentQueued) || summary.State == string(subagents.ResidentRunning))
-	if changed || active {
-		go i.reloadOpenResidentChildSession(child.childID)
+	if !child.SetSummary(summary, ok) {
+		return false
 	}
+	go i.reloadOpenResidentChildSession(child.childID)
+	return true
+}
+
+// residentListChanged compares the fields the picker and log view act on.
+func residentListChanged(previous, next []session.ResidentSummary) bool {
+	if len(previous) != len(next) {
+		return true
+	}
+	for index := range next {
+		a, b := previous[index], next[index]
+		if a.ID != b.ID || a.State != b.State || a.HistoryRev != b.HistoryRev {
+			return true
+		}
+	}
+	return false
 }
 
 func residentSummaryFor(residents []session.ResidentSummary, childID string) (session.ResidentSummary, bool) {
@@ -62,7 +79,7 @@ func (i *Interactive) reloadResidentChildSession(session *residentChildSession) 
 		return
 	}
 	go func() {
-		err := session.ReloadAll(200, i.invalidate)
+		err := session.ReloadRecent(200)
 		if session.FinishLoad(err) {
 			if session.RequestRecentReload() {
 				i.reloadResidentChildSession(session)
