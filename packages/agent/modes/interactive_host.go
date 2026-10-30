@@ -119,7 +119,6 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
 	i.prepareReplacementAgentLocked(ag)
-	i.resetCompactContinuationLocked()
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
@@ -223,14 +222,8 @@ func (i *Interactive) CancelTurn() {
 	if cancel != nil {
 		i.cancelCoordinator()
 
-		i.mu.Lock()
-		handoff, persistHandoff := i.resetCompactContinuationLocked()
-		i.mu.Unlock()
 		cancel()
 		i.confirmDialog.CancelAll("turn cancelled")
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
-		}
 	}
 }
 

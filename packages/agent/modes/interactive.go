@@ -251,9 +251,6 @@ type InteractiveConfig struct {
 	// PersistCompactHandoff records the current opaque handoff snapshot in the
 	// active session. It must not re-enter Interactive.
 	PersistCompactHandoff func(json.RawMessage) error
-	// CurrentCompactHandoff returns the opaque handoff snapshot for the session
-	// currently owned by the host after a session switch. Invalid data is ignored.
-	CurrentCompactHandoff func() json.RawMessage
 
 	InitialInput string
 
@@ -625,19 +622,6 @@ type fastModeSettingsStore interface {
 type webSearchSettingsStore interface {
 	SetWebSearchEnabled(enabled bool) error
 }
-
-type compactContinuationOrigin uint8
-
-type compactContinuationRequest struct {
-	origin compactContinuationOrigin
-}
-
-const (
-	compactOriginManual compactContinuationOrigin = iota
-	compactOriginPreTurnThreshold
-	compactOriginAfterTurnThreshold
-	compactOriginRecovery
-)
 
 type compactContinuationReason uint8
 
@@ -2124,17 +2108,7 @@ const modalBackdropDimPercent = 50
 // its persistence snapshot plus whether persistence is needed. The caller must
 // hold i.mu.
 
-// autoCompactContinuationPrompt is an interactive-only compact-handoff
-// instruction defining recovery completion criteria.
-const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Inspect the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. A progress report, plan update, or statement of future work is not completion: if required work remains, take the next concrete action now. Only finish when the request is actually complete or when a specific user decision is required. If nothing remains, give a brief truthful completion; do not invent work or force a tool call.`
-
 // runCompact asks the daemon to compact; session events project progress.
-//
-// When auto is true the spinner message is pinned to "condensing
-// history" and the status bar surfaces "(auto)" next to the context
-// percentage so it's obvious the system triggered this, not the user.
-// request.force tells the post-compact hand-off to resume even if the
-// transcript tail has visible assistant text, for example after StopLength.
 
 // shellEscapeCommand reports whether text is a "!command" shell
 // escape and, if so, returns the command with the leading '!' (and

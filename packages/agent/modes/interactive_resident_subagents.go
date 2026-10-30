@@ -690,7 +690,6 @@ func (i *Interactive) doSessionImport(src string) {
 		return
 	}
 	i.restoreLoadedSessionTitle()
-	i.restoreCurrentCompactHandoff()
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
@@ -904,7 +903,6 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		i.setSessionTreeError("tree: checkout failed: " + err.Error())
 		return
 	}
-	i.restoreCurrentCompactHandoff()
 
 	// LoadSession is intentionally the old func(string) error callback: the
 	// CLI and embedders already own agent/session swapping. Refresh the view
@@ -985,7 +983,6 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		i.invalidate()
 		return
 	}
-	i.restoreCurrentCompactHandoff()
 	i.resetSessionTitleForFreshBranch()
 	i.mu.Lock()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)

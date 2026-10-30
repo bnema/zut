@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -266,7 +265,6 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.planCurrent = 0
 		i.planTotal = 0
 		i.planRevision++
-		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		// A cleared conversation starts over with a fresh terminal title.
 		titleCancel := i.resetSessionTitleLocked()
 		i.view.InvalidateRenderCache()
@@ -276,9 +274,6 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		pinDone()
 		if titleCancel != nil {
 			titleCancel()
-		}
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
 		}
 		// Persist outside the lock: session writes are file I/O. Only write when
 		// a plan existed in core or on disk, so /clear in --no-session mode stays
@@ -418,7 +413,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 		i.openSkillsDialog()
 	case "/compact":
-		i.runCompact(ctx, compactContinuationRequest{origin: compactOriginManual})
+		i.runCompact()
 	case "/study":
 		// Canned prompt that tells the agent to read every file
 		// in some target so its later turns have the whole thing
@@ -791,8 +786,6 @@ func (i *Interactive) doLogout(target string) {
 		return
 	}
 	i.statusErr = ""
-	var handoff json.RawMessage
-	var persistHandoff bool
 	if clearedCurrent {
 		// The running agent was using a credential we just wiped. Drop
 		// it so prompts can't go out with the stale client, and hint at
@@ -801,15 +794,11 @@ func (i *Interactive) doLogout(target string) {
 			_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 		}
 		i.agent = nil
-		handoff, persistHandoff = i.resetCompactContinuationLocked()
 		i.statusOK = "logged out of " + strings.Join(providers, ", ") + ". type /login to sign back in."
 	} else {
 		i.statusOK = "logged out of " + strings.Join(providers, ", ")
 	}
 	i.mu.Unlock()
-	if persistHandoff {
-		i.persistCompactHandoff(handoff)
-	}
 }
 func providerSetupInfo(provider string) (string, []string, bool) {
 	const docsURL = "https://raw.githubusercontent.com/bnema/zut/main/docs/providers.md"
@@ -983,13 +972,7 @@ func (i *Interactive) cancelAndWaitForIdle() {
 		return
 	}
 	if cancel != nil {
-		i.mu.Lock()
-		handoff, persistHandoff := i.resetCompactContinuationLocked()
-		i.mu.Unlock()
 		cancel()
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
-		}
 	}
 	// ConfirmToolCall waits on its response channel rather than the turn
 	// context, so cancellation must also resolve every pending prompt.
@@ -1260,9 +1243,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 		return
 	}
 	i.restoreLoadedSessionTitle()
-	state := decodeCompactHandoff(i.currentCompactHandoff())
 	i.mu.Lock()
-	i.compactContinuation = state
 	i.sessionLoading = false
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""
@@ -1457,7 +1438,6 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		// same transition as settings/session changes. Otherwise a build that
 		// started under the old web-search policy could commit afterward.
 		var buildErr error
-		var clearHandoff bool
 		buildAndCommitLogin := func() {
 			ag, prov, model, err := i.cfg.BuildAgent()
 			if err != nil {
@@ -1468,7 +1448,6 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.mu.Lock()
 			oldAgent := i.agent
 			i.prepareReplacementAgentLocked(ag)
-			_, clearHandoff = i.resetCompactContinuationLocked()
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
@@ -1495,9 +1474,6 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		if buildErr != nil {
 			i.showLoginResult(false, buildErr.Error())
 			return
-		}
-		if clearHandoff {
-			i.persistCompactHandoff(nil)
 		}
 		i.showLoginResult(true, "")
 	}

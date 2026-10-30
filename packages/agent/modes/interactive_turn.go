@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -171,119 +169,6 @@ func ShouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 		return false
 	}
 	return float64(inputTokens)/float64(contextWindow) >= float64(thresholdPercent)/100
-}
-func classifyCompactionContinuation(origin compactContinuationOrigin, statusRescueActive bool, stop provider.StopReason, turnErr error, msgs []provider.Message) compactContinuationReason {
-	if origin != compactOriginManual && structuralCompactionContinuation(msgs) {
-		return compactContinuationStructuralTail
-	}
-	if (origin != compactOriginAfterTurnThreshold && !statusRescueActive) || stop != provider.StopEnd || turnErr != nil {
-		return compactContinuationNone
-	}
-	if likelyForwardWorkStatus(msgs) {
-		return compactContinuationStatusRescue
-	}
-	return compactContinuationNone
-}
-func structuralCompactionContinuation(msgs []provider.Message) bool {
-	if len(msgs) == 0 {
-		return false
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != provider.RoleAssistant {
-		return true
-	}
-	hasText := false
-	for _, content := range last.Content {
-		switch block := content.(type) {
-		case provider.ToolCallBlock:
-			return true
-		case provider.TextBlock:
-			if strings.TrimSpace(block.Text) != "" {
-				hasText = true
-			}
-		case provider.ReasoningBlock:
-			// Reasoning without a visible answer is not terminal.
-		default:
-			return true
-		}
-	}
-	return !hasText
-}
-func likelyForwardWorkStatus(msgs []provider.Message) bool {
-	if len(msgs) == 0 {
-		return false
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != provider.RoleAssistant {
-		return false
-	}
-	var text strings.Builder
-	for _, content := range last.Content {
-		block, ok := content.(provider.TextBlock)
-		if !ok {
-			if _, hasTool := content.(provider.ToolCallBlock); hasTool {
-				return false
-			}
-			continue
-		}
-		if strings.TrimSpace(block.Text) == "" {
-			continue
-		}
-		if text.Len() > 0 {
-			text.WriteByte(' ')
-		}
-		text.WriteString(block.Text)
-	}
-	if text.Len() == 0 {
-		return false
-	}
-	normalized := strings.ToLower(strings.Join(strings.Fields(text.String()), " "))
-	normalized = strings.NewReplacer("’", "'", "‘", "'", "`", "'").Replace(normalized)
-	for _, phrase := range []string{
-		"next i will",
-		"next, i will",
-		"i'll now",
-		"i will now",
-		"i am going to",
-		"i need to continue",
-		"then i will",
-		"then, i will",
-		"i will proceed",
-	} {
-		if containsFutureWorkPhrase(normalized, phrase) {
-			return true
-		}
-	}
-	return false
-}
-func containsFutureWorkPhrase(text, phrase string) bool {
-	for offset := 0; offset < len(text); {
-		index := strings.Index(text[offset:], phrase)
-		if index < 0 {
-			return false
-		}
-		index += offset
-		end := index + len(phrase)
-		if !wordRuneBefore(text, index) && !wordRuneAfter(text, end) {
-			return true
-		}
-		offset = end
-	}
-	return false
-}
-func wordRuneBefore(text string, index int) bool {
-	if index == 0 {
-		return false
-	}
-	rune_, _ := utf8.DecodeLastRuneInString(text[:index])
-	return unicode.IsLetter(rune_) || unicode.IsDigit(rune_) || rune_ == '_'
-}
-func wordRuneAfter(text string, index int) bool {
-	if index == len(text) {
-		return false
-	}
-	rune_, _ := utf8.DecodeRuneInString(text[index:])
-	return unicode.IsLetter(rune_) || unicode.IsDigit(rune_) || rune_ == '_'
 }
 
 // appendPortShellContext sends shell-escape output to the daemon session,

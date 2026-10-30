@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -678,13 +677,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		cancelTurn := i.cancelTurn
 		var restoreQueued core.QueuedMessage
 		var hasRestoreQueued bool
-		var handoff json.RawMessage
-		var persistHandoff bool
 		if busyCancel {
 			// Keep the most recently queued follow-up as an editable draft
 			// instead of losing it with the cancelled turn's stale queue.
 			restoreQueued, hasRestoreQueued = i.popQueuedUserMessageLocked()
-			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
 		if busyCancel {
@@ -701,9 +697,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// goroutine unblocks and the context cancellation can
 			// actually take effect.
 			i.confirmDialog.CancelAll("turn cancelled")
-			if persistHandoff {
-				i.persistCompactHandoff(handoff)
-			}
 			return false
 		}
 	case tui.KeyCtrlD:
