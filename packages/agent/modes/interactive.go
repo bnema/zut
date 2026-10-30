@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -243,13 +242,6 @@ type InteractiveConfig struct {
 	// Agent is optional. If nil, zut opens without credentials; the
 	// user must /login before they can prompt.
 	Agent *core.Agent
-
-	// InitialCompactHandoff is the opaque, persisted handoff snapshot for a
-	// resumed interactive session. Invalid data is ignored by this package.
-	InitialCompactHandoff json.RawMessage
-	// PersistCompactHandoff records the current opaque handoff snapshot in the
-	// active session. It must not re-enter Interactive.
-	PersistCompactHandoff func(json.RawMessage) error
 
 	InitialInput string
 
@@ -611,89 +603,6 @@ type webSearchSettingsStore interface {
 	SetWebSearchEnabled(enabled bool) error
 }
 
-type compactContinuationReason uint8
-
-const (
-	compactContinuationNone compactContinuationReason = iota
-	compactContinuationStructuralTail
-	compactContinuationForcedLength
-	compactContinuationGoalCompactionPending
-	compactContinuationGoal
-	compactContinuationStatusRescue
-)
-
-const maxStatusRescueContinuations = 2
-
-const compactHandoffVersion = 1
-
-type compactContinuationState struct {
-	reason         compactContinuationReason
-	rescueAttempts int
-}
-
-type persistedCompactHandoff struct {
-	Version        int    `json:"version"`
-	Reason         string `json:"reason"`
-	RescueAttempts int    `json:"rescue_attempts,omitempty"`
-}
-
-func decodeCompactHandoff(raw json.RawMessage) compactContinuationState {
-	var persisted persistedCompactHandoff
-	if len(raw) == 0 || json.Unmarshal(raw, &persisted) != nil || persisted.Version != compactHandoffVersion {
-		return compactContinuationState{}
-	}
-	switch persisted.Reason {
-	case "structural_tail":
-		if persisted.RescueAttempts == 0 {
-			return compactContinuationState{reason: compactContinuationStructuralTail}
-		}
-	case "forced_length":
-		if persisted.RescueAttempts == 0 {
-			return compactContinuationState{reason: compactContinuationForcedLength}
-		}
-	case "goal_compaction_pending":
-		if persisted.RescueAttempts == 0 {
-			return compactContinuationState{reason: compactContinuationGoalCompactionPending}
-		}
-	case "goal":
-		if persisted.RescueAttempts == 0 {
-			return compactContinuationState{reason: compactContinuationGoal}
-		}
-	case "status_rescue":
-		if persisted.RescueAttempts >= 1 && persisted.RescueAttempts <= maxStatusRescueContinuations {
-			return compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: persisted.RescueAttempts}
-		}
-	}
-	return compactContinuationState{}
-}
-
-func encodeCompactHandoff(state compactContinuationState) json.RawMessage {
-	var reason string
-	switch state.reason {
-	case compactContinuationStructuralTail:
-		reason = "structural_tail"
-	case compactContinuationForcedLength:
-		reason = "forced_length"
-	case compactContinuationGoalCompactionPending:
-		reason = "goal_compaction_pending"
-	case compactContinuationGoal:
-		reason = "goal"
-	case compactContinuationStatusRescue:
-		reason = "status_rescue"
-	default:
-		return nil
-	}
-	encoded, err := json.Marshal(persistedCompactHandoff{
-		Version:        compactHandoffVersion,
-		Reason:         reason,
-		RescueAttempts: state.rescueAttempts,
-	})
-	if err != nil {
-		return nil
-	}
-	return encoded
-}
-
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -760,7 +669,7 @@ type Interactive struct {
 
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,
-	// scheduled, runCtx, pending*, compacting*, compactContinuation,
+	// runCtx, pending*, compacting*,
 	// goalStatus, cumUsage,
 	// activity, lastCtxInput, busy, cancelTurn). In Port mode they are
 	// either unused or written only as view projections of session.Info
@@ -872,11 +781,6 @@ type Interactive struct {
 	// flight. Surfaced in the status bar so the user can tell a
 	// condense pass from a regular assistant turn.
 	autoCompacting bool
-
-	// compactContinuation records the private reason and bounded rescue
-	// budget for the live compaction handoff. It is never persisted or
-	// inferred from rendered transcript rows.
-	compactContinuation compactContinuationState
 
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
@@ -1134,7 +1038,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		inputHistoryIndex:       -1,
 		clock:                   time.Now,
 		reloadErrors:            append([]string(nil), cfg.StartupExtensionErrors...),
-		compactContinuation:     decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
 	i.skillPins = newSkillPinState(cfg.LoadSkillPins, cfg.ToggleSkillPin, cfg.SkillSnapshot)
 	i.btwDialog.setCloseHook(func() {
@@ -2050,17 +1953,6 @@ const modalBackdropDimPercent = 50
 // swapModel applies a /model selection (or a rescue selection) using
 // the supplied builder. rescue=true tags the success message so the
 // user can see that launch-time overrides were ignored.
-
-// compactHandoffLocked returns a self-contained persistence snapshot. The
-// caller must hold i.mu.
-
-// setCompactContinuationLocked updates the private handoff state and returns
-// its persistence snapshot plus whether persistence is needed. The caller must
-// hold i.mu.
-
-// resetCompactContinuationLocked clears the private handoff state and returns
-// its persistence snapshot plus whether persistence is needed. The caller must
-// hold i.mu.
 
 // runCompact asks the daemon to compact; session events project progress.
 

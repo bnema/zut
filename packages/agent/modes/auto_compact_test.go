@@ -54,47 +54,6 @@ func TestAutoCompactContinuationIsHiddenFromTranscriptButPersisted(t *testing.T)
 	}
 }
 
-func TestDecodeCompactHandoff(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want compactContinuationState
-	}{
-		{
-			name: "status rescue",
-			raw:  `{"version":1,"reason":"status_rescue","rescue_attempts":1}`,
-			want: compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: 1},
-		},
-		{
-			name: "forced length",
-			raw:  `{"version":1,"reason":"forced_length"}`,
-			want: compactContinuationState{reason: compactContinuationForcedLength},
-		},
-		{
-			name: "goal compaction pending",
-			raw:  `{"version":1,"reason":"goal_compaction_pending"}`,
-			want: compactContinuationState{reason: compactContinuationGoalCompactionPending},
-		},
-		{
-			name: "goal",
-			raw:  `{"version":1,"reason":"goal"}`,
-			want: compactContinuationState{reason: compactContinuationGoal},
-		},
-		{
-			name: "invalid status attempt", raw: `{"version":1,"reason":"status_rescue","rescue_attempts":3}`},
-		{name: "unknown reason", raw: `{"version":1,"reason":"other"}`},
-		{name: "invalid JSON", raw: `{`},
-		{name: "missing", raw: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := decodeCompactHandoff([]byte(tt.raw)); got != tt.want {
-				t.Fatalf("decodeCompactHandoff(%q) = %#v, want %#v", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestShouldAutoCompactUsesConfiguredThreshold(t *testing.T) {
 	tests := []struct {
 		name      string

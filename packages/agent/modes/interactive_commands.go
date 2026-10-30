@@ -1287,17 +1287,13 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 }
 
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
-	var replaced bool
 	swap := func() {
-		replaced, _ = i.swapModelUnserialized(prov, model, builder, rescue)
+		i.swapModelUnserialized(prov, model, builder, rescue)
 	}
 	if i.cfg.SessionTransition != nil {
 		i.cfg.SessionTransition(swap)
 	} else {
 		swap()
-	}
-	if replaced {
-		i.resetCompactHandoff()
 	}
 }
 
