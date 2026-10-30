@@ -1015,3 +1015,41 @@ func TestShortIDLookupPrefiltersUnrelatedBody(t *testing.T) {
 		t.Fatal("duplicate alias accepted")
 	}
 }
+
+func TestShortIDLookupEscapedAlias(t *testing.T) {
+	root, cwd := t.TempDir(), t.TempDir()
+	path := filepath.Join(SessionsDir(root, cwd), "escaped.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := json.Marshal(SessionMeta{ID: "a47cd1aa-240d-467f-9a25-5a6be4601f11", CWD: cwd, DaemonIDs: []string{"abcdefghijkl"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	escaped := strings.Replace(string(meta), "abcdefghijkl", `\u0061bcdefghijkl`, 1)
+	if err := os.WriteFile(path, []byte(`{"type":"meta","meta":`+escaped+"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	found, err := FindManagedSessionByID(context.Background(), root, "abcdefghijkl")
+	if err != nil || found != path {
+		t.Fatalf("lookup = %q, %v; want %q", found, err, path)
+	}
+}
+
+func TestSessionContainsIDAcrossChunkBoundary(t *testing.T) {
+	const id = "abcdefghijkl"
+	// The first read fills 32KiB + len(id). Split either the literal ID or
+	// the conservative Unicode-escape marker across that exact boundary.
+	for _, target := range []string{id, `\u0061bcdefghijkl`} {
+		t.Run(target, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "chunks.jsonl")
+			data := strings.Repeat("x", 32*1024+len(id)-1) + target
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if !sessionContainsID(context.Background(), path, id) {
+				t.Fatal("prefilter lost split ID or escape")
+			}
+		})
+	}
+}

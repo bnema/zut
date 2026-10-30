@@ -1307,7 +1307,9 @@ func sessionContainsID(ctx context.Context, path, id string) bool {
 		}
 		n, err := f.Read(buf[carry:])
 		data := buf[:carry+n]
-		if bytes.Contains(data, []byte(id)) {
+		// Escaped JSON may encode an alias without its literal bytes. Any
+		// Unicode escape conservatively admits the file to metadata parsing.
+		if bytes.Contains(data, []byte(id)) || bytes.Contains(data, []byte(`\u`)) {
 			return true
 		}
 		if err != nil {

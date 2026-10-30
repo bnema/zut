@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,8 +20,25 @@ import (
 )
 
 type resumeTerminal struct {
-	bytes.Buffer
-	input *strings.Reader
+	mu     sync.Mutex
+	buffer bytes.Buffer
+	input  *strings.Reader
+}
+
+func (t *resumeTerminal) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buffer.Write(p)
+}
+func (t *resumeTerminal) WriteString(s string) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buffer.WriteString(s)
+}
+func (t *resumeTerminal) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buffer.String()
 }
 
 func (*resumeTerminal) Size() (int, int)                                  { return 80, 24 }
