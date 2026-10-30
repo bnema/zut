@@ -69,6 +69,12 @@ Response:
 ```
 
 Required as the first message when `ZUTCORE_RPC_TOKEN` is set; optional otherwise.
+Extension alerts (`ext_alert`) are held until a successful `hello`, including
+when no token is configured. Clients that want alerts must send `hello`.
+The bridge buffers up to 64 alerts, dropping the oldest on overflow, and
+flushes them in arrival order after the successful `hello` response. Failed
+authentication does not release buffered alerts. Subsequent alerts are sent
+immediately.
 
 ### `prompt`
 
