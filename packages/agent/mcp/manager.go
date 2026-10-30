@@ -65,13 +65,6 @@ func NewManager(cfg Config, cwd string, info ClientInfo, httpClient *http.Client
 	return m
 }
 
-// SetEnv sets the session base environment before Start. Empty means no inheritance.
-func (m *Manager) SetEnv(env []string) {
-	for _, entry := range m.servers {
-		entry.cfg.BaseEnv = append([]string{}, env...)
-	}
-}
-
 // SetAuthPath enables stored OAuth credentials before Start is called.
 func (m *Manager) SetAuthPath(path string) { m.authPath = path }
 

@@ -169,3 +169,35 @@ func TestLookupEnvKeyCase(t *testing.T) {
 		t.Fatalf("last value wins: %q", got)
 	}
 }
+
+func TestLookupEnvOK(t *testing.T) {
+	env := []string{"Path=first", "PATH=last", "Empty=", "Malformed"}
+	for _, tc := range []struct {
+		name    string
+		windows bool
+		key     string
+		want    string
+		present bool
+	}{
+		{"windows mixed case last wins", true, "pAtH", "last", true},
+		{"windows empty is present", true, "EMPTY", "", true},
+		{"windows missing", true, "missing", "", false},
+		{"malformed entry is absent", true, "Malformed", "", false},
+		{"unix exact case", false, "Path", "first", true},
+		{"unix wrong case is absent", false, "path", "", false},
+		{"unix empty is present", false, "Empty", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := lookupEnvOK(tc.windows, env, tc.key)
+			if got != tc.want || ok != tc.present {
+				t.Fatalf("lookupEnvOK = %q, %v; want %q, %v", got, ok, tc.want, tc.present)
+			}
+		})
+	}
+	if got, ok := LookupEnvOK(nil, "PATH"); got != "" || ok {
+		t.Fatalf("nil environment lookup = %q, %v", got, ok)
+	}
+	if got, ok := LookupEnvOK(env, "Empty"); got != "" || !ok {
+		t.Fatalf("empty value lookup = %q, %v", got, ok)
+	}
+}

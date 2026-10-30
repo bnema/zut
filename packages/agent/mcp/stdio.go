@@ -132,14 +132,8 @@ func buildStdioEnv(cfg ServerConfig) []string {
 	if base == nil {
 		base = os.Environ()
 	}
-	lookup := map[string]string{}
-	for _, item := range base {
-		if k, v, ok := strings.Cut(item, "="); ok {
-			lookup[k] = v
-		}
-	}
 	for _, key := range append(append([]string(nil), defaultEnvVars...), cfg.EnvVars...) {
-		if v, ok := lookup[key]; ok {
+		if v, ok := execpath.LookupEnvOK(base, key); ok {
 			env[key] = v
 		}
 	}

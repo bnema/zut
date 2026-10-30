@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/internal/execpath"
 )
 
 const (
@@ -339,11 +341,5 @@ func lookupBaseEnv(base []string, key string) (string, bool) {
 	if base == nil {
 		return os.LookupEnv(key)
 	}
-	for i := len(base) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(base[i], "=")
-		if ok && k == key {
-			return v, true
-		}
-	}
-	return "", false
+	return execpath.LookupEnvOK(base, key)
 }
