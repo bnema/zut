@@ -38,6 +38,9 @@ type Port interface {
 	ChangeCWD(ctx context.Context, path string) error
 	SetJail(ctx context.Context, enabled bool) error
 	SetTitle(ctx context.Context, title string) error
+	// AppendShellContext appends a client-run "!command" output to the
+	// transcript as hidden-from-title user context (ShellEscapeMetaKey).
+	AppendShellContext(ctx context.Context, text string) error
 	ToggleSkillPin(ctx context.Context, name string, global bool) error
 	ReloadExtensions(ctx context.Context) error
 	InvokeExtensionCommand(ctx context.Context, name, args string) error

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/stretchr/testify/mock"
 )
 
 func applyStartupPreResultForTest(t *testing.T, i *Interactive) {
@@ -95,8 +95,12 @@ func TestStartupPreShellWithoutAgentThenPrefill(t *testing.T) {
 }
 
 func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
-	agent := core.NewAgent(nil, "", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+	i, port := newPortShellInteractive(t)
+	sent := make(chan string, 2)
+	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, text string) error {
+		sent <- text
+		return nil
+	}).Times(2)
 	i.runCtx = context.Background()
 	i.awaitingStartupPre = true
 	i.deferredInitialInput = "!printf zut-default"
@@ -111,26 +115,20 @@ func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
 	}
 	i.startShellEscape(context.Background(), cmd)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	var got []string
+	deadline := time.After(5 * time.Second)
+	for len(got) < 2 {
 		select {
 		case result := <-i.startupPreDone:
 			i.applyStartupPreResult(result)
-		default:
+		case text := <-sent:
+			got = append(got, text)
+		case <-deadline:
+			t.Fatalf("startup pre did not auto-submit the deferred prompt; sent %q", got)
 		}
-		messages := agent.Messages()
-		i.mu.Lock()
-		running := i.shellRunning || i.busy
-		awaiting := i.awaitingStartupPre
-		i.mu.Unlock()
-		if len(messages) >= 2 && !running && !awaiting {
-			joined := userMessageText(messages[0]) + "\n" + userMessageText(messages[1])
-			if !strings.Contains(joined, "zut-pre") || !strings.Contains(joined, "zut-default") {
-				t.Fatalf("context = %q, want both pre and default shell output", joined)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("startup pre did not auto-submit the deferred prompt")
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "zut-pre") || !strings.Contains(joined, "zut-default") {
+		t.Fatalf("context = %q, want both pre and default shell output", joined)
+	}
 }

@@ -2,17 +2,38 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
+// newPortShellInteractive attaches an idle daemon session for shell escapes.
+func newPortShellInteractive(t *testing.T) (*Interactive, *sessionmocks.MockPort) {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "shell", Run: session.RunStateIdle}, Seq: 1}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(0x1)).Return(make(chan session.Event), nil).Once()
+	i := NewInteractive(InteractiveConfig{Port: port, CWD: t.TempDir()})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, i.attachPort(ctx))
+	return i, port
+}
+
 func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
-	agent := core.NewAgent(nil, "", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+	i, port := newPortShellInteractive(t)
+	sent := make(chan string, 1)
+	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, text string) error {
+		sent <- text
+		return nil
+	}).Once()
 	cmd := "printf zut-shell-context"
 	if runtime.GOOS == "windows" {
 		cmd = "echo zut-shell-context"
@@ -20,25 +41,44 @@ func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
 
 	i.startShellEscape(context.Background(), cmd)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		messages := agent.Messages()
-		i.mu.Lock()
-		running := i.shellRunning
-		i.mu.Unlock()
-		if len(messages) == 1 && !running {
-			text := userMessageText(messages[0])
-			if !strings.Contains(text, "zut-shell-context") {
-				t.Fatalf("shell context = %q, want command output", text)
-			}
-			if messages[0].Meta[shellEscapeMetaKey] != "true" {
-				t.Fatalf("shell context metadata = %v", messages[0].Meta)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case text := <-sent:
+		require.Contains(t, text, "zut-shell-context")
+	case <-time.After(5 * time.Second):
+		t.Fatal("shell output was not sent to the daemon session")
 	}
-	t.Fatal("shell output was not appended to agent context")
+	require.Eventually(t, func() bool {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return !i.shellRunning && i.statusOK == "shell command finished"
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestShellEscapeReportsDaemonContextFailure(t *testing.T) {
+	i, port := newPortShellInteractive(t)
+	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).Return(errors.New(`unsupported port method "append_shell_context"; run "zut daemon restart"`)).Once()
+
+	i.startShellEscape(context.Background(), "echo hi")
+
+	require.Eventually(t, func() bool {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return !i.shellRunning && strings.Contains(i.statusErr, "zut daemon restart")
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestAppendPortShellContextKeepsTailWithinLimit(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	var got string
+	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, text string) error {
+		got = text
+		return nil
+	}).Once()
+	out := strings.Repeat("x", session.MaxShellContextBytes) + "TAIL"
+	require.NoError(t, appendPortShellContext(port, out))
+	require.LessOrEqual(t, len(got), session.MaxShellContextBytes)
+	require.True(t, strings.HasPrefix(got, "[shell output truncated]"))
+	require.True(t, strings.HasSuffix(got, "TAIL"))
 }
 
 func TestShellEscapeCommand(t *testing.T) {

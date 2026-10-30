@@ -2,12 +2,14 @@ package session_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
 	"github.com/stretchr/testify/require"
 )
@@ -278,4 +280,35 @@ func TestApplySettingsRejectsUnsupportedThreshold(t *testing.T) {
 		require.NoError(t, h.C.ApplySettings(h.Ctx, session.SettingsPatch{AutoCompactThreshold: &v}))
 		require.Equal(t, v, threshold)
 	}
+}
+
+func TestAppendShellContextAppendsTaggedUserContext(t *testing.T) {
+	store := opsStore(t)
+	store.EXPECT().FlushSession().Once()
+	ag := opsAgent(t, "m")
+	h := session.NewLane9Harness(t, session.Deps{SessionStore: store}, ag)
+	events, err := h.C.Subscribe(h.Ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, h.C.AppendShellContext(h.Ctx, "$ ls\n\nfile"))
+	msgs := ag.Messages()
+	last := msgs[len(msgs)-1]
+	require.Equal(t, provider.RoleUser, last.Role)
+	require.Equal(t, "true", last.Meta[session.ShellEscapeMetaKey])
+	require.Equal(t, []provider.Content{provider.TextBlock{Text: "$ ls\n\nfile"}}, last.Content)
+	for {
+		select {
+		case ev := <-events:
+			if um, ok := ev.Agent.(core.EvUserMessage); ok && ev.Kind == session.EvAgent {
+				require.Equal(t, "true", um.Message.Meta[session.ShellEscapeMetaKey])
+				return
+			}
+		case <-h.Ctx.Done():
+			t.Fatal(h.Ctx.Err())
+		}
+	}
+}
+
+func TestAppendShellContextRejectsOversizedText(t *testing.T) {
+	h := session.NewLane9Harness(t, session.Deps{}, opsAgent(t, "m"))
+	require.ErrorContains(t, h.C.AppendShellContext(h.Ctx, strings.Repeat("x", session.MaxShellContextBytes+1)), "limit")
 }

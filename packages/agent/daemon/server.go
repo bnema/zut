@@ -492,6 +492,7 @@ type portParams struct {
 	Ext          string                     `json:"ext"`
 	PanelID      string                     `json:"panel_id"`
 	Key          extproto.PanelKeyFromHost  `json:"key"`
+	Text         string                     `json:"text"`
 }
 
 // port dispatches a snake_case Port method (docs/daemon-protocol.md). Read
@@ -572,6 +573,8 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return nil, h.SetJail(ctx, p.Enabled)
 	case "set_title":
 		return nil, h.SetTitle(ctx, p.Title)
+	case "append_shell_context":
+		return nil, h.AppendShellContext(ctx, p.Text)
 	case "toggle_skill_pin":
 		return nil, h.ToggleSkillPin(ctx, p.Name, p.Global)
 	case "reload_extensions":

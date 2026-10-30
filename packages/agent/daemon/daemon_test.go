@@ -295,6 +295,14 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_profile", Params: json.RawMessage(`{"slot":3}`)}, nil); err != nil {
 		t.Fatal(err)
 	}
+	err = a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "append_shell_context", Params: json.RawMessage(`{"text":"$ ls"}`)}, nil)
+	if err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+		t.Fatalf("append_shell_context by kicked client = %v", err)
+	}
+	s1.h.EXPECT().AppendShellContext(mock.Anything, "$ ls").Return(nil).Once()
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "append_shell_context", Params: json.RawMessage(`{"text":"$ ls"}`)}, nil); err != nil {
+		t.Fatalf("append_shell_context by controller = %v", err)
+	}
 	var got session.Info
 	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "info"}, &got); err != nil || got.ID != "s1" {
 		t.Fatalf("read by non-controller = %+v, %v", got, err)

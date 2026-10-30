@@ -85,6 +85,9 @@ func TestClientRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/repo", tree.Workspaces[0].RepoRoot)
 	require.ErrorIs(t, p.SetTitle(ctx, "x"), session.ErrBusy)
+	err = p.AppendShellContext(ctx, "$ ls")
+	require.ErrorContains(t, err, `unsupported port method "append_shell_context"`)
+	require.ErrorContains(t, err, `run "zut daemon restart"`)
 	calls := d.portCalls()
 	require.Equal(t, "submit", calls[0].Method)
 	var params struct {
@@ -92,6 +95,9 @@ func TestClientRequests(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(calls[0].Params, &params))
 	require.Equal(t, "hi", params.In.Text)
+	last := calls[len(calls)-1]
+	require.Equal(t, "append_shell_context", last.Method)
+	require.JSONEq(t, `{"text":"$ ls"}`, string(last.Params))
 	require.NoError(t, c.Stop(ctx, time.Second))
 }
 

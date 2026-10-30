@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -96,7 +98,12 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			out += "\n\n[cancelled]"
 		}
 
-		if i.agent != nil {
+		var contextErr error
+		if port := i.SessionPort(); port != nil {
+			// The daemon owns the transcript: send the output so the next
+			// prompt sees it, as the in-process path did below.
+			contextErr = appendPortShellContext(port, out)
+		} else if i.agent != nil {
 			i.agent.AppendUserContext(out, map[string]string{shellEscapeMetaKey: "true"})
 		}
 
@@ -117,6 +124,10 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		} else {
 			i.statusOK = "shell command finished"
 			i.statusErr = ""
+		}
+		if contextErr != nil {
+			i.statusOK = ""
+			i.statusErr = "shell output not added to the session: " + contextErr.Error()
 		}
 		i.mu.Unlock()
 		runPendingIdleWork(pendingIdleWork)
@@ -764,3 +775,17 @@ func (i *Interactive) shouldAutoCompactLocked() bool {
 	threshold := NormalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
 	return ShouldAutoCompact(i.lastCtxInput, m.ContextWindow, threshold)
 }
+
+// appendPortShellContext sends shell-escape output to the daemon session,
+// keeping the tail within the session's size limit.
+func appendPortShellContext(port session.Port, out string) error {
+	if len(out) > session.MaxShellContextBytes {
+		const marker = "[shell output truncated]\n"
+		out = marker + strings.ToValidUTF8(out[len(out)-(session.MaxShellContextBytes-len(marker)):], "")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shellContextTimeout)
+	defer cancel()
+	return port.AppendShellContext(ctx, out)
+}
+
+const shellContextTimeout = 30 * time.Second

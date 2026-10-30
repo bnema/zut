@@ -138,6 +138,9 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 			return session.Tree{Workspaces: []session.WorkspaceNode{{RepoRoot: "/repo"}}}, nil
 		case "set_title":
 			return nil, errors.New("set_title: " + session.ErrBusy.Error())
+		case "append_shell_context":
+			// Mirrors an older daemon's dispatch fallthrough.
+			return nil, errors.New(`unsupported port method "append_shell_context"`)
 		}
 		return nil, nil
 	case "list":

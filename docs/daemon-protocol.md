@@ -139,6 +139,7 @@ with `model profile empty`.
 | set_goal | `{"command":{"op":"set","objective":"task"}}` | omitted |
 | change_cwd | `{"path":"/workspace"}` | omitted |
 | set_title | `{"title":"task"}` | omitted |
+| append_shell_context | `{"text":"$ ls\n\n…"}` | omitted |
 | toggle_skill_pin | `{"name":"skill","global":false}` | omitted |
 | invoke_extension_command | `{"name":"command","args":"text"}` | omitted |
 | extension_panel_input | `{"ext":"extension","panel_id":"panel","key":{"type":"panel_key","panel_id":"panel","key":"enter","text":""}}` | omitted |
@@ -148,6 +149,9 @@ with `model profile empty`.
 Types from `core`, `tools`, and `provider` retain their existing JSON field
 spelling; the lossless codecs preserve interface-valued content. The panel key
 is the existing `extproto.PanelKeyFromHost` (no additional key type).
+`append_shell_context` appends client-run `!command` output as user context
+marked `shell_escape` (at most 64 KiB, refused while busy); clients surface an
+older daemon's `unsupported port method` error with a `zut daemon restart` hint.
 `SettingsPatch` omits orchestration: `Args.Orchestrate` is launch-only through
 `CreateSpec.Args`. Nil setting pointers mean unchanged. `GoalCommand.op` is
 `set|pause|resume|clear|complete`; deferred action is `dismiss|send_to_agent`;

@@ -725,3 +725,43 @@ func rescueEligible(err error) bool {
 	}
 	return false
 }
+
+// ShellEscapeMetaKey marks user context appended from a client "!command";
+// session titles and the tree skip it like the in-process shell escape did.
+const ShellEscapeMetaKey = "shell_escape"
+
+// MaxShellContextBytes bounds AppendShellContext. Shell escapes already cap
+// output at the bash tool's 50 KiB; the slack covers the command echo and
+// error/cancel suffixes.
+const MaxShellContextBytes = 64 << 10
+
+// AppendShellContext appends text as user context tagged ShellEscapeMetaKey,
+// the daemon-side twin of the in-process Agent.AppendUserContext path. It is
+// refused while a turn or compaction owns the transcript.
+func (c *Controller) AppendShellContext(ctx context.Context, text string) error {
+	if len(text) > MaxShellContextBytes {
+		return fmt.Errorf("shell context is %d bytes, limit %d", len(text), MaxShellContextBytes)
+	}
+	var result error
+	err := c.call(ctx, func() {
+		if c.turnSeam.isBusy() || c.compactSeam.compacting() {
+			result = ErrBusy
+			return
+		}
+		ag := c.turnSeam.currentAgent()
+		if ag == nil {
+			result = errors.New("session agent unavailable")
+			return
+		}
+		ag.AppendUserContext(text, map[string]string{ShellEscapeMetaKey: "true"})
+		msgs := ag.Messages()
+		if c.deps.SessionStore != nil {
+			c.deps.SessionStore.FlushSession()
+		}
+		c.publishAgent(core.EvUserMessage{Message: msgs[len(msgs)-1]})
+	})
+	if err != nil {
+		return err
+	}
+	return result
+}

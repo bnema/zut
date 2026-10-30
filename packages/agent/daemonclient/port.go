@@ -64,7 +64,13 @@ func (p *RemotePort) port(ctx context.Context, method string, params, out any) e
 	if params == nil {
 		params = struct{}{}
 	}
-	return p.c.call(ctx, portFrame{Type: "port", Session: p.id, Method: method, Params: params}, out)
+	err := p.c.call(ctx, portFrame{Type: "port", Session: p.id, Method: method, Params: params}, out)
+	if err != nil && strings.Contains(err.Error(), "unsupported port method") {
+		// An older daemon predates this method; restarting it picks up the
+		// client's version.
+		return fmt.Errorf("%w; run \"zut daemon restart\"", err)
+	}
+	return err
 }
 
 func (p *RemotePort) setInfo(info session.Info) {
@@ -551,6 +557,13 @@ func (p *RemotePort) SetTitle(ctx context.Context, title string) error {
 	return p.port(ctx, "set_title", struct {
 		Title string `json:"title"`
 	}{title}, nil)
+}
+
+// AppendShellContext implements session.Port.
+func (p *RemotePort) AppendShellContext(ctx context.Context, text string) error {
+	return p.port(ctx, "append_shell_context", struct {
+		Text string `json:"text"`
+	}{text}, nil)
 }
 
 // ToggleSkillPin implements session.Port.
