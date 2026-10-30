@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/lsp"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -1005,5 +1006,50 @@ func TestWriteNewTranscriptTracksPartialAppend(t *testing.T) {
 	}
 	if repaired := provider.RepairOrphanedToolResults(messages); len(repaired) != len(messages) {
 		t.Fatalf("replayed transcript lost tool pairing: %#v", messages)
+	}
+}
+
+func TestSessionResumeClosesDiscardedAgentLSP(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("buildFailure=%v", fail), func(t *testing.T) {
+			cwd := t.TempDir()
+			listener := fakeLSPWorkspace(t, cwd)
+			oldManager, candidateManager := lsp.NewManager(), lsp.NewManager()
+			t.Cleanup(func() { _ = oldManager.Close(); _ = candidateManager.Close() })
+			old := core.NewAgent(nil, "old", "", core.Registry{"lsp": &tools.LSPTool{Manager: oldManager}})
+			next := core.NewAgent(nil, "new", "", core.Registry{"lsp": &tools.LSPTool{Manager: candidateManager}})
+			oldConn := startFakeLSP(t, old.ToolsSnapshot(), cwd, listener)
+			nextConn := startFakeLSP(t, next.ToolsSnapshot(), cwd, listener)
+			path := syntheticSession(t, "stored", "new", provider.Usage{})
+			sess, _, err := core.OpenSession(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			candidate, err := applySessionResume(sess, old, "current", "old", false, false, func(p, m string) (*core.Agent, string, string, error) {
+				if fail {
+					return next, p, m, errors.New("build failed")
+				}
+				return next, p, m, nil
+			})
+			if fail {
+				if err == nil {
+					t.Fatal("expected build failure")
+				}
+				waitFakeLSPExit(t, nextConn)
+				if _, err := oldManager.Capabilities(context.Background(), cwd, "", "fake"); err != nil {
+					t.Fatalf("live manager closed on failure: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer candidate.session.Close()
+				waitFakeLSPExit(t, oldConn)
+				if _, err := candidateManager.Capabilities(context.Background(), cwd, "", "fake"); err != nil {
+					t.Fatalf("replacement manager closed: %v", err)
+				}
+			}
+		})
 	}
 }

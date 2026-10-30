@@ -281,6 +281,9 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 
 	rebuilt, resolvedProvider, resolvedModel, err := buildAgentFor(resumeProvider, resumeModel)
 	if err != nil {
+		if rebuilt != current {
+			closeAgentLSP(rebuilt)
+		}
 		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q: %w", resumeProvider, resumeModel, err)
 	}
 	if rebuilt == nil {
@@ -341,6 +344,12 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	if err != nil {
 		return sessionResumeCandidate{}, joinSessionCloseError(err, sess)
 	}
+	committed := false
+	defer func() {
+		if !committed && candidate.rebuilt && candidate.agent != ag {
+			closeAgentLSP(candidate.agent)
+		}
+	}()
 	// A replacement agent is still private at this point. Bind the durable
 	// identity before it can be published or run any startup work.
 	if err := candidate.agent.BindSessionID(candidate.session.Meta.ID); err != nil {
@@ -361,6 +370,10 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	// update/remove fail. Done after the candidate is fully hydrated but before
 	// the caller commits it.
 	candidate.agent.SetPlan(candidate.session.Meta.PlanSteps())
+	committed = true
+	if candidate.agent != ag {
+		closeAgentLSP(ag)
+	}
 	return candidate, nil
 }
 

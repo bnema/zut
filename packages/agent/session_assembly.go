@@ -805,6 +805,9 @@ func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 	defer func() {
 		if !committed {
 			rollback()
+			if candidate.rebuilt && candidate.agent != current {
+				closeAgentLSP(candidate.agent)
+			}
 			loadErr = joinSessionCloseError(loadErr, candidate.session)
 		}
 	}()
@@ -848,6 +851,9 @@ func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 	a.runtime.SetActiveSession(candidate.session.ID)
 	committed = true
 	a.mu.Unlock()
+	if candidate.agent != current {
+		closeAgentLSP(current)
+	}
 	if candidate.session.Meta.Parent != "" {
 		a.extMgr.EmitSessionEvent("session_forked", sessionContext(candidate.session), newStates)
 	}
