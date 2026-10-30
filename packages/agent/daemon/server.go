@@ -96,7 +96,7 @@ func listenSocket(path string, zutOwnedDirs []string) (*socketListener, error) {
 // close stops listening, removes the socket only if the path still refers to
 // the file created by this listener, then releases the socket lock.
 func (l *socketListener) close() {
-	_ = l.Listener.Close()
+	_ = l.Close()
 	if cur, err := os.Lstat(l.path); err == nil && os.SameFile(cur, l.info) {
 		_ = os.Remove(l.path)
 	}

@@ -179,7 +179,7 @@ func (h *factoryHandle) Close(ctx context.Context, reason string) error {
 	if err := h.Controller.Close(ctx, reason); err != nil {
 		return err
 	}
-	if h.Controller.OnActor(ctx) {
+	if h.OnActor(ctx) {
 		return nil
 	}
 	select {

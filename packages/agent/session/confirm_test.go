@@ -108,10 +108,7 @@ func TestConfirmQuestionsRescueConcurrent(t *testing.T) {
 	qctx, qcancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() { _, err := c.questionAsker().AskQuestions(qctx, nil); done <- err }()
-	for {
-		if (<-events).Kind == EvPending {
-			break
-		}
+	for (<-events).Kind != EvPending {
 	}
 	qcancel()
 	require.ErrorIs(t, <-done, context.Canceled)

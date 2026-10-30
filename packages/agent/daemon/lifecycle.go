@@ -114,7 +114,7 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 		close(opts.Ready)
 	}
 	<-runCtx.Done()
-	_ = ln.Listener.Close()
+	_ = ln.Close()
 	d.shutdown()
 	d.log.Info("daemon stopped")
 	return nil
