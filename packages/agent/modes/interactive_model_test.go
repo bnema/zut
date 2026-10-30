@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestReasoningSelectorUsesCurrentModelLevels(t *testing.T) {
@@ -48,33 +50,32 @@ func TestReasoningSelectorOnlyOffersOffForUnsupportedModel(t *testing.T) {
 	}
 }
 
+// Ctrl+R asks the daemon for the next level; the level shown is the one the
+// daemon reports back (session TestSetReasoningPersistsAndUpdatesAgent).
 func TestCtrlRCyclesCurrentModelReasoningLevels(t *testing.T) {
-	var changed []string
-	i := NewInteractive(InteractiveConfig{
-		Theme:     tui.Dark,
-		Provider:  "openai",
-		Model:     "gpt-5.6-sol",
-		Reasoning: "high",
-		OnReasoningChanged: func(level string) {
-			changed = append(changed, level)
-		},
-	})
-	i.agent = &core.Agent{Reasoning: "high"}
+	port := sessionmocks.NewMockPort(t)
+	info := session.Info{Run: session.RunStateIdle, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}
+	i := newQueuePortInteractive(t, port, session.Snapshot{Info: info}, InteractiveConfig{Theme: tui.Dark})
 	i.rend = nil
 
 	for _, want := range []string{"xhigh", "max", ""} {
+		called := make(chan struct{})
+		port.EXPECT().SetReasoning(mock.Anything, want).RunAndReturn(func(context.Context, string) error {
+			close(called)
+			return nil
+		}).Once()
 		if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlR}); done {
 			t.Fatal("ctrl+r exited the interactive session")
 		}
-		if i.cfg.Reasoning != want || i.agent.Reasoning != want {
-			t.Fatalf("reasoning = cfg %q agent %q, want %q", i.cfg.Reasoning, i.agent.Reasoning, want)
+		waitSignal(t, called, "SetReasoning "+want)
+		info.Reasoning = want
+		i.mu.Lock()
+		i.applyInfoLocked(info)
+		got := i.cfg.Reasoning
+		i.mu.Unlock()
+		if got != want {
+			t.Fatalf("reasoning = %q, want %q", got, want)
 		}
-	}
-	if !slices.Equal(changed, []string{"xhigh", "max", ""}) {
-		t.Fatalf("reasoning callbacks = %q", changed)
-	}
-	if i.statusOK != "reasoning level off" {
-		t.Fatalf("reasoning status = %q", i.statusOK)
 	}
 }
 
