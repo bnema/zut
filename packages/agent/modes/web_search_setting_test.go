@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"errors"
+	"github.com/bnema/zut/packages/tui"
 	"strings"
 	"testing"
 	"time"
@@ -51,11 +52,11 @@ func settingsRow(t *testing.T, i *Interactive, key string) settingsItem {
 
 func waitStatus(t *testing.T, i *Interactive, ok func(statusOK, statusErr string) bool) {
 	t.Helper()
-	require.Eventually(t, func() bool {
-		i.mu.Lock()
-		defer i.mu.Unlock()
-		return ok(i.statusOK, i.statusErr)
-	}, 5*time.Second, 5*time.Millisecond)
+	runLoopCall(t, i)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.True(t, ok(i.statusOK, i.statusErr), "status OK=%q error=%q", i.statusOK, i.statusErr)
+
 }
 
 func TestSettingsDialogOffersWebSearchEnabledByDefault(t *testing.T) {
@@ -223,5 +224,51 @@ func TestStaleWebSearchResolveCannotCommitAfterPolicyChange(t *testing.T) {
 	}
 	if len(availability) == 0 || availability[len(availability)-1] {
 		t.Fatalf("stale resolve availability = %v, want final deny", availability)
+	}
+}
+
+func TestPortSettingResultOwnedByInputLoop(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		for _, applyErr := range []error{nil, errors.New("disk full")} {
+			i, port := newPortSettingsInteractive(t, InteractiveConfig{})
+			entered, release := make(chan struct{}), make(chan struct{})
+			port.EXPECT().ApplySettings(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, session.SettingsPatch) error {
+				close(entered)
+				<-release
+				return applyErr
+			}).Once()
+			i.applySettingToggle("web_search_enabled", false)
+			waitSignal(t, entered, "ApplySettings")
+			// Read and mutate dialog input while the worker holds the RPC response.
+			for n := 0; n < 10; n++ {
+				i.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
+				i.settingsDialog.Render(i.cfg.Theme, 80)
+				require.True(t, i.webSearchEnabled())
+			}
+			if stale {
+				i.sessionGen++
+				i.statusOK = "new session"
+			}
+			close(release)
+			// Even a completed RPC cannot mutate input-owned state until this call.
+			select {
+			case fn := <-i.loopCalls:
+				require.True(t, i.webSearchEnabled())
+				fn()
+			case <-time.After(5 * time.Second):
+				t.Fatal("setting completion was not posted")
+			}
+			if stale {
+				require.True(t, i.webSearchEnabled())
+				require.Equal(t, "new session", i.statusOK)
+				require.Empty(t, i.statusErr)
+			} else if applyErr != nil {
+				require.True(t, i.webSearchEnabled())
+				require.Contains(t, i.statusErr, "disk full")
+				require.True(t, settingsRow(t, i, "web_search_enabled").value)
+			} else {
+				require.False(t, i.webSearchEnabled())
+			}
+		}
 	}
 }

@@ -1231,14 +1231,38 @@ func (i *Interactive) portSettingsCall(label string, call func(context.Context, 
 }
 
 func (i *Interactive) portApplySettings(key string, patch session.SettingsPatch) {
-	i.portSettingsCall("settings: "+key, func(ctx context.Context, port session.Port) error {
-		err := port.ApplySettings(ctx, patch)
-		i.mirrorPortSetting(key, patch, err)
-		if err != nil && strings.Contains(err.Error(), "unsupported port method") {
-			return fmt.Errorf("%w; restart the daemon to enable settings updates", err)
+	parent := i.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	gen, port := i.sessionGen, i.SessionPort()
+	go func() {
+		var err error
+		if port == nil {
+			err = fmt.Errorf("no session attached")
+		} else {
+			ctx, cancel := context.WithTimeout(parent, i.sessionCallTimeout())
+			err = port.ApplySettings(ctx, patch)
+			cancel()
 		}
-		return err
-	})
+		if err != nil && strings.Contains(err.Error(), "unsupported port method") {
+			err = fmt.Errorf("%w; restart the daemon to enable settings updates", err)
+		}
+		select {
+		case i.loopCalls <- func() {
+			if i.sessionGen != gen {
+				return
+			}
+			i.mirrorPortSetting(key, patch, err)
+			if err != nil {
+				i.ReportError(fmt.Errorf("settings: %s: %w", key, err))
+			}
+			i.invalidate()
+		}:
+		case <-parent.Done():
+		}
+	}()
+
 }
 
 // portSettingToggleBlocked applies the launch-time limits the daemon cannot

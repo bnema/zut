@@ -30,8 +30,11 @@ func newPortShellInteractive(t *testing.T) (*Interactive, *sessionmocks.MockPort
 func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
 	i, port := newPortShellInteractive(t)
 	sent := make(chan string, 1)
+	release := make(chan struct{})
+	done := make(chan struct{})
 	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, text string) error {
 		sent <- text
+		<-release
 		return nil
 	}).Once()
 	cmd := "printf zut-shell-context"
@@ -47,24 +50,40 @@ func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shell output was not sent to the daemon session")
 	}
-	require.Eventually(t, func() bool {
-		i.mu.Lock()
-		defer i.mu.Unlock()
-		return !i.shellRunning && i.statusOK == "shell command finished"
-	}, 5*time.Second, 10*time.Millisecond)
+	i.mu.Lock()
+	require.True(t, i.shellRunning)
+	i.pendingIdleWork = append(i.pendingIdleWork, func() { close(done) })
+	i.mu.Unlock()
+	close(release)
+	waitSignal(t, done, "shell completion")
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.False(t, i.shellRunning)
+	require.Equal(t, "shell command finished", i.statusOK)
+
 }
 
 func TestShellEscapeReportsDaemonContextFailure(t *testing.T) {
 	i, port := newPortShellInteractive(t)
-	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).Return(errors.New(`unsupported port method "append_shell_context"; run "zut daemon restart"`)).Once()
-
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	port.EXPECT().AppendShellContext(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, string) error {
+		close(entered)
+		<-release
+		return errors.New(`unsupported port method "append_shell_context"; run "zut daemon restart"`)
+	}).Once()
 	i.startShellEscape(context.Background(), "echo hi")
+	waitSignal(t, entered, "AppendShellContext")
+	i.mu.Lock()
+	require.True(t, i.shellRunning)
+	i.pendingIdleWork = append(i.pendingIdleWork, func() { close(done) })
+	i.mu.Unlock()
+	close(release)
+	waitSignal(t, done, "shell completion")
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.False(t, i.shellRunning)
+	require.Contains(t, i.statusErr, "zut daemon restart")
 
-	require.Eventually(t, func() bool {
-		i.mu.Lock()
-		defer i.mu.Unlock()
-		return !i.shellRunning && strings.Contains(i.statusErr, "zut daemon restart")
-	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestAppendPortShellContextKeepsTailWithinLimit(t *testing.T) {
