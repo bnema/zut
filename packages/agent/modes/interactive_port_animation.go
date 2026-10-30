@@ -24,8 +24,8 @@ func (i *Interactive) redrawAnimationTick(requestRedraw func()) {
 	dictating := i.dictation.phase != ""
 	sessionLoading := i.sessionDialog.Loading()
 	sessionSearching := i.sessionDialog.SearchLoading()
-	// Daemon clients have no local ResidentManager activity observer.
-	residentAnimating := i.residentAnimating.Load() || hasActivePortResidents(i.portInfo.Residents)
+	// Resident activity comes only from the session-published summaries.
+	residentAnimating := hasActivePortResidents(i.portInfo.Residents)
 	i.mu.Unlock()
 	if busy || dictating || sessionLoading || sessionSearching || i.btwDialog.Loading() || residentAnimating {
 		requestRedraw()

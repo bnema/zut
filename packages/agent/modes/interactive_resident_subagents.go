@@ -9,6 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -27,6 +28,34 @@ func (i *Interactive) reloadOpenResidentChildSession(childID string) {
 	}
 	i.reloadResidentChildSession(session)
 }
+
+// residentInfoChangedLocked refreshes the open child view from session info
+// events, the only trigger (no timer). The session publishes one coalesced
+// info event per resident update, so a queued or running child reloads on
+// each; otherwise only a changed summary (state transition) reloads. Reloads
+// coalesce in the child session: at most one in flight plus one pending.
+func (i *Interactive) residentInfoChangedLocked() {
+	child := i.residentChildSession
+	if child == nil {
+		return
+	}
+	summary, ok := residentSummaryFor(i.portInfo.Residents, child.childID)
+	changed := child.SetSummary(summary, ok)
+	active := ok && (summary.State == string(subagents.ResidentQueued) || summary.State == string(subagents.ResidentRunning))
+	if changed || active {
+		go i.reloadOpenResidentChildSession(child.childID)
+	}
+}
+
+func residentSummaryFor(residents []session.ResidentSummary, childID string) (session.ResidentSummary, bool) {
+	for _, r := range residents {
+		if r.ID == childID {
+			return r, true
+		}
+	}
+	return session.ResidentSummary{}, false
+}
+
 func (i *Interactive) reloadResidentChildSession(session *residentChildSession) {
 	if i == nil || session == nil {
 		return

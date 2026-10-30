@@ -5,20 +5,25 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
-// residentChildSession owns a bounded child transcript assembled from the
-// resident journal plus the child's immutable live projection. It deliberately
-// has no UI lock or disk path: callers load pages asynchronously and discard
-// them when their own dialog generation no longer matches.
+// residentChildSession owns a bounded child transcript read through the
+// session port. It deliberately has no UI lock or disk path: callers load
+// pages asynchronously and refresh them when the session publishes a changed
+// resident summary. Only finalized history is shown; the daemon does not
+// stream a child's in-flight text.
 type residentChildSession struct {
 	mu                  sync.Mutex
-	manager             *subagents.ResidentManager
+	port                session.Port
 	childID             string
+	summary             session.ResidentSummary
+	hasSummary          bool
 	olderCursor         string
 	view                tui.View
 	composer            *tui.Editor
@@ -32,21 +37,20 @@ type residentChildSession struct {
 	unread                int
 	lastRows              int
 	recentRows            int
-	liveRevision          uint64
-	livePresent           bool
 	cacheWidth            int
 	cacheMessagesRevision uint64
 	cacheMessageCount     int
-	cacheLiveRevision     uint64
-	cacheLivePresent      bool
 	cacheRows             []string
 	loadCtx               context.Context
 	cancelLoad            context.CancelFunc
 }
 
-func newResidentChildSession(manager *subagents.ResidentManager, childID string, theme tui.Theme) *residentChildSession {
+// residentHistoryTimeout bounds one daemon page read.
+const residentHistoryTimeout = 10 * time.Second
+
+func newResidentChildSession(port session.Port, childID string, theme tui.Theme) *residentChildSession {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &residentChildSession{manager: manager, childID: childID, view: tui.View{Theme: theme, ExpandAll: true}, composer: tui.NewEditor("follow-up > "), loadCtx: ctx, cancelLoad: cancel}
+	return &residentChildSession{port: port, childID: childID, view: tui.View{Theme: theme, ExpandAll: true}, composer: tui.NewEditor("follow-up > "), loadCtx: ctx, cancelLoad: cancel}
 }
 
 func (s *residentChildSession) Close() {
@@ -65,11 +69,34 @@ func (s *residentChildSession) setTheme(theme tui.Theme) {
 	s.view.InvalidateRenderCache()
 }
 
-func (s *residentChildSession) LoadRecent(limit int) error {
-	if s == nil || s.manager == nil {
-		return fmt.Errorf("resident child session: unavailable")
+// SetSummary records the session-published summary shown in the header and
+// reports whether it changed since the last call.
+func (s *residentChildSession) SetSummary(summary session.ResidentSummary, ok bool) bool {
+	if s == nil {
+		return false
 	}
-	page, err := s.manager.HistoryPage(s.childID, "", limit)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := ok != s.hasSummary || summary != s.summary
+	s.summary, s.hasSummary = summary, ok
+	return changed
+}
+
+func (s *residentChildSession) historyPage(cursor string, limit int) (subagents.ResidentHistoryPage, error) {
+	if s == nil || s.port == nil {
+		return subagents.ResidentHistoryPage{}, fmt.Errorf("resident child session: unavailable")
+	}
+	parent := s.loadCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, residentHistoryTimeout)
+	defer cancel()
+	return s.port.ResidentHistory(ctx, s.childID, cursor, limit)
+}
+
+func (s *residentChildSession) LoadRecent(limit int) error {
+	page, err := s.historyPage("", limit)
 	if err != nil {
 		return err
 	}
@@ -157,12 +184,11 @@ func (s *residentChildSession) replaceRecent(messages []provider.Message, olderC
 	s.olderCursor = olderCursor
 	s.recentRows = len(messages)
 	s.err = ""
-	s.refreshLiveLocked()
 	s.mu.Unlock()
 }
 
 func (s *residentChildSession) LoadOlder(limit int) error {
-	if s == nil || s.manager == nil {
+	if s == nil || s.port == nil {
 		return fmt.Errorf("resident child session: unavailable")
 	}
 	s.mu.Lock()
@@ -171,7 +197,7 @@ func (s *residentChildSession) LoadOlder(limit int) error {
 	if cursor == "" {
 		return nil
 	}
-	page, err := s.manager.HistoryPage(s.childID, cursor, limit)
+	page, err := s.historyPage(cursor, limit)
 	if err != nil {
 		return err
 	}
@@ -184,49 +210,24 @@ func (s *residentChildSession) LoadOlder(limit int) error {
 	s.view.MessagesRevision++
 	s.olderCursor = page.OlderCursor
 	s.err = ""
-	s.refreshLiveLocked()
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *residentChildSession) refreshLiveLocked() {
-	if s == nil || s.manager == nil {
-		return
-	}
-	live, ok := s.manager.Live(s.childID)
-	if !ok {
-		s.view.Streaming = ""
-		s.view.StreamingActive = false
-		s.view.ToolCalls = nil
-		s.liveRevision = 0
-		s.livePresent = false
-		return
-	}
-	s.liveRevision = live.Revision
-	s.livePresent = true
-	s.view.Streaming = live.AssistantText
-	s.view.StreamingActive = live.State == subagents.ResidentRunning && live.AssistantText != ""
-	s.view.ToolCalls = make([]tui.ToolCallView, len(live.Tools))
-	for index, tool := range live.Tools {
-		s.view.ToolCalls[index] = tui.ToolCallView{ID: tool.ID, Name: tool.Name, Args: tui.ShortArgs(tool.Name, tool.Args), RawJSONBuf: string(tool.Args), Streaming: tool.State == subagents.ResidentLiveToolComposing, Revision: live.Revision}
-	}
-}
-
 func (s *residentChildSession) renderedHistory(width int) []string {
 	s.mu.Lock()
-	s.refreshLiveLocked()
-	if s.cacheWidth == width && s.cacheMessagesRevision == s.view.MessagesRevision && s.cacheMessageCount == len(s.view.Messages) && s.cacheLiveRevision == s.liveRevision && s.cacheLivePresent == s.livePresent && s.cacheRows != nil {
+	if s.cacheWidth == width && s.cacheMessagesRevision == s.view.MessagesRevision && s.cacheMessageCount == len(s.view.Messages) && s.cacheRows != nil {
 		rows := s.cacheRows
 		s.mu.Unlock()
 		return rows
 	}
 	view := s.view.CloneForRender()
-	messagesRevision, liveRevision := s.view.MessagesRevision, s.liveRevision
+	messagesRevision := s.view.MessagesRevision
 	s.mu.Unlock()
 	rows := view.Build(width)
 	s.mu.Lock()
-	if s.view.MessagesRevision == messagesRevision && s.liveRevision == liveRevision {
-		s.cacheWidth, s.cacheMessagesRevision, s.cacheMessageCount, s.cacheLiveRevision, s.cacheLivePresent, s.cacheRows = width, messagesRevision, len(s.view.Messages), liveRevision, s.livePresent, rows
+	if s.view.MessagesRevision == messagesRevision {
+		s.cacheWidth, s.cacheMessagesRevision, s.cacheMessageCount, s.cacheRows = width, messagesRevision, len(s.view.Messages), rows
 		s.view.AdoptRenderCacheFrom(view)
 	}
 	s.mu.Unlock()
@@ -238,7 +239,6 @@ func (s *residentChildSession) View() *tui.View {
 		return nil
 	}
 	s.mu.Lock()
-	s.refreshLiveLocked()
 	defer s.mu.Unlock()
 	return s.view.CloneForRender()
 }
@@ -293,7 +293,7 @@ func (s *residentChildSession) FinishLoad(err error) bool {
 }
 
 // HandleKey updates only the child-local composer. It returns a durable prompt
-// candidate; the controller leaves it intact until Manager.Resume succeeds.
+// candidate; the controller leaves it intact until the session accepts it.
 func (s *residentChildSession) HandleKey(k tui.Key) (string, bool) {
 	if s == nil || s.composer == nil {
 		return "", false
@@ -354,30 +354,28 @@ func (s *residentChildSession) FollowTail() {
 	s.mu.Unlock()
 }
 
-// Render keeps all transcript rendering in tui.View. Disk-backed history is
-// loaded by the controller before this is called; this method consults only
-// the immutable live projection maintained by the resident child.
+// Render keeps all transcript rendering in tui.View. History is loaded by the
+// controller before this is called; Render never calls the session port.
 func (s *residentChildSession) Render(width, height int) []string {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	loading, loadErr := s.loading, s.err
+	summary, hasSummary := s.summary, s.hasSummary
 	var editorLines []string
 	if s.composer != nil {
 		editorLines, _, _ = s.composer.Render(width)
 	}
 	s.mu.Unlock()
 	header := fmt.Sprintf("  Resident subagent %s", s.childID)
-	if s.manager != nil {
-		if snapshot, ok := s.manager.SnapshotFor(s.childID); ok {
-			header += fmt.Sprintf("  %s  %s/%s", snapshot.State, snapshot.Provider, snapshot.Model)
-			if snapshot.Profile != "" {
-				header += "  " + snapshot.Profile
-			}
-			if snapshot.WorkspaceMode != "" {
-				header += "  " + string(snapshot.WorkspaceMode)
-			}
+	if hasSummary {
+		header += "  " + residentDisplayState(subagents.ResidentState(summary.State))
+		if profile := sanitizeSessionTreeText(summary.Profile); profile != "" {
+			header += "  " + profile
+		}
+		if workspace := sanitizeSessionTreeText(summary.Workspace); workspace != "" {
+			header += "  " + workspace
 		}
 	}
 	lines := []string{header}

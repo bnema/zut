@@ -154,20 +154,8 @@ func formatResidentSubagentActivityAge(started, now time.Time) string {
 	}
 }
 
-func renderResidentSubagentActivityPage(theme tui.Theme, manager *subagents.ResidentManager, spinnerGlyph string, snapshotLimit, width int, now time.Time) ([]string, int) {
-	if manager == nil || snapshotLimit <= 0 {
-		return nil, 0
-	}
-	snapshots, total := manager.ActiveSnapshotPage(snapshotLimit)
-	hidden := total - len(snapshots)
-	if hidden < 0 {
-		hidden = 0
-	}
-	return renderResidentSubagentActivityLines(theme, spinnerGlyph, snapshots, width, now), hidden
-}
-
 // residentSnapshotsFromInfo projects the daemon-published resident summaries
-// for clients without a local ResidentManager. Summaries carry no usage or
+// for the activity panel. Summaries carry no usage or
 // activity detail, so turn age falls back to UpdatedAt.
 func residentSnapshotsFromInfo(residents []session.ResidentSummary, limit int) ([]subagents.ResidentSnapshot, int) {
 	out := make([]subagents.ResidentSnapshot, 0, len(residents))

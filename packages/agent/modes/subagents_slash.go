@@ -56,16 +56,7 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "/subagents result <id>: missing id")
 			return
 		}
-		if i.cfg.ResidentManager == nil {
-			i.subagentsStatus("", "result: unavailable on a daemon session; use /subagents logs "+rest)
-			return
-		}
-		result, err := i.cfg.ResidentManager.Result(rest)
-		if err != nil {
-			i.subagentsStatus("", "result: "+err.Error())
-			return
-		}
-		i.subagentsStatus(residentResultStatus(rest, result), "")
+		i.subagentsStatus("", "result: unavailable on a daemon session; use /subagents logs "+rest)
 	case "kill", "stop":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents kill <id>: missing id")
@@ -92,21 +83,10 @@ func (i *Interactive) runResidentSubagents(ctx context.Context, args []string) {
 	}
 }
 
-func residentResultStatus(id string, result subagents.ResidentResult) string {
-	status := fmt.Sprintf("%s result %s", residentDisplayState(result.State), id)
-	text := result.Summary
-	if result.Handoff != "" {
-		text = result.Handoff
-	}
-	if summary := truncateStatus(sanitizeSessionTreeText(text), 240); summary != "" {
-		status += ": " + summary
-	}
-	return status
-}
-
 func (i *Interactive) openResidentChildSession(childID string) {
-	session := newResidentChildSession(i.cfg.ResidentManager, childID, i.cfg.Theme)
 	i.mu.Lock()
+	session := newResidentChildSession(i.port, childID, i.cfg.Theme)
+	session.SetSummary(residentSummaryFor(i.portInfo.Residents, childID))
 	previous := i.residentChildSession
 	if i.residentSubagentsDialog != nil {
 		i.residentSubagentsDialog.Close()

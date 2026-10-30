@@ -1,7 +1,6 @@
 package modes
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -124,36 +123,22 @@ func idleResidentSummaries(count int) []session.ResidentSummary {
 	return residents
 }
 
-func spawnResidentIndicatorChildren(t *testing.T, manager *subagents.ResidentManager, count int) {
-	t.Helper()
-	for index := 0; index < count; index++ {
-		spec := subagents.ResidentChildSpec{
-			ID: fmt.Sprintf("child-%02d", index), SessionID: fmt.Sprintf("session-%02d", index), Profile: fmt.Sprintf("agent-%02d", index),
-			Provider: "openai", Model: "gpt-test",
+func TestResidentSnapshotsFromInfoReportsHiddenActiveChildren(t *testing.T) {
+	residents := make([]session.ResidentSummary, 6)
+	for index := range residents {
+		state := subagents.ResidentRunning
+		if index == 5 {
+			state = subagents.ResidentIdle
 		}
-		if _, err := manager.Spawn(context.Background(), spec, "task"); err != nil {
-			t.Fatalf("Spawn(%d): %v", index, err)
-		}
+		residents[index] = session.ResidentSummary{ID: fmt.Sprintf("child-%02d", index), Profile: fmt.Sprintf("agent-%02d", index), State: string(state)}
 	}
-}
-
-func TestRenderResidentSubagentActivityPageReportsHiddenActiveChildren(t *testing.T) {
-	manager := subagents.NewResidentManagerWithLimit(t.TempDir(), 16, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
-			<-ctx.Done()
-			return ctx.Err()
-		}), nil
-	})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spawnResidentIndicatorChildren(t, manager, 5)
-
-	lines, hidden := renderResidentSubagentActivityPage(tui.Dark, manager, "/", 2, 80, time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC))
-	plain := strings.Join(plainResidentIndicatorLines(lines), "\n")
-	if hidden != 3 {
-		t.Fatalf("hidden active children = %d, want 3", hidden)
+	snapshots, total := residentSnapshotsFromInfo(residents, 2)
+	if total != 5 || len(snapshots) != 2 {
+		t.Fatalf("active page = %d of %d, want 2 of 5", len(snapshots), total)
 	}
-	if count := strings.Count(plain, "agent-"); count != 2 {
-		t.Fatalf("activity page rendered %d child rows, want bounded page of 2:\n%s", count, plain)
+	lines := renderResidentSubagentActivityLines(tui.Dark, "/", snapshots, 80, time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC))
+	if count := strings.Count(strings.Join(plainResidentIndicatorLines(lines), "\n"), "agent-"); count != 2 {
+		t.Fatalf("activity page rendered %d child rows, want 2", count)
 	}
 }
 

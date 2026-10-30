@@ -15,7 +15,6 @@ func TestPortResidentIdleTickRequestsRedraw(t *testing.T) {
 			// and an explicit animation tick, as in an idle daemon client.
 			i := &Interactive{}
 			i.portInfo = session.Info{Residents: []session.ResidentSummary{{ID: "child", State: string(state)}}}
-			require.False(t, i.residentAnimating.Load())
 			redraws := 0
 			for n := 0; n < 2; n++ {
 				i.redrawAnimationTick(func() { redraws++ })

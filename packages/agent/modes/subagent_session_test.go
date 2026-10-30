@@ -3,6 +3,8 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,10 +37,7 @@ func TestResidentChildSessionBuildsSharedTranscriptView(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
-	})
-	session := newResidentChildSession(manager, "child", tui.Dark)
+	session := newResidentChildSession(journalPort(t, root), "child", tui.Dark)
 	if err := session.LoadRecent(20); err != nil {
 		t.Fatal(err)
 	}
@@ -53,27 +52,7 @@ func TestResidentChildSessionBuildsSharedTranscriptView(t *testing.T) {
 }
 
 func TestResidentChildSessionKeepsComposerUntilFollowUpIsAccepted(t *testing.T) {
-	root := t.TempDir()
-	runs := make(chan string, 2)
-	manager := subagents.NewResidentManager(root, func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(_ context.Context, prompt string) error {
-			runs <- prompt
-			return nil
-		}), nil
-	})
-	t.Cleanup(func() {
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
-	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
-		t.Fatal(err)
-	}
-	if got := <-runs; got != "initial task" {
-		t.Fatalf("initial prompt = %q", got)
-	}
-	session := newResidentChildSession(manager, "child", tui.Dark)
+	session := newResidentChildSession(nil, "child", tui.Dark)
 	session.composer.SetValue("follow up")
 	prompt, submit := session.HandleKey(tui.Key{Kind: tui.KeyEnter})
 	if !submit || prompt != "follow up" {
@@ -82,15 +61,13 @@ func TestResidentChildSessionKeepsComposerUntilFollowUpIsAccepted(t *testing.T) 
 	if got := session.composer.Value(); got != "follow up" {
 		t.Fatalf("composer cleared before durable acceptance: %q", got)
 	}
-	if err := manager.Resume(context.Background(), "child", prompt); err != nil {
-		t.Fatal(err)
+	session.FinishSubmission(errors.New("rejected"))
+	if got := session.composer.Value(); got != "follow up" {
+		t.Fatalf("composer cleared after rejection: %q", got)
 	}
 	session.FinishSubmission(nil)
 	if got := session.composer.Value(); got != "" {
 		t.Fatalf("composer after acceptance = %q", got)
-	}
-	if got := <-runs; got != "follow up" {
-		t.Fatalf("follow-up prompt = %q", got)
 	}
 }
 
@@ -131,8 +108,7 @@ func TestResidentChildSessionReloadRecentShowsFinalizedTurn(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manager := subagents.NewResidentManager(root, nil)
-	session := newResidentChildSession(manager, spec.ID, tui.Dark)
+	session := newResidentChildSession(journalPort(t, root), spec.ID, tui.Dark)
 	if err := session.LoadRecent(20); err != nil {
 		t.Fatal(err)
 	}
@@ -225,165 +201,104 @@ func TestInteractiveResidentChildMouseReportingFollowsOverlay(t *testing.T) {
 	}
 }
 
-func TestInteractiveResidentUpdatesRefreshOpenChildSession(t *testing.T) {
-	root := t.TempDir()
-	started := make(chan struct{})
-	stream := make(chan struct{})
-	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error {
-			close(started)
-			<-stream
-			if err := journal.RecordAgentEvent(core.EvTextDelta{Delta: "streamed without input"}); err != nil {
-				return err
-			}
-			<-release
-			return nil
-		}), nil
-	})
-	t.Cleanup(func() {
-		close(release)
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
+func TestResidentChildSessionPagesOlderHistoryThroughPort(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	msg := func(text string) subagents.ResidentHistoryItem {
+		raw, err := json.Marshal(provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: text}}})
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
-	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
-	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
+		return subagents.ResidentHistoryItem{Type: "message.assistant", Message: raw}
+	}
+	port.EXPECT().ResidentHistory(mock.Anything, "child", "", 5).Return(subagents.ResidentHistoryPage{Items: []subagents.ResidentHistoryItem{msg("newest")}, OlderCursor: "c1"}, nil).Once()
+	port.EXPECT().ResidentHistory(mock.Anything, "child", "c1", 5).Return(subagents.ResidentHistoryPage{Items: []subagents.ResidentHistoryItem{msg("oldest")}}, nil).Once()
+	session := newResidentChildSession(port, "child", tui.Dark)
+	if err := session.LoadAll(5, nil); err != nil {
 		t.Fatal(err)
 	}
-	<-started
-	interactive.residentChildSession = newResidentChildSession(manager, "child", tui.Dark)
-	for {
-		select {
-		case <-interactive.dirty:
-		default:
-			goto drained
-		}
-	}
-
-drained:
-	close(stream)
-	select {
-	case <-interactive.dirty:
-	case <-time.After(time.Second):
-		t.Fatal("resident stream did not request a redraw")
-	}
-	lines := interactive.residentChildSession.Render(80, 24)
-	if !containsLine(lines, "streamed without input") {
-		t.Fatalf("open resident child session did not render streamed text: %q", lines)
+	got := strings.Join(session.View().Build(80), "\n")
+	if first, last := strings.Index(got, "oldest"), strings.Index(got, "newest"); first < 0 || last < first {
+		t.Fatalf("paged history = %q, want oldest before newest", got)
 	}
 }
 
-func TestInteractiveResidentHistoryUpdatesRefreshOpenChildSession(t *testing.T) {
-	root := t.TempDir()
-	started := make(chan struct{})
-	persist := make(chan struct{})
-	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error {
-			close(started)
-			<-persist
-			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "bash", Arguments: json.RawMessage(`{"command":"printf fresh"}`)}}}}); err != nil {
-				return err
-			}
-			if err := journal.RecordAgentEvent(core.EvToolResult{ID: "call-1", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "fresh resident output"}}}}); err != nil {
-				return err
-			}
-			<-release
-			return nil
-		}), nil
-	})
-	t.Cleanup(func() {
-		close(release)
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
-	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
-	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
-		t.Fatal(err)
+func TestResidentChildSessionReportsPortError(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentHistory(mock.Anything, "child", "", 200).Return(subagents.ResidentHistoryPage{}, errors.New("unknown child")).Once()
+	session := newResidentChildSession(port, "child", tui.Dark)
+	if !session.BeginLoad() {
+		t.Fatal("load not accepted")
 	}
-	<-started
-	session := newResidentChildSession(manager, spec.ID, tui.Dark)
-	if err := session.LoadRecent(200); err != nil {
-		t.Fatal(err)
+	session.FinishLoad(session.LoadAll(200, nil))
+	if lines := session.Render(80, 10); !containsLine(lines, "history: unknown child") {
+		t.Fatalf("render = %q, want port error", lines)
 	}
-	interactive.residentChildSession = session
-	close(persist)
+}
 
-	deadline := time.Now().Add(time.Second)
+func TestResidentChildSessionHeaderUsesSessionSummary(t *testing.T) {
+	session := newResidentChildSession(nil, "child", tui.Dark)
+	session.SetSummary(residentSummaryFixture("child", string(subagents.ResidentIdle)), true)
+	if lines := session.Render(80, 10); !containsLine(lines, "child  completed  reviewer  worktree") {
+		t.Fatalf("header = %q", lines)
+	}
+}
+
+func residentSummaryFixture(id, state string) session.ResidentSummary {
+	return session.ResidentSummary{ID: id, State: state, Profile: "reviewer", Workspace: "worktree"}
+}
+
+// The session publishes an info event per resident update; an open child view
+// reloads its history from that event alone (no timer, no render-time call).
+func TestInteractiveResidentInfoEventRefreshesOpenChildSession(t *testing.T) {
+	root := t.TempDir()
+	writeResidentJournal(t, root, "child", core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "first"}}}})
+	port := journalPort(t, root)
+	interactive := newQueuePortInteractive(t, port, session.Snapshot{Info: session.Info{ID: "s", Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentRunning)}}}}, InteractiveConfig{Theme: tui.Dark})
+	interactive.openResidentChildSession("child")
+	child := interactive.residentChildSession
+	waitResidentLines(t, child, "first")
+
+	writeResidentJournal(t, root, "child", core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "finalized later"}}}})
+	interactive.mu.Lock()
+	interactive.applyInfoLocked(session.Info{ID: "s", Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentIdle)}}})
+	interactive.mu.Unlock()
+	waitResidentLines(t, child, "finalized later")
+	if lines := child.Render(100, 30); !containsLine(lines, "completed") {
+		t.Fatalf("header did not follow session summary: %q", lines)
+	}
+}
+
+func TestInteractiveResidentInfoEventIgnoresUnchangedIdleChild(t *testing.T) {
+	port := sessionmocks.NewMockPort(t)
+	interactive := &Interactive{}
+	interactive.residentChildSession = newResidentChildSession(port, "child", tui.Dark)
+	info := session.Info{Residents: []session.ResidentSummary{{ID: "child", State: string(subagents.ResidentIdle)}}}
+	interactive.residentChildSession.SetSummary(info.Residents[0], true)
+	// No ResidentHistory expectation: an unchanged idle summary must not reload.
+	interactive.applyInfoLocked(info)
+	time.Sleep(20 * time.Millisecond)
+}
+
+func waitResidentLines(t *testing.T, child *residentChildSession, needle string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if lines := session.Render(100, 30); containsLine(lines, "fresh resident output") {
+		if containsLine(child.Render(100, 30), needle) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("durable resident history did not refresh while running: %q", session.Render(100, 30))
+			t.Fatalf("child view never showed %q: %q", needle, child.Render(100, 30))
 		}
 		time.Sleep(time.Millisecond)
 	}
 }
 
-func TestInteractiveResidentHistoryUpdateDoesNotBlockChildControlGoroutine(t *testing.T) {
-	root := t.TempDir()
-	started := make(chan struct{})
-	persist := make(chan struct{})
-	persisted := make(chan struct{})
-	release := make(chan struct{})
-	manager := subagents.NewResidentManager(root, func(_ subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error {
-			close(started)
-			<-persist
-			if err := journal.RecordAgentEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "durable update"}}}}); err != nil {
-				return err
-			}
-			close(persisted)
-			<-release
-			return nil
-		}), nil
-	})
-	t.Cleanup(func() {
-		close(release)
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
-	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
-	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
-		t.Fatal(err)
-	}
-	<-started
-
-	interactive.mu.Lock()
-	interactive.residentChildSession = newResidentChildSession(manager, spec.ID, tui.Dark)
-	defer interactive.mu.Unlock()
-	close(persist)
-	select {
-	case <-persisted:
-	case <-time.After(time.Second):
-		t.Fatal("resident history update blocked the child control goroutine")
-	}
-}
-
 func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testing.T) {
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
-	})
-	t.Cleanup(func() {
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	spec := subagents.ResidentChildSpec{ID: "child", SessionID: "session", Provider: "openai", Model: "gpt-5"}
-	if _, err := manager.Spawn(context.Background(), spec, "initial task"); err != nil {
-		t.Fatal(err)
-	}
+	spec := subagents.ResidentChildSpec{ID: "child"}
 	port := sessionmocks.NewMockPort(t)
 	port.EXPECT().ResidentList(mock.Anything, mock.Anything, mock.Anything).Return([]subagents.ResidentSnapshot{{ID: spec.ID, State: subagents.ResidentIdle}}, 1, nil)
-	// The child log view still reads the local manager until it moves to the port.
-	interactive := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
+	port.EXPECT().ResidentHistory(mock.Anything, spec.ID, "", 200).Return(subagents.ResidentHistoryPage{}, nil).Maybe()
+	interactive := newQueuePortInteractive(t, port, session.Snapshot{}, InteractiveConfig{Theme: tui.Dark})
 	interactive.ed.SetValue("draft")
 
 	interactive.handleKey(context.Background(), tui.Key{Kind: tui.KeyDown})
@@ -400,39 +315,21 @@ func TestInteractiveInputDownOpensResidentPickerAndEnterOpensLiveChild(t *testin
 	if interactive.residentChildSession == nil || interactive.residentChildSession.childID != spec.ID {
 		t.Fatalf("resident child session = %#v, want %q", interactive.residentChildSession, spec.ID)
 	}
+	waitResidentLoadDone(t, interactive.residentChildSession)
 }
 
-func TestInteractiveResidentActivityDrivesIndependentAnimation(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
-		return subagents.ResidentTurnRunner(func(context.Context, string) error {
-			close(started)
-			<-release
-			return nil
-		}), nil
-	})
-	t.Cleanup(func() {
-		if err := manager.Close(context.Background()); err != nil {
-			t.Error(err)
+func waitResidentLoadDone(t *testing.T, child *residentChildSession) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		child.mu.Lock()
+		loading := child.loading
+		child.mu.Unlock()
+		if !loading {
+			return
 		}
-	})
-	interactive := NewInteractive(InteractiveConfig{ResidentManager: manager, Theme: tui.Dark})
-	if interactive.residentAnimating.Load() {
-		t.Fatal("new interactive reported resident animation")
-	}
-	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "indicator", SessionID: "session", Provider: "openai", Model: "gpt-5"}, "task"); err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	if !interactive.residentAnimating.Load() {
-		t.Fatal("running resident did not enable independent animation")
-	}
-	close(release)
-	deadline := time.Now().Add(time.Second)
-	for interactive.residentAnimating.Load() {
 		if time.Now().After(deadline) {
-			t.Fatal("completed resident did not disable independent animation")
+			t.Fatal("child history load did not finish")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -445,4 +342,35 @@ func containsLine(lines []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// journalPort serves ResidentHistory from on-disk resident journals, as the
+// daemon does, so child-session tests exercise real history pages.
+func journalPort(t *testing.T, root string) *sessionmocks.MockPort {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().ResidentHistory(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, childID, cursor string, limit int) (subagents.ResidentHistoryPage, error) {
+		return subagents.ReadResidentHistoryPage(filepath.Join(root, childID), cursor, limit)
+	}).Maybe()
+	return port
+}
+
+func writeResidentJournal(t *testing.T, root, childID string, events ...core.AgentEvent) {
+	t.Helper()
+	journal, err := subagents.OpenResidentJournal(root, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := subagents.ResidentChildSpec{ID: childID, SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "task"); err != nil && !strings.Contains(err.Error(), "already") {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if err := journal.RecordAgentEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

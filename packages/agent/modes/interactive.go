@@ -53,7 +53,7 @@ const detachedByOtherNotice = "detached: attached from another terminal"
 //
 // Port, Detach and Client are the daemon-client contract: when Port is set
 // the TUI renders only from Port snapshots/events. The remaining domain
-// fields (Agent, Build*, Persist*, Current*, ResidentManager,
+// fields (Agent, Build*, Persist*, Current*,
 // ...) are L16 SHIMS kept so the in-process command/dialog code compiles
 // until L16/L18 delete it; Port-mode rendering never reads them.
 type InteractiveConfig struct {
@@ -430,9 +430,6 @@ type InteractiveConfig struct {
 	// AFTER the built-in catalog so a built-in name always wins.
 	Extensions *extensions.Manager
 
-	// ResidentManager owns the /subagents runtime and provides bounded journal
-	// pages plus live projections to the child-session UI.
-	ResidentManager *subagents.ResidentManager
 	// SpawnResident resolves the host's live registry/configuration and commits
 	// a new resident child. Keeping that construction callback in agent avoids
 	// leaking provider or credential assembly into modes.
@@ -795,11 +792,10 @@ type Interactive struct {
 	// jump-picker selection should branch off that message instead
 	// of scrolling. Flag resets after the action fires or the dialog
 	// is dismissed, so repeated /jump calls don't turn into forks.
-	pendingFork       bool
-	suggest           *slashSuggester
-	fileSuggest       *fileSuggester
-	spin              *spinner
-	residentAnimating atomic.Bool
+	pendingFork bool
+	suggest     *slashSuggester
+	fileSuggest *fileSuggester
+	spin        *spinner
 	// portMode is set once a session port is attached and never cleared;
 	// settings paths read it without taking mu.
 	portMode atomic.Bool
@@ -1024,18 +1020,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
 	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.Port != nil, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
-	if cfg.ResidentManager != nil {
-		// Resident updates arrive from the child control goroutine. The
-		// renderer reads its immutable live projection on the next throttled
-		// frame, so this callback must only request that frame.
-		cfg.ResidentManager.SetUpdateObserver(func(string) { i.invalidate() })
-		cfg.ResidentManager.SetHistoryUpdateObserver(func(childID string) {
-			go i.reloadOpenResidentChildSession(childID)
-		})
-		cfg.ResidentManager.SetActivityObserver(func(active bool) {
-			i.residentAnimating.Store(active)
-		})
-	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = filterHiddenTranscriptMessages(cfg.Agent.Messages())

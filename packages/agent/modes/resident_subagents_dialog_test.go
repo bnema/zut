@@ -85,25 +85,6 @@ func TestResidentSubagentsDialogBoundsEmptyStateByHeight(t *testing.T) {
 	}
 }
 
-func TestResidentResultStatusIncludesFinalSummary(t *testing.T) {
-	got := residentResultStatus("child", subagents.ResidentResult{State: subagents.ResidentIdle, Summary: "the child answer"})
-	if got != "completed result child: the child answer" {
-		t.Fatalf("result status = %q", got)
-	}
-}
-
-func TestResidentResultStatusSanitizesDeprecatedHandoff(t *testing.T) {
-	// Archived v2 results may still carry a handoff; the status line must
-	// sanitize control sequences exactly like any other summary text.
-	got := residentResultStatus("child", subagents.ResidentResult{
-		State:   subagents.ResidentFailed,
-		Handoff: "Workspace: /tmp/\x1b[31mrepo\x1b[0m\x1b]52;c;secret\a\r\x00",
-	})
-	if got != "failed result child: Workspace: /tmp/repo" {
-		t.Fatalf("result status = %q", got)
-	}
-}
-
 func TestResidentSubagentsDialogRefreshAllowsNilReceiver(t *testing.T) {
 	var dialog *residentSubagentsDialog
 	dialog.refresh(1)
