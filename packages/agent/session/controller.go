@@ -148,6 +148,7 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 	c.initGoal()
 	c.residentSeam.residentsInit()
 	c.initConfirm()
+	c.initProfiles()
 	c.updateInfo()
 	go func() {
 		defer close(c.done)
@@ -272,6 +273,8 @@ func (c *Controller) updateInfo() {
 		info.Residents = c.residentSeam.residentSummaries()
 	}
 	info.Deferred = c.deferredCount()
+	info.Profiles = append([]QuickModelShortcut(nil), c.settings.profiles...)
+	info.ActiveProfile = c.settings.activeProfile
 	if c.deps.SessionStore != nil {
 		info.SessionPath = c.deps.SessionStore.CurrentSessionPath()
 	}
@@ -283,6 +286,7 @@ func (c *Controller) updateInfo() {
 func (c *Controller) Info() Info {
 	info := c.info.Load().(Info)
 	info.Residents = append([]ResidentSummary(nil), info.Residents...)
+	info.Profiles = append([]QuickModelShortcut(nil), info.Profiles...)
 	if info.Goal != nil {
 		goal := *info.Goal
 		info.Goal = &goal

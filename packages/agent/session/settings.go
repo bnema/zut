@@ -12,9 +12,12 @@ import (
 )
 
 type settingsState struct {
-	title        string
-	titleStarted bool
-	replaceErr   error
+	// profiles caches the store's slots; activeProfile is per session (0 none).
+	profiles      []QuickModelShortcut
+	activeProfile int
+	title         string
+	titleStarted  bool
+	replaceErr    error
 }
 
 func (s *settingsState) snapshotInto(out *Snapshot) { out.Info.Title = s.title }
@@ -75,21 +78,31 @@ func (c *Controller) swapModel(p, m string) error {
 
 // SetModel builds a replacement without discarding the transcript.
 func (c *Controller) SetModel(ctx context.Context, p, m string) error {
-	return c.settingsCall(ctx, func() error { return c.swapModel(p, m) })
+	return c.settingsCall(ctx, func() error {
+		if err := c.swapModel(p, m); err != nil {
+			return err
+		}
+		return c.autosaveModel()
+	})
 }
 
-// SetReasoning persists and updates the idle agent's reasoning level.
+// SetReasoning persists and updates the idle agent's reasoning level; with an
+// active profile it is saved into that profile instead of plain settings.
 func (c *Controller) SetReasoning(ctx context.Context, level string) error {
 	return c.settingsCall(ctx, func() error {
-		if c.deps.SettingsStore != nil {
+		if n := c.settings.activeProfile; n > 0 {
+			level = clampReasoning(c.deps.Provider, c.deps.Model, level)
+			p := c.liveProfile()
+			p.Reasoning = level
+			if err := c.saveProfile(n, p, false); err != nil {
+				return err
+			}
+		} else if c.deps.SettingsStore != nil {
 			if err := c.deps.SettingsStore.SetReasoning(level); err != nil {
 				return err
 			}
 		}
-		c.deps.Reasoning = level
-		if ag := c.turnSeam.currentAgent(); ag != nil {
-			ag.Reasoning = level
-		}
+		c.setLiveReasoning(level)
 		return nil
 	})
 }
@@ -97,29 +110,6 @@ func (c *Controller) SetReasoning(ctx context.Context, level string) error {
 // SetFastMode validates the provider before changing runtime state.
 func (c *Controller) SetFastMode(ctx context.Context, enabled bool) error {
 	return c.ApplySettings(ctx, SettingsPatch{FastMode: &enabled})
-}
-
-// ApplyProfile applies a one-based configured model shortcut.
-func (c *Controller) ApplyProfile(ctx context.Context, n int) error {
-	return c.settingsCall(ctx, func() error {
-		if n < 1 || n > len(c.deps.QuickModelShortcuts) {
-			return fmt.Errorf("unknown model profile %d", n)
-		}
-		p := c.deps.QuickModelShortcuts[n-1]
-		if err := provider.ValidateFastMode(p.Provider, p.FastMode); err != nil {
-			return err
-		}
-		if err := c.swapModel(p.Provider, p.Model); err != nil {
-			return err
-		}
-		c.deps.Reasoning = p.Reasoning
-		setSetting(&c.deps.FastMode, &p.FastMode)
-		if ag := c.turnSeam.currentAgent(); ag != nil {
-			ag.Reasoning = p.Reasoning
-			ag.SetFastMode(p.FastMode)
-		}
-		return nil
-	})
 }
 
 // setSetting retains assembly's shared setting pointers, allocating only when absent.
@@ -146,6 +136,19 @@ func (c *Controller) ApplySettings(ctx context.Context, p SettingsPatch) error {
 		}
 		// Each persisted field updates memory right after its own write, so a
 		// later failure leaves memory matching the store.
+		if p.FastMode != nil {
+			if n := c.settings.activeProfile; n > 0 {
+				prof := c.liveProfile()
+				prof.FastMode = *p.FastMode
+				if err := c.saveProfile(n, prof, false); err != nil {
+					return err
+				}
+			} else if c.deps.SettingsStore != nil {
+				if err := c.deps.SettingsStore.SetFastMode(*p.FastMode); err != nil {
+					return err
+				}
+			}
+		}
 		if p.AutoSubagentsEnabled != nil && c.deps.SettingsStore != nil {
 			if err := c.deps.SettingsStore.SetAutoSubagents(*p.AutoSubagentsEnabled); err != nil {
 				return err
@@ -251,7 +254,15 @@ func (c *Controller) ToggleSkillPin(ctx context.Context, name string, global boo
 	})
 }
 
-// ReloadCredentials rebuilds through assembly, which owns credential resolution.
+// ReloadCredentials rebuilds through assembly, which owns credential
+// resolution. The swap detaches the active profile instead of autosaving.
 func (c *Controller) ReloadCredentials(ctx context.Context) error {
-	return c.SetModel(ctx, c.Info().Provider, c.Info().Model)
+	info := c.Info()
+	return c.settingsCall(ctx, func() error {
+		if err := c.swapModel(info.Provider, info.Model); err != nil {
+			return err
+		}
+		c.settings.activeProfile = 0
+		return nil
+	})
 }

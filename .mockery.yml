@@ -44,6 +44,7 @@ packages:
       ConfirmGate:
       ScheduleHost:
       DeferredStore:
+      ProfileStore:
       turnSeam:
         config:
           dir: packages/agent/session

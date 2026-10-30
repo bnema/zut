@@ -290,6 +290,8 @@ func (c *Controller) rescue(ctx context.Context, cause error) (*core.Agent, erro
 			return
 		}
 		c.deps.Provider, c.deps.Model = actualP, actualM
+		// A rescue swap detaches the active profile instead of autosaving.
+		c.settings.activeProfile = 0
 		if c.deps.SessionStore != nil {
 			c.deps.SessionStore.PersistModel(actualP, actualM)
 		}

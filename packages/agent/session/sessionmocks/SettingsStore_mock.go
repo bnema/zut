@@ -146,6 +146,57 @@ func (_c *MockSettingsStore_SetCompactMode_Call) RunAndReturn(run func(enabled b
 	return _c
 }
 
+// SetFastMode provides a mock function for the type MockSettingsStore
+func (_mock *MockSettingsStore) SetFastMode(enabled bool) error {
+	ret := _mock.Called(enabled)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SetFastMode")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(bool) error); ok {
+		r0 = returnFunc(enabled)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockSettingsStore_SetFastMode_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetFastMode'
+type MockSettingsStore_SetFastMode_Call struct {
+	*mock.Call
+}
+
+// SetFastMode is a helper method to define mock.On call
+//   - enabled bool
+func (_e *MockSettingsStore_Expecter) SetFastMode(enabled any) *MockSettingsStore_SetFastMode_Call {
+	return &MockSettingsStore_SetFastMode_Call{Call: _e.mock.On("SetFastMode", enabled)}
+}
+
+func (_c *MockSettingsStore_SetFastMode_Call) Run(run func(enabled bool)) *MockSettingsStore_SetFastMode_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 bool
+		if args[0] != nil {
+			arg0 = args[0].(bool)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSettingsStore_SetFastMode_Call) Return(err error) *MockSettingsStore_SetFastMode_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockSettingsStore_SetFastMode_Call) RunAndReturn(run func(enabled bool) error) *MockSettingsStore_SetFastMode_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetInlineImages provides a mock function for the type MockSettingsStore
 func (_mock *MockSettingsStore) SetInlineImages(enabled bool) error {
 	ret := _mock.Called(enabled)

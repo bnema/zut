@@ -51,6 +51,10 @@ type Info struct {
 	UpdatedAt       time.Time         `json:"updated_at"`
 	LastUserInputAt time.Time         `json:"last_user_input_at"`
 	SessionPath     string            `json:"session_path"`
+	// Profiles lists the model profile slots (empty entry = unassigned).
+	Profiles []QuickModelShortcut `json:"profiles,omitempty"`
+	// ActiveProfile is this session's one-based active slot (0 none).
+	ActiveProfile int `json:"active_profile,omitempty"`
 }
 
 // Activity is a terminal-free session contract payload.
