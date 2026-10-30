@@ -458,6 +458,8 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return nil, h.CancelQueued(ctx, p.ID)
 	case "slide_back_queued":
 		return h.SlideBackQueued(ctx)
+	case "clear_queued_user":
+		return nil, h.ClearQueuedUser(ctx)
 	case "answer_confirmation":
 		return nil, h.AnswerConfirmation(ctx, p.ReqID, p.Decision)
 	case "answer_question":

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -428,6 +430,17 @@ func (p *RemotePort) SlideBackQueued(ctx context.Context) (session.Input, error)
 	var in session.Input
 	err := p.port(ctx, "slide_back_queued", nil, &in)
 	return in, err
+}
+
+// ClearQueuedUser implements session.Port. Daemons predating the method
+// answer "unsupported port method"; that is mapped to ErrUnknownRequest so
+// callers can degrade gracefully.
+func (p *RemotePort) ClearQueuedUser(ctx context.Context) error {
+	err := p.port(ctx, "clear_queued_user", nil, nil)
+	if err != nil && !errors.Is(err, session.ErrUnknownRequest) && strings.Contains(err.Error(), "unsupported port method") {
+		return fmt.Errorf("%w: %w", session.ErrUnknownRequest, err)
+	}
+	return err
 }
 
 // AnswerConfirmation implements session.Port.

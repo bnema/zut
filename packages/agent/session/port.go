@@ -20,6 +20,7 @@ type Port interface {
 	Compact(ctx context.Context) error
 	CancelQueued(ctx context.Context, id string) error
 	SlideBackQueued(ctx context.Context) (Input, error)
+	ClearQueuedUser(ctx context.Context) error
 	AnswerConfirmation(ctx context.Context, reqID string, decision core.ConfirmDecision) error
 	AnswerQuestion(ctx context.Context, reqID string, answers []tools.QuestionAnswer) error
 	ResolveDeferred(ctx context.Context, id, action string) error

@@ -128,6 +128,11 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 		switch p.Method {
 		case "slide_back_queued":
 			return session.Input{Text: "queued", Mode: session.SubmitMode("queue"), Origin: session.InputOrigin("user")}, nil
+		case "clear_queued_user":
+			if d.version == "old" {
+				return nil, errors.New("unsupported port method \"clear_queued_user\"")
+			}
+			return nil, nil
 		case "sessions_query":
 			return session.Tree{Workspaces: []session.WorkspaceNode{{RepoRoot: "/repo"}}}, nil
 		case "set_title":

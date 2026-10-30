@@ -156,6 +156,36 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 	}
 	return in, result
 }
+
+// ClearQueuedUser discards every queued user input, both the controller
+// queue and the running agent's steering queue, and publishes the new queue
+// so attached clients refresh. Host-queued inputs (extension events, subagent
+// reports) are kept: unlike the legacy in-process Ctrl+C, which dropped the
+// whole local queue, the daemon queue is shared by every client and its host
+// evidence is not the user's draft to discard (same rule as SlideBackQueued).
+// Clearing an empty queue is not an error.
+func (c *Controller) ClearQueuedUser(ctx context.Context) error {
+	return c.call(ctx, func() {
+		kept := c.turn.queue[:0:0]
+		for _, q := range c.turn.queue {
+			if q.Input.HostEvent {
+				kept = append(kept, q)
+			}
+		}
+		if len(kept) != len(c.turn.queue) {
+			c.turn.queue = kept
+			c.publishQueue()
+		}
+		if c.turn.agent != nil {
+			for {
+				if _, ok := c.turn.agent.PopQueuedUserMessage(); !ok {
+					break
+				}
+			}
+		}
+	})
+}
+
 func (c *Controller) publishQueue() {
 	c.publish(EvQueue, QueueEvent{Queue: append([]QueuedInput(nil), c.turn.queue...)})
 }

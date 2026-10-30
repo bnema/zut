@@ -105,6 +105,62 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 	}()
 }
 
+// portHasUserQueued reports whether the attached session queue holds user input.
+func (i *Interactive) portHasUserQueued() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, q := range i.portQueue {
+		if !q.Input.HostEvent {
+			return true
+		}
+	}
+	return false
+}
+
+// portClearQueuedUser is the port-mode Ctrl+C queue clear. Host events stay
+// queued in the session; the QueueEvent it publishes refreshes portQueue.
+// Pinned-skill preloads carried by dropped drafts are released, as on the
+// legacy path. An older daemon without the method gets a status hint.
+func (i *Interactive) portClearQueuedUser(ctx context.Context) {
+	port := i.SessionPort()
+	gen := i.sessionGen
+	i.mu.Lock()
+	for _, q := range i.portQueue {
+		if !q.Input.HostEvent {
+			i.skillPins.recall(q.Input.Text)
+		}
+	}
+	i.statusOK, i.statusErr = "queue cleared", ""
+	i.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+		err := port.ClearQueuedUser(callCtx)
+		cancel()
+		if err == nil {
+			return
+		}
+		select {
+		case i.loopCalls <- func() {
+			if gen != i.sessionGen {
+				return
+			}
+			i.mu.Lock()
+			if errors.Is(err, session.ErrUnknownRequest) {
+				i.statusOK, i.statusErr = "", "daemon too old to clear the queue; run \"zut daemon restart\""
+			} else {
+				i.statusOK, i.statusErr = "", fmt.Sprintf("clear queue: %v", err)
+			}
+			i.mu.Unlock()
+			i.invalidate()
+		}:
+		case <-ctx.Done():
+		}
+	}()
+}
+
 type portRecallOperation struct {
 	gen            uint64
 	port           session.Port

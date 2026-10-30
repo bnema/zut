@@ -80,6 +80,7 @@ func TestClientRequests(t *testing.T) {
 	in, err := p.SlideBackQueued(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "queued", in.Text)
+	require.NoError(t, p.ClearQueuedUser(ctx))
 	tree, err := p.SessionsQuery(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "/repo", tree.Workspaces[0].RepoRoot)
@@ -92,6 +93,13 @@ func TestClientRequests(t *testing.T) {
 	require.NoError(t, json.Unmarshal(calls[0].Params, &params))
 	require.Equal(t, "hi", params.In.Text)
 	require.NoError(t, c.Stop(ctx, time.Second))
+}
+
+func TestClearQueuedUserOldDaemonIsUnknownRequest(t *testing.T) {
+	_, path := newDaemon(t, "old", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "old"})
+	err := c.Port("s1", true).ClearQueuedUser(testCtx(t))
+	require.ErrorIs(t, err, session.ErrUnknownRequest)
 }
 
 func recvSeqs(t *testing.T, ch <-chan session.Event, n int) []session.Event {
