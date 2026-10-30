@@ -601,6 +601,14 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 	i.cfg.Reasoning = info.Reasoning
 	fast := info.FastMode
 	i.cfg.FastMode = &fast
+	// The daemon owns model profile slots; the indicator and dialogs read
+	// this copy. An old daemon sends none.
+	profiles := make([]QuickModelShortcut, len(info.Profiles))
+	for n, p := range info.Profiles {
+		profiles[n] = QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}
+	}
+	i.cfg.QuickModelShortcuts = profiles
+	i.cfg.ActiveModelProfile = info.ActiveProfile
 	if info.CWD != "" {
 		i.cfg.CWD = info.CWD
 	}

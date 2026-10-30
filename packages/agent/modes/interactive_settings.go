@@ -537,6 +537,10 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	i.modelDialog.Open(current, loggedIn, reasoning)
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
+	if i.portMode.Load() {
+		i.portAssignProfile(slot, providerName, model)
+		return
+	}
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
 	if slot <= len(i.cfg.QuickModelShortcuts) && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
 		fastMode = i.cfg.QuickModelShortcuts[slot-1].FastMode
@@ -554,9 +558,7 @@ func (i *Interactive) applyQuickModelShortcut(slot int) {
 		return
 	}
 	if i.portMode.Load() {
-		i.portSettingsCall(fmt.Sprintf("profile %d", slot), func(ctx context.Context, port session.Port) error {
-			return port.ApplyProfile(ctx, slot)
-		})
+		i.portApplyProfile(slot)
 		return
 	}
 	if i.busy {
@@ -608,6 +610,10 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	if err != nil || slot < 1 || slot > 9 {
 		return
 	}
+	if i.portMode.Load() && value == "" {
+		i.portClearProfile(slot)
+		return
+	}
 	providerName, model := "", ""
 	if value != "" {
 		parts := strings.SplitN(value, "\t", 2)
@@ -618,6 +624,11 @@ func (i *Interactive) applyQuickModelSetting(key, value string) {
 	i.setQuickModelShortcut(slot, providerName, model)
 }
 func (i *Interactive) setQuickModelShortcut(slot int, providerName, model string) {
+	if i.portMode.Load() {
+		i.quickModelActivate = false
+		i.portAssignProfile(slot, providerName, model)
+		return
+	}
 	i.setQuickModelProfile(slot, QuickModelShortcut{
 		Provider: providerName, Model: model, Reasoning: i.cfg.Reasoning,
 		FastMode: i.cfg.FastMode != nil && *i.cfg.FastMode,

@@ -5,484 +5,327 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-type profileSettingsStore struct {
-	SettingsStore
-	profiles map[int]QuickModelShortcut
-	active   int
-	err      error
-}
+var (
+	profSol  = session.QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}
+	profGPT5 = session.QuickModelShortcut{Provider: "openai", Model: "gpt-5.5", FastMode: true}
+)
 
-func (s *profileSettingsStore) SetModelProfile(slot int, p QuickModelShortcut, active int) error {
-	if s.err != nil {
-		return s.err
+// profileInfo returns an idle Info with nine slots, set filling 1-based slots.
+func profileInfo(active int, set map[int]session.QuickModelShortcut) session.Info {
+	slots := make([]session.QuickModelShortcut, 9)
+	for n, p := range set {
+		slots[n-1] = p
 	}
-	s.profiles[slot], s.active = p, active
-	return nil
+	return session.Info{ID: "s1", Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", Run: session.RunStateIdle, Profiles: slots, ActiveProfile: active}
 }
 
-func newProfileInteractive(t *testing.T) (*Interactive, *profileSettingsStore) {
+// newPortProfileInteractive builds a port-mode TUI with info applied, without
+// running the loop: keys go straight to handleKey.
+func newPortProfileInteractive(t *testing.T, info session.Info) (*Interactive, *sessionmocks.MockPort) {
 	t.Helper()
-	s := &profileSettingsStore{profiles: make(map[int]QuickModelShortcut)}
-	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s,
-		QuickModelShortcuts: []QuickModelShortcut{{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}},
-	})
+	port := sessionmocks.NewMockPort(t)
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Port: port})
 	i.rend = nil
-	i.agent = core.NewAgent(nil, i.cfg.Model, "", nil)
-	i.agent.Reasoning = i.cfg.Reasoning
-	return i, s
+	profSetInfo(i, info)
+	return i, port
 }
 
-func selectProfileModel(t *testing.T, i *Interactive, prov, model string) {
+func profSetInfo(i *Interactive, info session.Info) {
+	i.mu.Lock()
+	i.applyInfoLocked(info)
+	i.mu.Unlock()
+}
+
+func profKey(i *Interactive, k tui.Key) { i.handleKey(context.Background(), k) }
+
+func profCtrl(n int) tui.Key { return tui.Key{Kind: tui.KeyRune, Rune: rune('0' + n), Ctrl: true} }
+
+func profExpectApply(port *sessionmocks.MockPort, slot int, err error) chan struct{} {
+	called := make(chan struct{})
+	port.EXPECT().ApplyProfile(mock.Anything, slot).RunAndReturn(func(context.Context, int) error { close(called); return err }).Once()
+	return called
+}
+
+func profWait(t *testing.T, ch chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s not called", what)
+	}
+}
+
+func profStatusErr(i *Interactive) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.statusErr
+}
+
+func profPick(t *testing.T, i *Interactive, prov, model string) {
 	t.Helper()
 	m, err := provider.FindModel(prov, model)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	i.modelDialog.view = []provider.Model{m}
 	i.modelDialog.cursor = 0
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+	profKey(i, tui.Key{Kind: tui.KeyEnter})
 }
 
-func TestModelProfileRecallAndAutosave(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '&', Ctrl: true})
-	if i.cfg.ActiveModelProfile != 1 || s.active != 1 || s.profiles[1].Reasoning != "high" {
-		t.Fatalf("capture: cfg=%+v store=%+v", i.cfg.QuickModelShortcuts, s)
-	}
-	if i.modelDialog.Active() || !strings.Contains(i.statusOK, "profile 1 active") {
-		t.Fatal(i.statusOK)
-	}
-	i.applyReasoningSetting("max")
-	if s.profiles[1].Reasoning != "max" {
-		t.Fatal("reasoning not saved to active slot")
-	}
-	i.applyQuickModelShortcut(2)
-	selectProfileModel(t, i, "openai", "gpt-5.5")
-	i.applyReasoningSetting("")
-	i.applyModelSelection("openai", "gpt-5.5")
-	if s.profiles[2].Model != "gpt-5.5" || s.profiles[2].Reasoning != "" {
-		t.Fatal(s.profiles)
-	}
-	i.runSlash(context.Background(), "/profile 1")
-	if i.cfg.Model != "gpt-5.6-sol" || i.agent.Model != i.cfg.Model || i.cfg.Reasoning != "max" || i.agent.Reasoning != "max" || s.active != 1 {
-		t.Fatalf("recall failed: model=%s reasoning=%s active=%d", i.cfg.Model, i.cfg.Reasoning, s.active)
-	}
-	if s.profiles[2].Model != "gpt-5.5" {
-		t.Fatal("recall overwrote previous slot")
-	}
+func TestProfileInfoDrivesIndicator(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(2, map[int]session.QuickModelShortcut{2: profGPT5}))
+	require.Equal(t, 2, i.cfg.ActiveModelProfile)
+	require.Equal(t, "gpt-5.5", i.cfg.QuickModelShortcuts[1].Model)
+	require.True(t, i.cfg.QuickModelShortcuts[1].FastMode)
+	profSetInfo(i, profileInfo(0, nil))
+	require.Equal(t, 0, i.cfg.ActiveModelProfile)
 }
 
-func TestModelProfileRestoresFastModePerSlot(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	enabled := true
-	i.cfg.FastMode = &enabled
-	i.agent.SetFastMode(true)
-	i.cfg.QuickModelShortcuts = []QuickModelShortcut{
-		{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", FastMode: true},
-		{Provider: "openai", Model: "gpt-5.5", FastMode: false},
-	}
-
-	i.applyQuickModelShortcut(1)
-	if !i.agent.FastModeEnabled() {
-		t.Fatal("profile 1 did not restore fast mode")
-	}
-	i.applyQuickModelShortcut(2)
-	if i.agent.FastModeEnabled() || i.cfg.FastMode == nil || *i.cfg.FastMode || s.profiles[2].FastMode {
-		t.Fatalf("profile 2 did not restore fast mode off: agent=%v cfg=%v store=%+v", i.agent.FastModeEnabled(), i.cfg.FastMode, s)
-	}
-	i.applyQuickModelShortcut(1)
-	if !i.agent.FastModeEnabled() || s.profiles[1].FastMode == false {
-		t.Fatalf("profile 1 did not restore fast mode on: agent=%v store=%+v", i.agent.FastModeEnabled(), s)
-	}
+func TestProfileSettingsItemsFromInfo(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol}))
+	require.Contains(t, i.quickModelSettingItem(1).hint, "(active)")
+	require.Contains(t, i.quickModelSettingItem(1).hint, "gpt-5.6-sol")
+	require.Equal(t, "not assigned", i.quickModelSettingItem(2).hint)
 }
 
-func TestModelProfileFastModeToggleAutosavesActiveSlot(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	var changed []bool
-	i.cfg.OnFastModeChanged = func(enabled bool) { changed = append(changed, enabled) }
-	i.applyQuickModelShortcut(1)
-	changed = nil
-	i.applySettingToggle("fast_mode", true)
-	if i.cfg.FastMode == nil || !*i.cfg.FastMode || !i.agent.FastModeEnabled() || !s.profiles[1].FastMode || !reflect.DeepEqual(changed, []bool{true}) {
-		t.Fatalf("fast mode enable was not applied to active profile: cfg=%v agent=%v store=%+v", i.cfg.FastMode, i.agent.FastModeEnabled(), s)
-	}
-	i.applySettingToggle("fast_mode", false)
-	if i.cfg.FastMode == nil || *i.cfg.FastMode || i.agent.FastModeEnabled() || s.profiles[1].FastMode || !reflect.DeepEqual(changed, []bool{true, false}) {
-		t.Fatalf("fast mode disable was not applied to active profile: cfg=%v agent=%v store=%+v", i.cfg.FastMode, i.agent.FastModeEnabled(), s)
-	}
+func TestCtrlDigitAppliesAssignedProfile(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{3: profGPT5}))
+	called := profExpectApply(port, 3, nil)
+	profKey(i, profCtrl(3))
+	profWait(t, called, "ApplyProfile")
+	require.False(t, i.modelDialog.Active())
 }
 
-func TestModelProfileEmptyShortcutOpensPickerAndCancelPreservesSelection(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.applyQuickModelShortcut(1)
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'é', Ctrl: true})
-	if !i.modelDialog.Active() || i.quickModelAssign != 2 || i.cfg.ActiveModelProfile != 1 || len(s.profiles) != 1 {
-		t.Fatal("empty shortcut did not open a non-mutating picker")
-	}
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
-	if i.quickModelActivate || i.quickModelAssign != 0 || i.cfg.ActiveModelProfile != 1 || len(s.profiles) != 1 {
-		t.Fatal("cancellation changed profile state")
-	}
-	i.runSlash(context.Background(), "/profile 2")
-	selectProfileModel(t, i, "openai", "gpt-5.5")
-	if i.cfg.ActiveModelProfile != 2 || s.active != 2 || s.profiles[2].Model != "gpt-5.5" || i.modelDialog.Active() {
-		t.Fatalf("picker did not save and activate: %+v", s)
-	}
+func TestAzertyCtrlAppliesProfile(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{1: profSol}))
+	called := profExpectApply(port, 1, nil)
+	profKey(i, tui.Key{Kind: tui.KeyRune, Rune: '&', Ctrl: true})
+	profWait(t, called, "ApplyProfile")
 }
 
-func TestModelProfileDefaultSlotAndActiveSettingsEdits(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	if i.cfg.ActiveModelProfile != 1 {
-		t.Fatal("missing active slot did not default to 1")
-	}
-	i.openQuickModelPicker(1)
-	i.modelDialog.reasoning = "low"
-	selectProfileModel(t, i, "openai", "gpt-5.5")
-	if s.active != 1 || s.profiles[1].Model != "gpt-5.5" || s.profiles[1].Reasoning != "low" || i.agent.Model != "gpt-5.5" || i.agent.Reasoning != "low" {
-		t.Fatalf("active settings edit did not apply and save: %+v", s)
-	}
-	fresh := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s})
-	fresh.rend = nil
-	if fresh.cfg.ActiveModelProfile != 1 {
-		t.Fatal("fresh configuration has no default slot")
-	}
-	fresh.applyReasoningSetting("low")
-	if s.active != 1 || s.profiles[1].Model != "gpt-5.6-sol" || s.profiles[1].Reasoning != "low" {
-		t.Fatal("default slot edits not saved")
-	}
+func TestProfileCommandApplies(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{4: profSol}))
+	called := profExpectApply(port, 4, nil)
+	i.runSlash(context.Background(), "/profile 4")
+	profWait(t, called, "ApplyProfile")
 }
 
-func TestModelProfileCrossProviderCarriesTranscriptAndUsage(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	msgs := []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "preserve me"}}}}
-	i.agent.SetMessages(msgs)
-	i.agent.SeedCost(provider.Usage{InputTokens: 123})
-	i.cfg.QuickModelShortcuts = []QuickModelShortcut{{Provider: "google", Model: "gemini-2.0-flash", Reasoning: "high"}}
-	var changed string
-	i.cfg.OnReasoningChanged = func(level string) { changed = level }
-	i.cfg.BuildAgentFor = func(p, m string) (*core.Agent, string, string, error) {
-		return core.NewAgent(nil, m, "", nil), p, m, nil
-	}
-	transitions := 0
-	i.cfg.SessionTransition = func(fn func()) { transitions++; fn() }
-	i.applyQuickModelShortcut(1)
-	if transitions != 1 || i.cfg.Provider != "google" || i.cfg.Reasoning != "" || changed != "" || s.profiles[1].Reasoning != "" {
-		t.Fatalf("cross-provider state: provider=%s reasoning=%s store=%+v", i.cfg.Provider, i.cfg.Reasoning, s)
-	}
-	if !reflect.DeepEqual(i.agent.Messages(), msgs) || i.agent.Cost().InputTokens != 123 {
-		t.Fatal("lost transcript or usage")
-	}
-}
-
-func TestModelProfileFailureDoesNotSelectOrOverwrite(t *testing.T) {
-	for _, failure := range []string{"busy", "unknown", "build", "save"} {
-		t.Run(failure, func(t *testing.T) {
-			i, s := newProfileInteractive(t)
-			i.applyQuickModelShortcut(1)
-			before := s.profiles[1]
-			i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "google", Model: "gemini-2.0-flash"})
-			switch failure {
-			case "busy":
-				i.busy = true
-			case "unknown":
-				i.cfg.QuickModelShortcuts[1].Model = "does-not-exist"
-			case "build":
-				i.cfg.BuildAgentFor = func(string, string) (*core.Agent, string, string, error) {
-					return nil, "", "", errors.New("build failed")
-				}
-			case "save":
-				i.cfg.QuickModelShortcuts[1] = QuickModelShortcut{Provider: i.cfg.Provider, Model: i.cfg.Model, Reasoning: "low"}
-				s.err = errors.New("disk full")
-			}
-			i.applyQuickModelShortcut(2)
-			if s.active != 1 || s.profiles[1] != before || i.statusErr == "" {
-				t.Fatalf("failed switch changed persistence: %+v / %s", s, i.statusErr)
-			}
-			if failure != "save" && (i.cfg.ActiveModelProfile != 1 || i.cfg.Reasoning != "high") {
-				t.Fatal("failed switch changed live profile")
-			}
-			if failure == "save" && (i.cfg.ActiveModelProfile != 0 || !strings.Contains(i.statusErr, "model switched; profile not saved")) {
-				t.Fatal("save failure misrepresents persistence")
-			}
-		})
-	}
-}
-
-func TestModelProfileSaveFailureReportsRetainedModelPersistence(t *testing.T) {
-	for _, manual := range []bool{false, true} {
-		i, s := newProfileInteractive(t)
-		i.applyQuickModelShortcut(1)
-		before := s.profiles[1]
-		i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5", Reasoning: "low"})
-		var persistedModel string
-		i.cfg.PersistModel = func(_, model string) { persistedModel = model }
-		s.err = errors.New("disk full")
-		if manual {
-			i.applyModelSelection("openai", "gpt-5.5")
-		} else {
-			i.applyQuickModelShortcut(2)
-		}
-		if persistedModel != "gpt-5.5" || i.agent.Model != persistedModel {
-			t.Fatal("live model and model/session persistence must agree")
-		}
-		if s.active != 1 || s.profiles[1] != before || i.cfg.ActiveModelProfile != 0 || i.statusOK != "" || !strings.Contains(i.statusErr, "model switched; profile not saved") {
-			t.Fatalf("failed favorite save misreported: %s", i.statusErr)
-		}
-	}
-}
-
-type legacyProfileSettingsStore struct {
-	SettingsStore
-	shortcut  QuickModelShortcut
-	reasoning string
-	fastMode  bool
-}
-
-func (s *legacyProfileSettingsStore) SetQuickModelShortcut(_ int, prov, model string) error {
-	s.shortcut = QuickModelShortcut{Provider: prov, Model: model}
-	return nil
-}
-func (s *legacyProfileSettingsStore) SetReasoning(level string) error {
-	s.reasoning = level
-	return nil
-}
-func (s *legacyProfileSettingsStore) SetFastMode(enabled bool) error {
-	s.fastMode = enabled
-	return nil
-}
-
-func TestModelProfileLegacySettingsStoreCompatibility(t *testing.T) {
-	s := &legacyProfileSettingsStore{}
-	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", SettingsStore: s})
-	i.rend = nil
-	i.agent = core.NewAgent(nil, i.cfg.Model, "", nil)
-	if i.cfg.ActiveModelProfile != 0 {
-		t.Fatal("legacy store cannot persist an active profile")
-	}
-	i.applyReasoningSetting("low")
-	i.applySettingToggle("fast_mode", true)
-	i.setQuickModelProfile(2, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
-	i.applyQuickModelShortcut(2)
-	if s.reasoning != "low" || !s.fastMode || !i.agent.FastModeEnabled() || s.shortcut.Model != "gpt-5.5" || i.agent.Model != "gpt-5.5" || i.cfg.ActiveModelProfile != 0 {
-		t.Fatal("legacy reasoning/model-only settings no longer work")
-	}
-}
-
-func TestModelProfileAssignmentAndReasoningSaveFailure(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.applyQuickModelShortcut(1)
-	before := i.cfg.QuickModelShortcuts[0]
-	s.err = errors.New("read-only config")
-	i.setQuickModelProfile(1, QuickModelShortcut{})
-	i.applyReasoningSetting("low")
-	if i.cfg.QuickModelShortcuts[0] != before || i.cfg.ActiveModelProfile != 1 || i.agent.Reasoning != "high" || i.cfg.Reasoning != "high" {
-		t.Fatal("save failure changed selection")
-	}
-	s.err = nil
-	i.setQuickModelProfile(1, QuickModelShortcut{})
-	if i.cfg.ActiveModelProfile != 0 || s.active != 0 || s.profiles[1].Model != "" || i.agent.Model != before.Model {
-		t.Fatal("clear should detach without changing live model")
-	}
-}
-
-func TestModelProfilePickerReasoningIsLocalUntilAssigned(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.applyQuickModelShortcut(1)
-	i.openQuickModelPicker(2)
-	i.modelDialog.view = []provider.Model{{Provider: "openai", ID: "gpt-5.6-sol", Reasoning: true}}
-	i.modelDialog.cursor = 0
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyLeft})
-	if i.cfg.Reasoning != "high" || s.profiles[1].Reasoning != "high" {
-		t.Fatal("picker changed active reasoning")
-	}
-	want := i.modelDialog.reasoning
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
-	if s.profiles[2].Reasoning != want || i.cfg.ActiveModelProfile != 1 || i.cfg.Reasoning != "high" {
-		t.Fatalf("assignment=%+v reasoning=%s", s, want)
-	}
-}
-
-func TestModelProfileRestoresActiveIndicatorOnlyForMatchingSelection(t *testing.T) {
-	p := QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}
-	for _, override := range []bool{false, true} {
-		cfg := InteractiveConfig{Theme: tui.Dark, Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, QuickModelShortcuts: []QuickModelShortcut{p}, ActiveModelProfile: 1}
-		want := 1
-		if override {
-			cfg.Model = "gpt-5.5"
-			want = 0
-		}
-		i := NewInteractive(cfg)
-		if i.cfg.ActiveModelProfile != want {
-			t.Fatalf("override=%v active=%d", override, i.cfg.ActiveModelProfile)
-		}
-	}
-}
-
-func TestModelProfileShortcutLayouts(t *testing.T) {
-	for _, row := range []string{"123456789", "&é\"'(-è_ç"} {
-		for idx, r := range []rune(row) {
-			if got := quickModelShortcutSlot(tui.Key{Kind: tui.KeyRune, Rune: r, Ctrl: true}); got != idx+1 {
-				t.Fatalf("Ctrl+%c = %d", r, got)
-			}
-			for _, key := range []tui.Key{{Kind: tui.KeyRune, Rune: r}, {Kind: tui.KeyRune, Rune: r, Ctrl: true, Alt: true}, {Kind: tui.KeyPaste, Paste: string(r)}} {
-				if quickModelShortcutSlot(key) != 0 {
-					t.Fatalf("unexpected shortcut: %+v", key)
-				}
-			}
-		}
-	}
-}
-
-func TestModelProfileCommandRejectsInvalidSlots(t *testing.T) {
+func TestProfileCommandRejectsInvalidSlots(t *testing.T) {
 	for _, command := range []string{"/profile", "/profile 0", "/profile 10", "/profile x", "/profile 1 extra"} {
-		i, s := newProfileInteractive(t)
+		i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
 		i.runSlash(context.Background(), command)
-		if !strings.Contains(i.statusErr, "usage:") || s.active != 0 {
-			t.Fatalf("%s: %s", command, i.statusErr)
-		}
+		require.Contains(t, profStatusErr(i), "usage:", command)
 	}
 }
 
-func TestTabCyclesModelProfilesForward(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
+func TestEmptySlotOpensActivatingPicker(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol}))
+	profKey(i, profCtrl(5))
+	require.True(t, i.modelDialog.Active())
+	require.Equal(t, 5, i.quickModelAssign)
+	require.True(t, i.quickModelActivate)
+}
+
+func TestActivatingPickerAssignsAndActivates(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, nil))
+	called := make(chan struct{})
+	port.EXPECT().AssignProfile(mock.Anything, 5, mock.MatchedBy(func(p session.QuickModelShortcut) bool {
+		return p.Provider == "openai" && p.Model == "gpt-5.5"
+	}), true).RunAndReturn(func(context.Context, int, session.QuickModelShortcut, bool) error { close(called); return nil }).Once()
+	profKey(i, profCtrl(5))
+	profPick(t, i, "openai", "gpt-5.5")
+	profWait(t, called, "AssignProfile")
+	require.False(t, i.modelDialog.Active())
+	require.Zero(t, i.quickModelAssign)
+}
+
+func TestCancelActivatingPickerCallsNothing(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
+	profKey(i, profCtrl(2))
+	profKey(i, tui.Key{Kind: tui.KeyEsc})
+	require.False(t, i.modelDialog.Active())
+	require.Zero(t, i.quickModelAssign)
+	require.False(t, i.quickModelActivate)
+}
+
+func TestProfileEmptyErrorOpensPicker(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{6: profSol}))
+	called := profExpectApply(port, 6, session.ErrProfileEmpty)
+	profKey(i, profCtrl(6))
+	profWait(t, called, "ApplyProfile")
+	select {
+	case fn := <-i.loopCalls:
+		fn()
+	case <-time.After(5 * time.Second):
+		t.Fatal("picker not queued")
+	}
+	require.True(t, i.modelDialog.Active())
+	require.Equal(t, 6, i.quickModelAssign)
+	require.True(t, i.quickModelActivate)
+	require.Empty(t, profStatusErr(i))
+}
+
+func TestApplyProfileErrorShown(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{1: profSol}))
+	called := profExpectApply(port, 1, errors.New("model switched; profile not saved: disk"))
+	profKey(i, profCtrl(1))
+	profWait(t, called, "ApplyProfile")
+	require.Eventually(t, func() bool { return strings.Contains(profStatusErr(i), "profile not saved") }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestBusyGuardFromInfoRun(t *testing.T) {
+	for _, run := range []session.RunState{session.RunStateRunning, session.RunStateCompacting} {
+		info := profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5})
+		info.Run = run
+		i, _ := newPortProfileInteractive(t, info)
+		profKey(i, profCtrl(2))
+		require.Contains(t, profStatusErr(i), "cannot switch model while a turn is running")
+		require.False(t, i.modelDialog.Active())
+	}
+}
+
+func TestBusyGuardIgnoresLocalBusy(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, map[int]session.QuickModelShortcut{2: profGPT5}))
+	i.busy = true // stale local state; Info says idle
+	called := profExpectApply(port, 2, nil)
+	profKey(i, profCtrl(2))
+	profWait(t, called, "ApplyProfile")
+}
+
+func TestOldDaemonWithoutProfilesReportsError(t *testing.T) {
+	info := profileInfo(0, nil)
+	info.Profiles = nil
+	i, _ := newPortProfileInteractive(t, info)
+	profKey(i, profCtrl(1))
+	require.Contains(t, profStatusErr(i), "newer zut daemon")
+	require.False(t, i.modelDialog.Active())
+}
+
+func TestUnsupportedPortMethodSurfaces(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, nil))
+	called := make(chan struct{})
+	port.EXPECT().ClearProfile(mock.Anything, 3).RunAndReturn(func(context.Context, int) error {
+		close(called)
+		return errors.New(`unsupported port method "clear_profile"`)
+	}).Once()
+	i.applyQuickModelSetting("quick_model_3", "")
+	profWait(t, called, "ClearProfile")
+	require.Eventually(t, func() bool { return strings.Contains(profStatusErr(i), "unsupported port method") }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestSettingsAssignDoesNotActivate(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol}))
+	called := make(chan struct{})
+	port.EXPECT().AssignProfile(mock.Anything, 4, mock.MatchedBy(func(p session.QuickModelShortcut) bool { return p.Model == "gpt-5.5" }), false).
+		RunAndReturn(func(context.Context, int, session.QuickModelShortcut, bool) error { close(called); return nil }).Once()
+	i.openQuickModelPicker(4)
+	profPick(t, i, "openai", "gpt-5.5")
+	profWait(t, called, "AssignProfile")
+}
+
+func TestSettingsAssignAllowedWhileBusy(t *testing.T) {
+	info := profileInfo(0, nil)
+	info.Run = session.RunStateRunning
+	i, port := newPortProfileInteractive(t, info)
+	called := make(chan struct{})
+	port.EXPECT().AssignProfile(mock.Anything, 2, mock.Anything, false).
+		RunAndReturn(func(context.Context, int, session.QuickModelShortcut, bool) error { close(called); return nil }).Once()
+	i.openQuickModelPicker(2)
+	profPick(t, i, "openai", "gpt-5.5")
+	profWait(t, called, "AssignProfile")
+}
+
+func TestSettingsBackspaceClearsProfile(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol}))
+	called := make(chan struct{})
+	port.EXPECT().ClearProfile(mock.Anything, 1).RunAndReturn(func(context.Context, int) error { close(called); return nil }).Once()
+	i.applyQuickModelSetting("quick_model_1", "")
+	profWait(t, called, "ClearProfile")
+}
+
+func TestPickerReasoningCarriedIntoAssign(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(0, nil))
+	called := make(chan struct{})
+	port.EXPECT().AssignProfile(mock.Anything, 7, mock.MatchedBy(func(p session.QuickModelShortcut) bool { return p.Reasoning == "low" }), false).
+		RunAndReturn(func(context.Context, int, session.QuickModelShortcut, bool) error { close(called); return nil }).Once()
+	i.openQuickModelPicker(7)
+	i.modelDialog.reasoning = "low"
+	profPick(t, i, "openai", "gpt-5.5")
+	profWait(t, called, "AssignProfile")
+}
+
+func TestTabCyclesForward(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5}))
+	called := profExpectApply(port, 2, nil)
 	i.ed.SetValue("hello")
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	if i.cfg.ActiveModelProfile != 2 || s.active != 2 || i.cfg.Model != "gpt-5.5" {
-		t.Fatalf("tab did not cycle to slot 2: active=%d model=%q", i.cfg.ActiveModelProfile, i.cfg.Model)
-	}
-	if i.ed.Value() != "hello" {
-		t.Fatalf("tab modified editor text: %q", i.ed.Value())
-	}
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	profWait(t, called, "ApplyProfile")
+	require.Equal(t, "hello", i.ed.Value())
 }
 
-func TestTabCyclesModelProfilesWithWraparound(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
-	i.cfg.ActiveModelProfile = 9
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
-		t.Fatalf("tab did not wrap to slot 1: active=%d", i.cfg.ActiveModelProfile)
-	}
+func TestTabWrapsAround(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(9, map[int]session.QuickModelShortcut{1: profSol, 9: profGPT5}))
+	called := profExpectApply(port, 1, nil)
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	profWait(t, called, "ApplyProfile")
 }
 
-func TestTabStopsOnEmptySlot(t *testing.T) {
-	i, _ := newProfileInteractive(t)
-	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
-	i.cfg.ActiveModelProfile = 2
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	// Empty slot 3 opens the picker like Ctrl+3; the active slot is
-	// unchanged until the user picks a model.
-	if !i.modelDialog.Active() || i.quickModelAssign != 3 || i.cfg.ActiveModelProfile != 2 {
-		t.Fatalf("tab did not stop on empty slot 3: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
-	}
-}
-
-func TestShiftTabCyclesModelProfilesBackward(t *testing.T) {
-	i, _ := newProfileInteractive(t)
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
-	// Empty slot 9 opens the picker like Ctrl+9; the active slot is
-	// unchanged until the user picks a model.
-	if !i.modelDialog.Active() || i.quickModelAssign != 9 || i.cfg.ActiveModelProfile != 1 {
-		t.Fatalf("shift-tab did not stop on empty slot 9: active=%d picker=%v assign=%d", i.cfg.ActiveModelProfile, i.modelDialog.Active(), i.quickModelAssign)
-	}
-}
-
-func TestShiftTabFromActiveProfileGoesBackward(t *testing.T) {
-	i, s := newProfileInteractive(t)
-	i.cfg.QuickModelShortcuts = append(i.cfg.QuickModelShortcuts, QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"})
-	i.cfg.ActiveModelProfile = 2
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyShiftTab})
-	if i.cfg.ActiveModelProfile != 1 || s.active != 1 {
-		t.Fatalf("shift-tab did not move to slot 1: active=%d", i.cfg.ActiveModelProfile)
-	}
+func TestShiftTabWithoutActiveStartsAtNine(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
+	profKey(i, tui.Key{Kind: tui.KeyShiftTab})
+	require.True(t, i.modelDialog.Active())
+	require.Equal(t, 9, i.quickModelAssign)
 }
 
 func TestTabOnPathKeepsPathCompletion(t *testing.T) {
-	i, _ := newProfileInteractive(t)
+	i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("x"), 0o600))
 	i.cfg.CWD = dir
-	i.cfg.ActiveModelProfile = 0
 	i.ed.SetValue("./al")
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	// The path token must complete to the single match; profiles stay put.
-	if i.ed.Value() != "./alpha.txt" {
-		t.Fatalf("tab did not complete path: %q", i.ed.Value())
-	}
-	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 0 {
-		t.Fatalf("tab on path cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
-	}
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	require.Equal(t, "./alpha.txt", i.ed.Value())
+	require.False(t, i.modelDialog.Active())
 }
 
 func TestTabWithSlashPopupCompletesCommand(t *testing.T) {
-	i, _ := newProfileInteractive(t)
+	i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
 	i.ed.SetValue("/mod")
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	// The slash popup owns Tab while visible: it completes the command
-	// instead of cycling profiles.
-	if i.ed.Value() != "/model" {
-		t.Fatalf("tab did not complete slash command: %q", i.ed.Value())
-	}
-	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
-		t.Fatalf("tab with slash popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
-	}
-}
-
-func TestTabWithFilePopupKeepsPopup(t *testing.T) {
-	i, _ := newProfileInteractive(t)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	i.cfg.CWD = dir
-	i.fileSuggest.SetCWD(dir)
-	i.ed.SetValue("@")
-	if !i.fileSuggest.Active(i.ed.Value()) {
-		t.Fatal("file popup did not open for @")
-	}
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	// The file popup owns Tab while visible: no profile cycling.
-	if i.modelDialog.Active() || i.cfg.ActiveModelProfile != 1 {
-		t.Fatalf("tab with file popup cycled profiles: active=%d picker=%v", i.cfg.ActiveModelProfile, i.modelDialog.Active())
-	}
-}
-
-func TestTabWhileBusyShowsGuard(t *testing.T) {
-	i, _ := newProfileInteractive(t)
-	i.busy = true
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyTab})
-	if !strings.Contains(i.statusErr, "cannot switch model while a turn is running") {
-		t.Fatalf("tab while busy did not show guard: %q", i.statusErr)
-	}
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	require.Equal(t, "/model", i.ed.Value())
+	require.False(t, i.modelDialog.Active())
 }
 
 func TestModifiedTabDoesNotCycle(t *testing.T) {
-	i, _ := newProfileInteractive(t)
+	i, _ := newPortProfileInteractive(t, profileInfo(0, nil))
 	for _, k := range []tui.Key{
-		{Kind: tui.KeyTab, Ctrl: true},
-		{Kind: tui.KeyTab, Alt: true},
-		{Kind: tui.KeyTab, Super: true},
-		{Kind: tui.KeyTab, Shift: true},
-		{Kind: tui.KeyShiftTab, Ctrl: true},
-		{Kind: tui.KeyShiftTab, Alt: true},
-		{Kind: tui.KeyShiftTab, Super: true},
+		{Kind: tui.KeyTab, Ctrl: true}, {Kind: tui.KeyTab, Alt: true}, {Kind: tui.KeyTab, Super: true}, {Kind: tui.KeyTab, Shift: true},
+		{Kind: tui.KeyShiftTab, Ctrl: true}, {Kind: tui.KeyShiftTab, Alt: true}, {Kind: tui.KeyShiftTab, Super: true},
 	} {
 		i.ed.Clear()
-		i.handleKey(context.Background(), k)
-		if i.modelDialog.Active() || i.quickModelAssign != 0 {
-			t.Fatalf("modified tab cycled profiles: key=%+v assign=%d", k, i.quickModelAssign)
+		profKey(i, k)
+		require.False(t, i.modelDialog.Active(), "%+v", k)
+		require.Zero(t, i.quickModelAssign)
+	}
+}
+
+func TestShortcutLayouts(t *testing.T) {
+	for _, row := range []string{"123456789", "&é\"'(-è_ç"} {
+		for idx, r := range []rune(row) {
+			require.Equal(t, idx+1, quickModelShortcutSlot(tui.Key{Kind: tui.KeyRune, Rune: r, Ctrl: true}))
+			for _, k := range []tui.Key{{Kind: tui.KeyRune, Rune: r}, {Kind: tui.KeyRune, Rune: r, Ctrl: true, Alt: true}, {Kind: tui.KeyPaste, Paste: string(r)}} {
+				require.Zero(t, quickModelShortcutSlot(k))
+			}
 		}
 	}
 }
