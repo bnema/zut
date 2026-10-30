@@ -2,9 +2,11 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -96,6 +98,39 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 		defer cancel()
 		if err := port.Submit(callCtx, in); err != nil {
 			i.ReportError(fmt.Errorf("submit: %w", err))
+		}
+	}()
+}
+
+// portSlideBackQueued retrieves a draft off-loop, optionally aborting only after
+// retrieval so cancellation cannot discard the draft first.
+func (i *Interactive) portSlideBackQueued(ctx context.Context, abort bool) {
+	port := i.SessionPort()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+		in, err := port.SlideBackQueued(callCtx)
+		cancel()
+		if err != nil && !errors.Is(err, session.ErrUnknownRequest) {
+			i.ReportError(fmt.Errorf("slide back queued: %w", err))
+		}
+		if abort {
+			callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
+			if err := port.Abort(callCtx); err != nil {
+				i.ReportError(fmt.Errorf("abort: %w", err))
+			}
+			cancel()
+		}
+		if err == nil && (in.Text != "" || len(in.Images) > 0) {
+			select {
+			case i.loopCalls <- func() {
+				i.restoreQueuedMessageToEditor(core.QueuedMessage{Text: in.Text, Images: in.Images})
+				i.invalidate()
+			}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 }

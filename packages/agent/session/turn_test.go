@@ -604,3 +604,29 @@ func TestTurnHiddenTextOnly(t *testing.T) {
 	require.Len(t, snap.Queue, 1)
 	require.NoError(t, c.Abort(ctx))
 }
+
+func TestSlideBackQueuedPreservesHostEventsAndFallsBackToAgent(t *testing.T) {
+	c, ctx := newTestController(t)
+	ag := core.NewAgent(nil, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() {
+		c.turn.agent = ag
+		c.turn.busy = true
+		ag.QueuePrompt(core.QueuedMessage{Text: "core draft"})
+		ag.QueuePrompt(core.QueuedMessage{Text: "core host", HostEvent: true})
+	}))
+	require.NoError(t, c.Submit(ctx, Input{Text: "controller draft", Mode: SubmitModeAuto}))
+	require.NoError(t, c.Submit(ctx, Input{Text: "controller host", HostEvent: true}))
+	in, err := c.SlideBackQueued(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "controller draft", in.Text)
+	in, err = c.SlideBackQueued(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "core draft", in.Text)
+	_, err = c.SlideBackQueued(ctx)
+	require.ErrorIs(t, err, ErrUnknownRequest)
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Queue, 1)
+	require.Equal(t, "controller host", snap.Queue[0].Input.Text)
+	require.Equal(t, 1, ag.QueuedMessageCount())
+}

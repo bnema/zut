@@ -659,7 +659,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		if i.port != nil {
 			if i.portRunning() {
-				i.portAbort(ctx)
+				i.portSlideBackQueued(ctx, true)
 				return false
 			}
 			break
@@ -731,6 +731,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// contents (we don't append/push). When the queue is empty
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
+			if i.port != nil {
+				i.portSlideBackQueued(ctx, false)
+				return false
+			}
 			i.mu.Lock()
 			message, ok := i.popQueuedUserMessageLocked()
 			i.mu.Unlock()

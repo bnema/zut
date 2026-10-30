@@ -88,6 +88,7 @@ func TestInteractivePortEscAbortsRunningTurn(t *testing.T) {
 	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
 	expectPortSubscribe(port, events, nil)
 	called := make(chan struct{})
+	port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{}, session.ErrUnknownRequest).Once()
 	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
 		close(called)
 		return nil
@@ -109,4 +110,55 @@ func TestInteractivePortSubmitErrorShown(t *testing.T) {
 	r, term := startPortKeys(t, port)
 	term.send("boom\r")
 	r.waitOutput(t, "submit: daemonrefused")
+}
+
+func TestInteractivePortSlideBackRestoresEditor(t *testing.T) {
+	for _, esc := range []bool{true, false} {
+		name := "AltUp"
+		if esc {
+			name = "Esc"
+		}
+		t.Run(name, func(t *testing.T) {
+			port := sessionmocks.NewMockPort(t)
+			events := make(chan session.Event, 4)
+			port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
+			expectPortSubscribe(port, events, nil)
+			slid := make(chan struct{})
+			port.EXPECT().SlideBackQueued(mock.Anything).RunAndReturn(func(context.Context) (session.Input, error) {
+				close(slid)
+				return session.Input{Text: "queued draft"}, nil
+			}).Once()
+			if esc {
+				port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
+					select {
+					case <-slid:
+					default:
+						t.Error("Abort called before SlideBackQueued")
+					}
+					return nil
+				}).Once()
+			}
+			r, term := startPortKeys(t, port)
+			require.Eventually(t, r.i.portRunning, 5*time.Second, 10*time.Millisecond)
+			if esc {
+				term.send("\x1b")
+			} else {
+				term.send("\x1b[1;3A")
+			}
+			require.Eventually(t, func() bool {
+				got := make(chan string, 1)
+				select {
+				case r.i.loopCalls <- func() { got <- r.i.ed.Value() }:
+				case <-time.After(time.Second):
+					return false
+				}
+				select {
+				case value := <-got:
+					return value == "queued draft"
+				case <-time.After(time.Second):
+					return false
+				}
+			}, 5*time.Second, 10*time.Millisecond)
+		})
+	}
 }
