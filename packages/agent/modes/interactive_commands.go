@@ -1232,14 +1232,16 @@ func (i *Interactive) canResumeSessionSelection() bool {
 // would lose subsequent transcript writes on Unix and behaves differently
 // on Windows.
 func (i *Interactive) applySessionDeletion(path string) {
-	if i.cfg.CurrentSessionPath == nil {
+	// The attached session reports its own file; without one the legacy
+	// path callback is required to protect the active session (L16 SHIM).
+	if !i.portMode.Load() && i.cfg.CurrentSessionPath == nil {
 		i.mu.Lock()
 		i.statusErr = "session deletion is not wired in this build"
 		i.statusOK = ""
 		i.mu.Unlock()
 		return
 	}
-	current := i.cfg.CurrentSessionPath()
+	current := i.currentSessionPath()
 	if current != "" && filepath.Clean(current) == filepath.Clean(path) {
 		i.mu.Lock()
 		i.statusErr = "cannot delete the active session; resume another session first"

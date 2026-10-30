@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -36,8 +38,13 @@ func TestApplySessionAgentWithCWDRebindsInteractiveWorkspace(t *testing.T) {
 }
 
 func TestCanResumeSessionSelectionRejectsBusyTurn(t *testing.T) {
-	i := NewInteractive(InteractiveConfig{Agent: core.NewAgent(nil, "model", "", nil), LoadSession: func(string) error { return nil }})
-	i.busy = true
+	i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{Info: session.Info{Run: session.RunStateIdle}}, InteractiveConfig{})
+	if !i.canResumeSessionSelection() {
+		t.Fatal("idle session rejected selection")
+	}
+	i.mu.Lock()
+	i.applyInfoLocked(session.Info{Run: session.RunStateRunning})
+	i.mu.Unlock()
 	if i.canResumeSessionSelection() {
 		t.Fatal("busy turn allowed session selection")
 	}

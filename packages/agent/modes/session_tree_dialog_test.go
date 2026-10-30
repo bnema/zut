@@ -9,9 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionTreeAsyncLoadOpensImmediatelyAndStreamsNewestFirst(t *testing.T) {
@@ -229,28 +233,28 @@ func TestSessionTreeOpensWithExtensionStateRows(t *testing.T) {
 func TestSessionTreeHistoricalSelectionCreatesBranchFromOldSegment(t *testing.T) {
 	root := t.TempDir()
 	cwd := "/workspace/tree-history-branch"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
+	sess, err := core.NewSession(root, cwd, "test", "model", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AppendMessage(treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "old prompt"})); err != nil {
+	if err := sess.AppendMessage(treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "old prompt"})); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old answer"})); err != nil {
+	if err := sess.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old answer"})); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AppendCompaction([]provider.Message{{
+	if err := sess.AppendCompaction([]provider.Message{{
 		Role:    provider.RoleUser,
 		Meta:    map[string]string{"compaction": "true"},
 		Content: []provider.Content{provider.TextBlock{Text: "summary"}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "new answer"})); err != nil {
+	if err := sess.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "new answer"})); err != nil {
 		t.Fatal(err)
 	}
-	path := session.Path
-	if err := session.Close(); err != nil {
+	path := sess.Path
+	if err := sess.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,22 +275,22 @@ func TestSessionTreeHistoricalSelectionCreatesBranchFromOldSegment(t *testing.T)
 		t.Fatalf("old target = %+v, found=%v", target, found)
 	}
 
-	ag := core.NewAgent(nil, "model", "", nil)
+	// Historical rows materialize a pre-compaction branch file locally, then
+	// the daemon resumes it.
+	i, _, client, _ := newTreePortInteractiveAt(t, root, cwd, path)
+	nextPort := sessionmocks.NewMockPort(t)
 	var loaded string
-	i := NewInteractive(InteractiveConfig{
-		Agent:              ag,
-		CWD:                cwd,
-		SessionsRoot:       root,
-		Version:            "test",
-		CurrentSessionPath: func() string { return path },
-		LoadSession: func(newPath string) error {
-			loaded = newPath
-			return nil
-		},
-	})
+	client.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Info, error) {
+		loaded = spec.ResumePath
+		return session.Info{ID: "branch"}, nil
+	}).Once()
+	client.EXPECT().Attach(mock.Anything, session.ID("branch")).Return(nextPort, nil).Once()
+	nextPort.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "branch", CWD: cwd, Run: session.RunStateIdle}}, nil).Once()
+	nextPort.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Once()
 	i.applySessionTreeTarget(target, 1)
+	awaitSessionSwitch(t, i)
 	if loaded == "" {
-		t.Fatalf("historical selection did not load a branch; status=%q", i.statusErr)
+		t.Fatalf("historical selection did not resume a branch; status=%q", i.statusErr)
 	}
 	branch, messages, err := core.OpenSession(loaded)
 	if err != nil {
@@ -474,6 +478,8 @@ func TestSessionTreeRenderAndPagingAreWidthAndHeightSafe(t *testing.T) {
 	}
 }
 
+// The checked-out session's context gauge comes from its snapshot, zero
+// included, never from the session that was left.
 func TestSessionTreeCheckoutRefreshesLastTurnUsageIncludingZero(t *testing.T) {
 	root := t.TempDir()
 	cwd := "/workspace/tree-usage"
@@ -481,43 +487,57 @@ func TestSessionTreeCheckoutRefreshesLastTurnUsageIncludingZero(t *testing.T) {
 		treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "question"}),
 		treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "answer"}),
 	})
-
-	initial := core.NewAgent(nil, "model", "", nil)
-	initial.SeedLastTurnUsage(provider.Usage{InputTokens: 99})
-	selected := core.NewAgent(nil, "model", "", nil)
-	selected.SetMessages(initial.Messages())
-	selected.SeedLastTurnUsage(provider.Usage{
-		InputTokens:      7,
-		CacheReadTokens:  11,
-		CacheWriteTokens: 13,
-	})
-
-	i := NewInteractive(InteractiveConfig{
-		Agent:              initial,
-		CWD:                cwd,
-		SessionsRoot:       root,
-		CurrentSessionPath: func() string { return path },
-	})
-	i.cfg.LoadSession = func(string) error {
-		i.agent = selected
-		return nil
-	}
-
 	target := sessionTreeTarget{
 		SourcePath:        path,
 		EffectiveIndex:    1,
 		SelectionBoundary: 2,
 		Role:              provider.RoleAssistant,
 	}
-	i.applySessionTreeTarget(target, 1)
-	if i.lastCtxInput != 31 {
-		t.Fatalf("checked-out context usage = %d, want 31", i.lastCtxInput)
+	for _, used := range []int{31, 0} {
+		i, _, client, _ := newTreePortInteractiveAt(t, root, cwd, path)
+		i.mu.Lock()
+		i.lastCtxInput = 99
+		i.mu.Unlock()
+		nextPort := sessionmocks.NewMockPort(t)
+		client.EXPECT().Create(mock.Anything, mock.Anything).Return(session.Info{ID: "branch"}, nil).Once()
+		client.EXPECT().Attach(mock.Anything, session.ID("branch")).Return(nextPort, nil).Once()
+		nextPort.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "branch", CWD: cwd, Run: session.RunStateIdle, ContextUsed: used}}, nil).Once()
+		nextPort.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Once()
+		i.applySessionTreeTarget(target, 1)
+		awaitSessionSwitch(t, i)
+		if i.lastCtxInput != used {
+			t.Fatalf("checked-out context usage = %d, want %d", i.lastCtxInput, used)
+		}
 	}
+}
 
-	selected.SeedLastTurnUsage(provider.Usage{})
-	i.applySessionTreeTarget(target, 1)
-	if i.lastCtxInput != 0 {
-		t.Fatalf("checked-out zero usage left stale context value %d", i.lastCtxInput)
+// newTreePortInteractiveAt attaches to an idle session already stored at path.
+func newTreePortInteractiveAt(t *testing.T, root, cwd, path string) (*Interactive, *sessionmocks.MockPort, *mockSessionClient, string) {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{
+		Info: session.Info{ID: "original", CWD: cwd, SessionPath: path, Run: session.RunStateIdle},
+		Seq:  1,
+	}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(1)).Return(make(chan session.Event), nil).Once()
+	client := newMockSessionClient(t)
+	i := NewInteractive(InteractiveConfig{Port: port, Client: client, SessionsRoot: root})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	i.runCtx = ctx
+	require.NoError(t, i.attachPort(ctx))
+	return i, port, client, path
+}
+
+// awaitSessionSwitch applies the pending switch result on the test goroutine.
+func awaitSessionSwitch(t *testing.T, i *Interactive) {
+	t.Helper()
+	select {
+	case res := <-i.sessionResults:
+		require.NoError(t, res.err)
+		i.applySessionResult(context.Background(), res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("session switch did not complete")
 	}
 }
 

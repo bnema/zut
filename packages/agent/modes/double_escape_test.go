@@ -2,12 +2,16 @@ package modes
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func applySessionTreeLoads(d *sessionTreeDialog, events <-chan sessionTreeLoadEvent) error {
@@ -176,43 +180,44 @@ func TestSessionTreeSelectionAllowsDeferredToolActivation(t *testing.T) {
 	}
 }
 
+// newTreePortInteractive attaches to an idle session whose file at path
+// holds msgs (SessionsRoot root, CWD cwd), as tui_client.go does.
+func newTreePortInteractive(t *testing.T, root, cwd string, msgs []provider.Message) (*Interactive, *sessionmocks.MockPort, *mockSessionClient, string) {
+	t.Helper()
+	path := newTreeTestSession(t, root, cwd, msgs)
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{
+		Info:     session.Info{ID: "original", CWD: cwd, SessionPath: path, Run: session.RunStateIdle},
+		Seq:      1,
+		Messages: msgs,
+	}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(1)).Return(make(chan session.Event), nil).Once()
+	client := newMockSessionClient(t)
+	i := NewInteractive(InteractiveConfig{Port: port, Client: client, SessionsRoot: root})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	i.runCtx = ctx
+	require.NoError(t, i.attachPort(ctx))
+	return i, port, client, path
+}
+
 func TestSessionTreeGateFailureDoesNotFlushOrOpenOverlay(t *testing.T) {
-	i := NewInteractive(InteractiveConfig{})
-	flushes := 0
-	i.cfg.FlushSession = func() { flushes++ }
+	// No session file: the gate fails closed without reaching the client.
+	port := sessionmocks.NewMockPort(t)
+	i := NewInteractive(InteractiveConfig{Port: port, Client: newMockSessionClient(t), SessionsRoot: t.TempDir()})
+	i.portInfo = session.Info{Run: session.RunStateIdle, CWD: "/workspace"}
 
 	i.doSessionTree()
-	if flushes != 0 {
-		t.Fatalf("FlushSession called %d times on a failed gate", flushes)
-	}
 	if i.sessionTreeDialog.Active() {
 		t.Fatal("session tree overlay opened after a failed gate")
 	}
 }
 
 func TestSessionTreeGateRejectsModelRefreshInFlight(t *testing.T) {
-	root := t.TempDir()
-	cwd := "/workspace/model-refresh-gate"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
-	if err != nil {
-		t.Fatal(err)
+	i, _, _, _ := newTreePortInteractive(t, t.TempDir(), "/workspace/model-refresh-gate", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "message"}}}})
+	if !i.canOpenSessionTree() {
+		t.Fatal("fixture gate should open while idle")
 	}
-	message := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "message"}}}
-	if err := session.AppendMessage(message); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	i := NewInteractive(InteractiveConfig{
-		Agent:              core.NewAgent(nil, "model", "", nil),
-		CWD:                cwd,
-		SessionsRoot:       root,
-		CurrentSessionPath: func() string { return path },
-		LoadSession:        func(string) error { return nil },
-	})
-	i.agent.SetMessages([]provider.Message{message})
 	i.mu.Lock()
 	i.modelRefreshing = true
 	i.mu.Unlock()
@@ -222,31 +227,7 @@ func TestSessionTreeGateRejectsModelRefreshInFlight(t *testing.T) {
 }
 
 func TestSessionTreeSelectionGateAllowsActiveTree(t *testing.T) {
-	root := t.TempDir()
-	cwd := "/workspace/selection-gate"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "message"}}}
-	if err := session.AppendMessage(message); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ag := core.NewAgent(nil, "model", "", nil)
-	ag.SetMessages([]provider.Message{message})
-	i := NewInteractive(InteractiveConfig{
-		Agent:        ag,
-		CWD:          cwd,
-		SessionsRoot: root,
-		CurrentSessionPath: func() string {
-			return path
-		},
-		LoadSession: func(string) error { return nil },
-	})
+	i, _, _, _ := newTreePortInteractive(t, t.TempDir(), "/workspace/selection-gate", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "message"}}}})
 	i.sessionTreeDialog.active = true
 	if i.canOpenSessionTree() {
 		t.Fatal("open gate accepted an already-active tree")
@@ -257,44 +238,16 @@ func TestSessionTreeSelectionGateAllowsActiveTree(t *testing.T) {
 }
 
 func TestDoubleEscapeOpensReadableTreeThroughSharedGate(t *testing.T) {
-	root := t.TempDir()
-	cwd := "/workspace/double-escape"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}
-	if err := session.AppendMessage(message); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	ag := core.NewAgent(nil, "model", "", nil)
-	ag.SetMessages([]provider.Message{message})
+	// No Submit expectation: the gesture never starts a provider turn.
+	i, _, _, _ := newTreePortInteractive(t, t.TempDir(), "/workspace/double-escape", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}})
 	now := time.Unix(200, 0)
-	flushes := 0
-	i := NewInteractive(InteractiveConfig{
-		Agent:        ag,
-		CWD:          cwd,
-		SessionsRoot: root,
-		CurrentSessionPath: func() string {
-			return path
-		},
-		LoadSession: func(string) error { return nil },
-		FlushSession: func() {
-			flushes++
-		},
-	})
 	i.clock = func() time.Time { return now }
 
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
 		t.Fatal("first Escape exited")
 	}
-	if i.sessionTreeDialog.Active() || flushes != 0 {
-		t.Fatalf("first Escape opened/flushed: active=%v flushes=%d", i.sessionTreeDialog.Active(), flushes)
+	if i.sessionTreeDialog.Active() {
+		t.Fatal("first Escape opened the tree")
 	}
 	now = now.Add(499 * time.Millisecond)
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
@@ -306,57 +259,28 @@ func TestDoubleEscapeOpensReadableTreeThroughSharedGate(t *testing.T) {
 	if err := applySessionTreeLoads(i.sessionTreeDialog, i.sessionTreeLoads); err != nil {
 		t.Fatalf("background session tree load: %v", err)
 	}
-	if flushes != 1 {
-		t.Fatalf("FlushSession called %d times, want once in the background", flushes)
-	}
-	if got := len(ag.Messages()); got != 1 {
-		t.Fatalf("double Escape changed transcript with a provider turn: %d messages", got)
-	}
 }
 
 func TestSecondEscapeFallsThroughToCancellationWhenTurnBecomesBusy(t *testing.T) {
-	root := t.TempDir()
-	cwd := "/workspace/double-escape-busy"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}
-	if err := session.AppendMessage(message); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	ag := core.NewAgent(nil, "model", "", nil)
-	ag.SetMessages([]provider.Message{message})
+	i, port, _, _ := newTreePortInteractive(t, t.TempDir(), "/workspace/double-escape-busy", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}})
 	now := time.Unix(300, 0)
-	cancelled := 0
-	i := NewInteractive(InteractiveConfig{
-		Agent:              ag,
-		CWD:                cwd,
-		SessionsRoot:       root,
-		CurrentSessionPath: func() string { return path },
-		LoadSession:        func(string) error { return nil },
-	})
 	i.clock = func() time.Time { return now }
+	aborted := make(chan struct{})
+	port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{}, session.ErrUnknownRequest).Once()
+	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error { close(aborted); return nil }).Once()
 
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
 		t.Fatal("first Escape exited")
 	}
 	i.mu.Lock()
-	i.busy = true
-	i.cancelTurn = func() { cancelled++ }
+	i.applyInfoLocked(session.Info{ID: "original", CWD: i.portInfo.CWD, SessionPath: i.portInfo.SessionPath, Run: session.RunStateRunning})
 	i.mu.Unlock()
 	now = now.Add(100 * time.Millisecond)
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
 		t.Fatal("second Escape exited")
 	}
-	if cancelled != 1 {
-		t.Fatalf("second Escape did not fall through to cancellation: got %d cancels", cancelled)
-	}
+	runLoopCall(t, i)
+	waitSignal(t, aborted, "Abort")
 	if i.sessionTreeDialog.Active() {
 		t.Fatal("session tree opened after the turn became busy")
 	}
@@ -366,48 +290,17 @@ func TestSecondEscapeFallsThroughToCancellationWhenTurnBecomesBusy(t *testing.T)
 }
 
 func TestSecondEscapeStillConsumesFailClosedTreeGate(t *testing.T) {
-	root := t.TempDir()
-	cwd := "/workspace/double-escape-gate"
-	session, err := core.NewSession(root, cwd, "test", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}
-	if err := session.AppendMessage(message); err != nil {
-		t.Fatal(err)
-	}
-	path := session.Path
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	ag := core.NewAgent(nil, "model", "", nil)
-	ag.SetMessages([]provider.Message{message})
+	i, _, _, path := newTreePortInteractive(t, t.TempDir(), "/workspace/double-escape-gate", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "draft"}}}})
 	now := time.Unix(400, 0)
-	pathCalls := 0
-	flushes := 0
-	i := NewInteractive(InteractiveConfig{
-		Agent:        ag,
-		CWD:          cwd,
-		SessionsRoot: root,
-		CurrentSessionPath: func() string {
-			pathCalls++
-			if pathCalls == 1 {
-				return path
-			}
-			// Keep the cheap gesture eligibility true while making the
-			// asynchronous family read fail after the overlay opens.
-			return path + ".missing"
-		},
-		LoadSession: func(string) error { return nil },
-		FlushSession: func() {
-			flushes++
-		},
-	})
 	i.clock = func() time.Time { return now }
 
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
 		t.Fatal("first Escape exited")
+	}
+	// Keep the cheap gesture eligibility true while making the asynchronous
+	// family read fail after the overlay opens.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
 	}
 	now = now.Add(100 * time.Millisecond)
 	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
@@ -421,9 +314,6 @@ func TestSecondEscapeStillConsumesFailClosedTreeGate(t *testing.T) {
 	}
 	if i.sessionTreeDialog.Active() {
 		t.Fatal("unreadable family left the tree overlay active")
-	}
-	if flushes != 1 {
-		t.Fatalf("FlushSession called %d times, want one asynchronous flush", flushes)
 	}
 }
 

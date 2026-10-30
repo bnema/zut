@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -747,10 +748,7 @@ func TestApplySessionDeletionRemovesFileAndRow(t *testing.T) {
 	if err := os.WriteFile(path, []byte("session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	i := &Interactive{
-		cfg:           InteractiveConfig{CurrentSessionPath: func() string { return "" }},
-		sessionDialog: &sessionDialog{active: true, sessions: []core.SessionSummary{{Path: path}}},
-	}
+	i := newDeletionPortInteractive(t, "", path)
 
 	i.applySessionDeletion(path)
 
@@ -770,10 +768,7 @@ func TestApplySessionDeletionProtectsActiveSession(t *testing.T) {
 	if err := os.WriteFile(path, []byte("session"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	i := &Interactive{
-		cfg:           InteractiveConfig{CurrentSessionPath: func() string { return path }},
-		sessionDialog: &sessionDialog{active: true, sessions: []core.SessionSummary{{Path: path}}},
-	}
+	i := newDeletionPortInteractive(t, path, path)
 
 	i.applySessionDeletion(path)
 
@@ -809,10 +804,7 @@ func TestApplySessionDeletionRequiresCurrentSessionWiring(t *testing.T) {
 
 func TestApplySessionDeletionPreservesRowOnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.jsonl")
-	i := &Interactive{
-		cfg:           InteractiveConfig{CurrentSessionPath: func() string { return "" }},
-		sessionDialog: &sessionDialog{active: true, sessions: []core.SessionSummary{{Path: path}}},
-	}
+	i := newDeletionPortInteractive(t, "", path)
 
 	i.applySessionDeletion(path)
 
@@ -822,4 +814,13 @@ func TestApplySessionDeletionPreservesRowOnError(t *testing.T) {
 	if !strings.Contains(i.statusErr, "delete session") {
 		t.Fatalf("statusErr = %q, want deletion error", i.statusErr)
 	}
+}
+
+// newDeletionPortInteractive attaches to a session whose own file is current
+// and opens the picker on a row for path.
+func newDeletionPortInteractive(t *testing.T, current, path string) *Interactive {
+	t.Helper()
+	i := newSessionInfoPortInteractive(t, session.Info{ID: "self", SessionPath: current}, nil)
+	i.sessionDialog = &sessionDialog{active: true, sessions: []core.SessionSummary{{Path: path}}}
+	return i
 }
