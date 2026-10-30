@@ -756,6 +756,25 @@ func TestSocketCloseKeepsForeignSocket(t *testing.T) {
 	}
 }
 
+func TestPrepareSocketDirConcurrentCreate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	const n = 8
+	errs := make(chan error, n)
+	start := make(chan struct{})
+	for range n {
+		go func() {
+			<-start
+			errs <- prepareSocketDir(dir, nil)
+		}()
+	}
+	close(start)
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent prepareSocketDir: %v", err)
+		}
+	}
+}
+
 func TestPrepareSocketDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mode checks are Unix-only")

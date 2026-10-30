@@ -15,6 +15,7 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +43,8 @@ const (
 // start it with Run; a Daemon runs at most once.
 type Daemon struct {
 	factory session.Factory
+	// peerUID is the UID socket peers must have (os.Getuid; tests override).
+	peerUID int
 
 	opMu sync.Mutex // serializes lifecycle operations
 
@@ -89,6 +92,7 @@ func New(factory session.Factory) *Daemon {
 		deliverers: make(map[session.ID]chan session.Input),
 		log:        discardLogger(),
 		bot:        newBotState(),
+		peerUID:    os.Getuid(),
 	}
 }
 
