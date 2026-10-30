@@ -3,14 +3,18 @@ package daemonclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemon"
+	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -149,6 +153,29 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 	ch, err := port.Subscribe(subCtx, 0)
 	require.NoError(t, err)
 	require.Equal(t, session.AttachStateAttached, port.Info().Attach)
+	// A second, non-controlling client can query residents while the TUI controls.
+	reader := dial(t, path, Options{ClientVersion: "daemon-v", ClientKind: "tui"})
+	readPort := reader.Port("s1", false)
+	rows := []subagents.ResidentSnapshot{{ID: "child", State: subagents.ResidentRunning, PendingFollowUps: 2}}
+	s1.h.EXPECT().ResidentList(mock.Anything, 1, 2).Return(rows, 4, nil).Once()
+	listed, total, err := readPort.ResidentList(ctx, 1, 2)
+	require.NoError(t, err)
+	require.Equal(t, rows, listed)
+	require.Equal(t, 4, total)
+	page := subagents.ResidentHistoryPage{Items: []subagents.ResidentHistoryItem{{Type: "tool_result", ToolID: "tool", ToolResult: json.RawMessage(`{"text":"result"}`)}}, OlderCursor: "next"}
+	s1.h.EXPECT().ResidentHistory(mock.Anything, "child", "older", 10).Return(page, nil).Once()
+	history, err := readPort.ResidentHistory(ctx, "child", "older", 10)
+	require.NoError(t, err)
+	require.Equal(t, page, history)
+	s1.h.EXPECT().ResidentHistory(mock.Anything, "missing", "", 0).Return(subagents.ResidentHistoryPage{}, errors.New("unknown child")).Once()
+	_, err = readPort.ResidentHistory(ctx, "missing", "", 0)
+	require.ErrorContains(t, err, "unknown child")
+	// Missing paging fields decode to zero, without changing protocol version.
+	s1.h.EXPECT().ResidentList(mock.Anything, 0, 0).Return(nil, 4, nil).Once()
+	var empty daemonproto.ResidentListData
+	require.NoError(t, reader.call(ctx, portFrame{Type: "port", Session: "s1", Method: "resident_list"}, &empty))
+	require.Equal(t, 4, empty.Total)
+
 	require.NoError(t, port.Submit(ctx, session.Input{Text: "1"}))
 	require.NoError(t, port.Submit(ctx, session.Input{Text: "2"}))
 	got := recvSeqs(t, ch, 2)

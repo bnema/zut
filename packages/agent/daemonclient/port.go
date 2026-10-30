@@ -13,6 +13,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
@@ -613,4 +614,18 @@ func (p *RemotePort) SessionsQuery(ctx context.Context) (session.Tree, error) {
 	var t session.Tree
 	err := p.port(ctx, "sessions_query", nil, &t)
 	return t, err
+}
+
+// ResidentList implements session.Port.
+func (p *RemotePort) ResidentList(ctx context.Context, offset, limit int) ([]subagents.ResidentSnapshot, int, error) {
+	var data daemonproto.ResidentListData
+	err := p.port(ctx, "resident_list", daemonproto.ResidentListParams{Offset: offset, Limit: limit}, &data)
+	return data.Residents, data.Total, err
+}
+
+// ResidentHistory implements session.Port.
+func (p *RemotePort) ResidentHistory(ctx context.Context, childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error) {
+	var page subagents.ResidentHistoryPage
+	err := p.port(ctx, "resident_history", daemonproto.ResidentHistoryParams{ChildID: childID, OlderCursor: olderCursor, Limit: limit}, &page)
+	return page, err
 }

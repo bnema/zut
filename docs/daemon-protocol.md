@@ -143,6 +143,8 @@ with `model profile empty`.
 | toggle_skill_pin | `{"name":"skill","global":false}` | omitted |
 | invoke_extension_command | `{"name":"command","args":"text"}` | omitted |
 | extension_panel_input | `{"ext":"extension","panel_id":"panel","key":{"type":"panel_key","panel_id":"panel","key":"enter","text":""}}` | omitted |
+| resident_list | `{"offset":0,"limit":20}` (optional fields) | `{"residents":[ResidentSnapshot],"total":1}` |
+| resident_history | `{"child_id":"child","older_cursor":"","limit":200}` | `ResidentHistoryPage` (`Items`, `OlderCursor`) |
 | resident_action | `{"command":{"op":"stop","child_id":"child","prompt":""}}` | omitted |
 | sessions_query | `{}` | Tree |
 
@@ -261,3 +263,11 @@ transcripts remain available through the normal resumable sessions list. The
 daemon does not persist open sessions or client environments in `state.json`;
 startup deletes any old `state.json` and stale daemon session review journals
 on a best-effort basis. `schedules.json` and core JSONL transcripts are untouched.
+
+Resident list/history are read-only port methods. List order, paging defaults,
+and transcript cursor validation follow the resident manager. History includes
+finalized messages and tool payloads; an empty older cursor selects the newest
+page. Missing paging fields use manager defaults: list offset is zero and a
+zero list limit returns only the total (a negative limit returns all snapshots);
+history limit defaults to 200 and is capped at 1000. Older daemons reject these
+additive methods as unsupported; clients report a daemon-restart hint.

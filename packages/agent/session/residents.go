@@ -276,3 +276,32 @@ func (c *Controller) residentsInit() {
 }
 
 func (c *Controller) residentInfo() Info { c.updateInfo(); return c.Info() }
+
+// ResidentList exposes the manager's recent-first state projection.
+func (c *Controller) ResidentList(ctx context.Context, offset, limit int) ([]subagents.ResidentSnapshot, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	m := c.deps.ResidentManager
+	if m == nil {
+		return nil, 0, errors.New("resident manager unavailable")
+	}
+	rows, total := m.RecentSnapshotPage(offset, limit)
+	return rows, total, ctx.Err()
+}
+
+// ResidentHistory reads through the manager-owned root, never a client path.
+func (c *Controller) ResidentHistory(ctx context.Context, childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error) {
+	if err := ctx.Err(); err != nil {
+		return subagents.ResidentHistoryPage{}, err
+	}
+	m := c.deps.ResidentManager
+	if m == nil {
+		return subagents.ResidentHistoryPage{}, errors.New("resident manager unavailable")
+	}
+	page, err := m.HistoryPage(childID, olderCursor, limit)
+	if err != nil {
+		return subagents.ResidentHistoryPage{}, err
+	}
+	return page, ctx.Err()
+}

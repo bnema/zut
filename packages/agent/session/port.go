@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
@@ -46,6 +47,10 @@ type Port interface {
 	InvokeExtensionCommand(ctx context.Context, name, args string) error
 	ExtensionPanelInput(ctx context.Context, ext, panelID string, key extproto.PanelKeyFromHost) error
 	ReloadCredentials(ctx context.Context) error
+	// ResidentList returns recent-first snapshots and the total resident count.
+	ResidentList(ctx context.Context, offset, limit int) ([]subagents.ResidentSnapshot, int, error)
+	// ResidentHistory returns bounded finalized transcript content; cursor is opaque.
+	ResidentHistory(ctx context.Context, childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)
 	ResidentAction(ctx context.Context, command ResidentCommand) error
 	SessionsQuery(ctx context.Context) (Tree, error)
 }

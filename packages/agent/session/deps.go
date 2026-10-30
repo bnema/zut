@@ -88,6 +88,7 @@ type ResidentHost interface {
 	SetUpdateObserver(observer func(string))
 	Snapshot() []subagents.ResidentSnapshot
 	RecentSnapshotPage(offset, limit int) ([]subagents.ResidentSnapshot, int)
+	HistoryPage(childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)
 	Resume(ctx context.Context, childID, prompt string) error
 	ResumeFollowUp(ctx context.Context, childID, prompt string, mode subagents.ResumeMode, turnID string, onSteered func(turnID string)) (subagents.ResumeOutcome, error)
 	Result(childID string) (subagents.ResidentResult, error)

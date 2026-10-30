@@ -115,3 +115,39 @@ func TestResidentConcurrentReports(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+func TestResidentQueries(t *testing.T) {
+	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().SetAcceptedObserver(mock.Anything)
+	m.EXPECT().SetCompletionObserver(mock.Anything)
+	m.EXPECT().SetUpdateObserver(mock.Anything)
+	m.EXPECT().Snapshot().Return(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewController(ctx, Deps{ResidentManager: m})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	rows := []subagents.ResidentSnapshot{{ID: "child", State: subagents.ResidentRunning}}
+	m.EXPECT().RecentSnapshotPage(2, 3).Return(rows, 7).Once()
+	got, total, err := c.ResidentList(ctx, 2, 3)
+	require.NoError(t, err)
+	require.Equal(t, rows, got)
+	require.Equal(t, 7, total)
+	page := subagents.ResidentHistoryPage{Items: []subagents.ResidentHistoryItem{{Type: "assistant", Message: []byte(`{"role":"assistant","content":"hello"}`)}}, OlderCursor: "older"}
+	m.EXPECT().HistoryPage("child", "cursor", 5).Return(page, nil).Once()
+	history, err := c.ResidentHistory(ctx, "child", "cursor", 5)
+	require.NoError(t, err)
+	require.Equal(t, page, history)
+	failure := errors.New("invalid child or cursor")
+	m.EXPECT().HistoryPage("unknown", "bad", 0).Return(subagents.ResidentHistoryPage{}, failure).Once()
+	_, err = c.ResidentHistory(ctx, "unknown", "bad", 0)
+	require.ErrorIs(t, err, failure)
+	_, _, err = (&Controller{}).ResidentList(ctx, 0, 0)
+	require.ErrorContains(t, err, "unavailable")
+	_, err = (&Controller{}).ResidentHistory(ctx, "child", "", 0)
+	require.ErrorContains(t, err, "unavailable")
+	canceled, stop := context.WithCancel(ctx)
+	stop()
+	_, _, err = c.ResidentList(canceled, 0, 0)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = c.ResidentHistory(canceled, "child", "", 0)
+	require.ErrorIs(t, err, context.Canceled)
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	mock "github.com/stretchr/testify/mock"
@@ -1218,6 +1219,164 @@ func (_c *MockHandle_ResidentAction_Call) Return(err error) *MockHandle_Resident
 }
 
 func (_c *MockHandle_ResidentAction_Call) RunAndReturn(run func(ctx context.Context, command session.ResidentCommand) error) *MockHandle_ResidentAction_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ResidentHistory provides a mock function for the type MockHandle
+func (_mock *MockHandle) ResidentHistory(ctx context.Context, childID string, olderCursor string, limit int) (subagents.ResidentHistoryPage, error) {
+	ret := _mock.Called(ctx, childID, olderCursor, limit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ResidentHistory")
+	}
+
+	var r0 subagents.ResidentHistoryPage
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, int) (subagents.ResidentHistoryPage, error)); ok {
+		return returnFunc(ctx, childID, olderCursor, limit)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, int) subagents.ResidentHistoryPage); ok {
+		r0 = returnFunc(ctx, childID, olderCursor, limit)
+	} else {
+		r0 = ret.Get(0).(subagents.ResidentHistoryPage)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string, int) error); ok {
+		r1 = returnFunc(ctx, childID, olderCursor, limit)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockHandle_ResidentHistory_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ResidentHistory'
+type MockHandle_ResidentHistory_Call struct {
+	*mock.Call
+}
+
+// ResidentHistory is a helper method to define mock.On call
+//   - ctx context.Context
+//   - childID string
+//   - olderCursor string
+//   - limit int
+func (_e *MockHandle_Expecter) ResidentHistory(ctx any, childID any, olderCursor any, limit any) *MockHandle_ResidentHistory_Call {
+	return &MockHandle_ResidentHistory_Call{Call: _e.mock.On("ResidentHistory", ctx, childID, olderCursor, limit)}
+}
+
+func (_c *MockHandle_ResidentHistory_Call) Run(run func(ctx context.Context, childID string, olderCursor string, limit int)) *MockHandle_ResidentHistory_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 int
+		if args[3] != nil {
+			arg3 = args[3].(int)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHandle_ResidentHistory_Call) Return(residentHistoryPage subagents.ResidentHistoryPage, err error) *MockHandle_ResidentHistory_Call {
+	_c.Call.Return(residentHistoryPage, err)
+	return _c
+}
+
+func (_c *MockHandle_ResidentHistory_Call) RunAndReturn(run func(ctx context.Context, childID string, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)) *MockHandle_ResidentHistory_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ResidentList provides a mock function for the type MockHandle
+func (_mock *MockHandle) ResidentList(ctx context.Context, offset int, limit int) ([]subagents.ResidentSnapshot, int, error) {
+	ret := _mock.Called(ctx, offset, limit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ResidentList")
+	}
+
+	var r0 []subagents.ResidentSnapshot
+	var r1 int
+	var r2 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int, int) ([]subagents.ResidentSnapshot, int, error)); ok {
+		return returnFunc(ctx, offset, limit)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, int, int) []subagents.ResidentSnapshot); ok {
+		r0 = returnFunc(ctx, offset, limit)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]subagents.ResidentSnapshot)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, int, int) int); ok {
+		r1 = returnFunc(ctx, offset, limit)
+	} else {
+		r1 = ret.Get(1).(int)
+	}
+	if returnFunc, ok := ret.Get(2).(func(context.Context, int, int) error); ok {
+		r2 = returnFunc(ctx, offset, limit)
+	} else {
+		r2 = ret.Error(2)
+	}
+	return r0, r1, r2
+}
+
+// MockHandle_ResidentList_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ResidentList'
+type MockHandle_ResidentList_Call struct {
+	*mock.Call
+}
+
+// ResidentList is a helper method to define mock.On call
+//   - ctx context.Context
+//   - offset int
+//   - limit int
+func (_e *MockHandle_Expecter) ResidentList(ctx any, offset any, limit any) *MockHandle_ResidentList_Call {
+	return &MockHandle_ResidentList_Call{Call: _e.mock.On("ResidentList", ctx, offset, limit)}
+}
+
+func (_c *MockHandle_ResidentList_Call) Run(run func(ctx context.Context, offset int, limit int)) *MockHandle_ResidentList_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 int
+		if args[1] != nil {
+			arg1 = args[1].(int)
+		}
+		var arg2 int
+		if args[2] != nil {
+			arg2 = args[2].(int)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHandle_ResidentList_Call) Return(residentSnapshots []subagents.ResidentSnapshot, n int, err error) *MockHandle_ResidentList_Call {
+	_c.Call.Return(residentSnapshots, n, err)
+	return _c
+}
+
+func (_c *MockHandle_ResidentList_Call) RunAndReturn(run func(ctx context.Context, offset int, limit int) ([]subagents.ResidentSnapshot, int, error)) *MockHandle_ResidentList_Call {
 	_c.Call.Return(run)
 	return _c
 }

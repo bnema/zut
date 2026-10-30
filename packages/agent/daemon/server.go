@@ -515,6 +515,19 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return h.Info(), nil
 	case "snapshot":
 		return h.Snapshot(ctx)
+	case "resident_list":
+		var params daemonproto.ResidentListParams
+		if err := unmarshalOptional(req.Params, &params); err != nil {
+			return nil, err
+		}
+		rows, total, err := h.ResidentList(ctx, params.Offset, params.Limit)
+		return daemonproto.ResidentListData{Residents: rows, Total: total}, err
+	case "resident_history":
+		var params daemonproto.ResidentHistoryParams
+		if err := unmarshalOptional(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return h.ResidentHistory(ctx, params.ChildID, params.OlderCursor, params.Limit)
 	case "sessions_query":
 		return h.SessionsQuery(ctx)
 	case "subscribe":

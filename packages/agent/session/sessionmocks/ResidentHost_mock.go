@@ -47,6 +47,78 @@ func (_m *MockResidentHost) EXPECT() *MockResidentHost_Expecter {
 	return &MockResidentHost_Expecter{mock: &_m.Mock}
 }
 
+// HistoryPage provides a mock function for the type MockResidentHost
+func (_mock *MockResidentHost) HistoryPage(childID string, olderCursor string, limit int) (subagents.ResidentHistoryPage, error) {
+	ret := _mock.Called(childID, olderCursor, limit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for HistoryPage")
+	}
+
+	var r0 subagents.ResidentHistoryPage
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(string, string, int) (subagents.ResidentHistoryPage, error)); ok {
+		return returnFunc(childID, olderCursor, limit)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string, string, int) subagents.ResidentHistoryPage); ok {
+		r0 = returnFunc(childID, olderCursor, limit)
+	} else {
+		r0 = ret.Get(0).(subagents.ResidentHistoryPage)
+	}
+	if returnFunc, ok := ret.Get(1).(func(string, string, int) error); ok {
+		r1 = returnFunc(childID, olderCursor, limit)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockResidentHost_HistoryPage_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'HistoryPage'
+type MockResidentHost_HistoryPage_Call struct {
+	*mock.Call
+}
+
+// HistoryPage is a helper method to define mock.On call
+//   - childID string
+//   - olderCursor string
+//   - limit int
+func (_e *MockResidentHost_Expecter) HistoryPage(childID any, olderCursor any, limit any) *MockResidentHost_HistoryPage_Call {
+	return &MockResidentHost_HistoryPage_Call{Call: _e.mock.On("HistoryPage", childID, olderCursor, limit)}
+}
+
+func (_c *MockResidentHost_HistoryPage_Call) Run(run func(childID string, olderCursor string, limit int)) *MockResidentHost_HistoryPage_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 int
+		if args[2] != nil {
+			arg2 = args[2].(int)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockResidentHost_HistoryPage_Call) Return(residentHistoryPage subagents.ResidentHistoryPage, err error) *MockResidentHost_HistoryPage_Call {
+	_c.Call.Return(residentHistoryPage, err)
+	return _c
+}
+
+func (_c *MockResidentHost_HistoryPage_Call) RunAndReturn(run func(childID string, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)) *MockResidentHost_HistoryPage_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Interrupt provides a mock function for the type MockResidentHost
 func (_mock *MockResidentHost) Interrupt(ctx context.Context, childID string) (bool, error) {
 	ret := _mock.Called(ctx, childID)
