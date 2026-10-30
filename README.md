@@ -1156,7 +1156,7 @@ For development, point `zut --ext <path>` at a working directory and skip the in
 
 ### Updating extensions
 
-`zut update` refreshes the zut binary **and** every installed extension that lives in a git checkout. If a daemon is running, the update prints a reminder to run `zut daemon restart`: the daemon keeps using the old binary until restarted. It never restarts automatically. Use `zut update --restart-daemon` to install and then perform the same restart as `zut daemon restart` (starting a daemon if none is running); sessions are restored idle, not resumed mid-turn. `zut update --check` only checks for an update and cannot be combined with `--restart-daemon`. A restart failure is reported as an error, but the new binary remains installed.
+`zut update` refreshes the zut binary **and** every installed extension that lives in a git checkout. If a running daemon reports a version different from the installed binary, the update prints a reminder to run `zut daemon restart`: the daemon keeps using the old binary until restarted. It never restarts automatically. Use `zut update --restart-daemon` to install and then perform the same restart as `zut daemon restart` (starting a daemon if none is running); sessions are restored idle, not resumed mid-turn. When zut is already up to date, the reminder still appears for a daemon running another version, and `--restart-daemon` restarts only such a daemon; otherwise it prints `zut: daemon already runs <version>; nothing to restart`. `zut update --check` only checks for an update and cannot be combined with `--restart-daemon`. A restart failure is reported as an error, but the new binary remains installed.
 
 Per-extension behaviour:
 

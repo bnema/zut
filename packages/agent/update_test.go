@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/daemonproto"
 )
 
 func TestIsDevVersion(t *testing.T) {
@@ -112,51 +116,109 @@ func TestUpdateFlags(t *testing.T) {
 	}
 }
 
+func fixedProbe(t *testing.T, version string, running bool) daemonProbe {
+	return func(ctx context.Context) (string, bool) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > time.Second {
+			t.Fatal("probe must have a short timeout")
+		}
+		return version, running
+	}
+}
+
+func noRestart(t *testing.T) func(io.Writer, string) error {
+	return func(io.Writer, string) error { t.Fatal("must not restart"); return nil }
+}
+
+const staleHint = "zut: the running daemon uses version 1.2.2, not 1.2.3; run 'zut daemon restart' to use 1.2.3 (sessions are restored idle)\n"
+
 func TestUpdateDaemonHint(t *testing.T) {
-	for _, running := range []bool{true, false} {
-		t.Run(map[bool]string{true: "running", false: "absent"}[running], func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		running bool
+		want    string
+	}{
+		{name: "older daemon", version: "1.2.2 (abc, today)", running: true, want: staleHint},
+		{name: "matching daemon", version: "1.2.3 (def, today)", running: true},
+		{name: "absent", running: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			err := updateDaemonAfterInstall(&out, "1.2.3", false, func(ctx context.Context) bool {
-				deadline, ok := ctx.Deadline()
-				if !ok || time.Until(deadline) > time.Second {
-					t.Fatal("probe must have a short timeout")
-				}
-				return running
-			}, func(io.Writer, string) error { t.Fatal("must not restart automatically"); return nil })
-			if err != nil {
+			if err := updateDaemonAfterInstall(&out, "1.2.3", false, fixedProbe(t, tc.version, tc.running), noRestart(t)); err != nil {
 				t.Fatal(err)
 			}
-			want := ""
-			if running {
-				want = "zut: a daemon is running an older version; run 'zut daemon restart' to use the new version (sessions are restored idle)\n"
-			}
-			if out.String() != want {
-				t.Fatalf("output = %q, want %q", out.String(), want)
+			if out.String() != tc.want {
+				t.Fatalf("output = %q, want %q", out.String(), tc.want)
 			}
 		})
 	}
 }
 
 func TestUpdateDaemonRestart(t *testing.T) {
-	for _, restartErr := range []error{nil, errors.New("restart failed")} {
-		var out bytes.Buffer
-		calls := 0
-		err := updateDaemonAfterInstall(&out, "1.2.3", true, func(context.Context) bool {
-			t.Fatal("explicit restart does not need a probe")
-			return false
-		}, func(w io.Writer, version string) error {
-			calls++
-			if w != &out || version != "1.2.3" {
-				t.Fatal("restart arguments not forwarded")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{{name: "success"}, {name: "failure", err: errors.New("restart failed")}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			calls := 0
+			err := updateDaemonAfterInstall(&out, "1.2.3", true, func(context.Context) (string, bool) {
+				t.Fatal("explicit restart does not need a probe")
+				return "", false
+			}, func(w io.Writer, version string) error {
+				calls++
+				if w != &out || version != "1.2.3" {
+					t.Fatal("restart arguments not forwarded")
+				}
+				return tc.err
+			})
+			if calls != 1 || !errors.Is(err, tc.err) {
+				t.Fatalf("calls=%d err=%v", calls, err)
 			}
-			return restartErr
+			if out.Len() != 0 {
+				t.Fatalf("unexpected hint: %q", out.String())
+			}
 		})
-		if calls != 1 || !errors.Is(err, restartErr) {
-			t.Fatalf("calls=%d err=%v", calls, err)
-		}
-		if out.Len() != 0 {
-			t.Fatalf("unexpected hint: %q", out.String())
-		}
+	}
+}
+
+func TestUpdateDaemonWhenCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		restart     bool
+		version     string
+		running     bool
+		wantRestart bool
+		want        string
+	}{
+		{name: "restart stale daemon", restart: true, version: "1.2.2", running: true, wantRestart: true},
+		{name: "restart current daemon", restart: true, version: "1.2.3 (abc, today)", running: true, want: "zut: daemon already runs 1.2.3; nothing to restart\n"},
+		{name: "restart absent daemon", restart: true, want: "zut: no daemon is running; nothing to restart\n"},
+		{name: "hint stale daemon", version: "1.2.2", running: true, want: staleHint},
+		{name: "no hint for current daemon", version: "1.2.3", running: true},
+		{name: "no hint for absent daemon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			calls := 0
+			err := updateDaemonWhenCurrent(&out, "1.2.3", tc.restart, fixedProbe(t, tc.version, tc.running), func(w io.Writer, version string) error {
+				calls++
+				if version != "1.2.3" {
+					t.Fatalf("restart version = %q", version)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (calls == 1) != tc.wantRestart || calls > 1 {
+				t.Fatalf("restart calls = %d, want restart %v", calls, tc.wantRestart)
+			}
+			if out.String() != tc.want {
+				t.Fatalf("output = %q, want %q", out.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -164,7 +226,49 @@ func TestUpdateDaemonProbeAbsent(t *testing.T) {
 	t.Setenv("ZUT_DAEMON_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if updateDaemonRunning(ctx) {
+	if _, running := updateDaemonProbe(ctx); running {
 		t.Fatal("absent daemon reported running")
+	}
+}
+
+func TestUpdateDaemonProbeRunning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket test server")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZUT_HOME", t.TempDir())
+	sock := filepath.Join(dir, "d.sock")
+	t.Setenv("ZUT_DAEMON_SOCKET", sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			nc, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn := daemonproto.NewConn(nc, daemonproto.Options{OnRequest: func(ctx context.Context, r daemonproto.Request) (any, error) {
+				switch r.Type {
+				case "hello":
+					return daemonproto.HelloData{ProtocolVersion: daemonproto.ProtocolVersion, DaemonVersion: "9.8.7"}, nil
+				case "daemon_status":
+					return daemonproto.DaemonStatusData{PID: os.Getpid(), Version: "9.8.7 (abc, today)"}, nil
+				}
+				return nil, errors.New("unsupported")
+			}})
+			go func() { _ = conn.Serve(context.Background()) }()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	version, running := updateDaemonProbe(ctx)
+	if !running || version != "9.8.7 (abc, today)" {
+		t.Fatalf("probe = (%q, %v), want running 9.8.7", version, running)
 	}
 }

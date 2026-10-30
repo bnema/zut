@@ -82,7 +82,10 @@ usage:
 
 notes:
   * A running daemon keeps its old version until restarted. By default,
-    update only prints a reminder; --restart-daemon opts into a restart.
+    update only prints a reminder when the daemon's version differs from
+    the installed one; --restart-daemon opts into a restart. When zut is
+    already up to date, --restart-daemon restarts only a daemon running a
+    different version, and otherwise reports that nothing needs restarting.
   * The binary must be writable by the current user. On a system-wide
     install (e.g. /usr/local/bin/zut owned by root) re-run with sudo.
   * Development builds are refused. They typically come from a local
@@ -123,11 +126,7 @@ func runUpdateCheck(version string) error {
 	return nil
 }
 
-// runUpdate is the meat of `zut update`.
-func runUpdate(version string) error {
-	return runUpdateWithRestart(version, false)
-}
-
+// runUpdateWithRestart is the meat of `zut update`.
 func runUpdateWithRestart(version string, restart bool) error {
 	if isDevVersion(version) {
 		return errors.New(devVersionNotice + "; `zut update` is disabled. Build a release tag or download from https://git.bnema.dev/zut/releases")
@@ -147,7 +146,7 @@ func runUpdateWithRestart(version string, restart bool) error {
 
 	if !versionLess(current, latest) {
 		fmt.Printf("zut %s is already up to date.\n", current)
-		return nil
+		return updateDaemonWhenCurrent(os.Stdout, current, restart, updateDaemonProbe, daemonRestart)
 	}
 	fmt.Printf("zut update: %s -> %s\n", current, latest)
 	fmt.Printf("zut update: release page %s\n", releaseURL)
@@ -234,32 +233,70 @@ func runUpdateWithRestart(version string, restart bool) error {
 	// overall update — the binary swap already succeeded.
 	updateAllExtensions(ZutHome())
 
-	return updateDaemonAfterInstall(os.Stdout, latest, restart, updateDaemonRunning, daemonRestart)
+	return updateDaemonAfterInstall(os.Stdout, latest, restart, updateDaemonProbe, daemonRestart)
 }
 
-// updateDaemonRunning uses the same status RPC as zut daemon status, without
-// spawning a daemon. An unreachable daemon is treated as not running.
-func updateDaemonRunning(ctx context.Context) bool {
+// updateDaemonProbe uses the same status RPC as zut daemon status, without
+// spawning a daemon. It returns the daemon's version; an unreachable daemon
+// is treated as not running.
+func updateDaemonProbe(ctx context.Context) (version string, running bool) {
 	c, err := dialExistingDaemon(ctx)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer c.Disconnect()
-	_, err = c.Status(ctx)
-	return err == nil
+	st, err := c.Status(ctx)
+	if err != nil {
+		return "", false
+	}
+	return st.Version, true
 }
 
-func updateDaemonAfterInstall(w io.Writer, version string, restart bool, probe func(context.Context) bool, restartDaemon func(io.Writer, string) error) error {
+// daemonProbe reports the running daemon's version, if any.
+type daemonProbe func(context.Context) (version string, running bool)
+
+// probeStaleDaemon returns the daemon's version and whether it differs from
+// version. A daemon that is not running is never stale.
+func probeStaleDaemon(probe daemonProbe, version string) (daemonVersion string, running, stale bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	daemonVersion, running = probe(ctx)
+	return daemonVersion, running, running && versionOnly(daemonVersion) != versionOnly(version)
+}
+
+func printDaemonHint(w io.Writer, daemonVersion, version string) {
+	fmt.Fprintf(w, "zut: the running daemon uses version %s, not %s; run 'zut daemon restart' to use %s (sessions are restored idle)\n", versionOnly(daemonVersion), versionOnly(version), versionOnly(version))
+}
+
+func updateDaemonAfterInstall(w io.Writer, version string, restart bool, probe daemonProbe, restartDaemon func(io.Writer, string) error) error {
 	if restart {
 		if err := restartDaemon(w, version); err != nil {
 			return fmt.Errorf("binary installed, but daemon restart failed: %w", err)
 		}
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if probe(ctx) {
-		fmt.Fprintln(w, "zut: a daemon is running an older version; run 'zut daemon restart' to use the new version (sessions are restored idle)")
+	if daemonVersion, _, stale := probeStaleDaemon(probe, version); stale {
+		printDaemonHint(w, daemonVersion, version)
+	}
+	return nil
+}
+
+// updateDaemonWhenCurrent handles the daemon when no install was needed: a
+// daemon running another version is restarted with --restart-daemon and
+// hinted otherwise; a missing or current daemon is left alone.
+func updateDaemonWhenCurrent(w io.Writer, version string, restart bool, probe daemonProbe, restartDaemon func(io.Writer, string) error) error {
+	daemonVersion, running, stale := probeStaleDaemon(probe, version)
+	switch {
+	case stale && restart:
+		if err := restartDaemon(w, version); err != nil {
+			return fmt.Errorf("daemon restart failed: %w", err)
+		}
+	case stale:
+		printDaemonHint(w, daemonVersion, version)
+	case restart && running:
+		fmt.Fprintf(w, "zut: daemon already runs %s; nothing to restart\n", versionOnly(daemonVersion))
+	case restart:
+		fmt.Fprintln(w, "zut: no daemon is running; nothing to restart")
 	}
 	return nil
 }
