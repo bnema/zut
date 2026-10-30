@@ -130,7 +130,7 @@ func (i *Interactive) canArmSessionTreeEscape() bool {
 	}
 	i.mu.Lock()
 	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
-	queued := len(i.queued) != 0
+	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	pendingFork := i.pendingFork
 	i.mu.Unlock()
@@ -155,7 +155,7 @@ func (i *Interactive) canOpenSessionTree() bool {
 
 	i.mu.Lock()
 	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
-	queued := len(i.queued) != 0
+	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	pendingFork := i.pendingFork
 	i.mu.Unlock()
@@ -176,13 +176,22 @@ func (i *Interactive) canCommitSessionTreeSelection() bool {
 	}
 	i.mu.Lock()
 	busy := i.busy || i.stream.Active() || i.shellRunning || i.compacting || i.autoCompacting || i.awaitingStartupPre || i.sessionLoading || i.modelRefreshing
-	queued := len(i.queued) != 0
+	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	i.mu.Unlock()
 	if busy || queued || !i.sessionTreeBackendReady(ag) {
 		return false
 	}
 	return i.currentSessionPath() != ""
+}
+
+// hasQueuedInputLocked reports queued input of the attached session, or of
+// the legacy host queue without one (L16 SHIM). Callers hold i.mu.
+func (i *Interactive) hasQueuedInputLocked() bool {
+	if i.port != nil {
+		return len(i.portQueue) != 0
+	}
+	return len(i.queued) != 0
 }
 
 // sessionTreeBackendReady uses daemon state instead of requiring a local agent.

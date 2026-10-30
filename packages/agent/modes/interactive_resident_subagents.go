@@ -706,6 +706,12 @@ func (i *Interactive) doSessionOp(action, arg string) {
 	case "import":
 		i.doSessionImport(arg)
 	case "fork":
+		// Same route as /fork: the daemon owns the transcript and queue, so
+		// the local gate (which needs the legacy agent) would always refuse.
+		if i.portMode.Load() {
+			i.portOpenFork()
+			break
+		}
 		i.doSessionFork()
 	case "tree":
 		i.doSessionTree()
@@ -876,7 +882,7 @@ func (i *Interactive) doSessionFork() {
 	}
 	i.mu.Lock()
 	busy := i.busy || i.shellRunning || i.compacting || i.autoCompacting || i.sessionLoading
-	queued := len(i.queued) != 0
+	queued := i.hasQueuedInputLocked()
 	ag := i.agent
 	i.mu.Unlock()
 	if busy || queued || ag == nil || ag.QueuedMessageCount() != 0 {

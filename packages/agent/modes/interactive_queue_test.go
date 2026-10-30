@@ -5,10 +5,15 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQueuedMessageSummaryKeepsImageIndicatorWhenTextIsTruncated(t *testing.T) {
@@ -28,22 +33,25 @@ func TestQueuedMessageSummaryKeepsImageIndicatorWhenTextIsTruncated(t *testing.T
 }
 
 func TestBusySubmitQueuesClipboardImagePrompt(t *testing.T) {
-	agent := core.NewAgent(nil, "test-model", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: agent})
-	i.mu.Lock()
-	i.busy = true
-	i.mu.Unlock()
+	port := sessionmocks.NewMockPort(t)
+	submitted := make(chan session.Input, 1)
+	port.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, in session.Input) error {
+		submitted <- in
+		return nil
+	}).Once()
+	i := newQueuePortInteractive(t, port, session.Snapshot{Info: session.Info{Run: session.RunStateRunning}}, InteractiveConfig{})
 	i.ed.SetValue("inspect [clipboard image #1]")
 	i.clipboardImages = []clipboardImageAttachment{testClipboardImage("[clipboard image #1]", "png-1")}
 
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
 
-	queued := agent.PendingQueuedMessages()
-	if len(queued) != 1 || queued[0].Text != "inspect" {
-		t.Fatalf("queued messages = %#v, want one inspect prompt", queued)
+	// The daemon decides whether a running session queues the prompt.
+	in := recvInput(t, submitted)
+	if in.Text != "inspect" || in.Mode != session.SubmitModeAuto {
+		t.Fatalf("submitted = %#v, want one auto-mode inspect prompt", in)
 	}
-	if len(queued[0].Images) != 1 || string(queued[0].Images[0].Data) != "png-1" {
-		t.Fatalf("queued images = %#v, want png-1", queued[0].Images)
+	if len(in.Images) != 1 || string(in.Images[0].Data) != "png-1" {
+		t.Fatalf("submitted images = %#v, want png-1", in.Images)
 	}
 	if !i.ed.IsEmpty() || len(i.clipboardImages) != 0 {
 		t.Fatal("submitted image prompt remained in the editor")
@@ -51,15 +59,16 @@ func TestBusySubmitQueuesClipboardImagePrompt(t *testing.T) {
 }
 
 func TestSlideBackRestoresQueuedImagesToEditor(t *testing.T) {
-	agent := core.NewAgent(nil, "test-model", "", nil)
 	image := testClipboardImage("unused", "png-1").Image
-	agent.QueueMessage("inspect", []provider.ImageBlock{image})
-	i := NewInteractive(InteractiveConfig{Agent: agent})
-	i.mu.Lock()
-	i.busy = true
-	i.mu.Unlock()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{Text: "inspect", Images: []provider.ImageBlock{image}}, nil).Once()
+	i := newQueuePortInteractive(t, port, session.Snapshot{
+		Info:  session.Info{Run: session.RunStateRunning},
+		Queue: []session.QueuedInput{{Input: session.Input{Text: "inspect", Images: []provider.ImageBlock{image}}}},
+	}, InteractiveConfig{})
 
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
+	runLoopCall(t, i)
 
 	if got := i.ed.Value(); got != "inspect [clipboard image #1]" {
 		t.Fatalf("editor = %q, want restored image marker", got)
@@ -69,47 +78,27 @@ func TestSlideBackRestoresQueuedImagesToEditor(t *testing.T) {
 	}
 }
 
+// Which queued item slides back (never host evidence) is daemon policy:
+// session TestSlideBackQueuedPreservesHostEventsAndFallsBackToAgent. The client
+// must not even ask the daemon when only host reports are queued.
 func TestSlideBackSkipsHostEvents(t *testing.T) {
-	for _, hostQueue := range []bool{false, true} {
-		name := "agent queue"
-		if hostQueue {
-			name = "host queue"
-		}
-		t.Run(name, func(t *testing.T) {
-			agent := core.NewAgent(nil, "test-model", "", nil)
-			i := NewInteractive(InteractiveConfig{Agent: agent})
-			i.busy = true
-			messages := []core.QueuedMessage{
-				{Text: "first report", HostEvent: true},
-				{Text: "older draft"},
-				{Text: "recover this draft"},
-				{Text: "latest report", HostEvent: true},
-			}
-			if hostQueue {
-				i.queued = messages
-			} else {
-				for _, message := range messages {
-					agent.QueuePrompt(message)
-				}
-			}
-			for _, want := range []string{"recover this draft", "older draft"} {
-				i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
-				if got := i.ed.Value(); got != want {
-					t.Fatalf("editor = %q, want %q", got, want)
-				}
-			}
-			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
-			if got := i.ed.Value(); got != "older draft" {
-				t.Fatalf("host-only queue changed editor to %q", got)
-			}
-			pending := i.queued
-			if !hostQueue {
-				pending = agent.PendingQueuedMessages()
-			}
-			if len(pending) != 2 || pending[0].Text != "first report" || pending[1].Text != "latest report" || !pending[0].HostEvent || !pending[1].HostEvent {
-				t.Fatalf("remaining reports = %#v, want both reports in original order", pending)
-			}
-		})
+	port := sessionmocks.NewMockPort(t) // no SlideBackQueued expectation
+	i := newQueuePortInteractive(t, port, session.Snapshot{
+		Info: session.Info{Run: session.RunStateRunning},
+		Queue: []session.QueuedInput{
+			{Input: session.Input{Text: "first report", HostEvent: true}},
+			{Input: session.Input{Text: "latest report", HostEvent: true}},
+		},
+	}, InteractiveConfig{})
+	i.ed.SetValue("draft")
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyUp, Alt: true})
+
+	if i.portRecall != nil {
+		t.Fatal("host-only queue started a slide-back")
+	}
+	if got := i.ed.Value(); got != "draft" {
+		t.Fatalf("host-only queue changed editor to %q", got)
 	}
 }
 
@@ -119,12 +108,15 @@ func TestSlideBackParsesModifiedArrow(t *testing.T) {
 		"alt shift up": "\x1b[1;4A",
 	} {
 		t.Run(name, func(t *testing.T) {
-			agent := core.NewAgent(nil, "test-model", "", nil)
-			i := NewInteractive(InteractiveConfig{Agent: agent})
-			i.busy = true
-			i.ed.SetValue("recover this draft")
-			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
-			agent.QueuePrompt(core.QueuedMessage{Text: "worker report", HostEvent: true})
+			port := sessionmocks.NewMockPort(t)
+			port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{Text: "recover this draft"}, nil).Once()
+			i := newQueuePortInteractive(t, port, session.Snapshot{
+				Info: session.Info{Run: session.RunStateRunning},
+				Queue: []session.QueuedInput{
+					{Input: session.Input{Text: "recover this draft"}},
+					{Input: session.Input{Text: "worker report", HostEvent: true}},
+				},
+			}, InteractiveConfig{})
 			reader := tui.NewReader(func() (byte, error) {
 				if sequence == "" {
 					return 0, io.EOF
@@ -138,119 +130,110 @@ func TestSlideBackParsesModifiedArrow(t *testing.T) {
 				t.Fatal(err)
 			}
 			i.handleKey(context.Background(), key)
+			runLoopCall(t, i)
 			if got := i.ed.Value(); got != "recover this draft" {
 				t.Fatalf("editor = %q, want user draft", got)
-			}
-			pending := agent.PendingQueuedMessages()
-			if len(pending) != 1 || !pending[0].HostEvent {
-				t.Fatalf("pending = %#v, want worker report", pending)
 			}
 		})
 	}
 }
 
+// With only host reports queued the daemon refuses the slide-back
+// (ErrUnknownRequest, session TestSlideBackQueuedPreservesHostEventsAndFallsBackToAgent);
+// Escape must still abort and keep the existing draft.
 func TestEscapeSkipsHostEvents(t *testing.T) {
-	for _, hasUserMessage := range []bool{false, true} {
-		for _, hostQueue := range []bool{false, true} {
-			agent := core.NewAgent(nil, "test-model", "", nil)
-			i := NewInteractive(InteractiveConfig{Agent: agent})
-			i.busy = true
-			i.cancelTurn = func() {}
-			i.ed.SetValue("existing draft")
-			messages := []core.QueuedMessage{{Text: "worker report", HostEvent: true}}
-			want := "existing draft"
-			if hasUserMessage {
-				messages = append([]core.QueuedMessage{{Text: "recover this draft"}}, messages...)
-				want = "recover this draft"
-			}
-			if hostQueue {
-				i.queued = messages
-			} else {
-				for _, message := range messages {
-					agent.QueuePrompt(message)
-				}
-			}
-			i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
-			if got := i.ed.Value(); got != want {
-				t.Fatalf("user=%v hostQueue=%v: editor = %q, want %q", hasUserMessage, hostQueue, got, want)
-			}
-		}
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{}, session.ErrUnknownRequest).Once()
+	aborted := make(chan struct{})
+	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error { close(aborted); return nil }).Once()
+	i := newQueuePortInteractive(t, port, session.Snapshot{
+		Info:  session.Info{Run: session.RunStateRunning},
+		Queue: []session.QueuedInput{{Input: session.Input{Text: "worker report", HostEvent: true}}},
+	}, InteractiveConfig{})
+	i.ed.SetValue("existing draft")
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+	runLoopCall(t, i)
+	waitSignal(t, aborted, "Abort")
+
+	if got := i.ed.Value(); got != "existing draft" {
+		t.Fatalf("editor = %q, want existing draft", got)
 	}
 }
 
 func TestSlidingQueueHintOnlyForUserMessages(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "vev")
-	for _, hostQueue := range []bool{false, true} {
-		for _, hasUserMessage := range []bool{false, true} {
-			agent := core.NewAgent(nil, "test-model", "", nil)
-			term := &alertTestTerminal{}
-			i := NewInteractive(InteractiveConfig{Agent: agent, Terminal: term, Theme: tui.Dark})
-			i.rend.Resize(80, 24)
-			messages := []core.QueuedMessage{{Text: "worker report", HostEvent: true}}
-			if hasUserMessage {
-				messages = append(messages, core.QueuedMessage{Text: "user draft"})
-			}
-			if hostQueue {
-				i.queued = messages
-			} else {
-				for _, message := range messages {
-					agent.QueuePrompt(message)
-				}
-			}
-			i.redraw()
-			output := stripANSIBytes(term.String())
-			if !strings.Contains(output, "worker report") {
-				t.Fatal("host report missing from sliding queue")
-			}
-			if got := strings.Contains(output, "Press Alt+Shift+↑"); got != hasUserMessage {
-				t.Fatalf("user=%v hostQueue=%v: recall hint visible=%v", hasUserMessage, hostQueue, got)
-			}
+	for _, hasUserMessage := range []bool{false, true} {
+		queue := []session.QueuedInput{{Input: session.Input{Text: "worker report", HostEvent: true}}}
+		if hasUserMessage {
+			queue = append(queue, session.QueuedInput{Input: session.Input{Text: "user draft"}})
+		}
+		term := &alertTestTerminal{}
+		i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{
+			Info:  session.Info{Run: session.RunStateRunning},
+			Queue: queue,
+		}, InteractiveConfig{Terminal: term, Theme: tui.Dark})
+		i.rend.Resize(80, 24)
+		i.redraw()
+		output := stripANSIBytes(term.String())
+		if !strings.Contains(output, "worker report") {
+			t.Fatal("host report missing from sliding queue")
+		}
+		if got := strings.Contains(output, "Press Alt+Shift+↑"); got != hasUserMessage {
+			t.Fatalf("user=%v: recall hint visible=%v", hasUserMessage, got)
 		}
 	}
 }
 
-func TestEscapeRestoresMostRecentQueuedMessageToEditor(t *testing.T) {
-	agent := core.NewAgent(nil, "test-model", "", nil)
-	agent.QueueMessage("older follow-up", nil)
-	agent.QueueMessage("recover this draft", nil)
+// newQueuePortInteractive attaches cfg to port, hydrated from snap. It does
+// not start Run: tests drive keys directly and apply loop callbacks with
+// runLoopCall.
+func newQueuePortInteractive(t *testing.T, port *sessionmocks.MockPort, snap session.Snapshot, cfg InteractiveConfig) *Interactive {
+	t.Helper()
+	snap.Seq = 1
+	port.EXPECT().Snapshot(mock.Anything).Return(snap, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(1)).Return(make(chan session.Event), nil).Once()
+	cfg.Port = port
+	i := NewInteractive(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, i.attachPort(ctx))
+	return i
+}
 
-	i := NewInteractive(InteractiveConfig{Agent: agent})
-	i.ed.SetValue("existing draft")
-	cancelled := 0
-	i.mu.Lock()
-	i.busy = true
-	i.cancelTurn = func() { cancelled++ }
-	i.mu.Unlock()
-
-	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc}); done {
-		t.Fatal("Escape exited")
-	}
-	if cancelled != 1 {
-		t.Fatalf("cancelled = %d, want 1", cancelled)
-	}
-	if got, want := i.ed.Value(), "recover this draft"; got != want {
-		t.Errorf("editor = %q, want %q", got, want)
-	}
-	if got := agent.PendingQueuedMessages(); len(got) != 1 || got[0].Text != "older follow-up" {
-		t.Errorf("remaining queued messages = %v, want [older follow-up]", got)
+// runLoopCall applies the next callback a session worker posted to the loop.
+func runLoopCall(t *testing.T, i *Interactive) {
+	t.Helper()
+	select {
+	case fn := <-i.loopCalls:
+		fn()
+	case <-time.After(5 * time.Second):
+		t.Fatal("missing loop callback")
 	}
 }
 
-func TestEscapeRestoresHostQueuedMessageToEditor(t *testing.T) {
-	i := NewInteractive(InteractiveConfig{})
-	cancelled := 0
-	i.mu.Lock()
-	i.busy = true
-	i.cancelTurn = func() { cancelled++ }
-	i.queued = []core.QueuedMessage{{Text: "recover this draft"}}
-	i.mu.Unlock()
-
-	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
-
-	if cancelled != 1 {
-		t.Fatalf("cancelled = %d, want 1", cancelled)
+func recvInput(t *testing.T, ch <-chan session.Input) session.Input {
+	t.Helper()
+	select {
+	case in := <-ch:
+		return in
+	case <-time.After(5 * time.Second):
+		t.Fatal("Submit was not called")
+		return session.Input{}
 	}
-	if got, want := i.ed.Value(), "recover this draft"; got != want {
-		t.Errorf("editor = %q, want %q", got, want)
+}
+
+// /session fork follows /fork onto the daemon path; the legacy gate needs a
+// local agent and would always refuse with "wait until ... queued messages".
+func TestPortSessionForkOpensForkPicker(t *testing.T) {
+	i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{
+		Info:     session.Info{Run: session.RunStateIdle, SessionPath: "/session.jsonl"},
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "fork from here"}}}},
+	}, InteractiveConfig{})
+
+	i.runSlash(context.Background(), "/session fork")
+
+	if !i.pendingFork || i.statusErr != "" {
+		t.Fatalf("fork picker not opened: pendingFork=%v statusErr=%q", i.pendingFork, i.statusErr)
 	}
 }
