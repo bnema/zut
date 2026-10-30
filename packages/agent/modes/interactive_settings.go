@@ -832,12 +832,8 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
-		// The subagent tools remain available for explicit user requests.
-		// Swap only the system-prompt guidance between strict orchestration and
-		// on-demand delegation.
-		i.applyAutoSubagentsTool()
-		// Also swap the system-prompt addendum so the model knows whether it
-		// should orchestrate proactively or delegate only on user request.
+		// The session owns the subagent tools; swap only the system-prompt
+		// guidance between strict orchestration and on-demand delegation.
 		i.applyAutoSubagentsSystemPrompt(value)
 		i.mu.Lock()
 		i.statusOK = "subagent orchestrator " + onOff(value)

@@ -200,25 +200,14 @@ func autoSubagentsAnyToolAllowedConfig(cfg InteractiveConfig) bool {
 		autoSubagentsResumeToolAllowedConfig(cfg) ||
 		autoSubagentsInterruptToolAllowedConfig(cfg)
 }
-func (i *Interactive) autoSubagentsToolAllowed() bool {
-	return autoSubagentsToolAllowedConfig(i.cfg)
-}
-func (i *Interactive) autoSubagentsStatusToolAllowed() bool {
-	return autoSubagentsStatusToolAllowedConfig(i.cfg)
-}
-func (i *Interactive) autoSubagentsStopToolAllowed() bool {
-	return autoSubagentsStopToolAllowedConfig(i.cfg)
-}
-func (i *Interactive) autoSubagentsResumeToolAllowed() bool {
-	return autoSubagentsResumeToolAllowedConfig(i.cfg)
-}
-func (i *Interactive) autoSubagentsInterruptToolAllowed() bool {
-	return autoSubagentsInterruptToolAllowedConfig(i.cfg)
-}
 func (i *Interactive) autoSubagentsEnabledLocked() bool {
 	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled && i.autoSubagentsAvailable()
 }
-func (i *Interactive) applyAutoSubagentsTool() {
+
+// stripLocalSubagentTools removes any subagent tool from the local agent.
+// Subagent tools run in the session behind the port, which owns the resident
+// manager; a local agent never carries a resident facade.
+func (i *Interactive) stripLocalSubagentTools() {
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -226,8 +215,6 @@ func (i *Interactive) applyAutoSubagentsTool() {
 	if i.agent == nil {
 		return
 	}
-	// Subagent tools run where the resident manager lives: in the session
-	// behind the port. A local agent never carries a resident facade.
 	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {

@@ -1408,7 +1408,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	// dynamically-registered tools need to be reattached. The apply
 	// helpers are no-ops when their feature is inactive, so the
 	// cross-provider path still works on a vanilla setup.
-	i.applyAutoSubagentsTool()
+	i.stripLocalSubagentTools()
 	i.applyTelegramTools(i.telegramBridge != nil)
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
@@ -1460,7 +1460,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			if oldAgent != nil {
 				_ = tools.CloseLSPManagers(oldAgent.ToolsSnapshot())
 			}
-			i.applyAutoSubagentsTool()
+			i.stripLocalSubagentTools()
 			i.applyTelegramTools(i.telegramBridge != nil)
 			// Authentication can change the provider used by the live
 			// agent. Persist it on the active session just like /model.

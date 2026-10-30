@@ -258,17 +258,6 @@ func splitIDAndRest(s string) (id, text string) {
 	return s[:cut], strings.TrimLeft(s[cut+1:], " \t")
 }
 
-func truncateStatus(value string, max int) string {
-	value = strings.ReplaceAll(strings.TrimSpace(value), "\n", " ")
-	if len([]rune(value)) <= max {
-		return value
-	}
-	if max <= 3 {
-		return string([]rune(value)[:max])
-	}
-	return string([]rune(value)[:max-3]) + "..."
-}
-
 func (i *Interactive) subagentsStatus(ok, errMsg string) {
 	i.mu.Lock()
 	i.statusOK = ok

@@ -433,8 +433,7 @@ type InteractiveConfig struct {
 	// SpawnResident resolves the host's live registry/configuration and commits
 	// a new resident child. Keeping that construction callback in agent avoids
 	// leaking provider or credential assembly into modes.
-	SpawnResident     func(context.Context, tools.ResidentSpawnRequest) (string, error)
-	BuildResidentSpec func(context.Context, tools.ResidentSpawnRequest) (subagents.ResidentChildSpec, error)
+	SpawnResident func(context.Context, tools.ResidentSpawnRequest) (string, error)
 
 	// ResolveSubagent validates a named markdown profile for direct
 	// /subagents commands. Auto-subagents uses the equivalent callback on its
@@ -1047,7 +1046,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.titleRealPromptSeen = i.sessionTitle != "" || hasRealUserPrompt(i.view.Messages)
 		i.titleGenerationStarted = i.titleRealPromptSeen
 	}
-	i.applyAutoSubagentsTool()
+	i.stripLocalSubagentTools()
 	if cfg.PreloadPinnedSkills {
 		i.SetPinnedSkillsPending(true)
 	}
@@ -2041,12 +2040,6 @@ type telegramSenderAdapter struct {
 // applyAutoSubagentsSystemPrompt swaps the prompt blocks owned by subagent
 // prompting on the running agent. Toggling strict orchestration changes the
 // delegation guidance while retaining the profile manifest when usable.
-
-// applyAutoSubagentsTool registers the canonical subagent tools whenever
-// launch-time policy permits them. Auto-subagents controls prompt behavior,
-// while the tools remain available for explicit user-requested delegation.
-// Mirrors applyTelegramTools' snapshot+mutate pattern so extension tools and
-// /reload-ext additions survive a settings change.
 
 // applyTelegramTools registers (active=true) or removes (active=false)
 // the telegram_send_image and telegram_send_file tools on the running
