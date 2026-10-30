@@ -111,7 +111,14 @@ func (l *socketListener) close() {
 func prepareSocketDir(dir string, zutOwnedDirs []string) error {
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return createSocketDir(dir)
+		err = createSocketDir(dir)
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		// Another daemon created it first: apply the existing-dir checks.
+		if fi, err = os.Lstat(dir); err != nil {
+			return fmt.Errorf("stat socket dir: %w", err)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("stat socket dir: %w", err)
