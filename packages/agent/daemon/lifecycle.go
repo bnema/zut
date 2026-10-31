@@ -119,7 +119,7 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 		d.log.Warn("remove pprof address file", "err", err)
 	}
 	if pprofAddr != "" {
-		if err := os.WriteFile(pprofPath, []byte(pprofAddr+"\n"), 0o600); err != nil {
+		if err := writeFileAtomic(pprofPath, []byte(pprofAddr+"\n")); err != nil {
 			d.log.Warn("write pprof address file", "err", err)
 		}
 		defer func() {
