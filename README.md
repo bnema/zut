@@ -1,24 +1,24 @@
 # zut
 
 > [!NOTE]
-> **Fork notice:** `zut` is an independent fork of [zot](https://github.com/patriceckhart/zot) adapted for my own workflow but feel free to use it too.
+> **Fork notice:** `zut` is an independent fork of [zot](https://github.com/patriceckhart/zot), adapted for my workflow and available to others.
 
 ## What is it?
 
-Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
+A lightweight coding agent harness written (vibe-slopped) in Go.
 
-- one static binary.
-- built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- eighteen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, ask_user_question, and schedule; `schedule` is interactive-only); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for public-web egress and availability boundaries.
-- three run modes (interactive tui, print, json).
-- built-in telegram bot.
-- native MCP client for stdio and streamable HTTP servers, shared by the primary agent, orchestrator, and subagents; no built-in OAuth—use a stdio bridge like mcp-remote; see [docs/mcp.md](docs/mcp.md).
-- extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. Interactive tools can wait for user input without a reply deadline and support cooperative cancellation; headless hosts reject them. See [docs/extensions.md](docs/extensions.md).
-- user and extension themes via JSON; see [docs/themes.md](docs/themes.md).
-- standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
-- reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
-- named subagent profiles from `~/.agents/agents/*.md`; see [docs/subagents.md](docs/subagents.md).
-- portable agents from local directories, `.zut` files, or temporary public GitHub downloads; see [docs/zutfiles.md](docs/zutfiles.md).
+- One static binary.
+- Providers: Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
+- seventeen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, ask_user_question), plus `schedule` and `sessions` in interactive daemon sessions, `subagent` for delegation, and `skill` when skills are enabled. [Public-web egress and availability](docs/web-search.md).
+- five run modes (interactive TUI, print, stream, JSON, RPC).
+- Built-in Telegram bot.
+- Native MCP client: stdio and streamable HTTP, shared by primary agent, orchestrator, and subagents. No built-in OAuth; use a stdio bridge such as mcp-remote. [MCP](docs/mcp.md).
+- Any-language subprocess + JSON-RPC extensions. None installed by default; opt in with `zut ext install` or `zut --ext`. Interactive tools allow user input without a reply deadline and cooperative cancellation; headless hosts reject them. [Extensions](docs/extensions.md).
+- User/extension JSON [themes](docs/themes.md).
+- Global/project `AGENTS.md` [standing instructions](#persistent-instructions-agentsmd).
+- Reusable `SKILL.md` [instructions](docs/skills.md).
+- Named [subagent profiles](docs/subagents.md) in `~/.agents/agents/*.md`.
+- [Portable agents](docs/zutfiles.md): local directories, `.zut` files, or temporary public GitHub downloads.
 
 ## Install
 
@@ -28,7 +28,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash
 ```
 
-Detects your OS and architecture, downloads the latest release from git.bnema.dev, verifies the SHA-256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin`, whichever is writable first. Pass a version or prefix to pin:
+Detects OS/architecture, downloads the latest git.bnema.dev release, verifies SHA-256 against `checksums.txt`, and extracts to the first writable directory: `/usr/local/bin`, `~/.local/bin`, or `~/bin`. Pin a version or prefix:
 
 ```bash
 curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash -s -- v0.1.0 ~/bin
@@ -40,7 +40,7 @@ curl -fsSL https://git.bnema.dev/zut/raw/main/install.sh | bash -s -- v0.1.0 ~/b
 iwr -useb https://git.bnema.dev/zut/raw/main/install.ps1 | iex
 ```
 
-Drops `zut.exe` into `$HOME\bin` and adds it to the user PATH if missing. Open a fresh terminal afterwards.
+Installs `zut.exe` in `$HOME\bin`, adding it to the user PATH if needed. Open a new terminal.
 
 ### go install
 
@@ -48,7 +48,9 @@ Drops `zut.exe` into `$HOME\bin` and adds it to the user PATH if missing. Open a
 go install github.com/bnema/zut/cmd/zut@latest
 ```
 
-The installed binary reports the tagged module version and supports `zut update`. Update checks and changelogs read ermite (`git.bnema.dev`) first, falling back to GitHub on API failures. Archives and checksums are downloaded from the answering source, pinned to the release tag; initial download URLs must use HTTPS on `git.bnema.dev` or `github.com`. Redirects may also use GitHub’s `objects.githubusercontent.com` and `release-assets.githubusercontent.com` CDN hosts, without forwarding the GitHub token. Release JSON and checksums are each limited to 1 MiB.
+Reports the tagged module version; supports `zut update`. Update checks/changelogs try ermite (`git.bnema.dev`), then GitHub on API failure. Archives/checksums come from the answering source, pinned to the release tag.
+
+Initial downloads require HTTPS on `git.bnema.dev` or `github.com`. Redirects also allow `objects.githubusercontent.com` and `release-assets.githubusercontent.com`, without forwarding the GitHub token. Release JSON and checksums are each limited to 1 MiB.
 
 ### From source
 
@@ -61,33 +63,30 @@ make install      # install the current checkout with go install
 make go-install   # install the latest published module version
 ```
 
-`make go-install GO_INSTALL_VERSION=v0.1.0` installs a specific published
-version. `make install` is different: it installs the current checkout as a
-development build.
+`make go-install GO_INSTALL_VERSION=v0.1.0` pins a published version; `make install` installs the checkout as a development build.
 
 ### Prebuilt binaries
 
-Every release on the [releases page](https://git.bnema.dev/zut/releases) ships archives for Linux, macOS, and Windows on amd64 and arm64 (except windows/arm64), plus a `checksums.txt` file. Download, verify, `chmod +x`, and drop on your `$PATH`.
+[Releases](https://git.bnema.dev/zut/releases) include Linux, macOS, and Windows archives for amd64/arm64 (except windows/arm64), plus `checksums.txt`. Download, verify, `chmod +x`, and place on `$PATH`.
 
 ## Authenticate
 
-The easiest way is to just run `zut` and type `/login`. The TUI opens even without credentials and walks you through a browser-based login flow.
+Run `zut`, then `/login` for browser login. The TUI opens without credentials.
 
 ### Credential lookup order
 
-1. `--api-key` flag
-2. provider-specific env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `XAI_API_KEY`, `CEREBRAS_API_KEY`, `TOGETHER_API_KEY`, `HF_TOKEN`, `ZAI_API_KEY`, `XIAOMI_API_KEY`, `MINIMAX_API_KEY`, `FIREWORKS_API_KEY`, `AI_GATEWAY_API_KEY`, `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, and others for provider-specific backends)
-3. `$ZUT_HOME/auth.json` (API key or OAuth token; mode 0600)
+1. `--api-key`
+2. Provider env var: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `XAI_API_KEY`, `CEREBRAS_API_KEY`, `TOGETHER_API_KEY`, `HF_TOKEN`, `ZAI_API_KEY`, `XIAOMI_API_KEY`, `MINIMAX_API_KEY`, `FIREWORKS_API_KEY`, `AI_GATEWAY_API_KEY`, `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, or other backend-specific variables.
+3. `$ZUT_HOME/auth.json` (API key/OAuth token; mode 0600).
 
-`$ZUT_HOME` defaults to:
-- All platforms: `$XDG_STATE_HOME/zut` when `XDG_STATE_HOME` is set
-- macOS fallback: `~/Library/Application Support/zut`
-- Linux fallback: `~/.local/state/zut`
-- Windows fallback: `%LOCALAPPDATA%\zut`
+`$ZUT_HOME` defaults to `$XDG_STATE_HOME/zut` on all platforms when `XDG_STATE_HOME` is set. Otherwise:
+- macOS: `~/Library/Application Support/zut`
+- Linux: `~/.local/state/zut`
+- Windows: `%LOCALAPPDATA%\zut`
 
 ### API keys from commands
 
-To keep an API key in a password manager instead of `auth.json`, configure an `api_key_command` for the provider:
+Keep keys in a password manager with a provider's `api_key_command`:
 
 ```json
 {
@@ -101,45 +100,51 @@ To keep an API key in a password manager instead of `auth.json`, configure an `a
 }
 ```
 
-For a provider added through `models.json`, put the same credential object under `additional_api_key_creds` using its provider ID. `program` is executed directly, without a shell, so each argument must be a separate `args` entry. `timeout_ms` is optional and defaults to 120 seconds.
+For `models.json` providers, put this credential object under `additional_api_key_creds`, keyed by provider ID.
 
-zut runs the command only when that provider is selected, not while checking login status or refreshing model catalogs in the background. Successful output is cached in memory for the rest of the zut process and is never written to disk. The command must print one non-empty line to stdout; zut removes trailing CR/LF characters, limits output to 64 KiB, and does not include command output in errors. Saving a normal key through `/login` replaces the command configuration, and `/logout` removes it.
+- `program` runs directly, without a shell; separate arguments in `args`. Optional `timeout_ms` defaults to 120 seconds.
+- Runs only when selecting that provider, not for login-status checks or background model-catalog refreshes.
+- Successful output stays in memory for the process, never on disk. Print one non-empty stdout line; trailing CR/LF is stripped. Output limit: 64 KiB. Errors omit command output.
+- Saving a key with `/login` replaces the command; `/logout` removes it.
 
-Treat `auth.json` as executable configuration: anyone who can modify it can cause zut to run a program under your user account. zut does not interpret `!` prefixes or execute command strings through a shell.
+**Treat `auth.json` as executable configuration:** anyone able to modify it can run programs as your user. zut neither interprets `!` prefixes nor runs command strings through a shell.
 
 ### `/login` flow
 
-Run `zut` and type `/login`. Pick one of two methods:
+Run `zut`, type `/login`, and choose:
 
-- **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you pick a provider from the full API-key provider list, paste the key, and zut saves it to `auth.json` if accepted. Providers with a lightweight model-list endpoint are probed before saving; provider backends that need extra project/account env vars are saved directly.
-- **Subscription**: use your Claude Pro/Max, ChatGPT Plus/Pro, Kimi Code, SuperGrok/X Premium, or GitHub Copilot subscription. DeepSeek and Google Gemini do **not** have a subscription login path. For those, use the API-key flow.
-  - Anthropic and OpenAI pin the browser callback to fixed provider-specific ports (`localhost:53692` for Anthropic, `localhost:1455` for OpenAI) because those are the only ports their auth servers will redirect to.
-  - Anthropic uses the Claude Code OAuth flow, with separate browser callback and copy-code choices. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
-  - Browser login for Anthropic and OpenAI Codex accepts a pasted callback URL or code from the same transaction; a supplied state must match. `esc` cancels the pending flow. OpenAI Codex has no standalone manual-code login.
-  - OpenAI uses the Codex CLI OAuth flow. Messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.
-  - Kimi uses the Kimi Code device-code OAuth flow. zut opens the verification URL, polls until you approve it in the browser, then sends messages to `api.kimi.com/coding/v1` with the Kimi Code identity headers.
-  - xAI uses a device-code OAuth flow. zut opens a prefilled authorization URL, polls for approval, and uses the resulting token with the xAI API.
-  - GitHub Copilot uses GitHub's device-code login flow. zut stores the GitHub access token and exchanges it for short-lived Copilot inference tokens on demand. Claude uses Messages, models tagged for Responses use that API, and the remaining models use Chat Completions. Account-specific model discovery filters picker availability without enabling policies; see [GitHub Copilot](docs/providers.md#github-copilot).
+- **API key:** browser form on `127.0.0.1:<free-port>`. Choose from the full API-key provider list and paste a key. Lightweight model-list endpoints are probed before saving to `auth.json`; backends needing extra project/account env vars are saved directly.
+- **Subscription:** Claude Pro/Max, ChatGPT Plus/Pro, Kimi Code, SuperGrok/X Premium, or GitHub Copilot. DeepSeek and Google Gemini require API-key login.
+  - Anthropic/OpenAI callbacks require fixed ports: `localhost:53692` / `localhost:1455`, respectively, as required by their auth servers.
+  - Anthropic: Claude Code OAuth, with browser callback or copy-code choices; messages use `api.anthropic.com`, bearer token, and Claude Code identity headers.
+  - Anthropic/OpenAI Codex browser login accepts a pasted callback URL or code from the same transaction; supplied state must match. `esc` cancels. Codex has no standalone manual-code login.
+  - OpenAI: Codex CLI OAuth; messages use `chatgpt.com/backend-api/codex/responses` with `chatgpt-account-id` from the returned id_token.
+  - Kimi: Kimi Code device-code OAuth; opens verification URL and polls for browser approval. Messages use `api.kimi.com/coding/v1` with Kimi Code identity headers.
+  - xAI: device-code OAuth; opens prefilled authorization URL, polls for approval, then uses the token with the xAI API.
+  - GitHub Copilot: GitHub device-code login; stores the GitHub access token and exchanges it for short-lived inference tokens on demand. Claude uses Messages; Responses-tagged models use Responses; others use Chat Completions. Account-specific discovery filters the picker without enabling policies. [GitHub Copilot](docs/providers.md#github-copilot).
 
-> **Note on subscription login.** The OAuth client IDs used are the ones published in Anthropic's Claude Code CLI, OpenAI's Codex CLI, Kimi Code CLI, xAI's device flow, and GitHub Copilot's device-code flow. Reusing them from a third-party tool may be against their terms of service and may be revoked at any time. Use it at your own risk; the API-key flow is the safe default.
+> Subscription login reuses published OAuth client IDs from Claude Code CLI, Codex CLI, Kimi Code CLI, xAI's device flow, and GitHub Copilot's device-code flow. Third-party use may violate their terms or be revoked anytime. Use at your own risk; API keys are the safe default.
 
 ### Compact status bar
 
-The interactive status bar combines the model and reasoning level and rounds cache/context percentages and costs:
+Combines model/reasoning level; rounds cache/context percentages and costs:
 
 ```text
 gpt-6-astra:medium  ↑261k ↓34k R12M C98% $8.52 plan:2/3 ctx31%/500k
 ```
 
-`↑` / `↓` are session input/output tokens, `R` is cache-read tokens, `C` is the measured cache-hit rate, `plan` is the current step / total steps while a plan is active, and `ctx` is context used / model capacity. Key status values use stronger contrast than their labels for quicker scanning in both dark and light terminals. The provider prefix and `(sub)` tag are omitted from this compact view. For subscription sessions, the dollar amount is an API-equivalent estimate, **not an additional charge**. Detailed session/subagent surfaces retain their existing precision and billing labels; `/session info` shows the provider.
+- `↑` / `↓`: session input/output tokens; `R`: cache-read tokens; `C`: measured cache-hit rate.
+- `plan`: current/total steps, only with an active plan. `ctx`: context used/model capacity.
+- Values have stronger contrast than labels in dark/light terminals. Provider prefix and `(sub)` are omitted; `/session info` shows the provider.
+- Subscription dollars estimate API-equivalent cost, **not an additional charge**. Detailed session/subagent views retain precision and billing labels.
 
 ### Token refresh
 
-OAuth access tokens are short-lived (Anthropic ~8h, OpenAI ~30d; Kimi, xAI, and GitHub Copilot also use refresh/exchange flows). zut refreshes or exchanges them automatically:
+OAuth access tokens expire (Anthropic ~8h, OpenAI ~30d). Kimi, xAI, and GitHub Copilot also refresh/exchange automatically.
 
-- At every credential lookup, zut checks the stored `expiry` and, if past it (with a 60s safety margin), hits the provider's `oauth/token` endpoint with the stored `refresh_token`, persists the new `access_token`, `refresh_token`, and `expiry` back to `auth.json`, and hands the fresh token to the client.
-- The telegram bridge additionally refreshes once per turn so a bot that runs for days keeps working without manual intervention.
-- If the refresh itself fails (the `refresh_token` was revoked, or the account was logged out everywhere), the error bubbles up to the caller: the TUI shows it in the status line, the bot replies with it in your DM. Run `/login` to get a fresh token pair.
+- Each credential lookup checks stored `expiry` with a 60s safety margin. When due, calls the provider's `oauth/token` with `refresh_token`, saves new `access_token`, `refresh_token`, and `expiry` to `auth.json`, and supplies the fresh token.
+- Telegram also refreshes each turn for long-running bots.
+- Refresh failures (revoked `refresh_token`, account logged out everywhere) appear in the TUI status line or bot DM. Run `/login` for fresh tokens.
 
 All data lives under `$ZUT_HOME`:
 
@@ -157,17 +162,19 @@ $ZUT_HOME/
 └── logs/               # app log files
 ```
 
-Drop a `SYSTEM.md` in `$ZUT_HOME` to replace the built-in identity and docs guidance for every run. Shared harness guidance and append addenda, including `AGENTS.md` and skills, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
+`$ZUT_HOME/SYSTEM.md` replaces built-in identity/docs guidance every run; delete it to restore defaults. Shared harness guidance and append addenda (`AGENTS.md`, skills) remain. `--system-prompt` overrides it per invocation, except a selected `systemPromptMode: replace` subagent profile sets the child's identity even with a parent override. Append-mode profiles retain shared guidance/global addenda.
 
-Shared prompt guidance remains active with custom identities and across providers and models. It asks the agent to complete authorized, non-destructive work rather than stop at a plan, while respecting requests for explanation or review and preserving required approvals. Explicit user instructions take precedence over skill guidelines; skills cannot grant permissions or override system or developer constraints. Writing guidance favors concise paragraphs, useful lists, and direct language without canned transitions. These are prompt instructions, not changes to tool permissions or guarantees of model behavior.
+Shared guidance applies across identities, providers, and models:
+- Complete authorized, non-destructive work, not just plans; respect explanation/review requests and required approvals.
+- User instructions outrank skills. Skills cannot grant permissions or override system/developer constraints.
+- Write concise paragraphs, useful lists, and direct language, without canned transitions.
+- Run scope-appropriate checks; report checks run and anything unverified.
 
-Shared harness guidance asks agents to verify changes with checks appropriate to their scope and report which checks ran and what remains unverified. This guidance is included with custom identities and does not change tool permissions, confirmations, jail behavior, or sandboxing.
-
-A selected subagent profile with `systemPromptMode: replace` supplies the child's base identity even when `--system-prompt` was provided for the parent run. Append-mode profiles retain shared harness guidance and global append addenda.
+These are prompt instructions, not behavioral guarantees or changes to tool permissions, confirmations, jail behavior, or sandboxing.
 
 ### HTTP proxy
 
-To route zut-managed HTTP and HTTPS requests through one proxy, add `http_proxy` to `$ZUT_HOME/config.json`:
+Set `http_proxy` in `$ZUT_HOME/config.json` for zut-managed HTTP/HTTPS:
 
 ```json
 {
@@ -175,41 +182,39 @@ To route zut-managed HTTP and HTTPS requests through one proxy, add `http_proxy`
 }
 ```
 
-The setting is applied at startup to both HTTP and HTTPS traffic. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` environment variables take precedence for their corresponding protocol. `NO_PROXY` and `no_proxy` continue to control bypasses. Restart zut after changing the config file. If the URL contains proxy credentials, prefer protected environment variables because `config.json` is not a credential store.
+Applied at startup; restart after edits. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` env vars win for their protocol. `NO_PROXY`/`no_proxy` control bypasses. Prefer protected env vars for proxy credentials: `config.json` is not a credential store.
 
 ## Persistent instructions (AGENTS.md)
 
-Use `AGENTS.md` to give zut standing instructions that layer **on top of** the default system prompt, without replacing it. This is the friendliest way to shape behavior (for example, taming local models that jump straight to code edits) because it adds guidance rather than taking over the base identity the way `SYSTEM.md` does.
+`AGENTS.md` adds standing guidance **on top of** the default system prompt, unlike `SYSTEM.md`'s identity replacement. For example, use it to discourage local models from editing immediately.
 
-zut discovers `AGENTS.md` files automatically at startup and loads them in this order:
+Startup discovery/appending order:
+1. `$ZUT_HOME/AGENTS.md`: global, every project.
+2. Every `AGENTS.md` from filesystem root to cwd, including `~/AGENTS.md` when inside your home. Deeper files may override earlier ones.
 
-1. `$ZUT_HOME/AGENTS.md` (global, machine-wide instructions that apply to every project).
-2. Every `AGENTS.md` from the filesystem root down to the current working directory. More specific (deeper) files may override earlier ones. This includes `~/AGENTS.md` when the working directory is inside your home directory.
+Enable **show loaded resources at startup** in `/settings` to list the active Zutfile agent, loaded context paths, extensions, and user-installed skills above the interactive transcript. Default: off. Agent section: only `zut run`. Built-in skills are omitted; lists are neither sent to the model nor stored in transcripts.
 
-All discovered files are appended to the prompt in that order, so a global baseline can be refined per project. To list the active Zutfile agent, loaded context paths, extensions, and user-installed skills above the interactive transcript, enable **show loaded resources at startup** in `/settings`. The agent section appears only for `zut run`, the setting is off by default, built-in skills are omitted, and the displayed lists are not sent to the model or stored in the session transcript.
-
-For a general, non-project-specific instruction set, put your rules in `$ZUT_HOME/AGENTS.md`, for example:
+Example global rules in `$ZUT_HOME/AGENTS.md`:
 
 ```markdown
 Treat questions and discussions as requests for explanation. Do not edit files or run tools unless explicitly asked to make a change. Ask before modifying code.
 ```
 
-`AGENTS.md` vs the other mechanisms:
-
 | Mechanism | Scope | Effect |
 |---|---|---|
-| `$ZUT_HOME/AGENTS.md` | global, every run | appended to the default prompt |
-| `./AGENTS.md` (and parent dirs) | project | appended to the default prompt |
-| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity and docs guidance; append addenda remain |
-| `--append-system-prompt <text>` | single run | appends for one invocation (repeatable) |
-| `--system-prompt <text>` | single run | replaces the built-in identity and docs guidance for one invocation; append addenda remain |
+| `$ZUT_HOME/AGENTS.md` | global, every run | appended to default prompt |
+| `./AGENTS.md` (and parent dirs) | project | appended to default prompt |
+| `$ZUT_HOME/SYSTEM.md` | global, every run | replaces identity/docs guidance; append addenda remain |
+| `--append-system-prompt <text>` | single run, repeatable | appends |
+| `--system-prompt <text>` | single run | replaces identity/docs guidance; append addenda remain |
 
-> **Note:** zut does not read a `CLAUDE.md` instruction file. The only Claude-compatible thing it picks up is skills under `.claude/skills/`. If you are migrating from Claude Code, move that content into `AGENTS.md` (global or per-project) and zut will use it.
+> zut does not read `CLAUDE.md`; only Claude-compatible skills under `.claude/skills/`. Move Claude Code instructions into global/project `AGENTS.md`.
 
 ## Changelog on update
 
-The first time you launch a newer zut binary, the TUI shows the release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). Development builds (`0.0.0-dev`) skip both the update and changelog requests and print `dev version detected; skipping update check`. For release builds, the fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
+On first launch after an upgrade, the TUI shows dismissible release notes; any key closes them. `config.json` records `last_changelog_shown` to avoid repeats. Fresh installs show none.
 
+Development builds (`0.0.0-dev`) skip update/changelog requests and print `dev version detected; skipping update check`. Release fetches are best-effort: network failure or missing release page silently skips and retries next launch.
 ## Usage
 
 ```bash
@@ -227,85 +232,87 @@ zut --list-models                # show supported models
 zut --help
 ```
 
-Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens`, `generated_output_tokens`, and `elapsed_ms`. Counts cover all model turns triggered by the prompt, including tool loops. Prompt tokens include cache reads and writes. `reasoning_tokens` is `null` when the provider does not report a separate count; in that case `generated_output_tokens` is the provider's total output count and may include reasoning. Elapsed time covers the agent run, not startup and credential resolution. The file is written only after a successful run.
+Print stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens`, `generated_output_tokens`, and `elapsed_ms`, covering all prompt-triggered turns and tool loops. Prompt tokens include cache reads/writes. If separate reasoning counts are unavailable, `reasoning_tokens` is `null` and `generated_output_tokens` is total provider output, possibly including reasoning. Elapsed time excludes startup and credential resolution. Stats are written only on success.
 
 ## Flags
 
 | Flag | Description |
 |---|---|
-| `--provider <id>` | Pick the provider (for example `anthropic`, `openai`, `openai-codex`, `kimi`, `google`, `github-copilot`, `groq`, `openrouter`, `amazon-bedrock`, `ollama`; see Providers). |
-| `--model <id>` | Pick the model (see `--list-models`). |
-| `--api-key <key>` | Override the API key. |
-| `--base-url <url>` | Override the provider base URL (tests, self-hosted). |
-| `--insecure` | Skip TLS certificate verification for the explicit `--base-url` endpoint or a `baseUrl` defined for a user model in `models.json` (self-signed local/internal inference servers). Built-in providers, auth, and model discovery keep normal TLS verification. |
-| `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZUT_HOME/SYSTEM.md`). |
-| `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
-| `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
-| `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON; incompatible with `--orchestrate`. |
-| `--orchestrate` | In print, stream, or JSON mode, enable bounded headless delegation and final synthesis. It is not implicit. |
-| `-c`, `--continue` | Resume the latest session for this cwd. |
-| `-r`, `--resume [ID]` | Pick a session to resume, or load a saved session by daemon ID or transcript UUID. |
-| `--session <path>` | Resume a specific session file. |
-| `--no-session` | Don't read or write session files. |
-| `--cwd <path>` | Use `<path>` as the working directory. |
+| `--provider <id>` | Provider, e.g. `anthropic`, `openai`, `openai-codex`, `kimi`, `google`, `github-copilot`, `groq`, `openrouter`, `amazon-bedrock`, `ollama`; see Providers. |
+| `--model <id>` | Model; see `--list-models`. |
+| `--api-key <key>` | Override API key. |
+| `--base-url <url>` | Override provider URL for tests/self-hosting. |
+| `--insecure` | Skip TLS verification only for explicit `--base-url` or user-model `baseUrl` in `models.json` (self-signed local/internal servers). Built-in providers, auth, and model discovery retain TLS verification. |
+| `--system-prompt <text>` | Replace default prompt, overriding `$ZUT_HOME/SYSTEM.md`. |
+| `--append-system-prompt <text>` | Append system text; repeatable. |
+| `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Supported models only; default `off`. `max` is opt-in, above `xhigh`. |
+| `--stats <path>` | Write JSON generation stats with `-p`/`--print`; incompatible with `--orchestrate`. |
+| `--orchestrate` | Explicit bounded delegation and final synthesis in print, stream, or JSON mode. |
+| `-c`, `--continue` | Resume latest session for this cwd. |
+| `-r`, `--resume [ID]` | Pick a session, or load by daemon ID/transcript UUID. |
+| `--session <path>` | Resume a session file. |
+| `--no-session` | No session-file reads/writes. |
+| `--cwd <path>` | Set working directory. |
 | `--no-tools` | Disable all tools. |
-| `--no-repetition-guard` | Disable repeated-content loop detection for intentional polling workflows. |
-| `--no-lsp` | Disable the built-in LSP/linter tool for this run. |
-| `--tools <csv>` | Only enable the listed tools. Include `lsp` to select it explicitly. An explicit list must include `web_search` to retain or opt into the complete public-web capability (`web_search`, `web_open`, `web_find`, and `web_click`) for that invocation; explicitly including it overrides the persisted web-search setting. |
-| `--max-steps <n>` | Cap agent loop iterations (default: unlimited). |
-| `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
-| `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
-| `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
-| `--no-context-files`, `-nc` | Disable discovery and loading of global and project `AGENTS.md` files. |
-| `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Press `/` while the dialog is focused to run a slash command first; closing its input or child dialog returns to the pending confirmation. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
+| `--no-repetition-guard` | Disable repeated-content loop detection for intentional polling. |
+| `--no-lsp` | Disable built-in LSP/linter tool. |
+| `--tools <csv>` | Enable only listed tools; name `lsp` explicitly. Include `web_search` to retain/enable all four public-web tools (`web_search`, `web_open`, `web_find`, `web_click`), overriding the persisted web-search setting. |
+| `--max-steps <n>` | Agent-loop limit; default unlimited. |
+| `-e`, `--ext <path>` | Load extension; repeatable, overrides installed namesakes. |
+| `--no-ext` | Skip discovery; explicit `--ext` still works (`--no-ext --ext ./x` loads only `x`). |
+| `--no-skill` | Disable all skills, including built-ins, the `skill` tool, and system-prompt skill manifest. |
+| `--no-context-files`, `-nc` | Skip global/project `AGENTS.md` discovery and loading. |
+| `--no-yolo` | Confirm each tool call in interactive TUI: name/one-line args preview, or edit diff in tool panel. Choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. `/` opens a slash command; closing its input/child dialog returns to confirmation. Print/JSON/RPC ignore this flag with a stderr warning; tools run freely. |
 
 ## Tools
 
-- `read`: read text files, or inline images (PNG, JPEG, GIF, WebP).
-- `write`: create or overwrite files, making parent directories as needed.
-- `edit`: one or more exact-match replacements in an existing file.
-- `grep`: search a file or directory for a regular expression using ripgrep when available, with a portable grep fallback. Search output is bounded and follows the active filesystem read scope; it never invokes a shell. The fallback's regular-expression syntax and ignore/hidden-file behavior can differ from ripgrep.
-- `glob`: find files matching a glob pattern (`**/*.go`, `*.json`, `src/**/*.ts`) within a directory tree. Supports `*`, `?`, `**`, and character classes; patterns with a slash match relative paths, others match basenames. Honors `.gitignore` rules including nested files, skips hidden entries unless asked, never follows nested directory symlinks, and bounds depth (24) and matches (500, sorted).
-- `ast`: search or rewrite source code structurally with an [ast-grep](https://ast-grep.github.io/) pattern. Prefer it when the operation depends on code syntax; use `grep`/`edit` for plain text. `language` is optional; when omitted, ast-grep infers it from each file's extension. Zut starts an installed `ast-grep` executable, or `sg` when it identifies itself as ast-grep, directly without a shell. Searches return compact `path:line` matches. Rewrites are planned in memory, shown as a diff for confirmation, checked against the active filesystem scope, verified against the files' current contents, written through a temporary file and rename with file permissions preserved, and followed by bounded diagnostics. When `grep` is given a regex that looks like a call or definition search and `ast` is available, its result includes a short `ast` suggestion. Install ast-grep separately; the tool returns a clear error when it is not available.
-- `bash`: run a command in the session cwd with merged stdout/stderr. Every call must include a positive integer `timeout` in seconds; calls without it or with `timeout <= 0` are rejected, and the deadline is always enforced. On Unix, zut uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
-- `python`: execute inline Python 3 code with an existing interpreter, never installing one. Every call must include nonblank `code` and a positive integer `timeout` in seconds (shared by interpreter discovery and execution). Each call runs a fresh stateless subprocess directly (`-u -B -`, code on stdin) in the session cwd with merged stdout/stderr; there is no persistent interpreter state, no script file, and no bytecode cache. Interactive input is unsupported (stdin observes EOF). Output is bounded (50 KiB, 2,000 lines) with explicit truncation marks; truncated results persist the byte-capped buffer to a temp file referenced as `full output` with its path in `full_output_path`, mirroring `bash`. Discovery order: `python_interpreter` in `$ZUT_HOME/config.json` (one executable path; relative paths resolve against the session cwd), then the active `VIRTUAL_ENV`, then `./.venv`, then `python3`/`python` on `PATH`. On Windows, Store aliases, `py` launchers, and install-manager entrypoints are rejected; only positively identified installed interpreters run. Missing packages fail with the ordinary import traceback. Tool arguments and output are recorded in the session like other tools; files the code deliberately writes persist. Save reusable scripts with `write`/`edit` instead of using `python` as an opaque file-edit path. Unavailable to packaged agents, and rejected while jailed (see below).
-- `worktree`: manage Git worktrees with the `create`, `list`, and `cleanup` actions. Creation checks out a new branch under `$ZUT_HOME/worktrees/<repo-id>`, starting from the current HEAD or from `base` (a branch, tag, or commit); an absolute local Git setting, `zut.worktrees.path`, overrides that root per repository. Listing inventories registered worktrees. Cleanup requires exact paths, confirmation through the normal preview gate, and revalidation immediately before removal. It refuses the primary worktree, dirty or detached checkouts, and commits not merged into the current branch, or into `into` when given. With `delete_branch`, it also deletes each removed worktree's local branch, only while the branch is still at the inspected commit; it never deletes the merge target or a branch checked out in another worktree, and it reports a branch-deletion failure while keeping the removed worktrees removed. It never removes unmerged work. For a feature-branch workflow, create `feat/x` from main, then create sub-worktrees with `base: "feat/x"` (for example `feat/x-api`). After committing on each sub-branch and merging it into `feat/x`, clean up with `into: "feat/x"` and `delete_branch: true`. `list` also accepts `into` to check eligibility against that branch.
-- `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. Successful native edits, writes, renames, and applied code actions automatically attach bounded diagnostics when available. See [docs/lsp.md](docs/lsp.md).
-- `web_search`: search DuckDuckGo HTML and return bounded source titles, URLs, snippets, and opaque references. `web_open` opens either a complete public URL or a referenced page, while `web_find` and `web_click` respectively find literal text in an opened page and follow a displayed link. The four tools are enabled together by default for normal CLI sessions and unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
-- `update_goal`: let the main agent start its own mission when none is active, set the next bounded goal within an active mission, pause work while a decision is pending, resume it once settled, mark the active goal `done` or `blocked`, or atomically supersede an invalid goal with a necessary in-mission replacement. Users can also pause and resume through `/goal`; clearing remains user-controlled.
-- `ask_user_question`: ask up to 10 chained questions with optional single- or multi-select choices and custom text answers. Requires an interactive terminal; background agents cannot use it. Use arrows or j/k to move, digits to pick, Space to toggle multiple choices, Enter to confirm, Shift+Tab to go back, and Esc to decline (or leave custom-text editing).
-- `plan`: maintain a session-scoped checklist of `pending`, `in_progress`, and `completed` steps through `set` (replace every step), `add`, `update` one step, `remove` one step, `clear`, and `show`. Several steps may be `in_progress` at once to track parallel work such as concurrent sub-agents. `set` requires at least one step; `clear` is how every step is removed. There is no step-count limit, but a plan carried across compaction shows only its first 12 steps. The plan is persisted in every mode through the tool-result commit path, inherited by forks and imports, and cleared by `/clear`. Successful updates appear inline as a checklist and emit `plan_update` events in JSON and RPC modes.
-- `schedule`: add, list, or cancel recurring five-field cron prompts for the current session. A task captures the machine's current timezone when it is created. A due task waits for an active turn to finish and then runs in the session, attached or detached; its output is recorded in the session transcript. Schedules are stored in `$ZUT_HOME/daemon/schedules.json` and survive a daemon restart; closing the session, including an idle-GC close, cancels them. Print, stream, JSON, and RPC modes do not expose this tool.
-- `sessions`: list, inspect, and message the other sessions open in the daemon. `list` shows each session's ID, attach and run state, model, directory, and title; `tree` groups sessions by repository with their resident subagents, current plan step, and goal; `send` delivers text to another session (by ID, unique ID prefix, or exact title), which receives it as a tagged message and runs it as a turn. The target may be detached. `list` and `tree` are always allowed. `send` requires the sending session to be attached, and is refused during a turn started by another session's message, so sessions cannot loop messages between themselves.
+- `read`: read text or inline images (PNG, JPEG, GIF, WebP).
+- `write`: create/overwrite files, creating parent directories.
+- `edit`: apply exact-match replacements to an existing file.
+- `grep`: bounded file/directory regex search within the active read scope, using ripgrep or portable grep, never a shell. Fallback regex, ignore, and hidden-file behavior may differ.
+- `glob`: match `**/*.go`, `*.json`, `src/**/*.ts`, etc.; supports `*`, `?`, `**`, character classes, matching relative paths with `/`, basenames otherwise. Honors nested `.gitignore`, skips hidden entries unless requested, never follows nested directory symlinks; depth 24, at most 500 sorted matches.
+- `ast`: structural search/rewrite with [ast-grep](https://ast-grep.github.io/); prefer for code syntax, `grep`/`edit` for text (`grep` suggests `ast` for call/definition-like regexes when available). Optional `language` defaults to extension inference; directly runs separately installed `ast-grep` or verified ast-grep `sg`, without a shell, returning compact `path:line` matches or a clear missing-tool error. Rewrites: plan in memory, confirm diff, check filesystem scope/current contents, write via temporary file and rename preserving permissions, then bounded diagnostics.
+- `bash`: run in session cwd with merged stdout/stderr; a positive integer `timeout` (seconds) is required and enforced. Unix tries `/bin/bash -c`, then PATH `bash -c`, then POSIX `/bin/sh -c`; Windows uses `cmd /C`; macOS's default Bash 3.2 lacks newer features.
+- `python`: run nonblank `code` in a fresh, stateless Python 3 subprocess in session cwd (`-u -B -`, code on stdin, merged stdout/stderr), requiring positive integer `timeout` seconds shared by discovery/execution; no installs, script file, bytecode cache, persistent state, or interactive input (EOF). Discovery: `python_interpreter` in `$ZUT_HOME/config.json` (one executable path, relative to cwd), active `VIRTUAL_ENV`, `./.venv`, then PATH `python3`/`python`; Windows rejects Store aliases, `py` launchers, and install-manager entrypoints, requiring a positively identified installed interpreter. Output: 50 KiB/2,000 lines with truncation marks; truncated byte-capped buffer persists to a temp file shown as `full output`/`full_output_path`, like `bash`; imports fail normally, args/output enter session history, deliberate file writes persist (use `write`/`edit` for reusable scripts, not opaque Python edits); unavailable to packaged agents or while jailed.
+- `worktree`: `create` checks out a new branch from HEAD or `base` (branch/tag/commit) under `$ZUT_HOME/worktrees/<repo-id>`, overridden per repository by absolute Git setting `zut.worktrees.path`; `list` inventories registered worktrees and accepts `into` for eligibility checks. `cleanup` requires exact paths, normal preview confirmation, and immediate revalidation; refuses primary, dirty, detached, or unmerged checkouts (merge target: current branch or `into`), never removing unmerged work; `delete_branch` deletes removed worktrees' local branches only at the inspected commit, never the target or branches checked out elsewhere, and reports deletion failures without restoring removed worktrees. Workflow: create `feat/x` from main, sub-worktrees with `base: "feat/x"` (e.g. `feat/x-api`), commit/merge into `feat/x`, then clean with `into: "feat/x"`, `delete_branch: true`.
+- `lsp`: configured servers/linters provide diagnostics, definitions, references, hover, symbols, renames, code actions, capabilities, and raw requests over stdio JSON-RPC; project `lsp.json` adds/overrides servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start, and repeated issues grouped; successful native edits, writes, renames, and applied code actions attach bounded diagnostics when available. See [docs/lsp.md](docs/lsp.md).
+- `web_search`: DuckDuckGo HTML search returns bounded titles, URLs, snippets, opaque references; `web_open` opens a full public URL/reference, `web_find` finds literal text in an opened page, `web_click` follows a displayed link. All four default on in normal CLI sessions, unavailable in bot, default SDK, and packaged agents; see [docs/web-search.md](docs/web-search.md).
+- `update_goal`: start a mission if none exists, set its next bounded goal, pause for a decision, resume, mark a goal `done`/`blocked`, or atomically supersede an invalid goal with a necessary in-mission replacement. Users can pause/resume with `/goal`; only users clear goals.
+- `ask_user_question`: up to 10 chained questions, optional single/multi-select and custom answers; interactive terminal only, not background agents. Arrows/j/k move, digits pick, Space toggles multiple choices, Enter confirms, Shift+Tab goes back, Esc declines/exits custom-text editing.
+- `plan`: session checklist states `pending`, `in_progress`, `completed`; actions `set` (replace all; at least one step), `add`, `update`, `remove`, `clear` (remove all), `show`; concurrent `in_progress` steps allowed. Unlimited steps, first 12 shown after compaction; persisted in every mode via tool-result commits, inherited by forks/imports, cleared by `/clear`. Updates display inline and emit JSON/RPC `plan_update` events.
+- `schedule`: add/list/cancel recurring five-field cron prompts, capturing current machine timezone. Due tasks wait for active turns, run attached or detached, record output in the transcript; `$ZUT_HOME/daemon/schedules.json` survives daemon restart, but session closure (including idle GC) cancels tasks. Unavailable in print/stream/JSON/RPC.
+- `sessions`: inspect/message other open daemon sessions: `list` shows ID, attach/run state, model, directory, title; `tree` groups by repository with resident subagents, plan step, goal. `list`/`tree` always allowed; `send` targets ID, unique prefix, or exact title (even detached), delivering a tagged message as a turn, but requires an attached sender and refuses message-triggered turns to prevent loops.
 
-Tool results carry resource provenance in the durable session. Before each provider request, Zut replaces an older read only when an equivalent newer view supersedes it, and replaces a multi-file search only after every discovered file has been consumed or mutated. This provider-only projection removes known-stale context without rewriting session history. Because an older projected result changes, prompt caching restarts from that point; compact deterministic markers limit the cost.
+Tool results retain resource provenance in durable history. Before provider requests, an equivalent newer read replaces an older one; multi-file searches are replaced only after all discovered files are consumed/mutated. This provider-only stale-context projection leaves history intact. Changed older results restart prompt caching there; compact deterministic markers limit cost.
 
-When the sandbox is on (see `/jail`), filesystem tools, `grep`, `glob`, `ast`, and LSP workspace edits refuse paths outside the session cwd. `worktree` also requires its repository root, Git metadata, and resolved worktree destination to remain inside the jail. `python` is rejected outright while jailed: arbitrary Python cannot be confined by the current jail (admission-time check; use `/unjail`). When admitted, `python` has unrestricted host filesystem/network/process access like `bash`. Jail does not sandbox web-search network egress.
+With `/jail`, filesystem tools, `grep`, `glob`, `ast`, and LSP workspace edits reject paths outside session cwd. `worktree` also confines repository root, Git metadata, and resolved destination. `python` is rejected at admission: the jail cannot confine arbitrary Python (use `/unjail`); when admitted, it has unrestricted host filesystem/network/process access like `bash`. Jail does not sandbox web-search egress.
 
 ## Modes
 
-- **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands. Independent views such as `/settings`, `/subagents`, pickers, and confirmations open in a focused floating pane while the live main view remains visible and dimmed behind it. On terminals narrower than 80 columns, the pane becomes a full-width bottom drawer.
-- **Print**: `zut -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
-- **Stream**: `zut --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
-- **Piped input**: stdin implies print mode when no explicit mode is selected. Print, stream, and JSON modes prepend piped input to the positional prompt, separated by a newline. For example, `cat README.md | zut "summarize this text"`.
-- **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
-- **RPC**: `zut rpc` runs as a long-lived child process that bridges to a daemon session; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
+- **Interactive** (default): streaming chat TUI, spinner, cost meter, slash commands. `/settings`, `/subagents`, pickers, and confirmations use focused floating panes over the dimmed live view; below 80 columns, full-width bottom drawers.
+- **Print**: `zut -p "prompt"` runs to completion; stdout contains only final assistant text.
+- **Stream**: `zut --stream "prompt"` skips TUI, streams assistant text to stdout, tool activity to stderr.
+- **Piped input**: stdin implies print unless a mode is explicit. Print/stream/JSON prepend stdin to the positional prompt with a newline: `cat README.md | zut "summarize this text"`.
+- **JSON**: `zut --json "prompt"` writes one agent event per stdout line; schema: [docs/rpc.md](docs/rpc.md).
+- **RPC**: long-lived `zut rpc` child bridges a daemon session; stdin commands, stdout events/responses, all NDJSON. Any-language embedding; schema: [docs/rpc.md](docs/rpc.md), clients: `examples/rpc/{python,node,shell,go}`.
 
 ### Headless orchestration
 
-`--orchestrate` explicitly enables bounded resident delegation for `-p`/`--print`, `--stream`, or `--json`; ordinary headless runs never delegate implicitly. This is a strict manager-only mode: the parent divides work into non-overlapping child scopes, coordinates active workers, and yields rather than implementing or repeating delegated work. The parent needs the `subagent` spawn action: it is available with the default tool set, or must be named in `--tools subagent:spawn` (and is disabled by `--no-tools`). A packaged agent's `PermissionSet` does not expose the subagent spawn action, so packaged agents cannot use orchestration. Interactive and RPC modes do not support this flag, and `--stats` cannot be combined with it.
+`--orchestrate` enables bounded resident delegation only in print/stream/JSON, never implicitly. The strict manager-only parent splits non-overlapping child scopes, coordinates workers, and yields rather than implementing/repeating delegated work. Requires `subagent` spawn: default tools or `--tools subagent:spawn`, unavailable with `--no-tools` or packaged-agent `PermissionSet`. Interactive/RPC and `--stats` are incompatible.
 
-Resident children inherit the parent CLI provider, model, and reasoning selection unless a selected profile or spawn explicitly overrides it. They do not inherit the parent's strict orchestrator role. Profile metadata from [docs/subagents.md](docs/subagents.md) is provided to the parent through `[subagents_list]` before selection; only the selected profile body and child-specific provider/model/reasoning configuration are loaded or applied afterward. Headless orchestration waits for every accepted child before its completion wave, while `required:true` additionally creates a durable obligation that survives terminal failure or interruption. Print mode writes only the final synthesis; stream mode renders every parent turn to stdout while tool diagnostics remain on stderr; JSON mode retains every parent event as parseable JSONL, including completion updates as existing `user_message` events. Child output is evidence for the next parent turn, not a host log.
+Children inherit CLI provider/model/reasoning unless profile/spawn overrides, not the strict manager role. Parent receives profile metadata via `[subagents_list]` before selection; only the selected body and child-specific configuration load afterward. See [docs/subagents.md](docs/subagents.md).
 
-The resident manager enforces global fair concurrency (six turns by default), optional queue timeout, required-result gating, and cancellation. A headless invocation permits at most 32 completion follow-up waves. Cancellation stops the parent and all resident children through the normal shutdown path. Children cannot spawn descendants. See [docs/subagents.md](docs/subagents.md) for the profile manifest and lifecycle.
+Headless completion waits for every accepted child; `required:true` adds a durable obligation surviving terminal failure/interruption. Print emits final synthesis only; stream emits all parent turns to stdout, tool diagnostics to stderr; JSON preserves all parent events, including completion `user_message` updates. Child output is evidence for the next parent turn, not a host log.
 
-When an initial print, stream, or JSON request exceeds the provider context window, zut compacts the existing transcript and continues the already-appended prompt once. Print still writes only the recovered final text, stream keeps assistant text on stdout and tool diagnostics on stderr, and JSON suppresses the recoverable first terminal error so stdout remains JSONL for the successful turn. A compaction failure or a second context-window error remains terminal; this is not a general autonomous-follow-up policy. The same one-shot recovery applies to resident child turns. It does not apply to RPC, SDK, bot, or Telegram requests.
+Resident management enforces global fair concurrency (default six turns), optional queue timeout, required-result gating, and cancellation. Limit: 32 completion follow-up waves per headless invocation. Cancellation shuts down parent and all resident children normally; children cannot spawn descendants. Profile manifest/lifecycle: [docs/subagents.md](docs/subagents.md).
 
-When a normal turn ends without a final answer (empty output, or commentary with no result), zut appends one bounded continuation and keeps working in the same turn. Interactive shows `Continuing: no final answer received.`; print writes only the recovered answer to stdout; stream keeps assistant text on stdout and the notice on stderr; JSON and RPC emit a `turn_recovery` event with `reason` (`missing_answer` or `commentary_only`) and `attempt` (always 1). If the continuation still produces no final answer, the turn ends with a visible incomplete-turn error instead of silent success. This does not guarantee task completion and does not override permissions, confirmations, or denials.
+If an initial print/stream/JSON request exceeds context, zut compacts existing history and retries the already-appended prompt once. Print emits recovered final text only; stream keeps text on stdout/diagnostics on stderr; JSON suppresses the recoverable first terminal error to preserve successful JSONL. Compaction failure or a second context error is terminal, not general autonomous follow-up. Resident child turns get the same recovery; RPC/SDK/bot/Telegram do not.
+
+A normal turn with no final answer (empty or commentary-only) gets one bounded continuation in the same turn. Interactive shows `Continuing: no final answer received.`; print emits only the recovered answer; stream sends text to stdout, notice to stderr; JSON/RPC emit `turn_recovery` with `reason` (`missing_answer`/`commentary_only`) and `attempt` 1. Still no answer: visible incomplete-turn error, not silent success. Recovery neither guarantees completion nor overrides permissions, confirmations, or denials.
 
 ## zutfile agents
 
-A zutfile packages an agent's instructions, skills, requirements, and enforced tool permissions as a shareable agent. Run one from a local directory, a packed `.zut` artifact, a short name, or directly from a public GitHub repository:
+Zutfiles share instructions, skills, requirements, and enforced tool permissions. Run a directory, packed `.zut`, short name, or public GitHub source:
 
 ```bash
 zut run ./my-agent
@@ -314,59 +321,68 @@ zut run frkr/zot-archify
 zut run acme/agents/code-reviewer --cwd /path/to/project
 ```
 
-Single-part names resolve only to a matching local directory or `.zut` archive. Anyone can publish an agent as a public GitHub repository and run it as `owner/repository`, or publish a collection and run an agent directory as `owner/repository/agent`. zut has no built-in owner, official collection, configured registry, or allowlist. For GitHub sources, zut downloads the repository archive into a temporary directory, validates and runs the selected agent, then removes the downloaded source when the command exits. Agent data, consent receipts, and sessions still persist under `$ZUT_HOME`. See [docs/zutfiles.md](docs/zutfiles.md) for authoring, permissions, packaging, and current limitations.
+Single-part names resolve only to local directories/`.zut` archives. Anyone can publish `owner/repository` or a collection's `owner/repository/agent`; no built-in owner, official collection, configured registry, or allowlist. GitHub archives download to temporary storage, are validated/run, then removed on exit; agent data, consent receipts, and sessions persist in `$ZUT_HOME`. Authoring, permissions, packaging, limits: [docs/zutfiles.md](docs/zutfiles.md).
 
 ## Embedding
 
-Two ways to drive zut from another program:
+- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`; one `Runtime` per project, `Prompt(ctx, text, images)` returns an `Event` channel. Credential-/endpoint-scoped model cache loads before runtime resolution, including dynamic OpenCode Go metadata. `sdk.Config.MaxSteps` zero means unlimited; set `50` to retain the former default. Example: `examples/sdk/`.
+- **Any language, out-of-process**: spawn `zut rpc`, exchange NDJSON on stdin/stdout. Schema: [docs/rpc.md](docs/rpc.md); clients: `examples/rpc/`.
 
-- **Go in-process**: import `github.com/bnema/zut/packages/agent/sdk`. One `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. The SDK loads the credential- and endpoint-scoped model cache before resolving a runtime, including dynamic OpenCode Go metadata. `sdk.Config.MaxSteps` is unlimited when zero; embedders preserving the former SDK default should set it to `50` explicitly. Small example in `examples/sdk/`.
-- **Any language, out-of-process**: spawn `zut rpc` as a subprocess and exchange newline-delimited JSON over its stdin/stdout. Wire format and event schema in [docs/rpc.md](docs/rpc.md). Reference clients live under `examples/rpc/`.
-
-Both interfaces share the same event schema, so transcripts captured by one can be replayed through the other.
-
+Both use the same event schema; transcripts from either can replay through the other.
 ## Slash commands
 
-Slash command names are case-insensitive in the TUI and messaging backends; arguments keep their original case. Type `/` in the TUI to open the autocomplete popup. Available commands:
+TUI and messaging commands ignore name case, not argument case. Type `/` in the TUI for autocomplete.
 
 | Command | Description |
 |---|---|
-| `/help` | Show key bindings and commands. |
-| `/info` | Show the current session ID, full transcript-file path, working directory, provider, and model. |
-| `/login` | Log in via API key or subscription (opens a dialog). |
-| `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again. |
-| `/model` | Pick a model from a list (or `/model <id>` to set directly). |
-| `/profile <1-9>` | Activate a saved model + reasoning + fast-mode profile, like `Ctrl+1` through `Ctrl+9`; empty slots open the model picker. See [Model profiles](#model-profiles). |
-| `/reasoning` | Set the reasoning level for subsequent model calls. |
-| `/fast` | Toggle fast mode for subsequent model calls; when a model profile is active, save the preference to that profile. |
-| `/orchestrator` | Toggle proactive subagent delegation. When disabled, subagent tools remain available for explicit delegation. |
-| `/goal <objective>` | Start an autonomous interactive-session mission. Use `/goal` for status, `/goal history` for prior goals, and `/goal pause`, `resume`, or `clear` for control. |
-| `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
-| `/sessions` | Resume a previous session. The picker opens in this-directory scope; press `Tab` for all sessions in the active namespace, or `/` to search user/assistant text. It omits branches created only for tree navigation. |
-| `/fork` | Pick a previous user message and fork the current session after that turn. The selected turn becomes branch context and no provider turn starts during the checkout. |
-| `/session` | Four ops on the current session: `export` to a portable `.zutsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. `Esc` `Esc` from an idle, empty editor is a shortcut for `/session tree` when the terminal supplies two parsed bare Escape events. |
-| `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
-| `/btw` | Side chat with full context that doesn't add to the main thread. |
-| `/subagents` | Spawn, inspect, and chat with resident background subagents. Each has a durable journal and optional Git worktree isolation. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
-| `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
-| `/compact` | Summarize the transcript into one message to free up context. |
-| `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zut/main.go`. |
-| `/jail` | Confine tools to the current directory. |
-| `/unjail` | Allow tools to touch paths outside again. |
-| `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
-| `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including web search, inline images, terminal alerts, AI terminal titles, proactive delegation, fast mode, main/sub-agent LSP access, and the auto-compact threshold. `/fast` and `/orchestrator` are shortcuts for their corresponding toggles. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
-| `/clear` | Clear the chat transcript. |
-| `/detach` | Leave the TUI and keep the session running in the daemon. Reattach with `zut attach <id>`. |
+| `/help` | Show keys and commands. |
+| `/info` | Show session ID, full transcript path, cwd, provider, and model. |
+| `/login` | Open API-key or subscription login. |
+| `/logout [provider]` | Clear one provider's credentials, or all if omitted. |
+| `/model` | Pick a model, or set it with `/model <id>`. |
+| `/profile <1-9>` | Activate a [model profile](#model-profiles). |
+| `/reasoning` | Set reasoning for subsequent calls. |
+| `/fast` | Toggle fast mode. |
+| `/orchestrator` | Toggle proactive delegation. |
+| `/goal <objective>` | Start an autonomous interactive mission. |
+| `/llama` | Manage the configured llama.cpp router and GGUF models. |
+| `/sessions` | Resume a session. |
+| `/fork` | Branch after a past user turn without starting a provider call. |
+| `/session` | Inspect, export, import, fork, or browse the current session. |
+| `/jump` | Scroll to a turn, optionally filtered with `/jump <text>`. |
+| `/btw` | Open a full-context side chat outside the main thread. |
+| `/subagents` | Manage resident background agents. |
+| `/skills` | Browse discovered SKILL.md files. |
+| `/compact` | Summarize the transcript to free context. |
+| `/study` | Read the current directory or a supplied path. |
+| `/jail` | Confine tools to the cwd. |
+| `/unjail` | Remove the session's confinement. |
+| `/reload-ext` | Re-read extension manifests, respawn subprocesses, and rebuild the tool registry. |
+| `/telegram` | Manage the Telegram bridge (alias `/tg`). |
+| `/settings` | Change persistent settings. |
+| `/clear` | Clear the transcript. |
+| `/detach` | Leave the TUI with the daemon session running for `zut attach <id>`. |
 | `/exit` | Close the daemon session and exit zut. |
 
-Extension-registered commands appear under a divider at the bottom of the popup, sorted by name.
+- `/logout openai-codex` clears ChatGPT/Codex subscription auth but preserves a public OpenAI API key. `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again.
+- `/llama` appears after llama.cpp login is configured. Connect to the router, load/unload/remove cached models, or search/download Hugging Face GGUFs with live progress.
+- `/study` runs "Read and understand everything in the current directory." before targeted questions. Supply a typed, drag-dropped, or `@`-selected path to narrow it: `/study [dir:packages/]`, `/study cmd/zut/main.go`.
+- `/telegram [connect|disconnect|status]` opens a picker without an argument. When connected, paired-user DMs become prompts in the running session; assistant replies are mirrored to Telegram.
+
+Extension commands appear below a divider in autocomplete, sorted by name.
 
 ### `/goal`
 
-In interactive mode, the first user request establishes a durable user-owned mission. `/goal <objective>` explicitly starts or replaces its current user-owned goal and begins work immediately. While a goal is active, zut starts one leased hidden follow-up whenever the interactive thread becomes idle; queued user input always runs first. When no mission is active, the main agent can use `update_goal` to start one of its own; within an active mission, it can pause while a decision is pending, resume after that decision is settled, settle the current goal, set a bounded next goal, or atomically mark an invalid objective `superseded` and replace it with a necessary objective inside the same mission. Superseding cannot broaden scope or merely avoid difficult work. An omitted `mission_id` targets the current mission; when supplied, it must match that mission. Subagents cannot start or update missions. The current state appears in the status bar and prior transitions are available through `/goal history`; both persist with the session.
+The first interactive request creates a durable user-owned mission. `/goal <objective>` starts/replaces its goal and works immediately. While active, each idle period starts one leased hidden follow-up; queued user input goes first.
 
-Goals are unlimited by default. Zut records token use for each goal but only enforces a budget when it is explicitly configured in `config.json`:
+The main agent can use `update_goal` to:
+- Start a mission when none is active.
+- Pause for a decision, resume once settled, settle the goal, or set a bounded next goal.
+- Atomically mark an invalid objective `superseded` and replace it within the same mission, never to broaden scope or avoid hard work.
+
+`mission_id` defaults to the current mission and must match if supplied. Subagents cannot start/update missions. Status-bar state and `/goal history` persist with the session.
+
+Token use is recorded but unlimited unless `config.json` sets a budget:
 
 ```json
 {
@@ -376,64 +392,94 @@ Goals are unlimited by default. Zut records token use for each goal but only enf
 }
 ```
 
-When set, `max_token_budget` is applied to newly created goals. A goal that reaches it becomes `budget_limited`; omitting the setting creates a goal with no token limit. If a provider truncates an active goal because its output limit was reached, zut first compacts the durable conversation state, then resumes the goal in a fresh leased turn; this capacity boundary does not count as no progress or a task blocker. This is separate from the continuation safety controller: a turn that ends without a concrete tool action receives one corrective continuation, then becomes `stalled` rather than repeatedly sending the same prompt. `esc` cancels only the running turn: the goal stays active, the next message is handled first, and incidental input is followed by one automatic return to the goal. Only `/goal pause` pauses execution. Terminal provider errors block the goal instead of retrying indefinitely. Use `/goal` to inspect it, `/goal pause` or `/goal resume` to control execution, and `/goal clear` to remove it.
+`max_token_budget` limits new goals; reaching it sets `budget_limited`.
 
-A branch that copies the complete transcript inherits the goal. Forking from an earlier turn clears it because the later objective did not necessarily exist at that point. Manual `/compact` leaves an active goal recorded but does not start a hidden follow-up; run `/goal resume` to continue it.
+- Output-limit truncation compacts durable state, then resumes in a fresh leased turn; it is not no progress or a blocker.
+- A turn without concrete tool action gets one corrective continuation, then becomes `stalled`.
+- `esc` cancels only the turn, not the goal. The next message runs first; incidental input is followed by one automatic return to the goal.
+- Terminal provider errors block the goal rather than retry forever.
+- `/goal` inspects; `/goal history` shows history; only `/goal pause` pauses execution; `/goal resume` continues; `/goal clear` removes it.
+
+Complete-transcript branches inherit goals; earlier forks clear them because the objective may not yet exist. Manual `/compact` retains the active goal without follow-up; use `/goal resume`.
 
 ### Shell escape (`!command`)
 
-Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. Interactive shell escapes always use zut's built-in 600-second (10-minute) timeout. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
+Prefix a command with `!` to run it without the model. The remainder goes to the `bash` tool's shell in the session cwd, honoring `/jail`:
+- Unix: `/bin/bash -c`, then `bash -c` from `PATH`, then POSIX `/bin/sh -c`.
+- Windows: `cmd /C`.
+
+Escapes always time out at 600 seconds (10 minutes). Command, merged output, and exit status enter the transcript as user context, without starting a model turn. `esc` cancels; escapes cannot start during an agent turn or another escape.
 
 ### `/sessions`
 
-Lists sessions open in the daemon first (marked `this terminal`, `attached` for another client, or `detached`); selecting one switches this terminal to it and releases the current session, which keeps running. Below them, shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the session title. Press `Tab` to rotate between **this directory** and **all sessions** in the active normal or Zutfile-agent namespace; other agent namespaces never appear. Press `/` and type at least two characters to search contiguous text in an ephemeral in-memory corpus of persisted user and assistant messages. Tool calls, tool results, images, developer context, and compaction payloads are excluded. The picker displays each matching session's count and a highlighted first matching excerpt; changing a query reuses the corpus rather than reopening transcripts. Session entries and search corpus load in the background. Once an entry appears, `up`/`down` and `enter` can select it immediately; `r` renames, `d` deletes after confirmation (the active session is protected, but sessions open in other zut processes cannot be detected and are deleted like any other file), and `esc` clears a search or cancels and closes the picker. Selecting a session from another working directory switches the live workspace to that session's recorded directory before the transcript resumes, so tools, instructions, sandbox state, and file suggestions do not retain the old directory. Sessions remember their stored provider and model: resuming rebuilds the live agent when necessary instead of silently using a different model; if a staged switch fails, the current session is left unchanged. Branches created for tree navigation remain available to `/session tree` but are hidden from this flat picker. `/sessions` is unavailable with `--no-session`. A fresh interactive session asks the active model for a concise title after the first real prompt and restores that title when resumed.
+Daemon sessions come first, marked `this terminal`, `attached` elsewhere, or `detached`. Selection switches this terminal; the released session keeps running. Previous cwd sessions follow newest first, with timestamp, model, message count, cost, and title.
+
+Keys:
+- `Tab`: switch **this directory** / **all sessions** within the active normal or Zutfile-agent namespace; other agent namespaces never appear.
+- `/`: search contiguous persisted user/assistant text (minimum two characters). The temporary in-memory corpus excludes tool calls/results, images, developer context, and compaction payloads. Queries reuse it without reopening transcripts; results show counts and first highlighted excerpts.
+- `up`/`down`, `enter`: select as soon as an entry appears; entries and search corpus load in the background.
+- `r`: rename; `d`: confirm deletion. Active session protected; sessions open in other zut processes are undetectable and deleted like ordinary files.
+- `esc`: clear search or cancel/close.
+
+Resume switches workspace to the recorded cwd before replay, updating tools, instructions, sandbox, and file suggestions. It restores provider/model, rebuilding the agent if needed. Failed staged switches leave the current session unchanged.
+
+Tree-navigation branches appear only in `/session tree`. Unavailable with `--no-session`. Fresh interactive sessions get a concise model title after the first real prompt; resume restores it (see AI terminal titles).
 
 ### `/session`
 
-Inspect the current session with `/session info` or `/session timeline`, or export, import, fork, and browse its family tree. `/session` alone opens a picker; each operation is also runnable directly.
+`/session` opens an operation picker; direct forms include `/session info`, `/session timeline`, `/session export [path]`, `/session import <path>`, `/session fork`, and `/session tree`.
 
-- **`/session timeline`**. Opens a read-only floating inspector for the current system prompt, visible messages, reasoning summaries, and tool calls. Select an event with `up`/`down` or `pgup`/`pgdn`; `tab`/`shift+tab` switches between summary, payload, result, schema, and transcript-derived timing. Use `left`/`right` or `home`/`end` to scroll details, `/` to search, and `esc` to return. `ctrl+e` exports JSON to the default export directory with `0600` permissions where supported. Images are represented by MIME type and size; provider-private signatures and encrypted reasoning are omitted. The export still contains conversation and tool text: review it before sharing. Context composition is a byte-based estimate, not tokenizer-exact.
-- **`/session export [path]`**. Writes the running transcript to a portable `.zutsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zutsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zutsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
+- **`/session timeline`**: read-only floating inspector of the current system prompt, visible messages, reasoning summaries, and tool calls.
+  - `up`/`down` or `pgup`/`pgdn`: select an event.
+  - `tab`/`shift+tab`: summary, payload, result, schema, or transcript-derived timing.
+  - `left`/`right` or `home`/`end`: scroll details; `/`: search; `esc`: return.
+  - `ctrl+e`: export JSON to the default export directory, with `0600` permissions where supported.
 
-  **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/subagents` child journals are not included.** They remain machine-local managed state; a `.zutsession` is only a main-chat transcript. If you want the child conversation, copy it from the child-session view manually.
-- **`/session import <path>`**. Copies a `.zutsession` file into `$ZUT_HOME/sessions/<cwd-hash>/` with a fresh id and the current cwd, then switches the running agent onto it. Imported sessions are first-class: they show up in `/sessions` and `/jump`, and in the current-family tree when they are part of that family. Drag-drop paths in the editor are accepted (zut strips the surrounding quotes automatically).
-- **`/fork`** (also available as **`/session fork`**). Opens a turn picker (same shape as `/jump`). Pick any past user message; zut copies the transcript through that turn into a new branch and switches to it without starting a provider request. The parent session stays on disk. In daemon mode, forks from `/fork`, `/session tree` (tree branching), and `/btw` inherit only the registered parent’s launch settings: working directory, tool and extension policy, confirmation/sandbox settings, environment, and zutfile permissions. Client overrides are not merged; an unregistered parent is rejected with `parent session not found`. Use it to try a different question without polluting the original transcript, or to rewind after the agent went down the wrong path. Use a user-message row in `/session tree` when you want the prompt restored for editing, including image attachments.
-- **`/session tree`**. Shows the current session's family: its root ancestor and descendants, not unrelated root sessions in the same cwd. The tree opens immediately while its history loads in the background; rows appear from recent to older content, and `esc` cancels the load or closes the tree. Use `up`/`down` and `enter` to choose an available row. The picker keeps pre-compaction history available as forkable user and assistant messages, while hiding tool calls, tool results, compaction checkpoints, shell/image helper rows, and other internal context. Message rows are indented at their branch points and the current endpoint is tagged `[current]`. Empty and detached branch points are represented by visible boundary rows. A child whose historical fork point no longer matches after compaction stays discoverable as a detached branch under the parent's current tail rather than disappearing. Parentless sessions are roots; orphaned children (whose parent file was deleted) remain roots.
+  Images show MIME/size; private provider signatures and encrypted reasoning are omitted. Review conversation/tool text before sharing. Context estimates use bytes, not exact tokens.
+- **`/session export [path]`**: save the running main transcript to `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zutsession` by default. Override with a path: directories get dated filenames; bare names gain `.zutsession`. Strips metadata cwd to hide filesystem layout. Includes messages, tool calls/results, compactions, usage, **not `/subagents` child journals**. Copy those machine-local conversations manually from child views.
+- **`/session import <path>`**: copy a `.zutsession` into `$ZUT_HOME/sessions/<cwd-hash>/` with fresh ID/current cwd, then switch to it. Imports appear in `/sessions`, `/jump`, and the current-family tree when applicable. Drag-dropped paths work; surrounding quotes are stripped.
+- **`/fork`**, also **`/session fork`**: a `/jump`-style picker copies through a past user turn into a new branch, switching without a provider call. Parent stays on disk. Try another question or rewind; tree user rows instead restore editable prompts with images.
 
-  Selecting a user-message row creates a navigation branch before that message and restores the complete editable draft, including text blocks and image attachments; no provider request is made until you submit it. Selecting an assistant-message row checks out a safe message boundary, and selecting an empty or detached boundary checks out that branch point with an empty editor. Navigation branches are hidden from `/sessions` but remain in the tree.
+  Daemon `/fork`, tree branches, and `/btw` inherit only registered-parent launch settings: cwd, tool/extension policy, confirmation/sandbox, environment, zutfile permissions. No client overrides; unregistered parents fail with `parent session not found`.
+- **`/session tree`**: browse root ancestor/descendants, not unrelated cwd roots. Opens immediately; history loads in the background, newest first. `up`/`down`, `enter` select available rows; `esc` cancels loading or closes.
 
-  The tree and double-Escape shortcut also work when attached to a daemon: selecting a user message checks out a hidden branch through the daemon and restores its draft only after the new session is attached. Press Enter after editing to resend through that session.
+  Pre-compaction user/assistant messages remain forkable; tools, compaction checkpoints, shell/image helpers, and internal context are hidden. Messages indent at branch points; `[current]` marks the endpoint. Empty/detached points have boundary rows. Fork points lost to compaction appear detached under the parent's current tail. Parentless/orphaned sessions are roots.
 
-  `/session tree` and the double-Escape shortcut use the same checks: a complete current session family must be readable, and no turn, shell escape, compaction, startup/session load, dialog, picker, suggestion, or queued message may be active. The shortcut is two parsed, unmodified bare `Esc` events within 500 ms from an idle editor with no visible text or pending image. Dialogs, confirmations, panels, pickers, and suggestions keep their existing Escape behavior; busy Escape still cancels, modified Escape is not part of the gesture, and any intervening key or timeout resets it. The shortcut depends on the terminal input path producing those parsed events; `/session tree` is the explicit equivalent when it is unavailable.
+  User rows branch **before** the message, restoring editable text blocks/images with no provider call until submission. Assistant rows check out safe message boundaries; empty/detached boundaries open an empty editor. Navigation branches appear only in the tree.
+
+  When daemon-attached, user rows check out a hidden branch, then restore the draft after attachment. Edit and Enter to resend there.
+
+  Tree navigation requires a readable complete current family and no active turn, shell escape, compaction, startup/session load, dialog, picker, suggestion, or queued message.
+
+  **Double Escape:** two parsed, unmodified bare `Esc` events within 500 ms open the tree under the same checks, from an idle editor without text/pending images. Intervening keys/timeouts reset; modified Escape does not count. Dialogs, confirmations, panels, pickers, and suggestions retain Escape behavior; busy Escape cancels. If terminal input cannot supply those events, use `/session tree`.
 
 ### `/jump`
 
-Opens a turn picker for the current session, one row per user prompt, each showing the turn number, how many tools that turn invoked, and the first line of the prompt. `up`/`down` to pick, `enter` to jump, `esc` to cancel. Any printable rune while the picker is open extends a filter; backspace narrows it back. `/jump <text>` pre-applies the filter; if exactly one turn matches, zut jumps straight there without showing the picker.
+One row per user prompt shows turn number, tool count, and first prompt line.
+- `up`/`down`: select; `enter`: jump; `esc`: cancel.
+- Printable characters extend the filter; backspace narrows it.
+- `/jump <text>` pre-filters and jumps directly if exactly one turn matches.
 
-Jumping is non-destructive. The transcript is untouched, the viewport just scrolls so the chosen turn is at the top. A muted line at the top of the chat reads `viewing turn N of M, pgdn to catch up`. Scroll back to the bottom with `pgdn` (or keep scrolling with the arrow keys) and the indicator goes away.
+Only the viewport changes, not the transcript. The turn appears at the top with `viewing turn N of M, pgdn to catch up`. Reach the bottom with `pgdn` or arrow scrolling to clear the indicator.
 
 ### `/btw`
 
-Opens a side-chat overlay with the full main session as frozen context, so you can ask quick clarifying questions ("does asyncio.gather() catch exceptions?", "btw the bundle budget is 10MB", "what's the default fetch timeout?") without bloating the main thread.
-
-Each question runs an isolated agent turn against `system + main transcript + side-chat history so far`. The side chat has the same tools and guards as the main chat, including per-tool confirmation when `--no-yolo` is active. Responses, tool calls, and tool results stay in the overlay. When you press `esc` to close, **nothing** has been added to the main session and subsequent main-thread turns don't re-read any of the side-chat exchanges, keeping the running context window lean.
+This overlay freezes main context. Each isolated turn sees `system + main transcript + side-chat history so far`, with main tools/guards, including per-tool `--no-yolo` confirmation.
 
 ```
 /btw                              # open the overlay, type questions interactively
 /btw does PUT replace the whole resource?
 ```
 
-Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
+`enter` sends; `esc` cancels calls or closes if idle; `ctrl+c` closes immediately. Replies/tools stay in the overlay, never enter the main transcript or session file, and are never re-read by later main turns.
 
 ### `/subagents`
 
-Resident subagents run alongside the main session as independent in-process agent conversations. Each has its own stable session identity, provider client, tool registry, cancellation boundary, durable journal, and structured latest-turn result. Starting one never starts another `zut` process.
+Resident subagents are in-process conversations, not extra `zut` processes, each with stable session ID, provider client, tool registry, cancellation boundary, durable journal, and structured latest-turn result.
 
-> **V0.x breaking change:** previous subprocess subagent state is unsupported and ignored. Outstanding jobs are never migrated or replayed; remove the old state directory when you no longer need it.
+> **V0.x breaking changes:** old subprocess state is ignored and unsupported; jobs are never migrated or replayed. Remove old state when no longer needed. The `subagent_spawn`, `subagent_status`, `subagent_stop`, and `subagent_resume` tools are replaced by `subagent` with an `action`. Replace `--tools subagent_spawn` (now selects nothing) with `--tools subagent:spawn`, or `--tools subagent` for all actions. Under `--no-yolo`, "always allow" is per action: approving `subagent:status` never approves `subagent:spawn` or another action.
 
-> **V0.x breaking change:** the separate `subagent_spawn`, `subagent_status`, `subagent_stop`, and `subagent_resume` tools are replaced by one `subagent` tool whose actions are selected by an `action` argument. `--tools subagent_spawn` no longer selects anything; use `--tools subagent:spawn`, or bare `--tools subagent` for every action. Under `--no-yolo` the "always allow" grant is remembered per action (`subagent:status` and `subagent:spawn` are separate grants), so approving a read-only `status` call never pre-approves any other action.
-
-> **Choose the workspace deliberately.** Use `isolation:"worktree"` for parallel coding so children cannot edit the host checkout. Use shared mode for read-only review or explicitly coordinated work. Worktree isolation is an accident-prevention guardrail, not a security sandbox.
+> For parallel coding, choose `isolation:"worktree"` so children cannot edit the host checkout. Shared mode is for read-only review or explicitly coordinated work. Worktrees prevent accidents; they are not a security sandbox.
 
 ```text
 /subagents                                      # open the dashboard
@@ -446,62 +492,64 @@ Resident subagents run alongside the main session as independent in-process agen
 /subagents kill <id>                            # stop a live child
 ```
 
-**Dashboard (`/subagents` with no arg)** — a bounded list of resident children, ordered by the latest state change. Rows lead with the profile or model, show `completed` rather than the internal success state, a relative update time, and a short ID. Use `up`/`down` then `enter` to open the selected child, or `esc` to close. With any resident child present, `down` from the main composer opens this picker without clearing a draft.
+- **Dashboard:** bounded child list by latest state change; rows show profile/model, `completed` instead of internal success, relative update time, short ID. `up`/`down`, `enter` open; `esc` closes. With resident children, composer `down` opens it without clearing drafts.
+- **Child transcript:** main renderer combines finalized journals with immutable live projection. PgUp loads older bounded pages; Up/Down preserves scrollback; PgDn follows output. `enter` sends follow-ups, retaining drafts until durable acceptance; `esc` closes.
+- **Persistence:** managed `transcript.jsonl` stores acceptance/finalized records; `metadata.json` is rebuildable; `result.json` holds up to 256 KiB final visible assistant text; worktrees may add `patch.diff`. Completion updates carry bounded text; child views show full history. Shutdown stops children; relaunch marks queued/running work `interrupted`, never replays. Resume with an explicit prompt.
+- **Scheduling:** fair global default: six concurrent turns, one per child (`subagents.max_concurrent` overrides). No queue deadline unless positive `subagents.queue_timeout` durably fails overdue prompts. Required work stays unresolved until an explicit successful follow-up.
+- **Limits:** no cumulative token budget/step cap; inherited `--max-steps` defaults to unlimited. Turns have model-context bounds and one compaction recovery. Last-turn prompts reaching 85%, 90%, 95% context get one non-blocking finish-up reminder per band in the next request.
+- **Control:** `subagent` action `status` with `agent_id`, `include_result: true` retrieves terminal results without model calls. Check progress/side effects before resume; its `wait` blocks on the answering turn. Resume steers running turns unless `mode: "queue"` schedules next. `interrupt` cancels only the turn, retaining context for wrap-up. See [lifecycle and persistence](docs/subagents.md#lifecycle-and-persistence).
+- **Workspace/results:** worktree mode captures a patch and changed-file list without applying it; shared mode uses the host checkout. References: `subagent://<id>`, `subagent://<id>/history`, `subagent://<id>/result`, `subagent://<id>/patch`.
 
-**Inside an agent's transcript** — the overlay uses the main transcript renderer, combining finalized journal history with an immutable live projection. PgUp loads an older bounded page; Up/Down preserves scrollback and PgDn follows new output. Type a follow-up and press `enter`; the draft stays until the manager durably accepts it. Press `esc` to close.
+**Proactive delegation:** `/settings` → **proactive delegation** or `/orchestrator` makes the interactive primary delegate implementation, debugging, testing, review, and broad research by default. Answers, quick lookups, few-line edits, and integration stay local.
 
-**Lifecycle** — acceptance and finalized transcript records live under managed subagent state as `transcript.jsonl`, with rebuildable `metadata.json`, bounded `result.json` (including up to 256 KiB of final visible assistant text), and optional worktree `patch.diff`. Completion updates carry that bounded final text; open the child transcript for complete history. Host shutdown stops all children. A next launch marks work that was queued or running as `interrupted`; it never replays it. Use an explicit new prompt to resume.
+The starting reply names parts, owners, and delegated profiles. The primary maps dependencies, parallelizes independent work, and uses feature-branch sub-worktrees for multi-part features. Review gates merges; merged worktrees/branches are removed. Blocking work uses `required: true`; the primary yields for host completion, never duplicating active workers' investigation, review, tests, or implementation.
 
-The fair global scheduler defaults to six concurrent turns, one active turn per child. `subagents.max_concurrent` overrides that limit. Queueing has no default deadline; a positive `subagents.queue_timeout` durably fails a prompt that waits too long for a slot. Required child work remains an obligation until an explicit successful follow-up.
+Host-driven asynchronous completion/required-work outcomes persist through `[auto-subagents update]` and `[required-subagents update]`. Never poll status, dashboards, metadata, journals, event logs, or files solely to wait.
 
-Each child runs without a cumulative token budget or step cap: it inherits the parent's resolved `--max-steps`, unlimited by default, and each turn is bounded by the model context window with one compaction recovery. A child whose last-turn prompt reaches 85%, 90%, or 95% of its model context window receives one non-blocking reminder per band to finish up, injected into its next provider request. Retrieve a terminal result without a model call using the `subagent` tool's `status` action with `agent_id` and `include_result: true`. After checking the saved progress and side effects, an explicit resume continues the retained session, and its `wait` value blocks on the turn that answers it. A resume to a running child steers its current turn by default (`mode: "queue"` runs it as the next turn instead), and the `interrupt` action cancels only the running turn so a later resume can ask the child to wrap up with its context intact. Required work stays unresolved until success. See [lifecycle and persistence](docs/subagents.md#lifecycle-and-persistence) for details.
-
-Worktree isolation captures a patch and changed-file list without applying it. Shared children use the host checkout. The available logical references are `subagent://<id>`, `subagent://<id>/history`, `subagent://<id>/result`, and `subagent://<id>/patch`.
-
-**Proactive delegation.** With `/settings` → **proactive delegation** on (or `/orchestrator`), the interactive primary acts as an orchestrator and delegates by default. Implementation, debugging, testing, review, and broad research go to workers; answers, quick lookups, edits of a few lines, and integration stay local. For each new request, the reply that starts the work names each part, its owner, and the profile for each delegated part. The primary maps dependencies, runs independent parts in parallel, and for multi-part features gives each worker a sub-worktree based on a feature branch, gates each result with a review before merging, and removes merged worktrees and branches when done. Blocking work is spawned with `required: true` and the primary yields for the host completion update. An active worker owns its scope until completion, so the primary does not repeat that investigation, review, testing, or implementation. The canonical resident `subagent` tool remains available for user-requested delegation when the setting is off, subject to launch-time permissions. Do not poll the status action or journal files solely to wait for completion.
+Even when off, permitted canonical `subagent` tools/profile metadata support user delegation and active skill workflows: named profiles, reasoning, per-spawn fast overrides, shared/worktree isolation, persisted lifecycle/results. See [docs/subagents.md](docs/subagents.md).
 
 ### Named subagent profiles
 
-zut discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default and from additional paths configured through `ZUT_AGENT_PROFILES`. Whenever the `subagent` tool's `spawn` action is available, the primary agent receives `[subagents_list]` metadata and should select the appropriately named profile for each worker when one matches; otherwise it can spawn a clearly described general worker without an `agent` field. If launch-time policy withholds the `subagent` spawn action, profile metadata is omitted. An interactive primary with proactive delegation enabled continues locally, while an explicit headless `--orchestrate` run reports that its required delegation is unavailable instead of implementing directly. Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
+Discover markdown/frontmatter profiles in `~/.agents/agents/*.md` and `ZUT_AGENT_PROFILES` paths. Available `subagent` action `spawn` supplies `[subagents_list]`: choose a matching `agent` profile, or a clearly described general worker without `agent`. Bodies apply only to the selected child.
+
+Without spawn permission, metadata is omitted; the proactive interactive primary works locally. Explicit headless `--orchestrate` remains manager-only and reports unavailable delegation instead of implementing. See [docs/subagents.md](docs/subagents.md) for discovery, fields, reasoning, and examples.
 
 ### `/settings`
 
-Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` or `space` to change the selected row, `esc` to close (rows that open a sub-view, like model shortcuts, use `esc` to go back one level first). Changes are written to `$ZUT_HOME/config.json` without a restart; individual settings document whether they affect the current turn, the next model call, or a later session event. Current settings:
+`up`/`down` select; `enter` or `space` changes; `esc` closes (or backs out of a sub-view first). Settings save to `$ZUT_HOME/config.json` without restart. Timing differs by setting:
 
-- **web search** — allow the normal CLI agent to search DuckDuckGo and explore returned in-memory references or direct public URLs with `web_open`. Enabled by default; disabling it removes `web_search`, `web_open`, `web_find`, and `web_click` from the current interactive session and future normal CLI runs when no invocation-level tool override applies. If the current command explicitly included `--tools web_search` (alone or in its CSV list), that higher-precedence opt-in keeps the capability enabled for this session and the settings row is read-only with an explanation; run zut without that explicit override to change the persisted default. The setting persists as `web_search_enabled`. Bot, default SDK, and packaged-agent runs remain unavailable regardless of this setting. See [docs/web-search.md](docs/web-search.md).
-- **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
-- **terminal alerts** — emit a terminal bell when zut needs your input (tool confirmation, question, login, or a blocked/paused goal), when the main session stops, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
-- **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zut: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
-- **proactive delegation** — make the interactive primary an orchestrator that delegates substantial work by default and keeps small edits, lookups, and integration local. See **Proactive delegation** above. Off by default. When off, the permitted canonical subagent tools and profile manifest remain available for user-requested delegation or when an active skill workflow requires it. The tools accept named profiles, reasoning, per-spawn fast-mode overrides, and shared/worktree isolation where applicable; lifecycle and result references are persisted. Completion and required-work state are host-driven through `[auto-subagents update]` and `[required-subagents update]` messages; required work stays asynchronous and persists its outcome. If launch-time restrictions prevent spawning, the interactive primary continues locally. Explicit headless `--orchestrate` remains a separate strict manager-only mode and reports unavailable delegation rather than implementing directly. Do not poll or inspect dashboards, metadata, event logs, or files solely to wait. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
-- **fast mode** — request the provider's fast tier where supported. It currently uses OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; toggle it with `/fast` or `/settings`; changes apply on the next model call. When a model profile is active, the value is saved in that profile and restored when switching profiles; otherwise it persists as `fast_mode`. Other providers currently return an unsupported-provider error. Fast mode may cost more and depends on the selected model/account.
-- **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
-- **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.
-- **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), `90%`, or `95%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns, and persists as `auto_compact_threshold`. Context accounting includes uncached input plus provider-reported cache reads and writes, so cached turns still trigger compaction. Structural unfinished tails and truncated output continue as before. After a successful after-turn threshold compaction, zut may make at most two hidden, bounded recovery continuations when the assistant's visible text appears to promise future work; clear completed text settles normally, and a newer queued user request wins. An interrupted interactive session retains an outstanding handoff when resumed, including after portable export and import. Manual `/compact` does not silently start work. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses. Truncated-output continuation remains a separate priority rule.
-- **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
-- **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.
-- **show loaded resources at startup**: list the active Zutfile agent (for `zut run`), loaded `AGENTS.md` paths, extensions, and user-installed skills in compact sections above the transcript. Built-in skills are omitted. Off by default. Changes apply immediately and persist to `config.json` as `show_instructions_at_startup`.
-- **TUI settings**: opens a sub-view for input layout in display order: status, working spinner, input, then subagent operations. **Input style** can be `plain` (default prompt line), `lines` (separator lines above and below the input), or `block` (a user-bubble-style input block). **Status position** places model, usage, and working-directory information above or below the input. **Working spinner position** places the busy spinner above or below the input. Changes apply immediately and persist to `config.json` as `tui_input_style`, `tui_status_position`, and `tui_working_position`.
-- **reasoning level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call. Use `/reasoning` to open this selector directly, or press `Ctrl+R` to cycle through the active model's supported levels. The selector only shows distinct levels supported by the active model; models without reasoning support only offer `off`.
-- **color theme** — `auto` follows the terminal foreground, background, ANSI palette, color depth, and supported live appearance changes. Choose fixed dark/light palettes or JSON overlays discovered under `$ZUT_HOME/themes` and loaded extensions. Active custom files reload safely; invalid edits retain the last valid appearance and persistent deletion resets to auto. See [docs/themes.md](docs/themes.md).
-- **model profiles** — nine favorites containing a provider, model, reasoning level, and fast-mode preference. `enter` on a slot opens the `/model` picker; `left`/`right` chooses that favorite's reasoning without changing the live model. `enter` saves the assignment; `backspace` clears it. Editing the active slot immediately applies and saves its new model and reasoning. `/fast` while a profile is active applies and saves that profile's fast-mode preference. Assigning other slots does not change the live model and works while a turn is running. Clearing the active slot detaches it for this session without changing the live model. Slots are shared by every daemon session. See [Model profiles](#model-profiles).
+- **web search:** on by default for normal CLI DuckDuckGo search and `web_open` exploration of in-memory references or public URLs. `web_search_enabled: false` removes `web_search`, `web_open`, `web_find`, and `web_click` from the current interactive session and future normal CLI runs unless invocation tool overrides apply. Explicit `--tools web_search`, alone or in CSV, wins for that session and makes the row read-only with an explanation; rerun without it to change the default. Bot, default SDK, and packaged-agent runs never gain access from this setting. See [docs/web-search.md](docs/web-search.md).
+- **render images when supported:** inline screenshots and `read` images via terminal image protocol, otherwise text placeholders. `TERM_PROGRAM` detection can be overridden; terminals with no image protocol force the greyed-out row off.
+- **terminal alerts:** on by default, immediate; `terminal_alerts_enabled`. Bell on input needs (tool confirmation, question, login, blocked/paused goal), main-session stop, or structured extension alert. Terminal may make it audible, visual, or silent.
+- **AI terminal titles:** on by default; `terminal_title_enabled`. One small hidden request to the active model after a fresh interactive session's first real prompt sets `zut: <title>` (max 40 Unicode characters). Saved with the session, restored on resume, never conversation context. Toggle applies immediately; startup context, resumed history, and slash commands never trigger generation. Disable to avoid the extra request.
+- **proactive delegation:** off by default; `/orchestrator` is the shortcut. See `/subagents` and Named subagent profiles above for delegation, permissions, host-driven completion, no-polling rules, and headless `--orchestrate` behavior.
+- **fast mode:** off by default; `/fast` is the shortcut, effective next model call. Uses OpenAI Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex; other providers return unsupported-provider errors. May cost more; availability depends on model/account. Saves to the active profile, restored on profile switch; otherwise `fast_mode`.
+- **lsp in main session:** on by default; `lsp_enabled` enables built-in `lsp` and code diagnostics.
+- **lsp in sub-agents:** on by default; `subagent_lsp_enabled` applies to newly started children.
+- **auto-compact threshold:** `off`, `70%`, `80%`, `85%` (default), `90%`, or `95%` of advertised model context; `auto_compact_threshold`. Controls before/after interactive-turn compaction. Accounting includes uncached input plus provider cache reads/writes, so cached turns still qualify. See `/compact` for recovery, handoff, and cancellation rules; `off` disables only percentage triggers.
+- **jail new sessions by default:** off by default; `jail_by_default` confines new interactive, print, JSON, RPC, and background agents to their cwd and updates the current interactive session immediately. `/jail` and `/unjail` override only that session, not the default.
+- **compact transcript rendering:** off by default; immediate; `compact_mode`. Tool calls use quiet headers and indented output rather than boxes; sent messages omit padded background bubbles.
+- **show loaded resources at startup:** off by default; immediate; `show_instructions_at_startup`. Compact sections above the transcript list the active Zutfile agent (`zut run`), loaded `AGENTS.md` paths, extensions, and user-installed skills, excluding built-ins.
+- **TUI settings:** sub-view ordered status, working spinner, input, subagent operations. **Input style:** `plain` (default prompt line), `lines` (separators above/below), or `block` (user-bubble style). **Status position:** model/usage/cwd above or below input. **Working spinner position:** busy spinner above or below input. Immediate; keys `tui_input_style`, `tui_status_position`, `tui_working_position`.
+- **reasoning level:** off, minimum, low, medium, high, xhigh, max; saved in `config.json`, effective next call. Selector shows only distinct supported levels; non-reasoning models offer only `off`. Opt-in `max` is native on GPT-5.6 and adaptive-thinking Claude; other backends clamp to highest accepted effort. `/reasoning` opens it; `Ctrl+R` cycles supported levels.
+- **color theme:** `auto` follows terminal foreground/background, ANSI palette, color depth, and supported live appearance changes. Fixed dark/light palettes and JSON overlays from `$ZUT_HOME/themes` or loaded extensions are available. Active custom files safely reload; invalid edits retain the last valid appearance, persistent deletion resets to auto. See [docs/themes.md](docs/themes.md).
+- **model profiles:** nine shared provider/model/reasoning/fast-mode favorites. `enter` opens a slot's `/model` picker; `left`/`right` selects reasoning without changing the live model; `enter` saves; `backspace` clears. Active-slot edits apply/save model and reasoning immediately; `/fast` applies/saves its fast preference. Other-slot assignments leave the live model unchanged, even during a turn. Clearing the active slot detaches it without changing the live model. See [Model profiles](#model-profiles).
 
-Dictation (`Alt+V`) is configured only through the `dictation` object in `config.json` (`recorder`, `max_seconds`, `language`) and has no `/settings` row. See [Dictation](#dictation).
+Dictation (`Alt+V`) has no settings row: configure `dictation` in `config.json` with `recorder`, `max_seconds`, and `language`. See [Dictation](#dictation).
 
 ### Model profiles
 
-Press `Ctrl+1` ... `Ctrl+9` from the editor, or run `/profile 1` ... `/profile 9`:
+Use `Ctrl+1` ... `Ctrl+9` in the editor, or `/profile 1` ... `/profile 9`:
+- Empty slots open `/model`: pick a model, adjust reasoning with `left`/`right`, then `enter` saves/activates using current fast mode. `esc` cancels unchanged. A slot concurrently cleared elsewhere also opens the picker.
+- Assigned slots restore model, clamped reasoning, and fast mode, keeping transcript and accumulated cost across providers.
+- Active-slot `/model`, `/reasoning`, `Ctrl+R`, and `/fast` changes save back automatically. Pick another slot first to preserve a favorite. Without an active slot, reasoning/fast changes save as plain `reasoning`/`fast_mode`.
+- Status shows `[1]` ... `[9]`. Switching is forbidden during a turn; `/settings` assignment/clearing is allowed.
 
-- An empty slot opens the `/model` picker. Choose a model and use `left`/`right` to adjust reasoning; `enter` saves and activates the slot. It starts with the current fast-mode preference. `esc` cancels without changing the current selection. A slot cleared from another session while you press its shortcut also opens the picker.
-- An assigned slot restores its saved selection, reasoning, and fast-mode preference, carrying the transcript and accumulated cost across provider changes. Reasoning is clamped to the selected model's supported levels.
-- While a slot is active, `/model`, `/reasoning`, `Ctrl+R`, and `/fast` changes automatically save back to it. Choose another slot first if you want to keep the old favorite.
-- With no active slot, `/reasoning` and `/fast` save as the plain `reasoning` and `fast_mode` settings.
-- The status bar shows the active slot as `[1]` ... `[9]`. Switching is rejected while a turn is running; assigning or clearing a slot from `/settings` is allowed.
+Daemon sessions share nine slots; edits appear immediately everywhere, but active slots are per-session. Attachment requires matching live model/reasoning/fast mode. Startup mismatches (resume/CLI options), rescue model swaps, and credential reloads detach without overwriting favorites.
 
-The daemon owns the slots: every session it runs shares the same nine slots, and assigning or clearing a slot in one session shows up in the others immediately. The active slot belongs to each session, so two sessions can use different slots at the same time. A session's active slot stays attached only while the live model, reasoning, and fast mode match the slot; a mismatch at start (a resumed session or explicit CLI options) detaches it instead of overwriting the favorite. A rescue model swap or a credential reload also detaches the active slot rather than saving into it.
+If switching succeeds but saving fails, **model switched; profile not saved** means the live model stays and the slot detaches. Fix saving, then reselect.
 
-If a model switch succeeds but saving its profile fails, zut reports **model switched; profile not saved** and detaches the active slot. The live model is kept; fix the save error and select the profile again.
-
-Profiles and the active slot persist in `$ZUT_HOME/config.json`, using the existing `quick_model_shortcuts` array (positions 1–9) and `active_model_profile`. For example, merge these fields into your config while zut is closed:
+Merge these fields into `$ZUT_HOME/config.json` while zut is closed. `quick_model_shortcuts` positions are 1–9; `active_model_profile` stores the default slot:
 
 ```json
 {
@@ -513,81 +561,107 @@ Profiles and the active slot persist in `$ZUT_HOME/config.json`, using the exist
 }
 ```
 
-Use `{}` for an empty position. Hand edits apply to sessions created afterwards. New sessions start on `active_model_profile`; if it is missing, `0`, or outside 1–9, **no slot is active** and edits save as plain settings until you pick a slot. Activating a slot makes it the default for new sessions; clearing that slot resets `active_model_profile` to `0`. Old model-only slots still load; missing or empty `reasoning` means off and missing `fast_mode` means off. The active profile supplies startup defaults, with provider aliases normalized and reasoning clamped to the model's supported levels. If its provider or model is no longer available, startup repairs that profile to the resolved fallback while preserving its fast-mode preference. Explicit CLI options and session restoration keep their usual precedence. Fast mode remains subject to provider support. These favorites are separate from named Zutfile or subagent profiles.
+- `{}` is an empty position. Hand edits affect later-created sessions.
+- Missing, `0`, or out-of-range `active_model_profile` means no active slot; edits save as plain settings until selection. Activating sets the new-session default; clearing that slot resets it to `0`.
+- Legacy model-only slots load: missing/empty `reasoning` and missing `fast_mode` mean off.
+- Startup uses profile defaults, normalizes provider aliases, and clamps reasoning. Unavailable provider/model repairs the profile to the resolved fallback, preserving fast mode. CLI options and session restoration retain precedence; fast mode still requires provider support.
+- Favorites are separate from named Zutfile and subagent profiles.
 
-**AZERTY and terminals:** Ctrl plus the French AZERTY top row (`&`, `é`, `"`, `'`, `(`, `-`, `è`, `_`, `ç`) selects slots 1–9 without Shift. Modified digits also work. Zut requests enhanced keyboard reporting (Kitty/CSI-u or xterm modifyOtherKeys), but your terminal or multiplexer must forward the chord. If it reserves the shortcut for tabs or emits an indistinguishable legacy control byte, configure it to forward the enhanced key sequence, or use `/profile N`. Zut does not reinterpret bare punctuation or ambiguous control bytes as profile shortcuts. On macOS, Command plus these keys also works if the terminal forwards Super.
+**AZERTY/terminals:** Ctrl with the French top row (`&`, `é`, `"`, `'`, `(`, `-`, `è`, `_`, `ç`) selects 1–9 without Shift; modified digits work too. Zut requests Kitty/CSI-u or xterm modifyOtherKeys reporting. If a terminal/multiplexer reserves the chord or sends ambiguous legacy control bytes, configure enhanced forwarding or use `/profile N`. Bare punctuation and ambiguous bytes are never reinterpreted. macOS Command also works when the terminal forwards Super.
 
 ### `/skills`
 
-Opens a picker listing every discovered SKILL.md file, built-ins hidden. Each row shows the skill name, source, and description. `enter` opens the body inline (scrollable with `up`/`down`/`pgup`/`pgdn`); `esc` goes back. Re-runs discovery each time it opens, so edits to a SKILL.md during a session are reflected immediately. User skill discovery follows directory symlinks, skips cycles and dangling links, and preserves nested path aliases. Extension skills remain confined to the extension directory.
+Lists discovered SKILL.md names, sources, descriptions; built-ins hidden. `enter` previews; `up`/`down`/`pgup`/`pgdn` scroll; `esc` returns. Reopening rediscovers edits. User discovery follows directory symlinks, skips cycles/dangling links, preserves nested aliases. Extension skills stay within their directory.
 
-Press `p` or `g` in the list to toggle a project or global pin. Pinned skill bodies join the first user prompt of a fresh supported conversation; a read-only notice shows the pending selection without changing the editor. Resuming does not reload pins. Pins save repeated invocation, not tokens. See [pinning skills](docs/skills.md#pinning-skills) for storage, lifecycle, and mode support.
+`p`/`g` toggle project/global pins. Bodies join fresh supported conversations' first user prompt; a read-only pending-selection notice leaves the editor unchanged. Resume never reloads pins. Pins save invocation, not tokens. See [pinning skills](docs/skills.md#pinning-skills) for storage, lifecycle, modes.
 
 ### `/compact`
 
-Sends the current transcript through the model with a structured summarization prompt. The returned summary replaces the transcript as one synthetic user message, with the last few exchanges kept verbatim for continuity. The status bar's context meter resets. Manual `/compact` only summarizes; it does not silently start work afterward. Use it when the context meter creeps past ~80%.
+A structured model summary replaces the transcript with one synthetic user message, preserving recent exchanges verbatim and resetting context. Use around 80%. Manual `/compact` never silently starts work.
 
-zut also auto-compacts in the background after an interactive turn reaches the configured context threshold. Structural unfinished tails and output stopped at the model's token limit continue as before. After a successful after-turn threshold compaction, a visible assistant status that appears to promise future work may receive at most two hidden, bounded recovery continuations; clear completed text settles normally, and a newer queued user request supersedes that recovery. An interrupted interactive session resumes an outstanding hidden handoff without displaying it as a chat message. A new branch keeps that handoff only when it copies the complete effective transcript; `/fork` or `/session tree` selection at an earlier turn, and every branch from pre-compaction history, drops it and starts no hidden continuation. Manual `/compact` does not silently start work, and truncated-output continuation remains a separate priority rule. Choose `off`, `70%`, `80%`, `85%` (default), `90%`, or `95%` under `/settings` → **auto-compact threshold**. You'll see `condensing history, esc to cancel` above the status bar and an `(auto)` tag next to the context percentage; `esc` aborts it without touching the transcript. Turning the percentage trigger off does not disable automatic compaction and retry after a context-window or payload-too-large response.
+Automatic compaction runs in the background at the `/settings` threshold (`off`, `70%`, `80%`, `85%` default, `90%`, `95%`). `condensing history, esc to cancel` appears above the status bar, with `(auto)` beside context percentage. `esc` aborts without changing the transcript. `off` keeps manual compaction and automatic compaction/retry for context-window or payload-too-large responses.
 
-To prevent tool-heavy runs from exhausting context, provider requests and compaction inputs retain up to 32 KiB from each tool result and 128 KiB across all tool-result text, preferring newer results. Omitted output is marked for the model but remains fully visible in the transcript and stored in the session.
+Structural unfinished tails and model-token-limit output continue as before; truncated-output continuation is a separate priority rule. After successful after-turn threshold compaction:
+- Visible assistant text promising future work may get at most two hidden, bounded recovery continuations. Completed text settles; newer queued user input wins.
+- Interrupted sessions retain outstanding hidden handoffs on resume, including portable export/import, without showing them as chat messages.
+- Only complete-effective-transcript branches retain handoffs. Earlier-turn `/fork` or `/session tree` selections and all pre-compaction-history branches drop them and start no hidden continuation.
+
+Requests/compaction retain at most 32 KiB per tool result, 128 KiB total tool text, newest preferred. Omissions are marked for the model; full output stays visible and session-stored.
 
 ### `/jail`
 
-Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, `edit`, and `grep` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `worktree` also requires its repository root, Git metadata, and resolved worktree destination to be inside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
+Roots an accident-prevention sandbox at the status-bar cwd:
+- `read`, `write`, `edit`, `grep`: resolve paths, including symlinks, and reject outside targets.
+- `worktree`: repository root, Git metadata, and resolved destination must all stay inside.
+- `bash`: rejects obvious escapes (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar), plus outside-pointing shell arguments/redirections.
 
-This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zut under docker or a proper sandbox.
+Status shows `jailed, ~/your/cwd`. Persist across launches with `/settings` → **jail new sessions by default**; `/unjail` unlocks only the current session.
+
+This is not a hard security boundary. For real isolation, run zut in docker or a proper sandbox.
 
 ## Sessions
 
-Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZUT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. Session metadata stores the provider and model used by that session; resume honors that pair, rebuilding the active agent when it differs and refusing the switch without discarding the current session if rebuilding fails. Usage checkpoints may include sanitized `retry_lifecycle` metadata—attempts, backoff delays, terminal state, and an allowlisted failure category—but never raw provider errors or response bodies. This metadata is ignored when rebuilding provider context. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
+Interactive and print/json runs save JSONL transcripts in `$ZUT_HOME/sessions/<cwd-hash>/` unless `--no-session`. Resume with `--continue`, `--resume`, `--session <path>`, or TUI `/sessions`. Resume restores the recorded provider/model, rebuilding the agent if needed; failed rebuilds leave the current session intact. Empty sessions are deleted on close.
 
-Use `zut sessions prune` outside the TUI to find sessions whose recorded working directories no longer exist. The command groups sessions by directory, shows the stored session count and size, lets you select groups, and requires confirmation before permanently deleting files. It preserves sessions when a directory check fails with an error other than "not found" and rechecks each selected directory immediately before deletion. A deleted directory and a path hidden by some unmounted filesystems are indistinguishable, and sessions open in another running zut process cannot be detected, so review the selection, ensure remote filesystems are mounted, and prune only what no live session is using before deleting missing-directory groups.
+Usage checkpoints may store sanitized `retry_lifecycle` attempts, backoffs, terminal state, and allowlisted failure category, never raw provider errors or response bodies. Provider-context reconstruction ignores this metadata.
 
-Use `--older-than` to prune sessions by last activity instead, including sessions for directories that still exist. Supported age units are `m` (minutes), `h` (hours), `d` (24-hour days), `w` (7-day weeks), `mo` (calendar months), and `y` (calendar years). Add `--cwd PATH` to limit age pruning to one working directory. Each session file is checked again immediately before deletion and preserved if it has become active recently.
+Outside the TUI, `zut sessions prune` groups sessions with missing working directories, showing counts and sizes for selection and confirmed permanent deletion. It rechecks selected directories before deletion; errors other than "not found" preserve sessions.
+
+Unmounted paths can look deleted, and other zut processes' open sessions cannot be detected. Mount remote filesystems and ensure no live session uses a selected group before deleting.
+
+`--older-than` prunes by last activity, including existing directories; `--cwd PATH` limits it to one directory. Units: `m` minutes, `h` hours, `d` 24-hour days, `w` 7-day weeks, `mo` calendar months, `y` calendar years. Files are rechecked before deletion and preserved if recently active.
 
 ```sh
 zut sessions prune --dry-run                         # list missing-directory groups
-zut sessions prune --older-than 4h --dry-run         # inspect sessions inactive for four hours
-zut sessions prune --older-than 1mo --cwd ~/project  # select old sessions for one directory
-zut sessions prune --older-than 1y --all              # select every match, then confirm
-zut sessions prune --older-than 30d --all --yes       # delete every match without prompting
+zut sessions prune --older-than 4h --dry-run         # inspect four-hour inactivity
+zut sessions prune --older-than 1mo --cwd ~/project  # select old sessions in one directory
+zut sessions prune --older-than 1y --all             # select all matches, then confirm
+zut sessions prune --older-than 30d --all --yes      # delete without prompting
 ```
 
-`--all` selects every match and still asks for confirmation. Adding `--yes` makes deletion non-interactive and requires `--all`. Malformed, unreadable, and symlinked session entries are reported and preserved. The scan covers `$ZUT_HOME/sessions/` including named-agent namespaces; explicit session files stored elsewhere are not included.
+`--all` selects every match but still confirms; `--yes` requires `--all` and skips prompts. Malformed, unreadable, and symlinked entries are reported and preserved. Scans cover `$ZUT_HOME/sessions/`, including named-agent namespaces, not explicit session files elsewhere.
 
 ## Daemon and sessions
 
-Sessions are owned by a local background daemon. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc` and the Telegram bot are clients that create or attach to a daemon session. The first client that needs the daemon starts it (`zut daemon run`, detached), so there is nothing to set up. While it starts, the client prints `Starting zut daemon…` and then `zut daemon ready (1.2s)` on stderr; nothing is printed when a daemon already runs.
+A local daemon owns sessions. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc`, and Telegram create or attach as clients. The first client auto-starts detached `zut daemon run`, printing `Starting zut daemon…` then `zut daemon ready (1.2s)` on stderr. An existing daemon produces no startup message.
 
 ```sh
-zut ls [--json]                  # sessions open in the daemon
-zut tree [--json]                # sessions and their subagents
-zut attach [id|title-prefix]     # reattach the TUI; no argument picks the latest detached session in this directory
-zut kill <id>...                 # close sessions (exact ID or unique ID prefix)
-zut daemon status                # pid, version, uptime, session count
-zut daemon start|stop|restart    # each daemon starts with no open sessions
-zut daemon logs [-f]             # print or follow the daemon log
-zut daemon run [--idle-gc-hours N]  # foreground; detached idle sessions close after N hours (default 24, 0 disables)
+zut ls [--json]                    # open daemon sessions
+zut tree [--json]                  # sessions and subagents
+zut attach [id|title-prefix]       # TUI; no argument: latest detached session in this directory
+zut kill <id>...                   # exact IDs or unique ID prefixes
+zut daemon status                 # pid, version, uptime, session count
+zut daemon start|stop|restart      # starts empty
+zut daemon logs [-f]               # print/follow log
+zut daemon run [--idle-gc-hours N] # foreground; close detached idle sessions after N hours (default 24; 0 disables)
 ```
 
-Each daemon starts empty, including after a crash or auto-spawn. Previous session transcripts remain available in the resumable sessions list; they are not reopened as detached live sessions. Startup removes old `daemon/state.json` (which could contain client environment secrets) and stale `daemon/sessions/` review journals on a best-effort basis. Saved schedules are untouched.
+Every daemon starts empty, including after crashes or auto-spawn. Old transcripts remain resumable, not detached live sessions. Startup best-effort deletes old `daemon/state.json` (possibly containing client environment secrets) and stale `daemon/sessions/` review journals; saved schedules remain.
 
-Agents in different sessions can see and message each other with the `sessions` tool (see [Tools](#tools)).
+Agents can see and message other sessions with the `sessions` tool ([Tools](#tools)).
 
-In the TUI, `/detach` leaves the session running and prints the `zut attach` command; `/exit` closes it. In daemon mode, `ctrl+c` opens `Q quit · D detach · Esc cancel` whether idle or busy (after any dialog handling or idle input clearing). Q closes the session like `/exit`, staying open if closing fails; after cleanup and terminal restoration, quitting prints `zut --resume <daemon-id>` only if the transcript survived. This loads the saved transcript as a new live session; older transcripts still resume by UUID. No hint is printed with `--no-session` or when an empty transcript is deleted. D detaches like `/detach`. Esc or any other key cancels the menu without interrupting a turn. Pressing `ctrl+c` again while the menu is open forces exit after a bounded attempt to close the session; any close error is printed as an exit notice. Headless runs close their session at exit unless `--keep-session` is passed, which keeps it visible in `zut ls` and reattachable.
+TUI `/detach` leaves the session running and prints its `zut attach` command; `/exit` closes it. In daemon mode, idle or busy `ctrl+c` opens `Q quit · D detach · Esc cancel` after dialog handling or idle-input clearing:
 
-On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/user/zut-daemon.service`, `Restart=on-failure`) and prints the `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses it.
+- Q closes like `/exit`; failure keeps it open. After cleanup and terminal restoration, surviving transcripts get a `zut --resume <daemon-id>` hint. Resume creates a new live session; older transcripts still resume by UUID. No hint for `--no-session` or deleted empty transcripts.
+- D acts like `/detach`.
+- Esc or any other key cancels without interrupting the turn.
+- A second `ctrl+c` forces exit after a bounded close attempt, reporting close errors as an exit notice.
 
-The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`. Set `ZUT_DAEMON_LOG=debug|info|warn|error` in the daemon's environment to select its log level (default `info`; unrecognized values also use `info`). Restart an already-running daemon to apply a new level. The log rotates at 10 MiB, retaining one backup as `daemon.log.1`, with `0600` file permissions. An oversized existing log rotates on startup; during a run, rotation happens before a write would exceed the limit (individual records are not split). The interactive client writes its startup timings (session created, attached, first frame) to `$ZUT_HOME/logs/client.log` with `0600` permissions. Several clients can append to it at once, so it rotates (to `client.log.1`) only when a client opens it while it is over 10 MiB. Its level follows `ZUT_DAEMON_LOG` in the client's environment. With `ZUT_DAEMON_LOG=debug`, the daemon log also records per-phase timings for daemon startup and session creation (config, MCP servers, extensions, skills, session file) and the stderr of shared MCP servers; at the default level it records `daemon ready total=…` and `session ready total=…`.
+Headless runs close on exit unless `--keep-session`, which leaves them in `zut ls` and reattachable.
 
-Set `ZUT_DAEMON_PPROF=1` (or `true`) in the daemon's environment to enable
-pprof on `127.0.0.1:0`. Empty/unset disables it; another value specifies a
-loopback `host:port` (including port `0` for an automatically assigned port).
-Only loopback IPs and `localhost` (pinned to `127.0.0.1`) are accepted; other
-hosts are refused. The OS chooses a free port for `1`/`true`. The daemon logs the actual bound
-address and writes it to `$ZUT_HOME/daemon.pprof` (removed on shutdown). Listen failures
-are non-fatal, and profiling stops with the daemon. Restart an existing daemon
-to apply this setting. Profiling endpoints expose process data to local users.
+Linux `zut daemon install` writes `~/.config/systemd/user/zut-daemon.service` with `Restart=on-failure` and prints `systemctl --user` commands; `--now` runs them. `zut daemon uninstall [--now]` reverses this.
+
+Paths and logging:
+
+- Socket: `$XDG_RUNTIME_DIR/zut/daemon.sock`, fallback `$ZUT_HOME/run/daemon.sock`; Windows: `%LOCALAPPDATA%\zut\run\daemon.sock`. Override with `ZUT_DAEMON_SOCKET`.
+- Lock, pid, schedules: `$ZUT_HOME/daemon/`.
+- Daemon log: `$ZUT_HOME/logs/daemon.log`, `0600`, rotates at 10 MiB to one backup, `daemon.log.1`. Oversized logs rotate on startup; later rotation precedes a write exceeding the limit. Records are not split.
+- Interactive startup timings (session created, attached, first frame): `$ZUT_HOME/logs/client.log`, `0600`. Concurrent clients may append; rotation to `client.log.1` occurs only when opened over 10 MiB.
+- `ZUT_DAEMON_LOG=debug|info|warn|error` sets each process's level from its environment; default/unknown values use `info`. Restart the daemon to change its level. Default daemon logs include `daemon ready total=…` and `session ready total=…`; `debug` adds startup/session phase timings (config, MCP servers, extensions, skills, session file) and shared MCP server stderr.
+
+In the daemon environment, `ZUT_DAEMON_PPROF=1` or `true` enables pprof at `127.0.0.1:0` (OS-selected port); empty/unset disables it. Other values specify loopback `host:port`, including port `0`. Only loopback IPs and `localhost` (pinned to `127.0.0.1`) are accepted.
+
+The bound address is logged and written to `$ZUT_HOME/daemon.pprof`, removed on shutdown. Listen failures are non-fatal; profiling stops with the daemon. Restart to apply changes. Endpoints expose process data to local users.
 
 ```sh
 ZUT_DAEMON_PPROF=1 zut daemon
@@ -596,83 +670,91 @@ go tool pprof http://$(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
 go tool pprof http://(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
 ```
 
-These paths use the Linux default. With `ZUT_HOME` set, use that directory;
-with `XDG_STATE_HOME` set, use `$XDG_STATE_HOME/zut`. The macOS default is
-`~/Library/Application Support/zut`, and Windows uses `%LOCALAPPDATA%\zut`.
+Examples use Linux defaults. Prefer `ZUT_HOME` if set, otherwise `$XDG_STATE_HOME/zut` if set. macOS defaults to `~/Library/Application Support/zut`; Windows to `%LOCALAPPDATA%\zut`.
 
 Limitations:
 
-- Bot services are not restarted after a daemon restart. Run `zut telegram-bot start` again to create a new session and resume polling.
-- Autospawn on Windows is untested.
-- On Linux, macOS, FreeBSD, NetBSD, and OpenBSD, the daemon checks each socket peer’s UID against its own before handling requests, in addition to file permissions (a `0600` socket in a private directory owned by you). On Windows, the socket directory must be owned by the current user (or by Administrators when zut runs elevated) and have a protected DACL granting access only to that user; zut applies this DACL only to a directory it creates or to its default socket directory, and refuses to start with a `ZUT_DAEMON_SOCKET` in any other non-private directory. There is no per-connection UID check on Windows. On DragonFly BSD, Solaris, illumos, AIX, Plan 9, js, and wasip1 the daemon refuses to start (fail closed), so daemon-backed modes are unavailable there. These protections do not isolate the daemon from other processes running as the same user or from privileged administrators.
+- Bot services do not restart with the daemon. Run `zut telegram-bot start` again for a new session and polling.
+- Windows autospawn is untested.
+- Linux, macOS, FreeBSD, NetBSD, OpenBSD: socket peers must match the daemon UID, in addition to permissions (`0600` socket in your private directory).
+- Windows: socket directory ownership must be the current user (Administrators when elevated), with a protected DACL granting access only to that user. zut applies it only to directories it creates or its default socket directory; it refuses non-private custom `ZUT_DAEMON_SOCKET` directories. There is no per-connection UID check.
+- DragonFly BSD, Solaris, illumos, AIX, Plan 9, js, wasip1: daemon startup fails closed; daemon-backed modes are unavailable.
+- These checks do not isolate same-user processes or privileged administrators.
 
 ## Providers
 
-zut's built-in provider catalog includes:
+Built-in providers:
 
 - **Subscription-capable**: Anthropic Claude Pro/Max (`anthropic`), OpenAI Codex / ChatGPT Plus/Pro (`openai-codex`), Kimi Code (`kimi`), SuperGrok/X Premium (`xai`), GitHub Copilot (`github-copilot`).
-- **Direct API providers**: Anthropic, OpenAI Chat Completions, OpenAI Responses, DeepSeek, Google Gemini, Kimi/Moonshot, Moonshot CN, Groq, Cerebras, xAI, Together AI, Hugging Face Router, OpenRouter, Mistral, Z.AI, Xiaomi/MiMo token-plan regions, MiniMax global/CN, Fireworks, Vercel AI Gateway, OpenCode/OpenCode Go.
-- **Cloud/platform providers**: Amazon Bedrock, Google Vertex AI, Azure OpenAI, Cloudflare Workers AI, Cloudflare AI Gateway.
-- **Local/compatible**: Ollama, llama.cpp router mode, and OpenAI-compatible local endpoints via `--base-url`.
+- **Direct API**: Anthropic, OpenAI Chat Completions, OpenAI Responses, DeepSeek, Google Gemini, Kimi/Moonshot, Moonshot CN, Groq, Cerebras, xAI, Together AI, Hugging Face Router, OpenRouter, Mistral, Z.AI, Xiaomi/MiMo token-plan regions, MiniMax global/CN, Fireworks, Vercel AI Gateway, OpenCode/OpenCode Go.
+- **Cloud/platform**: Amazon Bedrock, Google Vertex AI, Azure OpenAI, Cloudflare Workers AI, Cloudflare AI Gateway.
+- **Local/compatible**: Ollama, llama.cpp router, OpenAI-compatible local endpoints via `--base-url`.
 
-Use `/login` to store API keys or subscription credentials. `/model` only shows models from providers that are currently available from env vars, `auth.json`, Kimi CLI fallback, local Ollama, or a configured llama.cpp router.
+`/login` stores keys or subscription credentials. `/model` lists only providers available through env vars, `auth.json`, Kimi CLI fallback, local Ollama, or a configured llama.cpp router.
 
 ## Models
 
-`--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
+`--list-models` and `/model` draw from three sources across built-in providers (the picker filters by availability):
 
-- **Catalog**: models baked into zut, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
-- **Live**: IDs discovered from provider model endpoints using your stored API key (cached for 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background on startup). OpenCode Go joins the published `https://opencode.ai/zen/go/v1/models` list with limits, prices, names, reasoning, and wire-adapter metadata from `https://models.dev/api.json`; its cache is scoped to the credential fingerprint and endpoint, and SDK runtimes load matching cached metadata before resolving. The published list is a catalog, not proof of consent, regional eligibility, quota, or account access; models.dev is the JSON source behind the linked provider page.
-- **Speculative**: IDs that appear in the upstream generator but aren't live on the public API yet. They'll 404 today and start working the moment the provider ships them.
+- **Catalog**: baked-in Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq Llama/Gemma/Compound, OpenRouter, Bedrock/Vertex IDs, Azure OpenAI deployments, Copilot, and other provider entries.
+- **Live**: provider model endpoints queried with stored keys; cached 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background at startup. OpenCode Go joins `https://opencode.ai/zen/go/v1/models` with limits, prices, names, reasoning, and wire-adapter metadata from `https://models.dev/api.json` (the linked provider page's JSON source). Its cache is credential-fingerprint/endpoint scoped; SDK runtimes load matching metadata before resolving. Catalog listing proves neither consent nor regional eligibility, quota, or account access.
+- **Speculative**: upstream-generator IDs not yet public. They return 404 until released.
 
-The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed. Tool output is still shown in full through the normal transcript rendering and retained in the session transcript. To keep long-running sessions usable, zut bounds the historical tool-result text included in provider-facing context; this projection affects what is sent to the model, not what is displayed or persisted, and it preserves the tool-call/result structure.
+The status-line context meter compares last-turn usage with the advertised context window. Historical tool-result text sent to providers is bounded, preserving call/result structure. Displayed and saved tool output remains complete.
 
 ### Model fallback (rescue)
 
-When a turn fails because of a recoverable provider error — expired token (`401`), permission denied (`403`), rate limit (`429`), provider outage (`502`/`503`/`504`), or a transient network failure — zut opens a **rescue** picker over the chat instead of just painting a red banner.
+Recoverable errors open a **rescue** model picker over chat: expired token (`401`), permission denied (`403`), rate limit (`429`), outage (`502`/`503`/`504`), or transient network failure.
 
-The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss. Press `tab` to read the full provider error, wrapped to the pane width; use `↑`/`↓` or `PageUp`/`PageDown` to scroll, and `tab` or `esc` to return to the picker.
+Rescue uses `/model`'s vertical fuzzy list, excluding the failed model and including only providers available through env vars, `auth.json`, Kimi CLI fallback, or ollama. `↑`/`↓` selects; `enter` retries the **same prompt**; `esc` dismisses. `tab` shows the full, pane-wrapped error; scroll with arrows or `PageUp`/`PageDown`, then `tab`/`esc` returns.
 
-Before the actual provider request fires, the shared HTTP streaming clients used by OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex also do up to four silent retries with short backoff (250ms, then 750ms, 750ms, and 750ms) on transient HTTP failures and connection-reset / EOF-before-headers errors. Once a stream is open, up to five reconnect attempts guard interrupted streams. Independently, a stream silent for five minutes is retried once immediately (shown as `idle timeout (1/1)`); a second silent stream fails the turn. Embedders set this budget with `core.Agent.MaxIdleRetries` (`0` disables), separate from `MaxRetries`. Cancellation and context deadlines are never retried, and follow-ups queued during a stalled stream are sent with the retry. Most edge-proxy blips disappear without you ever seeing the rescue picker.
+Shared OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex HTTP streaming clients silently retry transient HTTP failures and connection-reset / EOF-before-headers errors up to four times (250ms, 750ms, 750ms, 750ms). Open streams get up to five reconnect attempts.
 
-A rescue retry always **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides are usually the reason the rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally-picked provider), so the retry re-resolves credentials from env vars / `auth.json` / provider defaults instead. Use `/model` if you want overrides to stick.
+Separately, five minutes of stream silence triggers one immediate retry (`idle timeout (1/1)`); a second silent stream fails. Embedders configure `core.Agent.MaxIdleRetries` (`0` disables), independently of `MaxRetries`. Cancellation and context deadlines are never retried. Follow-ups queued during a stall go with the retry.
 
-No configuration is required — the candidate list is built dynamically from your active credentials. Bad-request / context-length / serialization errors are NOT routed to the rescue picker, because switching models won't fix them; those still surface as a normal error.
+Rescue **drops launch-time `--api-key` and `--base-url`**, rebuilding with env / `auth.json` / provider defaults to avoid bad or provider-specific overrides. Use `/model` to retain overrides.
+
+Candidates come from active credentials; no configuration needed. Bad-request, context-length, and serialization errors remain normal errors, not rescue candidates.
 
 ### Custom models
 
-Place a `models.json` in `$ZUT_HOME` (`$XDG_STATE_HOME/zut/` when set, otherwise the platform default above) to add models that aren't in the baked-in catalog or to override existing entries:
+Use `$ZUT_HOME/models.json` (`$XDG_STATE_HOME/zut/` if set, otherwise the platform default above) to add or override catalog entries:
 
 ```json
 {
   "providers": {
     "openai": {
-      "models": [
-        {
-          "id": "gpt-5.5",
-          "name": "GPT-5.5",
-          "reasoning": true,
-          "reasoningLevelMap": {"minimum": "low", "max": ""},
-          "contextWindow": 400000,
-          "maxTokens": 128000
-        }
-      ]
+      "models": [{
+        "id": "gpt-5.5",
+        "name": "GPT-5.5",
+        "reasoning": true,
+        "reasoningLevelMap": {"minimum": "low", "max": ""},
+        "contextWindow": 400000,
+        "maxTokens": 128000
+      }]
     }
   }
 }
 ```
 
-Supported fields per model: `id` (required), `name`, `reasoning`, `reasoningLevelMap`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
+Model fields: `id` (required), `name`, `reasoning`, `reasoningLevelMap`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
 
-`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, use an identity mapping such as `"max": "max"` to enable a level beyond the protocol default, or map it to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
+Optional `reasoningLevelMap` overrides protocol defaults. Keys: `minimum`, `low`, `medium`, `high`, `xhigh`, `max`. Map equivalent levels to each other; identity mappings such as `"max": "max"` enable levels beyond protocol defaults; `""` or `off` removes a level. `/reasoning` and requests use the same effective map.
 
-Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`, `moonshot`, `moonshot-ai`, and `kimi-code` map to `kimi`, and `deepseek-chat` and `deepseek-ai` map to `deepseek`. Built-in provider ids such as `groq`, `openrouter`, `github-copilot`, `amazon-bedrock`, `google-vertex`, `azure-openai-responses`, `fireworks`, `vercel-ai-gateway`, `mistral`, and `xai` can also be used directly.
+Provider normalization:
 
-User-defined models show `source: user` in `--list-models` and take precedence over both the baked-in catalog and live-discovered models. Adding a `models.json` does not hide the built-in catalog; entries are merged on top of it. Missing or invalid files are silently ignored.
+- `openai-codex`, `openai-responses` → `openai`
+- `anthropic-messages` → `anthropic`
+- `moonshot`, `moonshot-ai`, `kimi-code` → `kimi`
+- `deepseek-chat`, `deepseek-ai` → `deepseek`
+
+Built-in IDs also work directly: e.g. `groq`, `openrouter`, `github-copilot`, `amazon-bedrock`, `google-vertex`, `azure-openai-responses`, `fireworks`, `vercel-ai-gateway`, `mistral`, `xai`.
+
+User entries show `source: user` in `--list-models` and override baked-in/live metadata without hiding other entries. Missing/invalid files are silently ignored.
 
 #### Custom providers
 
-A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, or `anthropic` for the Anthropic Messages API). A model-level `baseUrl` overrides the provider-level one for that model; an unknown `api` value falls back to `openai` with a warning.
+Unknown provider IDs define custom providers. Set provider `baseUrl` and `api`: `openai` (default, Chat Completions), `openai-responses` (Responses), or `anthropic` (Messages). Unknown `api` warns and falls back to `openai`. Model `baseUrl` overrides provider `baseUrl`.
 
 ```json
 {
@@ -680,19 +762,19 @@ A top-level provider key that is not a built-in id defines a custom provider. Gi
     "my-company": {
       "baseUrl": "https://llm.mycompany.com/v1",
       "api": "openai",
-      "models": [
-        { "id": "company-llm-v2", "name": "Company LLM v2" }
-      ]
+      "models": [{"id": "company-llm-v2", "name": "Company LLM v2"}]
     }
   }
 }
 ```
 
-Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. For authenticated endpoints, supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Custom endpoints with a configured URL can also run without a key. Set `"auth": "none"` on a custom provider to ignore inherited, CLI, environment, and stored credentials for inference and discovery; command-backed keys are not executed. Use this only with trusted keyless endpoints. Custom keys are saved without a verification probe; an invalid key surfaces on the first model call.
+Custom providers appear in `--list-models`, `/model`, and `/login`. `models.json` holds no secrets. Supply keys through `/login`, `--api-key`, or upper-snake-case env vars (`my-company` → `MY_COMPANY_API_KEY`). Configured URLs also work keyless. Custom keys are saved without probing; invalid keys fail on first call.
 
-Set `"discover": true` at the provider level for opt-in model discovery from its OpenAI-style `/models` endpoint. A provider-level `baseUrl` is required. Discovered models use conservative 32K context and 4K output defaults; explicit model entries override their metadata. Failed refreshes keep the previous in-memory list, and background discovery never executes command-backed credentials. See [custom model discovery](docs/providers.md#custom-model-discovery) for the schema and limits.
+Provider `"auth": "none"` ignores inherited, CLI, env, and stored credentials for inference/discovery and never executes command-backed keys. Use only for trusted keyless endpoints.
 
-To retrieve this custom provider's key from a password manager, add a matching entry to `$ZUT_HOME/auth.json`:
+Provider `"discover": true` opts into OpenAI-style `/models` discovery and requires provider `baseUrl`. Discovered defaults: 32K context, 4K output; explicit entries override metadata. Failed refreshes retain the in-memory list; background discovery never executes command-backed credentials. See [custom model discovery](docs/providers.md#custom-model-discovery) for schema and limits.
+
+For password-manager keys, add a matching `$ZUT_HOME/auth.json` entry:
 
 ```json
 {
@@ -708,7 +790,7 @@ To retrieve this custom provider's key from a password manager, add a matching e
 }
 ```
 
-The provider IDs in `models.json` and `auth.json` must match. Then select the custom model directly:
+Provider IDs must match in `models.json` and `auth.json`. Select directly:
 
 ```bash
 zut --provider my-company --model company-llm-v2
@@ -716,69 +798,49 @@ zut --provider my-company --model company-llm-v2
 
 ### Kimi Code
 
-zut has built-in Kimi support through the Kimi Coding endpoint and Moonshot's OpenAI-compatible chat API.
+Kimi supports the Kimi Coding endpoint and Moonshot OpenAI-compatible chat API.
 
 ```bash
 zut --provider kimi
 ```
 
-By default this uses:
+Defaults: model `kimi-for-coding`, URL `https://api.kimi.com/coding/v1`.
 
-- model: `kimi-for-coding`
-- base URL: `https://api.kimi.com/coding/v1`
+Credential order: `--api-key` → `KIMI_API_KEY` → `MOONSHOT_API_KEY` → `$ZUT_HOME/auth.json` → official CLI token `~/.kimi/credentials/kimi-code.json` (unless `/logout kimi` disabled it).
 
-Credential lookup order for Kimi:
+`/login` supports keys or Kimi Code subscription device-code OAuth: opens verification URL, waits for browser approval, saves to `auth.json`, and auto-refreshes.
 
-1. `--api-key`
-2. `KIMI_API_KEY`
-3. `MOONSHOT_API_KEY`
-4. `$ZUT_HOME/auth.json`
-5. the official Kimi Code CLI token at `~/.kimi/credentials/kimi-code.json`, unless disabled by `/logout kimi`
-
-Use `/login` for either API-key login or Kimi Code subscription login. The subscription flow uses Kimi Code's device-code OAuth flow: zut opens the verification URL, waits for browser approval, stores the token in `auth.json`, and refreshes it automatically.
-
-For direct Moonshot API keys or a custom compatible endpoint:
+For direct Moonshot keys or compatible endpoints:
 
 ```bash
 zut --provider kimi --model kimi-k2-0905-preview --base-url https://api.moonshot.ai/v1 --api-key "$KIMI_API_KEY"
 ```
 
-Kimi K3 is built in as `kimi/k3`, `moonshotai/kimi-k3`, `moonshotai-cn/kimi-k3`, `opencode-go/kimi-k3`, `openrouter/moonshotai/kimi-k3`, and `vercel-ai-gateway/moonshotai/kimi-k3`. Its output limit is 131,072 tokens on every built-in route.
-
-You can add additional Kimi/Moonshot model IDs to `models.json` under the `kimi` provider.
+Kimi K3 routes: `kimi/k3`, `moonshotai/kimi-k3`, `moonshotai-cn/kimi-k3`, `opencode-go/kimi-k3`, `openrouter/moonshotai/kimi-k3`, `vercel-ai-gateway/moonshotai/kimi-k3`. All have a 131,072-token output limit. Add other Kimi/Moonshot IDs under `kimi` in `models.json`.
 
 ### xAI
 
-xAI supports either `XAI_API_KEY` or `/login` subscription authentication. The subscription option is labeled `Sign in with SuperGrok or X Premium`, opens a prefilled device-authorization URL, and refreshes the stored token automatically. The default xAI model is `grok-4.5`, sent through the Responses API.
+Use `XAI_API_KEY` or `/login` subscription option `Sign in with SuperGrok or X Premium`. It opens a prefilled device-authorization URL and auto-refreshes the stored token. Default: `grok-4.5` via Responses API.
 
 ### DeepSeek
 
-zut has built-in DeepSeek support through DeepSeek's OpenAI-compatible chat API.
+DeepSeek uses its OpenAI-compatible chat API.
 
 ```bash
 zut --provider deepseek
 ```
 
-By default this uses:
+Defaults: `deepseek-v4-pro`, `https://api.deepseek.com/v1`. Catalog: `deepseek-v4-pro` (reasoning), `deepseek-v4-flash`, matching current `GET https://api.deepseek.com/models` IDs. Add others under `deepseek` in `models.json`.
 
-- model: `deepseek-v4-pro`
-- base URL: `https://api.deepseek.com/v1`
+Credential order: `--api-key` → `DEEPSEEK_API_KEY` → `$ZUT_HOME/auth.json`.
 
-Catalog ships with `deepseek-v4-pro` (reasoning) and `deepseek-v4-flash`. These are exactly the IDs returned by `GET https://api.deepseek.com/models` today. You can add additional model IDs to `models.json` under the `deepseek` provider.
+`/login → api key` probes `/v1/models` once, then stores the key under `deepseek` in `auth.json`.
 
-Credential lookup order for DeepSeek:
+> **API key only:** no DeepSeek subscription OAuth. `/login subscription` lists only Anthropic, OpenAI, and Kimi; DeepSeek appears only in `/login → api key`.
 
-1. `--api-key`
-2. `DEEPSEEK_API_KEY`
-3. `$ZUT_HOME/auth.json`
+> **Text-only wire format:** DeepSeek rejects multimodal content (`unknown variant image_url, expected text`). zut silently drops outgoing user/tool `ImageBlock` parts, retaining text and stored images. Switching to vision-capable Claude, GPT-4o/5, or Gemini sends images again.
 
-Use `/login` and pick **api key** to paste a DeepSeek key. zut probes `/v1/models` once and stores the key under `deepseek` in `auth.json`.
-
-> **Auth model: API key only.** DeepSeek does not offer a subscription OAuth flow. The `/login subscription` step lists only Anthropic, OpenAI, and Kimi; DeepSeek shows up only under `/login → api key`.
-
-> **Text only at the wire level.** DeepSeek's chat-completions endpoint currently rejects the multimodal content schema (`unknown variant image_url, expected text`). When the active provider is `deepseek`, zut silently drops `ImageBlock` parts from outgoing user/tool messages and keeps only the text. Switching back to a vision-capable model (Claude, GPT-4o/5, Gemini) re-sends the image normally because the session file still stores it.
-
-For a custom-compatible endpoint (mirror, gateway, self-host):
+For mirrors, gateways, or self-hosted endpoints:
 
 ```bash
 zut --provider deepseek --base-url https://my-deepseek-mirror.example.com/v1 --api-key "$DEEPSEEK_API_KEY"
@@ -786,131 +848,122 @@ zut --provider deepseek --base-url https://my-deepseek-mirror.example.com/v1 --a
 
 ### Google Gemini
 
-zut has built-in Google Gemini support through the [AI Studio Generative Language API](https://aistudio.google.com/).
+Google Gemini uses the [AI Studio Generative Language API](https://aistudio.google.com/).
 
 ```bash
 zut --provider google
 ```
 
-By default this uses:
+Defaults: `gemini-2.5-pro`, `https://generativelanguage.googleapis.com`. Catalog also includes `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, `gemini-2.0-flash-lite`. `/v1beta/models` discovery adds IDs visible to your key.
 
-- model: `gemini-2.5-pro`
-- base URL: `https://generativelanguage.googleapis.com`
+Credential order: `--api-key` → `GEMINI_API_KEY` → `GOOGLE_API_KEY` → `$ZUT_HOME/auth.json`.
 
-Catalog ships with `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`, and `gemini-2.0-flash-lite`. Live discovery against `/v1beta/models` adds anything else your key can see.
+`/login → api key` probes `/v1beta/models` once, then stores the AI Studio key under `google` in `auth.json`.
 
-Credential lookup order for Google:
+> **API key only:** Gemini Advanced / Google One AI Premium consumer subscriptions provide no OAuth tokens. Selecting Google under `/login subscription` falls back to the key form. For OAuth/service-account auth, use `google-vertex`.
 
-1. `--api-key`
-2. `GEMINI_API_KEY`
-3. `GOOGLE_API_KEY`
-4. `$ZUT_HOME/auth.json`
+> **Free-tier limits:** AI Studio caps vary by model, per minute/day. Pro is strictest (a few requests/minute, ~50/day); Flash/Flash-Lite allow more. Pro returning 429 `"You exceeded your current quota"` while Flash works means Pro free-tier RPD exhaustion. Use Flash for agent loops or [enable billing](https://aistudio.google.com/app/apikey) on the project; the same key becomes pay-as-you-go (Pro: `$1.25/M` input, `$10/M` output).
 
-Use `/login` and pick **api key** to paste an AI Studio key. zut probes `/v1beta/models` once and stores the key under `google` in `auth.json`.
+Reasoning: `--reasoning off|minimum|low|medium|high|xhigh|max`, `/reasoning`, or `/settings` **reasoning level**. `max` is opt-in above `xhigh`: native on GPT-5.6, GPT-6, and adaptive-thinking Claude; unsupported providers clamp to their highest effort. Budget-based providers retain model/provider caps.
 
-> **Auth model: API key only (this provider).** Google does not issue OAuth tokens for consumer Gemini Advanced / Google One AI Premium subscriptions, so there is no "log in with your Google subscription" flow. The `/login subscription` step quietly downgrades to the api-key form when you pick Google so you don't end up in a dead end. If you need OAuth/service-account auth instead of an API key, use the `google-vertex` provider below.
+Gemini 3.x uses `thinkingLevel` (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`). Gemini-3-Pro has a `LOW` minimum and uses `HIGH` for medium-or-higher requests. `off` omits reasoning config except for always-on thinking models; Gemini 2.0 has no thinking config.
 
-> **Free-tier rate limits.** AI Studio's free tier has tight per-minute and per-day caps that vary by model: `gemini-2.5-pro` is the strictest (a few requests per minute, ~50 per day), Flash and Flash-Lite are far more generous. If a Pro turn 429s with `"You exceeded your current quota"` while Flash on the same key still works, you've hit the Pro free-tier RPD. Either switch to Flash for agent loops, or [enable billing](https://aistudio.google.com/app/apikey) on your AI Studio project to flip the same key from free to pay-as-you-go pricing (`$1.25/M` input, `$10/M` output for Pro).
+Claude Opus 5.5:
 
-Reasoning levels (`--reasoning off|minimum|low|medium|high|xhigh|max`, also configurable through `/reasoning` or in `/settings` as **reasoning level**) map differently per generation. `max` is a distinct opt-in tier above `xhigh`. GPT-5.6, GPT-6, and adaptive-thinking Claude models receive native `max`; unsupported providers clamp it to their highest accepted effort. Budget-based providers retain their provider/model caps. Gemini 3.x uses the `thinkingLevel` enum (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`), with Gemini-3-Pro pinned to `LOW` minimum and `HIGH` for any medium-or-higher request. `off` sends no reasoning config except on always-on thinking models. Gemini 2.0 models have no thinking config.
+- Anthropic: `--provider anthropic --model claude-opus-5-5`, 500,000 context tokens.
+- Copilot: `--provider github-copilot --model claude-opus-5.5`, 1,000,000 context tokens, subject to account access.
+- Output: up to 128,000 tokens. Always-on adaptive thinking: `low`, `medium`, `high`, `xhigh`, `max`; default/`off`/`minimum` use `low`. Selector hides unsupported levels.
+- Catalog prices per million: $4 input, $20 output, $0.20 cache reads, $5 cache writes. Copilot billing follows your plan.
 
-Claude Opus 5.5 is available through Anthropic (`--provider anthropic --model claude-opus-5-5`) and GitHub Copilot (`--provider github-copilot --model claude-opus-5.5`, subject to account availability). The context window is 500,000 tokens on Anthropic and 1,000,000 tokens on Copilot, with up to 128,000 output tokens. Adaptive thinking is always on, with `low`, `medium`, `high`, `xhigh`, and `max` effort levels. The default, `off`, and `minimum` requests use `low` instead. The reasoning selector omits unsupported levels. Catalog prices per million tokens are $4 input, $20 output, $0.20 cache reads, and $5 cache writes. Copilot billing remains governed by your plan.
+GPT-6 Sol/Luna: select `gpt-6-sol` or `gpt-6-luna` with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot` (API keys or Codex/Copilot subscriptions). Both use Responses API, up to 128,000 output tokens, and `low` through `max` reasoning. Context: OpenAI 272,000; Codex 500,000 working budget; Copilot 1,000,000. Subscription access depends on account availability and organization policy.
 
-GPT-6 Sol and GPT-6 Luna are available through OpenAI API keys, OpenAI Codex subscriptions, and GitHub Copilot. Select `gpt-6-sol` or `gpt-6-luna` with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot`. Both use the Responses API, support up to 128,000 output tokens, and expose `low` through `max` reasoning. OpenAI entries use a 272,000-token context window, Codex entries a 500,000-token working budget, and Copilot entries 1,000,000 tokens. Access through subscription providers depends on account availability and organization policy.
-
-You can add additional Gemini model IDs to `models.json` under the `google` provider.
+Add Gemini IDs under `google` in `models.json`.
 
 ### Gemini Enterprise Agent Platform (formerly Google Vertex AI)
 
-zut also has built-in support for [Gemini Enterprise Agent Platform](https://cloud.google.com/products/gemini-enterprise-agent-platform), Google's enterprise/GCP-hosted Gemini endpoint. Unlike the AI Studio `google` provider above, the `google-vertex` provider supports a Google Cloud API key plus `service_account` and `authorized_user` credential files. It does not support consumer Google login or the complete ADC credential chain, such as metadata-server and workload-identity credentials.
+[Gemini Enterprise Agent Platform](https://cloud.google.com/products/gemini-enterprise-agent-platform) is Google's enterprise/GCP Gemini endpoint. `google-vertex` supports Cloud API keys and `service_account` / `authorized_user` files, not consumer Google login or full ADC (metadata-server/workload-identity credentials).
 
 ```bash
 zut --provider google-vertex
 ```
 
-Required configuration (env vars, read at construction time):
+Environment, read at construction:
 
-- `GOOGLE_CLOUD_PROJECT` — required, your GCP project id.
-- `GOOGLE_CLOUD_LOCATION` — optional, defaults to `us-central1`.
+- `GOOGLE_CLOUD_PROJECT`: required GCP project ID.
+- `GOOGLE_CLOUD_LOCATION`: default `us-central1`.
 
-Credential lookup order for Vertex:
+Credential order:
 
-1. `GOOGLE_CLOUD_API_KEY`: simplest option. An API key created in the GCP console is sent as `x-goog-api-key`, without a token exchange.
-2. `GOOGLE_APPLICATION_CREDENTIALS`: path to a supported credential JSON file.
-3. **Default ADC file**: if neither of the above is set, zut checks the file written by `gcloud auth application-default login`. This is `~/.config/gcloud/application_default_credentials.json` on Unix systems and `%APPDATA%\gcloud\application_default_credentials.json` on Windows.
+1. `GOOGLE_CLOUD_API_KEY`: GCP console key sent as `x-goog-api-key`, no token exchange.
+2. `GOOGLE_APPLICATION_CREDENTIALS`: supported JSON file path.
+3. Default ADC file from `gcloud auth application-default login`: Unix `~/.config/gcloud/application_default_credentials.json`; Windows `%APPDATA%\gcloud\application_default_credentials.json`.
 
-Two credential file shapes are supported:
+Supported file types:
 
-- `type: "service_account"`: zut signs a JWT with the private key and exchanges it for a short-lived access token.
-- `type: "authorized_user"`: zut exchanges the stored client ID, client secret, and refresh token for a short-lived access token.
+- `type: "service_account"`: signs a private-key JWT and exchanges it for a short-lived token.
+- `type: "authorized_user"`: exchanges client ID, client secret, and refresh token for a short-lived token.
 
-Access tokens are cached in memory and refreshed on demand.
-
-If none of these are available, zut errors with `vertex: no auth — set GOOGLE_CLOUD_API_KEY or GOOGLE_APPLICATION_CREDENTIALS`.
+Tokens are cached in memory and refreshed on demand. Without credentials: `vertex: no auth — set GOOGLE_CLOUD_API_KEY or GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### Local models with ollama
 
-zut works with [ollama](https://ollama.com) out of the box. Ollama serves an OpenAI-compatible API locally, so any model you have pulled works with zut.
-
-Quick start:
+[ollama](https://ollama.com) serves a local OpenAI-compatible API; any pulled model works.
 
 ```bash
 ollama pull qwen3.5:4b
 zut --provider ollama --model qwen3.5:4b
 ```
 
-That's it. No API key needed for local models. zut defaults to `http://localhost:11434`.
+Local defaults: `http://localhost:11434`, no API key.
 
 ### Ollama Cloud with OLLAMA_API_KEY
 
-Set `OLLAMA_API_KEY` (from [ollama.com/settings/keys](https://ollama.com/settings/keys)) and zut uses Ollama Cloud automatically — no `--base-url` needed:
+`OLLAMA_API_KEY` from [ollama.com/settings/keys](https://ollama.com/settings/keys) selects Ollama Cloud without `--base-url`:
 
 ```bash
 export OLLAMA_API_KEY=...
 zut --provider ollama --model gemma4:31b
 ```
 
-With a real key and no explicit endpoint, zut defaults to `https://ollama.com/v1`. Precedence:
+Endpoint precedence:
 
-1. `--base-url` always wins — pass `--base-url http://localhost:11434` to force local while the key is set.
-2. A `baseUrl` in `models.json` (model- or provider-level) wins when no `--base-url` is given.
-3. Otherwise a real key (`--api-key`, `OLLAMA_API_KEY`, or `/login`) selects the cloud endpoint.
-4. With no key, zut stays local with no auth.
+1. `--base-url` wins; `--base-url http://localhost:11434` forces local even with a key.
+2. Model/provider `baseUrl` in `models.json`.
+3. A real key (`--api-key`, `OLLAMA_API_KEY`, `/login`) selects `https://ollama.com/v1`.
+4. No key: local, no auth.
 
-You can also save the key with `/login` → api key → Ollama (stored in `auth.json`). `--api-key` overrides env and stored credentials.
+`/login → api key → Ollama` saves to `auth.json`. `--api-key` overrides env/stored keys.
 
-For a remote ollama instance or one behind auth:
+Remote/authenticated example:
 
 ```bash
 zut --provider ollama --model llama3 --base-url https://my-server.com/v1 --api-key my-token
 ```
 
-You can also add models to your `models.json` so you don't need flags every time:
+Save model settings to avoid repeated flags:
 
 ```json
 {
   "providers": {
     "ollama": {
-      "models": [
-        {
-          "id": "qwen3.5:4b",
-          "name": "Qwen 3.5 4B",
-          "contextWindow": 32768,
-          "maxTokens": 8192
-        }
-      ]
+      "models": [{
+        "id": "qwen3.5:4b",
+        "name": "Qwen 3.5 4B",
+        "contextWindow": 32768,
+        "maxTokens": 8192
+      }]
     }
   }
 }
 ```
 
-The `ollama` provider uses the OpenAI chat completions protocol internally, so it also works with any OpenAI-compatible server (vLLM, LM Studio, LocalAI, etc.).
+`ollama` uses OpenAI Chat Completions and also works with vLLM, LM Studio, LocalAI, and other compatible servers.
 
 ### Local models with llama.cpp router mode
 
-zut can connect to a recent [llama.cpp](https://github.com/ggml-org/llama.cpp) router, manage its GGUF files, and use loaded models through the router's OpenAI-compatible inference API. This is separate from Ollama. An Ollama server normally listens on port `11434` and should use zut's `ollama` provider instead.
+zut manages GGUF files and loaded-model inference through a recent [llama.cpp](https://github.com/ggml-org/llama.cpp) router's OpenAI-compatible API. This is separate from Ollama (normally port `11434`; use provider `ollama`).
 
-Install or update llama.cpp. On macOS with Homebrew:
+Install/update llama.cpp, e.g. macOS Homebrew:
 
 ```bash
 brew install llama.cpp
@@ -918,7 +971,7 @@ brew install llama.cpp
 brew upgrade llama.cpp
 ```
 
-Create a directory for GGUF files and start `llama-server` without `--model`, `-m`, or `-hf`. Supplying one of those options starts a single model rather than the router API zut needs.
+Create a GGUF directory; start `llama-server` without `--model`, `-m`, or `-hf` (those select single-model mode, not the required router API).
 
 ```bash
 mkdir -p ~/llama-models
@@ -933,55 +986,58 @@ llama-server \
   -c 32768
 ```
 
-`--no-models-autoload` leaves load decisions to `/llama`. `--jinja` enables model chat templates and improves tool-call compatibility. `-ngl 999` requests maximum GPU offload, while `-c 32768` limits each loaded model to a 32K context. Adjust these values for your hardware.
+`--no-models-autoload` delegates loading to `/llama`; `--jinja` enables chat templates for better tool calls. `-ngl 999` requests maximum GPU offload; `-c 32768` caps each loaded model at 32K context. Adjust for your hardware.
 
-Confirm that router mode is active before configuring zut:
+Check router mode before configuring zut:
 
 ```bash
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/models
 ```
 
-The models request must return JSON with a `data` array. A 404 usually means the server is outdated, running on a different port, or was started in single-model mode.
+`/models` must return JSON with a `data` array. A 404 usually means an outdated server, wrong port, or single-model mode.
 
-In zut, run `/login`, choose **api key**, and select **llama.cpp**. Enter `http://127.0.0.1:8080` as the router URL and leave the API key empty for a local-only server. Do not enter `/v1`; zut derives the inference URL itself. The saved URL and optional key live in `$ZUT_HOME/auth.json`.
+In `/login → api key → llama.cpp`, enter router URL `http://127.0.0.1:8080`; leave the key empty for local-only use. Omit `/v1`; zut derives inference URLs. URL/key are saved in `$ZUT_HOME/auth.json`.
 
-You can configure the same connection through environment variables:
+Or use environment variables:
 
 ```bash
 export LLAMA_BASE_URL=http://127.0.0.1:8080
 export LLAMA_API_KEY=optional-secret
 ```
 
-When using a key, launch the server with the matching `--api-key` value. Keep `--host 127.0.0.1` unless remote clients must reach the router.
+For auth, pass the matching server `--api-key`. Keep `--host 127.0.0.1` unless remote access is needed.
 
-Run `/llama` to:
+`/llama` lets you:
 
-- inspect the router's current model states
-- search Hugging Face for GGUF repositories
-- choose a quantization and download it with byte progress
-- explicitly load or unload a model
-- press `d` to ask the router to remove a downloaded cache model after confirmation
+- inspect router model states;
+- search Hugging Face GGUF repositories;
+- choose quantization and download with byte progress;
+- explicitly load/unload models;
+- press `d` to request confirmed deletion of downloaded cache models.
 
-Models discovered through `--models-dir` or a preset cannot be removed by zut. Delete those files from their configured source instead. The router removes the selected GGUF from its Hugging Face cache, but some llama.cpp versions retain shared repository artifacts such as `mmproj` files. Remove the repository's cache directory manually if those artifacts are no longer needed. Hugging Face search uses `HF_TOKEN` when available. Gated repositories require prior access approval, and the `llama-server` process also needs an authorized `HF_TOKEN` because the server performs the download.
+zut cannot remove `--models-dir` or preset models; delete them at their source. Router deletion removes the selected cached GGUF, but some llama.cpp versions retain shared artifacts such as `mmproj`; remove the repository cache directory manually if unneeded.
 
-Opening `/model` refreshes the router and lists every loaded model under provider `llama.cpp`. Unloaded models are intentionally omitted because they cannot answer inference requests. Load them through `/llama` first, then select them through `/model`.
+Hugging Face search uses `HF_TOKEN` when set. Gated repositories need prior approval and an authorized `HF_TOKEN` in `llama-server`, which performs downloads.
 
-A model installed through Ollama is kept in Ollama's internal storage and is not automatically available as a llama.cpp GGUF file. Download a GGUF copy through `/llama` or place GGUF files in `~/llama-models`, then restart the router so it discovers files added manually.
+`/model` refreshes the router and lists only loaded models under `llama.cpp`; unloaded models cannot infer. Load with `/llama`, then select with `/model`.
 
+Ollama's internal model storage is not a llama.cpp GGUF source. Download via `/llama`, or put GGUFs in `~/llama-models` and restart the router to discover manually added files.
 ## Clipboard images
 
-In the main chat, `ctrl+v` checks the system clipboard for an image before falling back to text. A pasted image appears as a `[clipboard image #N]` marker and is attached when you submit the prompt; `esc` or `ctrl+c` clears pending image markers with the rest of the input. Wayland image paste uses `wl-paste` from `wl-clipboard`; X11 image paste uses `xclip` when available. Clipboard images larger than 32 MiB are ignored and use the normal text-paste fallback.
+In main chat, `ctrl+v` tries images before text. `[clipboard image #N]` markers attach on submit; `esc` or `ctrl+c` clears them with the input. Wayland needs `wl-paste` (`wl-clipboard`); X11 uses `xclip` when available. Images over 32 MiB fall back to text paste.
 
 ## Dictation
 
-Press `Alt+V` in the editor to record from the microphone, then `Alt+V` again to stop and transcribe. `Esc` cancels a recording and uploads nothing. While recording, a static red `● REC mm:ss` shows the recorder name and live microphone levels below the editor. During upload, a spinner shows audio duration, file size, and service; after insertion, a brief status shows word count, service, and transcription time. The transcript is inserted at the cursor and is not submitted. Dictation works with any active model or provider.
+`Alt+V` starts recording; press again to stop and transcribe. `Esc` cancels without uploading. The transcript inserts at the cursor without submitting, with any model/provider.
 
-**Requirements.** A ChatGPT login: the same `/login` OpenAI/ChatGPT OAuth used by the `openai-codex` provider. An API key does not work. Without a valid login zut reports `Dictation needs a ChatGPT login (/login)` or `ChatGPT login expired, run /login`; silent recordings report `No speech detected`.
+Below the editor, red `● REC mm:ss` shows the recorder and live microphone levels. Upload shows a spinner, duration, size, and service; insertion briefly shows word count, service, and transcription time.
 
-**Recorder.** zut uses the first of `pw-record`, `parecord`, or `ffmpeg` found on `PATH` (`ffmpeg` reads PulseAudio on Linux and AVFoundation `:0` on macOS). Windows has no auto-detection: set `dictation.recorder` to an `ffmpeg` DirectShow command such as `["ffmpeg", "-loglevel", "error", "-f", "dshow", "-i", "audio=Microphone (device name)", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", "{output}"]`, without `-nostdin` so it can be stopped gracefully.
+**Requirements.** Use `/login` OpenAI/ChatGPT OAuth (as for `openai-codex`), not an API key. Errors: `Dictation needs a ChatGPT login (/login)`, `ChatGPT login expired, run /login`, or `No speech detected` for silence.
 
-**Configuration.** All keys are optional, in `$ZUT_HOME/config.json`:
+**Recorder.** First on `PATH`: `pw-record`, `parecord`, then `ffmpeg` (PulseAudio on Linux; AVFoundation `:0` on macOS). Windows requires `dictation.recorder`, e.g. `["ffmpeg", "-loglevel", "error", "-f", "dshow", "-i", "audio=Microphone (device name)", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", "{output}"]`. Omit `-nostdin` for graceful stopping.
+
+**Configuration.** Optional keys in `$ZUT_HOME/config.json`:
 
 ```json
 {
@@ -993,32 +1049,32 @@ Press `Alt+V` in the editor to record from the microphone, then `Alt+V` again to
 }
 ```
 
-- `recorder`: command argv (no shell) containing the `{output}` placeholder; it must write a WAV file.
-- `max_seconds`: recording is stopped and transcribed automatically after this many seconds. Default `600`, allowed `1`–`1800`; any other value makes config loading fail.
-- `language`: ISO-639-1 hint such as `fr`. Omit it to auto-detect.
+- `recorder`: argv, no shell; must contain `{output}` and write WAV.
+- `max_seconds`: auto-stop/transcribe timeout; default `600`, range `1`–`1800`. Other values fail config loading.
+- `language`: ISO-639-1 hint, e.g. `fr`; omitted means auto-detect.
 
-**Privacy and limitations.** Audio is recorded to a private temporary WAV (16 kHz, mono) and deleted after transcription. It is uploaded to ChatGPT's private, undocumented dictation endpoint (`chatgpt.com/backend-api/transcribe`), which may change or stop working without notice. OpenAI retains uploaded audio (reportedly 30 days).
+**Privacy and limitations.** Private temporary WAV (16 kHz mono), deleted after transcription. Uploads go to ChatGPT's private, undocumented `chatgpt.com/backend-api/transcribe`, which may change or stop without notice. OpenAI retains audio (reportedly 30 days).
 
 ## Inline images
 
-When a tool returns an image (for example `read` on a PNG), zut renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZUT_INLINE_IMAGES` env var:
+Tool images (e.g. `read` on PNG) render inline in **Ghostty**, **Kitty**, **iTerm2**, and **WezTerm**. Other terminals show MIME type, dimensions, and byte size. `ZUT_INLINE_IMAGES` controls this:
 
 | Value | Effect |
 |---|---|
-| unset (default) | Auto-detect based on `TERM_PROGRAM`; use the text placeholder inside VS Code and Herdr. |
-| `iterm`, `iterm2` | Force the iTerm2 OSC 1337 protocol. |
-| `kitty` | Force the Kitty graphics protocol. |
-| `off`, `none` | Always use the text placeholder. |
+| unset (default) | Detect via `TERM_PROGRAM`; placeholders in VS Code and Herdr. |
+| `iterm`, `iterm2` | Force iTerm2 OSC 1337. |
+| `kitty` | Force Kitty graphics. |
+| `off`, `none` | Always show placeholders. |
 
-Herdr's Kitty graphics support is currently experimental, so zut does not enable inline images there automatically. After enabling `experimental.kitty_graphics` in Herdr, set `ZUT_INLINE_IMAGES=kitty` to opt in.
+Herdr support is experimental: enable `experimental.kitty_graphics`, then opt in with `ZUT_INLINE_IMAGES=kitty`.
 
-Frames containing images are full-repainted (no differential diff) to prevent stale image pixels from lingering through scroll. That costs one terminal flash per image-containing frame; set `ZUT_INLINE_IMAGES=off` if that bothers you.
+Image frames fully repaint to prevent stale pixels on scroll, costing one terminal flash per frame. Use `ZUT_INLINE_IMAGES=off` to avoid it.
 
 ## Tool rendering
 
-By default each tool call (bash, read, write, edit, worktree, grep, lsp) renders inside a bordered panel — a `┌─ header ─┐`, `│`-prefixed body rows, and a `└─┘` footer. On a screen with many calls the borders can read as busy, so zut also offers a **flat** mode: a single quiet header line per call (`▌ bash …`) with indented, border-free output. Same information — tool name, arg summary, streamed output, the `... (N more lines, ctrl+o to expand)` truncation — just no frame.
+Tool calls (bash, read, write, edit, worktree, grep, lsp) default to bordered panels (`┌─ header ─┐`, `│` body, `└─┘` footer). Flat mode uses `▌ bash …` and indented output. Both show tool name, args, streamed output, and `... (N more lines, ctrl+o to expand)` truncation.
 
-Set the `tool_render` key in `$ZUT_HOME/config.json`:
+In `$ZUT_HOME/config.json`:
 
 ```json
 {
@@ -1028,41 +1084,41 @@ Set the `tool_render` key in `$ZUT_HOME/config.json`:
 
 | Value | Effect |
 |---|---|
-| unset / `"box"` (default) | Each tool call is wrapped in a bordered panel. |
-| `"flat"` | Boxless: a quiet header line plus indented output. |
+| unset / `"box"` (default) | Bordered panels. |
+| `"flat"` | Header and indented output, no borders. |
 
-The `ZUT_FLAT_TOOLS` env var overrides the config for a single run, which is handy for trying it without editing the file:
+`ZUT_FLAT_TOOLS` overrides config for one run:
 
 | Value | Effect |
 |---|---|
-| `1`, `true`, `yes`, `on`, `flat` | Force flat rendering. |
-| `0`, `false`, `no`, `off`, `box` | Force the bordered panel. |
-| unset | Fall back to the `tool_render` config key. |
+| `1`, `true`, `yes`, `on`, `flat` | Force flat. |
+| `0`, `false`, `no`, `off`, `box` | Force boxes. |
+| unset | Use `tool_render`. |
 
 ```sh
 ZUT_FLAT_TOOLS=1 zut   # flat, just this run
 ZUT_FLAT_TOOLS=0 zut   # boxes, even if config.json says "flat"
 ```
 
-Either way, theme colors still drive the rendering (the header uses your accent/foreground, output uses the tool-output color) and `ctrl+o` still expands a truncated result.
+Both use theme colors (accent/foreground headers, tool-output body); `ctrl+o` expands truncated results.
 
 ### Tool arg width
 
-The header line for a tool call shows the tool name plus a one-line summary of its primary argument — a `path`, a `command`, or a query. That summary is truncated to 60 cells by default (`web_answer What is the best architecture to implement resilience wit...`). On a wide terminal that can clip long queries more than you'd like, so set the `ZUT_TOOL_ARG_WIDTH` env var to raise (or lower) the limit:
+Headers summarize the primary `path`, `command`, or query on one line, truncated at 60 cells (e.g. `web_answer What is the best architecture to implement resilience wit...`). Override with:
 
 ```sh
-ZUT_TOOL_ARG_WIDTH=120 zut   # allow up to 120 cells before truncating
+ZUT_TOOL_ARG_WIDTH=120 zut   # up to 120 cells
 ```
 
 | Value | Effect |
 |---|---|
-| unset (default) | Truncate the arg summary at 60 cells. |
-| integer in `[20, 500]` | Truncate at that many cells instead. |
-| anything else | Ignored; falls back to the 60-cell default. |
+| unset (default) | 60 cells. |
+| integer in `[20, 500]` | Use this many cells. |
+| anything else | Fall back to 60. |
 
 ## Compact input
 
-By default a message you send renders as a padded, background-tinted bubble: a blank tinted row above and below the text, with a `▌` accent bar down the left. So even a one-line prompt occupies three rows. Set `compact_input` to collapse it to a single quiet `▌ your text` gutter line per wrapped row — no padding rows, no background tint.
+Sent messages default to background-tinted bubbles with a left `▌` bar and blank padding rows above/below (three rows for one line). `compact_input` removes tint and padding, leaving `▌ your text` per wrapped row:
 
 ```json
 {
@@ -1072,10 +1128,10 @@ By default a message you send renders as a padded, background-tinted bubble: a b
 
 | Value | Effect |
 |---|---|
-| unset / `false` (default) | Padded, background-tinted user bubble. |
-| `true` | One quiet gutter line per wrapped row. |
+| unset / `false` (default) | Padded, tinted bubble. |
+| `true` | One gutter line per wrapped row. |
 
-The `ZUT_COMPACT_INPUT` env var overrides the config for a single run (`1`/`true`/`on`/`compact` force compact; `0`/`false`/`off`/`bubble` force the bubble):
+`ZUT_COMPACT_INPUT` overrides config: `1`/`true`/`on`/`compact` forces compact; `0`/`false`/`off`/`bubble` forces bubbles.
 
 ```sh
 ZUT_COMPACT_INPUT=1 zut   # compact, just this run
@@ -1083,12 +1139,21 @@ ZUT_COMPACT_INPUT=1 zut   # compact, just this run
 
 ## Queued messages
 
-You can keep typing while the agent is working. Pressing `enter` during a turn steers the message, including pasted screenshots, into the active turn instead of waiting for a separate turn. It appears above the status bar as `sliding in: <text> [image]` and is delivered before the next model call. The currently running tool finishes normally; any remaining calls in that batch are skipped with error results so the agent can read your message and reconsider them. Sub-agent reports and other host events do not skip tools. Submit as many messages as you want; they are injected in order. Pending messages remain visible until injected. Telegram bot messages instead wait for their own turns so each submission receives its own reply. If the turn ends before reading an accepted message, it continues in a follow-up turn; during compaction, input waits until compaction finishes. `alt+up` returns the most recently queued user message and its image markers to the input for editing, skipping sub-agent reports and other host events. `esc` cancels the active turn, restores the most recent queued message in the same way, and drops any remaining stale follow-ups; `ctrl+c` never interrupts a busy turn. In daemon mode, if you edit the input while a queued-message recall is in flight, the recalled draft and its images are appended after your new input on a new line. Only one recall runs at a time; another `esc` requests cancellation after retrieval finishes. With no known queued user message, `alt+up` keeps its normal editor/scroll navigation. In daemon mode `ctrl+c` opens the quit/detach menu described above; in in-process mode it arms the exit hint, and a second `ctrl+c` within two seconds exits zut.
+While the agent works, `enter` steers text and screenshots into its active turn. Pending messages appear above the status bar as `sliding in: <text> [image]` until delivered, in order, before the next model call.
 
-To recover your most recently queued message back into the editor (to tweak it before it runs), press `Alt+↑` (`Option+↑` on macOS). In Vev, use `Alt+Shift+↑` because `Alt+↑` is reserved for pane navigation. In VS Code's integrated terminal on macOS, use `Option+Shift+↑`. zut's hint line adapts based on `$TERM_PROGRAM` and appears only when a user message is available to recover.
+- The running tool finishes; remaining calls in its batch get skipped with error results so the agent can reconsider. Sub-agent reports/host events do not skip tools.
+- Submit any number. Unread accepted messages continue in a follow-up turn; compaction delays delivery until it finishes.
+- Telegram submissions wait for separate turns and replies.
+- `alt+up` recalls the newest queued user message with image markers, skipping host events/reports. Without a known message, normal editor/scroll navigation applies.
+- `esc` cancels the turn, recalls that message, and drops stale follow-ups. `ctrl+c` never interrupts a busy turn.
+- Daemon recall appends the draft/images on a new line if you edit during retrieval. Only one recall runs; another `esc` requests cancellation after retrieval.
+- Daemon `ctrl+c` opens the quit/detach menu above. In-process, it arms the exit hint; repeat within two seconds to exit.
 
-Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/info`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+Recall keys: `Alt+↑` (`Option+↑` on macOS); `Alt+Shift+↑` in Vev (pane navigation owns `Alt+↑`); `Option+Shift+↑` in macOS VS Code terminals. The `$TERM_PROGRAM`-aware hint appears only when a user message can be recovered.
 
+Busy slash commands:
+- Immediate: `/help`, `/info`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`.
+- Cancel the turn first: `/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`.
 
 ## Keys (interactive mode)
 
@@ -1098,31 +1163,31 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 |---|---|
 | `enter` | Submit (steers the active turn if the agent is busy). |
 | `alt+enter` | Newline. |
-| `tab` | Complete the selected slash command, file, or path token; otherwise cycle to the next model profile (empty slots open the picker). |
-| `shift+tab` | Cycle to the previous model profile (empty slots open the picker). |
-| `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
-| `ctrl+c` | Clear the input and queue while idle. Otherwise, in daemon mode show Q quit / D detach / Esc cancel; Ctrl+C again forces quit. In-process mode: arm the exit hint; press again within 2s to exit. Use `esc` outside the menu to cancel a running turn. |
+| `tab` | Complete selected slash command/file/path; otherwise next model profile (empty slot opens picker). |
+| `shift+tab` | Previous model profile (empty slot opens picker). |
+| `esc` | Busy: cancel turn. Idle: clear input. Two parsed bare `Esc` presses within 500 ms open `/session tree` only with an idle, empty editor. Dialogs, busy/queued work, and modified keys retain precedence. |
+| `ctrl+c` | Idle: clear input/queue. Otherwise daemon: Q quit / D detach / Esc cancel menu; Ctrl+C again forces quit. In-process: exit hint; repeat within 2s to exit. Outside the menu, `esc` cancels running turns. |
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
-| `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
-| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, worktree, grep, glob, lsp, and web_search outputs over ~12 lines). |
-| `ctrl+r` | Cycle through the reasoning levels supported by the active model. The selected level applies to subsequent model calls and persists to `config.json`. |
-| `ctrl+1` ... `ctrl+9` | Activate a persistent model + reasoning + fast-mode profile; empty slots open the model picker. French AZERTY Ctrl + top-row symbols also work when forwarded by the terminal. Rejected while a turn is running. See [Model profiles](#model-profiles); `/profile N` is the terminal-independent fallback. |
-| `alt+v` | Start dictation; press again to stop and transcribe. `esc` cancels a recording. Requires a ChatGPT login. See [Dictation](#dictation). |
-| `@` | Open the file picker. Browse files and directories in the working directory. |
+| `ctrl+v` | Paste text into focused chat, side chat, dialog, filter, or credential input. Main chat attaches images to the next prompt via macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`. Linux text uses `wl-paste`, `xclip`, or `xsel`; native bracketed paste needs none. |
+| `ctrl+o` | Expand/collapse read, write, edit, bash, worktree, grep, glob, lsp, web_search results over ~12 lines. |
+| `ctrl+r` | Cycle supported reasoning levels; applies to future calls and persists in `config.json`. |
+| `ctrl+1` ... `ctrl+9` | Activate persistent model/reasoning/fast-mode profile; empty slots open picker. French AZERTY Ctrl + top-row symbols work if forwarded. Rejected during turns. See [Model profiles](#model-profiles); fallback: `/profile N`. |
+| `alt+v` | Start/stop-and-transcribe dictation; `esc` cancels. Needs ChatGPT login. See [Dictation](#dictation). |
+| `@` | Browse working-directory files/directories. |
 
 ### File picker (`@`)
 
 | Key | Action |
 |---|---|
-| `@` | Open the file picker (type after a space or at the start of input). |
+| `@` | Open picker at input start or after a space. |
 | `up`, `down` | Navigate the file list. |
 | `right` | Open the selected directory. |
 | `left` | Go back to the parent directory. |
-| `enter` | Select the file or directory and insert it as a chip (`[file:name]` or `[dir:name/]`). |
+| `enter` | Insert selected file/directory chip (`[file:name]` or `[dir:name/]`). |
 | `esc` | Close the file picker. |
 
-Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only entries containing "read"). Selected files are inserted as compact chips that expand to the full path on submit. Dragged-and-dropped files and directories also collapse to chips automatically.
+Filter with `@read` to show entries containing "read". File chips expand to full paths on submit. Dropped files and directories also become chips.
 
 ### Editor line navigation
 
@@ -1132,132 +1197,119 @@ Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only
 | `alt+left`, `alt+right` | Jump one word back or forward. |
 | `ctrl+u`, `ctrl+k` | Delete to start or end of line. |
 | `ctrl+w`, `alt+backspace` | Delete the previous word. |
-| `up`, `down` | Move within multi-line input. At the top edge, `up` recalls previous prompts and `down` moves forward through prompt history. At the bottom edge, `down` opens the resident-subagent picker when a child exists, preserving the draft. |
+| `up`, `down` | Move in multiline input. Top edge: `up`/`down` browse older/newer prompts. Bottom edge: `down` opens resident-subagent picker if children exist, preserving draft. |
 
 ### Chat scroll
 
 | Key | Action |
 |---|---|
 | `pgup`, `pgdn` | Scroll one page up or down. |
-| `up`, `down` (editor empty, not browsing prompt history) | Scroll three lines up or down. When resident children exist, `down` opens their picker first. This is how the mouse wheel reaches the scroll logic on most terminals. |
+| `up`, `down` (editor empty, not browsing prompt history) | Scroll three lines; `down` opens resident-child picker first if available. Most terminals route the mouse wheel here. |
 
 ## Extensions
 
-zut can be extended in any language via a subprocess + JSON-RPC protocol. Extensions can register slash commands, expose tools to the model, intercept tool calls (block or rewrite args), gate whole turns before the model is called, and rewrite the assistant's visible text before it reaches the user. None are installed by default; opt in explicitly. Hot-reload any time with `/reload-ext`.
+Opt-in subprocess JSON-RPC extensions work in any language; none are installed by default. They register commands/tools, block or rewrite tool args, gate turns before model calls, and rewrite visible assistant text. Hot-reload with `/reload-ext`.
 
 ### Install and manage
 
 ```bash
 zut ext install <path|git-url>   # copy / clone into $ZUT_HOME/extensions/
-zut ext install --build=go <path> # explicitly build and install local Go source
-zut ext list                      # show installed extensions
-zut ext doctor                    # diagnose load, registration, and conflict issues
-zut ext logs <name> [-f]          # cat or tail the extension's stderr log
-zut ext enable <name>             # re-enable a disabled extension
-zut ext disable <name>            # disable without removing
-zut ext remove <name>             # delete an extension directory
+zut ext install --build=go <path> # explicitly build/install local Go source
+zut ext list                      # installed extensions
+zut ext doctor                    # load, registration, conflict diagnostics
+zut ext logs <name> [-f]          # print / tail stderr log
+zut ext enable <name>             # re-enable
+zut ext disable <name>            # keep files
+zut ext remove <name>             # delete directory
 ```
 
-For local installs, zut validates `extension.json` and any executable path
-relative to the extension directory before reporting success. It never runs a
-build implicitly. Use `zut ext install --build=go <path>` to explicitly build a
-local Go extension; other source-based extensions must provide their runtime
-artifact or launcher themselves. A failed validation or build leaves no
-partial installation behind.
+Local installs validate `extension.json` and extension-relative executable paths. Builds are never implicit: use `--build=go` for local Go source; other languages must supply artifacts/launchers. Failed validation/builds leave no partial install.
 
-`zut ext doctor` keeps normal extension startup fail-soft, but gives
-you an explicit troubleshooting view: manifest errors, disabled or
-shadowed extensions, subprocess load errors, ready/auto-ready status,
-registered commands/tools, registration conflicts, warnings, and the
-stderr log path.
+`doctor` reports manifest errors, disabled/shadowed extensions, load errors, ready/auto-ready state, commands/tools, conflicts, warnings, and stderr log paths; normal startup remains fail-soft.
 
-For development, point `zut --ext <path>` at a working directory and skip the install step entirely. Repeatable; takes precedence over installed extensions of the same name.
+Develop with repeatable `zut --ext <path>`: no install, and working copies override installed namesakes.
 
 ### Updating extensions
 
-`zut update` refreshes the zut binary **and** every installed extension that lives in a git checkout. If a running daemon reports a version different from the installed binary, the update prints a reminder to run `zut daemon restart`: the daemon keeps using the old binary until restarted. It never restarts automatically. Use `zut update --restart-daemon` to install and then perform the same restart as `zut daemon restart` (starting a daemon if none is running); sessions are restored idle, not resumed mid-turn. When zut is already up to date, the reminder still appears for a daemon running another version, and `--restart-daemon` restarts only such a daemon; otherwise it prints `zut: daemon already runs <version>; nothing to restart`. `zut update --check` only checks for an update and cannot be combined with `--restart-daemon`. A restart failure is reported as an error, but the new binary remains installed.
+`zut update` updates the binary and installed git extensions. Daemons keep the old binary until `zut daemon restart`; version mismatches print a reminder, even when zut is up to date. No automatic restart.
 
-Per-extension behaviour:
+`zut update --restart-daemon` installs then runs the equivalent restart (starts a missing daemon). Sessions restore idle, not mid-turn. If already up to date, only a mismatched daemon restarts; otherwise: `zut: daemon already runs <version>; nothing to restart`. Restart failure returns an error but leaves the new binary installed. `zut update --check` only checks; it cannot combine with `--restart-daemon`.
 
-- Disabled extensions are skipped.
-- Extensions without a `.git/` directory (installed by `zut ext install ./local-path`) are skipped — there is no remote to pull from.
-- For the rest, zut stashes any dirty worktree state (including untracked runtime files like `todos.json` or `config.json`), runs `git pull --ff-only`, and pops the stash. If the pop produces conflicts, the conflict markers are left in place and you'll see a warning.
-- Diverged branches, offline pulls, or any other git failure are reported as `failed` and the next extension is processed. `zut update` itself never aborts because of an extension.
-- zut does **not** run any build step (`go build`, `npm install`, `make`) after the pull. Extension authors are expected to commit the runnable artifact (binary, transpiled JS, etc.). If you need a build, run it explicitly, reinstall the extension, or use `/reload-ext` for a working-tree copy.
+Per extension:
+- Skip disabled extensions and those without `.git/` (e.g. `zut ext install ./local-path`).
+- Stash dirty/untracked files (e.g. `todos.json`, `config.json`), `git pull --ff-only`, then pop. Pop conflicts leave markers and a warning.
+- Git failures (divergence, offline, etc.) report `failed` and continue; they never abort `zut update`.
+- No post-pull build (`go build`, `npm install`, `make`). Authors should commit runnable artifacts (binary/transpiled JS). Otherwise build explicitly, reinstall, or `/reload-ext` a working copy.
 
 ### Theme-only extensions
 
-An extension may ship only a theme: `extension.json` plus `theme.json` (or `themes/theme.json`) and no executable. zut loads it without spawning a subprocess and shows it in `/settings` with source information. See [docs/themes.md](docs/themes.md).
+`extension.json` plus `theme.json` or `themes/theme.json` needs no executable/subprocess. Themes appear in `/settings` with their source. See [docs/themes.md](docs/themes.md).
 
 ### Reference
 
-`examples/extensions/` ships reference implementations in Go, TypeScript, Node, and shell. See [docs/extensions.md](docs/extensions.md) for the full protocol and the SDK API (`packages/agent/ext`).
+Go, TypeScript, Node, and shell examples: `examples/extensions/`. Protocol and SDK API (`packages/agent/ext`): [docs/extensions.md](docs/extensions.md).
 
 ## Skills
 
-A skill is a per-folder `SKILL.md` file with a YAML frontmatter header. zut discovers skills at startup, surfaces their names in the system prompt, and exposes a built-in `skill` tool the model uses to load the body on demand.
+Skills are folder-local `SKILL.md` files with YAML frontmatter. Startup discovery adds names to the system prompt; the built-in `skill` tool loads bodies on demand.
 
-By default zut loads built-in skills plus user-installed skills from:
-
+Defaults: built-ins plus user skills in:
 - `./.zut/skills/<name>/SKILL.md` (project)
 - `$ZUT_HOME/skills/<name>/SKILL.md` (global)
-- `./.claude/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md` (Claude-compatible layout)
-- `./.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md` (agent-compatible layout)
+- `./.claude/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md` (Claude-compatible)
+- `./.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md` (agent-compatible)
 
-User skill roots are scanned recursively. A nested skill keeps its frontmatter `name` and can also be loaded by its slash-separated path relative to the skill root, such as `systems-backend/subskills/golang-patterns`.
+User roots scan recursively. Nested skills retain frontmatter `name` and accept root-relative slash paths, e.g. `systems-backend/subskills/golang-patterns`.
 
-See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips, and example skills under `examples/skills/`.
+Frontmatter, authoring, and `examples/skills/`: [docs/skills.md](docs/skills.md).
 
 ## Telegram bot (bridge)
 
-zut can run as a telegram bot so you can DM it from your phone. Both forms run inside the daemon: **a bridge on the TUI session** (the session you're typing in mirrors into Telegram) or **a bot service** (a headless daemon session of its own).
+Both modes run in the daemon: bridge the current TUI session, or run a separate headless bot session for phone DMs.
 
 ### From inside the TUI
 
-Type `/telegram` in the running TUI to open a picker with **connect**, **disconnect**, and **status**. When connected:
+`/telegram` opens **connect**, **disconnect**, **status**. Direct commands: `/telegram connect`, `/telegram disconnect`, `/telegram status` (alias `/tg`).
 
-- DMs from the paired user become prompts in the **same** session you're typing in, so you can continue a conversation from the terminal on your phone and back again.
-- Messages you type in the TUI are mirrored into the Telegram thread prefixed `you: ...` and the assistant's replies come back prefixed `zut: ...`, so the Telegram chat stays a complete record of both sides of the conversation.
-- Messages sent from Telegram show up as your own bubble in Telegram (no mirror) and the assistant's reply to them comes back bare (no prefix).
-- The status bar shows a `- tg -` tag while the bridge is active.
-- `/telegram connect` / `/telegram disconnect` / `/telegram status` (or `/tg`) also work as direct commands without the picker.
+When connected:
+- Paired-user DMs prompt the same session; switch between phone and terminal.
+- TUI messages mirror as `you: ...`, replies as `zut: ...`.
+- Telegram messages remain their own bubbles (no mirror); replies have no prefix.
+- Status bar shows `- tg -`.
 
-The bridge is hosted by the daemon next to the session, so it keeps working after `/detach`. It refuses to start while the bot service (below) is polling the same bot, since two long-poll consumers race on every update and drop messages.
+The daemon bridge survives `/detach`. It refuses to poll a bot already used by the bot service: competing long polls lose messages.
 
 ### Bot service
 
-For a bot that is not tied to a TUI:
-
 ```bash
-zut telegram-bot setup     # paste a BotFather token, verify, save
-zut telegram-bot start     # run the bot in the daemon (starts the daemon if needed)
-zut telegram-bot stop      # stop the bot and close its session
-zut telegram-bot logs -f   # bot lines of the daemon log (omit -f to print and exit)
-zut telegram-bot status    # config (token masked) + whether the daemon runs it
-zut telegram-bot reset     # forget the token and paired user
-# short alias: `zut tg ...` is accepted for every subcommand
+zut telegram-bot setup     # paste/verify/save BotFather token
+zut telegram-bot start     # run in daemon; start daemon if needed
+zut telegram-bot stop      # stop bot and close session
+zut telegram-bot logs -f   # bot daemon-log lines; omit -f to print/exit
+zut telegram-bot status    # masked config + running state
+zut telegram-bot reset     # forget token and paired user
+# `zut tg ...` aliases every subcommand
 ```
 
-The bot runs as one headless daemon session (visible in `zut ls`) created with the cwd, environment and flags given to `start`. It is not restarted after a daemon restart: the next `start` creates a new session. Previous transcripts remain available in the resumable sessions list.
+One headless session appears in `zut ls`, using `start`'s cwd, environment, and flags. Daemon restarts do not restart it; the next `start` creates a new session. Old transcripts remain resumable.
 
-Setup flow:
+Setup:
+1. Ask [@BotFather](https://t.me/BotFather) for `/newbot`; copy its token.
+2. Run `zut telegram-bot setup`; paste the token.
+3. Run `zut telegram-bot start` in the agent's working directory.
+4. Send the bot `/start`. The first user claims it (`allowed_user_id`); all others are rejected.
 
-1. Talk to [@BotFather](https://t.me/BotFather) on telegram, run `/newbot`, copy the token it gives you.
-2. Run `zut telegram-bot setup` and paste the token when prompted.
-3. Run `zut telegram-bot start` in the directory you want the agent to operate in.
-4. Open your bot on telegram, send `/start`. The first user to do this claims the bridge (stored as `allowed_user_id`); every other user is rejected.
+DMs become prompts. Photos and `image/*` documents download for vision-capable models. Case-insensitive bot commands: `/help`, `/status`, `/stop` (cancel turn). Config: `$ZUT_HOME/bot.json`, mode 0600.
 
-From then on, any DM you send is forwarded to the agent as a user prompt. Attached photos or `image/*` documents are downloaded and passed to vision-capable models. In-bot telegram commands are case-insensitive: `/help`, `/status`, `/stop` (cancel the current turn). Config lives in `$ZUT_HOME/bot.json` (mode 0600).
+Both bridges remove existing webhooks before long polling, preserving pending updates. Telegram forbids simultaneous webhooks and `getUpdates`; do not share this token with a webhook service.
 
-Starting either Telegram bridge removes any webhook configured for that bot before long polling begins, while preserving pending updates. Telegram does not allow webhooks and `getUpdates` polling at the same time, so do not share the bot token with another service that expects to keep a webhook active.
-
-Bot mode respects the usual zut flags: `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, and so on. Run `zut tg start -c --model claude-opus-4-1` to resume the latest session on Opus, for example.
+Normal flags apply: `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, etc. Example: `zut tg start -c --model claude-opus-4-1` resumes the latest session on Opus.
 
 ### Architecture: protocol-agnostic bot core
 
-The messenger functionality is split in two layers. A generic, protocol-agnostic core lives in `packages/agent/modes/bot`: it owns the turn queue, agent prompting, built-in command dispatch (`/start`, `/help`, `/status`, `/stop`), status formatting, and per-turn credential refresh. Concrete transports implement the small `BotAdapter` interface (inbound polling, sending replies, a typing indicator, and optional protocol-specific status text); the Telegram support in `packages/agent/modes/telegram` is one such adapter.
+`packages/agent/modes/bot` owns turn queues, prompting, `/start`, `/help`, `/status`, `/stop`, status formatting, and per-turn credential refresh. Transports implement `BotAdapter`: inbound polling, replies, typing indicator, optional protocol-specific status. Telegram's adapter is in `packages/agent/modes/telegram`.
 
-This means additional messaging backends (Discord, Slack, Signal, and similar) can be added by implementing `BotAdapter` in a new package and wiring up a subcommand. No changes to the runner, agent, or core are required. Channel IDs are opaque strings owned by the adapter, so the shared runner stays free of protocol-specific types.
+Add Discord, Slack, Signal, etc. with a new adapter package and subcommand; no runner, agent, or core changes. Channel IDs are adapter-owned opaque strings, not protocol-specific shared types.
 
 ## Development
 
@@ -1277,23 +1329,23 @@ make release VERSION=0.1.0 # cross-compile release binaries
 Source layout (single Go module, four packages under `packages/`):
 
 ```
-cmd/zut/                              main()
-packages/provider/                    LLM client surface, model catalog, streaming clients
-packages/provider/auth/               credential store, api-key probe, oauth, login server
-packages/core/                        agent loop, sessions, cost tracking, compaction
-packages/tui/                         terminal raw-mode, input parser, editor, renderer, markdown, view
-packages/agent/                       cli wiring, arg parsing, system prompt, config
-packages/agent/lsp/                    LSP clients, server discovery, linters, diagnostics
-packages/agent/extensions/            extension subprocess manager
-packages/agent/extproto/              extension wire-format types
-packages/agent/modes/                 interactive tui, print, json, dialogs
-packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
-packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, worktree, grep, glob, lsp, web search, goals, sandbox
-packages/agent/skills/                skill discovery, frontmatter parser, skill tool
-packages/agent/subagents/             named profiles and resident background runtime
-packages/agent/sdk/                   public Go SDK for embedding zut in-process (package sdk)
-packages/agent/ext/                   public Go SDK for writing extensions (package ext)
+cmd/zut/  main()
+packages/provider/  LLM client surface, model catalog, streaming clients
+packages/provider/auth/  credential store, api-key probe, oauth, login server
+packages/core/  agent loop, sessions, cost tracking, compaction
+packages/tui/  terminal raw-mode, input parser, editor, renderer, markdown, view
+packages/agent/  cli wiring, arg parsing, system prompt, config
+packages/agent/lsp/  LSP clients, server discovery, linters, diagnostics
+packages/agent/extensions/  extension subprocess manager
+packages/agent/extproto/  extension wire-format types
+packages/agent/modes/  interactive tui, print, json, dialogs
+packages/agent/modes/bot/  protocol-agnostic bot runner (BotAdapter interface)
+packages/agent/modes/telegram/  telegram adapter, api client, daemon
+packages/agent/tools/  read, write, edit, bash, worktree, grep, glob, lsp, web search, goals, sandbox
+packages/agent/skills/  skill discovery, frontmatter parser, skill tool
+packages/agent/subagents/  named profiles and resident background runtime
+packages/agent/sdk/  public Go SDK for embedding zut in-process (package sdk)
+packages/agent/ext/  public Go SDK for writing extensions (package ext)
 ```
 
 Downstream consumers can depend on individual packages:
