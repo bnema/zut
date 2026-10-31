@@ -155,8 +155,8 @@ func formatResidentSubagentActivityAge(started, now time.Time) string {
 }
 
 // residentSnapshotsFromInfo projects the daemon-published resident summaries
-// for the activity panel. Summaries carry no usage or
-// activity detail, so turn age falls back to UpdatedAt.
+// for the activity panel, including live usage and activity metadata. Missing
+// timestamps from older daemons retain the UpdatedAt fallback.
 func residentSnapshotsFromInfo(residents []session.ResidentSummary, limit int) ([]subagents.ResidentSnapshot, int) {
 	out := make([]subagents.ResidentSnapshot, 0, len(residents))
 	for _, r := range residents {
@@ -164,7 +164,10 @@ func residentSnapshotsFromInfo(residents []session.ResidentSummary, limit int) (
 		if state != subagents.ResidentQueued && state != subagents.ResidentRunning {
 			continue
 		}
-		out = append(out, subagents.ResidentSnapshot{ID: r.ID, Profile: r.Profile, State: state, UpdatedAt: r.UpdatedAt})
+		out = append(out, subagents.ResidentSnapshot{ID: r.ID, Profile: r.Profile, State: state, UpdatedAt: r.UpdatedAt,
+			TurnStartedAt: r.TurnStartedAt, ActivityUpdatedAt: r.ActivityUpdatedAt,
+			WaitingForModel: r.WaitingForModel, Usage: r.Usage, ContextUsed: r.ContextUsed,
+			ContextMax: r.ContextMax, Subscription: r.Subscription})
 	}
 	total := len(out)
 	if limit >= 0 && len(out) > limit {

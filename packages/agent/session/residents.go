@@ -72,7 +72,10 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 		if r.OwnedElsewhere {
 			continue
 		}
-		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt, HistoryRev: r.HistoryRev})
+		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt, HistoryRev: r.HistoryRev,
+			TurnStartedAt: r.TurnStartedAt, ActivityUpdatedAt: r.ActivityUpdatedAt,
+			WaitingForModel: r.WaitingForModel, Usage: r.Usage, ContextUsed: r.ContextUsed,
+			ContextMax: r.ContextMax, Subscription: r.Subscription})
 	}
 	return out
 }
