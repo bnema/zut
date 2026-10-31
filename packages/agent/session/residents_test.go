@@ -11,6 +11,7 @@ import (
 	. "github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,10 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 			m.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { accepted = f })
 			m.EXPECT().SetCompletionObserver(mock.Anything).Run(func(f func(subagents.ResidentCompletion) bool) { completed = f })
 			m.EXPECT().SetUpdateObserver(mock.Anything).Run(func(f func(string)) { update = f })
-			m.EXPECT().Snapshot().Return([]subagents.ResidentSnapshot{{ID: "child", State: subagents.ResidentRunning, Profile: "worker"}})
+			live := subagents.ResidentSnapshot{ID: "child", State: subagents.ResidentRunning, Profile: "worker",
+				TurnStartedAt: time.Now().UTC().Add(-time.Minute), ActivityUpdatedAt: time.Now().UTC(),
+				WaitingForModel: true, Usage: provider.Usage{InputTokens: 123}, ContextUsed: 456, ContextMax: 8192, Subscription: true}
+			m.EXPECT().Snapshot().Return([]subagents.ResidentSnapshot{live})
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			c := NewController(ctx, Deps{ResidentManager: m})
 			t.Cleanup(func() { cancel(); <-c.Done() })
@@ -47,6 +51,14 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 			}
 			snapshot, err := c.Snapshot(ctx)
 			require.NoError(t, err)
+			row := snapshot.Info.Residents[0]
+			require.Equal(t, live.TurnStartedAt, row.TurnStartedAt)
+			require.Equal(t, live.ActivityUpdatedAt, row.ActivityUpdatedAt)
+			require.Equal(t, live.WaitingForModel, row.WaitingForModel)
+			require.Equal(t, live.Usage, row.Usage)
+			require.Equal(t, live.ContextUsed, row.ContextUsed)
+			require.Equal(t, live.ContextMax, row.ContextMax)
+			require.Equal(t, live.Subscription, row.Subscription)
 			require.Equal(t, "/workspace", snapshot.Info.Residents[0].Workspace)
 			require.Len(t, []rune(snapshot.Info.Residents[0].Task), 120)
 			completion := subagents.ResidentCompletion{ChildID: "child", TurnID: "turn", Summary: "finished"}

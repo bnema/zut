@@ -88,7 +88,14 @@ type ResidentSummary struct {
 	// HistoryRev changes only when the child's finalized history grows, so
 	// clients can skip history reloads on live-only updates. Absent (zero)
 	// from older daemons.
-	HistoryRev uint64 `json:"history_rev,omitempty"`
+	HistoryRev        uint64         `json:"history_rev,omitempty"`
+	TurnStartedAt     time.Time      `json:"turn_started_at,omitzero"`
+	ActivityUpdatedAt time.Time      `json:"activity_updated_at,omitzero"`
+	WaitingForModel   bool           `json:"waiting_for_model,omitempty"`
+	Usage             provider.Usage `json:"usage,omitzero"`
+	ContextUsed       int            `json:"context_used,omitempty"`
+	ContextMax        int            `json:"context_max,omitempty"`
+	Subscription      bool           `json:"subscription,omitempty"`
 }
 
 // Snapshot is a terminal-free session contract payload.
