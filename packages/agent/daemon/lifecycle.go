@@ -111,6 +111,23 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	defer ln.close()
 	d.log.Debug("startup phase", "phase", "socket listen", "duration", time.Since(t))
 	d.log.Info("daemon started", "pid", os.Getpid(), "version", opts.Version)
+	pprofAddr, pprofDone := startPprof(runCtx, os.Getenv("ZUT_DAEMON_PPROF"), d.log)
+
+	pprofPath := filepath.Join(opts.Home, "daemon.pprof")
+	// Clear stale discovery data even when profiling is disabled or fails.
+	if err := os.Remove(pprofPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.log.Warn("remove pprof address file", "err", err)
+	}
+	if pprofAddr != "" {
+		if err := os.WriteFile(pprofPath, []byte(pprofAddr+"\n"), 0o600); err != nil {
+			d.log.Warn("write pprof address file", "err", err)
+		}
+		defer func() {
+			if err := os.Remove(pprofPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				d.log.Warn("remove pprof address file", "err", err)
+			}
+		}()
+	}
 
 	t = time.Now()
 	d.cleanupPreviousSessions()
@@ -123,6 +140,7 @@ func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	<-runCtx.Done()
 	_ = ln.Close()
 	d.shutdown()
+	<-pprofDone
 	d.log.Info("daemon stopped")
 	return nil
 }

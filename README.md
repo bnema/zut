@@ -580,6 +580,26 @@ On Linux, `zut daemon install` writes a systemd user unit (`~/.config/systemd/us
 
 The socket is `$XDG_RUNTIME_DIR/zut/daemon.sock` (fallback `$ZUT_HOME/run/daemon.sock`; on Windows `%LOCALAPPDATA%\zut\run\daemon.sock`). Set `ZUT_DAEMON_SOCKET` to override it. The log is `$ZUT_HOME/logs/daemon.log`; lock, pid and schedules live in `$ZUT_HOME/daemon/`. Set `ZUT_DAEMON_LOG=debug|info|warn|error` in the daemon's environment to select its log level (default `info`; unrecognized values also use `info`). Restart an already-running daemon to apply a new level. The log rotates at 10 MiB, retaining one backup as `daemon.log.1`, with `0600` file permissions. An oversized existing log rotates on startup; during a run, rotation happens before a write would exceed the limit (individual records are not split). The interactive client writes its startup timings (session created, attached, first frame) to `$ZUT_HOME/logs/client.log` with `0600` permissions. Several clients can append to it at once, so it rotates (to `client.log.1`) only when a client opens it while it is over 10 MiB. Its level follows `ZUT_DAEMON_LOG` in the client's environment. With `ZUT_DAEMON_LOG=debug`, the daemon log also records per-phase timings for daemon startup and session creation (config, MCP servers, extensions, skills, session file) and the stderr of shared MCP servers; at the default level it records `daemon ready total=…` and `session ready total=…`.
 
+Set `ZUT_DAEMON_PPROF=1` (or `true`) in the daemon's environment to enable
+pprof on `127.0.0.1:0`. Empty/unset disables it; another value specifies a
+loopback `host:port` (including port `0` for an automatically assigned port).
+Only loopback IPs and `localhost` (pinned to `127.0.0.1`) are accepted; other
+hosts are refused. The OS chooses a free port for `1`/`true`. The daemon logs the actual bound
+address and writes it to `$ZUT_HOME/daemon.pprof` (removed on shutdown). Listen failures
+are non-fatal, and profiling stops with the daemon. Restart an existing daemon
+to apply this setting. Profiling endpoints expose process data to local users.
+
+```sh
+ZUT_DAEMON_PPROF=1 zut daemon
+go tool pprof http://$(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
+# fish:
+go tool pprof http://(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
+```
+
+These paths use the Linux default. With `ZUT_HOME` set, use that directory;
+with `XDG_STATE_HOME` set, use `$XDG_STATE_HOME/zut`. The macOS default is
+`~/Library/Application Support/zut`, and Windows uses `%LOCALAPPDATA%\zut`.
+
 Limitations:
 
 - Bot services are not restarted after a daemon restart. Run `zut telegram-bot start` again to create a new session and resume polling.

@@ -82,6 +82,14 @@ Usage:
 
 The socket is $XDG_RUNTIME_DIR/zut/daemon.sock (fallback $ZUT_HOME/run/daemon.sock),
 overridable with ZUT_DAEMON_SOCKET. Logs: $ZUT_HOME/logs/daemon.log.
+ZUT_DAEMON_LOG=debug|info|warn|error selects log verbosity (default info).
+ZUT_DAEMON_PPROF=1 (or true) enables pprof on 127.0.0.1:0; alternatively
+set a loopback host:port (port 0 allowed). Empty/unset disables profiling.
+The actual address is logged and saved to $ZUT_HOME/daemon.pprof until shutdown.
+The example uses the Linux default home; adjust for ZUT_HOME or your OS.
+Example: ZUT_DAEMON_PPROF=1 zut daemon
+Then: go tool pprof http://$(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
+Fish: go tool pprof http://(cat ~/.local/state/zut/daemon.pprof)/debug/pprof/heap
 `)
 }
 
