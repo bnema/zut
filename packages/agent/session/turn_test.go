@@ -38,6 +38,7 @@ func TestTurnStreamAndQueue(t *testing.T) {
 	residents.EXPECT().residentsRunStarted().Return().Twice()
 	residents.EXPECT().residentsRunEnded().Return().Twice()
 	residents.EXPECT().residentSummaries().Return(nil).Maybe()
+	residents.EXPECT().residentsRunning().Return(false).Maybe()
 	require.NoError(t, c.call(ctx, func() { c.residentSeam = residents }))
 
 	client := providermocks.NewMockClient(t)

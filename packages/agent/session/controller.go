@@ -245,7 +245,7 @@ func (c *Controller) publish(kind EventKind, data any) {
 }
 func (c *Controller) updateInfo() {
 	run := RunStateIdle
-	if c.turnSeam != nil && c.turnSeam.isBusy() {
+	if (c.turnSeam != nil && c.turnSeam.isBusy()) || (c.residentSeam != nil && c.residentSeam.residentsRunning()) {
 		run = RunStateRunning
 	}
 	compacting := c.compactSeam != nil && c.compactSeam.compacting()
