@@ -40,7 +40,6 @@ type dictationEvent struct {
 	recording    DictationRecording
 	audio        dictation.Result
 	size         int64
-	duration     time.Duration
 	transcribing bool
 	text         string
 	err          error
@@ -157,9 +156,8 @@ func runDictation(ctx context.Context, cfg DictationConfig, stop <-chan struct{}
 	events <- dictationEvent{transcribing: true, audio: audio, size: size}
 	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	began := time.Now()
 	text, err := cfg.Transcriber.Transcribe(requestCtx, provider.AudioInput{Filename: audio.Filename, MIMEType: audio.MIMEType, Reader: f, Language: cfg.Language})
-	events <- dictationEvent{text: text, err: err, duration: time.Since(began)}
+	events <- dictationEvent{text: text, err: err}
 }
 
 // Called only on the main UI loop, including editor insertion.
