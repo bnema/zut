@@ -19,9 +19,25 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+// ErrCorruptResidentJournal identifies invalid durable records, not storage failures.
+var ErrCorruptResidentJournal = errors.New("resident journal: corrupt")
+
+// ErrQuarantinedResidentJournal means this child is excluded from recovery and resume.
+var ErrQuarantinedResidentJournal = errors.New("resident journal: quarantined child is not resumable; start a new subagent")
+
+// ResidentQuarantineError reports a corrupt journal whose quarantine marker
+// was written and whose lease was released cleanly. Later discovery skips the
+// child, so callers may treat it as a one-time notice. Corruption joined with
+// a storage or close failure is never wrapped in this type.
+type ResidentQuarantineError struct{ Err error }
+
+func (e *ResidentQuarantineError) Error() string { return e.Err.Error() }
+func (e *ResidentQuarantineError) Unwrap() error { return e.Err }
+
 var ErrIncompatibleResidentJournal = errors.New("resident journal: incompatible version; start a new subagent")
 
 const (
+	residentQuarantineName     = "quarantined.json"
 	residentMetadataName       = "metadata.json"
 	residentTranscriptName     = "transcript.jsonl"
 	residentResultName         = "result.json"
@@ -441,17 +457,40 @@ func (j *ResidentJournal) publishAgentEvent(event core.AgentEvent) {
 	}
 }
 
+// Marker presence is sufficient: even a damaged marker must not revive a child.
+func checkResidentQuarantine(dir string) error {
+	_, err := os.Lstat(filepath.Join(dir, residentQuarantineName))
+	if err == nil {
+		return ErrQuarantinedResidentJournal
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("resident journal quarantine check: %w", err)
+}
+
 func OpenResidentJournal(root, childID string) (*ResidentJournal, error) {
 	if !residentChildID(childID) {
 		return nil, errors.New("resident journal: invalid child ID")
 	}
 	dir := filepath.Join(root, childID)
+	if err := checkResidentQuarantine(dir); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("resident journal directory: %w", err)
 	}
 	_ = os.Chmod(dir, 0o700)
 	lease, err := acquireResidentLease(dir)
 	if err != nil {
+		return nil, err
+	}
+	// Another owner may have quarantined the child between our first check
+	// and lease acquisition.
+	if err := checkResidentQuarantine(dir); err != nil {
+		if closeErr := lease.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	f, err := os.OpenFile(filepath.Join(dir, residentTranscriptName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -743,12 +782,12 @@ func ReadResidentJournal(path string) ([]residentRecord, error) {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > residentMaxRecordBytes {
-			return nil, errors.New("resident journal: record too large")
+			return nil, fmt.Errorf("%w: record too large", ErrCorruptResidentJournal)
 		}
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			var record residentRecord
 			if decodeErr := json.Unmarshal(line, &record); decodeErr != nil {
-				return nil, fmt.Errorf("resident journal decode: %w", decodeErr)
+				return nil, fmt.Errorf("%w: decode: %w", ErrCorruptResidentJournal, decodeErr)
 			}
 			record.raw = append(record.raw[:0], line...)
 			records = append(records, record)
@@ -833,13 +872,34 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 	if reconcileErr == nil {
 		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
 		if err != nil || len(records) == 0 || records[0].Spec == nil {
-			reconcileErr = errors.New("resident journal: invalid accepted child record")
+			if err != nil {
+				reconcileErr = err
+			} else {
+				reconcileErr = fmt.Errorf("%w: invalid accepted child record", ErrCorruptResidentJournal)
+			}
 		} else {
 			spec = *records[0].Spec
 		}
 	}
+	quarantined := false
+	if errors.Is(reconcileErr, ErrCorruptResidentJournal) {
+		marker := struct {
+			Version int       `json:"version"`
+			Time    time.Time `json:"time"`
+			Error   string    `json:"error"`
+		}{1, time.Now().UTC(), reconcileErr.Error()}
+		if err := writeResidentProjection(dir, residentQuarantineName, marker); err != nil {
+			reconcileErr = errors.Join(reconcileErr, fmt.Errorf("resident journal quarantine: %w", err))
+		} else {
+			quarantined = true
+		}
+	}
 	if closeErr := journal.Close(); closeErr != nil {
 		reconcileErr = errors.Join(reconcileErr, closeErr)
+		quarantined = false
+	}
+	if quarantined {
+		reconcileErr = &ResidentQuarantineError{Err: reconcileErr}
 	}
 	if reconcileErr != nil {
 		return ResidentMetadata{}, ResidentChildSpec{}, reconcileErr
@@ -860,7 +920,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 		return ResidentMetadata{}, err
 	}
 	if len(records) == 0 || records[0].Type != residentRecordAccepted || records[0].Spec == nil {
-		return ResidentMetadata{}, errors.New("resident journal: missing accepted child record")
+		return ResidentMetadata{}, fmt.Errorf("%w: missing accepted child record", ErrCorruptResidentJournal)
 	}
 	if records[0].Version != residentJournalVersion && records[0].Version != residentJournalVersionV2 {
 		return ResidentMetadata{}, ErrIncompatibleResidentJournal
@@ -873,7 +933,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	}
 	spec := *records[0].Spec
 	if spec.ID == "" || spec.SessionID == "" {
-		return ResidentMetadata{}, errors.New("resident journal: invalid accepted child record")
+		return ResidentMetadata{}, fmt.Errorf("%w: invalid accepted child record", ErrCorruptResidentJournal)
 	}
 	// v2 journals carry the removed rollout-budget outcomes and baselines;
 	// they are read with explicit translation below. Translation rebuilds
@@ -898,7 +958,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	toolResults := make(map[string]struct{})
 	for index, record := range records {
 		if index > 0 && record.Type == residentRecordAccepted {
-			return ResidentMetadata{}, errors.New("resident journal: duplicate accepted child record")
+			return ResidentMetadata{}, fmt.Errorf("%w: duplicate accepted child record", ErrCorruptResidentJournal)
 		}
 		// Resumed v2 journals legitimately mix versions: the v2 prefix
 		// stays on disk while new records stamp v3. Any other version is
@@ -909,18 +969,18 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 		switch record.Type {
 		case residentRecordTurnAccepted:
 			if record.TurnID == "" || seenTurns[record.TurnID] != "" {
-				return ResidentMetadata{}, errors.New("resident journal: invalid accepted turn record")
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid accepted turn record", ErrCorruptResidentJournal)
 			}
 			seenTurns[record.TurnID] = residentRecordTurnAccepted
 			lastStateAt = record.Time
 		case residentRecordGuard:
 			if record.Outcome != string(core.RepetitionGuardWarning) && record.Outcome != string(core.RepetitionGuardStopped) {
-				return ResidentMetadata{}, errors.New("resident journal: invalid repetition guard stage")
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid repetition guard stage", ErrCorruptResidentJournal)
 			}
 			lastStateAt = record.Time
 		case residentRecordTurnStarted:
 			if record.TurnID == "" || (seenTurns[record.TurnID] != residentRecordTurnAccepted && record.TurnID != spec.InitialTurnID) {
-				return ResidentMetadata{}, errors.New("resident journal: turn started without acceptance")
+				return ResidentMetadata{}, fmt.Errorf("%w: turn started without acceptance", ErrCorruptResidentJournal)
 			}
 			seenTurns[record.TurnID] = residentRecordTurnStarted
 			state = ResidentRunning
@@ -928,7 +988,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			lastAssistantSummary = ""
 		case residentRecordTurnFinished:
 			if record.TurnID == "" || seenTurns[record.TurnID] != residentRecordTurnStarted {
-				return ResidentMetadata{}, errors.New("resident journal: turn finished without start")
+				return ResidentMetadata{}, fmt.Errorf("%w: turn finished without start", ErrCorruptResidentJournal)
 			}
 			seenTurns[record.TurnID] = residentRecordTurnFinished
 			lastFinished = record
@@ -944,18 +1004,18 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 					// an explicit successful follow-up.
 					state = ResidentFailed
 				} else {
-					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+					return ResidentMetadata{}, fmt.Errorf("%w: invalid turn outcome", ErrCorruptResidentJournal)
 				}
 			case residentV2OutcomeCompletedBudgetExhausted:
 				if !translateV2BudgetOutcome {
-					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+					return ResidentMetadata{}, fmt.Errorf("%w: invalid turn outcome", ErrCorruptResidentJournal)
 				}
 				// The turn completed before the budget check fired. It is
 				// a genuine success.
 				state = ResidentCompleted
 			default:
 				if record.Outcome != residentOutcomeCompleted {
-					return ResidentMetadata{}, errors.New("resident journal: invalid turn outcome")
+					return ResidentMetadata{}, fmt.Errorf("%w: invalid turn outcome", ErrCorruptResidentJournal)
 				}
 				state = ResidentIdle
 			}
@@ -963,14 +1023,14 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 		case residentRecordAssistant:
 			message, err := core.DecodeMessageJSON(record.Message)
 			if err != nil {
-				return ResidentMetadata{}, fmt.Errorf("resident journal: invalid assistant message: %w", err)
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid assistant message: %w", ErrCorruptResidentJournal, err)
 			}
 			if summary := residentAssistantSummary(message); summary != "" {
 				lastAssistantSummary = summary
 			}
 		case residentRecordInterrupted:
 			if record.TurnID != "" && seenTurns[record.TurnID] != residentRecordTurnAccepted && seenTurns[record.TurnID] != residentRecordTurnStarted {
-				return ResidentMetadata{}, errors.New("resident journal: turn interrupted without acceptance")
+				return ResidentMetadata{}, fmt.Errorf("%w: turn interrupted without acceptance", ErrCorruptResidentJournal)
 			}
 			if record.TurnID != "" {
 				seenTurns[record.TurnID] = residentRecordInterrupted
@@ -982,27 +1042,27 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			lastStateAt = record.Time
 		case residentRecordToolCall:
 			if record.ToolID == "" || record.ToolName == "" || !json.Valid(record.ToolArgs) {
-				return ResidentMetadata{}, errors.New("resident journal: invalid tool call record")
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid tool call record", ErrCorruptResidentJournal)
 			}
 			if _, duplicate := toolCalls[record.ToolID]; duplicate {
-				return ResidentMetadata{}, errors.New("resident journal: duplicate tool call")
+				return ResidentMetadata{}, fmt.Errorf("%w: duplicate tool call", ErrCorruptResidentJournal)
 			}
 			toolCalls[record.ToolID] = struct{}{}
 		case residentRecordToolResult:
 			if record.ToolID == "" || !json.Valid(record.ToolResult) {
-				return ResidentMetadata{}, errors.New("resident journal: invalid tool result record")
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid tool result record", ErrCorruptResidentJournal)
 			}
 			if _, exists := toolCalls[record.ToolID]; !exists {
-				return ResidentMetadata{}, errors.New("resident journal: orphan tool result")
+				return ResidentMetadata{}, fmt.Errorf("%w: orphan tool result", ErrCorruptResidentJournal)
 			}
 			if _, duplicate := toolResults[record.ToolID]; duplicate {
-				return ResidentMetadata{}, errors.New("resident journal: duplicate tool result")
+				return ResidentMetadata{}, fmt.Errorf("%w: duplicate tool result", ErrCorruptResidentJournal)
 			}
 			toolResults[record.ToolID] = struct{}{}
 		case residentRecordCompacted:
 			checkpoint, err := decodeResidentCompactedMessages(record.Messages)
 			if err != nil {
-				return ResidentMetadata{}, fmt.Errorf("resident journal: invalid compaction checkpoint: %w", err)
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid compaction checkpoint: %w", ErrCorruptResidentJournal, err)
 			}
 			// The checkpoint replaces everything before it, so tool bookkeeping
 			// restarts from the compacted transcript. Without this, a call that
@@ -1027,7 +1087,7 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 			}
 		case residentRecordUsage:
 			if record.Usage == nil {
-				return ResidentMetadata{}, errors.New("resident journal: invalid usage record")
+				return ResidentMetadata{}, fmt.Errorf("%w: invalid usage record", ErrCorruptResidentJournal)
 			}
 			usage = ResidentUsageSnapshot{Usage: *record.Usage, ContextUsed: record.ContextUsed, ContextMax: record.ContextMax, Subscription: record.Subscription}
 		}

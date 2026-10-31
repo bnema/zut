@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -743,6 +744,9 @@ func TestResidentManagerReconcileSkipsIncompatibleJournal(t *testing.T) {
 			t.Fatalf("Reconcile errors = %v", errs)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(root, spec.ID, residentQuarantineName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incompatible journal marker: %v", err)
+	}
 	if _, err := ReconcileResidentJournal(filepath.Dir(transcript)); !errors.Is(err, ErrIncompatibleResidentJournal) {
 		t.Fatalf("explicit reconciliation error = %v, want incompatible version", err)
 	}
@@ -775,10 +779,14 @@ func TestResidentManagerReconcileSkipsIncompatibleJournal(t *testing.T) {
 	if err := corrupt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
+	for attempt := range 2 {
 		errs := manager.Reconcile()
-		if len(errs) != 1 || !strings.Contains(errs[0].Error(), "resident child corrupt:") {
-			t.Fatalf("Reconcile errors = %v, want corrupt child error only", errs)
+		if attempt == 0 {
+			if len(errs) != 1 || !errors.Is(errs[0], ErrCorruptResidentJournal) {
+				t.Fatalf("first Reconcile errors = %v, want corruption", errs)
+			}
+		} else if len(errs) != 0 {
+			t.Fatalf("second Reconcile errors = %v", errs)
 		}
 		if snapshots := manager.Snapshot(); len(snapshots) != 1 || snapshots[0].ID != "valid" {
 			t.Fatalf("snapshots = %#v, want valid sibling only", snapshots)
@@ -1142,5 +1150,97 @@ func TestResidentManagerLimitsConcurrentTurnsGlobally(t *testing.T) {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("queued seventh turn did not start after a slot released")
+	}
+}
+
+func TestResidentManagerQuarantinesOrphanToolResult(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenResidentJournal(root, "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ResidentChildSpec{ID: "orphan", SessionID: "session", Provider: "openai", Model: "gpt-5"}
+	if err := journal.Accept(spec, "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.appendSync(residentRecord{Version: residentJournalVersion, Type: residentRecordToolResult, ToolID: "missing", ToolResult: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, spec.ID)
+	before, err := os.ReadFile(filepath.Join(dir, residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewResidentManager(root, nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	errs := manager.Reconcile()
+	var quarantine *ResidentQuarantineError
+	if len(errs) != 1 || !errors.Is(errs[0], ErrCorruptResidentJournal) || !errors.As(errs[0], &quarantine) || !strings.Contains(errs[0].Error(), "orphan tool result") {
+		t.Fatalf("first Reconcile = %v", errs)
+	}
+	markerPath := filepath.Join(dir, residentQuarantineName)
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker struct {
+		Version int
+		Time    time.Time
+		Error   string
+	}
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.Version != 1 || marker.Time.IsZero() || !strings.Contains(marker.Error, "orphan tool result") {
+		t.Fatalf("marker = %+v", marker)
+	}
+	info, err := os.Stat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("marker mode = %v", info.Mode())
+	}
+	if errs := manager.Reconcile(); len(errs) != 0 {
+		t.Fatalf("second Reconcile = %v", errs)
+	}
+	if _, ok := manager.SnapshotFor(spec.ID); ok {
+		t.Fatal("quarantined child in snapshots")
+	}
+	if _, err := OpenResidentJournal(root, spec.ID); !errors.Is(err, ErrQuarantinedResidentJournal) {
+		t.Fatalf("open = %v", err)
+	}
+	if err := manager.Resume(context.Background(), spec.ID, "retry"); err == nil {
+		t.Fatal("resumed quarantined child")
+	}
+	after, err := os.ReadFile(filepath.Join(dir, residentTranscriptName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("quarantine changed transcript")
+	}
+}
+
+func TestResidentManagerDoesNotQuarantineIOFailure(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "unreadable")
+	// A directory in place of the transcript reliably fails even when run as root.
+	if err := os.MkdirAll(filepath.Join(dir, residentTranscriptName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewResidentManager(root, nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	for range 2 {
+		errs := manager.Reconcile()
+		if len(errs) != 1 || errors.Is(errs[0], ErrCorruptResidentJournal) {
+			t.Fatalf("Reconcile = %v", errs)
+		}
+		if _, err := os.Stat(filepath.Join(dir, residentQuarantineName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("I/O failure marker: %v", err)
+		}
 	}
 }

@@ -270,10 +270,8 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	if resident := a.runtime.ResidentManager(); resident != nil {
 		go func() {
 			defer close(a.reloadDone)
-			for _, e := range resident.Reconcile() {
-				if e != nil {
-					a.bind.hooks().Notify("subagents", "error", "reload subagents: "+e.Error())
-				}
+			if text := residentReconcileNotice(resident.Reconcile()); text != "" {
+				a.bind.hooks().Notify("subagents", "warning", text)
 			}
 		}()
 	} else {
