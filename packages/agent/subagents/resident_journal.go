@@ -25,6 +25,15 @@ var ErrCorruptResidentJournal = errors.New("resident journal: corrupt")
 // ErrQuarantinedResidentJournal means this child is excluded from recovery and resume.
 var ErrQuarantinedResidentJournal = errors.New("resident journal: quarantined child is not resumable; start a new subagent")
 
+// ResidentQuarantineError reports a corrupt journal whose quarantine marker
+// was written and whose lease was released cleanly. Later discovery skips the
+// child, so callers may treat it as a one-time notice. Corruption joined with
+// a storage or close failure is never wrapped in this type.
+type ResidentQuarantineError struct{ Err error }
+
+func (e *ResidentQuarantineError) Error() string { return e.Err.Error() }
+func (e *ResidentQuarantineError) Unwrap() error { return e.Err }
+
 var ErrIncompatibleResidentJournal = errors.New("resident journal: incompatible version; start a new subagent")
 
 const (
@@ -479,7 +488,9 @@ func OpenResidentJournal(root, childID string) (*ResidentJournal, error) {
 	// Another owner may have quarantined the child between our first check
 	// and lease acquisition.
 	if err := checkResidentQuarantine(dir); err != nil {
-		_ = lease.Close()
+		if closeErr := lease.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	f, err := os.OpenFile(filepath.Join(dir, residentTranscriptName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -870,6 +881,7 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 			spec = *records[0].Spec
 		}
 	}
+	quarantined := false
 	if errors.Is(reconcileErr, ErrCorruptResidentJournal) {
 		marker := struct {
 			Version int       `json:"version"`
@@ -878,10 +890,16 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 		}{1, time.Now().UTC(), reconcileErr.Error()}
 		if err := writeResidentProjection(dir, residentQuarantineName, marker); err != nil {
 			reconcileErr = errors.Join(reconcileErr, fmt.Errorf("resident journal quarantine: %w", err))
+		} else {
+			quarantined = true
 		}
 	}
 	if closeErr := journal.Close(); closeErr != nil {
 		reconcileErr = errors.Join(reconcileErr, closeErr)
+		quarantined = false
+	}
+	if quarantined {
+		reconcileErr = &ResidentQuarantineError{Err: reconcileErr}
 	}
 	if reconcileErr != nil {
 		return ResidentMetadata{}, ResidentChildSpec{}, reconcileErr

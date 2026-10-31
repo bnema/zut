@@ -10,7 +10,8 @@ import (
 
 func TestResidentReconcileNotice(t *testing.T) {
 	corrupt := func(id string) error {
-		return fmt.Errorf("resident child %s: %w: orphan tool result", id, subagents.ErrCorruptResidentJournal)
+		inner := fmt.Errorf("%w: orphan tool result", subagents.ErrCorruptResidentJournal)
+		return fmt.Errorf("resident child %s: %w", id, &subagents.ResidentQuarantineError{Err: inner})
 	}
 	tests := []struct {
 		name string
@@ -25,6 +26,11 @@ func TestResidentReconcileNotice(t *testing.T) {
 			name: "mixed",
 			errs: []error{corrupt("a"), errors.New("read root: denied"), errors.New("other")},
 			want: "1 corrupt subagent journal quarantined (quarantined.json); 2 subagent children not restored: read root: denied",
+		},
+		{
+			name: "corrupt but marker not written",
+			errs: []error{errors.Join(fmt.Errorf("%w: orphan tool result", subagents.ErrCorruptResidentJournal), errors.New("resident journal quarantine: disk full"))},
+			want: "1 subagent child not restored: resident journal: corrupt: orphan tool result\nresident journal quarantine: disk full",
 		},
 	}
 	for _, tt := range tests {

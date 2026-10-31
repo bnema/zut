@@ -1177,7 +1177,8 @@ func TestResidentManagerQuarantinesOrphanToolResult(t *testing.T) {
 	manager := NewResidentManager(root, nil)
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	errs := manager.Reconcile()
-	if len(errs) != 1 || !errors.Is(errs[0], ErrCorruptResidentJournal) || !strings.Contains(errs[0].Error(), "orphan tool result") {
+	var quarantine *ResidentQuarantineError
+	if len(errs) != 1 || !errors.Is(errs[0], ErrCorruptResidentJournal) || !errors.As(errs[0], &quarantine) || !strings.Contains(errs[0].Error(), "orphan tool result") {
 		t.Fatalf("first Reconcile = %v", errs)
 	}
 	markerPath := filepath.Join(dir, residentQuarantineName)
