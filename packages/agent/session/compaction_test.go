@@ -35,7 +35,8 @@ func TestCompactionReplacesMessagesAndContinuesPrompt(t *testing.T) {
 	turn.EXPECT().currentAgent().Return(ag).Maybe()
 	continued := make(chan Input, 1)
 	turn.EXPECT().startTurn(next).RunAndReturn(func(in Input) error { continued <- in; return nil }).Once()
-	turn.EXPECT().drainQueued().Return().Once()
+	drained := make(chan struct{})
+	turn.EXPECT().drainQueued().RunAndReturn(func() { close(drained) }).Once()
 	events, err := c.Subscribe(ctx, 0)
 	require.NoError(t, err)
 	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
@@ -55,6 +56,12 @@ func TestCompactionReplacesMessagesAndContinuesPrompt(t *testing.T) {
 			}
 			if ev.Kind == EvMessagesReplaced {
 				require.Equal(t, []string{"start", "done"}, phases)
+				// drainQueued runs on the actor after the event is published.
+				select {
+				case <-drained:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
 				return
 			}
 		case <-ctx.Done():

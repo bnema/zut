@@ -40,7 +40,8 @@ func TestManualCompactionPublishesRunState(t *testing.T) {
 				ag.AppendUserContext("original", nil)
 			}
 			turn.EXPECT().currentAgent().Return(ag).Maybe()
-			turn.EXPECT().drainQueued().Return().Once()
+			drained := make(chan struct{})
+			turn.EXPECT().drainQueued().RunAndReturn(func() { close(drained) }).Once()
 			events, err := c.Subscribe(ctx, 0)
 			require.NoError(t, err)
 			require.NoError(t, c.Compact(ctx))
@@ -67,6 +68,12 @@ func TestManualCompactionPublishesRunState(t *testing.T) {
 			}
 			require.Equal(t, phase, nextKinds(t, ctx, events, EvCompaction).Data.(CompactionEvent).Phase)
 			require.Equal(t, RunStateIdle, c.Info().Run)
+			// drainQueued runs on the actor after the final events are published.
+			select {
+			case <-drained:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
 		})
 	}
 }
