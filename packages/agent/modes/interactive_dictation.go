@@ -208,7 +208,7 @@ func (i *Interactive) refreshDictation() {
 					}
 					i.ed.Insert(text)
 					i.statusErr = ""
-					i.statusOK = fmt.Sprintf("%d words · %s · %.1f s", len(strings.Fields(text)), i.cfg.Dictation.Service, event.duration.Seconds())
+					i.statusOK = ""
 				}
 			}
 			i.invalidate()
