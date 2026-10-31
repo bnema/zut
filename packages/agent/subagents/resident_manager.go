@@ -893,7 +893,8 @@ func (m *ResidentManager) SnapshotFor(childID string) (ResidentSnapshot, bool) {
 // Reconcile discovers journals left by an earlier host, repairs their bounded
 // projections, and marks queued/running work interrupted. It never creates a
 // live child or replays a prompt. Incompatible journals are left untouched
-// and excluded from discovery. Other per-child errors are returned for callers
+// and excluded from discovery. Quarantined children are skipped silently.
+// Other per-child errors are returned for callers
 // to surface without hiding valid sibling journals.
 func (m *ResidentManager) Reconcile() []error {
 	if m == nil {
@@ -938,7 +939,7 @@ func (m *ResidentManager) Reconcile() []error {
 		// without reporting the same incompatibility at every host startup.
 		// Match the exact sentinel so a joined journal-close error is still
 		// reported.
-		if reconcileErr == ErrIncompatibleResidentJournal {
+		if reconcileErr == ErrIncompatibleResidentJournal || reconcileErr == ErrQuarantinedResidentJournal {
 			continue
 		}
 		if errors.Is(reconcileErr, ErrResidentLeaseBusy) {

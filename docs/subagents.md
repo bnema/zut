@@ -114,7 +114,10 @@ ignored. Resident journals written by older versions are read with explicit
 translation (an old `budget_exhausted` outcome reconciles as failure) or, for
 unknown versions, left untouched on disk and excluded from automatic
 discovery. Incompatible journals cannot be resumed; start a new child
-instead. Other journal recovery errors are still reported.
+instead. Corrupt journals are reported once and marked with a private
+`quarantined.json` file; later discovery skips them silently and they cannot
+be resumed. Quarantine preserves journal data. Storage failures remain
+reportable and do not quarantine a child.
 
 Compatibility notes: new journals write version 3 and carry no budget
 fields, baselines, or exhaustion states. Version 2 archives are read with
