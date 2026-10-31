@@ -110,15 +110,17 @@ func TestRunnerSubmitsWithTelegramOriginAndRepliesOnTurnEnd(t *testing.T) {
 	h := newRunnerHarness(t)
 	onMsg, _ := h.start(t)
 
+	// A Telegram message arriving during a user run must wait for its own
+	// Telegram run, not consume the user run's reply.
+	h.events <- infoEvent(session.RunStateRunning, session.InputOriginUser)
 	img := []provider.ImageBlock{{MimeType: "image/png", Data: []byte{1}}}
 	onMsg(InboundMessage{ChannelID: "42", MessageID: "7", Text: "hello", Images: img})
 	in := recv(t, h.inputs)
-	if in.Origin != session.InputOriginTelegram || in.Text != "hello" || len(in.Images) != 1 {
+	if in.Mode != session.SubmitModeQueue || in.Origin != session.InputOriginTelegram || in.Text != "hello" || len(in.Images) != 1 {
 		t.Fatalf("submitted %+v", in)
 	}
 
 	// A user-originated run must not consume the telegram reply slot.
-	h.events <- infoEvent(session.RunStateRunning, session.InputOriginUser)
 	h.events <- assistant("tui answer")
 	h.events <- infoEvent(session.RunStateIdle, "")
 	h.events <- infoEvent(session.RunStateRunning, session.InputOriginTelegram)
@@ -254,5 +256,30 @@ func TestRunnerReplyQueueDropsOldestWhenFull(t *testing.T) {
 	<-stopped
 	if got[0] != "c" || got[replyQueueSize-1] != string(rune('a'+replyQueueSize+1)) {
 		t.Fatalf("order = %v", got)
+	}
+}
+
+func TestRunnerQueuesSecondTelegramMessageDuringActiveTurn(t *testing.T) {
+	h := newRunnerHarness(t)
+	onMsg, _ := h.start(t)
+	onMsg(InboundMessage{ChannelID: "first", Text: "one"})
+	if in := recv(t, h.inputs); in.Mode != session.SubmitModeQueue {
+		t.Fatalf("mode = %s", in.Mode)
+	}
+	h.events <- infoEvent(session.RunStateRunning, session.InputOriginTelegram)
+	onMsg(InboundMessage{ChannelID: "second", Text: "two"})
+	if in := recv(t, h.inputs); in.Mode != session.SubmitModeQueue {
+		t.Fatalf("mode = %s", in.Mode)
+	}
+	h.events <- assistant("first answer")
+	h.events <- infoEvent(session.RunStateIdle, "")
+	if got := recv(t, h.sent); got.channel != "first" || got.text != "first answer" {
+		t.Fatalf("reply = %+v", got)
+	}
+	h.events <- infoEvent(session.RunStateRunning, session.InputOriginTelegram)
+	h.events <- assistant("second answer")
+	h.events <- infoEvent(session.RunStateIdle, "")
+	if got := recv(t, h.sent); got.channel != "second" || got.text != "second answer" {
+		t.Fatalf("reply = %+v", got)
 	}
 }

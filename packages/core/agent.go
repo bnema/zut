@@ -28,8 +28,10 @@ const (
 // QueuedMessage waits for the next model-call boundary. Ordinary user input
 // skips unstarted calls in the current tool batch after its first call finishes.
 type QueuedMessage struct {
-	Text   string
-	Images []provider.ImageBlock
+	// SubmissionSequence is an optional host-assigned order for draft recall.
+	SubmissionSequence uint64 `json:"-"`
+	Text               string
+	Images             []provider.ImageBlock
 	// HostEvent distinguishes host evidence from ordinary input so hosts can
 	// retain it after a failed turn. Explicit cancellation may still discard it.
 	HostEvent bool
@@ -394,7 +396,7 @@ func (a *Agent) DrainQueuedMessages() []QueuedMessage {
 }
 
 func cloneQueuedMessage(message QueuedMessage) QueuedMessage {
-	clone := QueuedMessage{Text: message.Text, HostEvent: message.HostEvent}
+	clone := QueuedMessage{Text: message.Text, HostEvent: message.HostEvent, SubmissionSequence: message.SubmissionSequence}
 	if len(message.Images) == 0 {
 		return clone
 	}

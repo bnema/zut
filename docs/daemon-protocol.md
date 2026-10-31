@@ -148,6 +148,16 @@ with `model profile empty`.
 | resident_action | `{"command":{"op":"stop","child_id":"child","prompt":""}}` | omitted |
 | sessions_query | `{}` | Tree |
 
+Busy `submit` calls with `mode: "auto"` steer human (`user` or `telegram`)
+input into the active turn at the next safe model/tool boundary. Hidden context,
+compaction, and an unavailable agent fall back to waiting for a turn. Host-origin
+`auto` submissions retain their existing queue behavior; `mode: "queue"` explicitly
+waits for a subsequent turn. The Telegram bot uses `queue` to preserve one reply
+per submission, including when a user-origin turn is active. Pending steering appears in snapshots and `queue`
+events until injection. These core-owned items have an empty controller queue ID;
+use `slide_back_queued` to recall user input, not `cancel_queued`. An accepted
+message left unread at successful turn completion starts a continuation.
+
 Types from `core`, `tools`, and `provider` retain their existing JSON field
 spelling; the lossless codecs preserve interface-valued content. The panel key
 is the existing `extproto.PanelKeyFromHost` (no additional key type).
