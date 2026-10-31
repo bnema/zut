@@ -516,7 +516,7 @@ func TestTurnQueuedStartFailureRestoresItem(t *testing.T) {
 	require.Contains(t, note.Text, "builder unavailable")
 }
 
-func TestTurnContinuingSkipsAutoCompact(t *testing.T) {
+func TestTurnUnconsumedSteerContinuesWithoutAutoCompact(t *testing.T) {
 	c, ctx := newTestController(t)
 	turnSeams(t, c, ctx)
 	compact := newMockcompactSeam(t)
@@ -539,7 +539,13 @@ func TestTurnContinuingSkipsAutoCompact(t *testing.T) {
 		c.goalSeam = goal
 		c.turn.agent = ag
 		c.turn.busy = true
-		ag.QueuePrompt(core.QueuedMessage{Text: "agent queued"})
+	}))
+	// Core has returned, but the finish callback has not run yet. Submit must
+	// still accept steering and finishTurn must launch a continuation.
+	require.NoError(t, c.Submit(ctx, Input{Text: "agent queued", Mode: SubmitModeAuto}))
+	require.NoError(t, c.call(ctx, func() {
+		require.Empty(t, c.turn.queue)
+		require.Equal(t, 1, ag.QueuedMessageCount())
 		c.finishTurn(context.Background(), nil)
 	}))
 	idle := 0
@@ -692,4 +698,95 @@ func TestClearQueuedUserKeepsHostEventsAndPublishes(t *testing.T) {
 	_, ok := ag.PopQueuedUserMessage()
 	require.False(t, ok)
 	require.NoError(t, c.ClearQueuedUser(ctx), "empty clear is not an error")
+}
+
+func TestBusyAutoHumanSteers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    Input
+		steer bool
+	}{
+		{"user", Input{Text: "draft", Mode: SubmitModeAuto, Origin: InputOriginUser}, true},
+		{"telegram", Input{Text: "draft", Mode: SubmitModeAuto, Origin: InputOriginTelegram}, true},
+		{"explicit queue", Input{Text: "draft", Mode: SubmitModeQueue, Origin: InputOriginUser}, false},
+		{"scheduler", Input{Text: "draft", Mode: SubmitModeAuto, Origin: "scheduler"}, false},
+		{"extension", Input{Text: "draft", Mode: SubmitModeAuto, Origin: "extension", HostEvent: true}, false},
+		{"hidden", Input{Text: "draft", Mode: SubmitModeAuto, Hidden: []provider.Message{{Role: provider.RoleUser}}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ctx := newTestController(t)
+			turnSeams(t, c, ctx)
+			ag := core.NewAgent(nil, "test", "", nil)
+			require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.turn.busy = true }))
+			require.NoError(t, c.Submit(ctx, tc.in))
+			require.NoError(t, c.call(ctx, func() {
+				if tc.steer {
+					require.Empty(t, c.turn.queue)
+					require.Equal(t, 1, ag.QueuedMessageCount())
+				} else {
+					require.Len(t, c.turn.queue, 1)
+					require.Zero(t, ag.QueuedMessageCount())
+				}
+			}))
+			snap, err := c.Snapshot(ctx)
+			require.NoError(t, err)
+			require.Len(t, snap.Queue, 1)
+			if tc.steer {
+				in, err := c.SlideBackQueued(ctx)
+				require.NoError(t, err)
+				require.Equal(t, "draft", in.Text)
+				snap, err = c.Snapshot(ctx)
+				require.NoError(t, err)
+				require.Empty(t, snap.Queue)
+			}
+		})
+	}
+}
+
+func TestFailedTurnRetainedHostReportIsNotProjectedAsQueuedWork(t *testing.T) {
+	c, ctx := newTestController(t)
+	turnSeams(t, c, ctx)
+	ag := core.NewAgent(nil, "test", "", nil)
+	require.NoError(t, c.call(ctx, func() {
+		c.turn.agent = ag
+		c.turn.busy = true
+		ag.QueuePrompt(core.QueuedMessage{Text: "[auto-subagents update]\n- worker: failed", HostEvent: true})
+		c.finishTurn(context.Background(), errors.New("provider failed"))
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Equal(t, RunStateIdle, snap.Info.Run)
+	require.Empty(t, snap.Queue, "retained host evidence must not keep headless clients waiting for runnable work")
+	require.Equal(t, 1, ag.QueuedMessageCount(), "host evidence survives for a later turn")
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	queue := nextKinds(t, ctx, events, EvQueue).Data.(QueueEvent).Queue
+	require.Empty(t, queue)
+}
+
+func TestSlideBackMixedQueuesUsesSubmissionOrder(t *testing.T) {
+	for _, coreFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(coreFirst), func(t *testing.T) {
+			c, ctx := newTestController(t)
+			turnSeams(t, c, ctx)
+			ag := core.NewAgent(nil, "test", "", nil)
+			require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.turn.busy = true }))
+			hidden := Input{Text: "hidden draft", Mode: SubmitModeAuto, Hidden: []provider.Message{{Role: provider.RoleUser}}}
+			steer := Input{Text: "steering draft", Mode: SubmitModeAuto}
+			first, second := hidden, steer
+			if coreFirst {
+				first, second = steer, hidden
+			}
+			require.NoError(t, c.Submit(ctx, first))
+			require.NoError(t, c.Submit(ctx, second))
+			got, err := c.SlideBackQueued(ctx)
+			require.NoError(t, err)
+			require.Equal(t, second.Text, got.Text)
+			got, err = c.SlideBackQueued(ctx)
+			require.NoError(t, err)
+			require.Equal(t, first.Text, got.Text)
+			_, err = c.SlideBackQueued(ctx)
+			require.ErrorIs(t, err, ErrUnknownRequest)
+		})
+	}
 }

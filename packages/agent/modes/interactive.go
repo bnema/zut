@@ -740,7 +740,7 @@ type Interactive struct {
 	stableChatCacheValid bool
 
 	// Messages typed while a turn is in flight. Each is delivered as
-	// its own follow-up turn once the current one finishes. Rendered
+	// steering input at the next safe model/tool boundary. Rendered
 	// above the status bar as "sliding in: ..." chips.
 	queued []core.QueuedMessage
 

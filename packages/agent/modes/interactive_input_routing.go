@@ -802,8 +802,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 
 	// Note: we intentionally do NOT gate the editor on i.busy here.
 	// Typing while the agent is working is supported — submitted
-	// messages are queued and delivered as follow-up turns when the
-	// current turn ends. See the submit handler below.
+	// messages steer the active turn at its next safe boundary.
+	// See the submit handler below.
 
 	if k.Kind == tui.KeyEnter && (k.Alt || k.Shift) {
 		i.ed.HandleKey(k)

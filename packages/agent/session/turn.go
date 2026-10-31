@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,11 +37,29 @@ type turnState struct {
 
 func (s *turnState) snapshotInto(out *Snapshot) {
 	out.Live = cloneTurn(s.live)
-	out.Queue = append([]QueuedInput(nil), s.queue...)
+	out.Queue = s.pendingInputs()
 	if s.agent != nil {
 		out.Messages = s.agent.Messages()
 	}
 }
+
+// pendingInputs projects both waiting queues for chips and draft recall. Core
+// steering items have no controller ID: SlideBackQueued owns their retrieval.
+func (s *turnState) pendingInputs() []QueuedInput {
+	out := append([]QueuedInput(nil), s.queue...)
+	if s.agent != nil {
+		for _, message := range s.agent.PendingQueuedMessages() {
+			// Host reports retained after errors are not runnable queue work.
+			// Publishing them here makes headless completion wait forever.
+			if message.HostEvent {
+				continue
+			}
+			out = append(out, QueuedInput{Input: Input{Text: message.Text, Images: message.Images, HostEvent: message.HostEvent, Origin: InputOriginUser}})
+		}
+	}
+	return out
+}
+
 func cloneTurn(in LiveTurn) LiveTurn {
 	in.Tools = append([]LiveTool(nil), in.Tools...)
 	for i := range in.Tools {
@@ -80,8 +99,12 @@ func (c *Controller) Submit(ctx context.Context, in Input) error {
 			c.turn.projection.LastUserInputAt = c.deps.Clock()
 		}
 		if c.isBusy() {
-			if in.Mode == "steer" && c.turn.busy && c.turn.agent != nil && len(in.Hidden) == 0 {
-				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: in.HostEvent})
+			human := !in.HostEvent && (in.Origin == InputOriginUser || in.Origin == InputOriginTelegram)
+			steer := in.Mode == SubmitModeSteer || (human && (in.Mode == SubmitModeAuto || in.Mode == ""))
+			if steer && c.turn.busy && c.turn.agent != nil && len(in.Hidden) == 0 {
+				c.turn.next++
+				c.turn.agent.QueuePrompt(core.QueuedMessage{Text: in.Text, Images: in.Images, HostEvent: in.HostEvent, SubmissionSequence: c.turn.next})
+				c.publishQueue()
 			} else {
 				c.enqueue(in)
 			}
@@ -136,20 +159,40 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 	var in Input
 	var result error
 	err := c.call(ctx, func() {
-		for n := len(c.turn.queue) - 1; n >= 0; n-- {
-			if c.turn.queue[n].Input.HostEvent {
+		index := -1
+		var latest uint64
+		for n, q := range c.turn.queue {
+			if q.Input.HostEvent {
 				continue
 			}
-			in = c.turn.queue[n].Input
-			c.turn.queue = append(c.turn.queue[:n], c.turn.queue[n+1:]...)
-			c.publishQueue()
-			return
+			sequence, _ := strconv.ParseUint(q.ID, 10, 64)
+			if index < 0 || sequence > latest {
+				index, latest = n, sequence
+			}
 		}
 		if c.turn.agent != nil {
-			if message, ok := c.turn.agent.PopQueuedUserMessage(); ok {
-				in = Input{Text: message.Text, Images: message.Images, Origin: InputOriginUser}
-				return
+			pending := c.turn.agent.PendingQueuedMessages()
+			for n := len(pending) - 1; n >= 0; n-- {
+				if pending[n].HostEvent {
+					continue
+				}
+				if index < 0 || pending[n].SubmissionSequence > latest {
+					// Core may inject this draft concurrently; Pop returns only
+					// an item still pending and never removes injected input.
+					if message, ok := c.turn.agent.PopQueuedUserMessage(); ok {
+						in = Input{Text: message.Text, Images: message.Images, Origin: InputOriginUser}
+						c.publishQueue()
+						return
+					}
+				}
+				break
 			}
+		}
+		if index >= 0 {
+			in = c.turn.queue[index].Input
+			c.turn.queue = append(c.turn.queue[:index], c.turn.queue[index+1:]...)
+			c.publishQueue()
+			return
 		}
 		result = ErrUnknownRequest
 	})
@@ -168,9 +211,8 @@ func (c *Controller) SlideBackQueued(ctx context.Context) (Input, error) {
 // Clearing an empty queue is not an error.
 //
 // The agent steering queue is cleared too: if a turn has just started, its
-// pending steering input is dropped as well. That queue is not part of the
-// published QueueEvent/Snapshot.Queue (clients' portQueue mirrors only the
-// controller queue), so a clear that only touches it publishes nothing.
+// pending steering input is dropped as well. Both queues are projected to
+// attached clients so chips and recall hints reflect pending input.
 func (c *Controller) ClearQueuedUser(ctx context.Context) error {
 	return c.call(ctx, func() {
 		kept := c.turn.queue[:0:0]
@@ -179,22 +221,24 @@ func (c *Controller) ClearQueuedUser(ctx context.Context) error {
 				kept = append(kept, q)
 			}
 		}
-		if len(kept) != len(c.turn.queue) {
-			c.turn.queue = kept
-			c.publishQueue()
-		}
+		changed := len(kept) != len(c.turn.queue)
+		c.turn.queue = kept
 		if c.turn.agent != nil {
 			for {
 				if _, ok := c.turn.agent.PopQueuedUserMessage(); !ok {
 					break
 				}
+				changed = true
 			}
+		}
+		if changed {
+			c.publishQueue()
 		}
 	})
 }
 
 func (c *Controller) publishQueue() {
-	c.publish(EvQueue, QueueEvent{Queue: append([]QueuedInput(nil), c.turn.queue...)})
+	c.publish(EvQueue, QueueEvent{Queue: c.turn.pendingInputs()})
 }
 func (c *Controller) publishTurnInfo() { c.updateInfo(); c.publish(EvInfo, InfoEvent{Info: c.Info()}) }
 func (c *Controller) publishError(text string) {
@@ -375,6 +419,8 @@ func (c *Controller) finishTurn(ctx context.Context, err error) {
 		c.startQueued()
 		return
 	}
+	// A submission can arrive after core's final boundary but before this
+	// actor callback. Continue so accepted steering is never stranded.
 	if err == nil && ctx.Err() == nil && c.turn.agent.QueuedMessageCount() > 0 {
 		e := c.runTurn(Input{Origin: origin}, true)
 		if e == nil {
@@ -474,6 +520,8 @@ func (c *Controller) tool(id string) *LiveTool {
 func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 	before := c.turn.projection
 	switch e := ev.(type) {
+	case core.EvUserMessage:
+		c.publishQueue()
 	case core.EvTurnEnd:
 		c.turn.end = e
 	case core.EvTurnStart:

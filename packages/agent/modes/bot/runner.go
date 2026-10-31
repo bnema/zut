@@ -133,7 +133,8 @@ func (r *Runner) ctx() context.Context {
 	return r.runCtx
 }
 
-// handleMessage forwards a normal inbound message to the session.
+// handleMessage queues one turn per inbound message: reply accounting retires
+// one channel per completed Telegram run, so these submissions must not steer.
 func (r *Runner) handleMessage(msg InboundMessage) {
 	if msg.Text == "" && len(msg.Images) == 0 {
 		return
@@ -145,7 +146,7 @@ func (r *Runner) handleMessage(msg InboundMessage) {
 		r.working = r.adapter.IndicateWorking(ctx, msg.ChannelID)
 	}
 	r.mu.Unlock()
-	err := r.port.Submit(ctx, session.Input{Text: msg.Text, Images: msg.Images, Mode: session.SubmitModeAuto, Origin: session.InputOriginTelegram})
+	err := r.port.Submit(ctx, session.Input{Text: msg.Text, Images: msg.Images, Mode: session.SubmitModeQueue, Origin: session.InputOriginTelegram})
 	if err != nil {
 		r.mu.Lock()
 		if n := len(r.pending); n > 0 {
