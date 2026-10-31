@@ -16,6 +16,17 @@ func newTestController(t *testing.T) (*Controller, context.Context) {
 	t.Cleanup(func() { cancel(); <-c.Done() })
 	return c, ctx
 }
+
+// newSyncTestController must be called inside a synctest bubble. Its cleanup
+// stops the actor before the bubble waits for all remaining goroutines.
+func newSyncTestController(t *testing.T) (*Controller, context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	c := NewController(ctx, Deps{})
+	t.Cleanup(func() { cancel(); <-c.Done() })
+	return c, ctx
+}
+
 func emit(t *testing.T, c *Controller, ctx context.Context, n int) {
 	t.Helper()
 	if err := c.call(ctx, func() {

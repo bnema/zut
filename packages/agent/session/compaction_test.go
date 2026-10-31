@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -28,69 +29,65 @@ func lane9Agent(t *testing.T) *core.Agent {
 	return ag
 }
 func TestCompactionReplacesMessagesAndContinuesPrompt(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	ag := lane9Agent(t)
-	next := Input{Text: "pending", Origin: InputOriginUser, Images: []provider.ImageBlock{{Data: []byte("image")}}}
-	turn.EXPECT().currentAgent().Return(ag).Maybe()
-	continued := make(chan Input, 1)
-	turn.EXPECT().startTurn(next).RunAndReturn(func(in Input) error { continued <- in; return nil }).Once()
-	drained := make(chan struct{})
-	turn.EXPECT().drainQueued().RunAndReturn(func() { close(drained) }).Once()
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
-	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
-	select {
-	case got := <-continued:
-		require.Equal(t, next, got)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	require.Less(t, ag.MessageCount(), 6)
-	var phases []string
-	for {
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		ag := lane9Agent(t)
+		next := Input{Text: "pending", Origin: InputOriginUser, Images: []provider.ImageBlock{{Data: []byte("image")}}}
+		turn.EXPECT().currentAgent().Return(ag).Maybe()
+		continued := make(chan Input, 1)
+		turn.EXPECT().startTurn(next).RunAndReturn(func(in Input) error { continued <- in; return nil }).Once()
+		turn.EXPECT().drainQueued().Return().Once()
+		events, err := c.Subscribe(ctx, 0)
+		require.NoError(t, err)
+		require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+		synctest.Wait()
 		select {
-		case ev := <-events:
-			if ev.Kind == EvCompaction {
-				phases = append(phases, ev.Data.(CompactionEvent).Phase)
-			}
-			if ev.Kind == EvMessagesReplaced {
-				require.Equal(t, []string{"start", "done"}, phases)
-				// drainQueued runs on the actor after the event is published.
-				select {
-				case <-drained:
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
-				return
-			}
+		case got := <-continued:
+			require.Equal(t, next, got)
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
-	}
+		require.Less(t, ag.MessageCount(), 6)
+		var phases []string
+		for {
+			select {
+			case ev := <-events:
+				if ev.Kind == EvCompaction {
+					phases = append(phases, ev.Data.(CompactionEvent).Phase)
+				}
+				if ev.Kind == EvMessagesReplaced {
+					require.Equal(t, []string{"start", "done"}, phases)
+					synctest.Wait()
+					return
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+	})
 }
 func TestCompactMissingAgent(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	turn.EXPECT().currentAgent().Return(nil).Once()
-	require.EqualError(t, c.Compact(ctx), "agent unavailable")
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		turn.EXPECT().currentAgent().Return(nil).Once()
+		require.EqualError(t, c.Compact(ctx), "agent unavailable")
+	})
 }
 
 func TestAutoCompactionPreservesPrompt(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx, turnInfoProjection{ContextUsed: 90, ContextMax: 100})
-	ag := lane9Agent(t)
-	turn.EXPECT().currentAgent().Return(ag).Maybe()
-	// A resident input does not trigger the unrelated title-generation request.
-	in := Input{Text: "continue work", Origin: InputOriginResident}
-	done := make(chan struct{})
-	turn.EXPECT().startTurn(in).RunAndReturn(func(Input) error { close(done); return nil }).Once()
-	turn.EXPECT().drainQueued().Return().Once()
-	require.NoError(t, c.call(ctx, func() { require.True(t, c.maybeAutoCompact(in)) }))
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	require.NoError(t, c.call(ctx, func() { require.False(t, c.maybeAutoCompact(in)) }))
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx, turnInfoProjection{ContextUsed: 90, ContextMax: 100})
+		ag := lane9Agent(t)
+		turn.EXPECT().currentAgent().Return(ag).Maybe()
+		// A resident input does not trigger the unrelated title-generation request.
+		in := Input{Text: "continue work", Origin: InputOriginResident}
+		turn.EXPECT().startTurn(in).Return(nil).Once()
+		turn.EXPECT().drainQueued().Return().Once()
+		require.NoError(t, c.call(ctx, func() { require.True(t, c.maybeAutoCompact(in)) }))
+		synctest.Wait()
+		require.NoError(t, c.call(ctx, func() { require.False(t, c.maybeAutoCompact(in)) }))
+	})
 }

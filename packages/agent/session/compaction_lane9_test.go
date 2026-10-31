@@ -3,10 +3,11 @@ package session
 import (
 	"context"
 	"errors"
-	"github.com/bnema/zut/packages/agent/tools"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
@@ -20,7 +21,9 @@ func blockingAgent(t *testing.T, started chan<- struct{}) *core.Agent {
 	client.EXPECT().Name().Return("openai").Maybe()
 	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
 		ch := make(chan provider.Event)
-		close(started)
+		if started != nil {
+			close(started)
+		}
 		go func() { <-ctx.Done(); close(ch) }()
 		return ch, nil
 	}).Once()
@@ -46,60 +49,60 @@ func nextKinds(t *testing.T, ctx context.Context, events <-chan Event, want Even
 }
 
 func TestAbortCompactionFailsWithoutReplacingMessages(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	started := make(chan struct{})
-	ag := blockingAgent(t, started)
-	before := ag.Messages()
-	turn.EXPECT().currentAgent().Return(ag).Maybe()
-	// No pending prompt: abort only drains what was already queued.
-	turn.EXPECT().drainQueued().Return().Once()
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
-	require.NoError(t, c.Compact(ctx))
-	<-started
-	require.NoError(t, c.call(ctx, func() { require.True(t, c.compacting()); c.abortCompaction() }))
-	ev := nextKinds(t, ctx, events, EvCompaction)
-	require.Equal(t, "start", ev.Data.(CompactionEvent).Phase)
-	ev = nextKinds(t, ctx, events, EvCompaction)
-	require.Equal(t, "failed", ev.Data.(CompactionEvent).Phase)
-	require.NoError(t, c.call(ctx, func() { require.False(t, c.compacting()) }))
-	require.Equal(t, before, ag.Messages())
-	// No note and no message replacement after an explicit abort. Events are
-	// published on the actor, so an actor barrier flushes any late one.
-	require.NoError(t, c.call(ctx, func() {}))
-	select {
-	case ev := <-events:
-		t.Fatalf("unexpected event %s", ev.Kind)
-	default:
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		ag := blockingAgent(t, nil)
+		before := ag.Messages()
+		turn.EXPECT().currentAgent().Return(ag).Maybe()
+		// No pending prompt: abort only drains what was already queued.
+		turn.EXPECT().drainQueued().Return().Once()
+		events, err := c.Subscribe(ctx, 0)
+		require.NoError(t, err)
+		require.NoError(t, c.Compact(ctx))
+		synctest.Wait()
+		require.NoError(t, c.call(ctx, func() { require.True(t, c.compacting()); c.abortCompaction() }))
+		ev := nextKinds(t, ctx, events, EvCompaction)
+		require.Equal(t, "start", ev.Data.(CompactionEvent).Phase)
+		ev = nextKinds(t, ctx, events, EvCompaction)
+		require.Equal(t, "failed", ev.Data.(CompactionEvent).Phase)
+		require.NoError(t, c.call(ctx, func() { require.False(t, c.compacting()) }))
+		require.Equal(t, before, ag.Messages())
+		// No note and no message replacement after an explicit abort. Events are
+		// published on the actor; quiescence flushes any late one.
+		synctest.Wait()
+		select {
+		case ev := <-events:
+			t.Fatalf("unexpected event %s", ev.Kind)
+		default:
+		}
+	})
 }
 
 func TestCompactionCompletionDrainsQueue(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	turn.EXPECT().currentAgent().Return(lane9Agent(t)).Maybe()
-	drained := make(chan struct{})
-	turn.EXPECT().drainQueued().RunAndReturn(func() { close(drained) }).Once()
-	require.NoError(t, c.Compact(ctx))
-	select {
-	case <-drained:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		turn.EXPECT().currentAgent().Return(lane9Agent(t)).Maybe()
+		turn.EXPECT().drainQueued().Return().Once()
+		require.NoError(t, c.Compact(ctx))
+		synctest.Wait()
+	})
 }
 
 func TestCompactBusyWhileCompacting(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	started := make(chan struct{})
-	turn.EXPECT().currentAgent().Return(blockingAgent(t, started)).Maybe()
-	turn.EXPECT().drainQueued().Return().Maybe()
-	require.NoError(t, c.Compact(ctx))
-	<-started
-	require.ErrorIs(t, c.Compact(ctx), ErrBusy)
-	require.ErrorIs(t, c.SetTitle(ctx, "x"), ErrBusy)
-	require.NoError(t, c.call(ctx, c.abortCompaction))
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		turn.EXPECT().currentAgent().Return(blockingAgent(t, nil)).Maybe()
+		turn.EXPECT().drainQueued().Return().Once()
+		require.NoError(t, c.Compact(ctx))
+		synctest.Wait()
+		require.ErrorIs(t, c.Compact(ctx), ErrBusy)
+		require.ErrorIs(t, c.SetTitle(ctx, "x"), ErrBusy)
+		require.NoError(t, c.call(ctx, c.abortCompaction))
+		synctest.Wait()
+	})
 }
 
 // failingAgent's summary request fails immediately with a provider error.
@@ -115,67 +118,57 @@ func failingAgent(t *testing.T) *core.Agent {
 }
 
 func TestAbortCompactionRequeuesPromptAndDrains(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	started := make(chan struct{})
-	turn.EXPECT().currentAgent().Return(blockingAgent(t, started)).Maybe()
-	next := Input{Text: "pending", Origin: InputOriginUser}
-	// GO-008: the prompt rejoins the FRONT of the queue, then the queue drains.
-	requeued := make(chan struct{})
-	turn.EXPECT().enqueueFront(next).RunAndReturn(func(Input) { close(requeued) }).Once()
-	drained := make(chan struct{})
-	turn.EXPECT().drainQueued().RunAndReturn(func() {
-		select {
-		case <-requeued:
-		default:
-			t.Error("drained before re-queueing the prompt")
-		}
-		close(drained)
-	}).Once()
-	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
-	<-started
-	require.NoError(t, c.call(ctx, c.abortCompaction))
-	select {
-	case <-drained:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		turn.EXPECT().currentAgent().Return(blockingAgent(t, nil)).Maybe()
+		next := Input{Text: "pending", Origin: InputOriginUser}
+		// GO-008: the prompt rejoins the FRONT of the queue, then the queue drains.
+		var requeued bool
+		turn.EXPECT().enqueueFront(next).RunAndReturn(func(Input) { requeued = true }).Once()
+		turn.EXPECT().drainQueued().RunAndReturn(func() {
+			require.True(t, requeued, "drained before re-queueing the prompt")
+		}).Once()
+		require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+		synctest.Wait()
+		require.NoError(t, c.call(ctx, c.abortCompaction))
+		synctest.Wait()
+	})
 }
 
 func TestFailedCompactionStillSendsPromptThenDrains(t *testing.T) {
-	c, ctx := newTestController(t)
-	turn := lane9Turn(t, c, ctx)
-	turn.EXPECT().currentAgent().Return(failingAgent(t)).Maybe()
-	next := Input{Text: "pending", Origin: InputOriginUser}
-	sent := make(chan struct{})
-	turn.EXPECT().startTurn(next).RunAndReturn(func(Input) error {
-		require.True(t, c.compact.skipOnce, "prompt must bypass auto-compaction once")
-		close(sent)
-		return nil
-	}).Once()
-	drained := make(chan struct{})
-	turn.EXPECT().drainQueued().RunAndReturn(func() { <-sent; close(drained) }).Once()
-	events, err := c.Subscribe(ctx, 0)
-	require.NoError(t, err)
-	require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
-	nextKinds(t, ctx, events, EvCompaction)
-	require.Equal(t, "failed", nextKinds(t, ctx, events, EvCompaction).Data.(CompactionEvent).Phase)
-	select {
-	case <-drained:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		turn := lane9Turn(t, c, ctx)
+		turn.EXPECT().currentAgent().Return(failingAgent(t)).Maybe()
+		next := Input{Text: "pending", Origin: InputOriginUser}
+		var sent bool
+		turn.EXPECT().startTurn(next).RunAndReturn(func(Input) error {
+			require.True(t, c.compact.skipOnce, "prompt must bypass auto-compaction once")
+			sent = true
+			return nil
+		}).Once()
+		turn.EXPECT().drainQueued().RunAndReturn(func() { require.True(t, sent, "drained before sending the prompt") }).Once()
+		events, err := c.Subscribe(ctx, 0)
+		require.NoError(t, err)
+		require.NoError(t, c.call(ctx, func() { require.NoError(t, c.beginCompact(&next)) }))
+		nextKinds(t, ctx, events, EvCompaction)
+		require.Equal(t, "failed", nextKinds(t, ctx, events, EvCompaction).Data.(CompactionEvent).Phase)
+		synctest.Wait()
+	})
 }
 
 func TestRescueWithoutBuilderSkipsPrompt(t *testing.T) {
-	c, ctx := newTestController(t)
-	lane9Turn(t, c, ctx)
-	// No awaitPending expectation: calling it fails the test.
-	confirm := newMockconfirmSeam(t)
-	require.NoError(t, c.call(ctx, func() { c.confirmSeam = confirm }))
-	cause := errors.New("overflow")
-	_, err := c.rescue(ctx, cause)
-	require.Same(t, cause, err)
+	synctest.Test(t, func(t *testing.T) {
+		c, ctx := newSyncTestController(t)
+		lane9Turn(t, c, ctx)
+		// No awaitPending expectation: calling it fails the test.
+		confirm := newMockconfirmSeam(t)
+		require.NoError(t, c.call(ctx, func() { c.confirmSeam = confirm }))
+		cause := errors.New("overflow")
+		_, err := c.rescue(ctx, cause)
+		require.Same(t, cause, err)
+	})
 }
 
 func TestTitleGenerationCancelledOnClose(t *testing.T) {
