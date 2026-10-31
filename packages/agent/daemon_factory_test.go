@@ -112,7 +112,11 @@ func submitAndWait(t *testing.T, ctx context.Context, c *daemonclient.Client, id
 	port := c.Port(id, true)
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	events, err := port.Subscribe(subCtx, 0)
+	// Only observe the turn submitted below, not retained events (or frames
+	// still in flight from an earlier subscription) from a previous turn.
+	snap, err := port.Snapshot(ctx)
+	require.NoError(t, err)
+	events, err := port.Subscribe(subCtx, snap.Seq)
 	require.NoError(t, err)
 	require.NoError(t, port.Submit(ctx, session.Input{Text: "hello", Origin: session.InputOriginUser}))
 	return waitAssistantText(t, ctx, events)
@@ -453,6 +457,8 @@ func TestDaemonStatusProbeWithoutLock(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(home, "daemon", "daemon.lock"))
 }
 
+// This adapter-edge test uses real Unix-socket/daemon I/O, not drivable by
+// synctest's virtual clock. Timeouts only bound failures.
 func TestDaemonResumeAliasMovesWithCWD(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	server := sessionAssemblyProvider(t)

@@ -177,6 +177,8 @@ func TestSubscribeSeqTooOldAfterReconnectEmitsMessagesReplaced(t *testing.T) {
 	require.Equal(t, session.TitleEvent{Title: "4"}, ev.Data)
 }
 
+// This adapter-edge test uses real Unix-socket/daemon I/O, not drivable by
+// synctest's virtual clock. Timeouts only bound failures.
 func TestSubscribeDaemonRestartSeqResetEmitsMessagesReplaced(t *testing.T) {
 	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
 	for _, title := range []string{"1", "2", "3"} {
@@ -189,10 +191,26 @@ func TestSubscribeDaemonRestartSeqResetEmitsMessagesReplaced(t *testing.T) {
 
 	d.close() // daemon restart: sequence numbering starts over
 	d2 := newDaemonAt(t, path, "v", daemonproto.ProtocolVersion)
-	d2.publish("r1")
+	// Keep the restarted daemon empty until resync completes. Publishing
+	// before the snapshot races with reconnect and makes its Seq either 0 or 1.
 	ev := recvSeqs(t, ch, 1)[0]
 	require.Equal(t, session.EvMessagesReplaced, ev.Kind)
+	require.Equal(t, uint64(0), ev.Seq)
+	// The replacement event precedes attach; wait for the live subscription
+	// before publishing, rather than relying on reconnect timing.
+	d2.mu.Lock()
+	attached := len(d2.attaches) > 0
+	if !attached {
+		d2.onAttach = make(chan struct{}, 1)
+	}
+	d2.mu.Unlock()
+	if !attached {
+		waitAttach(t, d2)
+	}
+	d2.publish("r1")
+	ev = recvSeqs(t, ch, 1)[0]
 	require.Equal(t, uint64(1), ev.Seq)
+	require.Equal(t, session.TitleEvent{Title: "r1"}, ev.Data)
 	d2.publish("r2")
 	ev = recvSeqs(t, ch, 1)[0]
 	require.Equal(t, uint64(2), ev.Seq)
