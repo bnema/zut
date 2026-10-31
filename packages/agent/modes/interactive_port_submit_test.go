@@ -85,22 +85,26 @@ func TestInteractivePortSubmitSendsInput(t *testing.T) {
 	require.Equal(t, session.InputOriginUser, got.Origin)
 }
 
-func TestInteractivePortEscAbortsRunningTurn(t *testing.T) {
-	port := sessionmocks.NewMockPort(t)
-	events := make(chan session.Event, 4)
-	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: session.RunStateRunning}}, nil).Once()
-	expectPortSubscribe(port, events, nil)
-	called := make(chan struct{})
-	port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{}, session.ErrUnknownRequest).Once()
-	port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
-		close(called)
-		return nil
-	}).Once()
+func TestInteractivePortEscAbortsRunningWork(t *testing.T) {
+	for _, run := range []session.RunState{session.RunStateRunning, session.RunStateCompacting} {
+		t.Run(string(run), func(t *testing.T) {
+			port := sessionmocks.NewMockPort(t)
+			events := make(chan session.Event, 4)
+			port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "s1", Run: run}}, nil).Once()
+			expectPortSubscribe(port, events, nil)
+			called := make(chan struct{})
+			port.EXPECT().SlideBackQueued(mock.Anything).Return(session.Input{}, session.ErrUnknownRequest).Once()
+			port.EXPECT().Abort(mock.Anything).RunAndReturn(func(context.Context) error {
+				close(called)
+				return nil
+			}).Once()
 
-	r, term := startPortKeys(t, port)
-	require.Eventually(t, r.i.portRunning, 5*time.Second, 10*time.Millisecond)
-	term.send("\x1b")
-	waitSignal(t, called, "Abort")
+			r, term := startPortKeys(t, port)
+			require.Eventually(t, r.i.portRunning, 5*time.Second, 10*time.Millisecond)
+			term.send("\x1b")
+			waitSignal(t, called, "Abort")
+		})
+	}
 }
 
 func TestInteractivePortSubmitErrorShown(t *testing.T) {

@@ -68,11 +68,11 @@ func (i *Interactive) applyStartupPreResult(result startupPreResult) {
 	}
 }
 
-// portRunning reports whether the attached session is running a turn.
+// portRunning reports whether the attached session has cancellable work.
 func (i *Interactive) portRunning() bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return i.portInfo.Run == session.RunStateRunning
+	return i.portInfo.Run == session.RunStateRunning || i.portInfo.Run == session.RunStateCompacting
 }
 
 // portSubmit sends a user prompt to the session port without blocking the

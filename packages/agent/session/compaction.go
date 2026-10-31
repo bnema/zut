@@ -102,6 +102,9 @@ func (c *Controller) beginCompact(next *Input) error {
 	before := ag.Messages()
 	started := c.deps.Clock()
 	c.logger().Info("compaction started", "auto", next != nil)
+	// Publish the run-state transition as well as the phase: attached clients
+	// use Info to project busy state, the spinner, and cancellation handling.
+	c.publishTurnInfo()
 	c.publish(EvCompaction, CompactionEvent{Phase: "start"})
 	compactDone := make(chan struct{})
 	c.compactDone = compactDone
@@ -141,6 +144,7 @@ func (c *Controller) beginCompact(next *Input) error {
 		_ = c.call(context.Background(), func() {
 			aborted, rescuing := c.compact.aborted, c.compact.rescuing
 			c.compact.busy, c.compact.aborted, c.compact.cancel, c.compact.rescuing = false, false, nil, false
+			c.publishTurnInfo()
 			duration := c.deps.Clock().Sub(started)
 			switch {
 			case aborted:
