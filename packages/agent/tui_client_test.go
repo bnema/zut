@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"context"
 	"os"
-
-	"github.com/bnema/zut/packages/agent/daemonclient"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
