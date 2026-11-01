@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,5 +274,131 @@ func TestDaemonClientRetriesExpiredSnapshotAttach(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+	}
+}
+
+func TestDaemonClientBurstRecovery(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprint("expired=", expired), func(t *testing.T) {
+			h := startCLIDaemon(t, twoSessions()[0])[0].h
+			h.EXPECT().Subscribe(mock.Anything, mock.Anything).Unset()
+			const count = daemonclient.SubscriberBuffer*3 + 10
+			burst := make(chan session.Event, count)
+			for seq := uint64(1); seq <= count; seq++ {
+				burst <- session.Event{Seq: seq, Session: "abc123", Kind: session.EvTitle}
+			}
+			h.EXPECT().Subscribe(mock.Anything, uint64(0)).Return((<-chan session.Event)(burst), nil).Once()
+			live := make(chan session.Event, count)
+			if expired {
+				h.EXPECT().Subscribe(mock.Anything, uint64(daemonclient.SubscriberBuffer)).Return(nil, session.ErrSeqTooOld).Once()
+				h.EXPECT().Subscribe(mock.Anything, uint64(count)).Return((<-chan session.Event)(live), nil).Once()
+			} else {
+				for seq := uint64(daemonclient.SubscriberBuffer + 1); seq <= count; seq++ {
+					live <- session.Event{Seq: seq, Session: "abc123", Kind: session.EvTitle}
+				}
+				h.EXPECT().Subscribe(mock.Anything, uint64(daemonclient.SubscriberBuffer)).Return((<-chan session.Event)(live), nil).Once()
+			}
+			h.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Seq: count, Info: twoSessions()[0]}, nil).Maybe()
+			// A standard-library pipe observes the overflow log without polling or
+			// racing the consumer against the daemon's event writer.
+			reader, writer := io.Pipe()
+			lines := make(chan string, 16)
+			scanned := make(chan struct{})
+			go func() {
+				defer close(scanned)
+				scanner := bufio.NewScanner(reader)
+				for scanner.Scan() {
+					lines <- scanner.Text()
+				}
+			}()
+			defer func() { writer.Close(); <-scanned; reader.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			c, err := dialExistingDaemonWithOptions(ctx, daemonclient.Options{Logger: slog.New(slog.NewTextHandler(writer, nil))})
+			require.NoError(t, err)
+			defer c.Disconnect()
+			events, err := c.Port("abc123", true).Subscribe(ctx, 0)
+			require.NoError(t, err)
+			select {
+			case line := <-lines:
+				require.Contains(t, line, "reason=local_buffer_full")
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			receive := func() session.Event {
+				t.Helper()
+				select {
+				case ev, ok := <-events:
+					require.True(t, ok)
+					return ev
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+					return session.Event{}
+				}
+			}
+			limit := count
+			if expired {
+				limit = daemonclient.SubscriberBuffer
+			}
+			for seq := 1; seq <= limit; seq++ {
+				ev := receive()
+				require.Equal(t, uint64(seq), ev.Seq)
+				require.Equal(t, session.EvTitle, ev.Kind)
+			}
+			if expired {
+				ev := receive()
+				require.Equal(t, uint64(count), ev.Seq)
+				require.Equal(t, session.EvMessagesReplaced, ev.Kind)
+			}
+			live <- session.Event{Seq: count + 1, Session: "abc123", Kind: session.EvTitle}
+			require.Equal(t, uint64(count+1), receive().Seq)
+			require.NoError(t, c.Disconnect())
+			select {
+			case line := <-lines:
+				require.Contains(t, line, `msg="client stream ended"`)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}
+
+func TestDaemonClientRepeatedSlowDropsRecover(t *testing.T) {
+	h := startCLIDaemon(t, twoSessions()[0])[0].h
+	h.EXPECT().Subscribe(mock.Anything, mock.Anything).Unset()
+	subscribed := make(chan chan session.Event, 1)
+	h.EXPECT().Subscribe(mock.Anything, uint64(0)).RunAndReturn(func(context.Context, uint64) (<-chan session.Event, error) {
+		ch := make(chan session.Event, 1)
+		subscribed <- ch
+		return ch, nil
+	}).Times(7)
+	h.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: twoSessions()[0]}, nil).Times(6)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialExistingDaemon(ctx)
+	require.NoError(t, err)
+	defer c.Disconnect()
+	events, err := c.Port("abc123", true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	for i := 0; i < 6; i++ {
+		select {
+		case ch := <-subscribed:
+			ch <- session.Event{Seq: 1, Session: "abc123", Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	select {
+	case ch := <-subscribed:
+		ch <- session.Event{Seq: 1, Session: "abc123", Kind: session.EvTitle}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case ev, ok := <-events:
+		require.True(t, ok)
+		require.Equal(t, session.EvTitle, ev.Kind)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }
