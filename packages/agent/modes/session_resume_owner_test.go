@@ -61,17 +61,17 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 				require.True(t, act.ToggleScope)
 				i.sessionDialog.Open(ctx, root, root, true)
 				defer i.sessionDialog.Close()
-				require.Empty(t, i.sessionDialog.live)
+				require.Equal(t, infos, i.sessionDialog.live)
 			}
 			if scenario == "initial-list-pending" {
 				started, release := make(chan struct{}), make(chan struct{})
-				client.EXPECT().List(mock.Anything).RunAndReturn(func(context.Context) ([]session.Info, error) {
+				client.EXPECT().List(mock.Anything).RunAndReturn(func(callCtx context.Context) ([]session.Info, error) {
 					close(started)
 					select {
 					case <-release:
 						return infos, nil
-					case <-ctx.Done():
-						return nil, ctx.Err()
+					case <-callCtx.Done():
+						return nil, callCtx.Err()
 					}
 				}).Once()
 				i.loadLiveSessions(ctx)
@@ -124,10 +124,13 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 			client.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 			if releaseInitial != nil {
 				close(releaseInitial)
+				// Closing the picker cancels the poller; it need not enqueue a
+				// stale result. Any already-queued result must be harmless.
 				select {
-				case <-i.loopCalls: // Join the initial List worker without applying its stale projection.
-				case <-time.After(5 * time.Second):
-					t.Fatal("initial list worker did not finish")
+				case apply := <-i.loopCalls:
+					apply()
+					require.False(t, i.sessionDialog.Active())
+				default:
 				}
 			}
 		})

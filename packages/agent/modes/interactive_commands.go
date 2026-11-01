@@ -1524,34 +1524,80 @@ func (i *Interactive) showLoginResult(success bool, message string) {
 	i.dialog.ShowResult(success, message)
 }
 
-// loadLiveSessions fills the /sessions live section from client.List off
-// the render loop; the result is applied on the loop.
+// loadLiveSessions owns one serial poller for the current dialog lifetime.
 func (i *Interactive) loadLiveSessions(ctx context.Context) {
 	client := i.SessionClient()
 	if client == nil {
 		return
 	}
-	self := i.SessionID()
-	timeout := i.sessionCallTimeout()
+	i.mu.Lock()
+	if !i.sessionDialog.Active() {
+		i.mu.Unlock()
+		return
+	}
+	if i.sessionDialog.liveCancel != nil {
+		i.sessionDialog.liveCancel()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	i.sessionDialog.liveCancel = cancel
+	generation := i.sessionDialog.liveGeneration
+	i.mu.Unlock()
+	ticker := time.NewTicker(time.Second)
 	go func() {
-		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer ticker.Stop()
 		defer cancel()
+		i.refreshLiveSessions(ctx, client, i.SessionID(), generation, ticker.C)
+	}()
+}
+
+// refreshLiveSessions accepts ticks so lifecycle tests can drive polling without
+// wall-clock synchronization. Calls and loop applications are strictly serial.
+func (i *Interactive) refreshLiveSessions(ctx context.Context, client SessionClient, self session.ID, generation uint64, ticks <-chan time.Time) {
+	lastError := ""
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
 		infos, err := client.List(callCtx)
+		cancel()
+		message := ""
+		if err != nil {
+			message = "sessions: list live: " + err.Error()
+		}
+		showError := message != "" && message != lastError
+		lastError = message
+		applied := make(chan struct{})
 		apply := func() {
+			defer close(applied)
 			i.mu.Lock()
-			if err != nil {
-				i.statusErr, i.statusOK = "sessions: list live: "+err.Error(), ""
-			} else {
-				i.sessionDialog.SetLive(infos, self)
+			defer i.mu.Unlock()
+			if ctx.Err() != nil || !i.sessionDialog.Active() || i.sessionDialog.liveGeneration != generation {
+				return
 			}
-			i.mu.Unlock()
+			if err == nil {
+				i.sessionDialog.SetLive(infos, self)
+			} else if showError {
+				i.statusErr, i.statusOK = message, ""
+			}
 			i.invalidate()
 		}
 		select {
 		case i.loopCalls <- apply:
 		case <-ctx.Done():
+			return
 		}
-	}()
+		select {
+		case <-applied:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-ticks:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // portAttachSession switches to live session id (/sessions live pick).

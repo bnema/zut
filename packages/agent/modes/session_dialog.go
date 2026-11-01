@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/mattn/go-runewidth"
 )
 
 type sessionLoadEventKind uint8
@@ -70,7 +72,9 @@ const (
 
 // sessionDialog is the inline picker shown when the user runs /sessions.
 type sessionDialog struct {
-	active bool
+	active         bool
+	liveCancel     context.CancelFunc
+	liveGeneration uint64
 	// live lists the daemon's sessions (port mode) above the on-disk rows.
 	// liveFocus moves the cursor into that section; liveCursor indexes it.
 	live             []session.Info
@@ -164,6 +168,9 @@ func newSessionDialog() *sessionDialog { return &sessionDialog{} }
 // background workers. Results are delivered to the caller so the UI goroutine
 // remains responsible for mutating dialog state and rendering it.
 func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope ...bool) <-chan sessionLoadEvent {
+	if !d.active {
+		d.liveGeneration++
+	}
 	if d.loadCancel != nil {
 		d.loadCancel()
 	}
@@ -187,12 +194,16 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string, allScope 
 	d.loadDone = done
 	d.sessions = nil
 	d.baseSessions = nil
-	d.live = nil
-	d.liveSelf = ""
-	d.liveFocus = false
-	d.liveCursor = 0
-	d.selectionTouched = false
-	d.liveInitialized = false
+	// Scope reloads replace only the on-disk projection. Live sessions and
+	// their poller belong to the whole dialog lifetime, in either scope.
+	if !d.active {
+		d.live = nil
+		d.liveSelf = ""
+		d.liveFocus = false
+		d.liveCursor = 0
+		d.selectionTouched = false
+		d.liveInitialized = false
+	}
 	d.cursor = 0
 	d.viewTop = 0
 	d.renaming = false
@@ -451,6 +462,10 @@ func (d *sessionDialog) CursorPos() (row, col int) {
 // Close hides the dialog, cancels any in-flight session reads, and abandons
 // any pending edit or deletion.
 func (d *sessionDialog) Close() {
+	if d.liveCancel != nil {
+		d.liveCancel()
+		d.liveCancel = nil
+	}
 	if d.loadCancel != nil {
 		d.loadCancel()
 		d.loadCancel = nil
@@ -751,7 +766,6 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	if d.loading {
 		hint += " · loading"
 	}
-	lines = append(lines, th.FGColor(th.Muted, hint))
 	if d.searchErr != "" {
 		lines = append(lines, th.FGColor(th.Warning, d.searchErr))
 	}
@@ -804,6 +818,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 			lines = append(lines, "  "+highlightSessionSearchExcerpt(th, match.excerpt, match.indexes, width-2))
 		}
 	}
+	lines = append(lines, th.FGColor(th.Muted, hint))
 	lines = append(lines, frameRule(th, width))
 	return lines
 }
@@ -946,8 +961,8 @@ func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 	provider := sanitizeSessionTreeText(s.Provider)
 	model := sanitizeSessionTreeText(s.Model)
 	summary = sanitizeSessionTreeText(summary)
-	left := fmt.Sprintf("%-14s  %s/%s  %d msgs  $%.4f  ",
-		when, provider, model, s.MessageCount, s.TotalCost)
+	left := fmt.Sprintf("%-14s  %-12s  %s/%s  %d msgs  $%.4f  ",
+		when, sessionProject("", s.CWD), provider, model, s.MessageCount, s.TotalCost)
 	room := maxWidth - len([]rune(left))
 	if room < 4 {
 		room = 4
@@ -1308,29 +1323,98 @@ func liveAttachLabel(info session.Info, self session.ID) string {
 	return "detached"
 }
 
+func sessionProject(repoRoot, cwd string) string {
+	path := strings.TrimSpace(repoRoot)
+	if path == "" {
+		path = strings.TrimSpace(cwd)
+	}
+	if path == "" {
+		return "-"
+	}
+	return sanitizeSessionTreeText(filepath.Base(path))
+}
+
+func liveRowColumns(info session.Info, self session.ID) []string {
+	state := "○ idle"
+	residents := false
+	for _, r := range info.Residents {
+		if r.State == "running" || r.State == "queued" {
+			residents = true
+		}
+	}
+	// Run includes resident work, so idle activity distinguishes waiting from
+	// a foreground turn even when Run is running.
+	if residents && (info.Run == session.RunStateIdle || info.Activity.Kind == "idle") {
+		state = "◌ waiting agents"
+	} else if info.Run == session.RunStateRunning || info.Run == session.RunStateCompacting {
+		state = "● running"
+		if tool := strings.TrimSpace(info.Activity.Tool); tool != "" {
+			state += " · " + tool
+		}
+	}
+	when := info.LastUserInputAt
+	if when.IsZero() {
+		when = info.UpdatedAt
+	}
+	model := info.Model
+	if idx := strings.LastIndex(model, "/"); idx >= 0 {
+		model = model[idx+1:]
+	}
+	model = strings.TrimPrefix(model, "claude-")
+	if info.Reasoning != "" {
+		model += ":" + info.Reasoning
+	}
+	title := strings.TrimSpace(info.Title)
+	if title == "" && info.Goal != nil && strings.TrimSpace(info.Goal.Objective) != "" {
+		title = "goal: " + info.Goal.Objective
+	}
+	if title == "" && info.PlanStep != nil {
+		title = strings.TrimSpace(info.PlanStep.Text)
+	}
+	if title == "" {
+		title = "(new session)"
+	}
+	columns := []string{liveAttachLabel(info, self), sessionProject(info.RepoRoot, info.CWD), state, formatRelative(when), model, fmt.Sprintf("$%.2f", info.Usage.CostUSD), title}
+	for idx := range columns {
+		columns[idx] = sanitizeSessionTreeText(columns[idx])
+	}
+	return columns
+}
+
 func (d *sessionDialog) renderLive(th tui.Theme, width int) []string {
 	if len(d.live) == 0 {
 		return nil
 	}
-	lines := []string{th.FGColor(th.Muted, "live sessions")}
+	rows := make([][]string, len(d.live))
+	widths := []int{13, 12, 18, 11, 16, 7}
 	for idx, info := range d.live {
-		title := strings.TrimSpace(info.Title)
-		if title == "" {
-			title = "(untitled)"
+		rows[idx] = liveRowColumns(info, d.liveSelf)
+	}
+	lines := []string{th.FGColor(th.Muted, "live sessions")}
+	for idx, row := range rows {
+		mark := "  "
+		if d.liveFocus && idx == d.liveCursor {
+			mark = "▸ "
 		}
-		plain := fmt.Sprintf("  %-13s  %s  %s/%s  %s", liveAttachLabel(info, d.liveSelf), sanitizeSessionTreeText(info.ID),
-			sanitizeSessionTreeText(info.Provider), sanitizeSessionTreeText(info.Model), sanitizeSessionTreeText(title))
-		if r := []rune(plain); width > 3 && len(r) > width {
-			plain = string(r[:width-3]) + "..."
+		var b strings.Builder
+		b.WriteString(mark)
+		for col, text := range row {
+			if col < len(widths) {
+				text = runewidth.Truncate(text, widths[col], "…")
+			}
+			b.WriteString(text)
+			if col < len(widths) {
+				b.WriteString(strings.Repeat(" ", widths[col]-runewidth.StringWidth(text)+2))
+			}
 		}
+		plain := runewidth.Truncate(b.String(), max(0, width), "…")
 		if d.liveFocus && idx == d.liveCursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
 			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
-	lines = append(lines, th.FGColor(th.Muted, "resumable sessions"))
-	return lines
+	return append(lines, "", th.FGColor(th.Muted, "resumable sessions"))
 }
 
 // handleLiveKey moves between the live and on-disk sections and resolves
