@@ -24,6 +24,19 @@ func TestSettingsReplacementPreservesTranscript(t *testing.T) {
 	}).Once()
 	require.NoError(t, c.call(ctx, func() { c.replaceAgent(next); require.NoError(t, c.settings.replaceErr) }))
 }
+
+// Auto-titling calls persistTitle directly rather than going through settingsCall.
+func TestPersistTitleUpdatesLiveInfo(t *testing.T) {
+	c, ctx := newTestController(t)
+	for _, title := range []string{"Automatic title", "Renamed title"} {
+		require.NoError(t, c.call(ctx, func() {
+			require.NoError(t, c.persistTitle(title))
+			require.Equal(t, title, c.Info().Title)
+		}))
+		require.Equal(t, title, c.Info().Title)
+	}
+}
+
 func lane9Turn(t *testing.T, c *Controller, ctx context.Context, projections ...turnInfoProjection) *mockturnSeam {
 	t.Helper()
 	m := newMockturnSeam(t)

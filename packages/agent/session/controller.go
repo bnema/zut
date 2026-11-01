@@ -139,6 +139,7 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 		id = NewID()
 	}
 	c := &Controller{deps: deps, loop: make(chan func()), done: make(chan struct{}), closeReq: make(chan struct{}), ring: &eventRing{}, subs: make(map[uint64]*subscription), attach: AttachStateDetached, id: id, created: deps.Clock()}
+	c.settings.title = deps.InitialTitle
 	c.actorBase = context.WithValue(context.WithoutCancel(ctx), actorKey{}, c)
 	c.extInit(ctx)
 	c.turnSeam = c
@@ -256,7 +257,7 @@ func (c *Controller) updateInfo() {
 	if compacting {
 		run = RunStateCompacting
 	}
-	info := Info{ID: string(c.id), CWD: c.deps.CWD, Provider: c.deps.Provider, Model: c.deps.Model, Reasoning: c.deps.Reasoning, Attach: c.attach, Run: run, CreatedAt: c.created, UpdatedAt: c.deps.Clock(), Activity: Activity{Kind: "idle"}}
+	info := Info{ID: string(c.id), Title: c.settings.title, CWD: c.deps.CWD, Provider: c.deps.Provider, Model: c.deps.Model, Reasoning: c.deps.Reasoning, Attach: c.attach, Run: run, CreatedAt: c.created, UpdatedAt: c.deps.Clock(), Activity: Activity{Kind: "idle"}}
 	if c.deps.FastMode != nil {
 		info.FastMode = *c.deps.FastMode
 	}

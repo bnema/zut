@@ -30,6 +30,7 @@ func TestSettingsCWDAndTitlePersistence(t *testing.T) {
 	require.NoError(t, c.ChangeCWD(ctx, "child"))
 	require.Equal(t, target, c.Info().CWD)
 	require.NoError(t, c.SetTitle(ctx, "Useful title"))
+	require.Equal(t, "Useful title", c.Info().Title)
 	snap, err := c.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "Useful title", snap.Info.Title)

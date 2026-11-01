@@ -636,7 +636,14 @@ func (a *sessionAssembly) deps() session.Deps {
 	a.fastMode = a.r.FastMode
 	homeDir, _ := os.UserHomeDir()
 	discovered, _ := subagents.Discover(a.r.CWD, homeDir)
+	initialTitle := ""
+	if a.sess != nil {
+		// core.Session.Title applies both the header title and later rename rows
+		// through the same snapshot reader used by session summaries.
+		initialTitle = a.sess.Title
+	}
 	d := session.Deps{
+		InitialTitle:                      initialTitle,
 		AgentBuilder:                      sessionAgentBuilder{a},
 		SessionStore:                      sessionFileStore{a},
 		ResidentBuilder:                   sessionResidentBuilder{a},

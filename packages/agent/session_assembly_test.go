@@ -420,6 +420,35 @@ func TestNewSessionDepsResume(t *testing.T) {
 	}
 }
 
+func TestNewSessionDepsResumeStoredTitle(t *testing.T) {
+	home := sessionAssemblyEnv(t)
+	server := sessionAssemblyProvider(t)
+	cwd := t.TempDir()
+	sess, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "Hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"Original title", "Renamed stored title"} {
+		if err := sess.UpdateTitle(title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := sess.Path
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deps, _ := newTestSessionDeps(t, session.CreateSpec{CWD: cwd, Env: []string{}, Args: sessionAssemblyArgs(server), ResumePath: path})
+	ctx, cancel := context.WithCancel(context.Background())
+	c := session.NewController(ctx, deps)
+	defer func() { cancel(); <-c.Done() }()
+	if got := c.Info().Title; got != "Renamed stored title" {
+		t.Fatalf("live title = %q, want latest stored title", got)
+	}
+}
+
 func TestNewSessionDepsCleanup(t *testing.T) {
 	sessionAssemblyEnv(t)
 	server := sessionAssemblyProvider(t)

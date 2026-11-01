@@ -291,6 +291,7 @@ func (c *Controller) persistTitle(title string) error {
 		}
 	}
 	c.settings.title = title
+	c.updateInfo()
 	c.publish(EvTitle, TitleEvent{Title: title})
 	return nil
 }

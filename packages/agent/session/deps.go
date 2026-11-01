@@ -158,6 +158,8 @@ type ProfileStore interface {
 // Replaceable callbacks are grouped into interfaces using their original method
 // names and types; Clock is the explicitly approved time source.
 type Deps struct {
+	// InitialTitle is the effective persisted title of the loaded session.
+	InitialTitle                                                   string
 	AgentBuilder                                                   AgentBuilder
 	SessionStore                                                   SessionStore
 	ResidentBuilder                                                ResidentBuilder
