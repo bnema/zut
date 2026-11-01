@@ -18,15 +18,9 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
-// SubscriberBuffer bounds undelivered events per subscription. Like the
-// session controller, a full buffer ends the subscription with a final
-// EvAttach{detached, "slow_consumer"} event instead of blocking the read loop.
+// SubscriberBuffer bounds undelivered events per subscription. Overflow pauses
+// local delivery until the consumer drains the queue, then replays from the ring.
 const SubscriberBuffer = 256
-
-// maxSlowResubscribes bounds consecutive re-attaches after daemon-side
-// slow_consumer drops with no delivered progress in between; one more such
-// drop ends the stream with a final slow_consumer event.
-const maxSlowResubscribes = 3
 
 // Reconnect backoff bounds for subscriptions after transport loss.
 const (
@@ -114,10 +108,9 @@ func (p *RemotePort) Snapshot(ctx context.Context) (session.Snapshot, error) {
 // no event is skipped or repeated; if the daemon no longer retains it (or its
 // sequence restarted), a synthetic EvMessagesReplaced (Seq = the fresh
 // snapshot Seq the stream resumes after) tells the consumer to refetch.
-// A daemon-side slow_consumer drop re-attaches the same way (bounded by
-// maxSlowResubscribes without progress). detached_by_other, closed, local
-// slow-consumer overflow and refused re-attach endings close the channel
-// after a final event.
+// Slow-consumer drops (local or daemon-side) replay the same way, waiting for
+// local capacity first. Intentional detach, session closure and refused attaches
+// remain terminal.
 func (p *RemotePort) Subscribe(ctx context.Context, afterSeq uint64) (<-chan session.Event, error) {
 	s := &subscription{port: p, last: afterSeq, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
 	c := p.c
@@ -187,42 +180,64 @@ func (c *Client) onNotification(n daemonproto.Notification) {
 type subscription struct {
 	port *RemotePort
 
-	mu   sync.Mutex
-	last uint64
-	out  chan session.Event
-	done bool
-	stop chan struct{}
+	mu       sync.Mutex
+	last     uint64
+	out      chan session.Event
+	done     bool
+	terminal bool
+	gap      *time.Timer // bounded fallback when a stale frame precedes replay
+	paused   bool        // ignore live frames until recovery replays from last
+	stop     chan struct{}
 	// resub asks supervise to re-attach after the daemon dropped this
 	// subscriber as a slow consumer.
 	resub chan struct{}
 }
 
-// deliver forwards ev unless already delivered, ending slow consumers. A
+// deliver forwards ev unless already delivered or recovery is pending. A
 // slow_consumer detach received from the daemon is not forwarded: it only
 // means the daemon dropped the subscriber, so supervise re-attaches. A full
-// local out buffer is the client's own overflow and stays final.
+// local out buffer pauses delivery and requests the same recovery.
 func (s *subscription) deliver(ev session.Event) {
 	s.mu.Lock()
-	if s.done || ev.Seq <= s.last {
+	if s.done || s.paused || ev.Seq <= s.last {
 		s.mu.Unlock()
 		return
 	}
-	if isSlowConsumer(ev) {
+	if !isSlowConsumer(ev) && ev.Seq != s.last+1 {
+		// A canceled daemon subscription can still have frames in its outbox.
+		// Do not let those frames pause the new subscription's contiguous
+		// replay. Recover only if the missing event fails to arrive in time.
+		if s.gap == nil {
+			s.armGap()
+		}
+		s.mu.Unlock()
+		return
+	}
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
+	}
+	if isSlowConsumer(ev) || len(s.out) >= cap(s.out)-1 {
+		reason := "local_buffer_full"
+		if isSlowConsumer(ev) {
+			reason = "daemon_slow_consumer"
+		}
+		last := s.last
+		s.paused = true
 		s.mu.Unlock()
 		select {
 		case s.resub <- struct{}{}:
 		default:
 		}
-		return
-	}
-	if len(s.out) >= cap(s.out)-1 {
-		s.mu.Unlock()
-		s.finish(&session.Event{Seq: ev.Seq, Session: ev.Session, At: ev.At, Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
+		if log := s.port.c.opts.Logger; log != nil {
+			log.Info("client stream recovering", "session", s.port.id, "reason", reason, "last_seq", last)
+		}
 		return
 	}
 	s.last = ev.Seq
 	s.out <- ev
 	terminal := ev.Kind == session.EvClosed
+	s.terminal = terminal
 	s.mu.Unlock()
 	if info, ok := ev.Data.(session.InfoEvent); ok {
 		s.port.setInfo(info.Info)
@@ -232,23 +247,78 @@ func (s *subscription) deliver(ev session.Event) {
 	}
 }
 
+// armGap starts the recovery fallback timer. s.mu must be held. The callback
+// acts only if s.gap is still its own timer, so a stale fired callback cannot
+// cancel a newer arming.
+func (s *subscription) armGap() {
+	last := s.last
+	var t *time.Timer
+	t = time.AfterFunc(reconnectMax, func() {
+		s.mu.Lock() // t is assigned under s.mu by the arming caller
+		s.gapFiredLocked(t, last)
+	})
+	s.gap = t
+}
+
+// gapFired is the fallback timer callback for timer t armed at last. It acts
+// only if t is still the current timer.
+func (s *subscription) gapFired(t *time.Timer, last uint64) {
+	s.mu.Lock()
+	s.gapFiredLocked(t, last)
+}
+
+// gapFiredLocked is gapFired with s.mu held; it releases s.mu.
+func (s *subscription) gapFiredLocked(t *time.Timer, last uint64) {
+	if s.done || s.gap != t {
+		s.mu.Unlock()
+		return
+	}
+	s.gap = nil
+	if s.last != last {
+		s.mu.Unlock()
+		return // progress or a snapshot moved last; a later gap re-arms
+	}
+	s.paused = true
+	s.mu.Unlock()
+	select {
+	case s.resub <- struct{}{}:
+	default:
+	}
+	if log := s.port.c.opts.Logger; log != nil {
+		log.Info("client stream recovering", "session", s.port.id, "reason", "sequence_gap", "last_seq", last)
+	}
+}
+
+// stopGap cancels the fallback timer. s.mu must be held.
+func (s *subscription) stopGap() {
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
+	}
+}
+
 func isSlowConsumer(ev session.Event) bool {
 	a, ok := ev.Data.(session.AttachEvent)
 	return ev.Kind == session.EvAttach && ok && a.Reason == "slow_consumer"
 }
 
-// slowResubscribeAllowed reports whether a daemon slow_consumer drop may be
-// retried. progressAt is the last Seq seen at the previous drop and stalls
-// counts consecutive drops without delivered progress since then.
-func (s *subscription) slowResubscribeAllowed(progressAt *uint64, stalls *int) bool {
-	cur := s.lastSeq()
-	if cur > *progressAt {
-		*stalls = 0
-	} else {
-		*stalls++
+// waitDrained keeps recovery off the read loop and bounds retry frequency even
+// when the daemon repeatedly drops a subscriber without making progress.
+func (s *subscription) waitDrained(ctx context.Context) error {
+	t := time.NewTicker(reconnectMin)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.stop:
+			return daemonproto.ErrClosed
+		case <-t.C:
+			if len(s.out) <= SubscriberBuffer/2 {
+				return nil
+			}
+		}
 	}
-	*progressAt = cur
-	return *stalls <= maxSlowResubscribes
 }
 
 // finish closes the stream once, after an optional final event. The extra
@@ -260,6 +330,26 @@ func (s *subscription) finish(final *session.Event) {
 		return
 	}
 	s.done = true
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
+	}
+	reason := "canceled_or_disconnected"
+	if s.terminal {
+		reason = "session_closed"
+	}
+	if final != nil {
+		switch v := final.Data.(type) {
+		case session.AttachEvent:
+			reason = v.Reason
+		case session.ClosedEvent:
+			reason = "session_closed"
+			if v.Reason != "" {
+				reason = "reattach_refused"
+			}
+		}
+	}
+	last := s.last
 	if final != nil {
 		s.out <- *final
 	}
@@ -267,6 +357,9 @@ func (s *subscription) finish(final *session.Event) {
 	close(s.stop)
 	s.mu.Unlock()
 	s.port.c.dropSub(s)
+	if log := s.port.c.opts.Logger; log != nil {
+		log.Info("client stream ended", "session", s.port.id, "reason", reason, "last_seq", last)
+	}
 }
 
 func (s *subscription) lastSeq() uint64 {
@@ -276,6 +369,16 @@ func (s *subscription) lastSeq() uint64 {
 }
 
 func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.done {
+		s.mu.Unlock()
+		return nil
+	}
+	s.paused = false
+	s.mu.Unlock()
 	var info session.Info
 	err := mapErr(conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: s.port.id, AfterSeq: s.lastSeq(), Controlling: s.port.controlling}, &info))
 	if err == nil {
@@ -288,6 +391,13 @@ func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error
 // with a synthetic EvMessagesReplaced when that Seq is no longer retained or
 // the daemon's sequence restarted below it.
 func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) error {
+	s.mu.Lock()
+	s.paused = true
+	s.stopGap()
+	s.mu.Unlock()
+	if err := s.waitDrained(ctx); err != nil {
+		return err
+	}
 	var snap session.Snapshot
 	if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 		return err
@@ -297,24 +407,34 @@ func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) err
 		if !errors.Is(err, session.ErrSeqTooOld) {
 			return err
 		}
+	}
+	// A replacement snapshot can itself expire before attach. Retry only that
+	// refusal, waiting for capacity before fetching each fresh snapshot so a
+	// slow local consumer does not age it while we wait. waitDrained also
+	// rate-limits repeated expiry and honors cancellation and terminal notices.
+	for {
+		s.mu.Lock()
+		s.paused = true
+		s.stopGap()
+		s.mu.Unlock()
+		if err := s.waitDrained(ctx); err != nil {
+			return err
+		}
 		if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 			return err
 		}
-	}
-	s.mu.Lock()
-	if s.done {
+		s.mu.Lock()
+		if s.done {
+			s.mu.Unlock()
+			return nil
+		}
+		s.last = snap.Seq
+		s.out <- session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
 		s.mu.Unlock()
-		return nil
+		if err := s.attach(ctx, conn); !errors.Is(err, session.ErrSeqTooOld) {
+			return err
+		}
 	}
-	if len(s.out) >= cap(s.out)-1 {
-		s.mu.Unlock()
-		s.finish(&session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
-		return nil
-	}
-	s.last = snap.Seq
-	s.out <- session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
-	s.mu.Unlock()
-	return s.attach(ctx, conn)
 }
 
 // transient reports transport-level failures worth redialing for.
@@ -328,7 +448,6 @@ func transient(err error) bool {
 // failure (the daemon answered and refused) is terminal.
 func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 	defer s.finish(nil)
-	progressAt, stalls := s.lastSeq(), 0
 	for {
 		var err error
 		select {
@@ -338,10 +457,6 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 		case <-s.stop:
 			return
 		case <-s.resub:
-			if !s.slowResubscribeAllowed(&progressAt, &stalls) {
-				s.finish(&session.Event{Seq: s.lastSeq(), Session: s.port.id, At: time.Now(), Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
-				return
-			}
 			if err = s.reattach(ctx, conn); err == nil {
 				continue
 			}

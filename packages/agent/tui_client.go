@@ -100,12 +100,14 @@ func (a *daemonSessionClient) detacher(held func() session.ID) func() {
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
 // from spec when attachID is empty) and runs the interactive TUI on it.
 func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
-	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}}))
+	streamLog, closeStreamLog := clientTimingLog()
+	defer closeStreamLog()
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui", Logger: streamLog}}))
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
 	}
-	return runTUIWithClient(ctx, c, attachID, spec, out)
+	return runTUIWithClientLog(ctx, c, attachID, spec, out, streamLog)
 }
 
 // clientLogPath returns $ZUT_HOME/logs/client.log.
@@ -122,13 +124,10 @@ func clientTimingLog() (*slog.Logger, func()) {
 	return logger, func() { _ = closer.Close() }
 }
 
-// runTUIWithClient owns c and disconnects it on return.
-func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
+func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger) int {
 	defer c.Disconnect()
 	start := time.Now()
-	tlog, closeLog := clientTimingLog()
 	setupCrashOutput(ZutHome(), "client", tlog)
-	defer closeLog()
 	logPhase := func(name string, attrs ...any) {
 		if tlog != nil {
 			tlog.Info("tui startup", append([]any{"phase", name, "since_daemon", time.Since(start)}, attrs...)...)
@@ -251,8 +250,10 @@ func runAttachCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ctx := context.Background()
+	streamLog, closeStreamLog := clientTimingLog()
+	defer closeStreamLog()
 	dctx, cancel := context.WithTimeout(ctx, daemonClientDeadline)
-	c, err := dialExistingDaemon(dctx)
+	c, err := dialExistingDaemonWithOptions(dctx, daemonclient.Options{ClientKind: "tui", Logger: streamLog})
 	if err != nil {
 		cancel()
 		fmt.Fprintln(stderr, err)
@@ -283,7 +284,7 @@ func runAttachCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "zut attach:", err)
 		return 1
 	}
-	return runTUIWithClient(ctx, c, session.ID(id), nil, stderr)
+	return runTUIWithClientLog(ctx, c, session.ID(id), nil, stderr, streamLog)
 }
 
 // resolveAttachTarget matches an exact ID, a unique ID prefix, then a unique

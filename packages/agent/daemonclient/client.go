@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -20,6 +21,8 @@ import (
 
 // Options configures the hello handshake and client diagnostics.
 type Options struct {
+	// Logger receives stream lifecycle diagnostics. Nil discards them.
+	Logger *slog.Logger
 	// ClientVersion is the zut binary version sent in hello.
 	ClientVersion string
 	// ClientKind is tui, headless, cli or bot (default cli).

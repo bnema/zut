@@ -290,31 +290,6 @@ func TestSubscribeInitialSeqTooOldIsReturned(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrSeqTooOld)
 }
 
-func TestSubscribeSlowConsumerIsDropped(t *testing.T) {
-	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
-	c := dial(t, path, Options{ClientVersion: "v"})
-	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
-	require.NoError(t, err)
-	for i := 0; i < SubscriberBuffer+10; i++ {
-		d.publish("x")
-	}
-	// publish returns once the frames are written, not once the client read
-	// loop routed them; reading ch early would drain it and avoid overflow.
-	// The client reads frames in wire order, so a round trip issued after the
-	// publishes completes only after every event was routed.
-	_, err = c.Status(testCtx(t))
-	require.NoError(t, err)
-	var last session.Event
-	n := 0
-	for ev := range ch {
-		last = ev
-		n++
-	}
-	require.Equal(t, SubscriberBuffer+1, n)
-	require.Equal(t, session.EvAttach, last.Kind)
-	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, last.Data)
-}
-
 func waitAttach(t *testing.T, d *miniDaemon) {
 	t.Helper()
 	select {
@@ -354,27 +329,6 @@ func TestSubscribeDaemonSlowConsumerDropReattaches(t *testing.T) {
 		}
 		require.Equal(t, 1, d.count("snapshot"))
 	}
-}
-
-func TestSubscribeDaemonSlowConsumerDropsWithoutProgressAreBounded(t *testing.T) {
-	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
-	d.onAttach = make(chan struct{}, 8)
-	c := dial(t, path, Options{ClientVersion: "v"})
-	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
-	require.NoError(t, err)
-	waitAttach(t, d)
-	for i := 0; i < maxSlowResubscribes; i++ {
-		d.dropSlowConsumer("")
-		waitAttach(t, d)
-	}
-	d.dropSlowConsumer("")
-	var evs []session.Event
-	for ev := range ch {
-		evs = append(evs, ev)
-	}
-	require.Len(t, evs, 1)
-	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, evs[0].Data)
-	require.Equal(t, 1+maxSlowResubscribes, d.count("attach"))
 }
 
 func TestEnsureDaemonAutospawns(t *testing.T) {

@@ -636,6 +636,8 @@ zut daemon logs [-f]               # print/follow log
 zut daemon run [--idle-gc-hours N] # foreground; close detached idle sessions after N hours (default 24; 0 disables)
 ```
 
+TUI event bursts recover automatically by replaying retained daemon events; if the ring has expired, the client refreshes its snapshot instead. Intentional takeovers and session closure still end attachment. Stream recovery and end reasons are recorded in `$ZUT_HOME/logs/client.log`.
+
 Every daemon starts empty, including after crashes or auto-spawn. Old transcripts remain resumable, not detached live sessions. Startup best-effort deletes old `daemon/state.json` (possibly containing client environment secrets) and stale `daemon/sessions/` review journals; saved schedules remain.
 
 Agents can see and message other sessions with the `sessions` tool ([Tools](#tools)).
