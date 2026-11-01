@@ -18,15 +18,9 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
-// SubscriberBuffer bounds undelivered events per subscription. Like the
-// session controller, a full buffer ends the subscription with a final
-// EvAttach{detached, "slow_consumer"} event instead of blocking the read loop.
+// SubscriberBuffer bounds undelivered events per subscription. Overflow pauses
+// local delivery until the consumer drains the queue, then replays from the ring.
 const SubscriberBuffer = 256
-
-// maxSlowResubscribes bounds consecutive re-attaches after daemon-side
-// slow_consumer drops with no delivered progress in between; one more such
-// drop ends the stream with a final slow_consumer event.
-const maxSlowResubscribes = 3
 
 // Reconnect backoff bounds for subscriptions after transport loss.
 const (
@@ -114,10 +108,9 @@ func (p *RemotePort) Snapshot(ctx context.Context) (session.Snapshot, error) {
 // no event is skipped or repeated; if the daemon no longer retains it (or its
 // sequence restarted), a synthetic EvMessagesReplaced (Seq = the fresh
 // snapshot Seq the stream resumes after) tells the consumer to refetch.
-// A daemon-side slow_consumer drop re-attaches the same way (bounded by
-// maxSlowResubscribes without progress). detached_by_other, closed, local
-// slow-consumer overflow and refused re-attach endings close the channel
-// after a final event.
+// Slow-consumer drops (local or daemon-side) replay the same way, waiting for
+// local capacity first. Intentional detach, session closure and refused attaches
+// remain terminal.
 func (p *RemotePort) Subscribe(ctx context.Context, afterSeq uint64) (<-chan session.Event, error) {
 	s := &subscription{port: p, last: afterSeq, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
 	c := p.c
@@ -187,27 +180,40 @@ func (c *Client) onNotification(n daemonproto.Notification) {
 type subscription struct {
 	port *RemotePort
 
-	mu   sync.Mutex
-	last uint64
-	out  chan session.Event
-	done bool
-	stop chan struct{}
+	mu       sync.Mutex
+	last     uint64
+	out      chan session.Event
+	done     bool
+	terminal bool
+	paused   bool // ignore live frames until recovery replays from last
+	stop     chan struct{}
 	// resub asks supervise to re-attach after the daemon dropped this
 	// subscriber as a slow consumer.
 	resub chan struct{}
 }
 
-// deliver forwards ev unless already delivered, ending slow consumers. A
+// deliver forwards ev unless already delivered or recovery is pending. A
 // slow_consumer detach received from the daemon is not forwarded: it only
 // means the daemon dropped the subscriber, so supervise re-attaches. A full
-// local out buffer is the client's own overflow and stays final.
+// local out buffer pauses delivery and requests the same recovery.
 func (s *subscription) deliver(ev session.Event) {
 	s.mu.Lock()
-	if s.done || ev.Seq <= s.last {
+	if s.done || s.paused || ev.Seq <= s.last {
 		s.mu.Unlock()
 		return
 	}
-	if isSlowConsumer(ev) {
+	if isSlowConsumer(ev) || len(s.out) >= cap(s.out)-1 || ev.Seq != s.last+1 {
+		if log := s.port.c.opts.Logger; log != nil {
+			reason := "local_buffer_full"
+			if ev.Seq != s.last+1 {
+				reason = "sequence_gap"
+			}
+			if isSlowConsumer(ev) {
+				reason = "daemon_slow_consumer"
+			}
+			log.Info("client stream recovering", "session", s.port.id, "reason", reason, "last_seq", s.last)
+		}
+		s.paused = true
 		s.mu.Unlock()
 		select {
 		case s.resub <- struct{}{}:
@@ -215,14 +221,10 @@ func (s *subscription) deliver(ev session.Event) {
 		}
 		return
 	}
-	if len(s.out) >= cap(s.out)-1 {
-		s.mu.Unlock()
-		s.finish(&session.Event{Seq: ev.Seq, Session: ev.Session, At: ev.At, Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
-		return
-	}
 	s.last = ev.Seq
 	s.out <- ev
 	terminal := ev.Kind == session.EvClosed
+	s.terminal = terminal
 	s.mu.Unlock()
 	if info, ok := ev.Data.(session.InfoEvent); ok {
 		s.port.setInfo(info.Info)
@@ -237,18 +239,23 @@ func isSlowConsumer(ev session.Event) bool {
 	return ev.Kind == session.EvAttach && ok && a.Reason == "slow_consumer"
 }
 
-// slowResubscribeAllowed reports whether a daemon slow_consumer drop may be
-// retried. progressAt is the last Seq seen at the previous drop and stalls
-// counts consecutive drops without delivered progress since then.
-func (s *subscription) slowResubscribeAllowed(progressAt *uint64, stalls *int) bool {
-	cur := s.lastSeq()
-	if cur > *progressAt {
-		*stalls = 0
-	} else {
-		*stalls++
+// waitDrained keeps recovery off the read loop and bounds retry frequency even
+// when the daemon repeatedly drops a subscriber without making progress.
+func (s *subscription) waitDrained(ctx context.Context) error {
+	t := time.NewTicker(reconnectMin)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.stop:
+			return daemonproto.ErrClosed
+		case <-t.C:
+			if len(s.out) <= SubscriberBuffer/2 {
+				return nil
+			}
+		}
 	}
-	*progressAt = cur
-	return *stalls <= maxSlowResubscribes
 }
 
 // finish closes the stream once, after an optional final event. The extra
@@ -260,6 +267,24 @@ func (s *subscription) finish(final *session.Event) {
 		return
 	}
 	s.done = true
+	reason := "canceled_or_disconnected"
+	if s.terminal {
+		reason = "session_closed"
+	}
+	if final != nil {
+		switch v := final.Data.(type) {
+		case session.AttachEvent:
+			reason = v.Reason
+		case session.ClosedEvent:
+			reason = "session_closed"
+			if v.Reason != "" {
+				reason = "reattach_refused"
+			}
+		}
+	}
+	if log := s.port.c.opts.Logger; log != nil {
+		log.Info("client stream ended", "session", s.port.id, "reason", reason, "last_seq", s.last)
+	}
 	if final != nil {
 		s.out <- *final
 	}
@@ -276,6 +301,9 @@ func (s *subscription) lastSeq() uint64 {
 }
 
 func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error {
+	s.mu.Lock()
+	s.paused = false
+	s.mu.Unlock()
 	var info session.Info
 	err := mapErr(conn.Call(ctx, daemonproto.AttachRequest{Type: "attach", Session: s.port.id, AfterSeq: s.lastSeq(), Controlling: s.port.controlling}, &info))
 	if err == nil {
@@ -288,6 +316,12 @@ func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error
 // with a synthetic EvMessagesReplaced when that Seq is no longer retained or
 // the daemon's sequence restarted below it.
 func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) error {
+	s.mu.Lock()
+	s.paused = true
+	s.mu.Unlock()
+	if err := s.waitDrained(ctx); err != nil {
+		return err
+	}
 	var snap session.Snapshot
 	if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 		return err
@@ -297,18 +331,19 @@ func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) err
 		if !errors.Is(err, session.ErrSeqTooOld) {
 			return err
 		}
+		s.mu.Lock()
+		s.paused = true
+		s.mu.Unlock()
 		if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 			return err
 		}
 	}
+	if err := s.waitDrained(ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.done {
 		s.mu.Unlock()
-		return nil
-	}
-	if len(s.out) >= cap(s.out)-1 {
-		s.mu.Unlock()
-		s.finish(&session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
 		return nil
 	}
 	s.last = snap.Seq
@@ -328,7 +363,6 @@ func transient(err error) bool {
 // failure (the daemon answered and refused) is terminal.
 func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 	defer s.finish(nil)
-	progressAt, stalls := s.lastSeq(), 0
 	for {
 		var err error
 		select {
@@ -338,10 +372,6 @@ func (s *subscription) supervise(ctx context.Context, conn *daemonproto.Conn) {
 		case <-s.stop:
 			return
 		case <-s.resub:
-			if !s.slowResubscribeAllowed(&progressAt, &stalls) {
-				s.finish(&session.Event{Seq: s.lastSeq(), Session: s.port.id, At: time.Now(), Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}})
-				return
-			}
 			if err = s.reattach(ctx, conn); err == nil {
 				continue
 			}

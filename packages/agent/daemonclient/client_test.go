@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -290,29 +291,50 @@ func TestSubscribeInitialSeqTooOldIsReturned(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrSeqTooOld)
 }
 
-func TestSubscribeSlowConsumerIsDropped(t *testing.T) {
+func TestSubscribeBurstReplaysAfterSlowConsumer(t *testing.T) {
+	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	var logs bytes.Buffer
+	c := dial(t, path, Options{ClientVersion: "v", Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
+	require.NoError(t, err)
+	const count = SubscriberBuffer*3 + 10
+	for i := 0; i < count; i++ {
+		d.publish("x")
+	}
+	_, err = c.Status(testCtx(t))
+	require.NoError(t, err)
+	got := recvSeqs(t, ch, count)
+	for i, ev := range got {
+		require.Equal(t, uint64(i+1), ev.Seq)
+		require.Equal(t, session.EvTitle, ev.Kind)
+	}
+	d.publish("live")
+	require.Equal(t, uint64(count+1), recvSeqs(t, ch, 1)[0].Seq)
+	require.NoError(t, c.Disconnect())
+	require.Contains(t, logs.String(), "reason=local_buffer_full")
+	require.Contains(t, logs.String(), `msg="client stream ended"`)
+}
+
+func TestSubscribeBurstResyncsWhenRingExpires(t *testing.T) {
 	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
 	c := dial(t, path, Options{ClientVersion: "v"})
 	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
 	require.NoError(t, err)
-	for i := 0; i < SubscriberBuffer+10; i++ {
+	const count = SubscriberBuffer * 2
+	for i := 0; i < count; i++ {
 		d.publish("x")
 	}
-	// publish returns once the frames are written, not once the client read
-	// loop routed them; reading ch early would drain it and avoid overflow.
-	// The client reads frames in wire order, so a round trip issued after the
-	// publishes completes only after every event was routed.
 	_, err = c.Status(testCtx(t))
 	require.NoError(t, err)
-	var last session.Event
-	n := 0
-	for ev := range ch {
-		last = ev
-		n++
+	d.trim(count)
+	for i := 0; i < SubscriberBuffer; i++ {
+		require.Equal(t, uint64(i+1), recvSeqs(t, ch, 1)[0].Seq)
 	}
-	require.Equal(t, SubscriberBuffer+1, n)
-	require.Equal(t, session.EvAttach, last.Kind)
-	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, last.Data)
+	ev := recvSeqs(t, ch, 1)[0]
+	require.Equal(t, session.EvMessagesReplaced, ev.Kind)
+	require.Equal(t, uint64(count), ev.Seq)
+	d.publish("live")
+	require.Equal(t, uint64(count+1), recvSeqs(t, ch, 1)[0].Seq)
 }
 
 func waitAttach(t *testing.T, d *miniDaemon) {
@@ -356,25 +378,19 @@ func TestSubscribeDaemonSlowConsumerDropReattaches(t *testing.T) {
 	}
 }
 
-func TestSubscribeDaemonSlowConsumerDropsWithoutProgressAreBounded(t *testing.T) {
+func TestSubscribeDaemonSlowConsumerDropsWithoutProgressRecover(t *testing.T) {
 	d, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
 	d.onAttach = make(chan struct{}, 8)
 	c := dial(t, path, Options{ClientVersion: "v"})
 	ch, err := c.Port("s1", true).Subscribe(testCtx(t), 0)
 	require.NoError(t, err)
 	waitAttach(t, d)
-	for i := 0; i < maxSlowResubscribes; i++ {
+	for i := 0; i < 6; i++ {
 		d.dropSlowConsumer("")
 		waitAttach(t, d)
 	}
-	d.dropSlowConsumer("")
-	var evs []session.Event
-	for ev := range ch {
-		evs = append(evs, ev)
-	}
-	require.Len(t, evs, 1)
-	require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}, evs[0].Data)
-	require.Equal(t, 1+maxSlowResubscribes, d.count("attach"))
+	d.publish("live")
+	require.Equal(t, uint64(1), recvSeqs(t, ch, 1)[0].Seq)
 }
 
 func TestEnsureDaemonAutospawns(t *testing.T) {

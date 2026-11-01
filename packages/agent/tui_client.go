@@ -100,12 +100,14 @@ func (a *daemonSessionClient) detacher(held func() session.ID) func() {
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
 // from spec when attachID is empty) and runs the interactive TUI on it.
 func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
-	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui"}}))
+	streamLog, closeStreamLog := clientTimingLog()
+	defer closeStreamLog()
+	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui", Logger: streamLog}}))
 	if err != nil {
 		fmt.Fprintln(out, err)
 		return 1
 	}
-	return runTUIWithClient(ctx, c, attachID, spec, out)
+	return runTUIWithClientLog(ctx, c, attachID, spec, out, streamLog)
 }
 
 // clientLogPath returns $ZUT_HOME/logs/client.log.
@@ -124,11 +126,15 @@ func clientTimingLog() (*slog.Logger, func()) {
 
 // runTUIWithClient owns c and disconnects it on return.
 func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
+	tlog, closeLog := clientTimingLog()
+	defer closeLog()
+	return runTUIWithClientLog(ctx, c, attachID, spec, out, tlog)
+}
+
+func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger) int {
 	defer c.Disconnect()
 	start := time.Now()
-	tlog, closeLog := clientTimingLog()
 	setupCrashOutput(ZutHome(), "client", tlog)
-	defer closeLog()
 	logPhase := func(name string, attrs ...any) {
 		if tlog != nil {
 			tlog.Info("tui startup", append([]any{"phase", name, "since_daemon", time.Since(start)}, attrs...)...)
