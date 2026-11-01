@@ -65,6 +65,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 		cols:                 cols,
 		agentRev:             rev,
 		statusOK:             i.statusOK,
+		statusFaded:          i.statusFlashFadedLocked(time.Now()),
 		statusErr:            i.statusErr,
 		help:                 strings.Join(i.helpBlock, "\n"),
 		sessionInfo:          sessionInfoBlocksKey(i.sessionInfoBlocks),
@@ -348,7 +349,11 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		if cols > 4 && len(line) > cols {
 			line = line[:cols-3] + "..."
 		}
-		chat = append(chat, i.cfg.Theme.FGColor(i.cfg.Theme.Tool, line), "")
+		color := i.cfg.Theme.Tool
+		if i.statusFlashFadedLocked(time.Now()) {
+			color = i.cfg.Theme.Muted
+		}
+		chat = append(chat, i.cfg.Theme.FGColor(color, line), "")
 	}
 
 	// Live shell-escape output (!command / entry.pre) streams into the

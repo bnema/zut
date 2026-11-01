@@ -1081,7 +1081,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.port, i.sessionID = res.port, res.id
 		i.subCancel, i.events = res.cancel, res.events
 		i.extNotes = nil
-		i.statusErr, i.statusOK = "", "switched to session "+string(res.id)
+		i.flashStatusLocked("switched to session " + string(res.id))
 		i.hydrateLocked(res.snap)
 		if selection := res.treeSelection; selection != nil {
 			i.ed.Clear()

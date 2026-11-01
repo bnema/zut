@@ -496,6 +496,7 @@ type chatCacheKey struct {
 	cols                 int
 	agentRev             uint64
 	statusOK             string
+	statusFaded          bool
 	statusErr            string
 	help                 string
 	sessionInfo          string
@@ -686,29 +687,33 @@ type Interactive struct {
 	planSnapshots      map[string]core.PlanUpdate
 	planRevision       uint64
 	reloadStatusSeq    uint64
-	extStatuses        map[string]map[string]extensionStatus
-	extWidgets         map[string]map[string]extensionWidget
-	liveBlock          []string // live streaming/tool progress rendered outside scrollback
-	helpBlock          []string // rendered above the chat when /help was typed
-	sessionInfoBlocks  []sessionInfoBlock
-	cumUsage           provider.Usage
-	dictation          interactiveDictation
-	pendingDictation   []<-chan struct{}
-	lastCtxInput       int // input_tokens of the most recent turn — approximates current context size
-	busy               bool
-	ctrlCExit          bool
-	activity           agentActivity
-	pendingIdleWork    []func()
-	dirty              chan struct{}
-	renderScheduler    atomic.Pointer[latestFrameScheduler]
-	renderRevision     atomic.Uint64
-	renderOutsideLock  bool
-	modelRefresh       chan modelRefreshResult
-	modelRefreshing    bool
-	startupPreDone     chan startupPreResult
-	cancelTurn         context.CancelFunc
-	scrollOffset       int // rows from the bottom; 0 = pinned to latest
-	prevScrollOffset   int // last value redraw snapped against; tracks intent
+	// Transient OK status (see status_flash.go).
+	statusFlashSeq    uint64
+	statusFlashMsg    string
+	statusFlashAt     time.Time
+	extStatuses       map[string]map[string]extensionStatus
+	extWidgets        map[string]map[string]extensionWidget
+	liveBlock         []string // live streaming/tool progress rendered outside scrollback
+	helpBlock         []string // rendered above the chat when /help was typed
+	sessionInfoBlocks []sessionInfoBlock
+	cumUsage          provider.Usage
+	dictation         interactiveDictation
+	pendingDictation  []<-chan struct{}
+	lastCtxInput      int // input_tokens of the most recent turn — approximates current context size
+	busy              bool
+	ctrlCExit         bool
+	activity          agentActivity
+	pendingIdleWork   []func()
+	dirty             chan struct{}
+	renderScheduler   atomic.Pointer[latestFrameScheduler]
+	renderRevision    atomic.Uint64
+	renderOutsideLock bool
+	modelRefresh      chan modelRefreshResult
+	modelRefreshing   bool
+	startupPreDone    chan startupPreResult
+	cancelTurn        context.CancelFunc
+	scrollOffset      int // rows from the bottom; 0 = pinned to latest
+	prevScrollOffset  int // last value redraw snapped against; tracks intent
 
 	// prevChatLen and prevChatCols track the chat buffer's size at the
 	// last redraw so that when content grows below the user's viewport
