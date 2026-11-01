@@ -1,21 +1,39 @@
 package modes
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
-// Transient ("flash") OK status: shown normally, then rendered muted
-// (fade), then cleared. Any later status write wins: the timers only
-// touch the line if it still holds the flashed message.
+// Every OK status line is transient: the renderer stamps a new message the
+// first time it sees it, draws it muted after statusFlashSolid and clears it
+// after statusFlashTotal. A newer message restarts the cycle; the clear timer
+// only touches the line if it still holds the stamped message. Progress
+// messages (see statusIsSticky) stay until their owner replaces them.
 const (
 	statusFlashSolid = 2500 * time.Millisecond
 	statusFlashTotal = 4 * time.Second
 )
 
-// flashStatusLocked shows msg as a transient OK status. Caller holds i.mu.
-func (i *Interactive) flashStatusLocked(msg string) {
-	i.statusOK, i.statusErr = msg, ""
+// statusIsSticky reports whether msg describes ongoing work and must not
+// expire on its own.
+func statusIsSticky(msg string) bool {
+	return strings.HasSuffix(msg, "…") || strings.HasSuffix(msg, "...") ||
+		msg == "Refreshing models"
+}
+
+// observeStatusLocked stamps a newly set OK status and schedules its fade and
+// clear. Caller holds i.mu.
+func (i *Interactive) observeStatusLocked(now time.Time) {
+	if i.statusOK == i.statusFlashMsg {
+		return
+	}
+	i.statusFlashMsg = i.statusOK
+	i.statusFlashAt = now
 	i.statusFlashSeq++
-	i.statusFlashMsg = msg
-	i.statusFlashAt = time.Now()
+	if i.statusOK == "" || statusIsSticky(i.statusOK) {
+		return
+	}
 	seq := i.statusFlashSeq
 	time.AfterFunc(statusFlashSolid, i.invalidate)
 	time.AfterFunc(statusFlashTotal, func() {
@@ -25,7 +43,7 @@ func (i *Interactive) flashStatusLocked(msg string) {
 	})
 }
 
-// clearFlashStatus clears the status if it is still flash seq.
+// clearFlashStatus clears the status if it is still the one stamped as seq.
 func (i *Interactive) clearFlashStatus(seq uint64) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -36,9 +54,9 @@ func (i *Interactive) clearFlashStatus(seq uint64) bool {
 	return true
 }
 
-// statusFlashFadedLocked reports whether the current OK status is a flash
-// past its solid phase and should render muted. Caller holds i.mu.
+// statusFlashFadedLocked reports whether the current OK status is past its
+// solid phase and should render muted. Caller holds i.mu.
 func (i *Interactive) statusFlashFadedLocked(now time.Time) bool {
 	return i.statusOK != "" && i.statusOK == i.statusFlashMsg &&
-		now.Sub(i.statusFlashAt) >= statusFlashSolid
+		!statusIsSticky(i.statusOK) && now.Sub(i.statusFlashAt) >= statusFlashSolid
 }

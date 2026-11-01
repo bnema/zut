@@ -60,12 +60,14 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	if _, r, ok := i.transcriptLenLocked(); ok {
 		rev = r
 	}
+	now := time.Now()
+	i.observeStatusLocked(now)
 	showVer := len(i.view.Messages) == 0 && !i.stream.Active() && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
 		cols:                 cols,
 		agentRev:             rev,
 		statusOK:             i.statusOK,
-		statusFaded:          i.statusFlashFadedLocked(time.Now()),
+		statusFaded:          i.statusFlashFadedLocked(now),
 		statusErr:            i.statusErr,
 		help:                 strings.Join(i.helpBlock, "\n"),
 		sessionInfo:          sessionInfoBlocksKey(i.sessionInfoBlocks),

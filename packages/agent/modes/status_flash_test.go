@@ -5,37 +5,57 @@ import (
 	"time"
 )
 
-func TestFlashStatusFadesThenClears(t *testing.T) {
+func TestStatusFadesThenClears(t *testing.T) {
 	i := &Interactive{dirty: make(chan struct{}, 1)}
+	now := time.Now()
 	i.mu.Lock()
-	i.flashStatusLocked("switched to session abc")
+	i.statusOK = "switched to session abc"
+	i.observeStatusLocked(now)
 	seq := i.statusFlashSeq
-	start := i.statusFlashAt
-	if i.statusFlashFadedLocked(start) {
-		t.Fatal("fresh flash must not be faded")
+	if i.statusFlashFadedLocked(now) {
+		t.Fatal("fresh status must not be faded")
 	}
-	if !i.statusFlashFadedLocked(start.Add(statusFlashSolid)) {
-		t.Fatal("flash past solid phase must be faded")
+	if !i.statusFlashFadedLocked(now.Add(statusFlashSolid)) {
+		t.Fatal("status past solid phase must be faded")
 	}
 	i.mu.Unlock()
 
 	if !i.clearFlashStatus(seq) || i.statusOK != "" {
-		t.Fatalf("flash not cleared: %q", i.statusOK)
+		t.Fatalf("status not cleared: %q", i.statusOK)
 	}
 }
 
-func TestFlashStatusKeepsNewerStatus(t *testing.T) {
+func TestStatusNewerMessageRestartsCycle(t *testing.T) {
 	i := &Interactive{dirty: make(chan struct{}, 1)}
+	now := time.Now()
 	i.mu.Lock()
-	i.flashStatusLocked("switched")
+	i.statusOK = "first"
+	i.observeStatusLocked(now)
 	seq := i.statusFlashSeq
-	i.statusOK = "something else"
-	faded := i.statusFlashFadedLocked(time.Now().Add(time.Hour))
+	i.statusOK = "second"
+	later := now.Add(time.Second)
+	i.observeStatusLocked(later)
+	faded := i.statusFlashFadedLocked(later)
 	i.mu.Unlock()
 	if faded {
-		t.Fatal("a newer status must not render faded")
+		t.Fatal("a newer status must start solid")
 	}
-	if i.clearFlashStatus(seq) || i.statusOK != "something else" {
+	if i.clearFlashStatus(seq) || i.statusOK != "second" {
 		t.Fatalf("newer status was clobbered: %q", i.statusOK)
+	}
+}
+
+func TestStickyStatusNeverFades(t *testing.T) {
+	for _, msg := range []string{"Reloading extensions...", "fork: switching session…", "Refreshing models"} {
+		i := &Interactive{dirty: make(chan struct{}, 1)}
+		now := time.Now()
+		i.mu.Lock()
+		i.statusOK = msg
+		i.observeStatusLocked(now)
+		faded := i.statusFlashFadedLocked(now.Add(time.Hour))
+		i.mu.Unlock()
+		if faded {
+			t.Fatalf("%q must not fade", msg)
+		}
 	}
 }
