@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -283,10 +285,27 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			h := startCLIDaemon(t, twoSessions()[0])[0].h
 			h.EXPECT().Subscribe(mock.Anything, mock.Anything).Unset()
 			const count = daemonclient.SubscriberBuffer*3 + 10
+			var diagnosticsMu sync.Mutex
+			var afterSeqs []uint64
+			var logLines []string
+			var lastDelivered uint64
+			dumpState := func() {
+				t.Helper()
+				stacks := make([]byte, 4<<20)
+				n := runtime.Stack(stacks, true)
+				diagnosticsMu.Lock()
+				after := append([]uint64(nil), afterSeqs...)
+				logs := append([]string(nil), logLines...)
+				diagnosticsMu.Unlock()
+				t.Logf("burst recovery timeout: Subscribe after=%v last_delivered=%d\nclient logs:\n%s\ngoroutines:\n%s", after, lastDelivered, strings.Join(logs, "\n"), stacks[:n])
+			}
 			initial := true
 			h.EXPECT().Subscribe(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, after uint64) (<-chan session.Event, error) {
+				diagnosticsMu.Lock()
+				afterSeqs = append(afterSeqs, after)
 				first := initial
 				initial = false
+				diagnosticsMu.Unlock()
 				if expired && !first && after < count {
 					return nil, session.ErrSeqTooOld
 				}
@@ -314,6 +333,9 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 				scanner := bufio.NewScanner(reader)
 				for scanner.Scan() {
 					line := scanner.Text()
+					diagnosticsMu.Lock()
+					logLines = append(logLines, line)
+					diagnosticsMu.Unlock()
 					if strings.Contains(line, "reason=local_buffer_full") {
 						select {
 						case recovering <- struct{}{}:
@@ -339,6 +361,7 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			select {
 			case <-recovering:
 			case <-ctx.Done():
+				dumpState()
 				t.Fatal(ctx.Err())
 			}
 			receive := func() session.Event {
@@ -346,8 +369,10 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 				select {
 				case ev, ok := <-events:
 					require.True(t, ok)
+					lastDelivered = ev.Seq
 					return ev
 				case <-ctx.Done():
+					dumpState()
 					t.Fatal(ctx.Err())
 					return session.Event{}
 				}
@@ -374,6 +399,7 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			select {
 			case <-ended:
 			case <-ctx.Done():
+				dumpState()
 				t.Fatal(ctx.Err())
 			}
 		})
