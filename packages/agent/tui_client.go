@@ -127,6 +127,7 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 	defer c.Disconnect()
 	start := time.Now()
 	tlog, closeLog := clientTimingLog()
+	setupCrashOutput(ZutHome(), "client", tlog)
 	defer closeLog()
 	logPhase := func(name string, attrs ...any) {
 		if tlog != nil {

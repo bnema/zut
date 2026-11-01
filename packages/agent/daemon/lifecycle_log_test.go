@@ -1,12 +1,17 @@
 package daemon
 
 import (
+	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
@@ -104,4 +109,47 @@ func TestDaemonFailedClientOperationsLogNothing(t *testing.T) {
 	if after := strings.TrimPrefix(out, before); strings.Contains(after, `msg="client `) {
 		t.Fatalf("failed close/clear logged:\n%s", after)
 	}
+}
+
+func TestClientDisconnectReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"nil", nil, "eof"},
+		{"eof", io.EOF, "eof"},
+		{"partial", io.ErrUnexpectedEOF, "eof"},
+		{"closed", daemonproto.ErrClosed, "closed"},
+		{"net closed", net.ErrClosed, "closed"},
+		{"canceled", context.Canceled, "canceled"},
+		{"error", errors.New("boom"), "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &syncBuffer{}
+			d := &Daemon{ctx: context.Background(), log: slog.New(slog.NewTextHandler(buf, nil))}
+			c := &client{id: 7, d: d, kind: "tui"}
+			c.logDisconnect(tc.err)
+			out := buf.String()
+			require.Contains(t, out, `level=INFO msg="client disconnect" client=7 client_kind=tui reason=`+tc.reason)
+			require.Equal(t, 1, strings.Count(out, `msg="client disconnect"`))
+			require.Equal(t, tc.reason == "error", strings.Contains(out, "err=boom"))
+		})
+	}
+}
+
+func TestDaemonLogsDisconnectButNotShutdown(t *testing.T) {
+	buf := &syncBuffer{}
+	f := sessionmocks.NewMockFactory(t)
+	r := startDaemon(t, f, t.TempDir(), Options{Logger: slog.New(slog.NewTextHandler(buf, nil))})
+	a := dial(t, r.sock)
+	require.NoError(t, a.call(t, daemonproto.HelloRequest{Type: "hello", ProtocolVersion: daemonproto.ProtocolVersion, ClientKind: "tui"}, nil))
+	require.NoError(t, a.conn.Close())
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), `msg="client disconnect" client=1 client_kind=tui reason=closed`)
+	}, 5*time.Second, time.Millisecond)
+	b := dial(t, r.sock)
+	require.NoError(t, b.call(t, daemonproto.HelloRequest{Type: "hello", ProtocolVersion: daemonproto.ProtocolVersion, ClientKind: "tui"}, nil))
+	r.stop(t)
+	require.Equal(t, 1, strings.Count(buf.String(), `msg="client disconnect"`))
 }

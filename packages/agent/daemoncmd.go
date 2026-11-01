@@ -113,6 +113,7 @@ func daemonRun(args []string, version string) error {
 		return err
 	}
 	defer logCloser.Close()
+	setupCrashOutput(home, "daemon", logger)
 	logger.Debug("startup phase", "phase", "open log", "duration", time.Since(t), "since_start", time.Since(processStart))
 	t = time.Now()
 	applyConfiguredHTTPProxy()

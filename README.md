@@ -657,7 +657,8 @@ Paths and logging:
 - Lock, pid, schedules: `$ZUT_HOME/daemon/`.
 - Daemon log: `$ZUT_HOME/logs/daemon.log`, `0600`, rotates at 10 MiB to one backup, `daemon.log.1`. Oversized logs rotate on startup; later rotation precedes a write exceeding the limit. Records are not split.
 - Interactive startup timings (session created, attached, first frame): `$ZUT_HOME/logs/client.log`, `0600`. Concurrent clients may append; rotation to `client.log.1` occurs only when opened over 10 MiB.
-- `ZUT_DAEMON_LOG=debug|info|warn|error` sets each process's level from its environment; default/unknown values use `info`. Restart the daemon to change its level. Default daemon logs include `daemon ready total=…` and `session ready total=…`; `debug` adds startup/session phase timings (config, MCP servers, extensions, skills, session file) and shared MCP server stderr.
+- Go panics and fatal runtime errors are also appended to `$ZUT_HOME/logs/client-crash.log` (TUI) and `$ZUT_HOME/logs/daemon-crash.log`, created with mode `0600` (best effort, no rotation).
+- `ZUT_DAEMON_LOG=debug|info|warn|error` sets each process's level from its environment; default/unknown values use `info`. Restart the daemon to change its level. Default daemon logs include `daemon ready total=…`, `session ready total=…`, and `client disconnect` with client kind and reason (except during shutdown); `debug` adds startup/session phase timings (config, MCP servers, extensions, skills, session file) and shared MCP server stderr.
 
 In the daemon environment, `ZUT_DAEMON_PPROF=1` or `true` enables pprof at `127.0.0.1:0` (OS-selected port); empty/unset disables it. Other values specify loopback `host:port`, including port `0`. Only loopback IPs and `localhost` (pinned to `127.0.0.1`) are accepted.
 

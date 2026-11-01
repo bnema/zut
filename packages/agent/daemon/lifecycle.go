@@ -638,11 +638,29 @@ func (d *Daemon) acceptLoop(ctx context.Context, ln net.Listener) {
 		}
 		d.goLoop(func(context.Context) {
 			err := c.conn.Serve(c.ctx)
-			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, daemonproto.ErrClosed) && !errors.Is(err, io.ErrUnexpectedEOF) {
-				d.log.Debug("client connection ended", "client", c.id, "err", err)
-			}
+			c.logDisconnect(err)
 			c.close()
 			d.clientGone(c)
 		})
 	}
+}
+
+// logDisconnect records connection loss, but not connections closed by shutdown.
+func (c *client) logDisconnect(err error) {
+	if c.d.isStopping() || c.d.ctx.Err() != nil {
+		return
+	}
+	reason := "error"
+	var attrs []any
+	switch {
+	case err == nil, errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		reason = "eof"
+	case errors.Is(err, context.Canceled):
+		reason = "canceled"
+	case errors.Is(err, daemonproto.ErrClosed), errors.Is(err, net.ErrClosed):
+		reason = "closed"
+	default:
+		attrs = append(attrs, "err", err)
+	}
+	c.d.log.Info("client disconnect", append([]any{"client", c.id, "client_kind", c.clientKind(), "reason", reason}, attrs...)...)
 }
