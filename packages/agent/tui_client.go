@@ -257,8 +257,10 @@ func runAttachCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ctx := context.Background()
+	streamLog, closeStreamLog := clientTimingLog()
+	defer closeStreamLog()
 	dctx, cancel := context.WithTimeout(ctx, daemonClientDeadline)
-	c, err := dialExistingDaemon(dctx)
+	c, err := dialExistingDaemonWithOptions(dctx, daemonclient.Options{ClientKind: "tui", Logger: streamLog})
 	if err != nil {
 		cancel()
 		fmt.Fprintln(stderr, err)
@@ -289,7 +291,7 @@ func runAttachCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "zut attach:", err)
 		return 1
 	}
-	return runTUIWithClient(ctx, c, session.ID(id), nil, stderr)
+	return runTUIWithClientLog(ctx, c, session.ID(id), nil, stderr, streamLog)
 }
 
 // resolveAttachTarget matches an exact ID, a unique ID prefix, then a unique

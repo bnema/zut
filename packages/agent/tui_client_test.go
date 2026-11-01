@@ -3,6 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"os"
+
+	"github.com/bnema/zut/packages/agent/daemonclient"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,4 +208,26 @@ func TestTUIClientConfigProjectsLaunchToolLimits(t *testing.T) {
 	require.Nil(t, cfg.AutoSubagentsResumeToolAllowed)
 	require.Nil(t, cfg.AutoSubagentsInterruptToolAllowed)
 	require.False(t, cfg.WebSearchInvocationOverride)
+}
+
+func TestAttachDaemonStreamLogsToClientFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	startCLIDaemon(t, twoSessions()...)
+	logger, closeLog := clientTimingLog()
+	require.NotNil(t, logger)
+	defer closeLog()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialExistingDaemonWithOptions(ctx, daemonclient.Options{ClientKind: "tui", Logger: logger})
+	require.NoError(t, err)
+	defer c.Disconnect()
+	_, err = c.Port("abc123", true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	require.NoError(t, c.Disconnect())
+	data, err := os.ReadFile(clientLogPath(home))
+	require.NoError(t, err)
+	require.Contains(t, string(data), `msg="client stream ended"`)
+	require.Contains(t, string(data), "session=abc123")
+	require.Contains(t, string(data), "reason=canceled_or_disconnected")
 }

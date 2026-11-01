@@ -24,7 +24,11 @@ var errDaemonNotRunning = errors.New(daemonNotRunningMsg)
 // dialExistingDaemon connects to a running daemon and never spawns one. The
 // entry points carry no version, so the skew warning is not emitted.
 func dialExistingDaemon(ctx context.Context) (*daemonclient.Client, error) {
-	c, err := daemonclient.Dial(ctx, daemonclient.SocketPath(os.Getenv), daemonclient.Options{ClientKind: "cli"})
+	return dialExistingDaemonWithOptions(ctx, daemonclient.Options{ClientKind: "cli"})
+}
+
+func dialExistingDaemonWithOptions(ctx context.Context, opts daemonclient.Options) (*daemonclient.Client, error) {
+	c, err := daemonclient.Dial(ctx, daemonclient.SocketPath(os.Getenv), opts)
 	if err != nil {
 		if daemonAbsent(err) {
 			return nil, errDaemonNotRunning
