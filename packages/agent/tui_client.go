@@ -17,6 +17,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/provider/auth"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -158,6 +159,11 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 	cfg := tuiClientConfig(out, launch)
 	var ui *modes.Interactive
 	cfg.Port, cfg.Client = port, client
+	// Login flows (browser callback, device code, API keys) run in the client,
+	// next to the user's browser; the daemon session reloads credentials after.
+	authMgr := auth.NewManager(AuthStoreFor())
+	defer authMgr.Close()
+	cfg.AuthManager = authMgr
 	cfg.StartupOutput = preOutput
 	cfg.Detach = client.detacher(func() session.ID { return ui.SessionID() })
 	cfg.OnFirstFrame = func() { logPhase("first frame", "session", attachID) }

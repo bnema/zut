@@ -907,6 +907,10 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 		i.mu.Unlock()
 		return
 	}
+	if i.cfg.AuthManager == nil {
+		i.showLoginResult(false, "login is unavailable: auth manager not configured")
+		return
+	}
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
 		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
 	}
@@ -918,6 +922,10 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 	i.showLoginAction(false, url)
 }
 func (i *Interactive) startOAuthFlow(provider string) {
+	if i.cfg.AuthManager == nil {
+		i.showLoginResult(false, "login is unavailable: auth manager not configured")
+		return
+	}
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
 		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
 	}
