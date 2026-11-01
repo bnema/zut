@@ -236,6 +236,12 @@ func (c *Controller) publish(kind EventKind, data any) {
 	c.updateInfo()
 	for id, s := range c.subs {
 		if len(s.events) >= cap(s.events)-1 {
+			attrs := []any{"session", c.id, "subscriber", id, "seq", ev.Seq,
+				"queued", len(s.events), "cap", cap(s.events), "kind", kind, "reason", "slow_consumer"}
+			if kind == EvAgent && ev.Agent != nil {
+				attrs = append(attrs, "agent_event_type", ev.Agent.Type())
+			}
+			c.logger().Warn("session subscriber dropped", attrs...)
 			terminal := Event{Seq: ev.Seq, Session: c.id, At: ev.At, Kind: EvAttach, Data: AttachEvent{State: AttachStateDetached, Reason: "slow_consumer"}}
 			s.events <- terminal
 			close(s.events)

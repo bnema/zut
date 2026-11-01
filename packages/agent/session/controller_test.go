@@ -1,12 +1,19 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bnema/zut/packages/core"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestController(t *testing.T) (*Controller, context.Context) {
@@ -169,5 +176,47 @@ func TestSubscribeCancellationAndShutdown(t *testing.T) {
 	}
 	if !c.Idle() {
 		t.Fatal("empty skeleton must be idle")
+	}
+}
+
+func TestSlowConsumerDropLogs(t *testing.T) {
+	for _, agent := range []bool{false, true} {
+		t.Run(fmt.Sprint("agent=", agent), func(t *testing.T) {
+			var logs bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			c := NewControllerWithOptions(ctx, Deps{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}, Options{ID: "slow-session"})
+			t.Cleanup(func() { cancel(); <-c.Done() })
+			_, err := c.Subscribe(ctx, 0)
+			require.NoError(t, err)
+			emit(t, c, ctx, subscriberBuffer)
+			require.Empty(t, logs.String(), "normal delivery must not log")
+			require.NoError(t, c.call(ctx, func() {
+				if agent {
+					c.publish(EvAgent, core.EvTextDelta{Delta: "private-content"})
+				} else {
+					c.publish(EvTitle, TitleEvent{Title: "private-content"})
+				}
+				c.publish(EvTitle, TitleEvent{}) // a dropped subscriber must not log again
+			}))
+			require.Equal(t, 1, strings.Count(logs.String(), "\n"))
+			var record map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &record))
+			require.Equal(t, "WARN", record["level"])
+			require.Equal(t, "session subscriber dropped", record["msg"])
+			require.Equal(t, "slow_consumer", record["reason"])
+			require.Equal(t, "slow-session", record["session"])
+			require.Equal(t, float64(1), record["subscriber"])
+			require.Equal(t, float64(subscriberBuffer+1), record["seq"])
+			require.Equal(t, float64(subscriberBuffer), record["queued"])
+			require.Equal(t, float64(subscriberBuffer+1), record["cap"])
+			if agent {
+				require.Equal(t, string(EvAgent), record["kind"])
+				require.Equal(t, "text_delta", record["agent_event_type"])
+			} else {
+				require.Equal(t, string(EvTitle), record["kind"])
+				require.NotContains(t, record, "agent_event_type")
+			}
+			require.NotContains(t, logs.String(), "private-content")
+		})
 	}
 }
