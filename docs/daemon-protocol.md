@@ -116,6 +116,11 @@ changes are saved into it. `assign_profile` and `clear_profile` may run during
 a turn unless they switch the model; `apply_profile` on an unassigned slot fails
 with `model profile empty`.
 
+`Info.run` stays `running` while resident sub-agents run, even after the main
+turn ends. In that state `Info.activity.kind` is `waiting_residents` and
+`activity.since` is the start of the wait; it stays fixed until the wait ends.
+Clients should tolerate activity kinds they do not recognize.
+
 | Method | Params | Successful data |
 | --- | --- | --- |
 | info | `{}` | Info |
