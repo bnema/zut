@@ -230,3 +230,45 @@ func TestAttachDaemonStreamLogsToClientFile(t *testing.T) {
 	require.Contains(t, string(data), "session=abc123")
 	require.Contains(t, string(data), "reason=canceled_or_disconnected")
 }
+
+func TestDaemonClientRetriesExpiredSnapshotAttach(t *testing.T) {
+	sessions := startCLIDaemon(t, twoSessions()[0])
+	h := sessions[0].h
+	// Replace the harness's default Subscribe behavior after its daemon watcher
+	// has subscribed. All client subscriptions below are explicitly controlled.
+	h.EXPECT().Subscribe(mock.Anything, mock.Anything).Unset()
+	dropped := make(chan session.Event, 1)
+	h.EXPECT().Subscribe(mock.Anything, uint64(0)).Return((<-chan session.Event)(dropped), nil).Once()
+	h.EXPECT().Subscribe(mock.Anything, uint64(0)).Return(nil, session.ErrSeqTooOld).Once()
+	h.EXPECT().Subscribe(mock.Anything, uint64(10)).Return(nil, session.ErrSeqTooOld).Once()
+	live := make(chan session.Event, 1)
+	live <- session.Event{Seq: 21, Session: "abc123", Kind: session.EvTitle, Data: session.TitleEvent{Title: "live"}}
+	h.EXPECT().Subscribe(mock.Anything, uint64(20)).Return((<-chan session.Event)(live), nil).Once()
+	snapshots := 0
+	h.EXPECT().Snapshot(mock.Anything).RunAndReturn(func(context.Context) (session.Snapshot, error) {
+		snapshots++
+		seq := uint64(10)
+		if snapshots >= 3 {
+			seq = 20
+		}
+		return session.Snapshot{Seq: seq, Info: twoSessions()[0]}, nil
+	}).Times(3)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialExistingDaemon(ctx)
+	require.NoError(t, err)
+	defer c.Disconnect()
+	events, err := c.Port("abc123", true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	dropped <- session.Event{Seq: 1, Session: "abc123", Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: "slow_consumer"}}
+	for _, want := range []session.Event{{Seq: 10, Kind: session.EvMessagesReplaced}, {Seq: 20, Kind: session.EvMessagesReplaced}, {Seq: 21, Kind: session.EvTitle}} {
+		select {
+		case ev, ok := <-events:
+			require.True(t, ok, "stream ended during snapshot retry")
+			require.Equal(t, want.Seq, ev.Seq)
+			require.Equal(t, want.Kind, ev.Kind)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}

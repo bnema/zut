@@ -301,7 +301,14 @@ func (s *subscription) lastSeq() uint64 {
 }
 
 func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
+	if s.done {
+		s.mu.Unlock()
+		return nil
+	}
 	s.paused = false
 	s.mu.Unlock()
 	var info session.Info
@@ -331,25 +338,33 @@ func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) err
 		if !errors.Is(err, session.ErrSeqTooOld) {
 			return err
 		}
+	}
+	// A replacement snapshot can itself expire before attach. Retry only that
+	// refusal, waiting for capacity before fetching each fresh snapshot so a
+	// slow local consumer does not age it while we wait. waitDrained also
+	// rate-limits repeated expiry and honors cancellation and terminal notices.
+	for {
 		s.mu.Lock()
 		s.paused = true
 		s.mu.Unlock()
+		if err := s.waitDrained(ctx); err != nil {
+			return err
+		}
 		if err := mapErr(conn.Call(ctx, daemonproto.SnapshotRequest{Type: "snapshot", Session: s.port.id}, &snap)); err != nil {
 			return err
 		}
-	}
-	if err := s.waitDrained(ctx); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	if s.done {
+		s.mu.Lock()
+		if s.done {
+			s.mu.Unlock()
+			return nil
+		}
+		s.last = snap.Seq
+		s.out <- session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
 		s.mu.Unlock()
-		return nil
+		if err := s.attach(ctx, conn); !errors.Is(err, session.ErrSeqTooOld) {
+			return err
+		}
 	}
-	s.last = snap.Seq
-	s.out <- session.Event{Seq: snap.Seq, Session: s.port.id, At: time.Now(), Kind: session.EvMessagesReplaced, Data: session.MessagesReplacedEvent{}}
-	s.mu.Unlock()
-	return s.attach(ctx, conn)
 }
 
 // transient reports transport-level failures worth redialing for.
