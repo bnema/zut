@@ -185,7 +185,8 @@ type subscription struct {
 	out      chan session.Event
 	done     bool
 	terminal bool
-	paused   bool // ignore live frames until recovery replays from last
+	gap      *time.Timer // bounded fallback when a stale frame precedes replay
+	paused   bool        // ignore live frames until recovery replays from last
 	stop     chan struct{}
 	// resub asks supervise to re-attach after the daemon dropped this
 	// subscriber as a slow consumer.
@@ -202,11 +203,38 @@ func (s *subscription) deliver(ev session.Event) {
 		s.mu.Unlock()
 		return
 	}
-	if isSlowConsumer(ev) || len(s.out) >= cap(s.out)-1 || ev.Seq != s.last+1 {
-		reason := "local_buffer_full"
-		if ev.Seq != s.last+1 {
-			reason = "sequence_gap"
+	if !isSlowConsumer(ev) && ev.Seq != s.last+1 {
+		// A canceled daemon subscription can still have frames in its outbox.
+		// Do not let those frames pause the new subscription's contiguous
+		// replay. Recover only if the missing event fails to arrive in time.
+		if s.gap == nil {
+			last := s.last
+			s.gap = time.AfterFunc(reconnectMax, func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if s.done || s.gap == nil {
+					return
+				}
+				s.gap = nil
+				if s.last != last {
+					return // progress or a snapshot moved last; a later gap re-arms
+				}
+				s.paused = true
+				select {
+				case s.resub <- struct{}{}:
+				default:
+				}
+			})
 		}
+		s.mu.Unlock()
+		return
+	}
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
+	}
+	if isSlowConsumer(ev) || len(s.out) >= cap(s.out)-1 {
+		reason := "local_buffer_full"
 		if isSlowConsumer(ev) {
 			reason = "daemon_slow_consumer"
 		}
@@ -268,6 +296,10 @@ func (s *subscription) finish(final *session.Event) {
 		return
 	}
 	s.done = true
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
+	}
 	reason := "canceled_or_disconnected"
 	if s.terminal {
 		reason = "session_closed"

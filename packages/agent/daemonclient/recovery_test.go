@@ -117,7 +117,7 @@ func TestStreamLoggingDoesNotHoldSubscriptionLock(t *testing.T) {
 					if finish {
 						s.finish(nil)
 					} else {
-						s.deliver(session.Event{Seq: 2, Kind: session.EvTitle}) // gap requests recovery
+						s.deliver(session.Event{Seq: 1, Kind: session.EvAttach, Data: session.AttachEvent{Reason: "slow_consumer"}})
 					}
 				}()
 				synctest.Wait() // logging is durably blocked on the pipe, with no reader
@@ -141,4 +141,39 @@ func TestStreamLoggingDoesNotHoldSubscriptionLock(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestRecoveryIgnoresStaleFramesBeforeReplay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &subscription{port: &RemotePort{c: &Client{}}, last: 256, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+		// Old daemon outbox frames can precede a new attach's replay. They must
+		// not pause delivery and discard the contiguous replay that follows.
+		s.deliver(session.Event{Seq: 681, Kind: session.EvTitle})
+		s.deliver(session.Event{Seq: 257, Kind: session.EvTitle})
+		require.Equal(t, uint64(257), s.lastSeq())
+		require.False(t, s.paused)
+		require.Equal(t, uint64(257), (<-s.out).Seq)
+	})
+}
+
+func TestRecoveryGapFallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &subscription{port: &RemotePort{c: &Client{}}, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+		s.deliver(session.Event{Seq: 9, Kind: session.EvTitle})
+		synctest.Wait()
+		s.mu.Lock()
+		require.False(t, s.paused)
+		s.mu.Unlock()
+		timer := time.NewTimer(reconnectMax)
+		<-timer.C
+		synctest.Wait()
+		s.mu.Lock()
+		require.True(t, s.paused)
+		s.mu.Unlock()
+		select {
+		case <-s.resub:
+		default:
+			t.Fatal("missing replay did not request recovery")
+		}
+	})
 }
