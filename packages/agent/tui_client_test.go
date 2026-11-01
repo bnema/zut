@@ -283,21 +283,25 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			h := startCLIDaemon(t, twoSessions()[0])[0].h
 			h.EXPECT().Subscribe(mock.Anything, mock.Anything).Unset()
 			const count = daemonclient.SubscriberBuffer*3 + 10
-			burst := make(chan session.Event, count)
-			for seq := uint64(1); seq <= count; seq++ {
-				burst <- session.Event{Seq: seq, Session: "abc123", Kind: session.EvTitle}
-			}
-			h.EXPECT().Subscribe(mock.Anything, uint64(0)).Return((<-chan session.Event)(burst), nil).Once()
-			live := make(chan session.Event, count)
-			if expired {
-				h.EXPECT().Subscribe(mock.Anything, uint64(daemonclient.SubscriberBuffer)).Return(nil, session.ErrSeqTooOld).Once()
-				h.EXPECT().Subscribe(mock.Anything, uint64(count)).Return((<-chan session.Event)(live), nil).Once()
-			} else {
-				for seq := uint64(daemonclient.SubscriberBuffer + 1); seq <= count; seq++ {
-					live <- session.Event{Seq: seq, Session: "abc123", Kind: session.EvTitle}
+			initial := true
+			h.EXPECT().Subscribe(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, after uint64) (<-chan session.Event, error) {
+				first := initial
+				initial = false
+				if expired && !first && after < count {
+					return nil, session.ErrSeqTooOld
 				}
-				h.EXPECT().Subscribe(mock.Anything, uint64(daemonclient.SubscriberBuffer)).Return((<-chan session.Event)(live), nil).Once()
-			}
+				// Every attach gets a fresh retained suffix. Forwarding can
+				// overflow again at any sequence; attempt count is irrelevant.
+				ch := make(chan session.Event, count+1)
+				end := uint64(count + 1)
+				if first {
+					end = count
+				}
+				for seq := after + 1; seq <= end; seq++ {
+					ch <- session.Event{Seq: seq, Session: "abc123", Kind: session.EvTitle}
+				}
+				return ch, nil
+			}).Maybe()
 			h.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Seq: count, Info: twoSessions()[0]}, nil).Maybe()
 			// A standard-library pipe observes the overflow log without polling or
 			// racing the consumer against the daemon's event writer.
@@ -350,14 +354,22 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 				require.Equal(t, uint64(count), ev.Seq)
 				require.Equal(t, session.EvMessagesReplaced, ev.Kind)
 			}
-			live <- session.Event{Seq: count + 1, Session: "abc123", Kind: session.EvTitle}
-			require.Equal(t, uint64(count+1), receive().Seq)
+			// The next event proves no duplicate was queued at a replay boundary.
+			ev := receive()
+			require.Equal(t, uint64(count+1), ev.Seq)
+			require.Equal(t, session.EvTitle, ev.Kind)
 			require.NoError(t, c.Disconnect())
-			select {
-			case line := <-lines:
-				require.Contains(t, line, `msg="client stream ended"`)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
+			// Multiple overflows may log recovery before the terminal line.
+			for {
+				select {
+				case line := <-lines:
+					if strings.Contains(line, `msg="client stream ended"`) {
+						return
+					}
+					require.Contains(t, line, `msg="client stream recovering"`)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
 			}
 		})
 	}

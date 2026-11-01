@@ -36,11 +36,7 @@ func TestRecoveryWaitRateLimit(t *testing.T) {
 }
 
 func TestPausedRecoveryTerminates(t *testing.T) {
-	for _, takeover := range []bool{false, true} {
-		name := "cancel"
-		if takeover {
-			name = "detached_by_other"
-		}
+	for _, name := range []string{"cancel", "detached_by_other", "closed"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -62,10 +58,10 @@ func TestPausedRecoveryTerminates(t *testing.T) {
 				go func() { defer close(exited); s.supervise(ctx, conn) }()
 				synctest.Wait()
 				// supervise is now waiting for local capacity, not reading its outer select.
-				if takeover {
-					c.onNotification(daemonproto.Notification{Type: "detached_by_other", Session: p.id})
-				} else {
+				if name == "cancel" {
 					cancel()
+				} else {
+					c.onNotification(daemonproto.Notification{Type: name, Session: p.id})
 				}
 				synctest.Wait()
 				select {
@@ -78,12 +74,16 @@ func TestPausedRecoveryTerminates(t *testing.T) {
 					events = append(events, ev)
 				}
 				want := SubscriberBuffer
-				if takeover {
+				if name != "cancel" {
 					want++
 				}
 				require.Len(t, events, want)
-				if takeover {
-					require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: "detached_by_other"}, events[len(events)-1].Data)
+				switch name {
+				case "detached_by_other":
+					require.Equal(t, session.AttachEvent{State: session.AttachStateDetached, Reason: name}, events[len(events)-1].Data)
+				case "closed":
+					require.Equal(t, session.EvClosed, events[len(events)-1].Kind)
+					require.Equal(t, session.ClosedEvent{}, events[len(events)-1].Data)
 				}
 				require.Empty(t, c.subs)
 				// A late event cannot revive a terminal stream.

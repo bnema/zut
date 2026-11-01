@@ -124,13 +124,6 @@ func clientTimingLog() (*slog.Logger, func()) {
 	return logger, func() { _ = closer.Close() }
 }
 
-// runTUIWithClient owns c and disconnects it on return.
-func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
-	tlog, closeLog := clientTimingLog()
-	defer closeLog()
-	return runTUIWithClientLog(ctx, c, attachID, spec, out, tlog)
-}
-
 func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger) int {
 	defer c.Disconnect()
 	start := time.Now()
