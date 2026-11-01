@@ -2,6 +2,8 @@ package daemonclient
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net"
 	"testing"
 	"testing/synctest"
@@ -90,6 +92,52 @@ func TestPausedRecoveryTerminates(t *testing.T) {
 				s.deliver(session.Event{Seq: SubscriberBuffer + 2, Kind: session.EvTitle})
 				_, ok := <-s.out
 				require.False(t, ok)
+			})
+		})
+	}
+}
+
+func TestStreamLoggingDoesNotHoldSubscriptionLock(t *testing.T) {
+	for _, finish := range []bool{false, true} {
+		name := "deliver"
+		if finish {
+			name = "finish"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				reader, writer := io.Pipe()
+				defer reader.Close()
+				defer writer.Close()
+				c := &Client{opts: Options{Logger: slog.New(slog.NewTextHandler(writer, nil))}, subs: make(map[session.ID]*subscription)}
+				s := &subscription{port: &RemotePort{c: c, id: "logging"}, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+				c.subs[s.port.id] = s
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if finish {
+						s.finish(nil)
+					} else {
+						s.deliver(session.Event{Seq: 2, Kind: session.EvTitle}) // gap requests recovery
+					}
+				}()
+				synctest.Wait() // logging is durably blocked on the pipe, with no reader
+				require.True(t, s.mu.TryLock(), "logging held the subscription mutex")
+				s.mu.Unlock()
+				if finish {
+					select {
+					case <-s.stop:
+					default:
+						t.Fatal("finish must close the stream before logging")
+					}
+				} else {
+					select {
+					case <-s.resub:
+					default:
+						t.Fatal("recovery must be signaled before logging")
+					}
+				}
+				reader.Close() // unblock the logger and join its caller
+				<-done
 			})
 		})
 	}

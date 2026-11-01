@@ -306,13 +306,26 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			// A standard-library pipe observes the overflow log without polling or
 			// racing the consumer against the daemon's event writer.
 			reader, writer := io.Pipe()
-			lines := make(chan string, 16)
+			recovering := make(chan struct{}, 1)
+			ended := make(chan struct{}, 1)
 			scanned := make(chan struct{})
 			go func() {
 				defer close(scanned)
 				scanner := bufio.NewScanner(reader)
 				for scanner.Scan() {
-					lines <- scanner.Text()
+					line := scanner.Text()
+					if strings.Contains(line, "reason=local_buffer_full") {
+						select {
+						case recovering <- struct{}{}:
+						default:
+						}
+					}
+					if strings.Contains(line, `msg="client stream ended"`) {
+						select {
+						case ended <- struct{}{}:
+						default:
+						}
+					}
 				}
 			}()
 			defer func() { writer.Close(); <-scanned; reader.Close() }()
@@ -324,8 +337,7 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			events, err := c.Port("abc123", true).Subscribe(ctx, 0)
 			require.NoError(t, err)
 			select {
-			case line := <-lines:
-				require.Contains(t, line, "reason=local_buffer_full")
+			case <-recovering:
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
@@ -359,17 +371,10 @@ func TestDaemonClientBurstRecovery(t *testing.T) {
 			require.Equal(t, uint64(count+1), ev.Seq)
 			require.Equal(t, session.EvTitle, ev.Kind)
 			require.NoError(t, c.Disconnect())
-			// Multiple overflows may log recovery before the terminal line.
-			for {
-				select {
-				case line := <-lines:
-					if strings.Contains(line, `msg="client stream ended"`) {
-						return
-					}
-					require.Contains(t, line, `msg="client stream recovering"`)
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
+			select {
+			case <-ended:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
 		})
 	}

@@ -203,21 +203,22 @@ func (s *subscription) deliver(ev session.Event) {
 		return
 	}
 	if isSlowConsumer(ev) || len(s.out) >= cap(s.out)-1 || ev.Seq != s.last+1 {
-		if log := s.port.c.opts.Logger; log != nil {
-			reason := "local_buffer_full"
-			if ev.Seq != s.last+1 {
-				reason = "sequence_gap"
-			}
-			if isSlowConsumer(ev) {
-				reason = "daemon_slow_consumer"
-			}
-			log.Info("client stream recovering", "session", s.port.id, "reason", reason, "last_seq", s.last)
+		reason := "local_buffer_full"
+		if ev.Seq != s.last+1 {
+			reason = "sequence_gap"
 		}
+		if isSlowConsumer(ev) {
+			reason = "daemon_slow_consumer"
+		}
+		last := s.last
 		s.paused = true
 		s.mu.Unlock()
 		select {
 		case s.resub <- struct{}{}:
 		default:
+		}
+		if log := s.port.c.opts.Logger; log != nil {
+			log.Info("client stream recovering", "session", s.port.id, "reason", reason, "last_seq", last)
 		}
 		return
 	}
@@ -282,9 +283,7 @@ func (s *subscription) finish(final *session.Event) {
 			}
 		}
 	}
-	if log := s.port.c.opts.Logger; log != nil {
-		log.Info("client stream ended", "session", s.port.id, "reason", reason, "last_seq", s.last)
-	}
+	last := s.last
 	if final != nil {
 		s.out <- *final
 	}
@@ -292,6 +291,9 @@ func (s *subscription) finish(final *session.Event) {
 	close(s.stop)
 	s.mu.Unlock()
 	s.port.c.dropSub(s)
+	if log := s.port.c.opts.Logger; log != nil {
+		log.Info("client stream ended", "session", s.port.id, "reason", reason, "last_seq", last)
+	}
 }
 
 func (s *subscription) lastSeq() uint64 {
