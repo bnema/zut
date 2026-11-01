@@ -1,0 +1,2631 @@
+[
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "step": 2,
+      "type": "turn_start",
+      "value": {
+        "Step": 2,
+        "TurnID": "turn"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "content": [
+        {
+          "text": "hi",
+          "type": "text"
+        },
+        {
+          "bytes": 2,
+          "mime_type": "image/png",
+          "type": "image"
+        },
+        {
+          "args": {
+            "x": 1
+          },
+          "id": "c",
+          "name": "read",
+          "type": "tool_call"
+        },
+        {
+          "call_id": "c",
+          "content": [
+            {
+              "text": "nested",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "type": "tool_result"
+        }
+      ],
+      "time": "2026-01-02T03:04:05Z",
+      "type": "user_message",
+      "value": {
+        "Message": {
+          "added_tool_names": [
+            "read"
+          ],
+          "content": [
+            {
+              "_content": "text",
+              "phase": "commentary",
+              "text": "hi",
+              "thought_signature": "sig"
+            },
+            {
+              "_content": "image",
+              "data": "AQI=",
+              "mime_type": "image/png"
+            },
+            {
+              "_content": "reasoning"
+            },
+            {
+              "_content": "reasoning",
+              "encrypted_content": "opaque",
+              "reasoning_id": "r"
+            },
+            {
+              "_content": "tool_call",
+              "arguments": {
+                "x": 1
+              },
+              "id": "c",
+              "name": "read",
+              "origin": "host"
+            },
+            {
+              "_content": "tool_result",
+              "call_id": "c",
+              "content": [
+                {
+                  "_content": "text",
+                  "text": "nested",
+                  "thought_signature": "nested-sig"
+                }
+              ],
+              "is_error": false
+            }
+          ],
+          "meta": {
+            "k": "v"
+          },
+          "role": "assistant",
+          "time": "2026-01-02T03:04:05Z"
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "type": "assistant_start",
+      "value": {}
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "attempt": 2,
+      "max_attempts": 3,
+      "model": "m",
+      "provider": "p",
+      "scope": "agent",
+      "type": "request_started",
+      "value": {
+        "Attempt": 2,
+        "MaxAttempts": 3,
+        "Model": "m",
+        "Provider": "p",
+        "Scope": "agent"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "continuation": "c",
+      "eligible": true,
+      "mode": "m",
+      "transport": "t",
+      "type": "cache_diagnostics",
+      "value": {
+        "Continuation": "c",
+        "Eligible": true,
+        "Mode": "m",
+        "Transport": "t"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "attempt": 1,
+      "delay_ms": 123,
+      "max_attempts": 2,
+      "reason": "idle timeout (1/1)",
+      "scope": "provider",
+      "type": "retry_scheduled",
+      "value": {
+        "Attempt": 1,
+        "Delay": {
+          "ms": 123,
+          "remainder_ns": 456789
+        },
+        "MaxAttempts": 2,
+        "Reason": "idle timeout (1/1)",
+        "Scope": "provider"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "delta": "text",
+      "type": "text_delta",
+      "value": {
+        "Delta": "text"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "args": {
+        "x": 1
+      },
+      "id": "c",
+      "name": "read",
+      "type": "tool_call",
+      "value": {
+        "Args": {
+          "x": 1
+        },
+        "ID": "c",
+        "Name": "read"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "id": "c",
+      "name": "read",
+      "type": "tool_execution_started",
+      "value": {
+        "ID": "c",
+        "Name": "read"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "id": "c",
+      "name": "read",
+      "type": "tool_use_start",
+      "value": {
+        "ID": "c",
+        "Name": "read"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "delta": "{\"x\"",
+      "id": "c",
+      "type": "tool_use_args",
+      "value": {
+        "Delta": "{\"x\"",
+        "ID": "c"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "id": "c",
+      "type": "tool_use_end",
+      "value": {
+        "ID": "c"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "id": "c",
+      "text": "working",
+      "type": "tool_progress",
+      "value": {
+        "ID": "c",
+        "Text": "working"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "explanation": null,
+      "id": "c",
+      "plan": [
+        {
+          "step": "do",
+          "status": "in_progress"
+        }
+      ],
+      "type": "plan_update",
+      "value": {
+        "CallID": "c",
+        "Update": {
+          "explanation": null,
+          "plan": [
+            {
+              "status": "in_progress",
+              "step": "do"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "content": [
+        {
+          "text": "hi",
+          "type": "text"
+        },
+        {
+          "bytes": 2,
+          "mime_type": "image/png",
+          "type": "image"
+        },
+        {
+          "args": {
+            "x": 1
+          },
+          "id": "c",
+          "name": "read",
+          "type": "tool_call"
+        },
+        {
+          "call_id": "c",
+          "content": [
+            {
+              "text": "nested",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "type": "tool_result"
+        }
+      ],
+      "id": "c",
+      "is_error": true,
+      "type": "tool_result",
+      "value": {
+        "ID": "c",
+        "Result": {
+          "ActivateTools": [
+            "read"
+          ],
+          "Content": [
+            {
+              "_content": "text",
+              "phase": "commentary",
+              "text": "hi",
+              "thought_signature": "sig"
+            },
+            {
+              "_content": "image",
+              "data": "AQI=",
+              "mime_type": "image/png"
+            },
+            {
+              "_content": "reasoning"
+            },
+            {
+              "_content": "reasoning",
+              "encrypted_content": "opaque",
+              "reasoning_id": "r"
+            },
+            {
+              "_content": "tool_call",
+              "arguments": {
+                "x": 1
+              },
+              "id": "c",
+              "name": "read",
+              "origin": "host"
+            },
+            {
+              "_content": "tool_result",
+              "call_id": "c",
+              "content": [
+                {
+                  "_content": "text",
+                  "text": "nested",
+                  "thought_signature": "nested-sig"
+                }
+              ],
+              "is_error": false
+            }
+          ],
+          "Context": {},
+          "Details": {
+            "detail": "value"
+          },
+          "IsError": true,
+          "PlanOperation": null,
+          "Timing": {
+            "completed_at": "0001-01-01T00:00:00Z",
+            "duration": {
+              "ms": 1000
+            },
+            "started_at": "0001-01-01T00:00:00Z"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "cache_measured_prompt": 0,
+      "cache_measured_read": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "cost_usd": 0,
+      "cumulative": {
+        "cache_measured_prompt": 0,
+        "cache_measured_read": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost_usd": 0,
+        "input": 0,
+        "output": 8,
+        "reasoning": null
+      },
+      "input": 5,
+      "output": 0,
+      "reasoning": 2,
+      "type": "usage",
+      "value": {
+        "Cumulative": {
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "cost_usd": 0,
+          "input_tokens": 0,
+          "output_tokens": 8,
+          "reasoning_tokens": 0
+        },
+        "Usage": {
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "cost_usd": 0,
+          "input_tokens": 5,
+          "output_tokens": 0,
+          "reasoning_tokens": 2,
+          "reasoning_tokens_known": true
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "content": [
+        {
+          "text": "hi",
+          "type": "text"
+        },
+        {
+          "bytes": 2,
+          "mime_type": "image/png",
+          "type": "image"
+        },
+        {
+          "args": {
+            "x": 1
+          },
+          "id": "c",
+          "name": "read",
+          "type": "tool_call"
+        },
+        {
+          "call_id": "c",
+          "content": [
+            {
+              "text": "nested",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "type": "tool_result"
+        }
+      ],
+      "time": "2026-01-02T03:04:05Z",
+      "type": "assistant_message",
+      "value": {
+        "Message": {
+          "added_tool_names": [
+            "read"
+          ],
+          "content": [
+            {
+              "_content": "text",
+              "phase": "commentary",
+              "text": "hi",
+              "thought_signature": "sig"
+            },
+            {
+              "_content": "image",
+              "data": "AQI=",
+              "mime_type": "image/png"
+            },
+            {
+              "_content": "reasoning"
+            },
+            {
+              "_content": "reasoning",
+              "encrypted_content": "opaque",
+              "reasoning_id": "r"
+            },
+            {
+              "_content": "tool_call",
+              "arguments": {
+                "x": 1
+              },
+              "id": "c",
+              "name": "read",
+              "origin": "host"
+            },
+            {
+              "_content": "tool_result",
+              "call_id": "c",
+              "content": [
+                {
+                  "_content": "text",
+                  "text": "nested",
+                  "thought_signature": "nested-sig"
+                }
+              ],
+              "is_error": false
+            }
+          ],
+          "meta": {
+            "k": "v"
+          },
+          "role": "assistant",
+          "time": "2026-01-02T03:04:05Z"
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "error": "synthetic",
+      "stop": "end",
+      "type": "turn_end",
+      "value": {
+        "Error": "synthetic",
+        "Stop": "end"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "attempt": 1,
+      "reason": "missing_answer",
+      "type": "turn_recovery",
+      "value": {
+        "Attempt": 1,
+        "Reason": "missing_answer"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "count": 3,
+      "elapsed_ms": 123,
+      "kind": "",
+      "stage": "",
+      "type": "repetition_guard",
+      "value": {
+        "count": 3,
+        "elapsed": {
+          "ms": 123,
+          "remainder_ns": 456789
+        },
+        "kind": "",
+        "stage": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "type": "done",
+      "value": {}
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "message": "synthetic",
+      "type": "error",
+      "value": {
+        "Error": "synthetic"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "stop": "",
+      "type": "turn_end",
+      "value": {
+        "Error": null,
+        "Stop": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "type": "error",
+      "value": {
+        "Error": null
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "info",
+    "data": {
+      "info": {
+        "activity": {
+          "kind": "",
+          "since": "0001-01-01T00:00:00Z",
+          "tool": ""
+        },
+        "attach": "",
+        "context_max": 0,
+        "context_used": 0,
+        "created_at": "0001-01-01T00:00:00Z",
+        "current_origin": "",
+        "cwd": "",
+        "deferred": 0,
+        "fast_mode": false,
+        "goal": null,
+        "id": "",
+        "last_user_input_at": "0001-01-01T00:00:00Z",
+        "model": "",
+        "plan_step": null,
+        "provider": "",
+        "reasoning": "",
+        "repo_root": "",
+        "residents": null,
+        "run": "",
+        "schedules": 0,
+        "session_path": "",
+        "title": "",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "usage": {
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "cost_usd": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_tokens": 0
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "queue",
+    "data": {
+      "queue": null
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "pending",
+    "data": {
+      "pending": {
+        "confirm": null,
+        "created_at": "0001-01-01T00:00:00Z",
+        "id": "",
+        "kind": "",
+        "questions": null,
+        "rescue": null
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "pending_resolved",
+    "data": {
+      "id": "",
+      "outcome": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "deferred",
+    "data": {
+      "deferred": {
+        "at": "0001-01-01T00:00:00Z",
+        "id": "",
+        "kind": "",
+        "questions": null,
+        "summary": "",
+        "tool": "",
+        "turn_id": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "note",
+    "data": {
+      "note": {
+        "level": "",
+        "text": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "ext_chrome",
+    "data": {
+      "ext_chrome": {
+        "alert": null,
+        "panels": null,
+        "statuses": null,
+        "widgets": null
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "ext_panel",
+    "data": {
+      "op": "",
+      "panel": {
+        "ext": "",
+        "spec": {
+          "id": ""
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "ext_alert",
+    "data": {
+      "alert": {
+        "kind": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "ext_display",
+    "data": {
+      "ext": "",
+      "text": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "ext_insert",
+    "data": {
+      "text": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "plan",
+    "data": {
+      "plan": null
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "goal",
+    "data": {
+      "goal": null,
+      "status": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "title",
+    "data": {
+      "title": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "compaction",
+    "data": {
+      "phase": "",
+      "summary": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "messages_replaced",
+    "data": {}
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "inter_session",
+    "data": {
+      "from": {
+        "cwd": "",
+        "session_id": "",
+        "title": ""
+      },
+      "text": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "attach",
+    "data": {
+      "reason": "",
+      "state": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "closed",
+    "data": {
+      "reason": "",
+      "successor": ""
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "info",
+    "data": {
+      "info": {
+        "activity": {
+          "kind": "",
+          "since": "0001-01-01T00:00:00Z",
+          "tool": ""
+        },
+        "attach": "",
+        "context_max": 0,
+        "context_used": 0,
+        "created_at": "2026-01-02T03:04:05Z",
+        "current_origin": "",
+        "cwd": "/workspace",
+        "deferred": 0,
+        "fast_mode": false,
+        "goal": null,
+        "id": "synthetic-session",
+        "last_user_input_at": "0001-01-01T00:00:00Z",
+        "model": "test-model",
+        "plan_step": null,
+        "provider": "test",
+        "reasoning": "",
+        "repo_root": "",
+        "residents": [
+          {
+            "id": "resident-000",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-001",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-002",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-003",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-004",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-005",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-006",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-007",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-008",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-009",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-010",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-011",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-012",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-013",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-014",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-015",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-016",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-017",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-018",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-019",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-020",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-021",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-022",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-023",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-024",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-025",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-026",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-027",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-028",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-029",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-030",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-031",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-032",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-033",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-034",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-035",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-036",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-037",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-038",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-039",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-040",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-041",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-042",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-043",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-044",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-045",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-046",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-047",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-048",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-049",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-050",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-051",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-052",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-053",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-054",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-055",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-056",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-057",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-058",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-059",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-060",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-061",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-062",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-063",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-064",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-065",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-066",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-067",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-068",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-069",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-070",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-071",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-072",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-073",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-074",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-075",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-076",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-077",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-078",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-079",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-080",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-081",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-082",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-083",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-084",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-085",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-086",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-087",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-088",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-089",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-090",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-091",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-092",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-093",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-094",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-095",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-096",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-097",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-098",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          },
+          {
+            "id": "resident-099",
+            "profile": "worker",
+            "state": "idle",
+            "task": "Inspect synthetic source and report findings",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "usage": {
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "cost_usd": 0,
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "reasoning_tokens": 0
+            },
+            "workspace": "/workspace"
+          }
+        ],
+        "run": "",
+        "schedules": 0,
+        "session_path": "",
+        "title": "Synthetic benchmark",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "usage": {
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "cost_usd": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_tokens": 0
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "",
+    "seq": 0,
+    "kind": "note",
+    "data": {
+      "duration": {
+        "ms": -1,
+        "remainder_ns": -234567
+      },
+      "nil": null,
+      "values": [
+        [
+          null,
+          {
+            "_content": "reasoning"
+          },
+          {
+            "completed_at": "0001-01-01T00:00:00Z",
+            "duration": {
+              "ms": 1,
+              "remainder_ns": 234567
+            },
+            "started_at": "0001-01-01T00:00:00Z"
+          },
+          {
+            "z": 1,
+            "a": 2
+          }
+        ],
+        null,
+        []
+      ]
+    }
+  },
+  {
+    "type": "event",
+    "session": "",
+    "seq": 0,
+    "kind": "note",
+    "data": null
+  },
+  {
+    "type": "event",
+    "session": "",
+    "seq": 0,
+    "kind": "note",
+    "data": {
+      "_content": "tool_result",
+      "call_id": "c",
+      "content": [
+        {
+          "_content": "text",
+          "text": "nested"
+        },
+        {
+          "_content": "tool_result",
+          "call_id": "inner",
+          "content": null,
+          "is_error": false
+        }
+      ],
+      "is_error": false,
+      "timing": {
+        "completed_at": "0001-01-01T00:00:00Z",
+        "duration": {
+          "ms": -1,
+          "remainder_ns": -234567
+        },
+        "started_at": "0001-01-01T00:00:00Z"
+      }
+    }
+  }
+]

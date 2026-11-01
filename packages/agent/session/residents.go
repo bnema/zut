@@ -12,16 +12,22 @@ import (
 )
 
 type residentState struct {
-	controller  *Controller
-	tracker     *subagents.CompletionTracker
-	coordinator *orchestration.Coordinator
-	specs       map[string]subagents.ResidentChildSpec
-	tasks       map[string]string
-	inboxMu     sync.Mutex
-	inbox       []func()
-	dirty       bool
-	closed      bool
-	wake        chan struct{}
+	// Summaries are actor-owned and immutable once published through Info.
+	inputsRevision          uint64
+	summariesRevision       uint64
+	summariesInputsRevision uint64
+	summariesValid          bool
+	summaries               []ResidentSummary
+	controller              *Controller
+	tracker                 *subagents.CompletionTracker
+	coordinator             *orchestration.Coordinator
+	specs                   map[string]subagents.ResidentChildSpec
+	tasks                   map[string]string
+	inboxMu                 sync.Mutex
+	inbox                   []func()
+	dirty                   bool
+	closed                  bool
+	wake                    chan struct{}
 	// stopDispatcher cancels a pending actor post; dispatcherDone joins it.
 	stopDispatcher context.CancelFunc
 	dispatcherDone chan struct{}
@@ -65,6 +71,13 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 	if c.deps.ResidentManager == nil {
 		return nil
 	}
+	// Read before Snapshot, not after: a mutation during the copy must cause
+	// another rebuild on the next read rather than be marked as included.
+	revision := c.deps.ResidentManager.Revision()
+	s := &c.res
+	if s.summariesValid && s.summariesRevision == revision && s.summariesInputsRevision == s.inputsRevision {
+		return s.summaries
+	}
 	snapshots := c.deps.ResidentManager.Snapshot()
 	out := make([]ResidentSummary, 0, len(snapshots))
 	for _, r := range snapshots {
@@ -77,6 +90,8 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 			WaitingForModel: r.WaitingForModel, Usage: r.Usage, ContextUsed: r.ContextUsed,
 			ContextMax: r.ContextMax, Subscription: r.Subscription})
 	}
+	s.summaries, s.summariesRevision, s.summariesInputsRevision = out, revision, s.inputsRevision
+	s.summariesValid = true
 	return out
 }
 
@@ -195,6 +210,7 @@ func (c *Controller) residentsInit() {
 	s.coordinator = orchestration.New()
 	s.specs = make(map[string]subagents.ResidentChildSpec)
 	s.tasks = make(map[string]string)
+	s.inputsRevision++
 	s.wake = make(chan struct{}, 1)
 	ctx, stop := context.WithCancel(context.Background())
 	s.stopDispatcher = stop
@@ -238,6 +254,7 @@ func (c *Controller) residentsInit() {
 					runes = runes[:120]
 				}
 				s.tasks[spec.ID] = string(runes)
+				s.inputsRevision++
 			}
 			// An acceptance outside a manager turn forms an implicit sealed wave.
 			busy := c.turnSeam.isBusy()

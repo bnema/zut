@@ -66,14 +66,17 @@ func TestAgentEventRoundTripAndProjection(t *testing.T) {
 			}
 			// Re-encoding also checks concrete content hydration, host-only origin and metadata.
 			_, again, err := daemonproto.EncodeAgentEvent(got)
-			if err != nil || string(raw) != string(again) {
+			if err != nil || !equalJSON(t, raw, again) {
 				t.Fatalf("unstable typed round trip: %s vs %s (%v)", raw, again, err)
 			}
 		})
 	}
 }
-func TestSessionEventRoundTrip(t *testing.T) {
-	payloads := []struct {
+func sessionPayloadCases() []struct {
+	k session.EventKind
+	v any
+} {
+	return []struct {
 		k session.EventKind
 		v any
 	}{
@@ -97,7 +100,9 @@ func TestSessionEventRoundTrip(t *testing.T) {
 		{session.EvAttach, session.AttachEvent{}},
 		{session.EvClosed, session.ClosedEvent{}},
 	}
-	for _, p := range payloads {
+}
+func TestSessionEventRoundTrip(t *testing.T) {
+	for _, p := range sessionPayloadCases() {
 		t.Run(string(p.k), func(t *testing.T) {
 			e := session.Event{Session: "s", Seq: 42, Kind: p.k, Data: p.v}
 			n, err := daemonproto.EncodeEvent(e)
@@ -171,7 +176,7 @@ func TestToolResultDetailsExactLargeInteger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != string(again) {
+	if !equalJSON(t, raw, again) {
 		t.Fatalf("round trip changed number:\n%s\n%s", raw, again)
 	}
 }

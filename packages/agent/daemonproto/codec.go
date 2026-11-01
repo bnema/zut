@@ -6,11 +6,96 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/provider"
 )
+
+// enrichTypes caches immutable metadata. Construction is serialized so a type is
+// analyzed only once; recursion uses a local path rather than partial cache entries.
+var enrichTypes sync.Map // map[reflect.Type]*enrichType
+var enrichTypesMu sync.Mutex
+
+type enrichField struct {
+	index int
+	key   string
+	needs bool
+}
+type enrichType struct {
+	needs  bool
+	fields []enrichField
+}
+
+func enrichFields(t reflect.Type) []enrichField {
+	var fields []enrichField
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		key, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if key == "-" {
+			continue
+		}
+		if key == "" {
+			key = f.Name
+		}
+		// Deliberately retain the old direct-key handling of anonymous fields.
+		fields = append(fields, enrichField{index: i, key: key})
+	}
+	return fields
+}
+
+func typeNeedsEnrich(t reflect.Type, path map[reflect.Type]bool) bool {
+	if t == reflect.TypeFor[json.RawMessage]() {
+		return false
+	}
+	if t == reflect.TypeFor[time.Duration]() || t.Implements(reflect.TypeFor[provider.Content]()) {
+		return true
+	}
+	if path[t] {
+		return false
+	}
+	path[t] = true
+	defer delete(path, t)
+	switch t.Kind() {
+	case reflect.Interface:
+		return true
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return typeNeedsEnrich(t.Elem(), path)
+	case reflect.Map:
+		return t.Key().Kind() == reflect.String && typeNeedsEnrich(t.Elem(), path)
+	case reflect.Struct:
+		for _, f := range enrichFields(t) {
+			if typeNeedsEnrich(t.Field(f.index).Type, path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func enrichMetadata(t reflect.Type) *enrichType {
+	if cached, ok := enrichTypes.Load(t); ok {
+		return cached.(*enrichType)
+	}
+	enrichTypesMu.Lock()
+	defer enrichTypesMu.Unlock()
+	if cached, ok := enrichTypes.Load(t); ok {
+		return cached.(*enrichType)
+	}
+	m := &enrichType{needs: typeNeedsEnrich(t, make(map[reflect.Type]bool))}
+	if t.Kind() == reflect.Struct {
+		m.fields = enrichFields(t)
+		for i := range m.fields {
+			m.fields[i].needs = typeNeedsEnrich(t.Field(m.fields[i].index).Type, make(map[reflect.Type]bool))
+		}
+	}
+	enrichTypes.Store(t, m)
+	return m
+}
 
 // marshalPayload retains concrete content types, including empty reasoning blocks
 // and host-only tool routing metadata, without changing durable session JSON.
@@ -23,6 +108,9 @@ func marshalPayload(v any) (json.RawMessage, error) {
 }
 func enrich(v reflect.Value, raw json.RawMessage) (json.RawMessage, error) {
 	if !v.IsValid() {
+		return raw, nil
+	}
+	if !enrichMetadata(v.Type()).needs {
 		return raw, nil
 	}
 	if v.Kind() == reflect.Interface {
@@ -92,27 +180,19 @@ func enrich(v reflect.Value, raw json.RawMessage) (json.RawMessage, error) {
 		if json.Unmarshal(raw, &m) != nil || m == nil {
 			return raw, nil
 		}
-		for i := 0; i < v.NumField(); i++ {
-			f := v.Type().Field(i)
-			if !f.IsExported() {
+		for _, f := range enrichMetadata(v.Type()).fields {
+			if !f.needs {
 				continue
 			}
-			key := strings.Split(f.Tag.Get("json"), ",")[0]
-			if key == "-" {
-				continue
-			}
-			if key == "" {
-				key = f.Name
-			}
-			r, ok := m[key]
+			r, ok := m[f.key]
 			if !ok {
 				continue
 			}
-			r, e := enrich(v.Field(i), r)
+			r, e := enrich(v.Field(f.index), r)
 			if e != nil {
 				return nil, e
 			}
-			m[key] = r
+			m[f.key] = r
 		}
 		return json.Marshal(m)
 	case reflect.Map:

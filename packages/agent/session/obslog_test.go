@@ -167,6 +167,7 @@ func TestSessionLogsCompaction(t *testing.T) {
 func TestSessionLogsSubagentLifecycle(t *testing.T) {
 	buf, logger := newLogBuffer()
 	m := newMockResidentHostLocal(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	var accepted func(subagents.ResidentChildSpec, string, string)
 	var completed func(subagents.ResidentCompletion) bool
 	m.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { accepted = f })

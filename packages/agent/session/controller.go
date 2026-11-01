@@ -26,9 +26,19 @@ type eventRing struct {
 	bytes   int
 }
 
+// jsonByteCount discards encoded bytes without copying the encoder's buffer.
+type jsonByteCount int
+
+func (n *jsonByteCount) Write(p []byte) (int, error) {
+	*n += jsonByteCount(len(p))
+	return len(p), nil
+}
+
 func (r *eventRing) append(ev Event) {
-	b, err := json.Marshal(ev)
-	size := len(b)
+	var count jsonByteCount
+	err := json.NewEncoder(&count).Encode(ev)
+	// Encode adds a newline that Marshal did not include in ring accounting.
+	size := int(count) - 1
 	if err != nil {
 		size = eventRingBytes + 1
 	}

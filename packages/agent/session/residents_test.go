@@ -20,6 +20,7 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 	for _, busy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "idle", true: "busy"}[busy], func(t *testing.T) {
 			m := sessionmocks.NewMockResidentHost(t)
+			m.EXPECT().Revision().Return(0).Maybe()
 			var accepted func(subagents.ResidentChildSpec, string, string)
 			var completed func(subagents.ResidentCompletion) bool
 			var update func(string)
@@ -73,6 +74,7 @@ func TestResidentsCompletionDelivery(t *testing.T) {
 
 func TestResidentActions(t *testing.T) {
 	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	m.EXPECT().SetAcceptedObserver(mock.Anything)
 	m.EXPECT().SetCompletionObserver(mock.Anything)
 	m.EXPECT().SetUpdateObserver(mock.Anything)
@@ -93,6 +95,7 @@ func TestResidentActions(t *testing.T) {
 
 func TestResidentConcurrentReports(t *testing.T) {
 	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	var accepted func(subagents.ResidentChildSpec, string, string)
 	var completed func(subagents.ResidentCompletion) bool
 	m.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { accepted = f })
@@ -131,6 +134,7 @@ func TestResidentConcurrentReports(t *testing.T) {
 
 func TestResidentQueries(t *testing.T) {
 	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	m.EXPECT().SetAcceptedObserver(mock.Anything)
 	m.EXPECT().SetCompletionObserver(mock.Anything)
 	m.EXPECT().SetUpdateObserver(mock.Anything)
@@ -167,6 +171,7 @@ func TestResidentQueries(t *testing.T) {
 
 func TestResidentListValidatesUntrustedPaging(t *testing.T) {
 	m := sessionmocks.NewMockResidentHost(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	m.EXPECT().SetAcceptedObserver(mock.Anything)
 	m.EXPECT().SetCompletionObserver(mock.Anything)
 	m.EXPECT().SetUpdateObserver(mock.Anything)

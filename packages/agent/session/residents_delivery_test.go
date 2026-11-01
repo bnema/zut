@@ -62,6 +62,7 @@ func TestResidentObserverRetryAndReentry(t *testing.T) {
 	for _, busy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "idle", true: "busy"}[busy], func(t *testing.T) {
 			m := newMockResidentHostLocal(t)
+			m.EXPECT().Revision().Return(0).Maybe()
 			var accepted func(subagents.ResidentChildSpec, string, string)
 			var completion func(subagents.ResidentCompletion) bool
 			var update func(string)

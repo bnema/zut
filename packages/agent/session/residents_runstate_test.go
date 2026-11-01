@@ -18,6 +18,12 @@ func TestResidentRunStateAfterParentTurnEnds(t *testing.T) {
 	var update func(string)
 	var running atomic.Bool
 	running.Store(true)
+	manager.EXPECT().Revision().RunAndReturn(func() uint64 {
+		if running.Load() {
+			return 1
+		}
+		return 2
+	})
 	manager.EXPECT().SetAcceptedObserver(mock.Anything).Return()
 	manager.EXPECT().SetCompletionObserver(mock.Anything).Return()
 	manager.EXPECT().SetUpdateObserver(mock.Anything).Run(func(f func(string)) { update = f })

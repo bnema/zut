@@ -466,6 +466,50 @@ func (_c *mockResidentHostLocal_ResumeFollowUp_Call) RunAndReturn(run func(ctx c
 	return _c
 }
 
+// Revision provides a mock function for the type mockResidentHostLocal
+func (_mock *mockResidentHostLocal) Revision() uint64 {
+	ret := _mock.Called()
+
+	if len(ret) == 0 {
+		panic("no return value specified for Revision")
+	}
+
+	var r0 uint64
+	if returnFunc, ok := ret.Get(0).(func() uint64); ok {
+		r0 = returnFunc()
+	} else {
+		r0 = ret.Get(0).(uint64)
+	}
+	return r0
+}
+
+// mockResidentHostLocal_Revision_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Revision'
+type mockResidentHostLocal_Revision_Call struct {
+	*mock.Call
+}
+
+// Revision is a helper method to define mock.On call
+func (_e *mockResidentHostLocal_Expecter) Revision() *mockResidentHostLocal_Revision_Call {
+	return &mockResidentHostLocal_Revision_Call{Call: _e.mock.On("Revision")}
+}
+
+func (_c *mockResidentHostLocal_Revision_Call) Run(run func()) *mockResidentHostLocal_Revision_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run()
+	})
+	return _c
+}
+
+func (_c *mockResidentHostLocal_Revision_Call) Return(v uint64) *mockResidentHostLocal_Revision_Call {
+	_c.Call.Return(v)
+	return _c
+}
+
+func (_c *mockResidentHostLocal_Revision_Call) RunAndReturn(run func() uint64) *mockResidentHostLocal_Revision_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetAcceptedObserver provides a mock function for the type mockResidentHostLocal
 func (_mock *mockResidentHostLocal) SetAcceptedObserver(observer func(subagents.ResidentChildSpec, string, string)) {
 	_mock.Called(observer)

@@ -176,12 +176,11 @@ func newResidentChildWithWorkspace(spec ResidentChildSpec, journal *ResidentJour
 		child.live.SeedUsage(journal.usageSnapshot())
 		journal.SetEventObserver(func(event core.AgentEvent) {
 			child.live.Apply(event)
-			child.recordActivity()
 			historyChanged := residentEventChangesHistory(event)
 			if historyChanged {
 				child.historyRev.Add(1)
 			}
-			child.notifyUpdate(historyChanged)
+			child.recordActivityUpdate(historyChanged)
 		})
 	}
 	go child.run()
@@ -285,8 +284,12 @@ func (c *ResidentChild) PendingFollowUps() int {
 
 func (c *ResidentChild) setQueuedTurns(n int) {
 	c.mu.Lock()
+	changed := c.queuedTurns != n
 	c.queuedTurns = n
 	c.mu.Unlock()
+	if changed {
+		c.notifyUpdate(false)
+	}
 }
 
 func (c *ResidentChild) setState(state ResidentState) {
@@ -329,12 +332,19 @@ func (c *ResidentChild) startTurn(turnID string) {
 }
 
 func (c *ResidentChild) recordActivity() {
+	c.recordActivityUpdate(false)
+}
+
+// recordActivityUpdate publishes once after activity and any journal-driven
+// live/history changes are visible to readers.
+func (c *ResidentChild) recordActivityUpdate(historyChanged bool) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	c.activityUpdatedAt = time.Now().UTC()
 	c.mu.Unlock()
+	c.notifyUpdate(historyChanged)
 }
 
 func (c *ResidentChild) notifyUpdate(historyChanged bool) {
@@ -423,6 +433,10 @@ func (c *ResidentChild) enqueueAccepted(ctx context.Context, request residentPro
 	}
 	if strings.TrimSpace(request.turnID) == "" {
 		return false, errors.New("resident child: missing turn ID")
+	}
+	// A ready inbox must not win admission over an already canceled caller.
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
 	select {
 	case <-ctx.Done():

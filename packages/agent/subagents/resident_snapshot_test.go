@@ -153,3 +153,81 @@ func TestResidentResumeAfterStopContinuesHistoryRev(t *testing.T) {
 		t.Fatalf("history rev after resume = %d, want > %d", resumed.HistoryRev, stopped.HistoryRev)
 	}
 }
+
+func BenchmarkResidentManagerSnapshotPageRecovered(b *testing.B) {
+	manager := &ResidentManager{recovered: make(map[string]ResidentSnapshot, 5000)}
+	for i := 0; i < 5000; i++ {
+		id := fmt.Sprintf("child-%05d", i)
+		manager.recovered[id] = ResidentSnapshot{ID: id, State: ResidentIdle}
+	}
+	for _, limit := range []int{-1, 50, 0} {
+		b.Run(fmt.Sprintf("limit=%d", limit), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				manager.SnapshotPage(0, limit)
+			}
+		})
+	}
+}
+
+func TestResidentManagerSnapshotPageRecoveredPaging(t *testing.T) {
+	manager := &ResidentManager{recovered: map[string]ResidentSnapshot{
+		"c": {ID: "c", OwnedElsewhere: true, HistoryRev: 7},
+		"a": {ID: "a", State: ResidentIdle},
+		"b": {ID: "b", State: ResidentStopped},
+	}}
+	for _, tt := range []struct {
+		name          string
+		offset, limit int
+		ids           string
+	}{
+		{"all", 0, -1, "abc"},
+		{"negative offset", -1, 1, "a"},
+		{"middle", 1, 1, "b"},
+		{"huge limit", 1, math.MaxInt, "bc"},
+		{"total only", 0, 0, ""},
+		{"past end", 3, 1, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			page, total := manager.SnapshotPage(tt.offset, tt.limit)
+			if total != 3 {
+				t.Fatalf("total = %d, want 3", total)
+			}
+			ids := ""
+			for _, row := range page {
+				ids += row.ID
+				if row != manager.recovered[row.ID] {
+					t.Fatalf("changed snapshot: %#v", row)
+				}
+			}
+			if ids != tt.ids {
+				t.Fatalf("IDs = %q, want %q", ids, tt.ids)
+			}
+		})
+	}
+	page, _ := manager.SnapshotPage(0, -1)
+	page[0].HistoryRev = 999
+	if manager.recovered["a"].HistoryRev != 0 {
+		t.Fatal("page aliases recovered state")
+	}
+}
+
+func TestResidentManagerSnapshotPageLiveOverridesRecovered(t *testing.T) {
+	child := newResidentChild(ResidentChildSpec{ID: "b", Profile: "live"}, nil, nil)
+	t.Cleanup(func() { _ = child.Close(context.Background()) })
+	manager := &ResidentManager{
+		children: map[string]*ResidentChild{"b": child, "c": nil},
+		recovered: map[string]ResidentSnapshot{
+			"a": {ID: "a"},
+			"b": {ID: "b", Profile: "recovered"},
+			"c": {ID: "c", Profile: "fallback"},
+		},
+	}
+	page, total := manager.SnapshotPage(0, -1)
+	if total != 3 || len(page) != 3 || page[0].ID != "a" || page[1].ID != "b" || page[2].ID != "c" {
+		t.Fatalf("page/total = %#v/%d", page, total)
+	}
+	if page[1].Profile != "live" || page[2].Profile != "fallback" {
+		t.Fatalf("live precedence/fallback changed: %#v", page)
+	}
+}

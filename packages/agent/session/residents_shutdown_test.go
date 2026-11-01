@@ -20,6 +20,7 @@ type residentObservers struct {
 
 func newGatedResidentController(t *testing.T) (*Controller, context.CancelFunc, *residentObservers, chan Input, func() func()) {
 	m := newMockResidentHostLocal(t)
+	m.EXPECT().Revision().Return(0).Maybe()
 	obs := &residentObservers{}
 	m.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { obs.accepted = f })
 	m.EXPECT().SetCompletionObserver(mock.Anything).Run(func(f func(subagents.ResidentCompletion) bool) { obs.completed = f })

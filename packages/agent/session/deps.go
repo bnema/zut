@@ -86,6 +86,7 @@ type ResidentHost interface {
 	SetCompletionObserver(observer func(subagents.ResidentCompletion) bool)
 	// SetUpdateObserver observes resident projection changes.
 	SetUpdateObserver(observer func(string))
+	Revision() uint64
 	Snapshot() []subagents.ResidentSnapshot
 	RecentSnapshotPage(offset, limit int) ([]subagents.ResidentSnapshot, int)
 	HistoryPage(childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)

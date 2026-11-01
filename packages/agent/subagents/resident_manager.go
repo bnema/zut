@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bnema/zut/packages/provider"
@@ -21,6 +22,15 @@ import (
 type ResidentFactory func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error)
 
 type ResidentManager struct {
+	// Snapshot mutation audit: map membership/recovered values advance under mu
+	// in Spawn (including rollback), resumeWithTurn, Stop, and Reconcile (also
+	// lease/OwnedElsewhere refresh). Child state/start/finish, journal live events
+	// (usage, context, waiting, history), activity and queued-turn setters reach
+	// notifyUpdate. Specs and seeded usage are fixed before child publication.
+	// Runtime steers notify on admission; consumption emits journal user events,
+	// and draining is followed by a terminal state update. Scheduler admission
+	// affects State(), not the ResidentSnapshot projection.
+	revision          atomic.Uint64
 	root              string
 	factory           ResidentFactory
 	prepareWorkspace  func(context.Context, WorkspaceRequest) (WorkspaceHandle, error)
@@ -42,6 +52,16 @@ type ResidentManager struct {
 	onUpdate          func(string)
 	onHistoryUpdate   func(string)
 	onActivity        func(bool)
+}
+
+// Revision is a monotonic invalidation token for snapshot projections. It may
+// advance more than once per operation. Read it before taking a snapshot: a
+// concurrent mutation must not be stamped as already included in that snapshot.
+func (m *ResidentManager) Revision() uint64 {
+	if m == nil {
+		return 0
+	}
+	return m.revision.Load()
 }
 
 // SetCompletionObserver installs the host report channel. Return true only
@@ -195,6 +215,7 @@ func (m *ResidentManager) notifyUpdate(childID string, historyChanged bool) {
 		return
 	}
 	m.mu.Lock()
+	m.revision.Add(1)
 	observer := m.onUpdate
 	historyObserver := m.onHistoryUpdate
 	m.mu.Unlock()
@@ -369,11 +390,13 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 		return nil, errors.New("resident manager: closed")
 	}
 	m.children[spec.ID] = child
+	m.revision.Add(1)
 	m.mu.Unlock()
 	if childAccepted, err := child.resumeAccepted(ctx, spec.InitialTurnID, task); err != nil {
 		m.mu.Lock()
 		if m.children[spec.ID] == child {
 			delete(m.children, spec.ID)
+			m.revision.Add(1)
 		}
 		m.mu.Unlock()
 		_ = child.Close(context.Background())
@@ -626,6 +649,7 @@ func (m *ResidentManager) resumeWithTurn(ctx context.Context, childID, prompt, t
 		m.children[childID] = child
 		delete(m.recovered, childID)
 		delete(m.recoveredSpec, childID)
+		m.revision.Add(1)
 		m.mu.Unlock()
 	}
 	if child == nil {
@@ -725,42 +749,46 @@ func (m *ResidentManager) SnapshotPage(offset, limit int) ([]ResidentSnapshot, i
 		offset = 0
 	}
 	m.mu.Lock()
-	live := make(map[string]*ResidentChild, len(m.children))
-	for id, child := range m.children {
-		live[id] = child
-	}
-	recovered := make(map[string]ResidentSnapshot, len(m.recovered))
-	for id, snapshot := range m.recovered {
-		recovered[id] = snapshot
-	}
-	m.mu.Unlock()
-	ids := make([]string, 0, len(live)+len(recovered))
-	for id := range recovered {
+	ids := make([]string, 0, len(m.children)+len(m.recovered))
+	for id := range m.recovered {
 		ids = append(ids, id)
 	}
-	for id := range live {
-		if _, alreadyRecovered := recovered[id]; !alreadyRecovered {
+	for id := range m.children {
+		if _, alreadyRecovered := m.recovered[id]; !alreadyRecovered {
 			ids = append(ids, id)
 		}
 	}
 	sort.Strings(ids)
 	total := len(ids)
 	if offset >= total || limit == 0 {
+		m.mu.Unlock()
 		return nil, total
 	}
 	end := total
-	if limit > 0 && offset+limit < end {
+	if limit > 0 && limit < end-offset {
 		end = offset + limit
 	}
 	result := make([]ResidentSnapshot, 0, end-offset)
+	// Copy only the requested recovered values and live pointers. Never take
+	// a child lock while holding the manager lock.
+	type liveRow struct {
+		index int
+		child *ResidentChild
+	}
+	var live []liveRow
 	for _, id := range ids[offset:end] {
-		if child := live[id]; child != nil {
-			result = append(result, residentSnapshot(child))
+		if child := m.children[id]; child != nil {
+			live = append(live, liveRow{index: len(result), child: child})
+			result = append(result, ResidentSnapshot{})
 			continue
 		}
-		if snapshot, ok := recovered[id]; ok {
+		if snapshot, ok := m.recovered[id]; ok {
 			result = append(result, snapshot)
 		}
+	}
+	m.mu.Unlock()
+	for _, row := range live {
+		result[row.index] = residentSnapshot(row.child)
 	}
 	return result, total
 }
@@ -912,6 +940,7 @@ func (m *ResidentManager) Reconcile() []error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	m.mu.Lock()
 	m.recovered = make(map[string]ResidentSnapshot)
+	m.revision.Add(1)
 	m.recoveredSpec = make(map[string]ResidentChildSpec)
 	m.mu.Unlock()
 	var errs []error
@@ -977,6 +1006,7 @@ func (m *ResidentManager) Reconcile() []error {
 				ID: childID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true,
 				Usage: foreign.Usage, ContextUsed: foreign.ContextUsed, ContextMax: foreign.ContextMax, Subscription: foreign.Subscription,
 			}
+			m.revision.Add(1)
 			m.mu.Unlock()
 			continue
 		}
@@ -992,6 +1022,7 @@ func (m *ResidentManager) Reconcile() []error {
 				Usage: metadata.Usage, ContextUsed: metadata.ContextUsed, ContextMax: metadata.ContextMax, Subscription: metadata.Subscription,
 			}
 			m.recoveredSpec[childID] = spec
+			m.revision.Add(1)
 		}
 		m.mu.Unlock()
 	}
@@ -1060,6 +1091,7 @@ func (m *ResidentManager) Stop(ctx context.Context, childID string) error {
 		delete(m.children, childID)
 		m.recovered[childID] = residentSnapshot(child)
 		m.recoveredSpec[childID] = child.spec
+		m.revision.Add(1)
 	}
 	m.mu.Unlock()
 	m.notifyUpdate(childID, false)
