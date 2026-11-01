@@ -61,7 +61,9 @@ func TestLiveRowsAlignedAndTruncated(t *testing.T) {
 		for _, row := range d.renderLive(tui.Theme{}, width)[1:3] {
 			plain := stripANSIBytes(row)
 			require.LessOrEqual(t, runewidth.StringWidth(plain), width)
-			require.Contains(t, plain, "…")
+			if width < 20 {
+				require.Contains(t, plain, "…")
+			}
 		}
 	}
 }
@@ -82,4 +84,14 @@ func TestLiveColumnsHaveFixedOffsets(t *testing.T) {
 		require.Equal(t, 2+13+12+18+11+16+7+12, runewidth.StringWidth(prefix))
 	}
 	require.Contains(t, stripANSIBytes(rows[2]), "…")
+}
+
+func TestLiveTitleVisibleAtCommonWidths(t *testing.T) {
+	d := &sessionDialog{live: []session.Info{{CWD: "/a/zut", Model: "anthropic/claude-opus-5-5", Reasoning: "high", Title: "Fix nil auth"}}}
+	for _, width := range []int{60, 80, 94, 130} {
+		plain := stripANSIBytes(d.renderLive(tui.Theme{}, width)[1])
+		require.Contains(t, plain, "Fix nil auth", "width %d", width)
+		require.Contains(t, plain, "zut", "width %d", width)
+		require.LessOrEqual(t, runewidth.StringWidth(plain), width)
+	}
 }

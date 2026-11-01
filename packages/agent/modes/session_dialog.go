@@ -1381,15 +1381,66 @@ func liveRowColumns(info session.Info, self session.ID) []string {
 	return columns
 }
 
+// liveColumns lists the fixed-width live columns (index into liveRowColumns)
+// in display order with their drop priority; higher drops first when the
+// dialog is too narrow to keep liveTitleMin cells for the title.
+var liveColumns = []struct{ index, width, drop int }{
+	{0, 13, 3}, {1, 12, 0}, {2, 18, 1}, {3, 11, 2}, {4, 16, 4}, {5, 7, 5},
+}
+
+const liveTitleMin = 24
+
+// keptLiveColumns depends only on width so columns never shift between
+// refreshes.
+func keptLiveColumns(width int) []bool {
+	keep := make([]bool, len(liveColumns))
+	used := 2 + liveTitleMin
+	for i := range keep {
+		keep[i] = true
+		used += liveColumns[i].width + 2
+	}
+	for drop := len(liveColumns) - 1; drop >= 1 && used > width; drop-- {
+		for i, c := range liveColumns {
+			if c.drop == drop && keep[i] {
+				keep[i] = false
+				used -= c.width + 2
+			}
+		}
+	}
+	return keep
+}
+
+func liveColumnWidths(width int) []int {
+	keep := keptLiveColumns(width)
+	var widths []int
+	for i, c := range liveColumns {
+		if keep[i] {
+			widths = append(widths, c.width)
+		}
+	}
+	return widths
+}
+
+func selectLiveColumns(all []string, width int) []string {
+	keep := keptLiveColumns(width)
+	var out []string
+	for i, c := range liveColumns {
+		if keep[i] {
+			out = append(out, all[c.index])
+		}
+	}
+	return append(out, all[len(all)-1])
+}
+
 func (d *sessionDialog) renderLive(th tui.Theme, width int) []string {
 	if len(d.live) == 0 {
 		return nil
 	}
 	rows := make([][]string, len(d.live))
-	widths := []int{13, 12, 18, 11, 16, 7}
 	for idx, info := range d.live {
-		rows[idx] = liveRowColumns(info, d.liveSelf)
+		rows[idx] = selectLiveColumns(liveRowColumns(info, d.liveSelf), width)
 	}
+	widths := liveColumnWidths(width)
 	lines := []string{th.FGColor(th.Muted, "live sessions")}
 	for idx, row := range rows {
 		mark := "  "
