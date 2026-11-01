@@ -691,6 +691,7 @@ type Interactive struct {
 	statusFlashSeq    uint64
 	statusFlashMsg    string
 	statusFlashAt     time.Time
+	statusFlashHeld   bool // held visible by a prompt awaiting input
 	extStatuses       map[string]map[string]extensionStatus
 	extWidgets        map[string]map[string]extensionWidget
 	liveBlock         []string // live streaming/tool progress rendered outside scrollback

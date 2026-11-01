@@ -22,16 +22,26 @@ func statusIsSticky(msg string) bool {
 		msg == "Refreshing models"
 }
 
+// statusAwaitingInputLocked reports whether the OK line is an instruction for
+// a prompt that is still waiting for the user (exit menu, profile picker), so
+// it must stay visible. Caller holds i.mu.
+func (i *Interactive) statusAwaitingInputLocked() bool {
+	return i.daemonExitMenu || (i.quickModelActivate && i.modelDialog.Active())
+}
+
 // observeStatusLocked stamps a newly set OK status and schedules its fade and
-// clear. Caller holds i.mu.
+// clear. A status held by a waiting prompt starts its cycle once the prompt
+// closes. Caller holds i.mu.
 func (i *Interactive) observeStatusLocked(now time.Time) {
-	if i.statusOK == i.statusFlashMsg {
+	held := i.statusAwaitingInputLocked()
+	if i.statusOK == i.statusFlashMsg && (held || !i.statusFlashHeld) {
 		return
 	}
 	i.statusFlashMsg = i.statusOK
 	i.statusFlashAt = now
 	i.statusFlashSeq++
-	if i.statusOK == "" || statusIsSticky(i.statusOK) {
+	i.statusFlashHeld = held
+	if held || i.statusOK == "" || statusIsSticky(i.statusOK) {
 		return
 	}
 	seq := i.statusFlashSeq
@@ -57,6 +67,6 @@ func (i *Interactive) clearFlashStatus(seq uint64) bool {
 // statusFlashFadedLocked reports whether the current OK status is past its
 // solid phase and should render muted. Caller holds i.mu.
 func (i *Interactive) statusFlashFadedLocked(now time.Time) bool {
-	return i.statusOK != "" && i.statusOK == i.statusFlashMsg &&
+	return i.statusOK != "" && i.statusOK == i.statusFlashMsg && !i.statusFlashHeld &&
 		!statusIsSticky(i.statusOK) && now.Sub(i.statusFlashAt) >= statusFlashSolid
 }

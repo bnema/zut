@@ -45,6 +45,33 @@ func TestStatusNewerMessageRestartsCycle(t *testing.T) {
 	}
 }
 
+func TestStatusHeldWhileExitMenuOpen(t *testing.T) {
+	i := &Interactive{dirty: make(chan struct{}, 1)}
+	now := time.Now()
+	i.mu.Lock()
+	i.daemonExitMenu = true
+	i.statusOK = daemonExitPrompt
+	i.observeStatusLocked(now)
+	seq := i.statusFlashSeq
+	if i.statusFlashFadedLocked(now.Add(time.Hour)) {
+		t.Fatal("exit prompt must not fade while the menu is open")
+	}
+	// Menu closes with the prompt still shown: the fade cycle starts now.
+	i.daemonExitMenu = false
+	closed := now.Add(time.Minute)
+	i.observeStatusLocked(closed)
+	if i.statusFlashSeq == seq || i.statusFlashHeld {
+		t.Fatal("closing the menu must restart the cycle")
+	}
+	if !i.statusFlashFadedLocked(closed.Add(statusFlashSolid)) {
+		t.Fatal("released prompt must fade")
+	}
+	i.mu.Unlock()
+	if i.clearFlashStatus(seq) {
+		t.Fatal("stale held stamp must not clear the status")
+	}
+}
+
 func TestStickyStatusNeverFades(t *testing.T) {
 	for _, msg := range []string{"Reloading extensions...", "fork: switching session…", "Refreshing models"} {
 		i := &Interactive{dirty: make(chan struct{}, 1)}
