@@ -53,13 +53,17 @@ func (i *Interactive) portApplyProfile(slot int) {
 	})
 }
 
+// profilePickerPromptPrefix starts the instruction shown while the activating
+// profile picker is open; the status line keeps it visible until it closes.
+const profilePickerPromptPrefix = "choose a model for profile "
+
 // openActivatingProfilePicker opens the model picker in assign+activate mode.
 func (i *Interactive) openActivatingProfilePicker(slot int) {
 	i.openQuickModelPicker(slot)
 	i.quickModelActivate = true
 	i.mu.Lock()
 	i.statusErr = ""
-	i.statusOK = fmt.Sprintf("choose a model for profile %d; Enter saves and activates", slot)
+	i.statusOK = fmt.Sprintf(profilePickerPromptPrefix+"%d; Enter saves and activates", slot)
 	i.mu.Unlock()
 	i.invalidate()
 }

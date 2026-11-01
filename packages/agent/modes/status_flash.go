@@ -26,7 +26,8 @@ func statusIsSticky(msg string) bool {
 // a prompt that is still waiting for the user (exit menu, profile picker), so
 // it must stay visible. Caller holds i.mu.
 func (i *Interactive) statusAwaitingInputLocked() bool {
-	return i.daemonExitMenu || (i.quickModelActivate && i.modelDialog.Active())
+	return i.daemonExitMenu ||
+		(strings.HasPrefix(i.statusOK, profilePickerPromptPrefix) && i.modelDialog.Active())
 }
 
 // observeStatusLocked stamps a newly set OK status and schedules its fade and
@@ -34,7 +35,7 @@ func (i *Interactive) statusAwaitingInputLocked() bool {
 // closes. Caller holds i.mu.
 func (i *Interactive) observeStatusLocked(now time.Time) {
 	held := i.statusAwaitingInputLocked()
-	if i.statusOK == i.statusFlashMsg && (held || !i.statusFlashHeld) {
+	if i.statusOK == i.statusFlashMsg && held == i.statusFlashHeld {
 		return
 	}
 	i.statusFlashMsg = i.statusOK

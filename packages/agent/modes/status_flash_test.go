@@ -72,6 +72,24 @@ func TestStatusHeldWhileExitMenuOpen(t *testing.T) {
 	}
 }
 
+func TestStatusReheldWhenSamePromptReopens(t *testing.T) {
+	i := &Interactive{dirty: make(chan struct{}, 1)}
+	now := time.Now()
+	i.mu.Lock()
+	i.statusOK = daemonExitPrompt
+	i.observeStatusLocked(now) // released: fade cycle running
+	released := i.statusFlashSeq
+	i.daemonExitMenu = true // reopened with identical text
+	i.observeStatusLocked(now.Add(time.Second))
+	if !i.statusFlashHeld || i.statusFlashFadedLocked(now.Add(time.Hour)) {
+		t.Fatal("reopened prompt must be held")
+	}
+	i.mu.Unlock()
+	if i.clearFlashStatus(released) || i.statusOK != daemonExitPrompt {
+		t.Fatal("old cycle must not clear a re-held prompt")
+	}
+}
+
 func TestStickyStatusNeverFades(t *testing.T) {
 	for _, msg := range []string{"Reloading extensions...", "fork: switching session…", "Refreshing models"} {
 		i := &Interactive{dirty: make(chan struct{}, 1)}
