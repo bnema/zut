@@ -85,3 +85,10 @@ func TestAgentActivityIdleRetryMessage(t *testing.T) {
 		t.Fatalf("event = %v", event)
 	}
 }
+
+func TestActivityWaitingResidentsLabel(t *testing.T) {
+	a := activity{kind: activityWaitingResidents}
+	if got := a.label(); got != "Waiting for sub-agents" {
+		t.Fatalf("label = %q", got)
+	}
+}

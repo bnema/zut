@@ -69,3 +69,39 @@ func TestSlashPromptsSubmitThroughPort(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionInfoWaitingResidentsReplacesStaleResponseActivity(t *testing.T) {
+	i := newQueuePortInteractive(t, sessionmocks.NewMockPort(t), session.Snapshot{Info: session.Info{Run: session.RunStateIdle}}, InteractiveConfig{})
+	ctx := context.Background()
+	info := session.Info{ID: "s1", Run: session.RunStateRunning, Provider: "test", Model: "test-model"}
+	sendInfo := func() {
+		i.handleSessionEvent(ctx, session.Event{Kind: session.EvInfo, Data: session.InfoEvent{Info: info}})
+	}
+	sendInfo()
+	i.handleSessionEvent(ctx, session.Event{Kind: session.EvAgent, Agent: core.EvTextDelta{Delta: "hello"}})
+	require.Equal(t, "Receiving response from model", i.activity.label())
+	oldStart := time.Now().Add(-time.Minute)
+	i.spin.startedAt = oldStart
+
+	info.Activity = session.Activity{Kind: session.ActivityKindWaitingResidents}
+	sendInfo()
+	require.True(t, i.busy)
+	require.Equal(t, "Waiting for sub-agents", i.activity.label())
+	waitStart := i.spin.startedAt
+	require.True(t, waitStart.After(oldStart), "entering waiting must restart elapsed time")
+	sendInfo()
+	require.Equal(t, waitStart, i.spin.startedAt, "repeated Info must not restart elapsed time")
+
+	i.spin.startedAt = oldStart
+	i.handleSessionEvent(ctx, session.Event{Kind: session.EvAgent, Agent: core.EvTurnStart{}})
+	require.True(t, i.spin.startedAt.After(oldStart), "a resident wake turn must not inherit the wait's elapsed time")
+	info.Activity.Kind = "waiting_model"
+	sendInfo()
+	require.Equal(t, "Preparing request", i.activity.label())
+	i.handleSessionEvent(ctx, session.Event{Kind: session.EvAgent, Agent: core.EvTextDelta{Delta: "again"}})
+	require.Equal(t, "Receiving response from test-model", i.activity.label())
+	info.Run = session.RunStateIdle
+	info.Activity.Kind = "idle"
+	sendInfo()
+	require.Equal(t, activityIdle, i.activity.kind)
+}

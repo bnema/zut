@@ -98,6 +98,8 @@ type Controller struct {
 	compactSeam   compactSeam
 	settingsSeam  settingsSeam
 	interSeam     interSeam
+	// waitingResidentsSince tracks the start of the current resident-only wait.
+	waitingResidentsSince time.Time
 	// actorBase is the parent of every actor context handed out by Do; it
 	// carries actorKey so Close and SetAttach never wait on the actor.
 	actorBase context.Context
@@ -245,7 +247,9 @@ func (c *Controller) publish(kind EventKind, data any) {
 }
 func (c *Controller) updateInfo() {
 	run := RunStateIdle
-	if (c.turnSeam != nil && c.turnSeam.isBusy()) || (c.residentSeam != nil && c.residentSeam.residentsRunning()) {
+	turnBusy := c.turnSeam != nil && c.turnSeam.isBusy()
+	residentsRunning := c.residentSeam != nil && c.residentSeam.residentsRunning()
+	if turnBusy || residentsRunning {
 		run = RunStateRunning
 	}
 	compacting := c.compactSeam != nil && c.compactSeam.compacting()
@@ -264,6 +268,14 @@ func (c *Controller) updateInfo() {
 		info.ContextUsed = projection.ContextUsed
 		info.ContextMax = projection.ContextMax
 		info.LastUserInputAt = projection.LastUserInputAt
+	}
+	if !turnBusy && residentsRunning && !compacting {
+		if c.waitingResidentsSince.IsZero() {
+			c.waitingResidentsSince = c.deps.Clock()
+		}
+		info.Activity = Activity{Kind: ActivityKindWaitingResidents, Since: c.waitingResidentsSince}
+	} else {
+		c.waitingResidentsSince = time.Time{}
 	}
 	if compacting {
 		info.Activity = Activity{Kind: "compacting", Since: info.Activity.Since}

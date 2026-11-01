@@ -58,6 +58,11 @@ func (i *Interactive) handleEventForPresentation(ev core.AgentEvent) {
 func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if _, ok := ev.(core.EvTurnStart); ok && i.activity.kind == activityWaitingResidents {
+		// A resident wake starts a new main turn; elapsed time must not
+		// include the wait that preceded it.
+		i.spin.Start()
+	}
 	i.activity.apply(ev)
 	switch e := ev.(type) {
 	case core.EvAssistantStart:
@@ -621,6 +626,11 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 		i.activity.activity = activity{kind: activityIdle}
 	case info.Run == session.RunStateCompacting:
 		i.activity.activity = activity{kind: activityCompactingHistory}
+	case info.Activity.Kind == session.ActivityKindWaitingResidents:
+		if i.activity.kind != activityWaitingResidents {
+			i.spin.Start()
+		}
+		i.activity.activity = activity{kind: activityWaitingResidents, provider: info.Provider, model: info.Model}
 	}
 	if !busy {
 		i.flushPortToolMsgLocked()

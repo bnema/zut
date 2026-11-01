@@ -57,6 +57,9 @@ type Info struct {
 	ActiveProfile int `json:"active_profile,omitempty"`
 }
 
+// ActivityKindWaitingResidents denotes an idle main turn awaiting running residents.
+const ActivityKindWaitingResidents = "waiting_residents"
+
 // Activity is a terminal-free session contract payload.
 type Activity struct {
 	Kind  string    `json:"kind"`

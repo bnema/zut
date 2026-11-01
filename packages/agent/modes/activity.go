@@ -15,6 +15,7 @@ import (
 type activityKind string
 
 const (
+	activityWaitingResidents     activityKind = "waiting_residents"
 	activityIdle                 activityKind = "idle"
 	activityPreparingRequest     activityKind = "preparing_request"
 	activitySendingRequest       activityKind = "sending_request"
@@ -43,6 +44,8 @@ type activity struct {
 
 func (a activity) label() string {
 	switch a.kind {
+	case activityWaitingResidents:
+		return "Waiting for sub-agents"
 	case activityPreparingRequest:
 		return "Preparing request"
 	case activitySendingRequest:
