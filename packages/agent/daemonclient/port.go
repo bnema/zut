@@ -208,23 +208,7 @@ func (s *subscription) deliver(ev session.Event) {
 		// Do not let those frames pause the new subscription's contiguous
 		// replay. Recover only if the missing event fails to arrive in time.
 		if s.gap == nil {
-			last := s.last
-			s.gap = time.AfterFunc(reconnectMax, func() {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				if s.done || s.gap == nil {
-					return
-				}
-				s.gap = nil
-				if s.last != last {
-					return // progress or a snapshot moved last; a later gap re-arms
-				}
-				s.paused = true
-				select {
-				case s.resub <- struct{}{}:
-				default:
-				}
-			})
+			s.armGap()
 		}
 		s.mu.Unlock()
 		return
@@ -260,6 +244,56 @@ func (s *subscription) deliver(ev session.Event) {
 	}
 	if terminal {
 		s.finish(nil)
+	}
+}
+
+// armGap starts the recovery fallback timer. s.mu must be held. The callback
+// acts only if s.gap is still its own timer, so a stale fired callback cannot
+// cancel a newer arming.
+func (s *subscription) armGap() {
+	last := s.last
+	var t *time.Timer
+	t = time.AfterFunc(reconnectMax, func() {
+		s.mu.Lock() // t is assigned under s.mu by the arming caller
+		s.gapFiredLocked(t, last)
+	})
+	s.gap = t
+}
+
+// gapFired is the fallback timer callback for timer t armed at last. It acts
+// only if t is still the current timer.
+func (s *subscription) gapFired(t *time.Timer, last uint64) {
+	s.mu.Lock()
+	s.gapFiredLocked(t, last)
+}
+
+// gapFiredLocked is gapFired with s.mu held; it releases s.mu.
+func (s *subscription) gapFiredLocked(t *time.Timer, last uint64) {
+	if s.done || s.gap != t {
+		s.mu.Unlock()
+		return
+	}
+	s.gap = nil
+	if s.last != last {
+		s.mu.Unlock()
+		return // progress or a snapshot moved last; a later gap re-arms
+	}
+	s.paused = true
+	s.mu.Unlock()
+	select {
+	case s.resub <- struct{}{}:
+	default:
+	}
+	if log := s.port.c.opts.Logger; log != nil {
+		log.Info("client stream recovering", "session", s.port.id, "reason", "sequence_gap", "last_seq", last)
+	}
+}
+
+// stopGap cancels the fallback timer. s.mu must be held.
+func (s *subscription) stopGap() {
+	if s.gap != nil {
+		s.gap.Stop()
+		s.gap = nil
 	}
 }
 
@@ -359,6 +393,7 @@ func (s *subscription) attach(ctx context.Context, conn *daemonproto.Conn) error
 func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) error {
 	s.mu.Lock()
 	s.paused = true
+	s.stopGap()
 	s.mu.Unlock()
 	if err := s.waitDrained(ctx); err != nil {
 		return err
@@ -380,6 +415,7 @@ func (s *subscription) reattach(ctx context.Context, conn *daemonproto.Conn) err
 	for {
 		s.mu.Lock()
 		s.paused = true
+		s.stopGap()
 		s.mu.Unlock()
 		if err := s.waitDrained(ctx); err != nil {
 			return err

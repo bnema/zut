@@ -177,3 +177,49 @@ func TestRecoveryGapFallback(t *testing.T) {
 		}
 	})
 }
+
+func TestRecoveryStaleGapCallbackKeepsNewerTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &subscription{port: &RemotePort{c: &Client{}}, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+		s.deliver(session.Event{Seq: 5, Kind: session.EvTitle}) // gap arms T1 at last=0
+		s.mu.Lock()
+		t1 := s.gap
+		s.mu.Unlock()
+		s.deliver(session.Event{Seq: 1, Kind: session.EvTitle}) // contiguous: clears T1
+		s.deliver(session.Event{Seq: 9, Kind: session.EvTitle}) // new gap arms T2 at last=1
+		s.gapFired(t1, 0)                                       // stale T1 callback must leave T2 armed
+		time.Sleep(reconnectMax)
+		synctest.Wait()
+		select {
+		case <-s.resub:
+		default:
+			t.Fatal("newer gap timer was lost")
+		}
+	})
+}
+
+func TestRecoveryGapSupersededNeverPauses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &subscription{port: &RemotePort{c: &Client{}}, last: 1, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+		s.deliver(session.Event{Seq: 5, Kind: session.EvTitle})
+		s.deliver(session.Event{Seq: 2, Kind: session.EvTitle})
+		time.Sleep(2 * reconnectMax)
+		synctest.Wait()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		require.False(t, s.paused)
+		require.Nil(t, s.gap)
+		require.Empty(t, s.resub)
+	})
+}
+
+func TestReattachClearsGapTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &subscription{port: &RemotePort{c: &Client{}}, out: make(chan session.Event, SubscriberBuffer+1), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+		s.deliver(session.Event{Seq: 9, Kind: session.EvTitle})
+		require.NotNil(t, s.gap)
+		close(s.stop)
+		_ = s.reattach(context.Background(), nil)
+		require.Nil(t, s.gap)
+	})
+}

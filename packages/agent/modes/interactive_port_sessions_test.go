@@ -31,7 +31,7 @@ func startSessionsPort(t *testing.T, client SessionClient, msgs ...provider.Mess
 }
 
 // startSessionsPortDetach is startSessionsPort with a Detach hook that
-// receives the Interactive, as runTUIWithClient wires it.
+// receives the Interactive, as runTUIWithClientLog wires it.
 func startSessionsPortDetach(t *testing.T, client SessionClient, detach func(*Interactive), msgs ...provider.Message) *sessionsRun {
 	t.Helper()
 	port := sessionmocks.NewMockPort(t)
