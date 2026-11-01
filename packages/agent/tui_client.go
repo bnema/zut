@@ -158,12 +158,8 @@ func runTUIWithClient(ctx context.Context, c *daemonclient.Client, attachID sess
 	logPhase("attached", "session", attachID)
 	cfg := tuiClientConfig(out, launch)
 	var ui *modes.Interactive
+	defer cfg.AuthManager.Close()
 	cfg.Port, cfg.Client = port, client
-	// Login flows (browser callback, device code, API keys) run in the client,
-	// next to the user's browser; the daemon session reloads credentials after.
-	authMgr := auth.NewManager(AuthStoreFor())
-	defer authMgr.Close()
-	cfg.AuthManager = authMgr
 	cfg.StartupOutput = preOutput
 	cfg.Detach = client.detacher(func() session.ID { return ui.SessionID() })
 	cfg.OnFirstFrame = func() { logPhase("first frame", "session", attachID) }
@@ -220,6 +216,10 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		ShowInstructionsAtStartup: cfg.ShowInstructionsAtStartup,
 		SettingsStore:             configSettingsStore{},
 		ZutHome:                   ZutHome(),
+		// Login and logout run in the client, next to the user's browser;
+		// the daemon session reloads credentials afterwards.
+		AuthManager:                auth.NewManager(AuthStoreFor()),
+		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
 	}
 	// Only project limits of a session this TUI created. For an attachment,
 	// local flags cannot describe the session's grants; the daemon enforces

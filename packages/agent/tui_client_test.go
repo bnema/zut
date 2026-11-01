@@ -196,6 +196,8 @@ func TestTUIClientConfigProjectsLaunchToolLimits(t *testing.T) {
 		})
 	}
 	cfg := tuiClientConfig(&bytes.Buffer{}, nil)
+	require.NotNil(t, cfg.AuthManager, "/login must work in the daemon TUI client")
+	require.NotNil(t, cfg.SetKimiCLIFallbackDisabled, "/logout kimi must disable the Kimi CLI fallback")
 	require.Nil(t, cfg.WebSearchToolAllowed, "attachment must not infer the session's limits")
 	require.Nil(t, cfg.AutoSubagentsToolAllowed)
 	require.Nil(t, cfg.AutoSubagentsStatusToolAllowed)
