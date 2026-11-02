@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/core"
 	"time"
@@ -52,14 +53,23 @@ const (
 	EvClosed EventKind = "closed"
 )
 
+// EventEncoder supplies transport encoding without making session depend on a
+// transport package. EncodeNotification must return immutable, owned bytes.
+type EventEncoder interface {
+	EncodeNotification(Event) (json.RawMessage, error)
+}
+
 // Event is a terminal-free session contract payload.
 type Event struct {
-	Seq     uint64          `json:"seq"`
-	Session ID              `json:"session"`
-	At      time.Time       `json:"at"`
-	Kind    EventKind       `json:"kind"`
-	Agent   core.AgentEvent `json:"agent"`
-	Data    any             `json:"data"`
+	// Notification is the immutable pre-encoded wire notification, shared by
+	// ring replay and all subscribers. Consumers must never mutate its bytes.
+	Notification json.RawMessage `json:"-"`
+	Seq          uint64          `json:"seq"`
+	Session      ID              `json:"session"`
+	At           time.Time       `json:"at"`
+	Kind         EventKind       `json:"kind"`
+	Agent        core.AgentEvent `json:"agent"`
+	Data         any             `json:"data"`
 }
 
 // InfoEvent is a terminal-free session contract payload.

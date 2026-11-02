@@ -94,6 +94,12 @@ func (c *Conn) write(ctx context.Context, frame any) error {
 	if err != nil {
 		return err
 	}
+	return c.writeBytes(ctx, b)
+}
+
+// writeBytes never appends into caller-owned memory: event bytes are shared
+// across subscriber goroutines and retained for replay.
+func (c *Conn) writeBytes(ctx context.Context, b []byte) error {
 	if len(b) > c.opts.MaxFrame {
 		return ErrFrameTooLarge
 	}
@@ -102,7 +108,10 @@ func (c *Conn) write(ctx context.Context, frame any) error {
 		return ErrClosed
 	default:
 	}
-	_, err = c.writer.WriteContext(ctx, append(b, '\n'), ndjson.WriteTimeout)
+	framed := make([]byte, len(b)+1)
+	copy(framed, b)
+	framed[len(b)] = '\n'
+	_, err := c.writer.WriteContext(ctx, framed, ndjson.WriteTimeout)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
@@ -115,7 +124,11 @@ func (c *Conn) write(ctx context.Context, frame any) error {
 
 // Notify writes a frame without an id. Frames containing an id are rejected.
 func (c *Conn) Notify(frame any) error {
-	b, err := marshalPayload(frame)
+	b, ok := frame.(json.RawMessage)
+	var err error
+	if !ok {
+		b, err = marshalPayload(frame)
+	}
 	if err != nil {
 		return err
 	}
@@ -126,7 +139,7 @@ func (c *Conn) Notify(frame any) error {
 	if e.ID != "" || e.Type == "" {
 		return fmt.Errorf("notification requires type and no id")
 	}
-	return c.write(context.Background(), json.RawMessage(b))
+	return c.writeBytes(context.Background(), b)
 }
 
 // Call assigns a fresh opaque id, sends frame and waits for its result. out may

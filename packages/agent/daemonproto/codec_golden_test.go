@@ -74,6 +74,13 @@ func TestEncodeEventGolden(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		cached, err := (daemonproto.EventEncoder{}).EncodeNotification(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(raw, cached) {
+			t.Fatalf("cached notification changed wire bytes for %s", e.Kind)
+		}
 		got = append(got, raw)
 	}
 	raw, err := json.MarshalIndent(got, "", "  ")

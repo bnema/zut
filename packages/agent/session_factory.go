@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/daemon"
+	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/scheduler"
 	"github.com/bnema/zut/packages/agent/session"
@@ -120,6 +121,7 @@ func (f *sessionFactory) build(ctx context.Context, spec session.CreateSpec, opt
 		cleanup()
 		return nil, fmt.Errorf("open deferred store: %w", err)
 	}
+	deps.EventEncoder = daemonproto.EventEncoder{}
 	deps.DeferredStore = store
 	deps.Directory = f.dir
 	deps.Logger = f.log.With("session", string(opts.ID))

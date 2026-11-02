@@ -27,6 +27,11 @@ packages:
             filename: agent_builder_mock_test.go
             structname: mockAgentBuilderLocal
       SessionStore:
+      EventEncoder:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: EventEncoder_mock_test.go
       ResidentBuilder:
       SkillStore:
       ToolRefresher:

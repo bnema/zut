@@ -35,12 +35,15 @@ func (n *jsonByteCount) Write(p []byte) (int, error) {
 }
 
 func (r *eventRing) append(ev Event) {
-	var count jsonByteCount
-	err := json.NewEncoder(&count).Encode(ev)
-	// Encode adds a newline that Marshal did not include in ring accounting.
-	size := int(count) - 1
-	if err != nil {
-		size = eventRingBytes + 1
+	size := len(ev.Notification)
+	if ev.Notification == nil {
+		var count jsonByteCount
+		err := json.NewEncoder(&count).Encode(ev)
+		// Non-wire controllers retain their existing JSON size accounting.
+		size = int(count) - 1
+		if err != nil {
+			size = eventRingBytes + 1
+		}
 	}
 	r.entries = append(r.entries, ringEntry{ev, size})
 	r.bytes += size
@@ -241,6 +244,14 @@ func (c *Controller) publish(kind EventKind, data any) {
 	if kind == EvAgent {
 		ev.Agent, _ = data.(core.AgentEvent)
 		ev.Data = nil
+	}
+	if c.deps.EventEncoder != nil {
+		raw, err := c.deps.EventEncoder.EncodeNotification(ev)
+		if err != nil {
+			c.logger().Warn("encode event", "kind", kind, "err", err)
+		} else {
+			ev.Notification = raw
+		}
 	}
 	c.ring.append(ev)
 	c.updateInfo()

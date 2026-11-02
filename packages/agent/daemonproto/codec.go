@@ -462,3 +462,14 @@ func DecodeEvent(n EventNotification) (session.Event, error) {
 	e.Data = reflect.ValueOf(p).Elem().Interface()
 	return e, nil
 }
+
+// EventEncoder encodes session publications once before fanout.
+type EventEncoder struct{}
+
+func (EventEncoder) EncodeNotification(e session.Event) (json.RawMessage, error) {
+	n, err := EncodeEvent(e)
+	if err != nil {
+		return nil, err
+	}
+	return marshalPayload(n)
+}
