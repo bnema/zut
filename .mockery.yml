@@ -65,6 +65,16 @@ packages:
           dir: packages/agent/session
           pkgname: session
           filename: schedSeam_mock_test.go
+      residentTimerClock:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: residentTimerClock_mock_test.go
+      residentTimer:
+        config:
+          dir: packages/agent/session
+          pkgname: session
+          filename: residentTimer_mock_test.go
       residentSeam:
         config:
           dir: packages/agent/session
