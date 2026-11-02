@@ -10,7 +10,9 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func BenchmarkResidentManagerReconcile(b *testing.B) {
+// All residents are reconciled once during setup, measuring the second-run
+// settled stamp path with the same transcript fixture as the full-read baseline.
+func BenchmarkResidentManagerReconcileSecondRun(b *testing.B) {
 	root := b.TempDir()
 	for i := 0; i < 100; i++ {
 		spec := ResidentChildSpec{ID: fmt.Sprintf("child-%04d", i), SessionID: "session", InitialTurnID: "turn", Provider: "test", Model: "test"}

@@ -877,8 +877,14 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 	if err != nil {
 		return ResidentMetadata{}, ResidentChildSpec{}, err
 	}
-	var spec ResidentChildSpec
-	metadata, reconcileErr := reconcileOwnedResidentJournalSpec(journal, &spec)
+	metadata, spec, stamped := readResidentReconcileStamp(dir)
+	var reconcileErr error
+	if !stamped {
+		metadata, reconcileErr = reconcileOwnedResidentJournalSpec(journal, &spec)
+		if reconcileErr == nil {
+			writeResidentReconcileStamp(dir, metadata, spec)
+		}
+	}
 	quarantined := false
 	if errors.Is(reconcileErr, ErrCorruptResidentJournal) {
 		marker := struct {
