@@ -83,7 +83,7 @@ func TestResidentSummariesMutationDuringSnapshot(t *testing.T) {
 	m.EXPECT().Revision().RunAndReturn(func() uint64 { return revision })
 	m.EXPECT().Snapshot().RunAndReturn(func() []subagents.ResidentSnapshot {
 		revision++
-		return []subagents.ResidentSnapshot{{ID: "a", HistoryRev: revision}}
+		return []subagents.ResidentSnapshot{{ID: "a", State: subagents.ResidentRunning, HistoryRev: revision}}
 	}).Twice()
 	c := &Controller{deps: Deps{ResidentManager: m}}
 	first := c.residentSummaries()
@@ -96,10 +96,11 @@ func TestResidentSummariesMutationDuringSnapshot(t *testing.T) {
 func TestResidentSummariesCacheInvalidatesProjectionFields(t *testing.T) {
 	m := newMockResidentHostLocal(t)
 	var revision uint64
-	row := subagents.ResidentSnapshot{ID: "child"}
+	row := subagents.ResidentSnapshot{ID: "child", State: subagents.ResidentRunning}
 	m.EXPECT().Revision().RunAndReturn(func() uint64 { return revision })
 	m.EXPECT().Snapshot().RunAndReturn(func() []subagents.ResidentSnapshot { return []subagents.ResidentSnapshot{row} })
 	c := &Controller{deps: Deps{ResidentManager: m}}
+	c.res.specs = map[string]subagents.ResidentChildSpec{"child": {}}
 	for _, mutate := range []func(){
 		func() { row.State = subagents.ResidentIdle },
 		func() { row.HistoryRev++ },
@@ -136,5 +137,35 @@ func TestResidentSummariesCacheInvalidatesProjectionFields(t *testing.T) {
 	revision++
 	if len(c.residentSummaries()) != 1 {
 		t.Fatal("released lease remained hidden")
+	}
+}
+
+func TestResidentSummariesSessionScope(t *testing.T) {
+	m := newMockResidentHostLocal(t)
+	rows := []subagents.ResidentSnapshot{
+		{ID: "owned-spec", State: subagents.ResidentCompleted},
+		{ID: "owned-task", State: subagents.ResidentFailed},
+		{ID: "running", State: subagents.ResidentRunning},
+		{ID: "queued", State: subagents.ResidentQueued},
+		{ID: "waiting", State: subagents.ResidentIdle, WaitingForModel: true},
+		{ID: "foreign", State: subagents.ResidentRunning, OwnedElsewhere: true},
+	}
+	for _, state := range []subagents.ResidentState{subagents.ResidentIdle, subagents.ResidentCompleted, subagents.ResidentFailed, subagents.ResidentStopped, subagents.ResidentInterrupted} {
+		rows = append(rows, subagents.ResidentSnapshot{ID: string(state), State: state})
+	}
+	m.EXPECT().Revision().Return(uint64(1)).Once()
+	m.EXPECT().Snapshot().Return(rows).Once()
+	c := &Controller{deps: Deps{ResidentManager: m}}
+	c.res.specs = map[string]subagents.ResidentChildSpec{"owned-spec": {}, "foreign": {}}
+	c.res.tasks = map[string]string{"owned-task": ""}
+	got := c.residentSummaries()
+	want := []string{"owned-spec", "owned-task", "running", "queued", "waiting"}
+	if len(got) != len(want) {
+		t.Fatalf("summaries = %#v", got)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Fatalf("summary %d = %s, want %s", i, got[i].ID, id)
+		}
 	}
 }

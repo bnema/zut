@@ -64,7 +64,9 @@ func (c *Controller) residentsRunning() bool {
 	return false
 }
 
-// residentSummaries uses accepted specifications for workspace and spawn task;
+// residentSummaries includes session-known children and active children only;
+// ResidentList provides paged discovery of recovered terminal children.
+// It uses accepted specifications for workspace and spawn task;
 // recovered children without an accepted specification leave these fields empty.
 // Task previews contain the first line, bounded to 120 Unicode code points.
 func (c *Controller) residentSummaries() []ResidentSummary {
@@ -79,10 +81,15 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 		return s.summaries
 	}
 	snapshots := c.deps.ResidentManager.Snapshot()
-	out := make([]ResidentSummary, 0, len(snapshots))
+	out := make([]ResidentSummary, 0)
 	for _, r := range snapshots {
 		// Children leased by another session are not ours to show.
 		if r.OwnedElsewhere {
+			continue
+		}
+		_, knownSpec := s.specs[r.ID]
+		_, knownTask := s.tasks[r.ID]
+		if !knownSpec && !knownTask && r.State != subagents.ResidentRunning && r.State != subagents.ResidentQueued && !r.WaitingForModel {
 			continue
 		}
 		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt, HistoryRev: r.HistoryRev,
