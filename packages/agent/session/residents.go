@@ -74,7 +74,11 @@ func (c *Controller) ResidentAction(ctx context.Context, command ResidentCommand
 }
 
 func (c *Controller) residentsRunning() bool {
-	for _, r := range c.residentSummaries() {
+	return residentSummariesRunning(c.residentSummaries())
+}
+
+func residentSummariesRunning(residents []ResidentSummary) bool {
+	for _, r := range residents {
 		if r.State == string(subagents.ResidentRunning) || r.State == string(subagents.ResidentQueued) {
 			return true
 		}

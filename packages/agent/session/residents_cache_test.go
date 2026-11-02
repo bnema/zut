@@ -169,3 +169,30 @@ func TestResidentSummariesSessionScope(t *testing.T) {
 		}
 	}
 }
+
+// A manager mutation during Snapshot must not cause updateInfo to rebuild a
+// second time and combine run state from one revision with rows from another.
+func TestUpdateInfoUsesOneResidentSnapshot(t *testing.T) {
+	m := newMockResidentHostLocal(t)
+	var revision uint64
+	m.EXPECT().Revision().RunAndReturn(func() uint64 { return revision }).Twice()
+	m.EXPECT().Snapshot().RunAndReturn(func() []subagents.ResidentSnapshot {
+		revision++
+		state := subagents.ResidentRunning
+		if revision > 1 {
+			state = subagents.ResidentCompleted
+		}
+		return []subagents.ResidentSnapshot{{ID: "child", State: state}}
+	}).Twice()
+	c := &Controller{deps: Deps{ResidentManager: m, Clock: time.Now}}
+	c.residentSeam = c
+	c.res.specs = map[string]subagents.ResidentChildSpec{"child": {}}
+	c.updateInfo()
+	if info := c.Info(); info.Run != RunStateRunning || info.Residents[0].State != string(subagents.ResidentRunning) {
+		t.Fatalf("inconsistent first projection: %#v", info)
+	}
+	c.updateInfo()
+	if info := c.Info(); info.Run != RunStateIdle || info.Residents[0].State != string(subagents.ResidentCompleted) {
+		t.Fatalf("inconsistent second projection: %#v", info)
+	}
+}

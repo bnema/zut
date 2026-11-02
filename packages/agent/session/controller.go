@@ -265,7 +265,11 @@ func (c *Controller) publish(kind EventKind, data any) {
 func (c *Controller) updateInfo() {
 	run := RunStateIdle
 	turnBusy := c.turnSeam != nil && c.turnSeam.isBusy()
-	residentsRunning := c.residentSeam != nil && c.residentSeam.residentsRunning()
+	var residents []ResidentSummary
+	if c.residentSeam != nil {
+		residents = c.residentSeam.residentSummaries()
+	}
+	residentsRunning := residentSummariesRunning(residents)
 	if turnBusy || residentsRunning {
 		run = RunStateRunning
 	}
@@ -300,9 +304,7 @@ func (c *Controller) updateInfo() {
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()
 	}
-	if c.residentSeam != nil {
-		info.Residents = c.residentSeam.residentSummaries()
-	}
+	info.Residents = residents
 	info.Deferred = c.deferredCount()
 	info.Profiles = append([]QuickModelShortcut(nil), c.settings.profiles...)
 	info.ActiveProfile = c.settings.activeProfile
