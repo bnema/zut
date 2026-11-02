@@ -779,10 +779,20 @@ func ReadResidentJournal(path string) ([]residentRecord, error) {
 	defer f.Close()
 	reader := bufio.NewReader(f)
 	var records []residentRecord
+	var line []byte
 	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > residentMaxRecordBytes {
-			return nil, fmt.Errorf("%w: record too large", ErrCorruptResidentJournal)
+		line = line[:0]
+		var err error
+		for {
+			var fragment []byte
+			fragment, err = reader.ReadSlice('\n')
+			if len(line)+len(fragment) > residentMaxRecordBytes {
+				return nil, fmt.Errorf("%w: record too large", ErrCorruptResidentJournal)
+			}
+			line = append(line, fragment...)
+			if err != bufio.ErrBufferFull {
+				break
+			}
 		}
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			var record residentRecord
@@ -867,20 +877,8 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 	if err != nil {
 		return ResidentMetadata{}, ResidentChildSpec{}, err
 	}
-	metadata, reconcileErr := reconcileOwnedResidentJournal(journal)
 	var spec ResidentChildSpec
-	if reconcileErr == nil {
-		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
-		if err != nil || len(records) == 0 || records[0].Spec == nil {
-			if err != nil {
-				reconcileErr = err
-			} else {
-				reconcileErr = fmt.Errorf("%w: invalid accepted child record", ErrCorruptResidentJournal)
-			}
-		} else {
-			spec = *records[0].Spec
-		}
-	}
+	metadata, reconcileErr := reconcileOwnedResidentJournalSpec(journal, &spec)
 	quarantined := false
 	if errors.Is(reconcileErr, ErrCorruptResidentJournal) {
 		marker := struct {
@@ -911,6 +909,12 @@ func reconcileResidentJournalWithSpec(dir string) (ResidentMetadata, ResidentChi
 // journal. It is the sole reconciliation implementation so reads and writes
 // share one ownership interval.
 func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, error) {
+	return reconcileOwnedResidentJournalSpec(journal, nil)
+}
+
+// reconcileOwnedResidentJournalSpec optionally retains the accepted spec from
+// the validated history, avoiding a second full read within the same lease.
+func reconcileOwnedResidentJournalSpec(journal *ResidentJournal, acceptedSpec *ResidentChildSpec) (ResidentMetadata, error) {
 	if journal == nil {
 		return ResidentMetadata{}, errors.New("resident journal: unavailable")
 	}
@@ -934,6 +938,9 @@ func reconcileOwnedResidentJournal(journal *ResidentJournal) (ResidentMetadata, 
 	spec := *records[0].Spec
 	if spec.ID == "" || spec.SessionID == "" {
 		return ResidentMetadata{}, fmt.Errorf("%w: invalid accepted child record", ErrCorruptResidentJournal)
+	}
+	if acceptedSpec != nil {
+		*acceptedSpec = spec
 	}
 	// v2 journals carry the removed rollout-budget outcomes and baselines;
 	// they are read with explicit translation below. Translation rebuilds
