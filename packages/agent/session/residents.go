@@ -5,11 +5,26 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/orchestration"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 )
+
+const residentActivityInterval = 250 * time.Millisecond
+
+// residentTimerClock schedules a single trailing activity publication. Completion
+// notifications bypass it. The timer callback only wakes the actor mailbox.
+type residentTimerClock interface {
+	AfterFunc(time.Duration, func()) residentTimer
+}
+type residentTimer interface{ Stop() bool }
+type wallResidentTimerClock struct{}
+
+func (wallResidentTimerClock) AfterFunc(d time.Duration, f func()) residentTimer {
+	return time.AfterFunc(d, f)
+}
 
 type residentState struct {
 	// Summaries are actor-owned and immutable once published through Info.
@@ -26,6 +41,9 @@ type residentState struct {
 	inboxMu                 sync.Mutex
 	inbox                   []func()
 	dirty                   bool
+	activityReady           bool
+	activityTimer           residentTimer
+	timerClock              residentTimerClock
 	closed                  bool
 	wake                    chan struct{}
 	// stopDispatcher cancels a pending actor post; dispatcherDone joins it.
@@ -56,7 +74,11 @@ func (c *Controller) ResidentAction(ctx context.Context, command ResidentCommand
 }
 
 func (c *Controller) residentsRunning() bool {
-	for _, r := range c.residentSummaries() {
+	return residentSummariesRunning(c.residentSummaries())
+}
+
+func residentSummariesRunning(residents []ResidentSummary) bool {
+	for _, r := range residents {
 		if r.State == string(subagents.ResidentRunning) || r.State == string(subagents.ResidentQueued) {
 			return true
 		}
@@ -64,7 +86,9 @@ func (c *Controller) residentsRunning() bool {
 	return false
 }
 
-// residentSummaries uses accepted specifications for workspace and spawn task;
+// residentSummaries includes session-known children and active children only;
+// ResidentList provides paged discovery of recovered terminal children.
+// It uses accepted specifications for workspace and spawn task;
 // recovered children without an accepted specification leave these fields empty.
 // Task previews contain the first line, bounded to 120 Unicode code points.
 func (c *Controller) residentSummaries() []ResidentSummary {
@@ -79,10 +103,15 @@ func (c *Controller) residentSummaries() []ResidentSummary {
 		return s.summaries
 	}
 	snapshots := c.deps.ResidentManager.Snapshot()
-	out := make([]ResidentSummary, 0, len(snapshots))
+	out := make([]ResidentSummary, 0)
 	for _, r := range snapshots {
 		// Children leased by another session are not ours to show.
 		if r.OwnedElsewhere {
+			continue
+		}
+		_, knownSpec := s.specs[r.ID]
+		_, knownTask := s.tasks[r.ID]
+		if !knownSpec && !knownTask && r.State != subagents.ResidentRunning && r.State != subagents.ResidentQueued && !r.WaitingForModel {
 			continue
 		}
 		out = append(out, ResidentSummary{ID: r.ID, Profile: r.Profile, State: string(r.State), Workspace: c.res.specs[r.ID].Workspace, Task: c.res.tasks[r.ID], UpdatedAt: r.UpdatedAt, HistoryRev: r.HistoryRev,
@@ -138,8 +167,13 @@ func (s *residentState) wakeLocked() {
 func (s *residentState) runPending() {
 	for {
 		s.inboxMu.Lock()
-		items, dirty, closed := s.inbox, s.dirty, s.closed
-		s.inbox, s.dirty = nil, false
+		items, closed := s.inbox, s.closed
+		dirty := s.dirty && (s.activityReady || closed)
+		s.inbox = nil
+		if dirty {
+			s.dirty, s.activityReady = false, false
+			s.activityTimer = nil
+		}
 		s.inboxMu.Unlock()
 		if len(items) == 0 && !dirty {
 			return
@@ -168,6 +202,9 @@ func (c *Controller) residentsShutdown() {
 	s.inboxMu.Lock()
 	already := s.closed
 	s.closed = true
+	if s.activityTimer != nil {
+		s.activityTimer.Stop()
+	}
 	s.inboxMu.Unlock()
 	if already {
 		return
@@ -206,6 +243,9 @@ func (s *residentState) deliver(actions []orchestration.Action) {
 func (c *Controller) residentsInit() {
 	s := &c.res
 	s.controller = c
+	if s.timerClock == nil {
+		s.timerClock = wallResidentTimerClock{}
+	}
 	s.tracker = subagents.NewCompletionTracker()
 	s.coordinator = orchestration.New()
 	s.specs = make(map[string]subagents.ResidentChildSpec)
@@ -288,10 +328,8 @@ func (c *Controller) residentsInit() {
 	m.SetUpdateObserver(func(string) {
 		s.inboxMu.Lock()
 		defer s.inboxMu.Unlock()
-		if !s.closed {
-			s.dirty = true
-			s.wakeLocked()
-		}
+		s.markActivityLocked()
+
 	})
 }
 
@@ -333,4 +371,26 @@ func (c *Controller) ResidentHistory(ctx context.Context, childID, olderCursor s
 		return subagents.ResidentHistoryPage{}, err
 	}
 	return page, ctx.Err()
+}
+
+// markActivityLocked arms one timer per activity burst, not one per delta.
+// Keeping it armed until the actor consumes the dirty flag guarantees a
+// trailing publication even when updates arrive while the actor is busy.
+func (s *residentState) markActivityLocked() {
+	if s.closed {
+		return
+	}
+	s.dirty = true
+	if s.activityTimer != nil {
+		return
+	}
+	s.activityTimer = s.timerClock.AfterFunc(residentActivityInterval, func() {
+		s.inboxMu.Lock()
+		defer s.inboxMu.Unlock()
+		if s.closed {
+			return
+		}
+		s.activityReady = true
+		s.wakeLocked()
+	})
 }

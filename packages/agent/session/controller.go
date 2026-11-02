@@ -35,12 +35,15 @@ func (n *jsonByteCount) Write(p []byte) (int, error) {
 }
 
 func (r *eventRing) append(ev Event) {
-	var count jsonByteCount
-	err := json.NewEncoder(&count).Encode(ev)
-	// Encode adds a newline that Marshal did not include in ring accounting.
-	size := int(count) - 1
-	if err != nil {
-		size = eventRingBytes + 1
+	size := len(ev.Notification)
+	if ev.Notification == nil {
+		var count jsonByteCount
+		err := json.NewEncoder(&count).Encode(ev)
+		// Non-wire controllers retain their existing JSON size accounting.
+		size = int(count) - 1
+		if err != nil {
+			size = eventRingBytes + 1
+		}
 	}
 	r.entries = append(r.entries, ringEntry{ev, size})
 	r.bytes += size
@@ -242,6 +245,14 @@ func (c *Controller) publish(kind EventKind, data any) {
 		ev.Agent, _ = data.(core.AgentEvent)
 		ev.Data = nil
 	}
+	if c.deps.EventEncoder != nil {
+		raw, err := c.deps.EventEncoder.EncodeNotification(ev)
+		if err != nil {
+			c.logger().Warn("encode event", "kind", kind, "err", err)
+		} else {
+			ev.Notification = raw
+		}
+	}
 	c.ring.append(ev)
 	c.updateInfo()
 	for id, s := range c.subs {
@@ -265,7 +276,11 @@ func (c *Controller) publish(kind EventKind, data any) {
 func (c *Controller) updateInfo() {
 	run := RunStateIdle
 	turnBusy := c.turnSeam != nil && c.turnSeam.isBusy()
-	residentsRunning := c.residentSeam != nil && c.residentSeam.residentsRunning()
+	var residents []ResidentSummary
+	if c.residentSeam != nil {
+		residents = c.residentSeam.residentSummaries()
+	}
+	residentsRunning := residentSummariesRunning(residents)
 	if turnBusy || residentsRunning {
 		run = RunStateRunning
 	}
@@ -300,9 +315,7 @@ func (c *Controller) updateInfo() {
 	if c.schedSeam != nil {
 		info.Schedules = c.schedSeam.scheduleCount()
 	}
-	if c.residentSeam != nil {
-		info.Residents = c.residentSeam.residentSummaries()
-	}
+	info.Residents = residents
 	info.Deferred = c.deferredCount()
 	info.Profiles = append([]QuickModelShortcut(nil), c.settings.profiles...)
 	info.ActiveProfile = c.settings.activeProfile

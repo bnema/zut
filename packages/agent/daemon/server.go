@@ -316,7 +316,11 @@ func (c *client) subscribe(e *entry, afterSeq uint64) error {
 				if ev.Session == "" {
 					ev.Session = e.id
 				}
-				n, err := daemonproto.EncodeEvent(ev)
+				var n any = ev.Notification
+				var err error
+				if ev.Notification == nil {
+					n, err = daemonproto.EncodeEvent(ev)
+				}
 				if err != nil {
 					c.d.log.Warn("encode event", "session", e.id, "kind", ev.Kind, "err", err)
 					continue

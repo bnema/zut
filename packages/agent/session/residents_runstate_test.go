@@ -85,8 +85,12 @@ func TestWaitingResidentsActivity(t *testing.T) {
 			c := &Controller{deps: Deps{Clock: func() time.Time { return now }}}
 			running := true
 			residents := newMockresidentSeam(t)
-			residents.EXPECT().residentsRunning().RunAndReturn(func() bool { return running })
-			residents.EXPECT().residentSummaries().Return(nil)
+			residents.EXPECT().residentSummaries().RunAndReturn(func() []ResidentSummary {
+				if running {
+					return []ResidentSummary{{ID: "child", State: string(subagents.ResidentRunning)}}
+				}
+				return nil
+			})
 			c.residentSeam = residents
 			busy := false
 			projection := Activity{Kind: "idle", Since: now.Add(-time.Minute)}

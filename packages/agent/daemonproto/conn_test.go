@@ -2,11 +2,13 @@ package daemonproto_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/bnema/zut/packages/agent/daemonproto"
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/provider"
 	"net"
 	"runtime"
@@ -319,5 +321,39 @@ func testConnCloseCompletesWriterAndHandler(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Call did not exit")
+	}
+}
+
+func TestNotifyDoesNotMutateSharedEventBytes(t *testing.T) {
+	notes := make(chan daemonproto.Notification, 7)
+	c, _ := servePair(t, daemonproto.Options{OnNotification: func(n daemonproto.Notification) { notes <- n }})
+	raw, err := (daemonproto.EventEncoder{}).EncodeNotification(session.Event{Session: "s", Seq: 1, Kind: session.EvInfo, Data: session.InfoEvent{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expose spare capacity: an append(raw, '\n') would overwrite the sentinel.
+	backing := make([]byte, len(raw)+32)
+	copy(backing, raw)
+	for i := len(raw); i < len(backing); i++ {
+		backing[i] = 0xa5
+	}
+	shared := json.RawMessage(backing[:len(raw)])
+	before := append([]byte(nil), backing...)
+	var wg sync.WaitGroup
+	for range 7 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.Notify(shared); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	for range 7 {
+		<-notes
+	}
+	if !bytes.Equal(before, backing) {
+		t.Fatal("Notify mutated shared notification backing memory")
 	}
 }
