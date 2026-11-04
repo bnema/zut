@@ -72,6 +72,7 @@ func newTestSession(t *testing.T, id string) *testSession {
 	}).Maybe()
 	s.h.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, reason string) error {
 		s.closes <- reason
+		s.emit(session.Event{Seq: 1, Kind: session.EvClosed, Data: session.ClosedEvent{Reason: reason}})
 		s.once.Do(func() { close(s.done) })
 		return nil
 	}).Maybe()
@@ -434,16 +435,108 @@ func TestClearSessionEventDoesNotPreemptSuccessor(t *testing.T) {
 			t.Fatalf("session close preempted successor notification: %+v", n)
 		default:
 		}
-		// Ordinary session closure must still reach the client unchanged.
+		// Other session-level closes must not duplicate lifecycle's terminal
+		// notification either.
 		s.emit(session.Event{Seq: 2, Kind: session.EvClosed, Data: session.ClosedEvent{Reason: "user_exit"}})
-		n := recv(t, c.outbox).(daemonproto.EventNotification)
-		ev, err := daemonproto.DecodeEvent(n)
-		if err != nil || ev.Data.(session.ClosedEvent).Reason != "user_exit" {
-			t.Fatalf("ordinary close = %+v, %v", ev, err)
+		synctest.Wait()
+		select {
+		case n := <-c.outbox:
+			t.Fatalf("duplicate session-level close: %+v", n)
+		default:
 		}
 		cancel()
 		d.wg.Wait()
 	})
+}
+
+func TestCloseNotifiesEverySubscriber(t *testing.T) {
+	for _, mode := range []string{"clear_controlled", "clear_uncontrolled", "close", "spontaneous"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				s1, s2 := newTestSession(t, "s1"), newTestSession(t, "s2")
+				f := sessionmocks.NewMockFactory(t)
+				f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+				clearing := strings.HasPrefix(mode, "clear")
+				if clearing {
+					f.EXPECT().Create(mock.Anything, mock.Anything).Return(s2.h, nil).Once()
+				}
+				d := New(f)
+				d.ctx, d.sessCtx = ctx, ctx
+				defer func() { cancel(); d.wg.Wait() }()
+				if _, err := d.createLocked(session.CreateSpec{}); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					for _, e := range d.entries() {
+						_ = e.lock.Close()
+					}
+				}()
+				clients := make([]*client, 2)
+				for j := range clients {
+					c := &client{id: uint64(j + 1), d: d, ctx: ctx, subs: map[session.ID]context.CancelFunc{}, outbox: make(chan any, 8), control: make(chan any, 8)}
+					clients[j] = c
+					d.clients[c.id] = c
+					controlling := j == 0 && mode != "clear_uncontrolled"
+					if _, err := d.attach(c, "s1", 0, controlling); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var successor session.ID
+				if clearing {
+					info, err := d.clear(clients[0], "s1")
+					if err != nil {
+						t.Fatal(err)
+					}
+					successor = session.ID(info.ID)
+				} else if mode == "spontaneous" {
+					if err := s1.h.Close(ctx, "user_exit"); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := d.closeLocked("s1", "user_exit", ""); err != nil {
+						t.Fatal(err)
+					}
+				}
+				synctest.Wait()
+				for j, c := range clients {
+					n := recv(t, c.control).(daemonproto.ClosedNotification)
+					if n.Session != "s1" || n.Successor != successor {
+						t.Fatalf("closed = %+v", n)
+					}
+					select {
+					case n := <-c.control:
+						t.Fatalf("duplicate terminal: %+v", n)
+					default:
+					}
+					select {
+					case n := <-c.outbox:
+						t.Fatalf("unexpected session event: %+v", n)
+					default:
+					}
+					c.mu.Lock()
+					_, old := c.subs["s1"]
+					_, next := c.subs["s2"]
+					c.mu.Unlock()
+					wantNext := mode == "clear_controlled" && j == 0
+					if old || next != wantNext {
+						t.Fatalf("client %d subscriptions: old=%v next=%v", j, old, next)
+					}
+				}
+				d.mu.Lock()
+				ctrl := d.controller["s2"]
+				d.mu.Unlock()
+				if mode == "clear_controlled" {
+					if ctrl != clients[0] {
+						t.Fatal("successor controller was not preserved")
+					}
+				} else if ctrl != nil {
+					t.Fatal("unexpected successor controller")
+				}
+			})
+		})
+	}
 }
 
 func TestClearArgsKeepsTerminator(t *testing.T) {

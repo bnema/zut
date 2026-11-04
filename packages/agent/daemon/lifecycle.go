@@ -342,14 +342,10 @@ func (d *Daemon) forget(e *entry) {
 		return
 	}
 	delete(d.reg, e.id)
-	ctrl := d.controller[e.id]
 	delete(d.controller, e.id)
 	d.mu.Unlock()
 	_ = e.lock.Close()
-	if ctrl != nil {
-		ctrl.cancelSub(e.id)
-		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: e.id})
-	}
+	d.notifyClosed(e.id, "")
 }
 
 // attach subscribes c to id after afterSeq; a controlling attach replaces
@@ -449,18 +445,35 @@ func (d *Daemon) closeLocked(id session.ID, reason string, successor session.ID)
 		return ErrUnknownSession
 	}
 	delete(d.reg, id)
-	ctrl := d.controller[id]
 	delete(d.controller, id)
 	d.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), d.stopTimeout())
 	err := e.h.Close(ctx, reason)
 	cancel()
 	_ = e.lock.Close()
-	if ctrl != nil {
-		ctrl.cancelSub(id)
-		ctrl.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor})
-	}
+	d.notifyClosed(id, successor)
 	return err
+}
+
+// notifyClosed ends every old-session subscription, not just the controller's.
+// Callers hold opMu, so attach/detach cannot race the subscriber snapshot.
+func (d *Daemon) notifyClosed(id session.ID, successor session.ID) {
+	d.mu.Lock()
+	clients := make([]*client, 0, len(d.clients))
+	for _, c := range d.clients {
+		clients = append(clients, c)
+	}
+	d.mu.Unlock()
+	for _, c := range clients {
+		c.mu.Lock()
+		cancel, subscribed := c.subs[id]
+		delete(c.subs, id)
+		c.mu.Unlock()
+		if subscribed {
+			cancel()
+			c.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor})
+		}
+	}
 }
 
 func (d *Daemon) stopTimeout() time.Duration {

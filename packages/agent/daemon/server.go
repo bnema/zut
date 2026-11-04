@@ -313,14 +313,12 @@ func (c *client) subscribe(e *entry, afterSeq uint64) error {
 				if !ok {
 					return
 				}
-				// Clear has a daemon-owned terminal notification carrying the
-				// successor. The session closes before that notification is
-				// queued and cannot know the successor itself. Forwarding its
-				// bare close would terminate the client subscription too soon.
+				// Lifecycle owns terminal notifications for every subscriber,
+				// including the successor on clear. Forwarding the session's
+				// close as well would race that notification and end the client
+				// subscription before it learns the successor.
 				if ev.Kind == session.EvClosed {
-					if closed, ok := ev.Data.(session.ClosedEvent); ok && closed.Reason == ReasonCleared {
-						continue
-					}
+					continue
 				}
 				if ev.Session == "" {
 					ev.Session = e.id
