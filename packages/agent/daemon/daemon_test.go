@@ -25,11 +25,12 @@ import (
 // testSession bundles a generated MockHandle with the state its
 // RunAndReturn closures read.
 type testSession struct {
-	h    *sessionmocks.MockHandle
-	mu   sync.Mutex
-	info session.Info
-	idle atomic.Bool
-	subs []chan session.Event
+	h      *sessionmocks.MockHandle
+	mu     sync.Mutex
+	info   session.Info
+	reason string
+	idle   atomic.Bool
+	subs   []chan session.Event
 	// subscribed is signaled (coalesced) after each Subscribe.
 	subscribed chan struct{}
 	done       chan struct{}
@@ -52,6 +53,7 @@ func newTestSession(t *testing.T, id string) *testSession {
 	s.idle.Store(true)
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
 	s.h.EXPECT().Done().Return(s.done).Maybe()
+	s.h.EXPECT().CloseReason().RunAndReturn(func() string { s.mu.Lock(); defer s.mu.Unlock(); return s.reason }).Maybe()
 	s.h.EXPECT().Idle().RunAndReturn(s.idle.Load).Maybe()
 	s.h.EXPECT().Subscribe(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, uint64) (<-chan session.Event, error) {
 		ch := make(chan session.Event, 64)
@@ -72,6 +74,9 @@ func newTestSession(t *testing.T, id string) *testSession {
 	}).Maybe()
 	s.h.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, reason string) error {
 		s.closes <- reason
+		s.mu.Lock()
+		s.reason = reason
+		s.mu.Unlock()
 		s.emit(session.Event{Seq: 1, Kind: session.EvClosed, Data: session.ClosedEvent{Reason: reason}})
 		s.once.Do(func() { close(s.done) })
 		return nil
@@ -491,9 +496,12 @@ func TestCloseNotifiesEverySubscriber(t *testing.T) {
 					}
 					successor = session.ID(info.ID)
 				} else if mode == "spontaneous" {
-					if err := s1.h.Close(ctx, "user_exit"); err != nil {
-						t.Fatal(err)
-					}
+					// End without publishing any event: the handle is the only
+					// source of the final reason, even if all streams were lost.
+					s1.mu.Lock()
+					s1.reason = "user_exit"
+					s1.mu.Unlock()
+					s1.once.Do(func() { close(s1.done) })
 				} else {
 					if err := d.closeLocked("s1", "user_exit", ""); err != nil {
 						t.Fatal(err)
@@ -986,6 +994,7 @@ func TestDirectoryStuckTargetDoesNotBlockOthers(t *testing.T) {
 	stuckIn := make(chan struct{}, 4)
 	stuck.EXPECT().Info().Return(session.Info{ID: "b", SessionPath: filepath.Join(t.TempDir(), "b.jsonl")}).Maybe()
 	stuck.EXPECT().Done().Return(stuckDone).Maybe()
+	stuck.EXPECT().CloseReason().Return("closed").Maybe()
 	stuck.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Maybe()
 	stuck.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, string) error { close(stuckDone); return nil }).Maybe()
 	stuck.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ session.Input) error {

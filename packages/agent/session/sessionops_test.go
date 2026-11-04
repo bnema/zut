@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bnema/zut/packages/core"
@@ -204,4 +205,35 @@ func TestCloseDuringCompactionWaitsForIt(t *testing.T) {
 		t.Fatal("Close returned before the compaction goroutine finished")
 	}
 	nextEvent(t, ctx, events, EvClosed)
+}
+
+func TestCloseReasonReliableWithoutEvents(t *testing.T) {
+	for _, mode := range []string{"explicit", "actor", "context"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				c := NewController(ctx, Deps{})
+				require.Empty(t, c.CloseReason())
+				// Force a slow subscriber to be dropped before termination.
+				_, err := c.Subscribe(ctx, 0)
+				require.NoError(t, err)
+				emit(t, c, ctx, subscriberBuffer+10)
+				want := "user_exit"
+				switch mode {
+				case "explicit":
+					require.NoError(t, c.Close(ctx, want))
+				case "actor":
+					require.NoError(t, c.Do(ctx, func(actx context.Context) { require.NoError(t, c.Close(actx, want)) }))
+				case "context":
+					want = closeReasonDaemonStop
+					cancel()
+				}
+				<-c.Done()
+				require.Equal(t, want, c.CloseReason())
+				require.NoError(t, c.Close(context.Background(), "ignored"))
+				require.Equal(t, want, c.CloseReason())
+			})
+		})
+	}
 }

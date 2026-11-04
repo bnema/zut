@@ -74,4 +74,7 @@ type Handle interface {
 	Close(ctx context.Context, reason string) error
 	Idle() bool
 	Done() <-chan struct{}
+	// CloseReason returns the first recorded close reason, or empty before close.
+	// It is safe to call concurrently and is final after Done closes.
+	CloseReason() string
 }

@@ -31,6 +31,7 @@ func newCLITestSession(t *testing.T, info session.Info) *cliTestSession {
 	s := &cliTestSession{h: sessionmocks.NewMockHandle(t), info: info, done: make(chan struct{}), closed: make(chan string, 1)}
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
 	s.h.EXPECT().Done().Return(s.done).Maybe()
+	s.h.EXPECT().CloseReason().Return("user_exit").Maybe()
 	s.h.EXPECT().Idle().Return(true).Maybe()
 	s.h.EXPECT().SetAttach(mock.Anything, mock.Anything, mock.Anything).Maybe()
 	s.h.EXPECT().Subscribe(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ uint64) (<-chan session.Event, error) {

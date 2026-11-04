@@ -316,57 +316,17 @@ func (d *Daemon) register(h session.Handle, s session.CreateSpec, lock *flock.Lo
 	e := &entry{parentPath: normParentPath(h.Info().SessionPath), id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
 	d.reg[id] = e
 	d.mu.Unlock()
-	events, err := h.Subscribe(d.ctx, 0)
-	if err != nil {
-		d.mu.Lock()
-		delete(d.reg, id)
-		d.mu.Unlock()
-		_ = lock.Close()
-		d.closeHandle(h, "subscribe_failed")
-		return fmt.Errorf("subscribe lifecycle: %w", err)
-	}
-	d.goLoop(func(ctx context.Context) { d.watch(ctx, e, events) })
+	d.goLoop(func(ctx context.Context) { d.watch(ctx, e) })
 	return nil
 }
 
-// watch unregisters a session when it ends on its own.
-// watch owns the close reason independently of client subscriptions. Once Done
-// closes, all publications are complete; drain buffered events before forgetting
-// so selecting Done ahead of EvClosed cannot lose the terminal reason.
-func (d *Daemon) watch(ctx context.Context, e *entry, events <-chan session.Event) {
-	var reason string
-	record := func(ev session.Event) {
-		if ev.Kind == session.EvClosed {
-			if closed, ok := ev.Data.(session.ClosedEvent); ok {
-				reason = closed.Reason
-			}
-		}
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-events:
-			if !ok {
-				events = nil
-			} else {
-				record(ev)
-			}
-		case <-e.h.Done():
-			for {
-				select {
-				case ev, ok := <-events:
-					if !ok {
-						events = nil
-					} else {
-						record(ev)
-					}
-				default:
-					d.forget(e, reason)
-					return
-				}
-			}
-		}
+// watch unregisters a session when it ends on its own. CloseReason is final
+// after Done, and unlike Subscribe cannot lose the reason under buffer pressure.
+func (d *Daemon) watch(ctx context.Context, e *entry) {
+	select {
+	case <-ctx.Done():
+	case <-e.h.Done():
+		d.forget(e, e.h.CloseReason())
 	}
 }
 

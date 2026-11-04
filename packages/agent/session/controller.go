@@ -122,6 +122,7 @@ type Controller struct {
 	// compactDone closes when the latest compaction goroutine returned.
 	compactDone chan struct{}
 	closeOnce   sync.Once
+	closeMu     sync.RWMutex
 	closeWhy    string
 }
 

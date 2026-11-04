@@ -58,11 +58,21 @@ func (c *Controller) Close(ctx context.Context, reason string) error {
 	}
 }
 
+// CloseReason returns the first recorded close reason, independently of the
+// lossy event stream. The value is final once Done closes.
+func (c *Controller) CloseReason() string {
+	c.closeMu.RLock()
+	defer c.closeMu.RUnlock()
+	return c.closeWhy
+}
+
 // requestClose asks the loop to stop with reason; it never waits and is safe
 // from any goroutine, including the actor.
 func (c *Controller) requestClose(reason string) {
 	c.closeOnce.Do(func() {
+		c.closeMu.Lock()
 		c.closeWhy = reason
+		c.closeMu.Unlock()
 		close(c.closeReq)
 	})
 }
@@ -71,7 +81,7 @@ func (c *Controller) requestClose(reason string) {
 // to the loop only through post, which fails fast once closeReq is closed, so
 // the turn goroutine never needs the actor to finish.
 func (c *Controller) closeOnActor() {
-	reason := c.closeWhy
+	reason := c.CloseReason()
 	// Resolve pending requests first so a detached session records them as
 	// deferred (D3) before turn cancellation denies them. Close acts on actor
 	// state directly (not via the cluster seams): it must not trigger goal
