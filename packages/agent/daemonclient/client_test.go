@@ -458,3 +458,24 @@ func TestMapErrInvalidFork(t *testing.T) {
 		})
 	}
 }
+
+func TestClosedNotificationReasonCompatibility(t *testing.T) {
+	for _, reason := range []string{"killed", ""} {
+		t.Run(reason, func(t *testing.T) {
+			c := &Client{subs: make(map[session.ID]*subscription)}
+			p := &RemotePort{c: c, id: "s1"}
+			s := &subscription{port: p, out: make(chan session.Event, 2), stop: make(chan struct{})}
+			c.subs["s1"] = s
+			raw, err := json.Marshal(daemonproto.ClosedNotification{Type: "closed", Session: "s1", Successor: "s2", Reason: reason})
+			require.NoError(t, err)
+			if reason == "" {
+				require.NotContains(t, string(raw), "reason")
+			}
+			c.onNotification(daemonproto.Notification{Type: "closed", Session: "s1", Raw: raw})
+			ev := <-s.out
+			require.Equal(t, session.ClosedEvent{Reason: reason, Successor: "s2"}, ev.Data)
+			_, ok := <-s.out
+			require.False(t, ok)
+		})
+	}
+}

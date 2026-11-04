@@ -173,7 +173,7 @@ func (c *Client) onNotification(n daemonproto.Notification) {
 	case "closed":
 		var cn daemonproto.ClosedNotification
 		_ = json.Unmarshal(n.Raw, &cn)
-		s.finish(&session.Event{Session: n.Session, At: time.Now(), Kind: session.EvClosed, Data: session.ClosedEvent{Successor: cn.Successor}})
+		s.finish(&session.Event{Session: n.Session, At: time.Now(), Kind: session.EvClosed, Data: session.ClosedEvent{Successor: cn.Successor, Reason: cn.Reason}})
 	}
 }
 

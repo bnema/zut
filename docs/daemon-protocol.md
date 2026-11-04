@@ -228,11 +228,13 @@ with `this daemon does not host bots`.
 ```json
 {"type":"event","session":"s1","seq":42,"kind":"title","data":{"title":"task"}}
 {"type":"detached_by_other","session":"s1"}
-{"type":"closed","session":"s1","successor":"s2"}
+{"type":"closed","session":"s1","successor":"s2","reason":"cleared"}
 ```
 
-`successor` is omitted when there is none. `/clear` closes the old session and
-creates a successor with the same launch configuration; its old transcript
+`reason` is the optional session close reason (for example `cleared`, `killed`,
+or `idle_gc`); older daemons omit it. `successor` is omitted when there is none.
+`/clear` closes the old session and creates a successor with the same launch
+configuration; its old transcript
 remains resumable. A slow consumer receives a final `attach` event with
 `{"state":"detached","reason":"slow_consumer"}` and its subscription closes.
 That final event is subscriber-local, using the sequence of the event that could

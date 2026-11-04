@@ -212,6 +212,10 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 	other := dial(t, path, Options{ClientVersion: "daemon-v"})
 	require.ErrorContains(t, other.Close(ctx, "s1", "user_exit"), daemon.ErrNotController.Error())
 	require.NoError(t, c.Close(ctx, "s1", "user_exit"))
+	closedEvent, ok := <-ch
+	require.True(t, ok)
+	require.Equal(t, session.EvClosed, closedEvent.Kind)
+	require.Equal(t, "user_exit", closedEvent.Data.(session.ClosedEvent).Reason)
 	select {
 	case reason := <-s1.closed:
 		require.Equal(t, "user_exit", reason)

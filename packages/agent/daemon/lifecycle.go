@@ -316,21 +316,62 @@ func (d *Daemon) register(h session.Handle, s session.CreateSpec, lock *flock.Lo
 	e := &entry{parentPath: normParentPath(h.Info().SessionPath), id: id, h: h, spec: s, lock: lock, detachedAt: d.now()}
 	d.reg[id] = e
 	d.mu.Unlock()
-	d.goLoop(func(ctx context.Context) { d.watch(ctx, e) })
+	events, err := h.Subscribe(d.ctx, 0)
+	if err != nil {
+		d.mu.Lock()
+		delete(d.reg, id)
+		d.mu.Unlock()
+		_ = lock.Close()
+		d.closeHandle(h, "subscribe_failed")
+		return fmt.Errorf("subscribe lifecycle: %w", err)
+	}
+	d.goLoop(func(ctx context.Context) { d.watch(ctx, e, events) })
 	return nil
 }
 
 // watch unregisters a session when it ends on its own.
-func (d *Daemon) watch(ctx context.Context, e *entry) {
-	select {
-	case <-ctx.Done():
-	case <-e.h.Done():
-		d.forget(e)
+// watch owns the close reason independently of client subscriptions. Once Done
+// closes, all publications are complete; drain buffered events before forgetting
+// so selecting Done ahead of EvClosed cannot lose the terminal reason.
+func (d *Daemon) watch(ctx context.Context, e *entry, events <-chan session.Event) {
+	var reason string
+	record := func(ev session.Event) {
+		if ev.Kind == session.EvClosed {
+			if closed, ok := ev.Data.(session.ClosedEvent); ok {
+				reason = closed.Reason
+			}
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				events = nil
+			} else {
+				record(ev)
+			}
+		case <-e.h.Done():
+			for {
+				select {
+				case ev, ok := <-events:
+					if !ok {
+						events = nil
+					} else {
+						record(ev)
+					}
+				default:
+					d.forget(e, reason)
+					return
+				}
+			}
+		}
 	}
 }
 
 // forget drops a session that ended on its own (for example /exit).
-func (d *Daemon) forget(e *entry) {
+func (d *Daemon) forget(e *entry, reason string) {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
 	if d.isStopping() {
@@ -345,7 +386,7 @@ func (d *Daemon) forget(e *entry) {
 	delete(d.controller, e.id)
 	d.mu.Unlock()
 	_ = e.lock.Close()
-	d.notifyClosed(e.id, "")
+	d.notifyClosed(e.id, "", reason)
 }
 
 // attach subscribes c to id after afterSeq; a controlling attach replaces
@@ -451,13 +492,13 @@ func (d *Daemon) closeLocked(id session.ID, reason string, successor session.ID)
 	err := e.h.Close(ctx, reason)
 	cancel()
 	_ = e.lock.Close()
-	d.notifyClosed(id, successor)
+	d.notifyClosed(id, successor, reason)
 	return err
 }
 
 // notifyClosed ends every old-session subscription, not just the controller's.
 // Callers hold opMu, so attach/detach cannot race the subscriber snapshot.
-func (d *Daemon) notifyClosed(id session.ID, successor session.ID) {
+func (d *Daemon) notifyClosed(id session.ID, successor session.ID, reason string) {
 	d.mu.Lock()
 	clients := make([]*client, 0, len(d.clients))
 	for _, c := range d.clients {
@@ -471,7 +512,7 @@ func (d *Daemon) notifyClosed(id session.ID, successor session.ID) {
 		c.mu.Unlock()
 		if subscribed {
 			cancel()
-			c.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor})
+			c.enqueue(daemonproto.ClosedNotification{Type: "closed", Session: id, Successor: successor, Reason: reason})
 		}
 	}
 }

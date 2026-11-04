@@ -141,6 +141,7 @@ type ClosedNotification struct {
 	Type      string     `json:"type"`
 	Session   session.ID `json:"session"`
 	Successor session.ID `json:"successor,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
 }
 
 // CreateData is successful create result data: the session info plus,

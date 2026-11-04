@@ -502,7 +502,11 @@ func TestCloseNotifiesEverySubscriber(t *testing.T) {
 				synctest.Wait()
 				for j, c := range clients {
 					n := recv(t, c.control).(daemonproto.ClosedNotification)
-					if n.Session != "s1" || n.Successor != successor {
+					wantReason := "user_exit"
+					if clearing {
+						wantReason = ReasonCleared
+					}
+					if n.Session != "s1" || n.Successor != successor || n.Reason != wantReason {
 						t.Fatalf("closed = %+v", n)
 					}
 					select {
