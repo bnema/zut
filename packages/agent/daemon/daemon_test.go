@@ -414,6 +414,38 @@ func TestDaemonClearRecreatesAndMovesController(t *testing.T) {
 	assertNoState(t, home)
 }
 
+// A session publishes its own terminal event before Handle.Close returns.
+// For clear, only the daemon knows the successor, so that event must not race
+// the authoritative ClosedNotification and terminate the client's subscription.
+func TestClearSessionEventDoesNotPreemptSuccessor(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d := &Daemon{}
+		s := newTestSession(t, "s1")
+		c := &client{d: d, ctx: ctx, outbox: make(chan any, 4), subs: map[session.ID]context.CancelFunc{}}
+		if err := c.subscribe(&entry{id: "s1", h: s.h}, 0); err != nil {
+			t.Fatal(err)
+		}
+		s.emit(session.Event{Seq: 1, Kind: session.EvClosed, Data: session.ClosedEvent{Reason: ReasonCleared}})
+		synctest.Wait()
+		select {
+		case n := <-c.outbox:
+			t.Fatalf("session close preempted successor notification: %+v", n)
+		default:
+		}
+		// Ordinary session closure must still reach the client unchanged.
+		s.emit(session.Event{Seq: 2, Kind: session.EvClosed, Data: session.ClosedEvent{Reason: "user_exit"}})
+		n := recv(t, c.outbox).(daemonproto.EventNotification)
+		ev, err := daemonproto.DecodeEvent(n)
+		if err != nil || ev.Data.(session.ClosedEvent).Reason != "user_exit" {
+			t.Fatalf("ordinary close = %+v, %v", ev, err)
+		}
+		cancel()
+		d.wg.Wait()
+	})
+}
+
 func TestClearArgsKeepsTerminator(t *testing.T) {
 	got := clearArgs([]string{"-c", "-r", "abc", "--model", "x", "--", "--provider"}, session.Info{Model: "m"})
 	if strings.Join(got, " ") != "--model m -- --provider" {
