@@ -17,6 +17,7 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/auth"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -175,6 +176,10 @@ func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID s
 // config and the terminal. Session/domain state comes from the Port.
 func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.InteractiveConfig {
 	cfg, _ := LoadConfig()
+	// Direct attachments bypass CLI catalog preparation. Read local metadata
+	// without discovery or credential refresh/network calls.
+	LoadCachedModels()
+	LoadUserModels()
 	themeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME")))
 	if themeEnv != "" && themeEnv != "auto" && themeEnv != "dark" && themeEnv != "light" {
 		fmt.Fprintf(out, "theme override: unsupported ZUT_THEME=%q; ignoring it\n", themeEnv)
@@ -218,6 +223,7 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		ZutHome:                   ZutHome(),
 		// Login and logout run in the client, next to the user's browser;
 		// the daemon session reloads credentials afterwards.
+		LoggedInProviders:          tuiLoggedInProviders,
 		AuthManager:                auth.NewManager(AuthStoreFor()),
 		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
 	}
@@ -240,6 +246,23 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		}
 	}
 	return ui
+}
+
+// tuiLoggedInProviders resolves availability on each open so login/logout is
+// reflected immediately. CredentialAvailable never executes api_key_command.
+func tuiLoggedInProviders() []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, m := range provider.Active() {
+		if seen[m.Provider] {
+			continue
+		}
+		seen[m.Provider] = true
+		if CredentialAvailable(m.Provider) {
+			names = append(names, m.Provider)
+		}
+	}
+	return names
 }
 
 // runAttachCommand handles `zut attach [id|title-prefix]`. It never spawns a
