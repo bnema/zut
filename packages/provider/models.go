@@ -339,6 +339,11 @@ var Catalog = []Model{
 		ContextWindow: 500000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
 		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 0.25, PriceCacheWrite: 12.5,
 	},
+	{
+		Provider: "anthropic", ID: "claude-fable-5-2", DisplayName: "Claude Fable 5.2",
+		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
+		PriceInput: 8, PriceOutput: 40, PriceCacheRead: 0.2, PriceCacheWrite: 10,
+	},
 
 	// ---- Speculative: OpenAI ----
 	// Public OpenAI API route. The ChatGPT/Codex subscription route is

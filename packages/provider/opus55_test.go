@@ -21,6 +21,8 @@ func TestClaude55CatalogAndThinking(t *testing.T) {
 		{"sonnet/anthropic", "anthropic", "claude-sonnet-5-5", NewAnthropic("synthetic-key", "").(*anthropicClient), 1000000, pricing{2, 10, 0.2, 2.5}},
 		{"sonnet/anthropic-oauth", "anthropic", "claude-sonnet-5-5", NewAnthropicOAuth("synthetic-token", "").(*anthropicClient), 1000000, pricing{2, 10, 0.2, 2.5}},
 		{"sonnet/github-copilot", "github-copilot", "claude-sonnet-5.5", copilotAnthropic, 1000000, pricing{2, 10, 0.1, 2.5}},
+		{"fable52/anthropic", "anthropic", "claude-fable-5-2", NewAnthropic("synthetic-key", "").(*anthropicClient), 1000000, pricing{8, 40, 0.2, 10}},
+		{"fable52/anthropic-oauth", "anthropic", "claude-fable-5-2", NewAnthropicOAuth("synthetic-token", "").(*anthropicClient), 1000000, pricing{8, 40, 0.2, 10}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := FindModel(tc.provider, tc.id)
