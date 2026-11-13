@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"crypto/tls"
 	"net/http"
 )
 
@@ -11,21 +10,9 @@ import (
 // keep normal certificate validation.
 func NewHTTPClient(insecureTLS bool) *http.Client {
 	if !insecureTLS {
-		return &http.Client{Timeout: 0}
+		return newDefaultHTTPClient()
 	}
-	tr, ok := http.DefaultTransport.(*http.Transport)
-	if ok {
-		tr = tr.Clone()
-	} else {
-		tr = &http.Transport{}
-	}
-	if tr.TLSClientConfig != nil {
-		tr.TLSClientConfig = tr.TLSClientConfig.Clone()
-	} else {
-		tr.TLSClientConfig = &tls.Config{}
-	}
-	tr.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
-	return &http.Client{Timeout: 0, Transport: tr}
+	return &http.Client{Transport: NewTransport(TransportOptions{InsecureTLS: true})}
 }
 
 // WithHTTPClient scopes an HTTP client to a concrete provider client.
