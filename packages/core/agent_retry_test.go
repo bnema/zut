@@ -185,8 +185,8 @@ func TestAgentResetsIdleDeadlineForEveryStreamEvent(t *testing.T) {
 	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := resets.Load(); got != 2 {
-		t.Fatalf("idle timer resets = %d, want one for each stream event", got)
+	if got := resets.Load(); got != 3 {
+		t.Fatalf("idle timer resets = %d, want one at open and for each stream event", got)
 	}
 }
 
@@ -212,10 +212,12 @@ func TestAgentFailsSilentContinuationAfterToolResult(t *testing.T) {
 	var timers atomic.Int32
 	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
 		idle := make(chan time.Time, 1)
-		if timers.Add(1) > 1 {
-			idle <- time.Now()
+		timer := timers.Add(1)
+		return idle, func() {}, func() {
+			if timer > 1 {
+				idle <- time.Now()
+			}
 		}
-		return idle, func() {}, func() {}
 	}
 	var durable []string
 	err := a.Prompt(context.Background(), "review", nil, func(event AgentEvent) {
@@ -656,6 +658,8 @@ func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
 	client := &cancelledRetryClient{cancel: cancel}
 	agent := NewAgent(client, "fake-model", "system", Registry{})
 	agent.MaxRetries = 1
+	// Exercise cancellation after opening, not the cancellable open phase.
+	agent.StreamIdleTimeout = 0
 
 	var retries []EvRetryScheduled
 	var lifecycle []RetryLifecycleRecord
@@ -724,14 +728,15 @@ func (c *scriptedStallClient) newAgent(maxRetries, maxIdleRetries int) *Agent {
 	a.RetryBaseDelay = time.Millisecond
 	a.StreamIdleTimeout = time.Hour
 	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
-		c.mu.Lock()
-		stalled := c.stalled
-		c.mu.Unlock()
 		fired := make(chan time.Time, 1)
-		if stalled {
-			fired <- time.Time{}
+		return fired, func() {}, func() {
+			c.mu.Lock()
+			stalled := c.stalled
+			c.mu.Unlock()
+			if stalled {
+				fired <- time.Time{}
+			}
 		}
-		return fired, func() {}, func() {}
 	}
 	return a
 }
@@ -839,5 +844,97 @@ func TestAgentMixesTransientAndIdleRetries(t *testing.T) {
 	want := []string{"request:1/2", `retry:2/2:1ms:""`, "request:2/2", `retry:3/3:0s:"idle timeout (1/1)"`, "request:3/3"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+type blockingOpenClient struct {
+	calls   atomic.Int32
+	entered chan struct{}
+	drained chan struct{}
+}
+
+func (*blockingOpenClient) Name() string { return "blocking-open" }
+
+func (c *blockingOpenClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	if c.calls.Add(1) > 1 {
+		return (activeStreamClient{}).Stream(ctx, req)
+	}
+	close(c.entered)
+	<-ctx.Done()
+	out := make(chan provider.Event)
+	go func() {
+		defer close(c.drained)
+		defer close(out)
+		out <- provider.EventStart{}
+	}()
+	return out, nil
+}
+
+func TestAgentOpenIdleTimeout(t *testing.T) {
+	for _, budget := range []int{0, 1} {
+		t.Run(fmt.Sprintf("budget-%d", budget), func(t *testing.T) {
+			client := &blockingOpenClient{entered: make(chan struct{}), drained: make(chan struct{})}
+			a := NewAgent(client, "model", "", Registry{})
+			a.MaxRetries = 0
+			a.MaxIdleRetries = budget
+			idle := make(chan time.Time, 1)
+			var timers int
+			a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+				timers++
+				if timers == 1 {
+					return idle, func() {}, func() {}
+				}
+				return make(chan time.Time), func() {}, func() {}
+			}
+			go func() {
+				<-client.entered
+				idle <- time.Time{}
+			}()
+			err := a.Prompt(t.Context(), "hello", nil, nil)
+			if budget == 0 {
+				var openErr *requestOpenError
+				if !errors.Is(err, ErrStreamIdleTimeout) || errors.As(err, &openErr) {
+					t.Fatalf("error = %v, want unwrapped idle timeout", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if got := client.calls.Load(); got != int32(budget+1) {
+				t.Fatalf("calls = %d, want %d", got, budget+1)
+			}
+			if timers != budget+1 {
+				t.Fatalf("timers = %d, want one per attempt", timers)
+			}
+			select {
+			case <-client.drained:
+			case <-time.After(time.Second):
+				t.Fatal("late stream was not drained")
+			}
+		})
+	}
+}
+
+func TestAgentParentCancelDuringOpen(t *testing.T) {
+	client := &blockingOpenClient{entered: make(chan struct{}), drained: make(chan struct{})}
+	a := NewAgent(client, "model", "", Registry{})
+	a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+		return make(chan time.Time), func() {}, func() {}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		<-client.entered
+		cancel()
+	}()
+	if err := a.Prompt(ctx, "hello", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+	if got := client.calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
+	}
+	select {
+	case <-client.drained:
+	case <-time.After(time.Second):
+		t.Fatal("late stream was not drained")
 	}
 }

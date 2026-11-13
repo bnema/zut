@@ -1245,24 +1245,6 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	})
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	a.beginProviderRequest()
-	stream, err := a.Client.Stream(streamCtx, req)
-	if err != nil {
-		return provider.StopError, provider.Message{}, &requestOpenError{err: err}
-	}
-	// A provider may already have queued events when cancellation wins. Keep a
-	// consumer attached after this turn returns so bounded producer channels
-	// cannot strand the provider goroutine and its response body.
-	defer func() { go drainProviderStream(stream) }()
-
-	sink(EvAssistantStart{})
-
-	var (
-		stop     provider.StopReason
-		finalErr error
-		finalMsg provider.Message
-	)
-
 	var idle <-chan time.Time
 	var resetIdle func()
 	if a.StreamIdleTimeout > 0 {
@@ -1274,6 +1256,60 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		idle, stopIdle, resetIdle = newTimer(a.StreamIdleTimeout)
 		defer stopIdle()
 	}
+	a.beginProviderRequest()
+	var stream <-chan provider.Event
+	var err error
+	if a.StreamIdleTimeout <= 0 || ctx.Err() != nil {
+		stream, err = a.Client.Stream(streamCtx, req)
+	} else {
+		type openResult struct {
+			stream <-chan provider.Event
+			err    error
+		}
+		opened := make(chan openResult)
+		// Stream can block waiting for response headers; keep cancellation and
+		// the idle deadline observable while the provider opens the request.
+		go func() {
+			stream, err := a.Client.Stream(streamCtx, req)
+			select {
+			case opened <- openResult{stream, err}:
+			case <-streamCtx.Done():
+				if stream != nil {
+					drainProviderStream(stream)
+				}
+			}
+		}()
+		select {
+		case result := <-opened:
+			stream, err = result.stream, result.err
+		case <-ctx.Done():
+			return provider.StopError, provider.Message{}, ctx.Err()
+		case <-idle:
+			if err := ctx.Err(); err != nil {
+				return provider.StopError, provider.Message{}, err
+			}
+			return provider.StopError, provider.Message{}, ErrStreamIdleTimeout
+		}
+	}
+	if err != nil {
+		return provider.StopError, provider.Message{}, &requestOpenError{err: err}
+	}
+	// A provider may already have queued events when cancellation wins. Keep a
+	// consumer attached after this turn returns so bounded producer channels
+	// cannot strand the provider goroutine and its response body.
+	defer func() { go drainProviderStream(stream) }()
+	if resetIdle != nil {
+		resetIdle()
+	}
+
+	sink(EvAssistantStart{})
+
+	var (
+		stop     provider.StopReason
+		finalErr error
+		finalMsg provider.Message
+	)
+
 	handleStreamEvent := func(ev provider.Event) (done bool) {
 		if resetIdle != nil {
 			resetIdle()
