@@ -1098,6 +1098,8 @@ func (a *Agent) dropAssistantMessageAfter(before int) {
 // requestLifecycleSink adapts provider-owned pre-stream retries into core
 // events without letting provider concerns leak into mode renderers.
 type requestLifecycleSink struct {
+	mu         sync.Mutex
+	closed     bool
 	sink       func(AgentEvent)
 	observe    func(RetryLifecycleRecord)
 	provider   string
@@ -1105,7 +1107,20 @@ type requestLifecycleSink struct {
 	lastReason RetryReason
 }
 
+// close waits for in-flight callbacks before the attempt emits terminal events.
+// Callbacks are synchronous and must not re-enter this same lifecycle sink.
+func (s *requestLifecycleSink) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
 func (s *requestLifecycleSink) CacheDiagnostics(diagnostics provider.CacheDiagnostics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.sink(EvCacheDiagnostics{
 		Eligible:     diagnostics.Eligible,
 		Mode:         diagnostics.Mode,
@@ -1115,6 +1130,11 @@ func (s *requestLifecycleSink) CacheDiagnostics(diagnostics provider.CacheDiagno
 }
 
 func (s *requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.sink(EvRequestStarted{
 		Provider:    s.provider,
 		Model:       s.model,
@@ -1125,6 +1145,11 @@ func (s *requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
 }
 
 func (s *requestLifecycleSink) RequestFailed(attempt, maxAttempts int, reason provider.RequestFailureReason, terminal bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.lastReason = retryReasonFromProvider(reason)
 	if s.observe != nil {
 		s.observe(RetryLifecycleRecord{
@@ -1139,6 +1164,11 @@ func (s *requestLifecycleSink) RequestFailed(attempt, maxAttempts int, reason pr
 }
 
 func (s *requestLifecycleSink) RetryScheduled(attempt, maxAttempts int, delay time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.sink(EvRetryScheduled{
 		Scope:       RetryScopeProvider,
 		Attempt:     attempt,
@@ -1216,6 +1246,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		provider: a.Client.Name(),
 		model:    a.Model,
 	}
+	defer requestLifecycle.close()
 	req := provider.Request{
 		Model:  a.Model,
 		System: system,

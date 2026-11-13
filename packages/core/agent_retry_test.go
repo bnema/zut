@@ -938,3 +938,125 @@ func TestAgentParentCancelDuringOpen(t *testing.T) {
 		t.Fatal("late stream was not drained")
 	}
 }
+
+type lifecycleOpenClient struct {
+	late, finished, canceled chan struct{}
+}
+
+func (*lifecycleOpenClient) Name() string { return "lifecycle-open" }
+
+func (c *lifecycleOpenClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	go func() {
+		<-ctx.Done()
+		close(c.canceled)
+	}()
+	// This callback deliberately stays in flight while cancellation wins.
+	req.Lifecycle.RequestAttempt(1, 2)
+	<-ctx.Done()
+	<-c.late
+	req.Lifecycle.RequestAttempt(2, 2)
+	req.Lifecycle.(*requestLifecycleSink).RequestFailed(1, 2, provider.RequestFailureNetwork, false)
+	req.Lifecycle.RetryScheduled(2, 2, 0)
+	req.Lifecycle.(*requestLifecycleSink).CacheDiagnostics(provider.CacheDiagnostics{})
+	close(c.finished)
+	return nil, ctx.Err()
+}
+
+func TestAgentOpenLifecycleBoundedToAttempt(t *testing.T) {
+	for _, cancelParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent-cancel-%t", cancelParent), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			client := &lifecycleOpenClient{late: make(chan struct{}), finished: make(chan struct{}), canceled: make(chan struct{})}
+			a := NewAgent(client, "model", "", Registry{})
+			a.MaxIdleRetries = 0
+			idle := make(chan time.Time, 1)
+			a.streamIdleTimer = func(time.Duration) (<-chan time.Time, func(), func()) {
+				return idle, func() {}, func() {}
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var events []AgentEvent
+			var records []RetryLifecycleRecord
+			a.OnRetryLifecycle = func(r RetryLifecycleRecord) { records = append(records, r) }
+			result := make(chan error, 1)
+			go func() {
+				result <- a.Prompt(ctx, "hello", nil, func(ev AgentEvent) {
+					if e, ok := ev.(EvRequestStarted); ok && e.Scope == RetryScopeProvider {
+						close(entered)
+						<-release
+					}
+					events = append(events, ev)
+				})
+			}()
+			<-entered
+			if cancelParent {
+				cancel()
+			} else {
+				idle <- time.Time{}
+			}
+			// cancelStream runs before lifecycle.close, even with a callback in flight.
+			<-client.canceled
+			select {
+			case err := <-result:
+				t.Fatalf("Prompt returned before callback completed: %v", err)
+			default:
+			}
+			close(release)
+			err := <-result
+			want := ErrStreamIdleTimeout
+			if cancelParent {
+				want = context.Canceled
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("error = %v, want %v", err, want)
+			}
+			nEvents, nRecords := len(events), len(records)
+			close(client.late)
+			<-client.finished
+			if len(events) != nEvents || len(records) != nRecords {
+				t.Fatal("lifecycle callback delivered after Prompt returned")
+			}
+		})
+	}
+}
+
+type lifecycleAfterOpenClient struct {
+	opened chan struct{}
+}
+
+func (*lifecycleAfterOpenClient) Name() string { return "lifecycle-after-open" }
+
+func (c *lifecycleAfterOpenClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event)
+	go func() {
+		defer close(out)
+		<-c.opened
+		req.Lifecycle.RequestAttempt(2, 2)
+		req.Lifecycle.RetryScheduled(2, 2, 0)
+		out <- provider.EventDone{Stop: provider.StopEnd}
+	}()
+	return out, nil
+}
+
+func TestAgentLifecycleRemainsLiveAfterOpen(t *testing.T) {
+	client := &lifecycleAfterOpenClient{opened: make(chan struct{})}
+	a := NewAgent(client, "model", "", Registry{})
+	var attempts, retries int
+	_, _, err := a.oneTurn(t.Context(), func(ev AgentEvent) {
+		switch e := ev.(type) {
+		case EvAssistantStart:
+			close(client.opened)
+		case EvRequestStarted:
+			if e.Scope == RetryScopeProvider {
+				attempts++
+			}
+		case EvRetryScheduled:
+			if e.Scope == RetryScopeProvider {
+				retries++
+			}
+		}
+	}, "", provider.RequestContext{}, 0, 1)
+	if err != nil || attempts != 1 || retries != 1 {
+		t.Fatalf("error = %v, provider attempts = %d, retries = %d", err, attempts, retries)
+	}
+}
