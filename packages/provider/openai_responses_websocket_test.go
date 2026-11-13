@@ -313,7 +313,7 @@ func TestResponsesWebSocketWireBaselineChangeForcesFullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := &responsesWebSocketSession{}
-	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, "resp_1")
+	session.lastRequest, session.lastBaseline, session.lastOutput, session.lastResponseID = first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "ok"}}}, "resp_1"
 
 	mappedModel = "gpt-5.6-sol-b"
 	second := Request{
@@ -346,7 +346,7 @@ func TestResponsesWebSocketAssistantMismatchForcesCompleteTranscript(t *testing.
 		t.Fatal(err)
 	}
 	session := &responsesWebSocketSession{}
-	session.recordCompleted(first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "actual"}}}, "resp_1")
+	session.lastRequest, session.lastBaseline, session.lastOutput, session.lastResponseID = first, baseline, Message{Role: RoleAssistant, Content: []Content{TextBlock{Text: "actual"}}}, "resp_1"
 	second := Request{
 		Model: first.Model, Context: RequestContext{CacheSessionID: "cache-root-1", ThreadID: "thread-1", TurnID: "turn-2"},
 		Messages: append(append([]Message(nil), first.Messages...),
@@ -610,5 +610,87 @@ func TestResponsesWebSocketWarmIdleExpires(t *testing.T) {
 		if conn != nil || raw != nil || previous != "" {
 			t.Fatal("expired session retained connection or continuation")
 		}
+	}
+}
+
+func TestResponsesWebSocketBackpressureEOFIsError(t *testing.T) {
+	// Model the reader's full raw buffer: its nonblocking terminal-error send
+	// cannot fit, then it closes raw. No consumer runs until after closure.
+	raw := make(chan sseEvent, 16)
+	for range cap(raw) {
+		raw <- sseEvent{Data: `{"type":"response.output_text.delta","output_index":0,"delta":"partial"}`}
+	}
+	close(raw)
+	finished := make(chan struct{})
+	defer close(finished)
+	events := filterResponsesWebSocketEvents(raw, "response-1", finished)
+	out := make(chan Event, 64)
+	client := &codexClient{}
+	first := sseEvent{Data: `{"type":"response.created","response":{"id":"response-1"}}`}
+	client.runResponseEventsWithFirst(context.Background(), Request{Model: "test"}, out, events, &first, nil)
+	close(out)
+	var done EventDone
+	for event := range out {
+		if v, ok := event.(EventDone); ok {
+			done = v
+		}
+	}
+	if done.Stop != StopError || done.Err == nil || !strings.Contains(done.Err.Error(), "closed before completion") {
+		t.Fatalf("truncated stream reported success: %#v", done)
+	}
+}
+
+func TestResponsesWebSocketCompletionAfterInvalidation(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		<-release
+		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.completed", "response": map[string]any{"id": "completed", "usage": map[string]any{}}})
+	}))
+	defer server.Close()
+	session := &responsesWebSocketSession{}
+	defer session.invalidate()
+	dial := func(ctx context.Context, _ Request) (*websocket.Conn, error) {
+		cfg, err := websocket.NewConfig("ws"+strings.TrimPrefix(server.URL, "http"), server.URL)
+		if err != nil {
+			return nil, err
+		}
+		return cfg.DialContext(ctx)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := session.ensureConnected(ctx, Request{}, dial); err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	conn, raw, exited := session.conn, session.raw, session.readerExited
+	session.mu.Unlock()
+	close(release)
+	// The reader receives completion then EOF. Wait for invalidation before
+	// allowing the parser's completion callback to run.
+	select {
+	case <-exited:
+	case <-ctx.Done():
+		t.Fatal("reader did not invalidate")
+	}
+	out := make(chan Event, 64)
+	client := &codexClient{}
+	client.runResponseEventsWithFirst(ctx, Request{Model: "test"}, out, raw, nil, func(id string, output Message) {
+		session.recordCompleted(conn, Request{}, "baseline", output, id)
+	})
+	close(out)
+	var completed bool
+	for event := range out {
+		if done, ok := event.(EventDone); ok {
+			completed = done.Err == nil
+		}
+	}
+	if !completed {
+		t.Fatal("completion was not delivered")
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.lastResponseID != "" || session.lastBaseline != "" || len(session.lastRequest.Messages) != 0 {
+		t.Fatal("completion resurrected invalidated continuation")
 	}
 }

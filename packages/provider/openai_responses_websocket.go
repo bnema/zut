@@ -309,7 +309,7 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 			terminal = true
 			stateMu.Unlock()
 			completed = true
-			session.recordCompleted(req, fullBaseline, output, responseID)
+			session.recordCompleted(conn, req, fullBaseline, output, responseID)
 		})
 		close(finished)
 		if !completed {
@@ -427,17 +427,36 @@ func filterResponsesWebSocketEvents(raw <-chan sseEvent, responseID string, done
 	out := make(chan sseEvent, 16)
 	go func() {
 		defer close(out)
+		terminal := false
 		for {
 			select {
 			case <-done:
 				return
 			case event, ok := <-raw:
 				if !ok {
+					if !terminal {
+						select {
+						case out <- sseEvent{Err: fmt.Errorf("responses WebSocket closed before completion")}:
+						case <-done:
+						}
+					}
 					return
 				}
 				if !responseWebSocketEventMatches(event, responseID) {
 					continue
 				}
+				var payload struct {
+					Type string `json:"type"`
+				}
+				_ = json.Unmarshal([]byte(event.Data), &payload)
+				switch payload.Type {
+				case "response.completed", "response.done", "response.failed", "error":
+					terminal = true
+				case "response.incomplete":
+					// The shared SSE parser does not handle this standalone event.
+					event.Err = fmt.Errorf("responses WebSocket response incomplete")
+				}
+				terminal = terminal || event.Err != nil
 				select {
 				case <-done:
 					return
@@ -583,9 +602,12 @@ func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEve
 	return s.conn, s.raw
 }
 
-func (s *responsesWebSocketSession) recordCompleted(request Request, baseline string, output Message, responseID string) {
+func (s *responsesWebSocketSession) recordCompleted(conn *websocket.Conn, request Request, baseline string, output Message, responseID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if conn == nil || s.conn != conn {
+		return
+	}
 	request.Messages = append([]Message(nil), request.Messages...)
 	request.Lifecycle = nil
 	s.lastRequest = request
