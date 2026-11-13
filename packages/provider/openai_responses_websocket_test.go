@@ -513,3 +513,102 @@ func assertCompletedResponseText(t *testing.T, client Client, req Request, want 
 		t.Fatalf("events = %#v; done = %#v", got, done)
 	}
 }
+
+func TestResponsesWebSocketSilentTurnExpires(t *testing.T) {
+	closed := make(chan struct{}, 2)
+	ws := websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		var request json.RawMessage
+		if websocket.JSON.Receive(conn, &request) != nil {
+			return
+		}
+		_ = websocket.JSON.Send(conn, map[string]any{"type": "response.created", "response": map[string]any{"id": "silent"}})
+		// Observe client closure without producing any more response data.
+		_ = websocket.JSON.Receive(conn, &request)
+		closed <- struct{}{}
+	})
+	server := httptest.NewServer(ws)
+	defer server.Close()
+	client := newResponsesWebSocketClient(&codexClient{token: "test", baseURL: server.URL + "/responses", http: &http.Client{}}).(*responsesWebSocketClient)
+	defer client.Close()
+	session := client.session("silent-thread")
+	session.idleTimeout = 50 * time.Millisecond
+	req := Request{Model: "gpt-5", Context: RequestContext{ThreadID: "silent-thread"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hello"}}}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for turn := 0; turn < 2; turn++ {
+		start := time.Now()
+		stream, err := client.Stream(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var failed bool
+		for event := range stream {
+			if done, ok := event.(EventDone); ok {
+				failed = done.Err != nil
+			}
+		}
+		if !failed || ctx.Err() != nil || time.Since(start) > time.Second {
+			t.Fatalf("silent turn did not fail promptly: failed=%v context=%v", failed, ctx.Err())
+		}
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			t.Fatal("server did not observe close")
+		}
+	}
+}
+
+func TestResponsesWebSocketWarmIdleExpires(t *testing.T) {
+	closed := make(chan struct{}, 2)
+	ws := websocket.Handler(func(conn *websocket.Conn) {
+		defer conn.Close()
+		var request json.RawMessage
+		if websocket.JSON.Receive(conn, &request) != nil {
+			return
+		}
+		for _, event := range []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "warm"}},
+			{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}},
+			{"type": "response.output_text.delta", "output_index": 0, "delta": "ok"},
+			{"type": "response.completed", "response": map[string]any{"id": "warm", "usage": map[string]any{}}},
+		} {
+			if websocket.JSON.Send(conn, event) != nil {
+				return
+			}
+		}
+		_ = websocket.JSON.Receive(conn, &request)
+		closed <- struct{}{}
+	})
+	server := httptest.NewServer(ws)
+	defer server.Close()
+	client := newResponsesWebSocketClient(&codexClient{token: "test", baseURL: server.URL + "/responses", http: &http.Client{}}).(*responsesWebSocketClient)
+	defer client.Close()
+	session := client.session("warm-thread")
+	session.idleTimeout = 50 * time.Millisecond
+	req := Request{Model: "gpt-5", Context: RequestContext{ThreadID: "warm-thread"}, Messages: []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hello"}}}}}
+	for turn := 0; turn < 2; turn++ {
+		assertCompletedResponse(t, client, req)
+		session.mu.Lock()
+		exited := session.readerExited
+		session.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			t.Fatal("idle socket was not closed")
+		}
+		select {
+		case <-exited:
+		case <-ctx.Done():
+			t.Fatal("idle reader did not exit")
+		}
+		cancel()
+		session.mu.Lock()
+		conn, raw, previous := session.conn, session.raw, session.lastResponseID
+		session.mu.Unlock()
+		if conn != nil || raw != nil || previous != "" {
+			t.Fatal("expired session retained connection or continuation")
+		}
+	}
+}

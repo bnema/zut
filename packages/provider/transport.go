@@ -46,11 +46,8 @@ func NewTransport(opts TransportOptions) *http.Transport {
 
 func newTransport(opts TransportOptions, timings transportTimings) *http.Transport {
 	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:         transportDialTimeout,
-			KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: transportKeepAliveIdle, Interval: transportKeepAliveInterval, Count: transportKeepAliveCount},
-		}).DialContext,
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           newProviderDialer().DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       transportIdleTimeout,
@@ -72,4 +69,13 @@ func sharedTransport() *http.Transport { return defaultTransport() }
 
 func newDefaultHTTPClient() *http.Client {
 	return &http.Client{Transport: sharedTransport()}
+}
+
+// newProviderDialer shares connection establishment and TCP liveness policy
+// between HTTP transports and persistent Responses WebSockets.
+func newProviderDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout:         transportDialTimeout,
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: transportKeepAliveIdle, Interval: transportKeepAliveInterval, Count: transportKeepAliveCount},
+	}
 }

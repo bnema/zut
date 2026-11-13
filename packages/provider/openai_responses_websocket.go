@@ -17,6 +17,12 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+// responsesWebSocketIdleTimeout bounds silent turns and retires warm sockets.
+// x/net/websocket consumes pong frames internally, so use an application-data
+// inactivity deadline rather than a ping loop that cannot observe pong replies.
+// Healthy but silent sockets may expire; ensureConnected redials on the next turn.
+const responsesWebSocketIdleTimeout = 5 * time.Minute
+
 // responsesWebSocketClient uses Responses WebSocket mode for one logical
 // thread at a time. Official OpenAI API-key and ChatGPT subscription clients
 // both use it; each supplies its own authenticated handshake headers and keeps
@@ -34,9 +40,13 @@ type responsesWebSocketSession struct {
 
 	turn chan struct{}
 
-	conn       *websocket.Conn
-	raw        chan sseEvent
-	readerDone chan struct{}
+	conn         *websocket.Conn
+	raw          chan sseEvent
+	readerDone   chan struct{}
+	readerExited chan struct{}
+
+	// idleTimeout is immutable after connection setup; zero uses the default.
+	idleTimeout time.Duration
 
 	// lastRequest is the complete request accepted by the server. Continuation
 	// must compare every response-context setting, not merely its transcript.
@@ -105,6 +115,7 @@ func (c *responsesWebSocketClient) dialResponses(ctx context.Context, req Reques
 		model = c.http.modelName(model)
 	}
 	useCodexCLIRouting := !c.http.disableCLIRouting && (c.http.cliRoutingAll || usesCodexCLIRouting(model))
+	config.Dialer = newProviderDialer()
 	config.Header = c.http.responsesHeaders(req, useCodexCLIRouting, true)
 	if tlsConfig := responsesWebSocketTLSConfig(c.http.http); tlsConfig != nil {
 		config.TlsConfig = tlsConfig
@@ -242,6 +253,10 @@ func (c *responsesWebSocketClient) Stream(ctx context.Context, req Request) (<-c
 		return c.http.Stream(ctx, req)
 	}
 	conn, raw := session.connection()
+	if conn == nil {
+		session.invalidate()
+		return c.http.Stream(ctx, req)
+	}
 	if err := websocket.Message.Send(conn, string(payload)); err != nil {
 		session.invalidate()
 		return c.http.Stream(ctx, req)
@@ -348,6 +363,9 @@ func (c *responsesWebSocketClient) reconnectFull(ctx context.Context, session *r
 		return nil, nil, sseEvent{}, "", err
 	}
 	conn, raw := session.connection()
+	if conn == nil {
+		return nil, nil, sseEvent{}, "", fmt.Errorf("responses WebSocket expired before send")
+	}
 	if err := websocket.Message.Send(conn, string(payload)); err != nil {
 		session.invalidateConnection(conn)
 		return nil, nil, sseEvent{}, "", err
@@ -545,14 +563,23 @@ func (s *responsesWebSocketSession) ensureConnected(ctx context.Context, req Req
 	s.conn = conn
 	s.raw = raw
 	s.readerDone = readerDone
+	exited := make(chan struct{})
+	s.readerExited = exited
 	s.mu.Unlock()
-	go readResponsesWebSocket(conn, raw, readerDone)
+	go func() {
+		defer close(exited)
+		s.readResponsesWebSocket(conn, raw, readerDone)
+	}()
 	return nil
 }
 
 func (s *responsesWebSocketSession) connection() (*websocket.Conn, <-chan sseEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.conn != nil {
+		// A new turn gets a full inactivity window, including its initial write.
+		_ = s.conn.SetDeadline(time.Now().Add(s.readIdleTimeout()))
+	}
 	return s.conn, s.raw
 }
 
@@ -565,6 +592,10 @@ func (s *responsesWebSocketSession) recordCompleted(request Request, baseline st
 	s.lastBaseline = baseline
 	s.lastOutput = output
 	s.lastResponseID = responseID
+	// Start the warm-idle period at turn completion, not at the last frame.
+	if s.conn != nil {
+		_ = s.conn.SetReadDeadline(time.Now().Add(s.readIdleTimeout()))
+	}
 }
 
 func (s *responsesWebSocketSession) invalidateConnection(conn *websocket.Conn) {
@@ -598,14 +629,32 @@ func (s *responsesWebSocketSession) invalidateLocked() {
 	s.lastResponseID = ""
 }
 
-func readResponsesWebSocket(conn *websocket.Conn, out chan<- sseEvent, done <-chan struct{}) {
+func (s *responsesWebSocketSession) readIdleTimeout() time.Duration {
+	if s.idleTimeout > 0 {
+		return s.idleTimeout
+	}
+	return responsesWebSocketIdleTimeout
+}
+
+func (s *responsesWebSocketSession) readResponsesWebSocket(conn *websocket.Conn, out chan<- sseEvent, done <-chan struct{}) {
 	defer close(out)
+	defer s.invalidateConnection(conn)
 	for {
+		s.mu.Lock()
+		if s.conn != conn {
+			s.mu.Unlock()
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(s.readIdleTimeout()))
+		s.mu.Unlock()
 		var data json.RawMessage
 		if err := websocket.JSON.Receive(conn, &data); err != nil {
+			// There may be no turn consuming raw. Never wait to report an idle
+			// failure: invalidate first, then best-effort delivery or channel EOF.
+			s.invalidateConnection(conn)
 			select {
 			case out <- sseEvent{Err: err}:
-			case <-done:
+			default:
 			}
 			return
 		}
