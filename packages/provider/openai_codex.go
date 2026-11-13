@@ -92,7 +92,7 @@ func newOpenAICodexClient(token, accountID, baseURL string) *codexClient {
 			ThreadHeader:         true,
 			ClientRequestHeader:  true,
 		},
-		http: &http.Client{Timeout: 0},
+		http: newDefaultHTTPClient(),
 	}
 }
 

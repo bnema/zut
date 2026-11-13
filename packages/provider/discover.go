@@ -18,7 +18,7 @@ func DiscoverAnthropic(ctx context.Context, apiKey, baseURL string) ([]Model, er
 	if baseURL == "" {
 		baseURL = anthropicDefaultBaseURL
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	var out []Model
 	after := ""
 	for {
@@ -73,7 +73,7 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	url := strings.TrimRight(baseURL, "/") + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -122,7 +122,7 @@ func DiscoverOllama(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	if baseURL == "" {
 		baseURL = OllamaCloudBaseURL
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	baseURL = strings.TrimRight(baseURL, "/")
 	url := baseURL + "/v1/models"
 	if versionSegmentSuffix.MatchString(baseURL) {
@@ -179,7 +179,7 @@ func discoverOpenCodeGo(ctx context.Context, apiKey, baseURL, metadataURL string
 		metadataURL = modelsDevAPIURL
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	// Models.dev is enrichment only. Keep serving IDs even when its public
 	// catalog is temporarily unavailable or has not published this provider.
 	var metadata modelsDevProvider
@@ -462,7 +462,7 @@ func DiscoverGoogle(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	if baseURL == "" {
 		baseURL = geminiDefaultBaseURL
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	var out []Model
 	pageToken := ""
 	for {
@@ -597,7 +597,7 @@ func DiscoverOpenAICodex(ctx context.Context, token, accountID, baseURL string) 
 	req.Header.Set("originator", "codex_cli_rs")
 	req.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -670,7 +670,7 @@ func DiscoverOpenRouter(ctx context.Context, baseURL string) ([]Model, error) {
 		baseURL = openrouterDefaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Transport: sharedTransport(), Timeout: 15 * time.Second}
 	url := baseURL + "/models"
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

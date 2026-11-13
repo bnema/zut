@@ -121,7 +121,7 @@ func (t *ChatGPTTranscriber) Transcribe(ctx context.Context, audio AudioInput) (
 	}()
 	client := t.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = newDefaultHTTPClient()
 	}
 	bounded := *client
 	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

@@ -62,7 +62,7 @@ type copilotTokenCache struct {
 
 var copilotCache = &copilotTokenCache{
 	tokens: map[string]copilotToken{},
-	http:   &http.Client{Timeout: 30 * time.Second},
+	http:   &http.Client{Transport: sharedTransport(), Timeout: 30 * time.Second},
 }
 
 // exchange swaps a PAT for a short-lived Copilot token. Caller is
@@ -210,7 +210,7 @@ const copilotDefaultBaseURL = "https://api.individual.githubcopilot.com"
 // NewGithubCopilotClient uses Messages for Claude, Responses for GPT/Grok/MAI,
 // and Chat Completions for Gemini/Kimi. The PAT is exchanged for Copilot tokens.
 func NewGithubCopilotClient(pat string) Client {
-	refresh := &copilotRefreshTransport{inner: http.DefaultTransport, pat: pat}
+	refresh := &copilotRefreshTransport{inner: sharedTransport(), pat: pat}
 	completionsHTTP := &http.Client{Transport: refresh, Timeout: 0}
 	// Initial baseURL is a sane default; copilotRefreshTransport rewrites
 	// the host on every request based on the freshly-issued token.

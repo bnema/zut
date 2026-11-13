@@ -56,7 +56,7 @@ func NewOpenAI(apiKey, baseURL string) Client {
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    "openai",
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -71,7 +71,7 @@ func NewOpenAIOAuth(accessToken, baseURL string) Client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    "openai",
 		oauth:   true,
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -90,7 +90,7 @@ func NewDeepSeek(apiKey, baseURL string) Client {
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    "deepseek",
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -105,7 +105,7 @@ func NewKimiWithHeaders(apiKey, baseURL string, headers map[string]string) Clien
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    "kimi",
 		headers: headers,
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 

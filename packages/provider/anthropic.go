@@ -98,7 +98,7 @@ func NewAnthropic(apiKey, baseURL string) Client {
 	return &anthropicClient{
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -110,7 +110,7 @@ func NewAnthropicOAuth(accessToken, baseURL string) Client {
 	return &anthropicClient{
 		oauthTok: accessToken,
 		baseURL:  strings.TrimRight(baseURL, "/"),
-		http:     &http.Client{Timeout: 0},
+		http:     newDefaultHTTPClient(),
 	}
 }
 

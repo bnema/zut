@@ -110,7 +110,7 @@ func NewLlamaCPPClient(serverURL, apiKey string) (*LlamaCPPClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &LlamaCPPClient{ServerURL: normalized, APIKey: apiKey, HTTP: &http.Client{Timeout: llamaCPPRequestTimeout}}, nil
+	return &LlamaCPPClient{ServerURL: normalized, APIKey: apiKey, HTTP: &http.Client{Transport: sharedTransport(), Timeout: llamaCPPRequestTimeout}}, nil
 }
 
 func (c *LlamaCPPClient) request(ctx context.Context, method, path string, body io.Reader, out any) error {
@@ -506,7 +506,7 @@ type HuggingFaceClient struct {
 }
 
 func NewHuggingFaceClient(token string) *HuggingFaceClient {
-	return &HuggingFaceClient{Token: token, BaseURL: defaultHuggingFaceURL, HTTP: &http.Client{Timeout: llamaCPPRequestTimeout}}
+	return &HuggingFaceClient{Token: token, BaseURL: defaultHuggingFaceURL, HTTP: &http.Client{Transport: sharedTransport(), Timeout: llamaCPPRequestTimeout}}
 }
 
 func (c *HuggingFaceClient) request(ctx context.Context, path string, out any) error {

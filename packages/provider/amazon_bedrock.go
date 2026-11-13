@@ -99,7 +99,7 @@ func NewBedrockClient(apiKey, baseURL string) Client {
 	c := &bedrockClient{
 		region:  region,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 
 	// Bearer route.

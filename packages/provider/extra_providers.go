@@ -15,7 +15,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 )
@@ -37,7 +36,7 @@ func NewOpenAICompat(name, apiKey, baseURL, fallbackBaseURL string) Client {
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    name,
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -196,7 +195,7 @@ func NewAnthropicCompat(name, apiKey, baseURL string) Client {
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    name,
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -217,7 +216,7 @@ func NewKimiCodingWithHeaders(apiKey, baseURL string, headers map[string]string)
 		baseURL: strings.TrimRight(baseURL, "/"),
 		name:    "kimi",
 		headers: headers,
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 
@@ -344,7 +343,7 @@ func NewCloudflareAIGateway(apiKey, baseURL string) Client {
 		baseURL: strings.TrimRight(resolved, "/"),
 		name:    "cloudflare-ai-gateway",
 		headers: map[string]string{"cf-aig-authorization": "Bearer " + apiKey},
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 

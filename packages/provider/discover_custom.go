@@ -78,7 +78,7 @@ func DiscoverCustomProviderWithClient(ctx context.Context, client *http.Client, 
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	if client == nil {
-		client = &http.Client{}
+		client = newDefaultHTTPClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {

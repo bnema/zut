@@ -124,7 +124,7 @@ func NewAzureOpenAI(apiKey, baseURL string) Client {
 	clean = strings.TrimSuffix(clean, "/openai")
 	httpClient := &http.Client{
 		Transport: &azureRewriteTransport{
-			inner:      http.DefaultTransport,
+			inner:      sharedTransport(),
 			apiVersion: apiVersion,
 		},
 		Timeout: 0,
@@ -194,7 +194,7 @@ func NewAzureOpenAIResponses(apiKey, baseURL string) Client {
 	}
 	httpClient := &http.Client{
 		Transport: &azureResponsesTransport{
-			inner:      http.DefaultTransport,
+			inner:      sharedTransport(),
 			apiKey:     apiKey,
 			apiVersion: apiVersion,
 		},

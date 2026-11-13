@@ -36,7 +36,7 @@ func openaiResponsesHTTPClient(client *http.Client) *http.Client {
 	clone := *client
 	inner := clone.Transport
 	if inner == nil {
-		inner = http.DefaultTransport
+		inner = sharedTransport()
 	}
 	clone.Transport = &openaiResponsesTransport{inner: inner}
 	return &clone
@@ -75,7 +75,7 @@ func NewOpenAIResponses(apiKey, baseURL string) Client {
 // route Responses-only preview models without changing the visible provider.
 func NewOpenAIResponsesNamed(apiKey, baseURL, name string) Client {
 	baseURL = responsesURL(baseURL)
-	httpClient := openaiResponsesHTTPClient(&http.Client{Timeout: 0})
+	httpClient := openaiResponsesHTTPClient(newDefaultHTTPClient())
 	inner := &codexClient{
 		token:        apiKey,
 		accountID:    "", // unused; transport strips the header

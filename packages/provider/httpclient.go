@@ -23,29 +23,21 @@ func WithHTTPClient(c Client, httpClient *http.Client) Client {
 	}
 	switch v := c.(type) {
 	case *openaiClient:
-		v.http = httpClient
+		v.http = providerHTTPClient(v.http, httpClient)
 	case *anthropicClient:
-		v.http = httpClient
+		v.http = providerHTTPClient(v.http, httpClient)
 	case *geminiClient:
-		v.http = httpClient
+		v.http = providerHTTPClient(v.http, httpClient)
 	case *bedrockClient:
-		v.http = httpClient
+		v.http = providerHTTPClient(v.http, httpClient)
 	case *codexClient:
-		v.http = httpClient
+		v.http = providerHTTPClient(v.http, httpClient)
 	case *responsesWebSocketClient:
-		if v.http.accountID == "" {
-			v.http.http = openaiResponsesHTTPClient(httpClient)
-		} else {
-			v.http.http = httpClient
-		}
+		v.http.http = providerHTTPClient(v.http.http, httpClient)
 	case *renamedClient:
-		if codex, ok := v.inner.(*codexClient); ok {
-			if _, isPublicResponses := codex.http.Transport.(*openaiResponsesTransport); isPublicResponses {
-				codex.http = openaiResponsesHTTPClient(httpClient)
-				return c
-			}
-		}
 		v.inner = WithHTTPClient(v.inner, httpClient)
+	case *copilotClient:
+		WithHTTPClient(v.router, httpClient)
 	case *modelRouter:
 		v.fallback = WithHTTPClient(v.fallback, httpClient)
 		for api, inner := range v.byAPI {
@@ -53,4 +45,54 @@ func WithHTTPClient(c Client, httpClient *http.Client) Client {
 		}
 	}
 	return c
+}
+
+// providerHTTPClient retains provider wire behavior while replacing the network
+// transport. Clone wrappers rather than mutating transports shared by routes.
+func providerHTTPClient(previous, replacement *http.Client) *http.Client {
+	if previous == nil {
+		return replacement
+	}
+	inner := replacement.Transport
+	if inner == nil {
+		inner = sharedTransport()
+	}
+	transport, wrapped := replaceProviderTransport(previous.Transport, inner)
+	if !wrapped {
+		return replacement
+	}
+	clone := *replacement
+	clone.Transport = transport
+	return &clone
+}
+
+func replaceProviderTransport(existing, replacement http.RoundTripper) (http.RoundTripper, bool) {
+	switch tr := existing.(type) {
+	case *azureRewriteTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	case *azureResponsesTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	case *vertexTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	case *copilotRefreshTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	case *copilotResponsesStripTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	case *openaiResponsesTransport:
+		clone := *tr
+		clone.inner, _ = replaceProviderTransport(tr.inner, replacement)
+		return &clone, true
+	default:
+		return replacement, false
+	}
 }

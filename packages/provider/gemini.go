@@ -46,7 +46,7 @@ func NewGemini(apiKey, baseURL string) Client {
 	return &geminiClient{
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		http:    newDefaultHTTPClient(),
 	}
 }
 

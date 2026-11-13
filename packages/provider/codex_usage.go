@@ -38,7 +38,7 @@ func fetchCodexWeeklyUsage(ctx context.Context, client *http.Client, endpoint, t
 	req.Header.Set("User-Agent", "codex-cli")
 	req.Header.Set("Accept", "application/json")
 	if client == nil {
-		client = http.DefaultClient
+		client = newDefaultHTTPClient()
 	}
 	// The account header is sensitive too: never forward it on a redirect.
 	bounded := *client

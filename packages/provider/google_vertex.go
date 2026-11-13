@@ -189,7 +189,7 @@ var vertexCache = &vertexTokenCache{
 		value     string
 		expiresAt time.Time
 	}{},
-	http: &http.Client{Timeout: 30 * time.Second},
+	http: &http.Client{Transport: sharedTransport(), Timeout: 30 * time.Second},
 }
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -350,7 +350,7 @@ func NewVertex(_ string, _ string) Client {
 		apiKey:       "vertex-placeholder", // overwritten by transport
 		baseURL:      "https://" + baseHost,
 		http: &http.Client{
-			Transport: &vertexTransport{inner: http.DefaultTransport, cfg: cfg},
+			Transport: &vertexTransport{inner: sharedTransport(), cfg: cfg},
 			Timeout:   0,
 		},
 	}

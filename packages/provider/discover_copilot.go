@@ -19,7 +19,7 @@ func DiscoverCopilotAvailableModels(ctx context.Context, pat string) ([]string, 
 	if baseURL == "" {
 		baseURL = copilotDefaultBaseURL
 	}
-	client := &http.Client{Transport: &copilotRefreshTransport{inner: http.DefaultTransport, pat: pat}}
+	client := &http.Client{Transport: &copilotRefreshTransport{inner: sharedTransport(), pat: pat}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
 		return nil, err
