@@ -31,7 +31,8 @@ func TestTransportSettings(t *testing.T) {
 	if insecure.TLSClientConfig == nil || !insecure.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("insecure option ignored")
 	}
-	if sharedTransport() != sharedTransport() || newDefaultHTTPClient().Transport != sharedTransport() || NewHTTPClient(false).Transport != sharedTransport() {
+	first, second := sharedTransport(), sharedTransport()
+	if first != second || newDefaultHTTPClient().Transport != first || NewHTTPClient(false).Transport != first {
 		t.Fatal("default clients do not share a pool")
 	}
 	if NewHTTPClient(true).Transport == sharedTransport() {
@@ -77,7 +78,7 @@ func blackholeProxy(t *testing.T, target string) (string, *atomic.Bool, *atomic.
 				buf := make([]byte, 32*1024)
 				for {
 					n, err := src.Read(buf)
-					if n > 0 && !(first && swallow.Load()) {
+					if n > 0 && (!first || !swallow.Load()) {
 						if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 							return
 						}
