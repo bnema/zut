@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/bnema/zut/packages/core"
 )
 
 func snippetTestStore(t *testing.T) *codemodeSnippetStore {
@@ -18,7 +20,7 @@ func snippetTestStore(t *testing.T) *codemodeSnippetStore {
 
 func TestCodemodeSnippetStore(t *testing.T) {
 	s := snippetTestStore(t)
-	if entries, err := s.list(); err != nil || len(entries) != 0 {
+	if entries, _, err := s.list(); err != nil || len(entries) != 0 {
 		t.Fatal(entries, err)
 	}
 	if err := s.save("sample", "result = 1\n", "example"); err != nil {
@@ -28,7 +30,7 @@ func TestCodemodeSnippetStore(t *testing.T) {
 	if err != nil || code != "result = 1\n" {
 		t.Fatal(code, err)
 	}
-	entries, err := s.list()
+	entries, _, err := s.list()
 	if err != nil || len(entries) != 1 || entries[0].Description != "example" || entries[0].UpdatedAt == "" {
 		t.Fatal(entries, err)
 	}
@@ -36,7 +38,7 @@ func TestCodemodeSnippetStore(t *testing.T) {
 	if err := s.save("sample", "result = 2", "updated"); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ = s.list()
+	entries, _, _ = s.list()
 	if entries[0].CreatedAt != created || entries[0].Description != "updated" {
 		t.Fatal(entries)
 	}
@@ -113,7 +115,15 @@ func TestCodemodeSnippetBridgeAndSearch(t *testing.T) {
 func TestCodemodeRealPythonSnippets(t *testing.T) {
 	s := snippetTestStore(t)
 	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t), SnippetHome: s.home}
-	code := `zut.save_snippet("self")
+	if err := s.save("bad", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.home(), "codemode", "snippets", "bad.py"), []byte("broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code := `assert len(zut.snippets().warnings) == 1
+assert len(zut.search("").warnings) == 1
+zut.save_snippet("self")
 assert "zut.save_snippet" in zut.snippet("self")
 zut.save_snippet("compose", 'result = zut.call("echo_data", **inputs).data', description="echo composition")
 assert zut.run_snippet("compose", x=3) == {"x": 3}
@@ -153,5 +163,48 @@ func TestCodemodeSnippetLimitsAndLiveDenial(t *testing.T) {
 		if reply := b.handle(context.Background(), raw); reply.Error == nil || reply.Error.Kind != "not_allowed" {
 			t.Fatalf("%s: %#v", method, reply)
 		}
+	}
+}
+
+func TestCodemodeSnippetWarnings(t *testing.T) {
+	s := snippetTestStore(t)
+	if err := s.save("good", "result=1", ""); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.home(), "codemode", "snippets")
+	if err := os.WriteFile(filepath.Join(dir, "broken.py"), []byte("not a snippet"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entries, warnings, err := s.list()
+	if err != nil || len(entries) != 1 || entries[0].Name != "good" || len(warnings) != 1 || !strings.Contains(warnings[0], "broken.py") {
+		t.Fatal(entries, warnings, err)
+	}
+	b := newCodemodeBridge(&bridgeTestInvoker{tools: core.NewRegistry(bridgeTestTool{"read", "Read files"})}, "")
+	b.snippets = s
+	for _, method := range []string{"search", "snippets"} {
+		raw, _ := json.Marshal(map[string]string{"method": method})
+		reply := b.handle(context.Background(), raw)
+		if reply.Error != nil {
+			t.Fatal(reply.Error)
+		}
+		result := reply.Result.(map[string]any)
+		if len(result["warnings"].([]string)) != 1 {
+			t.Fatal(result)
+		}
+		if method == "search" {
+			encoded, _ := json.Marshal(result)
+			if !strings.Contains(string(encoded), `"kind":"tool"`) || !strings.Contains(string(encoded), `"total":2`) {
+				t.Fatal(string(encoded))
+			}
+		}
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.list(); err == nil {
+		t.Fatal("directory error swallowed")
 	}
 }

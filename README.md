@@ -331,7 +331,9 @@ The Python API is available as `zut` (also via `import zut`):
   Nested calls retain the same limits and guards. Storage operations require
   unrestricted, unjailed admission and reject symlink escapes. Search includes
   saved snippets (`kind: "snippet"`) and tools (`kind: "tool"`), retaining its
-  list interface and `.total`/`.truncated` pagination metadata.
+  list interface and `.total`/`.truncated` pagination metadata. Search and
+  snippet lists expose `.warnings` for skipped unreadable or invalid entries;
+  directory/admission failures still raise errors.
 - `zut.ToolDenied` reports a refused nested call. `zut.ToolError` carries
   `.result` when `.is_error` is true, unless `check=False`.
   `zut.CodemodeError` carries `.kind` for bridge errors.

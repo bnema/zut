@@ -414,3 +414,27 @@ func TestCodemodeBridgeList(t *testing.T) {
 		t.Fatalf("%#v", reply)
 	}
 }
+
+type codemodeDescriptionTestTool struct {
+	bridgeTestTool
+	descriptions *int
+}
+
+func (t codemodeDescriptionTestTool) Description() string {
+	*t.descriptions++
+	if t.name == "codemode" {
+		panic("disallowed description evaluated")
+	}
+	return "description"
+}
+func TestCodemodeSearchDescriptionOnce(t *testing.T) {
+	calls, blocked := 0, 0
+	b := newCodemodeBridge(&bridgeTestInvoker{tools: core.NewRegistry(
+		codemodeDescriptionTestTool{bridgeTestTool{"read", ""}, &calls},
+		codemodeDescriptionTestTool{bridgeTestTool{"codemode", ""}, &blocked},
+	)}, "")
+	reply := b.handle(context.Background(), []byte(`{"method":"search"}`))
+	if reply.Error != nil || calls != 1 || blocked != 0 {
+		t.Fatal(reply, calls, blocked)
+	}
+}

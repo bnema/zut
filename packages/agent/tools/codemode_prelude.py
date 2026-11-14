@@ -100,24 +100,24 @@ class _Tools:
 
 class _MCP:
     def __init__(self, server=None):
-        self.__server = server
+        self.__zut_server__ = server
 
     def __dir__(self):
         namespaces = _rpc("namespaces", {})
-        return sorted(namespaces if self.__server is None else namespaces.get(self.__server, {}))
+        return sorted(namespaces if self.__zut_server__ is None else namespaces.get(self.__zut_server__, {}))
 
     def __getattr__(self, name, /):
         if name.startswith("__"):
             raise AttributeError(name)
         namespaces = _rpc("namespaces", {})
-        entries = namespaces if self.__server is None else namespaces.get(self.__server, {})
+        entries = namespaces if self.__zut_server__ is None else namespaces.get(self.__zut_server__, {})
         if name not in entries:
             suggestions = difflib.get_close_matches(name, entries, n=3)
-            message = f"unknown MCP {'server' if self.__server is None else 'method'} {name!r}"
+            message = f"unknown MCP {'server' if self.__zut_server__ is None else 'method'} {name!r}"
             if suggestions:
                 message += "; did you mean: " + ", ".join(suggestions) + "?"
             raise AttributeError(message)
-        if self.__server is None:
+        if self.__zut_server__ is None:
             return _MCP(name)
         canonical = entries[name]
         def invoke(check=True, **args):
@@ -132,6 +132,7 @@ class SearchResults(list):
         super().__init__(value["results"])
         self.total = value["total"]
         self.truncated = value["truncated"]
+        self.warnings = value.get("warnings", [])
 
 
 def search(query, limit=10):
@@ -159,8 +160,14 @@ def save_snippet(name, code=None, description=""):
     return _rpc("save_snippet", {"name": name, "code": code, "description": description})
 
 
+class Snippets(list):
+    def __init__(self, value):
+        super().__init__(value["results"])
+        self.warnings = value["warnings"]
+
+
 def snippets():
-    return _rpc("snippets", {})
+    return Snippets(_rpc("snippets", {}))
 
 
 def snippet(name):

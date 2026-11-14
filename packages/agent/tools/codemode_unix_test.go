@@ -131,3 +131,19 @@ zut.result("help ok")`, 10, nil, &codemodeMCPTestTool{})
 		t.Fatal(codemodeOutput(t, result))
 	}
 }
+
+type codemodeMCPCollisionTestTool struct{ codemodeEchoDataTool }
+
+func (*codemodeMCPCollisionTestTool) Name() string   { return "mcp___MCP__server___MCP__server" }
+func (*codemodeMCPCollisionTestTool) Server() string { return "_MCP__server" }
+func TestCodemodeRealPythonMCPStateCollision(t *testing.T) {
+	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `assert dir(zut.mcp) == ["_MCP__server"]
+server = zut.mcp._MCP__server
+assert dir(server) == ["_MCP__server"]
+assert server._MCP__server(value=42).data == {"value": 42}
+zut.result("collision ok")`, 10, nil, &codemodeMCPCollisionTestTool{})
+	if result.IsError || !strings.Contains(codemodeOutput(t, result), "collision ok") {
+		t.Fatal(codemodeOutput(t, result))
+	}
+}

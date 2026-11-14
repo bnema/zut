@@ -278,7 +278,10 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			}
 			err = b.snippets.save(p.Name, code, p.Description)
 		case "snippets":
-			result, err = b.snippets.list()
+			var entries []codemodeSnippetInfo
+			var warnings []string
+			entries, warnings, err = b.snippets.list()
+			result = map[string]any{"results": entries, "warnings": warnings}
 		case "snippet":
 			result, err = b.snippets.read(p.Name)
 		case "delete_snippet":
@@ -314,18 +317,24 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			Kind    string `json:"kind"`
 		}
 		results := []entry{}
+		warnings := []string{}
 		tokens := strings.Fields(codemodeNormalize(p.Query))
 		query := strings.Join(tokens, " ")
 		for name, tool := range b.inv.Tools() {
-			score := codemodeSearchScore(name, tool.Description(), query, tokens)
-			if !codemodeAllowed(name) || score < 0 {
+			if !codemodeAllowed(name) {
 				continue
 			}
-			summary, _, _ := strings.Cut(tool.Description(), "\n")
+			description := tool.Description()
+			score := codemodeSearchScore(name, description, query, tokens)
+			if score < 0 {
+				continue
+			}
+			summary, _, _ := strings.Cut(description, "\n")
 			results = append(results, entry{name, codemodeUTF8Prefix(summary, 160), score, "tool"})
 		}
 		if b.snippets != nil {
-			snippets, err := b.snippets.list()
+			snippets, snippetWarnings, err := b.snippets.list()
+			warnings = append(warnings, snippetWarnings...)
 			if err != nil {
 				return codemodeFailure("snippet_error", err.Error())
 			}
@@ -349,7 +358,7 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 		if len(results) > limit {
 			results = results[:limit]
 		}
-		return codemodeReply{Result: map[string]any{"results": results, "total": total, "truncated": total > limit}}
+		return codemodeReply{Result: map[string]any{"results": results, "total": total, "truncated": total > limit, "warnings": warnings}}
 	case "result":
 		if len(p.Value) == 0 {
 			return codemodeFailure("bad_request", "value is required")

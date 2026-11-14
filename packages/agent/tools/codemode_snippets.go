@@ -124,37 +124,43 @@ func readCodemodeSnippet(root *os.Root, name string) (codemodeSnippetInfo, strin
 	return info, string(code), nil
 }
 
-func (s *codemodeSnippetStore) list() ([]codemodeSnippetInfo, error) {
+func (s *codemodeSnippetStore) list() ([]codemodeSnippetInfo, []string, error) {
 	entries := []codemodeSnippetInfo{}
+	warnings := []string{}
 	root, err := s.open(false)
 	if errors.Is(err, os.ErrNotExist) {
-		return entries, nil
+		return entries, warnings, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer root.Close()
 	dir, err := root.Open(".")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer dir.Close()
 	files, err := dir.ReadDir(-1)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, file := range files {
 		if !strings.HasSuffix(file.Name(), ".py") {
 			continue
 		}
 		info, _, err := readCodemodeSnippet(root, strings.TrimSuffix(file.Name(), ".py"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, fmt.Sprintf("skipping snippet %q: %v", file.Name(), err))
+			continue
 		}
 		entries = append(entries, info)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries, nil
+	sort.Strings(warnings)
+	return entries, warnings, nil
 }
 
 func (s *codemodeSnippetStore) save(name, code, description string) error {
