@@ -9,7 +9,7 @@ import (
 )
 
 // ProtocolVersion is the required wire protocol version.
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 
 // UnsupportedPortMethod prefixes the error a daemon returns for a port method
 // it does not implement; clients use it to detect older daemons.

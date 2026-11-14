@@ -5,6 +5,74 @@
     "seq": 42,
     "kind": "agent",
     "data": {
+      "args": {
+        "path": "a"
+      },
+      "id": "parent/1",
+      "name": "read",
+      "parent_id": "parent",
+      "type": "nested_tool_started",
+      "value": {
+        "ID": "parent/1",
+        "ParentID": "parent",
+        "Name": "read",
+        "Args": {
+          "path": "a"
+        }
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "denied": true,
+      "id": "parent/1",
+      "is_error": true,
+      "name": "read",
+      "parent_id": "parent",
+      "summary": "denied",
+      "type": "nested_tool_result",
+      "value": {
+        "ID": "parent/1",
+        "ParentID": "parent",
+        "Name": "read",
+        "IsError": true,
+        "Denied": true,
+        "Summary": "denied"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
+      "denied": false,
+      "id": "parent/2",
+      "is_error": false,
+      "name": "read",
+      "parent_id": "parent",
+      "type": "nested_tool_result",
+      "value": {
+        "ID": "parent/2",
+        "ParentID": "parent",
+        "Name": "read",
+        "IsError": false,
+        "Denied": false,
+        "Summary": ""
+      }
+    }
+  },
+  {
+    "type": "event",
+    "session": "s",
+    "seq": 42,
+    "kind": "agent",
+    "data": {
       "step": 2,
       "type": "turn_start",
       "value": {

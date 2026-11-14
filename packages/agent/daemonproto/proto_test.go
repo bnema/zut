@@ -9,7 +9,7 @@ import (
 )
 
 func TestFrameJSONRoundTrip(t *testing.T) {
-	values := []any{HelloRequest{Type: "hello"}, CreateRequest{Type: "create"}, AttachRequest{Type: "attach"}, DetachRequest{Type: "detach"}, CloseRequest{Type: "close"}, ClearRequest{Type: "clear"}, ListRequest{Type: "list"}, TreeRequest{Type: "tree"}, SnapshotRequest{Type: "snapshot"}, PortRequest{Type: "port", Params: json.RawMessage(`{}`)}, DaemonStopRequest{Type: "daemon_stop"}, DaemonStatusRequest{Type: "daemon_status"}, Result{Type: "result", Data: json.RawMessage(`{}`)}, EventNotification{Type: "event", Data: json.RawMessage(`{}`)}, DetachedByOtherNotification{Type: "detached_by_other"}, ClosedNotification{Type: "closed"}, HelloData{ProtocolVersion: 1}, DaemonStatusData{PID: 123}}
+	values := []any{HelloRequest{Type: "hello"}, CreateRequest{Type: "create"}, AttachRequest{Type: "attach"}, DetachRequest{Type: "detach"}, CloseRequest{Type: "close"}, ClearRequest{Type: "clear"}, ListRequest{Type: "list"}, TreeRequest{Type: "tree"}, SnapshotRequest{Type: "snapshot"}, PortRequest{Type: "port", Params: json.RawMessage(`{}`)}, DaemonStopRequest{Type: "daemon_stop"}, DaemonStatusRequest{Type: "daemon_status"}, Result{Type: "result", Data: json.RawMessage(`{}`)}, EventNotification{Type: "event", Data: json.RawMessage(`{}`)}, DetachedByOtherNotification{Type: "detached_by_other"}, ClosedNotification{Type: "closed"}, HelloData{ProtocolVersion: ProtocolVersion}, DaemonStatusData{PID: 123}}
 	for _, value := range values {
 		t.Run(reflect.TypeOf(value).Name(), func(t *testing.T) {
 			b, err := json.Marshal(value)

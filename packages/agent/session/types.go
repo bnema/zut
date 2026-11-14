@@ -133,6 +133,7 @@ type LiveTool struct {
 	// (Args is nil then); a RawMessage cannot encode partial JSON.
 	ArgsPartial string           `json:"args_partial,omitempty"`
 	State       string           `json:"state"`
+	Nested      []string         `json:"nested,omitempty"`
 	Progress    string           `json:"progress"`
 	Result      *core.ToolResult `json:"result"`
 }

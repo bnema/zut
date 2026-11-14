@@ -63,6 +63,7 @@ func (s *turnState) pendingInputs() []QueuedInput {
 func cloneTurn(in LiveTurn) LiveTurn {
 	in.Tools = append([]LiveTool(nil), in.Tools...)
 	for i := range in.Tools {
+		in.Tools[i].Nested = append([]string(nil), in.Tools[i].Nested...)
 		// Args accumulate streamed deltas and stay partial JSON until the call
 		// completes; exposing them would make the snapshot unencodable.
 		if json.Valid(in.Tools[i].Args) {
@@ -552,6 +553,26 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 		t.Name = e.Name
 		t.State = "running"
 		c.turn.projection.Activity = Activity{Kind: "tool", Tool: e.Name, Since: c.deps.Clock()}
+	case core.EvNestedToolStarted:
+		c.turn.projection.Activity.Tool = e.Name
+	case core.EvNestedToolResult:
+		for idx := range c.turn.live.Tools {
+			parent := &c.turn.live.Tools[idx]
+			if parent.ID != e.ParentID {
+				continue
+			}
+			status := "ok"
+			if e.IsError {
+				status = "error"
+			}
+			if e.Denied {
+				status = "denied"
+			}
+			line := "↳ " + e.Name + " " + status + "\n"
+			parent.Progress += line
+			parent.Nested = append(parent.Nested, line)
+			break
+		}
 	case core.EvToolProgress:
 		c.tool(e.ID).Progress += e.Text
 	case core.EvToolResult:

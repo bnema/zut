@@ -258,3 +258,21 @@ type EvError struct {
 }
 
 func (EvError) Type() string { return "error" }
+
+// EvNestedToolStarted reports execution, not composition, of a nested call.
+// Args contains normalized execution arguments, including guard rewrites.
+type EvNestedToolStarted struct {
+	ID, ParentID, Name string
+	Args               json.RawMessage
+}
+
+func (EvNestedToolStarted) Type() string { return "nested_tool_started" }
+
+// EvNestedToolResult reports every nested invocation without committing history.
+type EvNestedToolResult struct {
+	ID, ParentID, Name string
+	IsError, Denied    bool
+	Summary            string
+}
+
+func (EvNestedToolResult) Type() string { return "nested_tool_result" }

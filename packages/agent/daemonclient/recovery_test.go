@@ -2,6 +2,8 @@ package daemonclient
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/bnema/zut/packages/core"
 	"io"
 	"log/slog"
 	"net"
@@ -222,4 +224,23 @@ func TestReattachClearsGapTimer(t *testing.T) {
 		_ = s.reattach(context.Background(), nil)
 		require.Nil(t, s.gap)
 	})
+}
+
+func TestUnknownAgentEventAdvancesSequence(t *testing.T) {
+	c := &Client{subs: make(map[session.ID]*subscription)}
+	p := &RemotePort{c: c, id: "future"}
+	s := &subscription{port: p, out: make(chan session.Event, 4), stop: make(chan struct{}), resub: make(chan struct{}, 1)}
+	c.subs[p.id] = s
+	for idx, data := range []string{`{"type":"future_kind","new_field":true}`, `{"type":"text_delta","value":{"Delta":"hello"}}`} {
+		raw, err := json.Marshal(daemonproto.EventNotification{Type: "event", Session: p.id, Seq: uint64(idx + 1), Kind: session.EvAgent, Data: json.RawMessage(data)})
+		require.NoError(t, err)
+		c.onNotification(daemonproto.Notification{Type: "event", Session: p.id, Raw: raw})
+	}
+	require.Equal(t, uint64(2), s.lastSeq())
+	require.Len(t, s.out, 2)
+	first := <-s.out
+	require.Equal(t, "future_kind", first.Agent.Type())
+	second := <-s.out
+	require.Equal(t, core.EvTextDelta{Delta: "hello"}, second.Agent)
+	require.Nil(t, s.gap)
 }

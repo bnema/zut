@@ -791,3 +791,26 @@ func TestSlideBackMixedQueuesUsesSubmissionOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestTurnNestedToolProjection(t *testing.T) {
+	c, ctx := newTestController(t)
+	require.NoError(t, c.call(ctx, func() {
+		c.applyAgentEvent(core.EvToolExecutionStarted{ID: "p", Name: "parent"})
+		c.applyAgentEvent(core.EvToolProgress{ID: "p", Text: "no newline"})
+		c.applyAgentEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "child"})
+		require.Len(t, c.turn.live.Tools, 1)
+		require.Equal(t, "child", c.turn.projection.Activity.Tool)
+		for _, e := range []core.EvNestedToolResult{
+			{ParentID: "p", Name: "child"}, {ParentID: "p", Name: "child", IsError: true}, {ParentID: "p", Name: "child", IsError: true, Denied: true}, {ParentID: "unknown", Name: "ignored"},
+		} {
+			c.applyAgentEvent(e)
+		}
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Live.Tools, 1)
+	require.Equal(t, "p", snap.Live.Tools[0].ID)
+	require.Equal(t, "running", snap.Live.Tools[0].State)
+	require.Equal(t, "no newline↳ child ok\n↳ child error\n↳ child denied\n", snap.Live.Tools[0].Progress)
+	require.Equal(t, []string{"↳ child ok\n", "↳ child error\n", "↳ child denied\n"}, snap.Live.Tools[0].Nested)
+}

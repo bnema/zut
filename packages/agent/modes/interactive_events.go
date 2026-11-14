@@ -28,6 +28,45 @@ func eventAffectsPresentation(ev core.AgentEvent) bool {
 	}
 }
 
+// nestedToolLines bounds the temporary parent-panel body independently of results.
+type nestedToolLines struct {
+	lines   []string
+	earlier int
+}
+
+func (n *nestedToolLines) append(line string) {
+	n.lines = append(n.lines, line)
+	if len(n.lines) > 8 {
+		n.lines = n.lines[1:]
+		n.earlier++
+	}
+}
+func (n *nestedToolLines) text() string {
+	prefix := ""
+	if n.earlier > 0 {
+		prefix = fmt.Sprintf("… %d earlier\n", n.earlier)
+	}
+	return prefix + strings.Join(n.lines, "")
+}
+func (i *Interactive) restoreNestedToolLinesLocked(tc *tui.ToolCallView, nested []string) {
+	for _, line := range nested {
+		i.appendNestedToolLineLocked(tc, line)
+	}
+}
+func (i *Interactive) appendNestedToolLineLocked(tc *tui.ToolCallView, line string) {
+	if i.nestedToolLines == nil {
+		i.nestedToolLines = make(map[string]*nestedToolLines)
+	}
+	n := i.nestedToolLines[tc.ID]
+	if n == nil {
+		n = &nestedToolLines{}
+		i.nestedToolLines[tc.ID] = n
+	}
+	n.append(line)
+	tc.Result = n.text()
+	i.bumpToolRevisionLocked(tc)
+}
+
 func planProgress(plan []core.PlanStep) (current, total int) {
 	total = len(plan)
 	for idx, step := range plan {
@@ -83,6 +122,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// will populate fresh entries for this turn's tools.
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
+		i.nestedToolLines = nil
 	case core.EvTextDelta:
 		// The pacer paints buffered text a few runes per tick so every
 		// provider has the same typewriter feel regardless of chunk size.
@@ -152,7 +192,19 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.toolOrder = append(i.toolOrder, e.ID)
 			i.stream.Gate(e.ID)
 		}
+	case core.EvNestedToolResult:
+		if tc, ok := i.toolCalls[e.ParentID]; ok && !tc.Done {
+			status := "ok"
+			if e.IsError {
+				status = "error"
+			}
+			if e.Denied {
+				status = "denied"
+			}
+			i.appendNestedToolLineLocked(tc, "↳ "+e.Name+" "+status+"\n")
+		}
 	case core.EvToolResult:
+		delete(i.nestedToolLines, e.ID)
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Done = true
 			tc.Error = e.Result.IsError
@@ -540,6 +592,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	// Live turn: rebuild streamed text and tool panels as of snap.Seq.
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
+	i.nestedToolLines = nil
 	if snap.Live.AssistantText != "" || len(snap.Live.Tools) > 0 {
 		i.startStreamLocked()
 		i.stream.Push(snap.Live.AssistantText)
@@ -549,6 +602,9 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 		tc := &tui.ToolCallView{ID: lt.ID, Name: lt.Name, RawJSONBuf: string(lt.Args) + lt.ArgsPartial, Streaming: lt.State == "composing"}
 		if len(lt.Args) > 0 && lt.State != "composing" {
 			tc.Args = tui.ShortArgs(lt.Name, lt.Args)
+		}
+		if lt.State == "running" {
+			i.restoreNestedToolLinesLocked(tc, lt.Nested)
 		}
 		if lt.Result != nil {
 			tc.Done = true

@@ -37,6 +37,11 @@ type Event struct {
 	Name string          `json:"name,omitempty"`
 	Args json.RawMessage `json:"args,omitempty"`
 
+	// nested_tool_started / nested_tool_result (experimental codemode)
+	ParentID string `json:"parent_id,omitempty"`
+	Denied   bool   `json:"denied,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+
 	// tool_progress
 	Text string `json:"text,omitempty"`
 
@@ -202,6 +207,12 @@ func toEvent(ev core.AgentEvent) Event {
 		out.ID = e.ID
 		out.Name = e.Name
 		out.Args = e.Args
+	case core.EvNestedToolStarted:
+		out.ID, out.ParentID, out.Name = e.ID, e.ParentID, e.Name
+		out.Args = e.Args
+	case core.EvNestedToolResult:
+		out.ID, out.ParentID, out.Name = e.ID, e.ParentID, e.Name
+		out.IsError, out.Denied, out.Summary = e.IsError, e.Denied, e.Summary
 	case core.EvToolExecutionStarted:
 		out.ID = e.ID
 		out.Name = e.Name

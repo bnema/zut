@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -230,4 +231,75 @@ func TestInteractiveToolProgressStormDoesNotInvalidate(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("completed tool result produced no live frame rows")
 	}
+}
+
+func TestInteractiveNestedToolLines(t *testing.T) {
+	i := &Interactive{dirty: make(chan struct{}, 1), toolCalls: make(map[string]*tui.ToolCallView)}
+	i.handleEvent(core.EvToolCall{ID: "p", Name: "parent"})
+	before := i.toolCalls["p"].Revision
+	i.handleEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "child"})
+	i.handleEvent(core.EvNestedToolResult{ParentID: "unknown", Name: "ignored"})
+	require.Len(t, i.toolCalls, 1)
+	require.Equal(t, before, i.toolCalls["p"].Revision)
+	for n := 0; n < 10; n++ {
+		i.handleEventForPresentation(core.EvNestedToolResult{ParentID: "p", Name: fmt.Sprintf("child%d", n), IsError: n == 8, Denied: n == 9})
+	}
+	tc := i.toolCalls["p"]
+	require.Equal(t, before+10, tc.Revision)
+	require.True(t, strings.HasPrefix(tc.Result, "… 2 earlier\n↳ child2 ok\n"))
+	require.True(t, strings.HasSuffix(tc.Result, "↳ child8 error\n↳ child9 denied\n"))
+	require.Equal(t, 9, strings.Count(tc.Result, "\n"))
+	view := &tui.View{Theme: tui.Dark, ToolCalls: []tui.ToolCallView{*tc}}
+	require.Contains(t, strings.Join(view.BuildLive(80), "\n"), "child9 denied")
+	i.applyPortAgentTranscriptLocked(core.EvNestedToolResult{ParentID: "p", Name: "child"})
+	require.Nil(t, i.portToolMsg)
+	require.Empty(t, i.portMsgs)
+	i.handleEvent(core.EvToolResult{ID: "p", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "real result"}}}})
+	require.Equal(t, "real result", tc.Result)
+	require.Empty(t, i.nestedToolLines)
+	i.handleEvent(core.EvNestedToolResult{ParentID: "p", Name: "late"})
+	require.Equal(t, "real result", tc.Result)
+}
+
+func TestInteractiveRestoreNestedToolLines(t *testing.T) {
+	i := &Interactive{}
+	tc := &tui.ToolCallView{ID: "p"}
+	var progress []string
+	for n := 0; n < 10; n++ {
+		progress = append(progress, fmt.Sprintf("↳ child%d ok\n", n))
+	}
+	i.restoreNestedToolLinesLocked(tc, progress)
+	require.True(t, strings.HasPrefix(tc.Result, "… 2 earlier\n↳ child2 ok\n"))
+	require.NotContains(t, tc.Result, "ordinary")
+	i.appendNestedToolLineLocked(tc, "↳ next denied\n")
+	require.True(t, strings.HasPrefix(tc.Result, "… 3 earlier\n"))
+	require.True(t, strings.HasSuffix(tc.Result, "↳ next denied\n"))
+	untouched := &tui.ToolCallView{ID: "other"}
+	i.restoreNestedToolLinesLocked(untouched, nil)
+	require.Empty(t, untouched.Result)
+}
+
+func TestActivityNestedResultsDoNotCompleteParent(t *testing.T) {
+	var a agentActivity
+	a.apply(core.EvToolCall{ID: "p", Name: "parent"})
+	a.apply(core.EvToolExecutionStarted{ID: "p", Name: "parent"})
+	a.apply(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "child"})
+	a.apply(core.EvNestedToolResult{ID: "p/1", ParentID: "p", Name: "child"})
+	require.Equal(t, activityRunningTool, a.kind)
+	require.Equal(t, map[string]string{"p": "parent"}, a.pendingToolCalls)
+}
+
+func TestInteractiveHydrateNestedToolProgress(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.hydrateLocked(session.Snapshot{Live: session.LiveTurn{Tools: []session.LiveTool{
+		{ID: "running", Name: "parent", State: "running", Progress: "ordinary↳ child denied\n", Nested: []string{"↳ child denied\n"}},
+		{ID: "done", Name: "parent", State: "done", Progress: "↳ child ok\n", Result: &core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "real"}}}},
+		{ID: "plain", Name: "parent", State: "running", Progress: "↳ child ok\n"},
+	}}})
+	require.Equal(t, "↳ child denied\n", i.toolCalls["running"].Result)
+	require.Equal(t, "real", i.toolCalls["done"].Result)
+	require.Empty(t, i.toolCalls["plain"].Result)
+	require.Len(t, i.toolCalls, 3)
 }

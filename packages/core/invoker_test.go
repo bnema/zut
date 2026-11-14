@@ -4,23 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
 )
 
 type invokingTestTool struct {
-	name      string
-	execute   func(context.Context) ToolResult
-	immutable bool
+	name            string
+	execute         func(context.Context) ToolResult
+	immutable       bool
+	progress        func(func(string))
+	executeProgress func(context.Context, func(string)) ToolResult
 }
 
 func (t *invokingTestTool) Name() string               { return t.name }
 func (*invokingTestTool) Description() string          { return "nested invocation test" }
 func (*invokingTestTool) Schema() json.RawMessage      { return json.RawMessage(`{"type":"object"}`) }
 func (t *invokingTestTool) AllowArgumentRewrite() bool { return !t.immutable }
-func (t *invokingTestTool) Execute(ctx context.Context, _ json.RawMessage, _ func(string)) (ToolResult, error) {
+func (t *invokingTestTool) Execute(ctx context.Context, _ json.RawMessage, progress func(string)) (ToolResult, error) {
+	if t.progress != nil {
+		t.progress(progress)
+	}
+	if t.executeProgress != nil {
+		return t.executeProgress(ctx, progress), nil
+	}
 	return t.execute(ctx), nil
 }
 
@@ -88,6 +101,30 @@ func TestNestedInvokerAgentTurn(t *testing.T) {
 			if mode == "rewrite" && outcome.Result.Content[0].(provider.TextBlock).Text != "tool arguments cannot be rewritten" {
 				t.Fatalf("rewrite result=%#v", outcome)
 			}
+			var order []string
+			for _, ev := range events {
+				switch e := ev.(type) {
+				case EvToolExecutionStarted, EvToolResult:
+					order = append(order, ev.Type())
+				case EvNestedToolStarted:
+					order = append(order, ev.Type())
+					if e.ID != outcome.ID || e.ParentID != "parent-id" || e.Name != "child" || string(e.Args) != "{}" {
+						t.Errorf("started=%#v", e)
+					}
+				case EvNestedToolResult:
+					order = append(order, ev.Type())
+					if e.ID != outcome.ID || e.ParentID != "parent-id" || e.Name != "child" || e.Denied != outcome.Denied || e.IsError != outcome.Result.IsError {
+						t.Errorf("result=%#v", e)
+					}
+				}
+			}
+			want := []string{"tool_execution_started", "nested_tool_result", "tool_result"}
+			if mode == "allow" {
+				want = []string{"tool_execution_started", "nested_tool_started", "nested_tool_result", "tool_result"}
+			}
+			if !reflect.DeepEqual(order, want) {
+				t.Fatalf("order=%v want=%v", order, want)
+			}
 			results := 0
 			for _, ev := range events {
 				if e, ok := ev.(EvToolResult); ok {
@@ -146,7 +183,8 @@ func TestNestedInvokerConcurrent(t *testing.T) {
 		seen[call.ID] = true
 		return call.ID != "parent/1", "denied", nil
 	}
-	inv := &nestedInvoker{agent: a, tools: a.ToolsSnapshot(), parent: provider.ToolCallBlock{ID: "parent"}}
+	var events []AgentEvent
+	inv := &nestedInvoker{agent: a, tools: a.ToolsSnapshot(), parent: provider.ToolCallBlock{ID: "parent"}, sink: newToolEventDispatcher(func(ev AgentEvent) { events = append(events, ev) }).emit}
 	start := make(chan struct{})
 	var ready, done sync.WaitGroup
 	ready.Add(count)
@@ -166,6 +204,9 @@ func TestNestedInvokerConcurrent(t *testing.T) {
 	ready.Wait()
 	close(start)
 	done.Wait()
+	if len(events) != count*2-1 {
+		t.Fatalf("events=%d", len(events))
+	}
 	if len(seen) != count || len(outcomes) != count {
 		t.Fatalf("calls=%d outcomes=%d", len(seen), len(outcomes))
 	}
@@ -236,5 +277,223 @@ func TestTopLevelRewriteRefusalDoesNotTrackDenial(t *testing.T) {
 	res := a.runOneTool(context.Background(), provider.ToolCallBlock{ID: "top", Name: "result"}, a.ToolsSnapshot(), func(AgentEvent) {})
 	if !res.IsError || a.sawDeniedToolCall() {
 		t.Fatalf("result=%#v tracked=%v", res, a.sawDeniedToolCall())
+	}
+}
+
+func TestNestedInvokerSummaryAndRewrittenArgs(t *testing.T) {
+	for _, prefix := range []string{strings.Repeat("a", 200), strings.Repeat("a", 199), strings.Repeat("a", 198)} {
+		t.Run(fmt.Sprint(len(prefix)), func(t *testing.T) {
+			child := &invokingTestTool{name: "child", execute: func(context.Context) ToolResult {
+				return ToolResult{Content: []provider.Content{provider.TextBlock{Text: prefix}, provider.TextBlock{Text: "界tail"}}}
+			}}
+			a := NewAgent(nil, "test", "", Registry{"child": child})
+			a.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+				return true, "", json.RawMessage(`{"rewritten":true}`)
+			}
+			var events []AgentEvent
+			inv := &nestedInvoker{agent: a, tools: a.ToolsSnapshot(), parent: provider.ToolCallBlock{ID: "parent"}, sink: newToolEventDispatcher(func(ev AgentEvent) { events = append(events, ev) }).emit}
+			inv.Invoke(context.Background(), "child", nil)
+			if len(events) != 2 {
+				t.Fatalf("events=%v", events)
+			}
+			if got := string(events[0].(EvNestedToolStarted).Args); got != `{"rewritten":true}` {
+				t.Fatal(got)
+			}
+			summary := events[1].(EvNestedToolResult).Summary
+			if summary != prefix || !utf8.ValidString(summary) || len(summary) > 200 {
+				t.Fatalf("summary=%q", summary)
+			}
+		})
+	}
+}
+
+func TestNestedInvokerConcurrentParentProgress(t *testing.T) {
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	child := &invokingTestTool{name: "child", execute: func(context.Context) ToolResult { return ToolResult{} }, progress: func(progress func(string)) { progress("not emitted") }}
+	parent := &invokingTestTool{name: "parent", progress: func(progress func(string)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			for j := 0; j < 32; j++ {
+				progress("parent")
+			}
+		}()
+	}, execute: func(ctx context.Context) ToolResult {
+		inv, _ := NestedInvokerFrom(ctx)
+		for j := 0; j < 16; j++ {
+			workers.Add(1)
+			go func() { defer workers.Done(); <-start; inv.Invoke(ctx, "child", nil) }()
+		}
+		close(start)
+		workers.Wait()
+		return ToolResult{}
+	}}
+	a := NewAgent(nil, "test", "", Registry{"parent": parent, "child": child})
+	var events []AgentEvent
+	a.executeTools(context.Background(), provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "p", Name: "parent"}}}, func(ev AgentEvent) { events = append(events, ev) })
+	starts, results, progress := 0, 0, 0
+	for _, ev := range events {
+		switch e := ev.(type) {
+		case EvNestedToolStarted:
+			starts++
+		case EvNestedToolResult:
+			results++
+		case EvToolProgress:
+			progress++
+			if e.ID != "p" {
+				t.Errorf("nested progress: %#v", e)
+			}
+		}
+	}
+	if starts != 16 || results != 16 || progress != 32 {
+		t.Fatalf("starts=%d results=%d progress=%d", starts, results, progress)
+	}
+	if events[0].Type() != "tool_execution_started" || events[len(events)-1].Type() != "tool_result" {
+		t.Fatal("parent event order")
+	}
+}
+
+func TestNestedInvokerReentrantProgressObserver(t *testing.T) {
+	var inv NestedInvoker
+	parent := &invokingTestTool{name: "parent", executeProgress: func(ctx context.Context, progress func(string)) ToolResult {
+		inv, _ = NestedInvokerFrom(ctx)
+		progress("progress")
+		return ToolResult{}
+	}}
+	a := NewAgent(nil, "test", "", Registry{"parent": parent, "child": &resultTool{}})
+	done := make(chan []string, 1)
+	go func() {
+		var order []string
+		observer := func(ev AgentEvent) {
+			order = append(order, ev.Type())
+			if _, ok := ev.(EvToolProgress); ok {
+				inv.Invoke(context.Background(), "child", nil)
+			}
+		}
+		a.executeTools(context.Background(), provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "p", Name: "parent"}}}, observer)
+		done <- order
+	}()
+	select {
+	case order := <-done:
+		want := []string{"tool_execution_started", "tool_progress", "nested_tool_started", "nested_tool_result", "tool_result"}
+		if !reflect.DeepEqual(order, want) {
+			t.Fatalf("order=%v", order)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("reentrant observer deadlocked")
+	}
+}
+
+func TestNestedSummaryLargeOutput(t *testing.T) {
+	content := []provider.Content{provider.TextBlock{Text: strings.Repeat("界", 1<<20)}, provider.TextBlock{Text: "ignored"}}
+	got := nestedSummary(content)
+	if len(got) != 198 || !utf8.ValidString(got) {
+		t.Fatalf("summary bytes=%d", len(got))
+	}
+}
+
+func TestToolDispatcherRecoversAfterObserverPanic(t *testing.T) {
+	for _, kind := range []string{"tool_execution_started", "tool_progress"} {
+		t.Run(kind, func(t *testing.T) {
+			parent := &invokingTestTool{name: "parent", executeProgress: func(_ context.Context, progress func(string)) ToolResult { progress("hello"); return ToolResult{} }}
+			a := NewAgent(nil, "test", "", Registry{"parent": parent})
+			done := make(chan []string, 1)
+			go func() {
+				var events []string
+				panicked := false
+				a.executeTools(context.Background(), provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "p", Name: "parent"}}}, func(ev AgentEvent) {
+					events = append(events, ev.Type())
+					if ev.Type() == kind && !panicked {
+						panicked = true
+						panic("observer")
+					}
+				})
+				done <- events
+			}()
+			select {
+			case events := <-done:
+				if events[len(events)-1] != "tool_result" {
+					t.Fatalf("events=%v", events)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("dispatcher stuck after panic")
+			}
+		})
+	}
+}
+
+func TestNestedInvokerCloseWaitsForDelivery(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	returning := make(chan struct{})
+	done := make(chan []string, 1)
+	var retained NestedInvoker
+	var delivered atomic.Int64
+	parent := &invokingTestTool{name: "parent", execute: func(ctx context.Context) ToolResult {
+		retained, _ = NestedInvokerFrom(ctx)
+		go retained.Invoke(ctx, "child", nil)
+		<-entered
+		close(returning)
+		return ToolResult{}
+	}}
+	a := NewAgent(nil, "test", "", Registry{"parent": parent, "child": &resultTool{}})
+	go func() {
+		var events []string
+		a.executeTools(context.Background(), provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "p", Name: "parent"}}}, func(ev AgentEvent) {
+			delivered.Add(1)
+			events = append(events, ev.Type())
+			if _, ok := ev.(EvNestedToolStarted); ok {
+				close(entered)
+				<-release
+			}
+		})
+		done <- events
+	}()
+	select {
+	case <-returning:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parent did not return")
+	}
+	select {
+	case <-done:
+		t.Fatal("batch returned before nested delivery")
+	default:
+	}
+	close(release)
+	select {
+	case events := <-done:
+		want := []string{"tool_execution_started", "nested_tool_started", "nested_tool_result", "tool_result"}
+		if !reflect.DeepEqual(events, want) {
+			t.Fatalf("events=%v", events)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("batch did not finish")
+	}
+	before := delivered.Load()
+	out := retained.Invoke(context.Background(), "child", nil)
+	if delivered.Load() != before {
+		t.Fatal("closed invoker emitted events")
+	}
+	if !out.Result.IsError || out.ID != "" || out.Result.Content[0].(provider.TextBlock).Text != "nested tool calls are no longer available: parent tool finished" {
+		t.Fatalf("outcome=%#v", out)
+	}
+}
+
+func TestToolDispatcherFlushResumesQueuedEventsAfterPanic(t *testing.T) {
+	var events []string
+	var d *toolEventDispatcher
+	d = newToolEventDispatcher(func(ev AgentEvent) {
+		events = append(events, ev.Type())
+		if ev.Type() == "tool_progress" {
+			d.emit(EvDone{})
+			panic("once")
+		}
+	})
+	func() { defer func() { _ = recover() }(); d.emit(EvToolProgress{}) }()
+	d.flush()
+	if !reflect.DeepEqual(events, []string{"tool_progress", "done"}) {
+		t.Fatalf("events=%v", events)
 	}
 }

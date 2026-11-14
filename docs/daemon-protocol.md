@@ -1,4 +1,4 @@
-# Local daemon protocol (version 1)
+# Local daemon protocol (version 2)
 
 The protocol uses UTF-8 NDJSON over a local AF_UNIX socket: one JSON object
 per line, no pretty-printing. Each request has an opaque string `id`; exactly
@@ -17,8 +17,8 @@ version mismatch prints `daemon is running zut <v>; run "zut daemon restart"`
 and continues. `client_kind` is `tui`, `headless`, `cli`, or `bot`.
 
 ```json
-{"id":"1","type":"hello","protocol_version":1,"client_version":"0.0.0-dev","client_kind":"tui","pid":123}
-{"id":"1","type":"result","ok":true,"data":{"protocol_version":1,"daemon_version":"0.0.0-dev"}}
+{"id":"1","type":"hello","protocol_version":2,"client_version":"0.0.0-dev","client_kind":"tui","pid":123}
+{"id":"1","type":"result","ok":true,"data":{"protocol_version":2,"daemon_version":"0.0.0-dev"}}
 ```
 
 ## Requests
@@ -300,3 +300,5 @@ deltas. Clients reload `resident_history` only when it or the resident state
 changes. Older daemons omit it; a missing value reads as zero, so such clients
 reload on state changes only. The counter restarts at zero when the daemon
 restarts.
+
+Unknown agent event kinds are ignorable and still advance the subscription sequence. Protocol version mismatches fail at hello; run `zut daemon restart` after upgrading.

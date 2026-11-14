@@ -56,6 +56,22 @@ func eventProjection(ev core.AgentEvent) map[string]any {
 		var args any
 		_ = json.Unmarshal(e.Args, &args)
 		m["args"] = args
+	case core.EvNestedToolStarted:
+		m["id"] = e.ID
+		m["parent_id"] = e.ParentID
+		m["name"] = e.Name
+		var args any
+		_ = json.Unmarshal(e.Args, &args)
+		m["args"] = args
+	case core.EvNestedToolResult:
+		m["id"] = e.ID
+		m["parent_id"] = e.ParentID
+		m["name"] = e.Name
+		m["is_error"] = e.IsError
+		m["denied"] = e.Denied
+		if e.Summary != "" {
+			m["summary"] = e.Summary
+		}
 	case core.EvToolExecutionStarted:
 		m["id"] = e.ID
 		m["name"] = e.Name
@@ -205,12 +221,14 @@ func EncodeAgentEvent(ev core.AgentEvent) (string, json.RawMessage, error) {
 	return ev.Type(), b, err
 }
 
-// DecodeAgentEvent restores a concrete event and rejects unknown event kinds.
+type unknownAgentEvent string
+
+func (e unknownAgentEvent) Type() string { return string(e) }
+
+// DecodeAgentEvent preserves unknown kinds as ignorable events, retaining sequence progress.
 func DecodeAgentEvent(kind string, data json.RawMessage) (core.AgentEvent, error) {
-	p, err := agentTarget(kind)
-	if err != nil {
-		return nil, err
-	}
+	p, targetErr := agentTarget(kind)
+	var err error
 	var w struct {
 		Type  string          `json:"type"`
 		Value json.RawMessage `json:"value"`
@@ -220,6 +238,9 @@ func DecodeAgentEvent(kind string, data json.RawMessage) (core.AgentEvent, error
 	}
 	if w.Type != kind {
 		return nil, fmt.Errorf("agent event kind mismatch")
+	}
+	if targetErr != nil {
+		return unknownAgentEvent(kind), nil
 	}
 	if len(w.Value) == 0 {
 		return nil, fmt.Errorf("missing lossless agent value")
@@ -269,6 +290,10 @@ func agentTarget(kind string) (any, error) {
 		return &core.EvTextDelta{}, nil
 	case "tool_call":
 		return &core.EvToolCall{}, nil
+	case "nested_tool_started":
+		return &core.EvNestedToolStarted{}, nil
+	case "nested_tool_result":
+		return &core.EvNestedToolResult{}, nil
 	case "tool_execution_started":
 		return &core.EvToolExecutionStarted{}, nil
 	case "tool_use_start":

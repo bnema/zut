@@ -19,6 +19,9 @@ func eventCases() []core.AgentEvent {
 	content := []provider.Content{provider.TextBlock{Text: "hi", ThoughtSignature: "sig", Phase: "commentary"}, provider.ImageBlock{MimeType: "image/png", Data: []byte{1, 2}}, provider.ReasoningBlock{}, provider.ReasoningBlock{ID: "r", Encrypted: "opaque"}, provider.ToolCallBlock{ID: "c", Name: "read", Arguments: json.RawMessage(`{"x":1}`), Origin: "host"}, provider.ToolResultBlock{CallID: "c", Content: []provider.Content{provider.TextBlock{Text: "nested", ThoughtSignature: "nested-sig"}}}}
 	msg := provider.Message{Role: provider.RoleAssistant, Content: content, Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Meta: map[string]string{"k": "v"}, AddedToolNames: []string{"read"}}
 	return []core.AgentEvent{
+		core.EvNestedToolStarted{ID: "parent/1", ParentID: "parent", Name: "read", Args: json.RawMessage(`{"path":"a"}`)},
+		core.EvNestedToolResult{ID: "parent/1", ParentID: "parent", Name: "read", IsError: true, Denied: true, Summary: "denied"},
+		core.EvNestedToolResult{ID: "parent/2", ParentID: "parent", Name: "read"},
 		core.EvTurnStart{Step: 2, TurnID: "turn"}, core.EvUserMessage{Message: msg}, core.EvAssistantStart{}, core.EvRequestStarted{Provider: "p", Model: "m", Scope: core.RetryScopeAgent, Attempt: 2, MaxAttempts: 3}, core.EvCacheDiagnostics{Eligible: true, Mode: "m", Transport: "t", Continuation: "c"}, core.EvRetryScheduled{Scope: core.RetryScopeProvider, Attempt: 1, MaxAttempts: 2, Delay: 123456789 * time.Nanosecond, Reason: "idle timeout (1/1)"}, core.EvTextDelta{Delta: "text"}, core.EvToolCall{ID: "c", Name: "read", Args: json.RawMessage(`{"x":1}`)}, core.EvToolExecutionStarted{ID: "c", Name: "read"}, core.EvToolUseStart{ID: "c", Name: "read"}, core.EvToolUseArgs{ID: "c", Delta: `{"x"`}, core.EvToolUseEnd{ID: "c"}, core.EvToolProgress{ID: "c", Text: "working"}, core.EvPlanUpdate{CallID: "c", Update: core.PlanUpdate{Plan: []core.PlanStep{{Step: "do", Status: core.PlanInProgress}}}}, core.EvToolResult{ID: "c", Result: core.ToolResult{Content: content, IsError: true, ActivateTools: []string{"read"}, Details: map[string]any{"detail": "value"}, Timing: &provider.ToolTiming{Duration: time.Second}}}, core.EvUsage{Usage: provider.Usage{InputTokens: 5, ReasoningTokensKnown: true, ReasoningTokens: 2}, Cumulative: provider.Usage{OutputTokens: 8}}, core.EvAssistantMessage{Message: msg}, core.EvTurnEnd{Stop: provider.StopReason("end"), Err: errors.New("synthetic")}, core.EvTurnRecovery{Reason: "missing_answer", Attempt: 1}, core.EvRepetitionGuard{Count: 3, Elapsed: 123456789 * time.Nanosecond}, core.EvDone{}, core.EvError{Err: errors.New("synthetic")}, core.EvTurnEnd{}, core.EvError{},
 	}
 }
@@ -120,8 +123,8 @@ func TestSessionEventRoundTrip(t *testing.T) {
 	}
 }
 func TestCodecRejectsUnknown(t *testing.T) {
-	if _, err := daemonproto.DecodeAgentEvent("unknown", json.RawMessage(`{}`)); err == nil {
-		t.Fatal("accepted unknown agent event")
+	if ev, err := daemonproto.DecodeAgentEvent("unknown", json.RawMessage(`{"type":"unknown"}`)); err != nil || ev.Type() != "unknown" {
+		t.Fatal("unknown agent event not preserved")
 	}
 	if _, err := daemonproto.DecodeEvent(daemonproto.EventNotification{Kind: "unknown", Data: json.RawMessage(`{}`)}); err == nil {
 		t.Fatal("accepted unknown session event")

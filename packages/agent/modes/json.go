@@ -121,6 +121,22 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		var args any
 		_ = json.Unmarshal(e.Args, &args)
 		m["args"] = args
+	case core.EvNestedToolStarted:
+		m["id"] = e.ID
+		m["parent_id"] = e.ParentID
+		m["name"] = e.Name
+		var args any
+		_ = json.Unmarshal(e.Args, &args)
+		m["args"] = args
+	case core.EvNestedToolResult:
+		m["id"] = e.ID
+		m["parent_id"] = e.ParentID
+		m["name"] = e.Name
+		m["is_error"] = e.IsError
+		m["denied"] = e.Denied
+		if e.Summary != "" {
+			m["summary"] = e.Summary
+		}
 	case core.EvToolExecutionStarted:
 		m["id"] = e.ID
 		m["name"] = e.Name

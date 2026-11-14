@@ -672,9 +672,10 @@ type Interactive struct {
 	pendingAlert *extproto.AlertRequest
 	// portTurnEnd is the daemon's last EvTurnEnd of the running turn; the
 	// turn-end bell is decided from it when Info reports idle.
-	portTurnEnd *core.EvTurnEnd
-	toolCalls   map[string]*tui.ToolCallView
-	toolOrder   []string
+	portTurnEnd     *core.EvTurnEnd
+	toolCalls       map[string]*tui.ToolCallView
+	toolOrder       []string
+	nestedToolLines map[string]*nestedToolLines
 	// toolRenderRevision is monotonic for the lifetime of the interactive
 	// view. Per-call counters would let unrelated tools alias the same rendered
 	// cache frame when they reach the same local revision.

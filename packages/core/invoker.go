@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/provider"
 )
 
 type invokeHooks struct {
-	started  func()
+	started  func(json.RawMessage)
 	progress func(string)
 }
 
@@ -82,7 +85,7 @@ func (a *Agent) invokeTool(ctx context.Context, tc provider.ToolCallBlock, tools
 	// Tool panics are recovered by the invocation-level defer above so
 	// guard, lookup, progress, and Execute panics all receive timing.
 	if hooks.started != nil {
-		hooks.started()
+		hooks.started(args)
 	}
 	out, err := tool.Execute(ctx, args, func(text string) {
 		if hooks.progress != nil {
@@ -122,6 +125,7 @@ type NestedOutcome struct {
 // NestedInvoker invokes tools without committing nested results. Every nested call
 // goes through BeforeToolExecute (guards, confirmation, and rewrite policy) and
 // denied tracking.
+// Callers must not retain the invoker beyond the parent Execute call.
 type NestedInvoker interface {
 	Tools() Registry
 	Invoke(ctx context.Context, name string, args json.RawMessage) NestedOutcome
@@ -139,20 +143,148 @@ func NestedInvokerFrom(ctx context.Context) (NestedInvoker, bool) {
 }
 
 type nestedInvoker struct {
-	agent   *Agent
-	tools   Registry
-	parent  provider.ToolCallBlock
-	counter atomic.Uint64
+	agent      *Agent
+	tools      Registry
+	parent     provider.ToolCallBlock
+	counter    atomic.Uint64
+	sink       func(AgentEvent)
+	lifetimeMu sync.Mutex
+	closed     bool
+	inflight   sync.WaitGroup
+}
+
+// toolEventDispatcher serializes delivery without holding a lock across callbacks.
+type toolEventDispatcher struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	queue    []AgentEvent
+	draining bool
+	sink     func(AgentEvent)
+}
+
+func newToolEventDispatcher(sink func(AgentEvent)) *toolEventDispatcher {
+	d := &toolEventDispatcher{sink: sink}
+	d.cond = sync.NewCond(&d.mu)
+	return d
+}
+func (d *toolEventDispatcher) emit(ev AgentEvent) {
+	d.mu.Lock()
+	d.queue = append(d.queue, ev)
+	if d.draining {
+		d.mu.Unlock()
+		return
+	}
+	d.draining = true
+	d.drainLocked()
+}
+
+// drainLocked takes ownership of the lock and releases it before delivery.
+func (d *toolEventDispatcher) drainLocked() {
+	for {
+		if len(d.queue) == 0 {
+			d.queue = nil
+			d.draining = false
+			d.cond.Broadcast()
+			d.mu.Unlock()
+			return
+		}
+		ev := d.queue[0]
+		d.queue[0] = nil
+		d.queue = d.queue[1:]
+		d.mu.Unlock()
+		d.deliver(ev)
+		d.mu.Lock()
+	}
+}
+func (d *toolEventDispatcher) deliver(ev AgentEvent) {
+	completed := false
+	defer func() {
+		if !completed {
+			d.mu.Lock()
+			d.draining = false
+			d.cond.Broadcast()
+			d.mu.Unlock()
+			// The original panic continues; queued events remain for emit or flush.
+		}
+	}()
+	if d.sink != nil {
+		d.sink(ev)
+	}
+	completed = true
+}
+
+// flush waits for delivery to finish. Never call it from inside a sink callback.
+func (d *toolEventDispatcher) flush() {
+	d.mu.Lock()
+	for d.draining {
+		d.cond.Wait()
+	}
+	if len(d.queue) == 0 {
+		d.mu.Unlock()
+		return
+	}
+	d.draining = true
+	d.drainLocked()
+}
+func (n *nestedInvoker) close() {
+	n.lifetimeMu.Lock()
+	n.closed = true
+	n.lifetimeMu.Unlock()
+	n.inflight.Wait()
+}
+
+func nestedSummary(content []provider.Content) string {
+	var text strings.Builder
+	for _, c := range content {
+		if b, ok := c.(provider.TextBlock); ok {
+			remaining := 200 + utf8.UTFMax - text.Len()
+			if len(b.Text) > remaining {
+				text.WriteString(b.Text[:remaining])
+			} else {
+				text.WriteString(b.Text)
+			}
+			if text.Len() >= 200+utf8.UTFMax {
+				break
+			}
+		}
+	}
+	s := text.String()
+	if len(s) <= 200 {
+		return strings.Clone(s)
+	}
+	end := 200
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return strings.Clone(s[:end])
 }
 
 func (n *nestedInvoker) Tools() Registry { return n.tools }
 
 func (n *nestedInvoker) Invoke(ctx context.Context, name string, args json.RawMessage) NestedOutcome {
+	n.lifetimeMu.Lock()
+	if n.closed {
+		n.lifetimeMu.Unlock()
+		return NestedOutcome{Result: ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: "nested tool calls are no longer available: parent tool finished"}}}}
+	}
+	n.inflight.Add(1)
+	n.lifetimeMu.Unlock()
+	defer n.inflight.Done()
 	id := n.parent.ID + "/" + strconv.FormatUint(n.counter.Add(1), 10)
 	call := provider.ToolCallBlock{ID: id, Name: name, Arguments: args, Origin: n.parent.Origin}
-	result, denied := n.agent.invokeTool(withNestedInvoker(ctx, nil), call, n.tools, invokeHooks{})
+	result, denied := n.agent.invokeTool(withNestedInvoker(ctx, nil), call, n.tools, invokeHooks{
+		// These are the normalized arguments after guard rewrites and empty -> {}.
+		started: func(executed json.RawMessage) {
+			if n.sink != nil {
+				n.sink(EvNestedToolStarted{ID: id, ParentID: n.parent.ID, Name: name, Args: append(json.RawMessage(nil), executed...)})
+			}
+		},
+	})
 	if denied {
 		n.agent.markDeniedToolCall()
+	}
+	if n.sink != nil {
+		n.sink(EvNestedToolResult{ID: id, ParentID: n.parent.ID, Name: name, IsError: result.IsError, Denied: denied, Summary: nestedSummary(result.Content)})
 	}
 	return NestedOutcome{ID: id, Result: result, Denied: denied}
 }

@@ -1498,6 +1498,8 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 }
 
 func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.Message, sink func(AgentEvent)) (provider.Message, bool, []repetitionObservation) {
+	dispatcher := newToolEventDispatcher(sink)
+	sink = dispatcher.emit
 	var executed provider.Message
 	skipping := false
 	var results []provider.Content
@@ -1528,7 +1530,7 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 			}
 		} else {
 			executed.Content = append(executed.Content, tc)
-			res = a.runOneTool(ctx, tc, tools, sink)
+			res = a.runOneToolWithDispatcher(ctx, tc, tools, dispatcher)
 		}
 		// A plan tool result carries the parsed operation, not the resulting
 		// checklist: core validates it against the current plan and materializes
@@ -1599,17 +1601,30 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 		Time:           time.Now(),
 		AddedToolNames: addedTools,
 	}
+	dispatcher.flush()
 	return toolMessage, hadError, repetitionCallObservations(executed, toolMessage)
 }
 
 func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) ToolResult {
+	return a.runOneToolWithDispatcher(ctx, tc, tools, newToolEventDispatcher(sink))
+}
+
+func (a *Agent) runOneToolWithDispatcher(ctx context.Context, tc provider.ToolCallBlock, tools Registry, dispatcher *toolEventDispatcher) ToolResult {
+	sink := dispatcher.emit
+	var inv *nestedInvoker
 	if tc.ID != "" {
-		ctx = withNestedInvoker(ctx, &nestedInvoker{agent: a, tools: tools, parent: tc})
+		inv = &nestedInvoker{agent: a, tools: tools, parent: tc, sink: sink}
+		ctx = withNestedInvoker(ctx, inv)
+
 	}
 	res, _ := a.invokeTool(ctx, tc, tools, invokeHooks{
-		started:  func() { sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name}) },
+		started:  func(json.RawMessage) { sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name}) },
 		progress: func(text string) { sink(EvToolProgress{ID: tc.ID, Text: text}) },
 	})
+	if inv != nil {
+		inv.close()
+	}
+	dispatcher.flush()
 	return res
 }
 

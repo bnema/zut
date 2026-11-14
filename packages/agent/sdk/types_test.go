@@ -101,3 +101,34 @@ func TestToEventPreservesActivityAndToolStreamFacts(t *testing.T) {
 		t.Fatalf("tool execution = %#v", toolEnd)
 	}
 }
+
+func TestToEventNestedTools(t *testing.T) {
+	started := toEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "read", Args: json.RawMessage(`{"path":"a"}`)})
+	if started.Type != "nested_tool_started" || started.ID != "p/1" || started.ParentID != "p" || started.Name != "read" || string(started.Args) != `{"path":"a"}` {
+		t.Fatalf("started=%#v", started)
+	}
+	result := toEvent(core.EvNestedToolResult{ID: "p/1", ParentID: "p", Name: "read", IsError: true, Denied: true, Summary: "denied"})
+	if result.Type != "nested_tool_result" || result.ID != "p/1" || result.ParentID != "p" || result.Name != "read" || !result.IsError || !result.Denied || result.Summary != "denied" {
+		t.Fatalf("result=%#v", result)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["parent_id"] != "p" || fields["denied"] != true || fields["summary"] != "denied" {
+		t.Fatalf("wire=%s", raw)
+	}
+	raw, err = json.Marshal(toEvent(core.EvToolExecutionStarted{ID: "p", Name: "parent"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"parent_id", "denied", "summary"} {
+		if strings.Contains(string(raw), `"`+field+`"`) {
+			t.Fatalf("optional %s included: %s", field, raw)
+		}
+	}
+}

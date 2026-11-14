@@ -146,3 +146,44 @@ func TestEventToJSONActivityLifecycle(t *testing.T) {
 		t.Fatalf("tool event = %#v", tool)
 	}
 }
+
+func TestJSONWriterNestedEvents(t *testing.T) {
+	var out bytes.Buffer
+	w := NewJSONWriter(&out)
+	w.Handle(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "read", Args: json.RawMessage(`{"path":"a"}`)})
+	w.Handle(core.EvNestedToolResult{ID: "p/1", ParentID: "p", Name: "read", IsError: true, Denied: true, Summary: "denied\nreason"})
+	w.Handle(core.EvNestedToolResult{ID: "p/2", ParentID: "p", Name: "read"})
+	if err := w.Err(); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("lines=%d: %s", len(lines), out.String())
+	}
+	for idx, line := range lines {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["parent_id"] != "p" || got["name"] != "read" {
+			t.Fatalf("event=%v", got)
+		}
+		switch idx {
+		case 0:
+			if got["type"] != "nested_tool_started" || got["id"] != "p/1" || got["args"].(map[string]any)["path"] != "a" {
+				t.Fatalf("started=%v", got)
+			}
+		case 1:
+			if got["type"] != "nested_tool_result" || got["id"] != "p/1" || got["is_error"] != true || got["denied"] != true || got["summary"] != "denied\nreason" {
+				t.Fatalf("result=%v", got)
+			}
+		case 2:
+			if got["type"] != "nested_tool_result" || got["id"] != "p/2" || got["is_error"] != false || got["denied"] != false {
+				t.Fatalf("result=%v", got)
+			}
+			if _, ok := got["summary"]; ok {
+				t.Fatalf("empty summary included: %v", got)
+			}
+		}
+	}
+}
