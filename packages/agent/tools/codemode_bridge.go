@@ -130,6 +130,74 @@ func codemodeAllowed(name string) bool {
 	return true
 }
 
+// codemodeNormalize accepts Python-friendly aliases without changing registry names.
+func codemodeNormalize(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
+}
+
+func (b *codemodeBridge) resolveName(requested string) (string, *codemodeError) {
+	tools := b.inv.Tools()
+	if _, err := tools.Get(requested); err == nil {
+		return requested, nil
+	}
+	normalized := codemodeNormalize(requested)
+	var matches, suggestions []string
+	for name := range tools {
+		n := codemodeNormalize(name)
+		if n == normalized {
+			matches = append(matches, name)
+		}
+		if codemodeAllowed(name) && (strings.Contains(n, normalized) || strings.Contains(normalized, n)) {
+			suggestions = append(suggestions, name)
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	message := fmt.Sprintf("unknown tool %q", requested)
+	if len(matches) > 1 {
+		message += "; ambiguous normalized name; candidates: " + strings.Join(matches, ", ")
+	} else if len(suggestions) > 0 {
+		sort.Strings(suggestions)
+		if len(suggestions) > 3 {
+			suggestions = suggestions[:3]
+		}
+		message += "; did you mean: " + strings.Join(suggestions, ", ") + "?"
+	}
+	return "", &codemodeError{Kind: "unknown_tool", Message: message}
+}
+
+// codemodeSearchScore uses tiers so description matches never outrank name matches.
+// All tokens must match; the weakest token determines the tier.
+func codemodeSearchScore(name, description, query string, tokens []string) int {
+	if len(tokens) == 0 {
+		return 0
+	}
+	name = codemodeNormalize(name)
+	description = codemodeNormalize(description)
+	score := 3
+	for _, token := range tokens {
+		if strings.Contains(name, token) {
+			continue
+		}
+		if !strings.Contains(description, token) {
+			return -1
+		}
+		score = 1
+	}
+	if score == 1 {
+		return score
+	}
+	if name == query {
+		return 4
+	}
+	if strings.HasPrefix(name, query) {
+		return 3
+	}
+	return 2
+}
+
 func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply {
 	var req struct {
 		Method string          `json:"method"`
@@ -160,10 +228,14 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 		if !codemodeAllowed(p.Name) {
 			return codemodeFailure("not_allowed", fmt.Sprintf("tool %q is not allowed in codemode", p.Name))
 		}
-		tool, err := b.inv.Tools().Get(p.Name)
-		if err != nil {
-			return codemodeFailure("unknown_tool", err.Error())
+		name, resolveErr := b.resolveName(p.Name)
+		if resolveErr != nil {
+			return codemodeReply{Error: resolveErr}
 		}
+		if !codemodeAllowed(name) {
+			return codemodeFailure("not_allowed", fmt.Sprintf("tool %q is not allowed in codemode", name))
+		}
+		tool, _ := b.inv.Tools().Get(name)
 		if req.Method == "describe" {
 			return codemodeReply{Result: map[string]any{"name": tool.Name(), "description": tool.Description(), "schema": tool.Schema()}}
 		}
@@ -171,7 +243,7 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			return codemodeFailure("limit", "codemode permits at most 200 tool calls")
 		}
 		b.calls++
-		out := b.inv.Invoke(ctx, p.Name, p.Args)
+		out := b.inv.Invoke(ctx, name, p.Args)
 		text := codemodeText(out.Result.Content)
 		if out.Denied {
 			b.denied++
@@ -197,21 +269,30 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 		type entry struct {
 			Name    string `json:"name"`
 			Summary string `json:"summary"`
+			Score   int    `json:"score"`
 		}
 		results := []entry{}
-		query := strings.ToLower(p.Query)
+		tokens := strings.Fields(codemodeNormalize(p.Query))
+		query := strings.Join(tokens, " ")
 		for name, tool := range b.inv.Tools() {
-			if !codemodeAllowed(name) || !strings.Contains(strings.ToLower(name+" "+tool.Description()), query) {
+			score := codemodeSearchScore(name, tool.Description(), query, tokens)
+			if !codemodeAllowed(name) || score < 0 {
 				continue
 			}
 			summary, _, _ := strings.Cut(tool.Description(), "\n")
-			results = append(results, entry{name, codemodeUTF8Prefix(summary, 160)})
+			results = append(results, entry{name, codemodeUTF8Prefix(summary, 160), score})
 		}
-		sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+		sort.Slice(results, func(i, j int) bool {
+			if results[i].Score != results[j].Score {
+				return results[i].Score > results[j].Score
+			}
+			return results[i].Name < results[j].Name
+		})
+		total := len(results)
 		if len(results) > limit {
 			results = results[:limit]
 		}
-		return codemodeReply{Result: map[string]any{"results": results}}
+		return codemodeReply{Result: map[string]any{"results": results, "total": total, "truncated": total > limit}}
 	case "result":
 		if len(p.Value) == 0 {
 			return codemodeFailure("bad_request", "value is required")

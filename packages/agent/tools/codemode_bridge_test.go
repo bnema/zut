@@ -301,3 +301,105 @@ func TestCodemodeBridgeCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestCodemodeBridgeNameResolution(t *testing.T) {
+	inv := &bridgeTestInvoker{tools: core.NewRegistry(
+		bridgeTestTool{"read", ""}, bridgeTestTool{"mcp__svelte__list-sections", ""},
+		bridgeTestTool{"foo-bar", ""}, bridgeTestTool{"foo_bar", ""},
+		bridgeTestTool{"ask_user_question", ""}, bridgeTestTool{"codemode", ""},
+		bridgeTestTool{"read_a", ""}, bridgeTestTool{"read_b", ""}, bridgeTestTool{"read_c", ""},
+	)}
+	var invoked string
+	inv.invoke = func(_ context.Context, name string, _ json.RawMessage) core.NestedOutcome {
+		invoked = name
+		return core.NestedOutcome{}
+	}
+	b := newCodemodeBridge(inv, "")
+	for _, method := range []string{"call", "describe"} {
+		for _, tc := range []struct{ requested, canonical string }{
+			{"Read", "read"}, {"mcp__svelte__list_sections", "mcp__svelte__list-sections"}, {"foo_bar", "foo_bar"},
+		} {
+			raw, _ := json.Marshal(map[string]any{"method": method, "params": map[string]string{"name": tc.requested}})
+			reply := b.handle(context.Background(), raw)
+			if reply.Error != nil {
+				t.Fatal(reply.Error)
+			}
+			if method == "call" && invoked != tc.canonical {
+				t.Fatal(invoked)
+			}
+			if method == "describe" && reply.Result.(map[string]any)["name"] != tc.canonical {
+				t.Fatal(reply)
+			}
+		}
+		for _, tc := range []struct{ name, kind, message string }{
+			{"FOO_BAR", "unknown_tool", "candidates: foo-bar, foo_bar"},
+			{"rea", "unknown_tool", "did you mean: read, read_a, read_b?"},
+			{"ASK-USER-QUESTION", "not_allowed", "not allowed"},
+			{"CODEMODE", "not_allowed", "not allowed"},
+			{"codem", "unknown_tool", "unknown tool"},
+		} {
+			raw, _ := json.Marshal(map[string]any{"method": method, "params": map[string]string{"name": tc.name}})
+			reply := b.handle(context.Background(), raw)
+			if reply.Error == nil || reply.Error.Kind != tc.kind || !strings.Contains(reply.Error.Message, tc.message) {
+				t.Fatalf("%s: %#v", tc.name, reply.Error)
+			}
+			if tc.name == "codem" && strings.Contains(reply.Error.Message, "did you mean") {
+				t.Fatal(reply.Error)
+			}
+		}
+	}
+}
+
+func TestCodemodeBridgeRankedSearch(t *testing.T) {
+	inv := &bridgeTestInvoker{tools: core.NewRegistry(
+		bridgeTestTool{"read", "Read files"}, bridgeTestTool{"reader", ""},
+		bridgeTestTool{"mcp__blender__read", ""}, bridgeTestTool{"a", "read docs"},
+		bridgeTestTool{"mcp__svelte__list-sections", "Svelte docs"},
+		bridgeTestTool{"svelte", "components"}, bridgeTestTool{"codemode", "read docs"},
+	)}
+	b := newCodemodeBridge(inv, "")
+	for _, tc := range []struct {
+		query     string
+		limit     int
+		names     []string
+		total     int
+		truncated bool
+	}{
+		{"READ", 2, []string{"read", "reader"}, 4, true},
+		{"read", 10, []string{"read", "reader", "mcp__blender__read", "a"}, 4, false},
+		{"svelte docs", 10, []string{"mcp__svelte__list-sections"}, 1, false},
+		{"LIST_SECTIONS", 10, []string{"mcp__svelte__list-sections"}, 1, false},
+		{"missing", 10, []string{}, 0, false},
+		{"  ", 2, []string{"a", "mcp__blender__read"}, 6, true},
+	} {
+		raw, _ := json.Marshal(map[string]any{"method": "search", "params": map[string]any{"query": tc.query, "limit": tc.limit}})
+		reply := b.handle(context.Background(), raw)
+		encoded, _ := json.Marshal(reply.Result)
+		var result struct {
+			Results []struct {
+				Name    string
+				Summary string
+				Score   int
+			}
+			Total     int
+			Truncated bool
+		}
+		if err := json.Unmarshal(encoded, &result); err != nil {
+			t.Fatal(err)
+		}
+		names := []string{}
+		for _, entry := range result.Results {
+			names = append(names, entry.Name)
+		}
+		if !reflect.DeepEqual(names, tc.names) || result.Total != tc.total || result.Truncated != tc.truncated {
+			t.Fatalf("%q: %s", tc.query, encoded)
+		}
+		if tc.query == "read" {
+			for i, want := range []int{4, 3, 2, 1} {
+				if result.Results[i].Score != want {
+					t.Fatal(string(encoded))
+				}
+			}
+		}
+	}
+}
