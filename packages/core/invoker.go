@@ -169,6 +169,9 @@ func newToolEventDispatcher(sink func(AgentEvent)) *toolEventDispatcher {
 	return d
 }
 func (d *toolEventDispatcher) emit(ev AgentEvent) {
+	if p, ok := ev.(EvToolProgress); ok && p.Text == "" {
+		return
+	}
 	d.mu.Lock()
 	d.queue = append(d.queue, ev)
 	if progress, ok := ev.(EvToolProgress); ok {
@@ -193,20 +196,32 @@ const toolProgressTruncated = "…[progress truncated]"
 // A single marker precedes the surviving progress, within the byte budget.
 func (d *toolEventDispatcher) boundProgressLocked() {
 	out := d.queue[:0]
-	for _, event := range d.queue {
+	for i := 0; i < len(d.queue); {
+		event := d.queue[i]
 		p, ok := event.(EvToolProgress)
-		if ok {
-			p.Text = strings.TrimPrefix(p.Text, toolProgressTruncated)
-			if len(out) > 0 {
-				if previous, ok := out[len(out)-1].(EvToolProgress); ok && previous.ID == p.ID {
-					previous.Text += p.Text
-					out[len(out)-1] = previous
-					continue
-				}
-			}
-			event = p
+		if !ok {
+			out = append(out, event)
+			i++
+			continue
 		}
-		out = append(out, event)
+		// Identify a run before writing into the queue's reused backing array.
+		end, size := i, 0
+		for end < len(d.queue) {
+			next, ok := d.queue[end].(EvToolProgress)
+			if !ok || next.ID != p.ID {
+				break
+			}
+			size += len(strings.TrimPrefix(next.Text, toolProgressTruncated))
+			end++
+		}
+		var text strings.Builder
+		text.Grow(size)
+		for j := i; j < end; j++ {
+			text.WriteString(strings.TrimPrefix(d.queue[j].(EvToolProgress).Text, toolProgressTruncated))
+		}
+		p.Text = text.String()
+		out = append(out, p)
+		i = end
 	}
 	clear(d.queue[len(out):])
 	d.queue = out

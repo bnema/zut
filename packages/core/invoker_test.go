@@ -493,7 +493,7 @@ func TestToolDispatcherFlushResumesQueuedEventsAfterPanic(t *testing.T) {
 				panic("once")
 			}
 		})
-		func() { defer func() { _ = recover() }(); d.emit(EvToolProgress{}) }()
+		func() { defer func() { _ = recover() }(); d.emit(EvToolProgress{Text: "hello"}) }()
 		d.flush()
 		if !reflect.DeepEqual(events, []string{"tool_progress", "done"}) {
 			t.Fatalf("events=%v", events)
@@ -549,6 +549,100 @@ func TestToolDispatcherBoundsPendingProgress(t *testing.T) {
 		}
 		if !reflect.DeepEqual(lifecycle, []string{"tool_execution_started", "nested_tool_started", "nested_tool_result"}) {
 			t.Fatal(lifecycle)
+		}
+	})
+}
+
+func TestToolDispatcherDropsEmptyProgress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		d := newToolEventDispatcher(func(AgentEvent) { <-release })
+		go d.emit(EvToolExecutionStarted{})
+		synctest.Wait()
+		for range 10000 {
+			d.emit(EvToolProgress{ID: "parent"})
+			d.emit(EvToolProgress{ID: "nested"})
+		}
+		if len(d.queue) != 0 || d.pendingProgressBytes != 0 {
+			t.Fatalf("queue=%d bytes=%d", len(d.queue), d.pendingProgressBytes)
+		}
+		close(release)
+		synctest.Wait()
+		d.flush()
+	})
+}
+
+func TestToolDispatcherProgressRuneBoundary(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		d := newToolEventDispatcher(func(AgentEvent) { <-release })
+		go d.emit(EvToolExecutionStarted{})
+		synctest.Wait()
+		// Overflow plus marker reservation cuts two bytes into the initial rune.
+		suffix := strings.Repeat("z", maxPendingToolProgressBytes-len(toolProgressTruncated)-1)
+		d.emit(EvToolProgress{ID: "p", Text: strings.Repeat("a", len(toolProgressTruncated)) + "界" + suffix})
+		want := toolProgressTruncated + suffix
+		if len(d.queue) != 1 {
+			t.Fatalf("queue=%d", len(d.queue))
+		}
+		got := d.queue[0].(EvToolProgress).Text
+		if got != want || !utf8.ValidString(got) {
+			t.Fatal("incorrect surviving suffix")
+		}
+		total := 0
+		for _, event := range d.queue {
+			if p, ok := event.(EvToolProgress); ok {
+				total += len(p.Text)
+			}
+		}
+		if total != d.pendingProgressBytes || total != len(want) {
+			t.Fatalf("computed=%d tracked=%d want=%d", total, d.pendingProgressBytes, len(want))
+		}
+		close(release)
+		synctest.Wait()
+		d.flush()
+		if d.pendingProgressBytes != 0 {
+			t.Fatal(d.pendingProgressBytes)
+		}
+	})
+}
+
+func TestToolDispatcherReentrantProgressOverflow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var events []AgentEvent
+		var d *toolEventDispatcher
+		d = newToolEventDispatcher(func(event AgentEvent) {
+			events = append(events, event)
+			if _, ok := event.(EvToolExecutionStarted); ok {
+				d.emit(EvNestedToolStarted{ID: "child"})
+				for range 1000 {
+					d.emit(EvToolProgress{ID: "child", Text: strings.Repeat("x", 1024)})
+				}
+				d.emit(EvNestedToolResult{ID: "child"})
+			}
+		})
+		d.emit(EvToolExecutionStarted{})
+		d.flush()
+		var order []string
+		text := ""
+		for _, event := range events {
+			order = append(order, event.Type())
+			if p, ok := event.(EvToolProgress); ok {
+				text += p.Text
+				if p.ID != "child" {
+					t.Fatal(p.ID)
+				}
+			}
+		}
+		want := []string{"tool_execution_started", "nested_tool_started", "tool_progress", "nested_tool_result"}
+		if !reflect.DeepEqual(order, want) {
+			t.Fatal(order)
+		}
+		if strings.Count(text, toolProgressTruncated) != 1 || !strings.HasSuffix(text, strings.Repeat("x", 1024)) {
+			t.Fatal("progress content/order")
+		}
+		if d.pendingProgressBytes != 0 || len(d.queue) != 0 {
+			t.Fatalf("bytes=%d queue=%d", d.pendingProgressBytes, len(d.queue))
 		}
 	})
 }
