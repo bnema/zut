@@ -143,7 +143,7 @@ func TestMCPToolSelection(t *testing.T) {
 			args := base
 			tc.edit(&args)
 			reg := core.Registry{}
-			addMCPTools(reg, args)
+			addMCPTools(reg, args, false)
 			for _, name := range tc.wants {
 				if _, ok := reg[name]; !ok {
 					t.Fatalf("missing %s in %v", name, keys(reg))
@@ -176,7 +176,7 @@ func TestOrchestratorHoldsReadOnlyMCPToolsAndWorkersGetAll(t *testing.T) {
 	narrowed := args
 	narrowed.Tools, narrowed.ToolsSet = []string{"subagent", "mcp__fake__deploy"}, true
 	narrowReg := core.Registry{}
-	addMCPTools(narrowReg, narrowed)
+	addMCPTools(narrowReg, narrowed, false)
 	if len(narrowReg) != 0 {
 		t.Fatalf("orchestrator --tools selection ignored: %v", keys(narrowReg))
 	}

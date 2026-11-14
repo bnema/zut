@@ -949,7 +949,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(false)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
 	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
-	addMCPTools(reg, args)
+	addMCPTools(reg, args, codemodeToolAllowed(args, cfg) && cfg.CodemodeDeferMCP())
 	maybeAddCodemodeTool(reg, args, args.CWD, sandbox, cfg)
 	timer.phase("resolve: tool registry", "tools", len(reg))
 
@@ -1555,7 +1555,15 @@ func maybeAddPythonTool(reg core.Registry, args Args, cwd string, sandbox *tools
 // maybeAddCodemodeTool adds the opt-in bridge only to unrestricted main
 // sessions. Interpreter discovery remains lazy, as with the python tool.
 func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *tools.Sandbox, cfg Config) bool {
-	if reg == nil || !cfg.CodemodeEnabled() || args.NoTools || args.PermissionSet != nil ||
+	if reg == nil || !codemodeToolAllowed(args, cfg) {
+		return false
+	}
+	reg["codemode"] = &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
+	return true
+}
+
+func codemodeToolAllowed(args Args, cfg Config) bool {
+	if !cfg.CodemodeEnabled() || args.NoTools || args.PermissionSet != nil ||
 		args.ResidentChild || args.Orchestrate || args.AgentName != "" || args.zutfile != nil {
 		return false
 	}
@@ -1566,7 +1574,6 @@ func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *too
 	} else if !toolListContains(args.Tools, "codemode") {
 		return false
 	}
-	reg["codemode"] = &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
 	return true
 }
 

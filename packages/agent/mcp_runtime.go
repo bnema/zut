@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/agent/mcp"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -140,7 +141,7 @@ func mcpToolSelected(args Args, name string) bool {
 // headless orchestrator is manager-only, so it receives only tools the
 // server marks read-only (plus resource reads) for research; its workers
 // receive the full set.
-func addMCPTools(reg core.Registry, args Args) {
+func addMCPTools(reg core.Registry, args Args, deferMCP bool) {
 	if reg == nil || args.mcpManager == nil || !mcpAllowed(args) {
 		return
 	}
@@ -153,6 +154,12 @@ func addMCPTools(reg core.Registry, args Args) {
 		if strictOrchestrator && !mcp.IsReadOnlyTool(tool) {
 			continue
 		}
+		if deferMCP {
+			tool = mcp.DeferredWhen(tool, func() bool {
+				cm, ok := reg["codemode"].(*tools.CodemodeTool)
+				return ok && tools.CodemodeAdmission(cm.Sandbox) == nil
+			})
+		}
 		reg[name] = tool
 	}
 }
@@ -163,10 +170,13 @@ func mcpSystemAddendum(reg core.Registry, args Args) string {
 		return ""
 	}
 	has := false
+	deferred := false
 	for _, tool := range reg {
 		if mcp.IsTool(tool) {
 			has = true
-			break
+			if mcp.DeferralConfigured(tool) {
+				deferred = true
+			}
 		}
 	}
 	strictOrchestrator := args.Orchestrate && !args.ResidentChild
@@ -179,6 +189,9 @@ func mcpSystemAddendum(reg core.Registry, args Args) string {
 	}
 	if args.Orchestrate && !args.ResidentChild {
 		addendum += "\nAs the orchestrator you only hold read-only MCP tools for research. Workers receive every MCP tool; delegate MCP actions that change external state."
+	}
+	if deferred {
+		addendum += "\nWhen codemode is available (not jailed or permission-restricted), MCP tools are not directly callable; use the codemode tool (zut.search, zut.describe, zut.call). Otherwise MCP tools remain directly callable."
 	}
 	return addendum
 }

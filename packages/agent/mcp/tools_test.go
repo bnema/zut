@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -42,5 +43,29 @@ func TestConvertCallResultStructuredData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeferredCopies(t *testing.T) {
+	readOnly := true
+	for _, original := range []core.Tool{
+		&serverTool{name: "mcp_test", raw: Tool{Annotations: &ToolAnnotations{ReadOnlyHint: &readOnly}}},
+		&listResourcesTool{}, &readResourceTool{},
+	} {
+		deferred := Deferred(original)
+		if deferred == original || original.(interface{ Deferred() bool }).Deferred() {
+			t.Fatal("original modified")
+		}
+		reg := core.NewRegistry(deferred)
+		if !reg.Specs()[0].Deferred {
+			t.Fatal("spec not deferred")
+		}
+		got, err := reg.Get(original.Name())
+		if err != nil || got != deferred || !IsTool(got) || !IsReadOnlyTool(got) {
+			t.Fatalf("lookup/classification: %T %v", got, err)
+		}
+	}
+	if Deferred(nil) != nil {
+		t.Fatal("non-MCP input changed")
 	}
 }

@@ -53,11 +53,8 @@ func (t *CodemodeTool) Execute(ctx context.Context, raw json.RawMessage, progres
 	if err != nil {
 		return protocolToolError(err.Error())
 	}
-	if t.Sandbox != nil && t.Sandbox.Permissions != nil {
-		return core.ToolResult{}, denied("permission denied: this agent cannot run codemode")
-	}
-	if t.Sandbox.Locked() {
-		return core.ToolResult{}, denied("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
+	if err := CodemodeAdmission(t.Sandbox); err != nil {
+		return core.ToolResult{}, err
 	}
 	inv, ok := core.NestedInvokerFrom(ctx)
 	if !ok {
@@ -123,4 +120,16 @@ func (t *CodemodeTool) Execute(ctx context.Context, raw json.RawMessage, progres
 		details["cleanup_error"] = outcome.CleanupErr.Error()
 	}
 	return core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: outcome.ExitCode != 0 || outcome.TimedOut || outcome.Cancelled, Details: details, Context: bridge.Context()}, nil
+}
+
+// CodemodeAdmission checks whether a sandbox permits arbitrary Python execution.
+// It is shared by execution and dynamic MCP deferral.
+func CodemodeAdmission(s *Sandbox) error {
+	if s != nil && s.Permissions != nil {
+		return denied("permission denied: this agent cannot run codemode")
+	}
+	if s.Locked() {
+		return denied("jailed: arbitrary Python cannot be confined by the current jail (use /unjail to disable)")
+	}
+	return nil
 }
