@@ -43,14 +43,21 @@ type GoalsConfig struct {
 	MaxTokenBudget *uint64 `json:"max_token_budget,omitempty"`
 }
 
+// ExperimentalConfig contains opt-in capabilities that are disabled by default.
+type ExperimentalConfig struct {
+	Codemode         *bool `json:"codemode,omitempty"`
+	CodemodeDeferMCP *bool `json:"codemode_defer_mcp,omitempty"`
+}
+
 // Config is the persisted user configuration.
 type Config struct {
-	Dictation   *DictationSettings `json:"dictation,omitempty"`
-	Provider    string             `json:"provider"`
-	Model       string             `json:"model"`
-	Reasoning   string             `json:"reasoning"`
-	Temperature *float32           `json:"temperature,omitempty"`
-	Theme       string             `json:"theme"`
+	Experimental *ExperimentalConfig `json:"experimental,omitempty"`
+	Dictation    *DictationSettings  `json:"dictation,omitempty"`
+	Provider     string              `json:"provider"`
+	Model        string              `json:"model"`
+	Reasoning    string              `json:"reasoning"`
+	Temperature  *float32            `json:"temperature,omitempty"`
+	Theme        string              `json:"theme"`
 
 	// FastMode requests OpenAI's fast service tier. Off by default;
 	// nil/missing means disabled. An active model profile supplies its
@@ -194,6 +201,16 @@ type Config struct {
 	// changelog (fetched from the GitHub release page) once and
 	// updates this field. Empty means "never shown".
 	LastChangelogShown string `json:"last_changelog_shown,omitempty"`
+}
+
+// CodemodeEnabled reports whether codemode was explicitly enabled.
+func (c Config) CodemodeEnabled() bool {
+	return c.Experimental != nil && c.Experimental.Codemode != nil && *c.Experimental.Codemode
+}
+
+// CodemodeDeferMCP defaults to true only when codemode is enabled.
+func (c Config) CodemodeDeferMCP() bool {
+	return c.CodemodeEnabled() && (c.Experimental.CodemodeDeferMCP == nil || *c.Experimental.CodemodeDeferMCP)
 }
 
 // ZutHome returns $ZUT_HOME or the OS-default data dir.

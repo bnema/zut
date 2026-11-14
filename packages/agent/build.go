@@ -134,7 +134,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "glob" || info.Name == "ast" || info.Name == "python" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.PlanToolName || info.Name == tools.AskUserQuestionToolName {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "glob" || info.Name == "ast" || info.Name == "python" || info.Name == "codemode" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.PlanToolName || info.Name == tools.AskUserQuestionToolName {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -950,6 +950,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(false), cfg.LSPDiagnosticsOnEditEnabled(false))
 	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
 	addMCPTools(reg, args)
+	maybeAddCodemodeTool(reg, args, args.CWD, sandbox, cfg)
 	timer.phase("resolve: tool registry", "tools", len(reg))
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
@@ -1400,6 +1401,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.PythonTool:
 			v.Sandbox = s
+		case *tools.CodemodeTool:
+			v.Sandbox = s
 		case *tools.WorktreeTool:
 			if v.Create != nil {
 				v.Create.Sandbox = s
@@ -1547,6 +1550,24 @@ func maybeAddPythonTool(reg core.Registry, args Args, cwd string, sandbox *tools
 		return
 	}
 	reg["python"] = &tools.PythonTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: interpreter}
+}
+
+// maybeAddCodemodeTool adds the opt-in bridge only to unrestricted main
+// sessions. Interpreter discovery remains lazy, as with the python tool.
+func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *tools.Sandbox, cfg Config) bool {
+	if reg == nil || !cfg.CodemodeEnabled() || args.NoTools || args.PermissionSet != nil ||
+		args.ResidentChild || args.Orchestrate || args.AgentName != "" || args.zutfile != nil {
+		return false
+	}
+	if len(args.Tools) == 0 {
+		if args.ToolsSet {
+			return false
+		}
+	} else if !toolListContains(args.Tools, "codemode") {
+		return false
+	}
+	reg["codemode"] = &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
+	return true
 }
 
 func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) bool {
