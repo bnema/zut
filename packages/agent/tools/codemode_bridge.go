@@ -258,6 +258,15 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			data = []byte("null")
 		}
 		return codemodeReply{Result: map[string]any{"id": out.ID, "is_error": out.Result.IsError, "text": text, "data": json.RawMessage(data)}}
+	case "list":
+		names := []string{}
+		for name := range b.inv.Tools() {
+			if codemodeAllowed(name) {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		return codemodeReply{Result: names}
 	case "search":
 		limit := p.Limit
 		if limit <= 0 {

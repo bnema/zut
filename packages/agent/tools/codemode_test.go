@@ -351,3 +351,32 @@ zut.result("all thread results matched")`, 10, nil, &codemodeEchoDataTool{})
 		t.Fatal(text)
 	}
 }
+
+func TestCodemodeRealPythonErgonomics(t *testing.T) {
+	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `names = dir(zut.tools)
+assert names == sorted(names) and "glob" in names and "codemode" not in names
+s = zut.search("", limit=1)
+assert isinstance(s, list) and isinstance(s, zut.SearchResults)
+assert len(s) == 1 and s.total == 2 and s.truncated
+s = zut.search("missing")
+assert s == [] and s.total == 0 and not s.truncated
+r = zut.tools["echo_data"](check=True, value=1)
+assert r and str(r) == r.text
+assert repr(r) == "ToolResult(id='cm/1', is_error=False, text='')"
+r = zut.ToolResult(dict(id="long", text="x" * 100, data=None, is_error=True))
+assert not r and str(r) == "x" * 100
+assert repr(r) == "ToolResult(id='long', is_error=True, text='" + "x" * 80 + "…')"
+r = zut.tools.glob(check=False, pattern="[")
+assert r.is_error and not r
+try:
+    zut.tools["glob"](check=True, pattern="[")
+except zut.ToolError as e:
+    assert e.kind == "tool_error" and e.result.is_error
+else:
+    raise AssertionError("expected ToolError")
+zut.result("ergonomics ok")`, 10, nil, &codemodeEchoDataTool{})
+	if result.IsError || !strings.Contains(codemodeOutput(t, result), "ergonomics ok") {
+		t.Fatal(codemodeOutput(t, result))
+	}
+}

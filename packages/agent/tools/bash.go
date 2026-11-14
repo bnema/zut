@@ -201,10 +201,12 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 	}
 
+	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	isErr := exitCode != 0 || runCtx.Err() != nil
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		IsError: isErr,
+		Data:    map[string]any{"exit_code": exitCode, "output": trimmed, "timed_out": timedOut},
 		Details: map[string]any{
 			"exit_code":        exitCode,
 			"full_output_path": fullPath,

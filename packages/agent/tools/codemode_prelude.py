@@ -23,10 +23,21 @@ class ToolResult:
         self.data = value["data"]
         self.is_error = value["is_error"]
 
+    def __repr__(self):
+        preview = self.text[:80] + ("…" if len(self.text) > 80 else "")
+        return f"ToolResult(id={self.id!r}, is_error={self.is_error!r}, text={preview!r})"
+
+    def __str__(self):
+        return self.text
+
+    def __bool__(self):
+        return not self.is_error
+
 
 class ToolError(Exception):
     def __init__(self, result):
         self.result = result
+        self.kind = "tool_error"
         super().__init__(result.text)
 
 
@@ -75,11 +86,24 @@ def call(name, /, check=True, **args):
 
 class _Tools:
     def __getattr__(self, name, /):
-        return lambda **args: call(name, **args)
+        return lambda check=True, **args: call(name, check=check, **args)
+
+    def __getitem__(self, name, /):
+        return self.__getattr__(name)
+
+    def __dir__(self):
+        return _rpc("list", {})
+
+
+class SearchResults(list):
+    def __init__(self, value):
+        super().__init__(value["results"])
+        self.total = value["total"]
+        self.truncated = value["truncated"]
 
 
 def search(query, limit=10):
-    return _rpc("search", {"query": query, "limit": limit})["results"]
+    return SearchResults(_rpc("search", {"query": query, "limit": limit}))
 
 
 def describe(name):
@@ -92,7 +116,7 @@ def result(value):
 
 zut = types.ModuleType("zut")
 for _name in ("call", "search", "describe", "result", "ToolResult", "ToolDenied",
-              "ToolError", "CodemodeError"):
+              "ToolError", "CodemodeError", "SearchResults"):
     setattr(zut, _name, globals()[_name])
 zut.tools = _Tools()
 sys.modules["zut"] = zut

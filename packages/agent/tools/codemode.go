@@ -28,7 +28,7 @@ type CodemodeTool struct {
 
 func (*CodemodeTool) Name() string { return "codemode" }
 func (*CodemodeTool) Description() string {
-	return "Run Python with the same host access as python; prints go to output. The zut API: zut.call(name, check=True, **args) or zut.tools.<name>(**args) returns ToolResult (.text, .data, .is_error, .id); use zut.call for names containing dots/dashes; check is reserved and cannot be forwarded as a tool argument. zut.search(query, limit=10), zut.describe(name), zut.result(value). Exceptions: zut.ToolDenied, zut.ToolError for is_error unless check=False, zut.CodemodeError with .kind. Each nested call follows normal confirmations."
+	return "Run Python with the same host access as python; prints go to output. zut.call(name, check=True, **args), zut.tools.<name>(check=True, **args), or zut.tools[name](**args) returns ToolResult (.text, .data, .is_error, .id). Names resolve case-insensitively with underscores/dashes equivalent; dir(zut.tools) lists allowed names. check is reserved, not a tool argument. zut.search(query, limit=10) returns a list with .total/.truncated; zut.describe(name), zut.result(value). Bash .data['exit_code'] gives status (also output, timed_out). Exceptions: zut.ToolDenied, zut.ToolError for is_error unless check=False, zut.CodemodeError with .kind. Each nested call follows normal confirmations."
 }
 func (*CodemodeTool) Schema() json.RawMessage { return json.RawMessage(pythonSchema) }
 

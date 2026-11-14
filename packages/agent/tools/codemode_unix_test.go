@@ -69,3 +69,16 @@ func TestCodemodeRealPythonBridgeFilesClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestCodemodeRealPythonBashData(t *testing.T) {
+	dir := t.TempDir()
+	tool := &CodemodeTool{CWD: dir, Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `r = zut.tools["bash"](command="printf captured; exit 3", timeout=5, check=False)
+assert not r and r.is_error
+assert r.data == {"exit_code": 3, "output": "captured", "timed_out": False}
+assert "captured" in str(r)
+zut.result(r.data)`, 10, nil, &BashTool{CWD: dir, Env: os.Environ()})
+	if result.IsError {
+		t.Fatal(codemodeOutput(t, result))
+	}
+}

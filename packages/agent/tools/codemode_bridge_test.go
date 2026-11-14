@@ -403,3 +403,14 @@ func TestCodemodeBridgeRankedSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestCodemodeBridgeList(t *testing.T) {
+	b := newCodemodeBridge(&bridgeTestInvoker{tools: core.NewRegistry(
+		bridgeTestTool{"z", ""}, bridgeTestTool{"mcp__x__a-b", ""}, bridgeTestTool{"a", ""},
+		bridgeTestTool{"codemode", ""}, bridgeTestTool{"ask_user_question", ""},
+	)}, "")
+	reply := b.handle(context.Background(), []byte(`{"method":"list"}`))
+	if reply.Error != nil || !reflect.DeepEqual(reply.Result, []string{"a", "mcp__x__a-b", "z"}) {
+		t.Fatalf("%#v", reply)
+	}
+}
