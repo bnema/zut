@@ -49,6 +49,8 @@ type ToolResult struct {
 	ActivateTools []string
 	// Details is arbitrary data for UIs and logs; not sent to the LLM.
 	Details any
+	// Data is a machine-readable result for nested callers (codemode). It is never sent to the LLM or persisted.
+	Data any `json:"-"`
 	// Timing is populated by the core invocation boundary. It is also copied
 	// to the persisted/provider-facing tool-result block, where it remains
 	// optional for compatibility with older sessions.

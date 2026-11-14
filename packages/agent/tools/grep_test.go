@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -353,5 +355,87 @@ func skipGrepScriptTestsOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX executable fixture")
+	}
+}
+
+func TestGrepStructuredMatches(t *testing.T) {
+	skipGrepScriptTestsOnWindows(t)
+	const output = "src/a.go:12:needle:with:colons\ninvalid output\nC:\\src\\b.go:2:other\nfile:0:invalid\nfile:x:invalid\nfile:3:\n"
+	want := []GrepMatch{{Path: "src/a.go", Line: 12, Text: "needle:with:colons"}, {Path: `C:\src\b.go`, Line: 2, Text: "other"}, {Path: "file", Line: 3, Text: ""}}
+	for _, engine := range []string{"rg", "grep"} {
+		t.Run(engine, func(t *testing.T) {
+			root := t.TempDir()
+			script := writeGrepScript(t, "#!/bin/sh\ncat <<'EOF'\n"+output+"EOF\n")
+			tool := &GrepTool{CWD: root, Env: os.Environ(), LookPath: lookupScripts(map[string]string{engine: script})}
+			result := executeGrepTest(t, tool, root)
+			if got := grepText(result); got != output {
+				t.Fatalf("text = %q, want %q", got, output)
+			}
+			if !reflect.DeepEqual(result.Data, want) {
+				t.Fatalf("Data = %#v, want %#v", result.Data, want)
+			}
+		})
+	}
+}
+
+func TestGrepStructuredMatchesRespectTruncation(t *testing.T) {
+	for _, input := range []string{strings.Repeat("file:1:hit\n", maxGrepOutputLines+1), strings.Repeat("file:1:"+strings.Repeat("x", 100)+"\n", 1000)} {
+		output := &grepOutput{}
+		_, _ = output.Write([]byte(input))
+		text, _ := output.text()
+		matches := grepMatches(text, "rg", ".", true)
+		if len(matches) == 0 {
+			t.Fatal("no structured matches")
+		}
+		var shown strings.Builder
+		for _, match := range matches {
+			shown.WriteString(match.Path + ":1:" + match.Text + "\n")
+		}
+		prefix, _, _ := strings.Cut(text, "... [truncated")
+		if shown.String() != prefix {
+			t.Fatalf("Data does not cover exactly displayed match lines")
+		}
+	}
+}
+
+func TestGrepSingleFileFixture(t *testing.T) {
+	const output = "2:needle:12:tail\ninvalid\n0:invalid\nx:invalid\n3:\n"
+	want := []GrepMatch{{Path: "shown/file.txt", Line: 2, Text: "needle:12:tail"}, {Path: "shown/file.txt", Line: 3, Text: ""}}
+	if got := grepMatches(output, "rg", "shown/file.txt", false); !reflect.DeepEqual(got, want) {
+		t.Fatalf("matches = %#v, want %#v", got, want)
+	}
+}
+
+func TestGrepSingleFileRealEngines(t *testing.T) {
+	for _, engine := range []string{"rg", "grep"} {
+		t.Run(engine, func(t *testing.T) {
+			executable, err := exec.LookPath(engine)
+			if err != nil {
+				t.Skipf("%s not installed", engine)
+			}
+			root := t.TempDir()
+			path := filepath.Join(root, "file.txt")
+			if err := os.WriteFile(path, []byte("other\nneedle:12:tail\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tool := &GrepTool{CWD: root, Env: os.Environ(), LookPath: lookupScripts(map[string]string{engine: executable})}
+			result, err := tool.Execute(context.Background(), grepArgsJSON("needle", "file.txt"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantText := "2:needle:12:tail\n"
+			wantPath := "file.txt"
+			if engine == "grep" {
+				wantText = path + ":" + wantText
+				wantPath = path
+			}
+			if got := grepText(result); got != wantText {
+				t.Fatalf("text = %q, want %q", got, wantText)
+			}
+			want := []GrepMatch{{Path: wantPath, Line: 2, Text: "needle:12:tail"}}
+			if !reflect.DeepEqual(result.Data, want) {
+				t.Fatalf("Data = %#v, want %#v", result.Data, want)
+			}
+		})
 	}
 }

@@ -27,6 +27,15 @@ type ReadTool struct {
 	Sandbox *Sandbox // when jailed, confines reads to the sandbox root
 }
 
+// ReadData contains the selected text lines and read metadata.
+type ReadData struct {
+	Path       string   `json:"path"`
+	StartLine  int      `json:"start_line"`
+	Lines      []string `json:"lines"`
+	TotalLines int      `json:"total_lines"`
+	Truncated  bool     `json:"truncated"`
+}
+
 type readArgs struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset,omitempty"`
@@ -163,6 +172,7 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	variant := fmt.Sprintf("%d:%d", a.Offset, a.Limit)
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
+		Data:    ReadData{Path: path, StartLine: start + 1, Lines: selected, TotalLines: len(lines), Truncated: truncLines || truncBytes},
 		Context: provider.ToolContext{Reads: []provider.ResourceRef{{Key: canonicalResourcePath(path), Variant: variant}}},
 		Details: map[string]any{
 			"path":            path,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -34,6 +35,13 @@ func TestReadText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantData := ReadData{Path: p, StartLine: 1, Lines: []string{"hello", "world"}, TotalLines: 2}
+	if !reflect.DeepEqual(res.Data, wantData) {
+		t.Fatalf("Data = %#v, want %#v", res.Data, wantData)
+	}
+	if text := res.Content[0].(provider.TextBlock).Text; text != "hello\nworld\n" {
+		t.Fatalf("text = %q", text)
+	}
 	got := res.Content[0].(provider.TextBlock).Text
 	if !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
 		t.Fatalf("got %q", got)
@@ -55,6 +63,9 @@ func TestReadImageMimeFromContentNotExtension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if res.Data != nil {
+		t.Fatalf("image Data = %#v", res.Data)
+	}
 	img, ok := res.Content[0].(provider.ImageBlock)
 	if !ok {
 		t.Fatalf("expected ImageBlock, got %T", res.Content[0])
@@ -71,6 +82,9 @@ func TestReadOffsetLimit(t *testing.T) {
 	tool := &ReadTool{CWD: dir}
 	res, _ := tool.Execute(context.Background(), mustJSON(t, map[string]any{"path": "a.txt", "offset": 2, "limit": 2}), nil)
 	got := res.Content[0].(provider.TextBlock).Text
+	if want := (ReadData{Path: p, StartLine: 2, Lines: []string{"2", "3"}, TotalLines: 5}); !reflect.DeepEqual(res.Data, want) {
+		t.Fatalf("Data = %#v, want %#v", res.Data, want)
+	}
 	// Current output format is raw bytes (no embedded line numbers):
 	// the tui draws its own gutter from the `start_line` detail.
 	if got != "2\n3\n" {
@@ -614,5 +628,27 @@ func TestEnvIsolationBashDescriptionUsesSessionPATH(t *testing.T) {
 	}
 	if got := withPath.Description(); got != shellDescription(withPath.sessionShell()) {
 		t.Fatalf("Description %q not built from session shell", got)
+	}
+}
+
+func TestReadDataTruncation(t *testing.T) {
+	for _, content := range []string{strings.Repeat("line\n", maxReadLines+1), strings.Repeat("x", maxReadBytes+1)} {
+		root := t.TempDir()
+		path := filepath.Join(root, "file.txt")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		result, err := (&ReadTool{CWD: root}).Execute(context.Background(), mustJSON(t, map[string]any{"path": "file.txt"}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := result.Data.(ReadData)
+		if !data.Truncated || data.Path != path || data.StartLine != 1 {
+			t.Fatalf("Data = %#v", data)
+		}
+		text := result.Content[0].(provider.TextBlock).Text
+		if !strings.HasPrefix(text, strings.Join(data.Lines, "\n")+"\n\n... [truncated at ") {
+			t.Fatalf("Data lines differ from text")
+		}
 	}
 }

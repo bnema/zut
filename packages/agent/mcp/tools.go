@@ -120,6 +120,12 @@ func (b *textBudget) forceTruncate() string {
 
 func convertCallResult(result CallResult) core.ToolResult {
 	out := core.ToolResult{IsError: result.IsError}
+	if len(result.StructuredContent) > 0 {
+		var data any
+		if err := json.Unmarshal(result.StructuredContent, &data); err == nil {
+			out.Data = data
+		}
+	}
 	budget := &textBudget{}
 	addText := func(s string) {
 		if s = budget.take(s); s != "" {

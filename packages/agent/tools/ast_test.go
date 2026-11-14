@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -60,6 +61,12 @@ func TestASTToolExecutesWithoutShellAndTracksDiscoveredFiles(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	want := filepath.Join(root, "main.go")
+	if expected := ([]ASTMatch{{File: want, Line: 1}}); !reflect.DeepEqual(result.Data, expected) {
+		t.Fatalf("Data = %#v, want %#v", result.Data, expected)
+	}
+	if text := result.Content[0].(provider.TextBlock).Text; text != want+":1:" {
+		t.Fatalf("text = %q", text)
+	}
 	if len(result.Context.Discovers) != 1 || result.Context.Discovers[0] != want {
 		t.Fatalf("discoveries = %v, want %s", result.Context.Discovers, want)
 	}
@@ -129,6 +136,12 @@ func TestASTRewriteFormatsGoSource(t *testing.T) {
 	plan, err := (&ASTTool{Env: os.Environ(), CWD: root}).planRewrite(root, astArgs{Language: "go", Rewrite: "{$$$BODY}"}, []astMatch{match})
 	if err != nil {
 		t.Fatalf("planRewrite: %v", err)
+	}
+	if expected := ([]ASTMatch{{File: path, Line: match.Range.Start.Line + 1, Text: match.Text, Replacement: match.Replacement}}); !reflect.DeepEqual(plan.result.Data, expected) {
+		t.Fatalf("Data = %#v, want %#v", plan.result.Data, expected)
+	}
+	if text := plan.result.Content[0].(provider.TextBlock).Text; text != boundASTText(unifiedDiff(path, string(original), string(plan.changes[0].content))) {
+		t.Fatalf("rewrite text changed: %q", text)
 	}
 	want := "package main\n\nfunc add(left, right int) int {\n\treturn left + right\n\n}\n"
 	if got := string(plan.changes[0].content); got != want {

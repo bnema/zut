@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,13 @@ type GrepTool struct {
 }
 
 var _ core.Tool = (*GrepTool)(nil)
+
+// GrepMatch is one displayed search match.
+type GrepMatch struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
 
 type grepArgs struct {
 	Pattern string `json:"pattern"`
@@ -186,6 +194,7 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 		isError = false
 	}
 
+	data := grepMatches(text, engine, t.Sandbox.DisplayPath(root, args.Path), info.IsDir())
 	discovers := grepResultPaths(text, root, info.IsDir())
 	// The hint is appended after path discovery so it is never read as a
 	// "file:line" result.
@@ -199,6 +208,7 @@ func (t *GrepTool) executeWithTimeout(ctx context.Context, raw json.RawMessage, 
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: text}},
 		IsError: isError,
+		Data:    data,
 		Context: provider.ToolContext{Discovers: discovers},
 		Details: map[string]any{
 			"engine":            engine,
@@ -236,6 +246,35 @@ func grepASTHint(pattern string) string {
 		return "\nTip: for definitions, the ast tool matches code shape, e.g. ast {\"pattern\":\"func $NAME($$$) $$$ { $$$ }\",\"path\":\"...\"}.\n"
 	}
 	return ""
+}
+
+var grepMatchLine = regexp.MustCompile(`^(.+?):([0-9]+):(.*)$`)
+
+func grepMatches(output, engine, displayedRoot string, rootIsDir bool) []GrepMatch {
+	matches := make([]GrepMatch, 0)
+	for _, line := range strings.Split(output, "\n") {
+		path, lineNumber, text := displayedRoot, "", ""
+		if engine == "rg" && !rootIsDir {
+			// Unlike grep -H, rg omits the filename for a single-file root.
+			var ok bool
+			lineNumber, text, ok = strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+		} else {
+			parts := grepMatchLine.FindStringSubmatch(line)
+			if parts == nil {
+				continue
+			}
+			path, lineNumber, text = parts[1], parts[2], parts[3]
+		}
+		number, err := strconv.Atoi(lineNumber)
+		if err != nil || number < 1 {
+			continue
+		}
+		matches = append(matches, GrepMatch{Path: path, Line: number, Text: text})
+	}
+	return matches
 }
 
 func grepResultPaths(output, root string, rootIsDir bool) []string {

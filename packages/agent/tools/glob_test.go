@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -63,6 +64,9 @@ func TestGlobStarMatchesBasenames(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := globResultText(t, result)
+	if data, ok := result.Data.([]string); !ok || !reflect.DeepEqual(data, strings.Split(text, "\n")) {
+		t.Fatalf("Data = %#v, text = %q", result.Data, text)
+	}
 	if !strings.Contains(text, "a.go") || !strings.Contains(text, "sub/c.go") {
 		t.Fatalf("output missing matches: %q", text)
 	}
@@ -266,6 +270,9 @@ func TestGlobEmptyResults(t *testing.T) {
 	if got := globResultText(t, result); got != "No files matched the pattern." {
 		t.Fatalf("empty output = %q", got)
 	}
+	if data, ok := result.Data.([]string); !ok || data == nil || len(data) != 0 {
+		t.Fatalf("empty Data = %#v", result.Data)
+	}
 	if globDetails(result)["matches"] != 0 || globDetails(result)["truncated"] != false {
 		t.Fatalf("empty details = %v", result.Details)
 	}
@@ -286,6 +293,9 @@ func TestGlobSortsDeterministically(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := globResultText(t, first), globResultText(t, second)
+	if !reflect.DeepEqual(first.Data, strings.Split(a, "\n")) || !reflect.DeepEqual(second.Data, first.Data) {
+		t.Fatalf("Data order differs from text")
+	}
 	if a != b {
 		t.Fatalf("nondeterministic order:\n%s\n%s", a, b)
 	}
@@ -423,6 +433,10 @@ func TestGlobBoundsResults(t *testing.T) {
 	result, err := tool.Execute(context.Background(), globArgsJSON("*.go", "", false), nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	data, ok := result.Data.([]string)
+	if !ok || len(data) != maxGlobMatches || strings.Join(data, "\n") != strings.Split(globResultText(t, result), "\n\n")[0] {
+		t.Fatalf("Data differs from truncated listing")
 	}
 	if got := globDetails(result)["matches"]; got != maxGlobMatches {
 		t.Fatalf("matches = %v, want %d", got, maxGlobMatches)

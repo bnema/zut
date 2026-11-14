@@ -195,6 +195,22 @@ type astPlan struct {
 	changes []astChange
 }
 
+// ASTMatch is a structural match and its optional replacement.
+type ASTMatch struct {
+	File        string `json:"file"`
+	Line        int    `json:"line"`
+	Text        string `json:"text"`
+	Replacement string `json:"replacement,omitempty"`
+}
+
+func astMatchData(matches []astMatch) []ASTMatch {
+	data := make([]ASTMatch, 0, len(matches))
+	for _, match := range matches {
+		data = append(data, ASTMatch{File: match.File, Line: match.Range.Start.Line + 1, Text: match.Text, Replacement: match.Replacement})
+	}
+	return data
+}
+
 type astMatch struct {
 	Text        string `json:"text"`
 	File        string `json:"file"`
@@ -301,6 +317,7 @@ func (t *ASTTool) plan(ctx context.Context, args astArgs) (astPlan, error) {
 		return astPlan{result: core.ToolResult{
 			Content: []provider.Content{provider.TextBlock{Text: text}},
 			Context: provider.ToolContext{Discovers: paths},
+			Data:    astMatchData(matches),
 			Details: map[string]any{"engine": "ast-grep", "path": root, "language": args.Language, "matches": len(matches)},
 		}}, nil
 	}
@@ -594,6 +611,7 @@ func (t *ASTTool) planRewrite(root string, args astArgs, matches []astMatch) (as
 	return astPlan{changes: changes, result: core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: text}},
 		Context: provider.ToolContext{Mutates: mutates},
+		Data:    astMatchData(matches),
 		Details: map[string]any{"engine": "ast-grep", "path": root, "language": args.Language, "matches": len(matches), "files": len(changes), "diff": text},
 	}}, nil
 }

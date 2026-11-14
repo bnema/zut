@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -27,6 +28,15 @@ func TestLSPToolSchemaAndFormatting(t *testing.T) {
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"action":"status"}`), nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Data, result.Details) {
+		t.Fatalf("Data = %#v, Details = %#v", result.Data, result.Details)
+	}
+	if _, ok := result.Data.([]lsp.ServerStatus); !ok {
+		t.Fatalf("Data type = %T", result.Data)
+	}
+	if got := result.Content[0].(provider.TextBlock).Text; got != boundLSPText(prettyJSON(result.Details)) {
+		t.Fatalf("status text changed: %q", got)
 	}
 	text, ok := result.Content[0].(provider.TextBlock)
 	if !ok || text.Text == "" {

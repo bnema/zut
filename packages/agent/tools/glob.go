@@ -104,7 +104,7 @@ func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 	rootSep := strings.Count(searchDir, string(os.PathSeparator))
 	var pushed []string
-	var matches []string
+	matches := make([]string, 0)
 	var discovered []string
 	truncated := false
 
@@ -228,6 +228,7 @@ func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: text}},
 		Context: provider.ToolContext{Discovers: discovered},
+		Data:    matches,
 		Details: map[string]any{
 			"matches":   len(matches),
 			"truncated": truncated,

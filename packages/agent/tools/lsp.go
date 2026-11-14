@@ -159,7 +159,7 @@ func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(strin
 		return core.ToolResult{}, actionErr
 	}
 	text = boundLSPText(text)
-	result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details}
+	result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: actionErr != nil, Details: details, Data: details}
 	if values, ok := details.(map[string]any); ok {
 		if paths, ok := values["modified_paths"].([]string); ok {
 			result.Context.Mutates = paths
@@ -210,7 +210,7 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	}
 	details := map[string]any{"action": args.Action, "responses": responses, "applied": applyCount, "modified_paths": modifiedPaths}
 	if applyCount > 0 && t.LSPDiagnostics {
-		result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, Details: details}
+		result := core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: text}}, Details: details, Data: details}
 		attachMutationDiagnostics(ctx, cwd, modifiedPaths, t.Manager, &result)
 		text = result.Content[0].(provider.TextBlock).Text
 	}
