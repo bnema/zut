@@ -1602,94 +1602,15 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 	return toolMessage, hadError, repetitionCallObservations(executed, toolMessage)
 }
 
-func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) (res ToolResult) {
-	started := time.Now()
-	defer func() {
-		if recover() != nil {
-			res = ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: "tool execution failed"}},
-				IsError: true,
-			}
-		}
-		res.Timing = &provider.ToolTiming{
-			StartedAt:   started,
-			CompletedAt: time.Now(),
-			Duration:    time.Since(started),
-		}
-	}()
-
-	tool, err := tools.Get(tc.Name)
-	if err != nil {
-		return ToolResult{
-			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
-			IsError: true,
-		}
+func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) ToolResult {
+	if tc.ID != "" {
+		ctx = withNestedInvoker(ctx, &nestedInvoker{agent: a, tools: tools, parent: tc})
 	}
-
-	args := tc.Arguments
-
-	// Intercept hook: an extension or other guard can refuse the
-	// call before any side effect happens, OR rewrite the args
-	// seen by the tool. The model sees the reason as the tool
-	// error, learns from it, and (typically) proposes a different
-	// action; rewrites are invisible to the model (they apply only
-	// to the execution).
-	if a.BeforeToolExecute != nil {
-		allowed, reason, modified := a.BeforeToolExecute(tc)
-		if !allowed {
-			// A guard or confirmation denial is tracked separately from an
-			// ordinary tool error: a denied invocation must not gain a
-			// recovery prompt urging more actions.
-			a.markDeniedToolCall()
-			if reason == "" {
-				reason = "tool call refused by extension guard"
-			}
-			return ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: reason}},
-				IsError: true,
-			}
-		}
-		if len(modified) > 0 && json.Valid(modified) {
-			if policy, ok := tool.(ToolArgumentRewritePolicy); ok && !policy.AllowArgumentRewrite() {
-				return ToolResult{
-					Content: []provider.Content{provider.TextBlock{Text: "tool arguments cannot be rewritten"}},
-					IsError: true,
-				}
-			}
-			args = modified
-		}
-	}
-
-	if len(args) == 0 {
-		args = json.RawMessage("{}")
-	}
-
-	// Tool panics are recovered by the invocation-level defer above so
-	// guard, lookup, progress, and Execute panics all receive timing.
-	sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
-	out, err := tool.Execute(ctx, args, func(text string) {
-		sink(EvToolProgress{ID: tc.ID, Text: text})
+	res, _ := a.invokeTool(ctx, tc, tools, invokeHooks{
+		started:  func() { sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name}) },
+		progress: func(text string) { sink(EvToolProgress{ID: tc.ID, Text: text}) },
 	})
-	if err != nil {
-		// A refused execution (permission scope, allowlist, jail, or
-		// admission gate) is tracked separately from an ordinary tool
-		// error: like a guard or confirmation denial, it must not gain
-		// a recovery prompt urging more actions.
-		if asToolDeniedError(err) {
-			a.markDeniedToolCall()
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
-				IsError: true,
-			}
-		}
-		return ToolResult{
-			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
-			IsError: true,
-		}
-	}
-	return out
+	return res
 }
 
 // extractText concatenates all TextBlock content in a message. Used
