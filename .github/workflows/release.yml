@@ -3,8 +3,10 @@ name: release
 # Every morning at 07:00 Europe/Paris, ermite tags main when its unreleased
 # conventional commits call for a release, then publishes it in the same run (a
 # tag pushed with the job token starts no run). A v* tag pushed by hand also
-# publishes. The GitHub mirror never tags nor publishes here: it receives the
-# forge's tags and github-release.yml publishes a link-only release.
+# publishes. A tag whose release is already published is left untouched, so a
+# quiet day stays green and a failed release is retried by the next run. The
+# GitHub mirror never tags nor publishes here: it receives the forge's tags and
+# github-release.yml publishes a link-only release.
 on:
   schedule:
     - cron: "0 7 * * *"
@@ -56,7 +58,8 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # A retry finds the tag already on HEAD: it is published again as is.
+          # A retry finds the tag already on HEAD and reuses it; the release job
+          # publishes it only when its release is not published yet.
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             exit 0
           fi
@@ -82,12 +85,41 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.tag && format('refs/tags/{0}', needs.tag.outputs.tag) || github.ref }}
 
+      # GoReleaser keeps a release as a draft until every artifact is uploaded:
+      # only a missing or draft release needs publishing.
+      - name: Check whether the release is already published
+        id: publication
+        shell: bash
+        env:
+          TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Same API and repository as github_urls.api and release.github in
+          # .goreleaser.yaml: a wrong path would answer 404 and republish daily.
+          api=${GITHUB_API_URL:-https://git.bnema.dev/-/github/api}
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          status=$(curl --silent --show-error --retry 3 --retry-connrefused \
+            --connect-timeout 10 --max-time 60 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            "${api%/}/repos/bnema/zut/releases/tags/$TAG")
+          publish=$(bash .github/scripts/release-needs-publish.sh "$status" "$response")
+          if [ "$publish" = false ]; then
+            echo "$TAG is already published; nothing to do."
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
+        if: steps.publication.outputs.publish == 'true'
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Run GoReleaser
+        if: steps.publication.outputs.publish == 'true'
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser

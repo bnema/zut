@@ -96,6 +96,9 @@ release:
     name: zut
   draft: false
   prerelease: auto
+  # The workflow reruns GoReleaser only for a missing or draft release;
+  # replacing assets lets that retry finish a partial upload.
+  replace_existing_artifacts: true
   header: |
     ## zut {{ .Tag }}
 

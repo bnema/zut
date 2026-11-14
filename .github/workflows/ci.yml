@@ -63,7 +63,9 @@ jobs:
       # only the three platform runners.
       - name: release-version policy
         if: matrix.os == 'ubuntu-latest'
-        run: bash .github/scripts/next-release-tag_test.sh
+        run: |
+          bash .github/scripts/next-release-tag_test.sh
+          bash .github/scripts/release-needs-publish_test.sh
 
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
