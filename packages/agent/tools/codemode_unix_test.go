@@ -82,3 +82,29 @@ zut.result(r.data)`, 10, nil, &BashTool{CWD: dir, Env: os.Environ()})
 		t.Fatal(codemodeOutput(t, result))
 	}
 }
+
+type codemodeMCPTestTool struct{ codemodeEchoDataTool }
+
+func (*codemodeMCPTestTool) Name() string { return "mcp__srv__list-things" }
+
+func TestCodemodeRealPythonMCPNamespace(t *testing.T) {
+	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `assert not hasattr(zut.tools, "__wrapped__")
+assert not hasattr(zut.tools, "__length_hint__")
+assert dir(zut.mcp) == ["srv"]
+assert dir(zut.mcp.srv) == ["list_things"]
+r = zut.mcp.srv.list_things(check=True, value="forwarded")
+assert r.data == {"value": "forwarded"}
+for obj, name, suggestion in [(zut.mcp, "sr", "srv"), (zut.mcp.srv, "list_thing", "list_things")]:
+    try:
+        getattr(obj, name)
+    except AttributeError as e:
+        assert suggestion in str(e) and "did you mean" in str(e)
+    else:
+        raise AssertionError("expected AttributeError")
+assert not hasattr(zut.mcp, "__wrapped__")
+zut.result("namespace ok")`, 10, nil, &codemodeMCPTestTool{})
+	if result.IsError || !strings.Contains(codemodeOutput(t, result), "namespace ok") {
+		t.Fatal(codemodeOutput(t, result))
+	}
+}

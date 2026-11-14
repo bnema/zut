@@ -4,6 +4,7 @@ import json
 import types
 import traceback
 import threading
+import difflib
 
 
 class CodemodeError(Exception):
@@ -86,6 +87,8 @@ def call(name, /, check=True, **args):
 
 class _Tools:
     def __getattr__(self, name, /):
+        if name.startswith("__"):
+            raise AttributeError(name)
         return lambda check=True, **args: call(name, check=check, **args)
 
     def __getitem__(self, name, /):
@@ -93,6 +96,31 @@ class _Tools:
 
     def __dir__(self):
         return _rpc("list", {})
+
+
+class _MCP:
+    def __init__(self, server=None):
+        self.__server = server
+
+    def __dir__(self):
+        namespaces = _rpc("namespaces", {})
+        return sorted(namespaces if self.__server is None else namespaces.get(self.__server, {}))
+
+    def __getattr__(self, name, /):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        namespaces = _rpc("namespaces", {})
+        entries = namespaces if self.__server is None else namespaces.get(self.__server, {})
+        if name not in entries:
+            suggestions = difflib.get_close_matches(name, entries, n=3)
+            message = f"unknown MCP {'server' if self.__server is None else 'method'} {name!r}"
+            if suggestions:
+                message += "; did you mean: " + ", ".join(suggestions) + "?"
+            raise AttributeError(message)
+        if self.__server is None:
+            return _MCP(name)
+        canonical = entries[name]
+        return lambda check=True, **args: call(canonical, check=check, **args)
 
 
 class SearchResults(list):
@@ -119,6 +147,7 @@ for _name in ("call", "search", "describe", "result", "ToolResult", "ToolDenied"
               "ToolError", "CodemodeError", "SearchResults"):
     setattr(zut, _name, globals()[_name])
 zut.tools = _Tools()
+zut.mcp = _MCP()
 sys.modules["zut"] = zut
 _code = _rpc("init", {})["code"]
 os.environ.pop("ZUT_CODEMODE_FDS", None)
