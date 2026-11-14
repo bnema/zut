@@ -246,12 +246,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				}
 			}
 			if tc.Recap != "" {
-				next := make(map[string]string, len(i.nestedRecaps)+1)
-				for id, recap := range i.nestedRecaps {
-					next[id] = recap
+				if i.nestedRecaps == nil {
+					i.nestedRecaps = make(map[string]string)
 				}
-				next[e.ID] = tc.Recap
-				i.nestedRecaps = next
+				i.nestedRecaps[e.ID] = tc.Recap
 				i.nestedRecapRevision++
 			}
 			delete(i.nestedToolLines, e.ID)
@@ -627,8 +625,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	}
 	// Live turn: rebuild streamed text and tool panels as of snap.Seq.
 	i.toolCalls = map[string]*tui.ToolCallView{}
-	i.nestedRecaps = make(map[string]string)
-	i.nestedRecapRevision++
+	i.resetNestedRecapsLocked()
 	i.toolOrder = nil
 	i.nestedToolLines = nil
 	if snap.Live.AssistantText != "" || len(snap.Live.Tools) > 0 {
@@ -1327,4 +1324,35 @@ func nestedCallsText(calls []session.NestedCall) string {
 		fmt.Fprintf(&b, " · %d denied", denied)
 	}
 	return b.String()
+}
+
+// resetNestedRecapsLocked drops display-only state when a session is replaced.
+func (i *Interactive) resetNestedRecapsLocked() {
+	i.nestedRecaps = make(map[string]string)
+	i.nestedRecapRevision++
+}
+
+// pruneNestedRecapsLocked uses the authoritative transcript, not the temporary
+// stream display limit. Calls still in flight may not have reached it yet.
+func (i *Interactive) pruneNestedRecapsLocked(messages []provider.Message) {
+	if len(i.nestedRecaps) == 0 {
+		return
+	}
+	keep := make(map[string]bool)
+	for _, message := range messages {
+		for _, block := range message.Content {
+			switch block := block.(type) {
+			case provider.ToolCallBlock:
+				keep[block.ID] = true
+			case provider.ToolResultBlock:
+				keep[block.CallID] = true
+			}
+		}
+	}
+	for id := range i.nestedRecaps {
+		if !keep[id] && (i.toolCalls[id] == nil || !i.busy) {
+			delete(i.nestedRecaps, id)
+			i.nestedRecapRevision++
+		}
+	}
 }

@@ -75,3 +75,27 @@ func TestCodemodeEmptyResultRecap(t *testing.T) {
 		})
 	}
 }
+
+func TestCodemodeRecapCacheIsMessageLocal(t *testing.T) {
+	v := &View{Theme: Dark, ToolRecaps: map[string]string{"a": "old", "b": "other"}, renderCache: make(map[msgCacheKey][]string)}
+	message := provider.Message{Role: provider.RoleTool, Content: []provider.Content{
+		provider.ToolResultBlock{CallID: "a"},
+	}}
+	first := v.renderMessageCached(0, message, 80, false, 0)
+	v.ToolRecaps["b"] = "unrelated"
+	v.ToolCalls = []ToolCallView{{ID: "b", Recap: "live unrelated"}}
+	second := v.renderMessageCached(0, message, 80, false, 0)
+	if &first[0] != &second[0] {
+		t.Fatal("unrelated recap invalidated message")
+	}
+	v.ToolRecaps["a"] = "updated"
+	third := v.renderMessageCached(0, message, 80, false, 0)
+	if !strings.Contains(strings.Join(third, "\n"), "updated") {
+		t.Fatal("referenced recap did not invalidate message")
+	}
+	v.ToolCalls = append(v.ToolCalls, ToolCallView{ID: "a", Recap: "live updated"})
+	fourth := v.renderMessageCached(0, message, 80, false, 0)
+	if !strings.Contains(strings.Join(fourth, "\n"), "live updated") {
+		t.Fatal("referenced live recap did not invalidate message")
+	}
+}

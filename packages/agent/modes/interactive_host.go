@@ -140,6 +140,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.cfg.Provider = provider
 	i.cfg.Model = model
 	titleCancel := i.resetSessionTitleLocked()
+	i.resetNestedRecapsLocked()
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.stream.Reset()

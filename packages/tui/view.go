@@ -768,11 +768,27 @@ func (v *View) boundMessageCache(renderFrom, messageCount int) {
 // shared slice is safe.
 func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnOpen bool, themeKey uint64) []string {
 	recapHash := fnv64aInit
-	for id, recap := range v.ToolRecaps {
-		recapHash ^= fnv64aWrite(fnv64aInit, []byte(id+recap))
-	}
-	for _, tc := range v.ToolCalls {
-		recapHash = fnv64aWrite(recapHash, []byte(tc.ID+tc.Recap))
+	for _, block := range m.Content {
+		var id string
+		switch block := block.(type) {
+		case provider.ToolCallBlock:
+			id = block.ID
+		case provider.ToolResultBlock:
+			id = block.CallID
+		default:
+			continue
+		}
+		recap := v.ToolRecaps[id]
+		for _, tc := range v.ToolCalls {
+			if tc.ID == id {
+				recap = tc.Recap
+				break
+			}
+		}
+		recapHash = fnv64aWrite(recapHash, []byte(id))
+		recapHash = fnv64aWriteByte(recapHash, 0)
+		recapHash = fnv64aWrite(recapHash, []byte(recap))
+		recapHash = fnv64aWriteByte(recapHash, 0)
 	}
 	visual := msgVisualKey{
 		recapHash:   recapHash,

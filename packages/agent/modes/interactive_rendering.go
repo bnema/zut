@@ -259,6 +259,7 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 }
 func (i *Interactive) buildChatLocked(cols int) []string {
 	if msgs, rev, ok := i.portTranscriptLocked(); ok {
+		i.pruneNestedRecapsLocked(msgs)
 		// While live text is on screen, show the transcript only as it was
 		// when the stream started. The agent appends the finished reply (and
 		// fast tool results) before the pacer has painted it; revealing them

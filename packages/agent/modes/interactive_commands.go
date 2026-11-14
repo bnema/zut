@@ -248,6 +248,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			i.agent.ResetRepetitionGuard()
 			i.agent.SetPlan(nil)
 		}
+		i.resetNestedRecapsLocked()
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
 		i.stream.Reset()
@@ -486,6 +487,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// agent + session. Reset transient TUI state so the new
 		// session opens clean.
 		i.mu.Lock()
+		i.resetNestedRecapsLocked()
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
 		i.stream.Reset()
@@ -1259,6 +1261,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 	i.restoreLoadedSessionTitle()
 	i.mu.Lock()
 	i.sessionLoading = false
+	i.resetNestedRecapsLocked()
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""
 	i.parkedTurn = 0

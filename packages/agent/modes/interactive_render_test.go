@@ -317,3 +317,18 @@ func TestInteractiveHydrateStructuredNestedCalls(t *testing.T) {
 	require.Equal(t, "out", i.toolCalls["p"].Result)
 	require.Contains(t, i.nestedRecaps["p"], "✓ ↳ bash pwd · workspace")
 }
+
+func TestNestedRecapsResetAndPrune(t *testing.T) {
+	i := &Interactive{nestedRecaps: map[string]string{"keep": "recap", "gone": "old", "live": "running"},
+		toolCalls: map[string]*tui.ToolCallView{"live": {ID: "live"}}, busy: true}
+	messages := []provider.Message{{Content: []provider.Content{provider.ToolCallBlock{ID: "keep"}}}}
+	i.pruneNestedRecapsLocked(messages)
+	require.Equal(t, map[string]string{"keep": "recap", "live": "running"}, i.nestedRecaps)
+	require.Equal(t, uint64(1), i.nestedRecapRevision)
+	i.busy = false
+	i.pruneNestedRecapsLocked(messages)
+	require.Equal(t, map[string]string{"keep": "recap"}, i.nestedRecaps)
+	i.resetNestedRecapsLocked()
+	require.Empty(t, i.nestedRecaps)
+	require.Equal(t, uint64(3), i.nestedRecapRevision)
+}
