@@ -341,6 +341,8 @@ active tool definitions and reached through `zut.search`, `zut.describe`, and
 `zut.call`. Set `"codemode_defer_mcp": false` inside `"experimental"` to opt out.
 Jailing makes MCP tools directly visible again; unjailing restores deferral.
 A tool result that explicitly activates a deferred tool can also expose it.
+The codemode tool description includes sorted MCP server/tool counts, refreshed
+for each request as background servers connect (long lists are summarized).
 
 Codemode has the same unrestricted host filesystem, network, and process access
 as `python`; it is not a sandbox. It is unavailable while jailed, with restricted

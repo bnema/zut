@@ -380,3 +380,29 @@ zut.result("ergonomics ok")`, 10, nil, &codemodeEchoDataTool{})
 		t.Fatal(codemodeOutput(t, result))
 	}
 }
+
+func TestCodemodeConnectorHints(t *testing.T) {
+	counts := map[string]int{"svelte": 4, "blender": 26, "offline": 0}
+	tool := &CodemodeTool{MCPServers: func() map[string]int { return counts }}
+	if got := tool.Description(); !strings.HasSuffix(got, " MCP servers: blender (26), svelte (4)") {
+		t.Fatal(got)
+	}
+	counts["async"] = 2
+	if !strings.Contains(tool.Description(), "MCP servers: async (2), blender (26)") {
+		t.Fatal("stale hints")
+	}
+	many := map[string]int{}
+	for i := 0; i < 100; i++ {
+		many[fmt.Sprintf("server%03d", i)] = i + 1
+	}
+	hint := codemodeConnectorHints(many)
+	if len(hint) > 600 || !strings.Contains(hint, "more") || hint != codemodeConnectorHints(many) {
+		t.Fatal(hint)
+	}
+	if got := codemodeConnectorHints(map[string]int{strings.Repeat("x", 1000): 1}); len(got) > 600 || !strings.Contains(got, "+1 more") {
+		t.Fatal(got)
+	}
+	if codemodeConnectorHints(nil) != "" {
+		t.Fatal("empty hints")
+	}
+}

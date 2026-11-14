@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/bnema/zut/packages/provider"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -160,5 +161,27 @@ func TestCodemodeUseSandboxDeniesBeforeSpawn(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("missing codemode tool result")
+	}
+}
+
+func TestCodemodeConnectorHintsWiring(t *testing.T) {
+	project := setupMCPHome(t, fakeMCPHTTPServer(t).URL)
+	args := pythonTestArgs(project)
+	args.Env = os.Environ()
+	startTestMCP(t, &args)
+	yes := true
+	reg := core.Registry{}
+	if !maybeAddCodemodeTool(reg, args, project, nil, Config{Experimental: &ExperimentalConfig{Codemode: &yes}}) {
+		t.Fatal("not registered")
+	}
+	cm := reg["codemode"].(*tools.CodemodeTool)
+	if cm.MCPServers == nil || cm.MCPServers()["fake"] < 1 || !strings.Contains(cm.Description(), "MCP servers: fake (") {
+		t.Fatal(cm.Description())
+	}
+	args.Tools = []string{"codemode", "mcp__fake__lookup"}
+	reg = core.Registry{}
+	maybeAddCodemodeTool(reg, args, project, nil, Config{Experimental: &ExperimentalConfig{Codemode: &yes}})
+	if got := reg["codemode"].(*tools.CodemodeTool).MCPServers()["fake"]; got != 1 {
+		t.Fatal(got)
 	}
 }

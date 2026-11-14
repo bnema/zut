@@ -1558,7 +1558,25 @@ func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *too
 	if reg == nil || !codemodeToolAllowed(args, cfg) {
 		return false
 	}
-	reg["codemode"] = &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
+	cm := &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
+	if args.mcpManager != nil && mcpAllowed(args) {
+		cm.MCPServers = func() map[string]int {
+			counts := map[string]int{}
+			// Status locks each server and reflects background startup/list changes.
+			connected := map[string]bool{}
+			for _, status := range args.mcpManager.Status() {
+				connected[status.Name] = status.Connected
+			}
+			for _, tool := range args.mcpManager.Tools() {
+				owner, ok := tool.(interface{ Server() string })
+				if ok && connected[owner.Server()] && mcpToolSelected(args, tool.Name()) {
+					counts[owner.Server()]++
+				}
+			}
+			return counts
+		}
+	}
+	reg["codemode"] = cm
 	return true
 }
 
