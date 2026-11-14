@@ -47,3 +47,31 @@ func TestCodemodeTranscriptRecap(t *testing.T) {
 		t.Fatalf("activity too wide: %q", lines[0])
 	}
 }
+
+func TestCodemodeEmptyResultRecap(t *testing.T) {
+	for _, mode := range []struct {
+		name          string
+		flat, compact bool
+	}{
+		{name: "boxed"},
+		{name: "flat", flat: true},
+		{name: "compact", compact: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			v := &View{Theme: Dark, FlatTools: mode.flat, CompactMode: mode.compact}
+			const recap = "✓ ↳ bash pwd"
+			for _, done := range []bool{false, true} {
+				call := ToolCallView{ID: "p", Name: "codemode", Done: done, Recap: recap}
+				rendered := strings.Join(v.renderToolCall(call, 80), "\n")
+				if !strings.Contains(rendered, recap) {
+					t.Fatalf("done=%v: missing recap in empty result: %s", done, rendered)
+				}
+				call.Recap = ""
+				without := strings.Join(v.renderToolCall(call, 80), "\n")
+				if strings.Contains(without, recap) {
+					t.Fatalf("done=%v: unexpected recap: %s", done, without)
+				}
+			}
+		})
+	}
+}

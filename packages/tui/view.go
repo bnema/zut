@@ -1431,8 +1431,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 
 	// Finished tool call with no body: just the labelled top edge
 	// directly closed by the bottom. Avoids a blank interior row
-	// for no-output tools.
-	if bodyText == "" {
+	// for no-output tools without a nested-call recap.
+	if bodyText == "" && tc.Recap == "" {
 		if v.FlatTools || v.CompactMode {
 			if v.CompactMode {
 				lines = append(lines, compactToolBlank(v.Theme, width))
