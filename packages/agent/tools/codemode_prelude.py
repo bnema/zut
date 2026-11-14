@@ -155,13 +155,36 @@ def help(name):
     print(details["description"])
 
 
+def save_snippet(name, code=None, description=""):
+    return _rpc("save_snippet", {"name": name, "code": code, "description": description})
+
+
+def snippets():
+    return _rpc("snippets", {})
+
+
+def snippet(name):
+    return _rpc("snippet", {"name": name})
+
+
+def delete_snippet(name):
+    return _rpc("delete_snippet", {"name": name})
+
+
+def run_snippet(name, **inputs):
+    namespace = {"__name__": "__codemode_snippet__", "zut": zut, "inputs": inputs}
+    exec(compile(snippet(name), "<snippet:" + name + ">", "exec"), namespace)
+    return namespace.get("result")
+
+
 def result(value):
     _rpc("result", {"value": value})
 
 
 zut = types.ModuleType("zut")
 for _name in ("call", "search", "describe", "help", "result", "ToolResult", "ToolDenied",
-              "ToolError", "CodemodeError", "SearchResults"):
+              "ToolError", "CodemodeError", "SearchResults", "save_snippet", "snippets",
+              "snippet", "delete_snippet", "run_snippet"):
     setattr(zut, _name, globals()[_name])
 zut.tools = _Tools()
 zut.mcp = _MCP()

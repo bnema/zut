@@ -1558,7 +1558,7 @@ func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *too
 	if reg == nil || !codemodeToolAllowed(args, cfg) {
 		return false
 	}
-	cm := &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter}
+	cm := &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter, SnippetHome: ZutHome}
 	if args.mcpManager != nil && mcpAllowed(args) {
 		cm.MCPServers = func() map[string]int {
 			counts := map[string]int{}

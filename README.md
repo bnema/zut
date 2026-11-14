@@ -320,6 +320,18 @@ The Python API is available as `zut` (also via `import zut`):
 - `zut.search(query, limit=10)` lists matching tool names and summaries;
   `zut.describe(name)` returns the description and schema.
 - `zut.result(value)` sets the JSON result printed after Python output.
+- Saved snippets are global under `$ZUT_HOME/codemode/snippets` (0700 directory,
+  0600 `.py` files with a metadata comment header). `zut.save_snippet(name,
+  code=None, description="")` saves code, defaulting to the current program;
+  names use 1–64 letters, digits, `_`, `.`, or `-`, and code is capped at 256 KiB
+  (descriptions: 1 KiB). `zut.snippets()` lists names, descriptions and timestamps;
+  `zut.snippet(name)` reads code; `zut.delete_snippet(name)` removes it.
+  `zut.run_snippet(name, **inputs)` executes in fresh globals containing `zut`
+  and an `inputs` dict, returning the snippet's `result` variable (or `None`).
+  Nested calls retain the same limits and guards. Storage operations require
+  unrestricted, unjailed admission and reject symlink escapes. Search includes
+  saved snippets (`kind: "snippet"`) and tools (`kind: "tool"`), retaining its
+  list interface and `.total`/`.truncated` pagination metadata.
 - `zut.ToolDenied` reports a refused nested call. `zut.ToolError` carries
   `.result` when `.is_error` is true, unless `check=False`.
   `zut.CodemodeError` carries `.kind` for bridge errors.

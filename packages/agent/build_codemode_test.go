@@ -44,7 +44,7 @@ func TestCodemodeRegistrationPolicy(t *testing.T) {
 			}
 			if got {
 				tool, ok := reg["codemode"].(*tools.CodemodeTool)
-				if !ok || tool.CWD != sandbox.Root || tool.Sandbox != sandbox || tool.Interpreter != cfg.PythonInterpreter || !reflect.DeepEqual(tool.Env, tc.args.Env) {
+				if !ok || tool.SnippetHome == nil || tool.SnippetHome() != ZutHome() || tool.CWD != sandbox.Root || tool.Sandbox != sandbox || tool.Interpreter != cfg.PythonInterpreter || !reflect.DeepEqual(tool.Env, tc.args.Env) {
 					t.Fatalf("tool=%#v", reg["codemode"])
 				}
 			}

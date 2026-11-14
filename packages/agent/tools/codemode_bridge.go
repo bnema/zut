@@ -20,6 +20,7 @@ import (
 const codemodeMaxLine = 8 * 1024 * 1024
 
 type codemodeBridge struct {
+	snippets              *codemodeSnippetStore
 	inv                   core.NestedInvoker
 	code                  string
 	calls, errors, denied int
@@ -207,11 +208,13 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 		return codemodeFailure("bad_request", "invalid request JSON")
 	}
 	var p struct {
-		Name  string          `json:"name"`
-		Args  json.RawMessage `json:"args"`
-		Query string          `json:"query"`
-		Limit int             `json:"limit"`
-		Value json.RawMessage `json:"value"`
+		Name        string          `json:"name"`
+		Code        *string         `json:"code"`
+		Description string          `json:"description"`
+		Args        json.RawMessage `json:"args"`
+		Query       string          `json:"query"`
+		Limit       int             `json:"limit"`
+		Value       json.RawMessage `json:"value"`
 	}
 	if len(req.Params) != 0 {
 		if bytes.Equal(bytes.TrimSpace(req.Params), []byte("null")) || json.Unmarshal(req.Params, &p) != nil {
@@ -258,6 +261,33 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			data = []byte("null")
 		}
 		return codemodeReply{Result: map[string]any{"id": out.ID, "is_error": out.Result.IsError, "text": text, "data": json.RawMessage(data)}}
+	case "save_snippet", "snippets", "snippet", "delete_snippet":
+		if b.snippets == nil {
+			return codemodeFailure("not_allowed", "snippet storage unavailable")
+		}
+		if err := CodemodeAdmission(b.snippets.sandbox); err != nil {
+			return codemodeFailure("not_allowed", err.Error())
+		}
+		var result any = struct{}{}
+		var err error
+		switch req.Method {
+		case "save_snippet":
+			code := b.code
+			if p.Code != nil {
+				code = *p.Code
+			}
+			err = b.snippets.save(p.Name, code, p.Description)
+		case "snippets":
+			result, err = b.snippets.list()
+		case "snippet":
+			result, err = b.snippets.read(p.Name)
+		case "delete_snippet":
+			err = b.snippets.delete(p.Name)
+		}
+		if err != nil {
+			return codemodeFailure("snippet_error", err.Error())
+		}
+		return codemodeReply{Result: result}
 	case "namespaces":
 		return codemodeReply{Result: codemodeNamespaces(b.inv.Tools())}
 	case "list":
@@ -281,6 +311,7 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 			Name    string `json:"name"`
 			Summary string `json:"summary"`
 			Score   int    `json:"score"`
+			Kind    string `json:"kind"`
 		}
 		results := []entry{}
 		tokens := strings.Fields(codemodeNormalize(p.Query))
@@ -291,11 +322,26 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 				continue
 			}
 			summary, _, _ := strings.Cut(tool.Description(), "\n")
-			results = append(results, entry{name, codemodeUTF8Prefix(summary, 160), score})
+			results = append(results, entry{name, codemodeUTF8Prefix(summary, 160), score, "tool"})
+		}
+		if b.snippets != nil {
+			snippets, err := b.snippets.list()
+			if err != nil {
+				return codemodeFailure("snippet_error", err.Error())
+			}
+			for _, snippet := range snippets {
+				score := codemodeSearchScore(snippet.Name, snippet.Description, query, tokens)
+				if score >= 0 {
+					results = append(results, entry{snippet.Name, codemodeUTF8Prefix(snippet.Description, 160), score, "snippet"})
+				}
+			}
 		}
 		sort.Slice(results, func(i, j int) bool {
 			if results[i].Score != results[j].Score {
 				return results[i].Score > results[j].Score
+			}
+			if results[i].Name == results[j].Name {
+				return results[i].Kind < results[j].Kind
 			}
 			return results[i].Name < results[j].Name
 		})

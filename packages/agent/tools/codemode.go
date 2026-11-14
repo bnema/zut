@@ -27,11 +27,13 @@ type CodemodeTool struct {
 	Interpreter string
 	// MCPServers returns a concurrency-safe snapshot of available server tool counts.
 	MCPServers func() map[string]int
+	// SnippetHome resolves global state using the application home helper.
+	SnippetHome func() string
 }
 
 func (*CodemodeTool) Name() string { return "codemode" }
 func (t *CodemodeTool) Description() string {
-	description := "Run Python with the same host access as python; prints go to output. zut.call(name, check=True, **args), zut.tools.<name>(check=True, **args), or zut.tools[name](**args) returns ToolResult (.text, .data, .is_error, .id). Names resolve case-insensitively with underscores/dashes equivalent; dir(zut.tools) lists allowed names. zut.mcp.<server>.<method>(check=True, **args) exposes MCP tools with Python-safe identifiers; dir() lists servers/methods. Sanitization collisions, reserved dunders, and unparseable names are omitted; use zut.call with the canonical name. check is reserved, not a tool argument. zut.search(query, limit=10) returns a list with .total/.truncated; zut.describe(name) returns schema and a typed signature; zut.help(name or MCP callable) prints signature + description; zut.result(value). Bash .data['exit_code'] gives status (also output, timed_out). Exceptions: zut.ToolDenied, zut.ToolError for is_error unless check=False, zut.CodemodeError with .kind. Each nested call follows normal confirmations."
+	description := "Run Python with the same host access as python; prints go to output. zut.call(name, check=True, **args), zut.tools.<name>(check=True, **args), or zut.tools[name](**args) returns ToolResult (.text, .data, .is_error, .id). Names resolve case-insensitively with underscores/dashes equivalent; dir(zut.tools) lists allowed names. zut.mcp.<server>.<method>(check=True, **args) exposes MCP tools with Python-safe identifiers; dir() lists servers/methods. Sanitization collisions, reserved dunders, and unparseable names are omitted; use zut.call with the canonical name. check is reserved, not a tool argument. zut.search(query, limit=10) returns a list with .total/.truncated; zut.describe(name) returns schema and a typed signature; zut.help(name or MCP callable) prints signature + description; zut.result(value). Saved snippets: zut.save_snippet(name, code=None, description=''), zut.snippets(), zut.snippet(name), zut.delete_snippet(name), zut.run_snippet(name, **inputs) returns its result variable. Bash .data['exit_code'] gives status (also output, timed_out). Exceptions: zut.ToolDenied, zut.ToolError for is_error unless check=False, zut.CodemodeError with .kind. Each nested call follows normal confirmations."
 	if t.MCPServers != nil {
 		description += codemodeConnectorHints(t.MCPServers())
 	}
@@ -117,6 +119,9 @@ func (t *CodemodeTool) Execute(ctx context.Context, raw json.RawMessage, progres
 	defer respR.Close()
 	defer respW.Close()
 	bridge := newCodemodeBridge(inv, a.Code)
+	if t.SnippetHome != nil {
+		bridge.snippets = &codemodeSnippetStore{home: t.SnippetHome, sandbox: t.Sandbox}
+	}
 	bridgeDone := make(chan error, 1)
 	go func() { bridgeDone <- bridge.serve(runCtx, reqR, respW) }()
 	outcome, runErr := runPythonProcess(runCtx, ctx, pythonRunSpec{
