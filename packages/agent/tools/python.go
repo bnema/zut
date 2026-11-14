@@ -212,6 +212,9 @@ type pythonRunSpec struct {
 	// Descendant-held descriptors are not covered by the output-drain timeout,
 	// so observing EOF on bridge pipes is the caller's concern.
 	ChildFiles []*os.File
+	// Started runs synchronously immediately after a successful process start.
+	// It may close caller-owned copies of ChildFiles; it must not block.
+	Started func()
 }
 
 // runPythonProcess runs one fresh subprocess directly with code on stdin.
@@ -251,6 +254,10 @@ func runPythonProcess(runCtx, parentCtx context.Context, spec pythonRunSpec) (py
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
 		return outcome, fmt.Errorf("start: %w", err)
+	}
+
+	if spec.Started != nil {
+		spec.Started()
 	}
 
 	captured := &bytes.Buffer{}
