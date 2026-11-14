@@ -237,7 +237,7 @@ func (b *codemodeBridge) handle(ctx context.Context, line []byte) codemodeReply 
 		}
 		tool, _ := b.inv.Tools().Get(name)
 		if req.Method == "describe" {
-			return codemodeReply{Result: map[string]any{"name": tool.Name(), "description": tool.Description(), "schema": tool.Schema()}}
+			return codemodeReply{Result: map[string]any{"name": tool.Name(), "description": tool.Description(), "schema": tool.Schema(), "signature": codemodeSignature(tool.Name(), tool.Schema())}}
 		}
 		if b.calls >= 200 {
 			return codemodeFailure("limit", "codemode permits at most 200 tool calls")

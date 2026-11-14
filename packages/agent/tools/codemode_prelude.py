@@ -120,7 +120,11 @@ class _MCP:
         if self.__server is None:
             return _MCP(name)
         canonical = entries[name]
-        return lambda check=True, **args: call(canonical, check=check, **args)
+        def invoke(check=True, **args):
+            return call(canonical, check=check, **args)
+        invoke.__name__ = canonical
+        invoke._zut_tool_name = canonical
+        return invoke
 
 
 class SearchResults(list):
@@ -138,12 +142,25 @@ def describe(name):
     return _rpc("describe", {"name": name})
 
 
+def help(name):
+    if callable(name):
+        canonical = getattr(name, "_zut_tool_name", None)
+        if not isinstance(canonical, str):
+            raise TypeError("help expects a tool name or zut.mcp callable")
+        details = describe(canonical)
+        name.__doc__ = details["signature"] + "\n" + details["description"]
+    else:
+        details = describe(name)
+    print(details["signature"])
+    print(details["description"])
+
+
 def result(value):
     _rpc("result", {"value": value})
 
 
 zut = types.ModuleType("zut")
-for _name in ("call", "search", "describe", "result", "ToolResult", "ToolDenied",
+for _name in ("call", "search", "describe", "help", "result", "ToolResult", "ToolDenied",
               "ToolError", "CodemodeError", "SearchResults"):
     setattr(zut, _name, globals()[_name])
 zut.tools = _Tools()

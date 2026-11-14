@@ -108,3 +108,26 @@ zut.result("namespace ok")`, 10, nil, &codemodeMCPTestTool{})
 		t.Fatal(codemodeOutput(t, result))
 	}
 }
+
+func TestCodemodeRealPythonHelp(t *testing.T) {
+	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `import ast, contextlib, io
+signature = zut.describe("glob")["signature"]
+ast.parse(signature)
+assert "pattern: str" in signature
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    zut.help("glob")
+assert signature in out.getvalue()
+method = zut.mcp.srv.list_things
+assert method.__name__ == "mcp__srv__list-things"
+with contextlib.redirect_stdout(out):
+    zut.help(method)
+assert "def mcp__srv__list_things(" in method.__doc__
+assert "Return the supplied JSON unchanged" in method.__doc__
+assert method.__doc__ in out.getvalue()
+zut.result("help ok")`, 10, nil, &codemodeMCPTestTool{})
+	if result.IsError || !strings.Contains(codemodeOutput(t, result), "help ok") {
+		t.Fatal(codemodeOutput(t, result))
+	}
+}
