@@ -63,6 +63,11 @@ func (s *turnState) pendingInputs() []QueuedInput {
 func cloneTurn(in LiveTurn) LiveTurn {
 	in.Tools = append([]LiveTool(nil), in.Tools...)
 	for i := range in.Tools {
+		in.Tools[i].CallsActive = nil
+		for id := range in.Tools[i].activeCalls {
+			in.Tools[i].CallsActive = append(in.Tools[i].CallsActive, id)
+		}
+		in.Tools[i].activeCalls = nil
 		in.Tools[i].Calls = append([]NestedCall(nil), in.Tools[i].Calls...)
 		for j := range in.Tools[i].Calls {
 			in.Tools[i].Calls[j].Args = append([]byte(nil), in.Tools[i].Calls[j].Args...)
@@ -562,7 +567,7 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 		for idx := range c.turn.live.Tools {
 			p := &c.turn.live.Tools[idx]
 			if p.ID == e.ParentID {
-				p.Calls = append(p.Calls, NestedCall{ID: e.ID, Name: e.Name, Args: append([]byte(nil), e.Args...)})
+				p.StartNestedCall(e.ID, e.Name, string(e.Args))
 				break
 			}
 		}
@@ -572,21 +577,7 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 			if parent.ID != e.ParentID {
 				continue
 			}
-			found := false
-			for j := range parent.Calls {
-				call := &parent.Calls[j]
-				if e.ID != "" && call.ID == e.ID {
-					call.Done = true
-					call.IsError = e.IsError
-					call.Denied = e.Denied
-					call.Summary = e.Summary
-					found = true
-					break
-				}
-			}
-			if !found {
-				parent.Calls = append(parent.Calls, NestedCall{ID: e.ID, Name: e.Name, Done: true, IsError: e.IsError, Denied: e.Denied, Summary: e.Summary})
-			}
+			parent.FinishNestedCall(e.ID, e.Name, e.IsError, e.Denied, e.Summary)
 			status := "ok"
 			if e.IsError {
 				status = "error"
@@ -595,8 +586,11 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 				status = "denied"
 			}
 			line := "↳ " + e.Name + " " + status + "\n"
-			parent.Progress += line
 			parent.Nested = append(parent.Nested, line)
+			if len(parent.Nested) > 8 {
+				parent.Nested = append([]string(nil), parent.Nested[len(parent.Nested)-8:]...)
+			}
+			parent.Progress = NestedDisplayText(parent.Progress + line)
 			break
 		}
 	case core.EvToolProgress:

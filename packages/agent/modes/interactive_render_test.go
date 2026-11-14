@@ -251,6 +251,8 @@ func TestInteractiveNestedToolLines(t *testing.T) {
 	require.Contains(t, tc.Result, "✗ ↳ child8")
 	require.Contains(t, tc.Result, "⊘ ↳ child9")
 	require.Contains(t, tc.Result, "11 calls · 1 error · 1 denied")
+	require.Len(t, i.nestedToolLines["p"].Calls, 8)
+	require.Equal(t, 11, i.nestedToolLines["p"].CallsTotal)
 	require.Equal(t, 9, strings.Count(tc.Result, "\n"))
 	i.handleEvent(core.EvToolResult{ID: "p", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "real result"}}}})
 	require.Equal(t, "real result", tc.Result)

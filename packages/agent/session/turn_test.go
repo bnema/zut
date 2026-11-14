@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -835,4 +836,59 @@ func TestTurnNestedCallSnapshot(t *testing.T) {
 	require.True(t, done.Live.Tools[0].Calls[0].Denied)
 	require.Equal(t, "not allowed", done.Live.Tools[0].Calls[0].Summary)
 	require.False(t, snap.Live.Tools[0].Calls[0].Done, "published snapshots must remain immutable")
+}
+
+func TestNestedCallsBoundedState(t *testing.T) {
+	var state LiveTool
+	large := strings.Repeat("界", 1000)
+	for j := 0; j < 1000; j++ {
+		id := fmt.Sprint(j)
+		state.StartNestedCall(id, "bash", large)
+	}
+	require.Len(t, state.Calls, 8)
+	require.Len(t, state.activeCalls, 1000)
+	require.Equal(t, 1000, state.CallsTotal)
+	require.Equal(t, 1000, state.CallsRunning)
+	require.Equal(t, 992, state.CallsEarlier)
+	for j := 0; j < 1000; j++ {
+		state.FinishNestedCall(fmt.Sprint(j), "bash", j%2 == 0, j%3 == 0, large)
+	}
+	require.Empty(t, state.activeCalls)
+	require.Zero(t, state.CallsRunning)
+	require.Equal(t, 1000, state.CallsTotal)
+	require.Equal(t, 334, state.CallsDenied)
+	require.Equal(t, 333, state.CallsErrors)
+	for _, call := range state.Calls {
+		require.Empty(t, call.Args)
+		require.LessOrEqual(t, len(call.ArgsSummary), 200)
+		require.LessOrEqual(t, len(call.Summary), 200)
+		require.True(t, utf8.ValidString(call.ArgsSummary))
+		require.True(t, utf8.ValidString(call.Summary))
+		require.True(t, call.Done)
+	}
+	state.FinishNestedCall("denied", "bash", true, true, "denied before start")
+	require.Equal(t, 1001, state.CallsTotal)
+	require.Equal(t, 335, state.CallsDenied)
+	require.Len(t, state.Calls, 8)
+}
+
+func TestNestedCallsSnapshotReconnectOutsideTail(t *testing.T) {
+	var state LiveTool
+	for j := 0; j < 20; j++ {
+		state.StartNestedCall(fmt.Sprint(j), "bash", "pwd")
+	}
+	snap := cloneTurn(LiveTurn{Tools: []LiveTool{state}})
+	require.Len(t, snap.Tools[0].Calls, 8)
+	require.Len(t, snap.Tools[0].CallsActive, 20)
+	encoded, err := json.Marshal(snap.Tools[0])
+	require.NoError(t, err)
+	var restored LiveTool
+	require.NoError(t, json.Unmarshal(encoded, &restored))
+	restored.RestoreNestedCalls()
+	restored.FinishNestedCall("0", "bash", true, false, "failed")
+	require.Equal(t, 20, restored.CallsTotal)
+	require.Equal(t, 19, restored.CallsRunning)
+	require.Equal(t, 1, restored.CallsErrors)
+	require.Len(t, restored.Calls, 8)
+	require.False(t, state.Calls[0].Done)
 }

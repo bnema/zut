@@ -32,7 +32,7 @@ func eventAffectsPresentation(ev core.AgentEvent) bool {
 type nestedToolLines struct {
 	lines   []string
 	earlier int
-	calls   []session.NestedCall
+	session.LiveTool
 }
 
 func (n *nestedToolLines) append(line string) {
@@ -197,30 +197,16 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	case core.EvNestedToolStarted:
 		if tc, ok := i.toolCalls[e.ParentID]; ok && !tc.Done {
 			n := i.nestedStateLocked(tc)
-			n.calls = append(n.calls, session.NestedCall{ID: e.ID, Name: e.Name, Args: append([]byte(nil), e.Args...)})
-			tc.Result = nestedCallsText(n.calls)
+			n.StartNestedCall(e.ID, e.Name, tui.ShortArgs(e.Name, e.Args))
+			tc.Result = nestedCallsText(n.LiveTool)
 			tc.NestedActivity = true
 			i.bumpToolRevisionLocked(tc)
 		}
 	case core.EvNestedToolResult:
 		if tc, ok := i.toolCalls[e.ParentID]; ok && !tc.Done {
 			n := i.nestedStateLocked(tc)
-			found := false
-			for j := range n.calls {
-				c := &n.calls[j]
-				if e.ID != "" && c.ID == e.ID {
-					c.Done = true
-					c.IsError = e.IsError
-					c.Denied = e.Denied
-					c.Summary = e.Summary
-					found = true
-					break
-				}
-			}
-			if !found {
-				n.calls = append(n.calls, session.NestedCall{ID: e.ID, Name: e.Name, Done: true, IsError: e.IsError, Denied: e.Denied, Summary: e.Summary})
-			}
-			tc.Result = nestedCallsText(n.calls)
+			n.FinishNestedCall(e.ID, e.Name, e.IsError, e.Denied, e.Summary)
+			tc.Result = nestedCallsText(n.LiveTool)
 			tc.NestedActivity = true
 			i.bumpToolRevisionLocked(tc)
 		}
@@ -240,7 +226,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			}
 			tc.Result = text.String()
 			if n := i.nestedToolLines[e.ID]; n != nil && (tc.Name == "codemode" || tc.Name == "python") {
-				tc.Recap = nestedCallsText(n.calls)
+				tc.Recap = nestedCallsText(n.LiveTool)
 				if tc.Recap == "" {
 					tc.Recap = n.text()
 				}
@@ -640,8 +626,15 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 		}
 		if len(lt.Calls) > 0 {
 			n := i.nestedStateLocked(tc)
-			n.calls = append([]session.NestedCall(nil), lt.Calls...)
-			tc.Result = nestedCallsText(n.calls)
+			n.LiveTool = lt
+			n.Calls = append([]session.NestedCall(nil), lt.Calls...)
+			for j := range n.Calls {
+				if n.Calls[j].ArgsSummary == "" {
+					n.Calls[j].ArgsSummary = session.NestedDisplayText(tui.ShortArgs(n.Calls[j].Name, n.Calls[j].Args))
+				}
+			}
+			n.RestoreNestedCalls()
+			tc.Result = nestedCallsText(n.LiveTool)
 			tc.NestedActivity = true
 		} else {
 			i.restoreNestedToolLinesLocked(tc, lt.Nested)
@@ -1272,40 +1265,31 @@ func (i *Interactive) nestedStateLocked(tc *tui.ToolCallView) *nestedToolLines {
 	return i.nestedToolLines[tc.ID]
 }
 
-func nestedCallsText(calls []session.NestedCall) string {
+func nestedCallsText(state session.LiveTool) string {
+	calls := state.Calls
 	if len(calls) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	start := 0
-	if len(calls) > 8 {
-		start = len(calls) - 8
+	if state.CallsEarlier > 0 {
+		start = state.CallsEarlier
 		fmt.Fprintf(&b, "… %d earlier\n", start)
 	}
-	errors, denied, running := 0, 0, 0
-	for j, c := range calls {
+	errors, denied, running := state.CallsErrors, state.CallsDenied, state.CallsRunning
+	for _, c := range calls {
 		glyph := "⠋"
 		if c.Done {
 			glyph = "✓"
-		} else {
-			running++
 		}
 		if c.IsError {
 			glyph = "✗"
-			errors++
 		}
 		if c.Denied {
 			glyph = "⊘"
-			denied++
-			if c.IsError {
-				errors--
-			}
-		}
-		if j < start {
-			continue
 		}
 		line := glyph + " ↳ " + c.Name
-		if args := tui.ShortArgs(c.Name, c.Args); args != "" {
+		if args := c.ArgsSummary; args != "" {
 			line += " " + args
 		}
 		if c.Summary != "" {
@@ -1313,7 +1297,7 @@ func nestedCallsText(calls []session.NestedCall) string {
 		}
 		fmt.Fprintln(&b, line)
 	}
-	fmt.Fprintf(&b, "%d calls", len(calls))
+	fmt.Fprintf(&b, "%d calls", state.CallsTotal)
 	if running > 0 {
 		fmt.Fprintf(&b, " · %d running", running)
 	}

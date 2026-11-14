@@ -270,8 +270,15 @@ The separate [local daemon protocol](daemon-protocol.md) is version 2; its versi
 
 The `protocol_version` field in the `hello` response is the major version of this schema. Backwards-incompatible changes bump it. Within a major version the schema only grows: new events, commands, and optional event fields may appear — such as the `id` field on `plan_update` — so consumers must ignore fields they do not recognize.
 
-Live tool snapshots may additionally include `calls`, an optional array of
-nested-call display metadata: `id`, `name`, optional `args`, `done`, `is_error`,
-`denied`, and `summary`. Started calls have `done: false`; results update the
-same ID, while denied-before-start calls may have no args. The legacy `nested`
-strings remain available. Neither field changes model-visible tool results.
+Live tool snapshots may additionally include `calls`, an optional array of at
+most eight recent nested-call display records: `id`, `name`, optional
+`args_summary`, legacy `args`, `done`, `is_error`, `denied`, and `summary`.
+New snapshots omit raw `args`; `args_summary` and `summary` are capped at 200
+bytes at a UTF-8 boundary. Started calls have `done: false`; results update the
+same ID while it remains in the tail. Denied-before-start calls may have no args.
+Optional `calls_total`, `calls_running`, `calls_errors` (excluding denials),
+`calls_denied`, and `calls_earlier` counters describe all calls, including those
+outside the tail. Optional `calls_active` lists running IDs, including those no
+longer in the tail, so clients can correlate later results after reconnecting.
+The legacy `nested` strings remain available as a bounded eight-entry tail.
+Neither field changes model-visible tool results.

@@ -8,6 +8,7 @@ import (
 	"github.com/bnema/zut/packages/provider"
 	"os"
 	"time"
+	"unicode/utf8"
 )
 
 // ID identifies a session contract value.
@@ -131,12 +132,19 @@ type LiveTool struct {
 	Args json.RawMessage `json:"args"`
 	// ArgsPartial carries streamed arguments that are not yet valid JSON
 	// (Args is nil then); a RawMessage cannot encode partial JSON.
-	ArgsPartial string           `json:"args_partial,omitempty"`
-	State       string           `json:"state"`
-	Calls       []NestedCall     `json:"calls,omitempty"`
-	Nested      []string         `json:"nested,omitempty"`
-	Progress    string           `json:"progress"`
-	Result      *core.ToolResult `json:"result"`
+	ArgsPartial  string       `json:"args_partial,omitempty"`
+	State        string       `json:"state"`
+	Calls        []NestedCall `json:"calls,omitempty"`
+	CallsTotal   int          `json:"calls_total,omitempty"`
+	CallsRunning int          `json:"calls_running,omitempty"`
+	CallsErrors  int          `json:"calls_errors,omitempty"`
+	CallsDenied  int          `json:"calls_denied,omitempty"`
+	CallsEarlier int          `json:"calls_earlier,omitempty"`
+	CallsActive  []string     `json:"calls_active,omitempty"`
+	activeCalls  map[string]struct{}
+	Nested       []string         `json:"nested,omitempty"`
+	Progress     string           `json:"progress"`
+	Result       *core.ToolResult `json:"result"`
 }
 
 // Input is a terminal-free session contract payload.
@@ -362,11 +370,109 @@ const (
 
 // NestedCall is display metadata, separate from the model-visible result.
 type NestedCall struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Args    json.RawMessage `json:"args,omitempty"`
-	Done    bool            `json:"done,omitempty"`
-	IsError bool            `json:"is_error,omitempty"`
-	Denied  bool            `json:"denied,omitempty"`
-	Summary string          `json:"summary,omitempty"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Args        json.RawMessage `json:"args,omitempty"`
+	ArgsSummary string          `json:"args_summary,omitempty"`
+	Done        bool            `json:"done,omitempty"`
+	IsError     bool            `json:"is_error,omitempty"`
+	Denied      bool            `json:"denied,omitempty"`
+	Summary     string          `json:"summary,omitempty"`
+}
+
+// NestedDisplayText bounds retained display text at a UTF-8 boundary.
+func NestedDisplayText(text string) string {
+	if len(text) <= 200 {
+		return text
+	}
+	end := 200
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end]
+}
+
+func (t *LiveTool) appendNestedCall(call NestedCall) {
+	if len(t.Calls) == 8 {
+		copy(t.Calls, t.Calls[1:])
+		t.Calls[7] = call
+	} else {
+		t.Calls = append(t.Calls, call)
+	}
+	t.CallsEarlier = t.CallsTotal - len(t.Calls)
+}
+
+// StartNestedCall retains only a bounded display record, never raw arguments.
+func (t *LiveTool) StartNestedCall(id, name, argsSummary string) {
+	if t.activeCalls == nil {
+		t.activeCalls = make(map[string]struct{})
+	}
+	if _, exists := t.activeCalls[id]; exists {
+		return
+	}
+	t.activeCalls[id] = struct{}{}
+	t.CallsTotal++
+	t.CallsRunning++
+	t.appendNestedCall(NestedCall{ID: id, Name: name, ArgsSummary: NestedDisplayText(argsSummary)})
+}
+
+// FinishNestedCall accounts for results even after their display record expires.
+func (t *LiveTool) FinishNestedCall(id, name string, isError, denied bool, summary string) {
+	_, started := t.activeCalls[id]
+	if started {
+		delete(t.activeCalls, id)
+		t.CallsRunning--
+	} else {
+		t.CallsTotal++
+	}
+	if denied {
+		t.CallsDenied++
+	} else if isError {
+		t.CallsErrors++
+	}
+	for j := range t.Calls {
+		call := &t.Calls[j]
+		if started && call.ID == id {
+			call.Done, call.IsError, call.Denied, call.Summary = true, isError, denied, NestedDisplayText(summary)
+			return
+		}
+	}
+	if !started {
+		t.appendNestedCall(NestedCall{ID: id, Name: name, Done: true, IsError: isError, Denied: denied, Summary: NestedDisplayText(summary)})
+	}
+}
+
+// RestoreNestedCalls initializes display counters and active IDs from a snapshot.
+func (t *LiveTool) RestoreNestedCalls() {
+	t.activeCalls = make(map[string]struct{})
+	for _, id := range t.CallsActive {
+		t.activeCalls[id] = struct{}{}
+	}
+	t.CallsActive = nil
+	for j := range t.Calls {
+		call := &t.Calls[j]
+		if call.ArgsSummary == "" {
+			call.ArgsSummary = NestedDisplayText(string(call.Args))
+		}
+		call.Args = nil
+		call.Summary = NestedDisplayText(call.Summary)
+		if !call.Done {
+			t.activeCalls[call.ID] = struct{}{}
+		}
+	}
+	if t.CallsTotal == 0 {
+		t.CallsTotal = len(t.Calls)
+		t.CallsRunning = len(t.activeCalls)
+		for _, call := range t.Calls {
+			if call.Denied {
+				t.CallsDenied++
+			} else if call.IsError {
+				t.CallsErrors++
+			}
+		}
+	}
+	if len(t.Calls) > 8 {
+		t.Calls = append([]NestedCall(nil), t.Calls[len(t.Calls)-8:]...)
+	}
+	t.CallsEarlier = t.CallsTotal - len(t.Calls)
 }
