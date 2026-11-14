@@ -63,6 +63,10 @@ func (s *turnState) pendingInputs() []QueuedInput {
 func cloneTurn(in LiveTurn) LiveTurn {
 	in.Tools = append([]LiveTool(nil), in.Tools...)
 	for i := range in.Tools {
+		in.Tools[i].Calls = append([]NestedCall(nil), in.Tools[i].Calls...)
+		for j := range in.Tools[i].Calls {
+			in.Tools[i].Calls[j].Args = append([]byte(nil), in.Tools[i].Calls[j].Args...)
+		}
 		in.Tools[i].Nested = append([]string(nil), in.Tools[i].Nested...)
 		// Args accumulate streamed deltas and stay partial JSON until the call
 		// completes; exposing them would make the snapshot unencodable.
@@ -555,11 +559,33 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 		c.turn.projection.Activity = Activity{Kind: "tool", Tool: e.Name, Since: c.deps.Clock()}
 	case core.EvNestedToolStarted:
 		c.turn.projection.Activity.Tool = e.Name
+		for idx := range c.turn.live.Tools {
+			p := &c.turn.live.Tools[idx]
+			if p.ID == e.ParentID {
+				p.Calls = append(p.Calls, NestedCall{ID: e.ID, Name: e.Name, Args: append([]byte(nil), e.Args...)})
+				break
+			}
+		}
 	case core.EvNestedToolResult:
 		for idx := range c.turn.live.Tools {
 			parent := &c.turn.live.Tools[idx]
 			if parent.ID != e.ParentID {
 				continue
+			}
+			found := false
+			for j := range parent.Calls {
+				call := &parent.Calls[j]
+				if e.ID != "" && call.ID == e.ID {
+					call.Done = true
+					call.IsError = e.IsError
+					call.Denied = e.Denied
+					call.Summary = e.Summary
+					found = true
+					break
+				}
+			}
+			if !found {
+				parent.Calls = append(parent.Calls, NestedCall{ID: e.ID, Name: e.Name, Done: true, IsError: e.IsError, Denied: e.Denied, Summary: e.Summary})
 			}
 			status := "ok"
 			if e.IsError {

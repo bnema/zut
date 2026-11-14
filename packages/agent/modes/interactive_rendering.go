@@ -83,6 +83,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 		expandAll:            i.view.ExpandAll,
 		tailLimit:            i.view.TailLimit,
 		planRev:              i.planRevision,
+		nestedRecapRev:       i.nestedRecapRevision,
 		renderedMessageCount: len(i.view.Messages),
 		viewCacheRev:         i.view.RenderCacheRevision,
 	}
@@ -288,6 +289,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// so showing v.ToolCalls a second time would duplicate them below
 	// the final assistant text — which looks like the summary came
 	// "before" the tools.
+	i.view.ToolRecaps = i.nestedRecaps
 	i.view.ToolCalls = i.view.ToolCalls[:0]
 	if i.busy {
 		for _, id := range i.toolOrder {

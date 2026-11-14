@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -235,30 +236,29 @@ func TestInteractiveToolProgressStormDoesNotInvalidate(t *testing.T) {
 
 func TestInteractiveNestedToolLines(t *testing.T) {
 	i := &Interactive{dirty: make(chan struct{}, 1), toolCalls: make(map[string]*tui.ToolCallView)}
-	i.handleEvent(core.EvToolCall{ID: "p", Name: "parent"})
-	before := i.toolCalls["p"].Revision
-	i.handleEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "child"})
-	i.handleEvent(core.EvNestedToolResult{ParentID: "unknown", Name: "ignored"})
-	require.Len(t, i.toolCalls, 1)
-	require.Equal(t, before, i.toolCalls["p"].Revision)
-	for n := 0; n < 10; n++ {
-		i.handleEventForPresentation(core.EvNestedToolResult{ParentID: "p", Name: fmt.Sprintf("child%d", n), IsError: n == 8, Denied: n == 9})
-	}
+	i.handleEvent(core.EvToolCall{ID: "p", Name: "codemode"})
+	i.handleEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "grep", Args: json.RawMessage(`{"pattern":"^module","path":"go.mod"}`)})
 	tc := i.toolCalls["p"]
-	require.Equal(t, before+10, tc.Revision)
-	require.True(t, strings.HasPrefix(tc.Result, "… 2 earlier\n↳ child2 ok\n"))
-	require.True(t, strings.HasSuffix(tc.Result, "↳ child8 error\n↳ child9 denied\n"))
+	require.Contains(t, tc.Result, `⠋ ↳ grep pattern="^module" path=go.mod`)
+	require.Contains(t, tc.Result, "1 calls · 1 running")
+	i.handleEvent(core.EvNestedToolResult{ID: "p/1", ParentID: "p", Name: "grep", Summary: "one match"})
+	require.Contains(t, tc.Result, `✓ ↳ grep pattern="^module" path=go.mod · one match`)
+	require.NotContains(t, tc.Result, "⠋")
+	for n := 0; n < 10; n++ {
+		i.handleEvent(core.EvNestedToolResult{ID: fmt.Sprint(n), ParentID: "p", Name: fmt.Sprintf("child%d", n), IsError: n == 8, Denied: n == 9})
+	}
+	require.True(t, strings.HasPrefix(tc.Result, "… 3 earlier\n✓ ↳ child2"))
+	require.Contains(t, tc.Result, "✗ ↳ child8")
+	require.Contains(t, tc.Result, "⊘ ↳ child9")
+	require.Contains(t, tc.Result, "11 calls · 1 error · 1 denied")
 	require.Equal(t, 9, strings.Count(tc.Result, "\n"))
-	view := &tui.View{Theme: tui.Dark, ToolCalls: []tui.ToolCallView{*tc}}
-	require.Contains(t, strings.Join(view.BuildLive(80), "\n"), "child9 denied")
-	i.applyPortAgentTranscriptLocked(core.EvNestedToolResult{ParentID: "p", Name: "child"})
-	require.Nil(t, i.portToolMsg)
-	require.Empty(t, i.portMsgs)
 	i.handleEvent(core.EvToolResult{ID: "p", Result: core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "real result"}}}})
 	require.Equal(t, "real result", tc.Result)
+	require.Contains(t, tc.Recap, "11 calls")
+	require.Equal(t, tc.Recap, i.nestedRecaps["p"])
 	require.Empty(t, i.nestedToolLines)
-	i.handleEvent(core.EvNestedToolResult{ParentID: "p", Name: "late"})
-	require.Equal(t, "real result", tc.Result)
+	i.handleEvent(core.EvAssistantStart{})
+	require.Contains(t, i.nestedRecaps["p"], "11 calls")
 }
 
 func TestInteractiveRestoreNestedToolLines(t *testing.T) {
@@ -302,4 +302,18 @@ func TestInteractiveHydrateNestedToolProgress(t *testing.T) {
 	require.Equal(t, "real", i.toolCalls["done"].Result)
 	require.Empty(t, i.toolCalls["plain"].Result)
 	require.Len(t, i.toolCalls, 3)
+}
+
+func TestInteractiveHydrateStructuredNestedCalls(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	calls := []session.NestedCall{{ID: "c", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)}}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.hydrateLocked(session.Snapshot{Live: session.LiveTurn{Tools: []session.LiveTool{{ID: "p", Name: "codemode", State: "running", Calls: calls}}}})
+	require.Contains(t, i.toolCalls["p"].Result, "⠋ ↳ bash pwd")
+	calls[0].Done = true
+	calls[0].Summary = "workspace"
+	i.hydrateLocked(session.Snapshot{Live: session.LiveTurn{Tools: []session.LiveTool{{ID: "p", Name: "codemode", State: "done", Calls: calls, Result: &core.ToolResult{Content: []provider.Content{provider.TextBlock{Text: "out"}}}}}}})
+	require.Equal(t, "out", i.toolCalls["p"].Result)
+	require.Contains(t, i.nestedRecaps["p"], "✓ ↳ bash pwd · workspace")
 }

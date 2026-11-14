@@ -814,3 +814,25 @@ func TestTurnNestedToolProjection(t *testing.T) {
 	require.Equal(t, "no newline↳ child ok\n↳ child error\n↳ child denied\n", snap.Live.Tools[0].Progress)
 	require.Equal(t, []string{"↳ child ok\n", "↳ child error\n", "↳ child denied\n"}, snap.Live.Tools[0].Nested)
 }
+
+func TestTurnNestedCallSnapshot(t *testing.T) {
+	c, ctx := newTestController(t)
+	require.NoError(t, c.call(ctx, func() {
+		c.applyAgentEvent(core.EvToolExecutionStarted{ID: "p", Name: "codemode"})
+		c.applyAgentEvent(core.EvNestedToolStarted{ID: "child", ParentID: "p", Name: "bash", Args: json.RawMessage(`{"command":"pwd"}`)})
+	}))
+	snap, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, snap.Live.Tools[0].Calls, 1)
+	require.False(t, snap.Live.Tools[0].Calls[0].Done)
+	require.NoError(t, c.call(ctx, func() {
+		c.applyAgentEvent(core.EvNestedToolResult{ID: "child", ParentID: "p", Name: "bash", IsError: true, Denied: true, Summary: "not allowed"})
+	}))
+	done, err := c.Snapshot(ctx)
+	require.NoError(t, err)
+	require.Len(t, done.Live.Tools[0].Calls, 1)
+	require.True(t, done.Live.Tools[0].Calls[0].Done)
+	require.True(t, done.Live.Tools[0].Calls[0].Denied)
+	require.Equal(t, "not allowed", done.Live.Tools[0].Calls[0].Summary)
+	require.False(t, snap.Live.Tools[0].Calls[0].Done, "published snapshots must remain immutable")
+}

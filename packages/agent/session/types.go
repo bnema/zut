@@ -133,6 +133,7 @@ type LiveTool struct {
 	// (Args is nil then); a RawMessage cannot encode partial JSON.
 	ArgsPartial string           `json:"args_partial,omitempty"`
 	State       string           `json:"state"`
+	Calls       []NestedCall     `json:"calls,omitempty"`
 	Nested      []string         `json:"nested,omitempty"`
 	Progress    string           `json:"progress"`
 	Result      *core.ToolResult `json:"result"`
@@ -358,3 +359,14 @@ const (
 	// SubmitModeQueue denotes queue.
 	SubmitModeQueue SubmitMode = "queue"
 )
+
+// NestedCall is display metadata, separate from the model-visible result.
+type NestedCall struct {
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Args    json.RawMessage `json:"args,omitempty"`
+	Done    bool            `json:"done,omitempty"`
+	IsError bool            `json:"is_error,omitempty"`
+	Denied  bool            `json:"denied,omitempty"`
+	Summary string          `json:"summary,omitempty"`
+}

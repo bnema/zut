@@ -304,6 +304,12 @@ requires nonblank `code` and a positive integer `timeout` in seconds, including
 discovery and execution. Prints go to merged stdout/stderr, with the same
 50 KiB/2,000-line output caps as `python`.
 
+In the interactive TUI, Python headers show the first non-import code line and
+line count. Codemode shows nested calls as they start and finish (✓ success,
+✗ error, ⊘ denied), with the last eight calls and a call counter retained above
+the output. Attached clients receive the same live activity; model-visible
+results are unchanged.
+
 The Python API is available as `zut` (also via `import zut`):
 
 - `zut.call(name, /, check=True, **args)` returns a `ToolResult` with `.text`,

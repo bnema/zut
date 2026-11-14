@@ -269,3 +269,9 @@ See `examples/rpc/` for working implementations in:
 The separate [local daemon protocol](daemon-protocol.md) is version 2; its version is not the RPC `hello` schema version shown above.
 
 The `protocol_version` field in the `hello` response is the major version of this schema. Backwards-incompatible changes bump it. Within a major version the schema only grows: new events, commands, and optional event fields may appear — such as the `id` field on `plan_update` — so consumers must ignore fields they do not recognize.
+
+Live tool snapshots may additionally include `calls`, an optional array of
+nested-call display metadata: `id`, `name`, optional `args`, `done`, `is_error`,
+`denied`, and `summary`. Started calls have `done: false`; results update the
+same ID, while denied-before-start calls may have no args. The legacy `nested`
+strings remain available. Neither field changes model-visible tool results.

@@ -104,7 +104,8 @@ type View struct {
 	PlanRevision    uint64
 	Streaming       string // current assistant text delta
 	StreamingActive bool
-	ToolCalls       []ToolCallView // tool calls in flight or completed
+	ToolRecaps      map[string]string // display-only nested call recaps by parent ID
+	ToolCalls       []ToolCallView    // tool calls in flight or completed
 
 	// Startup resource fields list host-loaded inputs before the transcript
 	// without creating provider messages or persisted entries.
@@ -193,7 +194,8 @@ type msgVisualKey struct {
 	theme       uint64
 	// planRev carries the plan snapshot revision so a new snapshot invalidates
 	// cached message rows that render a plan checklist.
-	planRev uint64
+	planRev   uint64
+	recapHash uint64
 }
 
 // msgCacheKey identifies a cached message render. hash is a 64-bit
@@ -249,6 +251,7 @@ func (v *View) CloneForRender() *View {
 	// The live-text cache grows in place; a snapshot must not share it.
 	clone.liveText = liveTextCache{}
 	clone.Messages = append([]provider.Message(nil), v.Messages...)
+	clone.ToolRecaps = cloneStringMap(v.ToolRecaps)
 	clone.ToolCalls = append([]ToolCallView(nil), v.ToolCalls...)
 	clone.StartupContextPaths = append([]string(nil), v.StartupContextPaths...)
 	clone.StartupExtensionNames = append([]string(nil), v.StartupExtensionNames...)
@@ -365,12 +368,14 @@ type ToolCallView struct {
 	// Revision is advanced by the owning interactive state whenever a
 	// visible field changes. A non-zero revision lets the live render cache
 	// avoid rescanning a large result string on every redraw.
-	Revision uint64
-	Args     string // rendered argument summary
-	Preview  string // side-effect-free result shown before confirmation
-	Result   string // rendered result preview (truncated)
-	Error    bool
-	Done     bool
+	Revision       uint64
+	Args           string // rendered argument summary
+	Preview        string // side-effect-free result shown before confirmation
+	Result         string // rendered result preview (truncated)
+	Recap          string // display-only nested activity, never part of the tool result
+	NestedActivity bool   // Result currently contains live nested activity
+	Error          bool
+	Done           bool
 
 	// Streaming is true while the model is still typing the tool
 	// call's JSON arguments. The TUI renders a live preview of any
@@ -762,7 +767,15 @@ func (v *View) boundMessageCache(renderFrom, messageCount int) {
 // not mutate it; Build() only ever appends to its own `out` so the
 // shared slice is safe.
 func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnOpen bool, themeKey uint64) []string {
+	recapHash := fnv64aInit
+	for id, recap := range v.ToolRecaps {
+		recapHash ^= fnv64aWrite(fnv64aInit, []byte(id+recap))
+	}
+	for _, tc := range v.ToolCalls {
+		recapHash = fnv64aWrite(recapHash, []byte(tc.ID+tc.Recap))
+	}
 	visual := msgVisualKey{
+		recapHash:   recapHash,
 		width:       width,
 		expandAll:   v.ExpandAll,
 		turnOpen:    turnOpen,
@@ -1128,6 +1141,13 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					label = v.toolCallLabels[tr.CallID]
 				}
 				label += mutatedFilesSuffix(tr.Context.Mutates)
+				recap := v.ToolRecaps[tr.CallID]
+				for _, tc := range v.ToolCalls {
+					if tc.ID == tr.CallID {
+						recap = tc.Recap
+						break
+					}
+				}
 				// Each tool result owns a complete box: top edge with
 				// the call's label, body rows wrapped in vertical
 				// edges, bottom edge to close. The label is looked up
@@ -1143,7 +1163,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error"), width, v.CompactMode))
 					}
 					forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
-					for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff) {
+					for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff)...) {
 						_, stripped := parseImageFootprint(line)
 						lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
 					}
@@ -1158,7 +1178,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FGColor(color, "  error"), width))
 				}
 				forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
-				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff) {
+				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff)...) {
 					// Image-footprint rows (the escape row, the blank
 					// reservation rows beneath it, and the gap row
 					// before the metadata caption) are tagged with the
@@ -1225,7 +1245,7 @@ func hashLiveTool(tc ToolCallView) uint64 {
 		return 0
 	}
 	h := fnv64aInit
-	for _, s := range []string{tc.ID, tc.Name, tc.Args, tc.Preview, tc.Result, tc.RawJSONBuf, tc.LivePath} {
+	for _, s := range []string{tc.ID, tc.Name, tc.Args, tc.Preview, tc.Result, tc.Recap, tc.RawJSONBuf, tc.LivePath} {
 		h = fnv64aWrite(h, []byte(s))
 		h = fnv64aWriteByte(h, 0)
 	}
@@ -1336,6 +1356,9 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// the target file as soon as it's known, even before the full
 	// JSON arrived.
 	arg := tc.Args
+	if (tc.Name == "codemode" || tc.Name == "python") && tc.RawJSONBuf != "" {
+		arg = ShortArgs(tc.Name, json.RawMessage(tc.RawJSONBuf))
+	}
 	if arg == "" && tc.LivePath != "" {
 		arg = tc.LivePath
 	}
@@ -1439,8 +1462,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			lines = append(lines, compactToolBlank(v.Theme, width))
 		}
 		lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-		body := v.renderLiveToolResult(bodyText, flatToolBodyRenderWidth(width), color, tc.LivePath)
-		for _, l := range v.collapseToolBody(body, false) {
+		body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color)
+		for _, l := range body {
 			_, stripped := parseImageFootprint(l)
 			lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
 		}
@@ -1451,8 +1474,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	}
 	lines = append(lines, toolBoxTop(v.Theme, label, width))
 	lines = append(lines, toolBoxSide(v.Theme, "", width))
-	body := v.renderLiveToolResult(bodyText, toolBoxBodyRenderWidth(width), color, tc.LivePath)
-	for _, l := range v.collapseToolBody(body, false) {
+	body := v.toolBodyWithActivity(tc, bodyText, toolBoxBodyRenderWidth(width), color)
+	for _, l := range body {
 		imgCells, stripped := parseImageFootprint(l)
 		if hasImageEscapeLine(stripped) {
 			lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
@@ -2744,6 +2767,27 @@ func toolArgWidth() int {
 // the finalised transcript will later render.
 func ShortArgs(tool string, raw json.RawMessage) string {
 	width := toolArgWidth()
+	if strings.EqualFold(tool, "codemode") || strings.EqualFold(tool, "python") {
+		code, ok, _ := ExtractPartialStringField(string(raw), "code")
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) == nil {
+			code, ok = obj["code"].(string)
+		}
+		if !ok || strings.TrimSpace(code) == "" {
+			return ""
+		}
+		lines := strings.Split(strings.TrimRight(code, "\r\n"), "\n")
+		first := "Python code"
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "import ") || strings.HasPrefix(line, "from ") {
+				continue
+			}
+			first = oneLineToolLabel(line)
+			break
+		}
+		return truncateWithEllipsis(first, width-12) + fmt.Sprintf(" (%d lines)", len(lines))
+	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return ""
@@ -2761,6 +2805,11 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 		if qs, ok := x["questions"].([]any); ok {
 			return fmt.Sprintf("· %d questions", len(qs))
 		}
+	}
+	if strings.EqualFold(tool, "grep") {
+		pattern, _ := x["pattern"].(string)
+		path, _ := x["path"].(string)
+		return truncateWithEllipsis(oneLineToolLabel(fmt.Sprintf("pattern=%q path=%s", pattern, path)), width)
 	}
 	var primary string
 	// Glob leads with its pattern; every other tool keeps the legacy
@@ -3243,4 +3292,32 @@ var osUserHome = func() string {
 		return h
 	}
 	return ""
+}
+
+func (v *View) toolBodyWithActivity(tc ToolCallView, text string, width int, color TerminalColor) []string {
+	if !tc.Done && tc.NestedActivity {
+		return v.renderNestedActivity(text, width)
+	}
+	return append(v.renderNestedActivity(tc.Recap, width), v.renderLiveToolResult(text, width, color, tc.LivePath)...)
+}
+
+func (v *View) renderNestedActivity(text string, width int) []string {
+	if text == "" {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		color := v.Theme.Muted
+		if strings.HasPrefix(line, "✓") {
+			color = v.Theme.ToolOut
+		}
+		if strings.HasPrefix(line, "✗") {
+			color = v.Theme.Error
+		}
+		if strings.HasPrefix(line, "⊘") {
+			color = v.Theme.Warning
+		}
+		lines = append(lines, v.Theme.FGColor(color, truncateWithEllipsis(oneLineToolLabel(line), max(1, width))))
+	}
+	return lines
 }
