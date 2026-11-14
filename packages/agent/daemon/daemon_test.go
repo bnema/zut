@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
@@ -1199,4 +1200,29 @@ func TestDaemonStopAttachIsNotForwarded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVersionOneShutdownAllowsVersionTwoRestart(t *testing.T) {
+	home := t.TempDir()
+	old := startDaemonWith(t, nil, home, Options{}, func(d *Daemon) { d.protocolVersion = 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := daemonclient.Dial(ctx, old.sock, daemonclient.Options{})
+	if c != nil {
+		c.Disconnect()
+		t.Fatal("strict handshake accepted protocol 1")
+	}
+	if err == nil || !strings.Contains(err.Error(), `run "zut daemon restart"`) {
+		t.Fatalf("missing restart hint: %v", err)
+	}
+	if err := daemonclient.StopAnyVersion(ctx, old.sock, daemonclient.Options{}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	old.wait(t)
+	current := startDaemon(t, nil, home, Options{SocketPath: old.sock})
+	c, err = daemonclient.Dial(ctx, current.sock, daemonclient.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Disconnect()
 }

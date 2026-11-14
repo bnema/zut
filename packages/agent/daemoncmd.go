@@ -334,7 +334,7 @@ func daemonStop(w io.Writer, version string) error {
 func stopDaemon(version string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), daemonStopWaitLimit)
 	defer cancel()
-	c, err := daemonClient(ctx, version)
+	err := daemonclient.StopAnyVersion(ctx, daemonclient.SocketPath(os.Getenv), daemonclient.Options{ClientVersion: version, ClientKind: "cli"}, daemonStopGrace)
 	if err != nil {
 		if errors.Is(err, daemonclient.ErrProtocolMismatch) {
 			return stopIncompatibleDaemon(ctx, ZutHome(), os.Stderr)
@@ -343,11 +343,6 @@ func stopDaemon(version string) (bool, error) {
 			return false, rerr
 		}
 		return false, nil
-	}
-	err = c.Stop(ctx, daemonStopGrace)
-	_ = c.Disconnect()
-	if err != nil {
-		return false, fmt.Errorf("daemon stop: %w", err)
 	}
 	return true, waitDaemonLockFree(ctx, ZutHome())
 }

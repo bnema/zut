@@ -1,4 +1,4 @@
-// Package daemonproto defines version 1 local daemon NDJSON frames.
+// Package daemonproto defines local daemon NDJSON frames.
 // Transport and lossless agent-event codecs are implemented separately.
 package daemonproto
 

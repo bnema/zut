@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -304,4 +305,59 @@ func (c *Client) Stop(ctx context.Context, graceful time.Duration) error {
 // subscriptions take control of the session (D5).
 func (c *Client) Port(id session.ID, controlling bool) *RemotePort {
 	return &RemotePort{c: c, id: id, controlling: controlling}
+}
+
+var rejectedProtocol = regexp.MustCompile(`protocol version [0-9]+ unsupported \(daemon speaks ([0-9]+)\)`)
+
+func rejectedProtocolVersion(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	match := rejectedProtocol.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return 0, false
+	}
+	version, e := strconv.Atoi(match[1])
+	return version, e == nil && version > 0
+}
+
+// StopAnyVersion negotiates only the hello/daemon_stop lifecycle frames.
+// Session connections must continue to use Dial's strict protocol handshake.
+func StopAnyVersion(ctx context.Context, socketPath string, opts Options, graceful time.Duration) error {
+	if err := checkSocketPath(socketPath); err != nil {
+		return err
+	}
+	version := daemonproto.ProtocolVersion
+	for attempt := 0; attempt < 2; attempt++ {
+		var dialer net.Dialer
+		nc, err := dialer.DialContext(ctx, "unix", socketPath)
+		if err != nil {
+			return err
+		}
+		conn := daemonproto.NewConn(nc, daemonproto.Options{})
+		serveDone := make(chan struct{})
+		go func() { defer close(serveDone); _ = conn.Serve(ctx) }()
+		var hello daemonproto.HelloData
+		err = conn.Call(ctx, daemonproto.HelloRequest{Type: "hello", ProtocolVersion: version, ClientVersion: opts.ClientVersion, ClientKind: "cli", PID: os.Getpid()}, &hello)
+		retryVersion, retry := rejectedProtocolVersion(err)
+		if err == nil && hello.ProtocolVersion != version {
+			retryVersion, retry = hello.ProtocolVersion, true
+		}
+		if attempt == 0 && retry {
+			conn.Close()
+			<-serveDone
+			version = retryVersion
+			continue
+		}
+		if err == nil {
+			err = conn.Call(ctx, daemonproto.DaemonStopRequest{Type: "daemon_stop", GracefulMS: int(graceful.Milliseconds())}, nil)
+			if errors.Is(err, daemonproto.ErrClosed) {
+				err = nil
+			}
+		}
+		conn.Close()
+		<-serveDone
+		return err
+	}
+	return errors.New("daemon stop protocol negotiation failed")
 }

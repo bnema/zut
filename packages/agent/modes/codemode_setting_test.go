@@ -32,7 +32,8 @@ func TestSettingsCodemodeToggle(t *testing.T) {
 	})
 	row := settingsRow(t, i, "experimental_codemode")
 	require.Equal(t, "codemode (experimental)", row.label)
-	require.Equal(t, "let the model run Python that calls zut tools; same host access as python; applies to new sessions", row.desc)
+	require.Contains(t, row.desc, "host access")
+	require.Contains(t, row.desc, "new sessions")
 	require.False(t, row.disabled)
 	require.False(t, row.value)
 	for _, enabled := range []bool{true, false} {

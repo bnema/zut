@@ -377,13 +377,17 @@ func (c *client) handle(ctx context.Context, r daemonproto.Request) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		if req.ProtocolVersion != daemonproto.ProtocolVersion {
-			return nil, fmt.Errorf("protocol version %d unsupported (daemon speaks %d)", req.ProtocolVersion, daemonproto.ProtocolVersion)
+		protocol := d.protocolVersion
+		if protocol == 0 {
+			protocol = daemonproto.ProtocolVersion
+		}
+		if req.ProtocolVersion != protocol {
+			return nil, fmt.Errorf("protocol version %d unsupported (daemon speaks %d); run \"zut daemon restart\"", req.ProtocolVersion, protocol)
 		}
 		c.mu.Lock()
 		c.kind = req.ClientKind
 		c.mu.Unlock()
-		return daemonproto.HelloData{ProtocolVersion: daemonproto.ProtocolVersion, DaemonVersion: d.opts.Version}, nil
+		return daemonproto.HelloData{ProtocolVersion: protocol, DaemonVersion: d.opts.Version}, nil
 	case "create":
 		req, err := decodeFrame[daemonproto.CreateRequest](r)
 		if err != nil {

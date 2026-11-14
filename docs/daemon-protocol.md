@@ -302,3 +302,5 @@ reload on state changes only. The counter restarts at zero when the daemon
 restarts.
 
 Unknown agent event kinds are ignorable and still advance the subscription sequence. Protocol version mismatches fail at hello; run `zut daemon restart` after upgrading.
+
+`zut daemon stop` and `zut daemon restart` negotiate the running daemon’s hello version solely to send `daemon_stop`, including protocol-1 daemons. Normal session connections still require the current protocol version. Shutdown waits for the daemon lock to be released before restart.

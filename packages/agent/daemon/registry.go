@@ -42,7 +42,9 @@ const (
 // Daemon is the session registry and lifecycle owner. Create it with New and
 // start it with Run; a Daemon runs at most once.
 type Daemon struct {
-	factory session.Factory
+	// protocolVersion overrides hello only in compatibility tests; zero uses current.
+	protocolVersion int
+	factory         session.Factory
 	// peerUID is the UID socket peers must have (os.Getuid; tests override).
 	peerUID int
 
