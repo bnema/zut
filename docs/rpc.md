@@ -211,8 +211,8 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_use_end` | `id` | Provider completed the tool-call argument stream |
 | `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
 | `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
-| `nested_tool_started` | `id`, `parent_id`, `name`, `args` | Experimental codemode event for a tool call made by a parent tool. Emitted only when execution starts; `args` contains normalized execution arguments after guard rewrites. Nested calls never appear in the transcript; consumers may ignore these events. |
-| `nested_tool_result` | `id`, `parent_id`, `name`, `is_error`, `denied`, optional `summary` | Experimental codemode event emitted once per nested invocation, including calls denied before execution (which have no started event). `summary` concatenates text content, truncated to 200 bytes at a UTF-8 rune boundary; omitted when empty. Nested calls never appear in the transcript; consumers may ignore these events. |
+| `nested_tool_started` | `id`, `parent_id`, `name`, `args` | Experimental event emitted by `codemode` for a nested tool call. Emitted only when execution starts; `args` contains normalized execution arguments after guard rewrites. Nested calls never appear in the transcript; consumers may ignore these events. |
+| `nested_tool_result` | `id`, `parent_id`, `name`, `is_error`, `denied`, optional `summary` | Experimental event emitted by `codemode` once per nested invocation, including calls denied before execution (which have no started event). `summary` concatenates text content, truncated to 200 bytes at a UTF-8 rune boundary; omitted when empty. Nested calls never appear in the transcript; consumers may ignore these events. |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `plan_update` | optional `id`, nullable `explanation`, `plan` | The built-in `plan` tool changed the session checklist. Each plan item has `step` and `status`. `id` is the tool-call id that produced the update; it is omitted when empty. |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
@@ -265,5 +265,7 @@ See `examples/rpc/` for working implementations in:
 - `go` — direct subprocess wrapper (the `packages/agent/sdk` SDK is the in-process Go API)
 
 ## Versioning
+
+The separate [local daemon protocol](daemon-protocol.md) is version 2; its version is not the RPC `hello` schema version shown above.
 
 The `protocol_version` field in the `hello` response is the major version of this schema. Backwards-incompatible changes bump it. Within a major version the schema only grows: new events, commands, and optional event fields may appear — such as the `id` field on `plan_update` — so consumers must ignore fields they do not recognize.

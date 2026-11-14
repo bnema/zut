@@ -9,7 +9,7 @@ A lightweight coding agent harness written (vibe-slopped) in Go.
 
 - One static binary.
 - Providers: Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- seventeen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, ask_user_question), plus `schedule` and `sessions` in interactive daemon sessions, `subagent` for delegation, and `skill` when skills are enabled. [Public-web egress and availability](docs/web-search.md).
+- seventeen core built-in tools (read, write, edit, bash, python, worktree, grep, glob, ast, lsp, web_search, web_open, web_find, web_click, update_goal, plan, ask_user_question), plus opt-in experimental `codemode`, `schedule` and `sessions` in interactive daemon sessions, `subagent` for delegation, and `skill` when skills are enabled. [Public-web egress and availability](docs/web-search.md).
 - five run modes (interactive TUI, print, stream, JSON, RPC).
 - Built-in Telegram bot.
 - Native MCP client: stdio and streamable HTTP, shared by primary agent, orchestrator, and subagents. No built-in OAuth; use a stdio bridge such as mcp-remote. [MCP](docs/mcp.md).
@@ -274,6 +274,7 @@ Print stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens`, `g
 - `ast`: structural search/rewrite with [ast-grep](https://ast-grep.github.io/); prefer for code syntax, `grep`/`edit` for text (`grep` suggests `ast` for call/definition-like regexes when available). Optional `language` defaults to extension inference; directly runs separately installed `ast-grep` or verified ast-grep `sg`, without a shell, returning compact `path:line` matches or a clear missing-tool error. Rewrites: plan in memory, confirm diff, check filesystem scope/current contents, write via temporary file and rename preserving permissions, then bounded diagnostics.
 - `bash`: run in session cwd with merged stdout/stderr; a positive integer `timeout` (seconds) is required and enforced. Unix tries `/bin/bash -c`, then PATH `bash -c`, then POSIX `/bin/sh -c`; Windows uses `cmd /C`; macOS's default Bash 3.2 lacks newer features.
 - `python`: run nonblank `code` in a fresh, stateless Python 3 subprocess in session cwd (`-u -B -`, code on stdin, merged stdout/stderr), requiring positive integer `timeout` seconds shared by discovery/execution; no installs, script file, bytecode cache, persistent state, or interactive input (EOF). Discovery: `python_interpreter` in `$ZUT_HOME/config.json` (one executable path, relative to cwd), active `VIRTUAL_ENV`, `./.venv`, then PATH `python3`/`python`; Windows rejects Store aliases, `py` launchers, and install-manager entrypoints, requiring a positively identified installed interpreter. Output: 50 KiB/2,000 lines with truncation marks; truncated byte-capped buffer persists to a temp file shown as `full output`/`full_output_path`, like `bash`; imports fail normally, args/output enter session history, deliberate file writes persist (use `write`/`edit` for reusable scripts, not opaque Python edits); unavailable to packaged agents or while jailed.
+- `codemode` (experimental, opt-in): compose guarded tool calls in Python; see [Experimental: codemode](#experimental-codemode).
 - `worktree`: `create` checks out a new branch from HEAD or `base` (branch/tag/commit) under `$ZUT_HOME/worktrees/<repo-id>`, overridden per repository by absolute Git setting `zut.worktrees.path`; `list` inventories registered worktrees and accepts `into` for eligibility checks. `cleanup` requires exact paths, normal preview confirmation, and immediate revalidation; refuses primary, dirty, detached, or unmerged checkouts (merge target: current branch or `into`), never removing unmerged work; `delete_branch` deletes removed worktrees' local branches only at the inspected commit, never the target or branches checked out elsewhere, and reports deletion failures without restoring removed worktrees. Workflow: create `feat/x` from main, sub-worktrees with `base: "feat/x"` (e.g. `feat/x-api`), commit/merge into `feat/x`, then clean with `into: "feat/x"`, `delete_branch: true`.
 - `lsp`: configured servers/linters provide diagnostics, definitions, references, hover, symbols, renames, code actions, capabilities, and raw requests over stdio JSON-RPC; project `lsp.json` adds/overrides servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start, and repeated issues grouped; successful native edits, writes, renames, and applied code actions attach bounded diagnostics when available. See [docs/lsp.md](docs/lsp.md).
 - `web_search`: DuckDuckGo HTML search returns bounded titles, URLs, snippets, opaque references; `web_open` opens a full public URL/reference, `web_find` finds literal text in an opened page, `web_click` follows a displayed link. All four default on in normal CLI sessions, unavailable in bot, default SDK, and packaged agents; see [docs/web-search.md](docs/web-search.md).
@@ -285,7 +286,59 @@ Print stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens`, `g
 
 Tool results retain resource provenance in durable history. Before provider requests, an equivalent newer read replaces an older one; multi-file searches are replaced only after all discovered files are consumed/mutated. This provider-only stale-context projection leaves history intact. Changed older results restart prompt caching there; compact deterministic markers limit cost.
 
-With `/jail`, filesystem tools, `grep`, `glob`, `ast`, and LSP workspace edits reject paths outside session cwd. `worktree` also confines repository root, Git metadata, and resolved destination. `python` is rejected at admission: the jail cannot confine arbitrary Python (use `/unjail`); when admitted, it has unrestricted host filesystem/network/process access like `bash`. Jail does not sandbox web-search egress.
+With `/jail`, filesystem tools, `grep`, `glob`, `ast`, and LSP workspace edits reject paths outside session cwd. `worktree` also confines repository root, Git metadata, and resolved destination. `python` and `codemode` are rejected at admission: the jail cannot confine arbitrary Python (use `/unjail`); when admitted, each has unrestricted host filesystem/network/process access like `bash`. Jail does not sandbox web-search egress.
+
+### Experimental: codemode
+
+`codemode` runs Python that calls zut tools and combines their results in one
+invocation. Enable it in `$ZUT_HOME/config.json`:
+
+```json
+{"experimental": {"codemode": true}}
+```
+
+Or use `/settings` → `codemode (experimental)`. The setting applies to new
+sessions. An existing Python 3.8+ interpreter is required; discovery and the
+`python_interpreter` setting are the same as for `python`. Each invocation
+requires nonblank `code` and a positive integer `timeout` in seconds, including
+discovery and execution. Prints go to merged stdout/stderr, with the same
+50 KiB/2,000-line output caps as `python`.
+
+The Python API is available as `zut` (also via `import zut`):
+
+- `zut.call(name, /, check=True, **args)` returns a `ToolResult` with `.text`,
+  `.data`, `.is_error`, and `.id`. `name` is positional-only; `check` is reserved,
+  not forwarded as a tool argument.
+- `zut.tools.<name>(**args)` is shorthand; use `zut.call` for names containing
+  dots or dashes.
+- `zut.search(query, limit=10)` lists matching tool names and summaries;
+  `zut.describe(name)` returns the description and schema.
+- `zut.result(value)` sets the JSON result printed after Python output.
+- `zut.ToolDenied` reports a refused nested call. `zut.ToolError` carries
+  `.result` when `.is_error` is true, unless `check=False`.
+  `zut.CodemodeError` carries `.kind` for bridge errors.
+
+```python
+r = zut.tools.glob(pattern="*.go")
+print(r.text)
+zut.result({"go_files": len(r.data)})
+```
+
+Each nested call passes through normal guards and confirmations. Nested calls
+cannot invoke `codemode`, `subagent`, `ask_user_question`, `plan`, `update_goal`,
+`schedule`, or `sessions`. Limits: 200 nested calls per run, 1 MiB of text per
+nested call (then a truncation marker), a 256 KiB JSON result, and an 8 MiB
+serialized request.
+
+With codemode enabled and admissible, MCP tools are hidden from the model's
+active tool definitions and reached through `zut.search`, `zut.describe`, and
+`zut.call`. Set `"codemode_defer_mcp": false` inside `"experimental"` to opt out.
+Jailing makes MCP tools directly visible again; unjailing restores deferral.
+A tool result that explicitly activates a deferred tool can also expose it.
+
+Codemode has the same unrestricted host filesystem, network, and process access
+as `python`; it is not a sandbox. It is unavailable while jailed, with restricted
+permissions, in sub-agents or packaged agents, or in a strict orchestrator.
 
 ## Modes
 

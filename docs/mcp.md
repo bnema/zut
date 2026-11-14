@@ -196,6 +196,18 @@ Set `"shared": false` on a server when sharing is unsafe:
 - Tool annotations such as `readOnlyHint` are hints from the server, not a
   security boundary.
 
+### Experimental codemode deferral
+
+With `experimental.codemode` enabled, MCP tools are deferred from the model's
+active tool definitions while codemode is admissible. Use `zut.search`,
+`zut.describe`, and `zut.call` inside codemode; server names and instructions
+remain in the system prompt. Set `"codemode_defer_mcp": false` inside the
+`"experimental"` object in `$ZUT_HOME/config.json` to keep MCP tools directly
+visible. Jailing or permission restrictions restore direct visibility;
+unjailing restores deferral. Explicit `ActivateTools` results (for example from
+an extension) can also expose deferred tools directly. See
+[Experimental: codemode](../README.md#experimental-codemode).
+
 ## Orchestrator mode and subagents
 
 All agents in one zut process share the same MCP connections.
