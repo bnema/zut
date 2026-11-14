@@ -160,7 +160,7 @@ func TestEnvIsolationGitPythonPropagation(t *testing.T) {
 				t.Fatalf("git %q %v", got, err)
 			}
 			scriptPath := filepath.Join(root, "git")
-			outcome, err := runPythonProcess(withToolEnv(context.Background(), env), context.Background(), scriptPath, "", root, nil)
+			outcome, err := runPythonProcess(withToolEnv(context.Background(), env), context.Background(), pythonRunSpec{Exe: scriptPath, CWD: root})
 			if err != nil || !strings.Contains(outcome.Captured, value+":"+root) {
 				t.Fatalf("python %+v %v", outcome, err)
 			}

@@ -200,21 +200,36 @@ func (t *PythonTool) run(runCtx, parentCtx context.Context, exe, code, cwd strin
 	if t.execHook != nil {
 		return t.execHook(runCtx, exe, code, cwd, progress)
 	}
-	return runPythonProcess(withToolEnv(runCtx, t.Env), parentCtx, exe, code, cwd, progress)
+	return runPythonProcess(withToolEnv(runCtx, t.Env), parentCtx, pythonRunSpec{Exe: exe, Code: code, CWD: cwd, Progress: progress})
+}
+
+type pythonRunSpec struct {
+	Exe, Code, CWD string
+	Env            []string
+	Progress       func(string)
+	// ChildFiles remain caller-owned: keep them open through process start and
+	// close the caller's copies on every path; the runner never closes them.
+	// Descendant-held descriptors are not covered by the output-drain timeout,
+	// so observing EOF on bridge pipes is the caller's concern.
+	ChildFiles []*os.File
 }
 
 // runPythonProcess runs one fresh subprocess directly with code on stdin.
 // It bounds captured output, drains pipes, and reports cleanup failure
 // without claiming every detached descendant was terminated.
-func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, progress func(string)) (pythonExecOutcome, error) {
+func runPythonProcess(runCtx, parentCtx context.Context, spec pythonRunSpec) (pythonExecOutcome, error) {
 	var outcome pythonExecOutcome
-	if toolEnv(runCtx) == nil {
+	env := spec.Env
+	if env == nil {
+		env = toolEnv(runCtx)
+	}
+	if env == nil {
 		return outcome, fmt.Errorf("tool python: session env not set")
 	}
-	cmd := exec.CommandContext(runCtx, exe, "-u", "-B", "-")
-	cmd.Dir = cwd
-	cmd.Env = pythonChildEnv(toolEnv(runCtx))
-	cmd.Stdin = strings.NewReader(code)
+	cmd := exec.CommandContext(runCtx, spec.Exe, "-u", "-B", "-")
+	cmd.Dir = spec.CWD
+	cmd.Env = pythonChildEnv(env)
+	cmd.Stdin = strings.NewReader(spec.Code)
 
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
@@ -226,6 +241,12 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 	var cancelErr pythonCancelError
 	closeOutput := configurePythonProcess(cmd, pw, &cancelErr)
 	defer closeOutput()
+
+	childEnv, err := attachChildFiles(cmd, spec.ChildFiles)
+	if err != nil {
+		return outcome, fmt.Errorf("attach child files: %w", err)
+	}
+	cmd.Env = append(cmd.Env, childEnv...)
 
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
@@ -245,8 +266,8 @@ func runPythonProcess(runCtx, parentCtx context.Context, exe, code, cwd string, 
 				if appendPythonChunk(captured, chunk) {
 					discarded = true
 				}
-				if progress != nil {
-					progress(string(chunk))
+				if spec.Progress != nil {
+					spec.Progress(string(chunk))
 				}
 			}
 			if err != nil {
