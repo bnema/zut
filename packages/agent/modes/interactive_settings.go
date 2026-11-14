@@ -173,6 +173,18 @@ func (i *Interactive) openSettingsDialog() {
 	if !provider.SupportsFastMode(i.cfg.Provider) {
 		fastModeHint = "only supported for OpenAI providers"
 	}
+	codemodeEnabled := false
+	codemodeStore, codemodeAvailable := i.cfg.SettingsStore.(codemodeSettingsStore)
+	codemodeHint := "requires persistent settings support"
+	if codemodeAvailable {
+		var err error
+		codemodeEnabled, err = codemodeStore.CodemodeEnabled()
+		codemodeHint = ""
+		if err != nil {
+			codemodeAvailable = false
+			codemodeHint = "settings: " + err.Error()
+		}
+	}
 	lspEnabled := i.cfg.LSPEnabled == nil || *i.cfg.LSPEnabled
 	subagentLSPEnabled := i.cfg.SubagentLSPEnabled == nil || *i.cfg.SubagentLSPEnabled
 
@@ -309,6 +321,14 @@ func (i *Interactive) openSettingsDialog() {
 			desc:  "request the provider's fast tier where supported; unsupported providers return an error",
 			value: fastMode,
 			hint:  fastModeHint,
+		},
+		{
+			key:      "experimental_codemode",
+			label:    "codemode (experimental)",
+			desc:     "let the model run Python that calls zut tools; same host access as python; applies to new sessions",
+			value:    codemodeEnabled,
+			disabled: !codemodeAvailable,
+			hint:     codemodeHint,
 		},
 		{
 			key:   "lsp_enabled",
@@ -860,6 +880,33 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.setLiveFastMode(value)
 		i.mu.Lock()
 		i.statusOK = "fast mode " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "experimental_codemode":
+		store, ok := i.cfg.SettingsStore.(codemodeSettingsStore)
+		if !ok {
+			i.resetSettingsToggle(key, false)
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = "settings: codemode requires persistent settings support"
+			i.mu.Unlock()
+			return
+		}
+		previous, err := store.CodemodeEnabled()
+		if err == nil {
+			err = store.SetCodemodeEnabled(value)
+		}
+		if err != nil {
+			i.resetSettingsToggle(key, previous)
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = "settings: " + err.Error()
+			i.mu.Unlock()
+			return
+		}
+		i.resetSettingsToggle(key, value)
+		i.mu.Lock()
+		i.statusOK = "codemode (experimental) " + onOff(value) + "; applies to new sessions"
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "lsp_enabled":

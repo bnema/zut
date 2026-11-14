@@ -559,6 +559,11 @@ type terminalTitleSettingsStore interface {
 	SetTerminalTitleEnabled(enabled bool) error
 }
 
+type codemodeSettingsStore interface {
+	CodemodeEnabled() (bool, error)
+	SetCodemodeEnabled(enabled bool) error
+}
+
 type lspSettingsStore interface {
 	SetLSPEnabled(enabled bool) error
 	SetSubagentLSPEnabled(enabled bool) error

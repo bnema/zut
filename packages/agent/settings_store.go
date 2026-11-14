@@ -117,6 +117,22 @@ func (configSettingsStore) SetFastMode(enabled bool) error {
 	})
 }
 
+// CodemodeEnabled reads the persisted preference, not the current session's tools.
+func (configSettingsStore) CodemodeEnabled() (bool, error) {
+	cfg, err := LoadConfig()
+	return cfg.CodemodeEnabled(), err
+}
+
+func (configSettingsStore) SetCodemodeEnabled(enabled bool) error {
+	return updateConfig(func(c *Config) error {
+		if c.Experimental == nil {
+			c.Experimental = &ExperimentalConfig{}
+		}
+		c.Experimental.Codemode = &enabled
+		return nil
+	})
+}
+
 func (configSettingsStore) SetLSPEnabled(enabled bool) error {
 	return updateConfig(func(c *Config) error {
 		c.LSPEnabled = &enabled
