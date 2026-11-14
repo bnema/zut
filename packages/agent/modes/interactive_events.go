@@ -1297,12 +1297,20 @@ func nestedCallsText(state session.LiveTool) string {
 		}
 		fmt.Fprintln(&b, line)
 	}
-	fmt.Fprintf(&b, "%d calls", state.CallsTotal)
+	unit := "calls"
+	if state.CallsTotal == 1 {
+		unit = "call"
+	}
+	fmt.Fprintf(&b, "%d %s", state.CallsTotal, unit)
 	if running > 0 {
 		fmt.Fprintf(&b, " · %d running", running)
 	}
 	if errors > 0 {
-		fmt.Fprintf(&b, " · %d error", errors)
+		unit := "errors"
+		if errors == 1 {
+			unit = "error"
+		}
+		fmt.Fprintf(&b, " · %d %s", errors, unit)
 	}
 	if denied > 0 {
 		fmt.Fprintf(&b, " · %d denied", denied)

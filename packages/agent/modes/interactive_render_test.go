@@ -240,7 +240,7 @@ func TestInteractiveNestedToolLines(t *testing.T) {
 	i.handleEvent(core.EvNestedToolStarted{ID: "p/1", ParentID: "p", Name: "grep", Args: json.RawMessage(`{"pattern":"^module","path":"go.mod"}`)})
 	tc := i.toolCalls["p"]
 	require.Contains(t, tc.Result, `⠋ ↳ grep pattern="^module" path=go.mod`)
-	require.Contains(t, tc.Result, "1 calls · 1 running")
+	require.Contains(t, tc.Result, "1 call · 1 running")
 	i.handleEvent(core.EvNestedToolResult{ID: "p/1", ParentID: "p", Name: "grep", Summary: "one match"})
 	require.Contains(t, tc.Result, `✓ ↳ grep pattern="^module" path=go.mod · one match`)
 	require.NotContains(t, tc.Result, "⠋")
@@ -333,4 +333,28 @@ func TestNestedRecapsResetAndPrune(t *testing.T) {
 	i.resetNestedRecapsLocked()
 	require.Empty(t, i.nestedRecaps)
 	require.Equal(t, uint64(3), i.nestedRecapRevision)
+}
+
+func TestNestedCallCounterPluralization(t *testing.T) {
+	for _, tt := range []struct {
+		count int
+		want  string
+	}{
+		{0, ""},
+		{1, "1 call · 1 error"},
+		{2, "2 calls · 2 errors"},
+	} {
+		t.Run(fmt.Sprint(tt.count), func(t *testing.T) {
+			var state session.LiveTool
+			for j := 0; j < tt.count; j++ {
+				state.FinishNestedCall(fmt.Sprint(j), "bash", true, false, "")
+			}
+			got := nestedCallsText(state)
+			if tt.count == 0 {
+				require.Empty(t, got)
+			} else {
+				require.True(t, strings.HasSuffix(got, tt.want), "got %q", got)
+			}
+		})
+	}
 }

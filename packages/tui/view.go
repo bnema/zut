@@ -2802,7 +2802,11 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 			first = oneLineToolLabel(line)
 			break
 		}
-		return truncateWithEllipsis(first, width-12) + fmt.Sprintf(" (%d lines)", len(lines))
+		unit := "lines"
+		if len(lines) == 1 {
+			unit = "line"
+		}
+		return truncateWithEllipsis(first, width-12) + fmt.Sprintf(" (%d %s)", len(lines), unit)
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
