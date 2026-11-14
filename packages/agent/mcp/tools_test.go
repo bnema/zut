@@ -15,10 +15,10 @@ func TestConvertCallResultStructuredData(t *testing.T) {
 		raw  string
 		want any
 	}{
-		{"object", `{"items":[1,"two",true],"missing":null}`, map[string]any{"items": []any{float64(1), "two", true}, "missing": nil}},
-		{"array", `[1,2]`, []any{float64(1), float64(2)}},
-		{"scalar", `"value"`, "value"},
-		{"null", `null`, nil},
+		{"object", `{"items":[1,"two",true],"missing":null}`, json.RawMessage(`{"items":[1,"two",true],"missing":null}`)},
+		{"array", `[1,2]`, json.RawMessage(`[1,2]`)},
+		{"scalar", `"value"`, json.RawMessage(`"value"`)},
+		{"null", `null`, json.RawMessage(`null`)},
 		{"invalid", `{"broken":`, nil},
 		{"empty", ``, nil},
 		{"whitespace", `   `, nil},
@@ -67,5 +67,15 @@ func TestDeferredCopies(t *testing.T) {
 	}
 	if Deferred(nil) != nil {
 		t.Fatal("non-MCP input changed")
+	}
+}
+
+func TestConvertCallResultStructuredIntegerRoundTrip(t *testing.T) {
+	raw := json.RawMessage(`{"integer":9007199254740993}`)
+	result := convertCallResult(CallResult{StructuredContent: raw})
+	raw[0] = '[' // Data must not alias the response buffer.
+	encoded, err := json.Marshal(result.Data)
+	if err != nil || string(encoded) != `{"integer":9007199254740993}` {
+		t.Fatalf("round trip = %s, %v", encoded, err)
 	}
 }

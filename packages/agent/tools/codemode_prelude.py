@@ -3,6 +3,7 @@ import sys
 import json
 import types
 import traceback
+import threading
 
 
 class CodemodeError(Exception):
@@ -41,17 +42,20 @@ for _fd in _fds:
 _requests = os.fdopen(_fds[0], "w", buffering=1, encoding="utf-8")
 _responses = os.fdopen(_fds[1], "r", encoding="utf-8")
 
+_rpc_lock = threading.Lock()
+
 
 def _rpc(method, params):
     request = json.dumps({"method": method, "params": params})
     if len(request.encode("utf-8")) > 8 * 1024 * 1024:
         raise CodemodeError("limit", "request exceeds 8 MiB")
-    try:
-        _requests.write(request + "\n")
-        _requests.flush()
-        line = _responses.readline()
-    except (OSError, ValueError) as error:
-        raise CodemodeError("bad_request", "codemode bridge closed: " + str(error)) from error
+    with _rpc_lock:
+        try:
+            _requests.write(request + "\n")
+            _requests.flush()
+            line = _responses.readline()
+        except (OSError, ValueError) as error:
+            raise CodemodeError("bad_request", "codemode bridge closed: " + str(error)) from error
     if not line:
         raise CodemodeError("closed", "codemode host disconnected")
     reply = json.loads(line)

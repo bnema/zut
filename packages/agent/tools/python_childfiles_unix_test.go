@@ -11,79 +11,52 @@ import (
 )
 
 func TestRunPythonChildFiles(t *testing.T) {
-	py := realPython3(t)
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	defer w.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	outcome, err := runPythonProcess(ctx, context.Background(), pythonRunSpec{
-		Exe: py, CWD: t.TempDir(), Env: os.Environ(), ChildFiles: []*os.File{w},
-		Code: `import os; os.write(int(os.environ["ZUT_CODEMODE_FDS"]), b"ok")`,
-	})
-	// The runner waits for exit; this tiny write fits in the pipe buffer.
-	// Close the parent's copy too, so ReadAll observes EOF.
-	if closeErr := w.Close(); closeErr != nil {
-		t.Fatal(closeErr)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.ExitCode != 0 || outcome.TimedOut || outcome.Cancelled {
-		t.Fatalf("child failed: %+v", outcome)
-	}
-	got, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "ok" {
-		t.Fatalf("child pipe = %q, want ok", got)
-	}
-}
-
-func TestRunPythonChildFilesTwoDescriptors(t *testing.T) {
-	py := realPython3(t)
-	var readers, writers []*os.File
-	for range 2 {
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { r.Close(); w.Close() })
-		readers = append(readers, r)
-		writers = append(writers, w)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	outcome, err := runPythonProcess(ctx, context.Background(), pythonRunSpec{
-		Exe: py, CWD: t.TempDir(), Env: os.Environ(), ChildFiles: writers,
-		Code: `import os
-assert os.environ["ZUT_CODEMODE_FDS"] == "3,4"
-os.write(3, b"first")
-os.write(4, b"second")`,
-	})
-	for _, w := range writers {
-		if err := w.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome.ExitCode != 0 || outcome.TimedOut || outcome.Cancelled {
-		t.Fatalf("child failed: %+v", outcome)
-	}
-	for i, want := range []string{"first", "second"} {
-		if err := readers[i].SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		got, err := io.ReadAll(readers[i])
-		if err != nil || string(got) != want {
-			t.Fatalf("pipe %d = %q, %v; want %q", i, got, err, want)
-		}
+	for _, tc := range []struct {
+		name, code string
+		want       []string
+	}{
+		{"one", `import os; assert os.environ["ZUT_CODEMODE_FDS"] == "3"; os.write(3,b"ok")`, []string{"ok"}},
+		{"two", `import os; assert os.environ["ZUT_CODEMODE_FDS"] == "3,4"; os.write(3,b"first"); os.write(4,b"second")`, []string{"first", "second"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			py := realPython3(t)
+			var readers, writers []*os.File
+			for range len(tc.want) {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { r.Close(); w.Close() })
+				readers = append(readers, r)
+				writers = append(writers, w)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			outcome, err := runPythonProcess(ctx, context.Background(), pythonRunSpec{
+				Exe: py, CWD: t.TempDir(), Env: os.Environ(), ChildFiles: writers,
+				Code: tc.code,
+			})
+			for _, w := range writers {
+				if err := w.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.ExitCode != 0 || outcome.TimedOut || outcome.Cancelled {
+				t.Fatalf("child failed: %+v", outcome)
+			}
+			for i, want := range tc.want {
+				if err := readers[i].SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				got, err := io.ReadAll(readers[i])
+				if err != nil || string(got) != want {
+					t.Fatalf("pipe %d = %q, %v; want %q", i, got, err, want)
+				}
+			}
+		})
 	}
 }
 

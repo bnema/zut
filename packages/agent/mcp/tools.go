@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -122,11 +123,8 @@ func (b *textBudget) forceTruncate() string {
 
 func convertCallResult(result CallResult) core.ToolResult {
 	out := core.ToolResult{IsError: result.IsError}
-	if len(result.StructuredContent) > 0 {
-		var data any
-		if err := json.Unmarshal(result.StructuredContent, &data); err == nil {
-			out.Data = data
-		}
+	if json.Valid(result.StructuredContent) {
+		out.Data = json.RawMessage(bytes.Clone(result.StructuredContent))
 	}
 	budget := &textBudget{}
 	addText := func(s string) {

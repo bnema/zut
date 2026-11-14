@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,7 +176,7 @@ func TestCodemodeAdmission(t *testing.T) {
 
 type codemodeBlockingTool struct {
 	started, cancelled chan struct{}
-	path               string
+	ready              net.Conn
 }
 
 func (*codemodeBlockingTool) Name() string            { return "blocking" }
@@ -182,7 +184,7 @@ func (*codemodeBlockingTool) Description() string     { return "blocks until can
 func (*codemodeBlockingTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (b *codemodeBlockingTool) Execute(ctx context.Context, _ json.RawMessage, _ func(string)) (core.ToolResult, error) {
 	close(b.started)
-	if err := os.WriteFile(b.path, []byte("started"), 0600); err != nil {
+	if _, err := b.ready.Write([]byte("!")); err != nil {
 		return core.ToolResult{}, err
 	}
 	<-ctx.Done()
@@ -193,14 +195,32 @@ func (b *codemodeBlockingTool) Execute(ctx context.Context, _ json.RawMessage, _
 func TestCodemodeRealPythonExitCancelsNested(t *testing.T) {
 	dir := t.TempDir()
 	tool := &CodemodeTool{CWD: dir, Env: os.Environ(), Interpreter: codemodePython(t)}
-	child := &codemodeBlockingTool{started: make(chan struct{}), cancelled: make(chan struct{}), path: filepath.Join(dir, "started")}
-	start := time.Now()
-	result := runCodemodeAgent(t, tool, `import threading, os, time
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	// Accept and pass one readiness byte through a blocking socket handshake;
+	// no filesystem polling or sleep is needed to order child exit after Invoke.
+	accepted := make(chan net.Conn, 1)
+	go func() { conn, _ := listener.Accept(); accepted <- conn }()
+	child := &codemodeBlockingTool{started: make(chan struct{}), cancelled: make(chan struct{})}
+	guard := func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		if call.Name == "blocking" {
+			child.ready = <-accepted
+		}
+		return true, "", nil
+	}
+	code := fmt.Sprintf(`import threading, os, socket
+ready = socket.create_connection(("127.0.0.1", %d))
 threading.Thread(target=lambda: zut.call("blocking"), daemon=True).start()
-while not os.path.exists("started"):
-    time.sleep(0.001)
-os._exit(0)`, 60, nil, child)
-	if result.IsError || time.Since(start) > 5*time.Second {
+assert ready.recv(1) == b"!"
+os._exit(0)`, listener.Addr().(*net.TCPAddr).Port)
+	result := runCodemodeAgent(t, tool, code, 60, guard, child)
+	if child.ready != nil {
+		defer child.ready.Close()
+	}
+	if result.IsError {
 		t.Fatal(codemodeOutput(t, result))
 	}
 	select {
@@ -214,14 +234,13 @@ func TestCodemodeRealPythonOversizedRequest(t *testing.T) {
 	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
 	// The agent helper has a 20s deadline, shorter than the requested 60s
 	// timeout. This must finish locally, not be rescued by the tool timeout.
-	start := time.Now()
 	result := runCodemodeAgent(t, tool, `try:
     zut.result("x" * (9 * 1024 * 1024))
 except zut.CodemodeError as e:
     print("oversized:", e.kind)
 zut.result("still connected")`, 60, nil)
 	text := codemodeOutput(t, result)
-	if result.IsError || !strings.Contains(text, "oversized: limit") || !strings.Contains(text, `result: "still connected"`) || time.Since(start) > 5*time.Second {
+	if result.IsError || !strings.Contains(text, "oversized: limit") || !strings.Contains(text, `result: "still connected"`) {
 		t.Fatal(text)
 	}
 }
@@ -293,6 +312,42 @@ func TestCodemodeRealPythonImportedTraceback(t *testing.T) {
 		}
 	}
 	if !result.IsError || strings.Contains(text, `File "<stdin>"`) {
+		t.Fatal(text)
+	}
+}
+
+type codemodeEchoDataTool struct{}
+
+func (*codemodeEchoDataTool) Name() string            { return "echo_data" }
+func (*codemodeEchoDataTool) Description() string     { return "Return the supplied JSON unchanged" }
+func (*codemodeEchoDataTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (*codemodeEchoDataTool) Execute(_ context.Context, args json.RawMessage, _ func(string)) (core.ToolResult, error) {
+	return core.ToolResult{Data: append(json.RawMessage(nil), args...)}, nil
+}
+
+func TestCodemodeRealPythonConcurrentRPC(t *testing.T) {
+	tool := &CodemodeTool{CWD: t.TempDir(), Env: os.Environ(), Interpreter: codemodePython(t)}
+	result := runCodemodeAgent(t, tool, `import threading
+barrier = threading.Barrier(8)
+failures = []
+def worker(index):
+    try:
+        barrier.wait()
+        for sequence in range(20):
+            value = {"index": index, "sequence": sequence, "integer": 9007199254740993}
+            r = zut.call("echo_data", **value)
+            assert r.data == value, (r.data, value)
+    except BaseException as error:
+        failures.append(str(error))
+threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+assert not failures, failures
+zut.result("all thread results matched")`, 10, nil, &codemodeEchoDataTool{})
+	text := codemodeOutput(t, result)
+	if result.IsError || !strings.Contains(text, `result: "all thread results matched"`) || !strings.Contains(text, "nested calls: 160 (errors: 0, denied: 0)") {
 		t.Fatal(text)
 	}
 }

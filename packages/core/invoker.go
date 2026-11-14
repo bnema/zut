@@ -155,11 +155,12 @@ type nestedInvoker struct {
 
 // toolEventDispatcher serializes delivery without holding a lock across callbacks.
 type toolEventDispatcher struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	queue    []AgentEvent
-	draining bool
-	sink     func(AgentEvent)
+	mu                   sync.Mutex
+	cond                 *sync.Cond
+	queue                []AgentEvent
+	draining             bool
+	pendingProgressBytes int
+	sink                 func(AgentEvent)
 }
 
 func newToolEventDispatcher(sink func(AgentEvent)) *toolEventDispatcher {
@@ -170,12 +171,82 @@ func newToolEventDispatcher(sink func(AgentEvent)) *toolEventDispatcher {
 func (d *toolEventDispatcher) emit(ev AgentEvent) {
 	d.mu.Lock()
 	d.queue = append(d.queue, ev)
+	if progress, ok := ev.(EvToolProgress); ok {
+		d.pendingProgressBytes += len(progress.Text)
+		if d.pendingProgressBytes > maxPendingToolProgressBytes {
+			d.boundProgressLocked()
+		}
+	}
 	if d.draining {
 		d.mu.Unlock()
 		return
 	}
 	d.draining = true
 	d.drainLocked()
+}
+
+const maxPendingToolProgressBytes = 256 * 1024
+const toolProgressTruncated = "…[progress truncated]"
+
+// boundProgressLocked coalesces only adjacent progress for the same call, then
+// evicts oldest progress text. Lifecycle events keep their relative positions.
+// A single marker precedes the surviving progress, within the byte budget.
+func (d *toolEventDispatcher) boundProgressLocked() {
+	out := d.queue[:0]
+	for _, event := range d.queue {
+		p, ok := event.(EvToolProgress)
+		if ok {
+			p.Text = strings.TrimPrefix(p.Text, toolProgressTruncated)
+			if len(out) > 0 {
+				if previous, ok := out[len(out)-1].(EvToolProgress); ok && previous.ID == p.ID {
+					previous.Text += p.Text
+					out[len(out)-1] = previous
+					continue
+				}
+			}
+			event = p
+		}
+		out = append(out, event)
+	}
+	clear(d.queue[len(out):])
+	d.queue = out
+	total := 0
+	for _, event := range out {
+		if p, ok := event.(EvToolProgress); ok {
+			total += len(p.Text)
+		}
+	}
+	drop := total - (maxPendingToolProgressBytes - len(toolProgressTruncated))
+	out = d.queue[:0]
+	marked := false
+	d.pendingProgressBytes = 0
+	for _, event := range d.queue {
+		if p, ok := event.(EvToolProgress); ok {
+			if drop >= len(p.Text) {
+				drop -= len(p.Text)
+				continue
+			}
+			if drop > 0 {
+				cut := drop
+				for cut < len(p.Text) && !utf8.RuneStart(p.Text[cut]) {
+					cut++
+				}
+				p.Text = p.Text[cut:]
+				drop = 0
+			}
+			if !marked {
+				p.Text = toolProgressTruncated + p.Text
+				marked = true
+			}
+			// Clone so a short suffix cannot retain a large discarded backing string.
+			p.Text = strings.Clone(p.Text)
+			d.pendingProgressBytes += len(p.Text)
+			event = p
+		}
+		out = append(out, event)
+	}
+	clear(d.queue[len(out):])
+	d.queue = out
 }
 
 // drainLocked takes ownership of the lock and releases it before delivery.
@@ -189,6 +260,9 @@ func (d *toolEventDispatcher) drainLocked() {
 			return
 		}
 		ev := d.queue[0]
+		if progress, ok := ev.(EvToolProgress); ok {
+			d.pendingProgressBytes -= len(progress.Text)
+		}
 		d.queue[0] = nil
 		d.queue = d.queue[1:]
 		d.mu.Unlock()
