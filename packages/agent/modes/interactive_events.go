@@ -16,6 +16,9 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+// portCloseReasonDaemonStop mirrors session's unexported closeReasonDaemonStop.
+const portCloseReasonDaemonStop = "daemon_stop"
+
 func eventAffectsPresentation(ev core.AgentEvent) bool {
 	switch ev.(type) {
 	case core.EvToolProgress:
@@ -770,6 +773,9 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 		if a.State == session.AttachStateDetached {
 			i.mu.Lock()
 			switch a.Reason {
+			case portCloseReasonDaemonStop:
+				i.exitNotice = "session closed: daemon stopped"
+				i.addResumeHintLocked()
 			case "detached_by_other":
 				i.exitNotice = detachedByOtherNotice
 			default:
@@ -797,7 +803,11 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 			return false
 		}
 		i.mu.Lock()
-		if i.exitNotice == "" {
+		if c.Reason == portCloseReasonDaemonStop {
+			// Replace rather than append so either event order yields one hint.
+			i.exitNotice = "session closed: daemon stopped"
+			i.addResumeHintLocked()
+		} else if i.exitNotice == "" {
 			i.exitNotice = "session closed"
 			if c.Reason != "" {
 				i.exitNotice += ": " + c.Reason

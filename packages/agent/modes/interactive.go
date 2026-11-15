@@ -1072,8 +1072,8 @@ func (i *Interactive) ExitNotice() string {
 }
 
 // addResumeHintLocked records quit guidance for the post-restore notice writer.
-// Call only after successful Client.Close (which awaits daemon cleanup), not
-// from the earlier EvClosed event or detach; i.mu must be held.
+// Call after successful Client.Close (which awaits daemon cleanup), or for a
+// daemon_stop event where the daemon owns persistence. i.mu must be held.
 func (i *Interactive) addResumeHintLocked() {
 	if i.sessionID == "" || i.portInfo.SessionPath == "" {
 		return

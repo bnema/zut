@@ -1234,7 +1234,7 @@ Develop with repeatable `zut --ext <path>`: no install, and working copies overr
 
 ### Updating extensions
 
-`zut update` updates the binary and installed git extensions. Daemons keep the old binary until `zut daemon restart`; version mismatches print a reminder, even when zut is up to date. No automatic restart.
+`zut update` updates the binary and installed git extensions. Daemons keep the old binary until `zut daemon restart`; version mismatches print a reminder, even when zut is up to date. No automatic restart. When `zut daemon restart` or `zut daemon stop` closes an attached interactive TUI, it restores the terminal and prints `session closed: daemon stopped`, followed by `Resume this session: zut --resume <id>` if the session transcript still exists.
 
 `zut update --restart-daemon` installs then runs the equivalent restart (starts a missing daemon). Sessions restore idle, not mid-turn. If already up to date, only a mismatched daemon restarts; otherwise: `zut: daemon already runs <version>; nothing to restart`. Restart failure returns an error but leaves the new binary installed. `zut update --check` only checks; it cannot combine with `--restart-daemon`.
 
