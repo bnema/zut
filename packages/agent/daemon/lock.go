@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/bnema/zut/packages/agent/internal/flock"
 )
@@ -47,4 +48,18 @@ func pidPath(home string) string { return filepath.Join(stateDir(home), "daemon.
 
 func writePID(home string) error {
 	return writeFileAtomic(pidPath(home), []byte(strconv.Itoa(os.Getpid())+"\n"))
+}
+
+// ReadPID reads the daemon PID record. A record alone does not prove liveness;
+// callers must check the daemon lock before signaling the process.
+func ReadPID(home string) (int, error) {
+	b, err := os.ReadFile(pidPath(home))
+	if err != nil {
+		return 0, fmt.Errorf("read daemon PID: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 || int64(pid) > 1<<31-1 {
+		return 0, fmt.Errorf("invalid daemon PID %q", strings.TrimSpace(string(b)))
+	}
+	return pid, nil
 }

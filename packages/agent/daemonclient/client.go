@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,20 @@ import (
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/session"
 )
+
+// ErrProtocolMismatch reports an incompatible hello handshake.
+var ErrProtocolMismatch = errors.New("daemon protocol mismatch")
+
+// Older daemons have no wire error code. Match only their exact hello rejection.
+var legacyProtocolMismatch = regexp.MustCompile(`^protocol version [0-9]+ unsupported \(daemon speaks [0-9]+\)$`)
+
+func classifyHelloError(err error) error {
+	var remote *daemonproto.RemoteError
+	if errors.As(err, &remote) && legacyProtocolMismatch.MatchString(remote.Msg) {
+		return fmt.Errorf("%w: %w; run \"zut daemon restart\"", ErrProtocolMismatch, err)
+	}
+	return err
+}
 
 // Options configures the hello handshake and client diagnostics.
 type Options struct {
@@ -96,9 +111,9 @@ func (c *Client) connect(ctx context.Context) (*daemonproto.Conn, error) {
 	var h daemonproto.HelloData
 	err = conn.Call(ctx, daemonproto.HelloRequest{Type: "hello", ProtocolVersion: daemonproto.ProtocolVersion, ClientVersion: c.opts.ClientVersion, ClientKind: c.opts.ClientKind, PID: c.opts.PID}, &h)
 	if err == nil && h.ProtocolVersion != daemonproto.ProtocolVersion {
-		err = fmt.Errorf("zut daemon speaks protocol %d, client requires %d; run \"zut daemon restart\"", h.ProtocolVersion, daemonproto.ProtocolVersion)
+		err = fmt.Errorf("%w: zut daemon speaks protocol %d, client requires %d; run \"zut daemon restart\"", ErrProtocolMismatch, h.ProtocolVersion, daemonproto.ProtocolVersion)
 	} else if err != nil {
-		err = fmt.Errorf("zut daemon hello: %w", err)
+		err = fmt.Errorf("zut daemon hello: %w", classifyHelloError(err))
 	}
 	if err != nil {
 		conn.Close()

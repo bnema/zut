@@ -336,6 +336,9 @@ func stopDaemon(version string) (bool, error) {
 	defer cancel()
 	c, err := daemonClient(ctx, version)
 	if err != nil {
+		if errors.Is(err, daemonclient.ErrProtocolMismatch) {
+			return stopIncompatibleDaemon(ctx, ZutHome(), os.Stderr)
+		}
 		if running, rerr := daemonNotRunning(err, ZutHome()); !running {
 			return false, rerr
 		}
@@ -347,6 +350,31 @@ func stopDaemon(version string) (bool, error) {
 		return false, fmt.Errorf("daemon stop: %w", err)
 	}
 	return true, waitDaemonLockFree(ctx, ZutHome())
+}
+
+// stopIncompatibleDaemon uses the PID only while the daemon lock is busy.
+// Read before probing: a free lock means a stale PID file, never a signal target.
+func stopIncompatibleDaemon(ctx context.Context, home string, w io.Writer) (bool, error) {
+	pid, pidErr := daemon.ReadPID(home)
+	l, err := flock.TryLock(filepath.Join(home, "daemon", "daemon.lock"))
+	if err == nil {
+		return false, l.Close()
+	}
+	if !errors.Is(err, flock.ErrBusy) {
+		return false, err
+	}
+	if pidErr != nil {
+		return false, pidErr
+	}
+	method, err := signalDaemonPID(pid)
+	if err != nil {
+		return false, err
+	}
+	if err := waitDaemonLockFree(ctx, home); err != nil {
+		return false, err
+	}
+	fmt.Fprintf(w, "zut daemon: protocol mismatch; stopped daemon pid %d with %s\n", pid, method)
+	return true, nil
 }
 
 func waitDaemonLockFree(ctx context.Context, home string) error {

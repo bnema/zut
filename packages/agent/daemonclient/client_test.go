@@ -58,6 +58,8 @@ func TestDialProtocolMismatchIsHardError(t *testing.T) {
 	c, err := Dial(testCtx(t), path, Options{ClientVersion: "1.0.0", Warnings: &warn})
 	require.Nil(t, c)
 	require.ErrorContains(t, err, "protocol 2")
+	require.ErrorIs(t, err, ErrProtocolMismatch)
+	require.ErrorContains(t, err, `run "zut daemon restart"`)
 }
 
 func TestClientRequests(t *testing.T) {
