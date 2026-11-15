@@ -1110,3 +1110,48 @@ func TestDirectorySendToClosedTarget(t *testing.T) {
 		t.Fatalf("send to closed target = %v", err)
 	}
 }
+
+func TestDaemonStopNotifiesAllSubscribersAfterClose(t *testing.T) {
+	s1 := newTestSession(t, "s1")
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	r := startDaemon(t, f, t.TempDir(), Options{})
+	a, b, stopper := dial(t, r.sock), dial(t, r.sock), dial(t, r.sock)
+	if err := a.call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.call(t, daemonproto.AttachRequest{Type: "attach", Session: "s1", Controlling: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "subscribe"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The stop response may race connection closure; terminal notifications must not.
+	_ = stopper.call(t, daemonproto.DaemonStopRequest{Type: "daemon_stop"}, nil)
+	for _, c := range []*testClient{a, b} {
+		n := c.note(t, "closed")
+		var closed daemonproto.ClosedNotification
+		if err := json.Unmarshal(n.Raw, &closed); err != nil {
+			t.Fatal(err)
+		}
+		if closed.Session != "s1" || closed.Reason != ReasonDaemonStop || closed.Successor != "" {
+			t.Fatalf("closed = %+v", closed)
+		}
+		// No waiting: persistence must already have completed at notification time.
+		select {
+		case reason := <-s1.closes:
+			if reason != ReasonDaemonStop {
+				t.Fatalf("close reason = %q", reason)
+			}
+			s1.closes <- reason
+		default:
+			t.Fatal("notification arrived before session close")
+		}
+		select {
+		case <-c.conn.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("connection did not close")
+		}
+	}
+	r.wait(t)
+}

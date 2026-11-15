@@ -238,7 +238,7 @@ func (d *Daemon) newClient(nc net.Conn) *client {
 		return nil
 	}
 	d.nextClient++
-	ctx, cancel := context.WithCancel(d.ctx)
+	ctx, cancel := context.WithCancel(d.sessCtx)
 	c := &client{id: d.nextClient, d: d, ctx: ctx, cancel: cancel, outbox: make(chan any, clientOutboxSize), control: make(chan any, controlQueueSize), subs: map[session.ID]context.CancelFunc{}}
 	c.conn = daemonproto.NewConn(nc, daemonproto.Options{OnRequest: c.handle})
 	d.clients[c.id] = c

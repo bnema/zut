@@ -233,6 +233,8 @@ with `this daemon does not host bots`.
 
 `reason` is the optional session close reason (for example `cleared`, `killed`,
 or `idle_gc`); older daemons omit it. `successor` is omitted when there is none.
+When the daemon stops, all subscribers receive `closed` with reason
+`daemon_stop` and no successor after sessions have been closed.
 `/clear` closes the old session and creates a successor with the same launch
 configuration; its old transcript
 remains resumable. A slow consumer receives a final `attach` event with

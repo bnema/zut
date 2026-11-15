@@ -240,3 +240,62 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 		t.Fatal("daemon did not stop after daemon_stop")
 	}
 }
+
+func TestDaemonStopEndsAllSubscriptions(t *testing.T) {
+	path := shortSocket(t)
+	s1 := newScriptedSession(t, "s1")
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	d := daemon.New(f)
+	ready := make(chan struct{})
+	runErr := make(chan error, 1)
+	home := t.TempDir()
+	go func() {
+		runErr <- d.Run(context.Background(), daemon.Options{SocketPath: path, Home: home, Ready: ready, GCInterval: time.Hour})
+	}()
+	t.Cleanup(func() {
+		d.Stop()
+		select {
+		case err := <-runErr:
+			require.NoError(t, err)
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	select {
+	case <-ready:
+	case err := <-runErr:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+	ctx := testCtx(t)
+	controller := dial(t, path, Options{})
+	reader := dial(t, path, Options{})
+	stopper := dial(t, path, Options{})
+	_, err := controller.Create(ctx, session.CreateSpec{CWD: "/w"})
+	require.NoError(t, err)
+	controlled, err := controller.Port("s1", true).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	observed, err := reader.Port("s1", false).Subscribe(ctx, 0)
+	require.NoError(t, err)
+	_ = stopper.Stop(ctx, time.Second)
+	for _, ch := range []<-chan session.Event{controlled, observed} {
+		var last session.Event
+		deadline := time.After(5 * time.Second)
+	stream:
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					break stream
+				}
+				last = ev
+			case <-deadline:
+				t.Fatal("subscription did not close (possibly reconnecting)")
+			}
+		}
+		require.Equal(t, session.EvClosed, last.Kind)
+		require.Equal(t, "daemon_stop", last.Data.(session.ClosedEvent).Reason)
+	}
+}

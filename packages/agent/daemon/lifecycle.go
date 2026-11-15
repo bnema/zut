@@ -35,6 +35,8 @@ const (
 
 const defaultStopTimeout = 10 * time.Second
 
+const shutdownFlushTimeout = 2 * time.Second
+
 // Options configures Run. Home and SocketPath are required.
 type Options struct {
 	// SocketPath is the AF_UNIX listen path (see DefaultSocketPath).
@@ -62,7 +64,8 @@ var errRunTwice = errors.New("daemon: Run called twice")
 // Run takes the daemon lock (ErrAlreadyRunning if held), writes the PID
 // file, removes stale daemon session metadata, and listens with an empty registry.
 // It serves until ctx ends or a client sends daemon_stop. Shutdown stops
-// accepting, detaches clients, closes sessions, and releases all locks.
+// accepting, cancels subscriptions, closes sessions, notifies subscribers, then
+// closes client connections and releases all locks.
 func (d *Daemon) Run(ctx context.Context, opts Options) error {
 	if opts.Home == "" || opts.SocketPath == "" {
 		return errors.New("daemon: Home and SocketPath are required")
@@ -163,6 +166,8 @@ func (d *Daemon) Stop() {
 	}
 }
 
+// shutdown persists session closure before flushing terminal notifications.
+// Clients remain connected until the bounded flush finishes.
 func (d *Daemon) shutdown() {
 	d.mu.Lock()
 	d.stopping = true
@@ -173,8 +178,15 @@ func (d *Daemon) shutdown() {
 	d.mu.Unlock()
 
 	d.opMu.Lock()
+	subscriptions := make(map[*client][]session.ID, len(clients))
 	for _, c := range clients {
-		c.close()
+		c.mu.Lock()
+		for id, cancel := range c.subs {
+			subscriptions[c] = append(subscriptions[c], id)
+			cancel()
+			delete(c.subs, id)
+		}
+		c.mu.Unlock()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d.stopTimeout())
 	// Close every session concurrently so the stop timeout bounds the whole
@@ -199,6 +211,32 @@ func (d *Daemon) shutdown() {
 	}
 	closing.Wait()
 	cancel()
+
+	var notifying sync.WaitGroup
+	for _, c := range clients {
+		notifying.Add(1)
+		go func() {
+			defer notifying.Done()
+			for _, id := range subscriptions[c] {
+				if err := c.conn.Notify(daemonproto.ClosedNotification{Type: "closed", Session: id, Reason: ReasonDaemonStop}); err != nil {
+					return
+				}
+			}
+		}()
+	}
+	flushed := make(chan struct{})
+	go func() { notifying.Wait(); close(flushed) }()
+	timer := time.NewTimer(shutdownFlushTimeout)
+	select {
+	case <-flushed:
+	case <-timer.C:
+	}
+	timer.Stop()
+	for _, c := range clients {
+		c.close()
+	}
+	// Closing connections unblocks any Notify still waiting on a write.
+	<-flushed
 	d.sessCancel()
 	d.opMu.Unlock()
 	d.wg.Wait()
