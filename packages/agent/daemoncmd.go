@@ -366,15 +366,30 @@ func stopIncompatibleDaemon(ctx context.Context, home string, w io.Writer) (bool
 	if pidErr != nil {
 		return false, pidErr
 	}
-	method, err := signalDaemonPID(pid)
+	method, err := signalDaemonPID(pid, filepath.Join(home, "daemon", "daemon.lock"))
 	if err != nil {
-		return false, err
+		return daemonSignalFailure(home, err)
 	}
 	if err := waitDaemonLockFree(ctx, home); err != nil {
 		return false, err
 	}
 	fmt.Fprintf(w, "zut daemon: protocol mismatch; stopped daemon pid %d with %s\n", pid, method)
 	return true, nil
+}
+
+func unverifiedDaemonPID(pid int) error {
+	return fmt.Errorf("zut daemon: protocol mismatch; could not verify daemon pid %d; stop it manually (kill -TERM %d), then retry", pid, pid)
+}
+
+// An exiting process may release the lock between our probe and signal.
+func daemonSignalFailure(home string, signalErr error) (bool, error) {
+	if errors.Is(signalErr, os.ErrProcessDone) || errors.Is(signalErr, syscall.ESRCH) {
+		l, err := flock.TryLock(filepath.Join(home, "daemon", "daemon.lock"))
+		if err == nil {
+			return true, l.Close()
+		}
+	}
+	return false, signalErr
 }
 
 func waitDaemonLockFree(ctx context.Context, home string) error {
