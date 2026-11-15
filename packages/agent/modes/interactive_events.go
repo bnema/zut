@@ -786,13 +786,13 @@ func (i *Interactive) handleSessionEvent(ctx context.Context, ev session.Event) 
 		}
 		return false
 	case session.EvClosed:
+		c, _ := ev.Data.(session.ClosedEvent)
 		i.mu.Lock()
 		closing := i.quitClosing
 		i.mu.Unlock()
-		if closing {
+		if closing && c.Reason != portCloseReasonDaemonStop {
 			return false
 		}
-		c, _ := ev.Data.(session.ClosedEvent)
 		if c.Successor != "" {
 			if err := i.reattachSuccessor(ctx, c.Successor); err != nil {
 				i.mu.Lock()
@@ -1104,6 +1104,12 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		}
 	case sessionResultExit:
 		i.quitClosing = false
+		// A daemon stop already ended this session. A late Close result must
+		// neither append another hint nor replace shutdown with an error.
+		if i.exitNotice == "session closed: daemon stopped" || strings.HasPrefix(i.exitNotice, "session closed: daemon stopped\n") {
+			i.mu.Unlock()
+			return true
+		}
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
 			i.mu.Unlock()

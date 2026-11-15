@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,5 +77,46 @@ func TestDaemonStopPrintsAfterTerminalRestore(t *testing.T) {
 			require.Equal(t, "session closed: daemon stopped\nResume this session: zut --resume s1", i.ExitNotice())
 			require.True(t, strings.HasSuffix(term.String(), tui.SeqShowCursor+i.ExitNotice()+"\n"))
 		})
+	}
+}
+
+func TestDaemonStopDuringPendingQuit(t *testing.T) {
+	for _, exists := range []bool{true, false} {
+		for _, reason := range []string{"daemon_stop", "user_exit"} {
+			for _, result := range []struct {
+				name string
+				err  error
+			}{
+				{name: "success"}, {name: "closed", err: session.ErrClosed},
+			} {
+				t.Run(fmt.Sprintf("%s/exists=%t/%s", reason, exists, result.name), func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "session.jsonl")
+					if exists {
+						require.NoError(t, os.WriteFile(path, []byte("saved\n"), 0600))
+					}
+					i := NewInteractive(InteractiveConfig{Port: sessionmocks.NewMockPort(t)})
+					i.sessionID = "s1"
+					i.portInfo.SessionPath = path
+					i.quitClosing = true
+					done := i.handleSessionEvent(context.Background(), session.Event{Kind: session.EvClosed, Data: session.ClosedEvent{Reason: reason}})
+					if reason != "daemon_stop" {
+						require.False(t, done)
+						require.Empty(t, i.ExitNotice())
+						require.True(t, i.quitClosing)
+						return
+					}
+					require.True(t, done)
+					want := "session closed: daemon stopped"
+					if exists {
+						want += "\nResume this session: zut --resume s1"
+					}
+					require.Equal(t, want, i.ExitNotice())
+					require.True(t, i.applySessionResult(context.Background(), sessionResult{kind: sessionResultExit, gen: i.sessionGen, err: result.err}))
+					require.Equal(t, want, i.ExitNotice())
+					require.Empty(t, i.statusErr)
+					require.False(t, i.quitClosing)
+				})
+			}
+		}
 	}
 }
