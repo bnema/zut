@@ -1155,3 +1155,48 @@ func TestDaemonStopNotifiesAllSubscribersAfterClose(t *testing.T) {
 	}
 	r.wait(t)
 }
+
+func TestDaemonStopAttachIsNotForwarded(t *testing.T) {
+	for _, preEncoded := range []bool{false, true} {
+		name := "typed"
+		if preEncoded {
+			name = "pre_encoded"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newTestSession(t, "s1")
+			f := sessionmocks.NewMockFactory(t)
+			f.EXPECT().Create(mock.Anything, mock.Anything).Return(s.h, nil).Once()
+			r := startDaemon(t, f, t.TempDir(), Options{})
+			c := dial(t, r.sock)
+			if err := c.call(t, daemonproto.CreateRequest{Type: "create"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.call(t, daemonproto.AttachRequest{Type: "attach", Session: "s1"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			ev := session.Event{Session: "s1", Seq: 1, Kind: session.EvAttach, Data: session.AttachEvent{State: session.AttachStateDetached, Reason: ReasonDaemonStop}}
+			if preEncoded {
+				n, err := daemonproto.EncodeEvent(ev)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ev.Notification, err = json.Marshal(n)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.emit(ev)
+			s.emit(session.Event{Session: "s1", Seq: 2, Kind: session.EvTitle, Data: session.TitleEvent{Title: "barrier"}})
+			// The same forwarder processes both events in order. If the detach were
+			// forwarded, it would be the next event rather than this title.
+			n := c.note(t, "event")
+			var got daemonproto.EventNotification
+			if err := json.Unmarshal(n.Raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Kind != session.EvTitle || got.Seq != 2 {
+				t.Fatalf("next event = %s", n.Raw)
+			}
+		})
+	}
+}

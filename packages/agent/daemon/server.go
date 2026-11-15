@@ -320,6 +320,14 @@ func (c *client) subscribe(e *entry, afterSeq uint64) error {
 				if ev.Kind == session.EvClosed {
 					continue
 				}
+				// Lifecycle's post-close closed{daemon_stop} notification is
+				// authoritative: SetAttach runs before Close persists the session.
+				// Pre-encoded events retain their typed Data, so filter them too.
+				if ev.Kind == session.EvAttach {
+					if attach, ok := ev.Data.(session.AttachEvent); ok && attach.State == session.AttachStateDetached && attach.Reason == ReasonDaemonStop {
+						continue
+					}
+				}
 				if ev.Session == "" {
 					ev.Session = e.id
 				}
