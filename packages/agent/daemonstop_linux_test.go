@@ -42,6 +42,12 @@ func TestDaemonStopSignalHelper(t *testing.T) {
 }
 
 func TestStopIncompatibleDaemon(t *testing.T) {
+	p, err := os.FindProcess(os.Getpid())
+	require.NoError(t, err)
+	defer p.Release()
+	if err := p.WithHandle(func(uintptr) {}); err != nil {
+		t.Skipf("pidfd-backed process handles unavailable: %v", err)
+	}
 	home := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(home, "daemon"), 0700))
 	t.Setenv("ZUT_STOP_HELPER", "1")
@@ -53,7 +59,13 @@ func TestStopIncompatibleDaemon(t *testing.T) {
 	require.NoError(t, err)
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start())
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
 	ready := make([]byte, len("ready\n"))
 	_, err = io.ReadFull(stdout, ready)
 	require.NoError(t, err)
@@ -63,7 +75,9 @@ func TestStopIncompatibleDaemon(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, stopped)
 	require.Contains(t, out.String(), fmt.Sprintf("stopped daemon pid %d with SIGTERM", cmd.Process.Pid))
-	require.NoError(t, cmd.Wait())
+	err = cmd.Wait()
+	waited = true
+	require.NoError(t, err)
 }
 
 func TestStopIncompatibleDaemonStalePID(t *testing.T) {

@@ -378,7 +378,7 @@ func stopIncompatibleDaemon(ctx context.Context, home string, w io.Writer) (bool
 }
 
 func unverifiedDaemonPID(pid int) error {
-	return fmt.Errorf("zut daemon: protocol mismatch; could not verify daemon pid %d; stop it manually (kill -TERM %d), then retry", pid, pid)
+	return fmt.Errorf("zut daemon: protocol mismatch; could not verify daemon pid %d; stop it manually (%s %d), then retry", pid, daemonManualStopCommand, pid)
 }
 
 // An exiting process may release the lock between our probe and signal.
