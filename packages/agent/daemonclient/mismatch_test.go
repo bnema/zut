@@ -1,13 +1,26 @@
 package daemonclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRetryStartupDialTimeoutBeforeContextCancellation(t *testing.T) {
+	// net.Dialer can return its own deadline error before ctx.Err is set.
+	ctx := context.Background()
+	err := fmt.Errorf("dial zut daemon: %w", &net.OpError{Op: "dial", Net: "unix", Err: os.ErrDeadlineExceeded})
+	require.NoError(t, ctx.Err())
+	require.True(t, retryStartupDial(err), "timeouts must reach startup log-tail reporting")
+	require.False(t, retryStartupDial(fmt.Errorf("hello: %w", ErrProtocolMismatch)))
+	require.False(t, retryStartupDial(os.ErrPermission))
+}
 
 func TestClassifyHelloError(t *testing.T) {
 	for _, tc := range []struct {

@@ -349,6 +349,11 @@ func StopAnyVersion(ctx context.Context, socketPath string, opts Options, gracef
 			version = retryVersion
 			continue
 		}
+		if retry {
+			err = fmt.Errorf("%w: daemon stop protocol negotiation failed", ErrProtocolMismatch)
+		} else if err != nil {
+			err = classifyHelloError(err)
+		}
 		if err == nil {
 			err = conn.Call(ctx, daemonproto.DaemonStopRequest{Type: "daemon_stop", GracefulMS: int(graceful.Milliseconds())}, nil)
 			if errors.Is(err, daemonproto.ErrClosed) {

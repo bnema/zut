@@ -3,8 +3,10 @@ package daemonclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,7 +97,11 @@ func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 			}
 			return c, nil
 		}
-		if !absent(err) && ctx.Err() == nil {
+		// DialContext can report a timeout before the context's Done channel
+		// closes. Keep timeout failures in the polling path so startup expiry
+		// always reaps the child and includes its log, rather than returning
+		// a bare dial error in that race.
+		if !retryStartupDial(err) && ctx.Err() == nil {
 			_ = cmd.Process.Release()
 			return nil, err
 		}
@@ -108,6 +114,11 @@ func EnsureDaemon(ctx context.Context, opts EnsureOptions) (*Client, error) {
 		}
 		delay = min(delay*2, pollMax)
 	}
+}
+
+func retryStartupDial(err error) bool {
+	var timeout net.Error
+	return absent(err) || (errors.As(err, &timeout) && timeout.Timeout())
 }
 
 // reap stops a child that never became reachable and reports its status.
