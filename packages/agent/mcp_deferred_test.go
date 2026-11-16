@@ -55,8 +55,8 @@ func TestMCPDeferredRegistration(t *testing.T) {
 			if err != nil || !mcp.IsTool(tool) || !mcp.IsReadOnlyTool(tool) {
 				t.Fatalf("lookup %T %v", tool, err)
 			}
-			prompt := mcpSystemAddendum(resolved.ToolRegistry, next)
-			if strings.Contains(prompt, "MCP tools are not directly callable") != tc.deferred || !strings.Contains(prompt, "Use lookup before deploy.") {
+			prompt := resolved.SystemPrompt
+			if strings.Contains(prompt, "MCP tools are not directly callable") != tc.deferred || !strings.Contains(prompt, "Use lookup before deploy.") || strings.Count(prompt, "MCP tools are not directly callable") > 1 {
 				t.Fatal(prompt)
 			}
 			// Inspect actual OpenAI request definitions using the provider's normal
@@ -182,7 +182,7 @@ func TestMCPDeferredFollowsLiveJail(t *testing.T) {
 		}
 	}
 	check(false) // jailed startup must keep the direct route.
-	prompt := mcpSystemAddendum(resolved.ToolRegistry, args)
+	prompt := resolved.SystemPrompt
 	if !strings.Contains(prompt, "When codemode is available") || !strings.Contains(prompt, "Otherwise MCP tools remain directly callable") {
 		t.Fatal(prompt)
 	}
@@ -201,7 +201,7 @@ func TestMCPDeferredFollowsLiveJail(t *testing.T) {
 	check(true)
 	shared.Permissions = &tools.PermissionSet{}
 	check(false)
-	if got := mcpSystemAddendum(resolved.ToolRegistry, args); got != prompt {
+	if got := codemodeSystemAddendum(resolved.ToolRegistry); !strings.Contains(prompt, got) {
 		t.Fatalf("conditional prompt changed: %s", got)
 	}
 }

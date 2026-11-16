@@ -170,13 +170,9 @@ func mcpSystemAddendum(reg core.Registry, args Args) string {
 		return ""
 	}
 	has := false
-	deferred := false
 	for _, tool := range reg {
 		if mcp.IsTool(tool) {
 			has = true
-			if mcp.DeferralConfigured(tool) {
-				deferred = true
-			}
 		}
 	}
 	strictOrchestrator := args.Orchestrate && !args.ResidentChild
@@ -189,9 +185,6 @@ func mcpSystemAddendum(reg core.Registry, args Args) string {
 	}
 	if args.Orchestrate && !args.ResidentChild {
 		addendum += "\nAs the orchestrator you only hold read-only MCP tools for research. Workers receive every MCP tool; delegate MCP actions that change external state."
-	}
-	if deferred {
-		addendum += "\nWhen codemode is available (not jailed or permission-restricted), MCP tools are not directly callable; use the codemode tool (zut.search, zut.describe, zut.call). Otherwise MCP tools remain directly callable."
 	}
 	return addendum
 }

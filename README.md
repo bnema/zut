@@ -291,7 +291,8 @@ With `/jail`, filesystem tools, `grep`, `glob`, `ast`, and LSP workspace edits r
 ### Experimental: codemode
 
 `codemode` runs Python that calls zut tools and combines their results in one
-invocation. Enable it in `$ZUT_HOME/config.json`:
+invocation. When registered, it adds conditional system-prompt guidance on batching, discovery, and compact results, including a non-MCP example.
+Enable it in `$ZUT_HOME/config.json`:
 
 ```json
 {"experimental": {"codemode": true}}

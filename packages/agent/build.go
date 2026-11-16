@@ -1001,6 +1001,9 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	if mcpAddendum := mcpSystemAddendum(reg, args); mcpAddendum != "" {
 		append_ = append(append_, mcpAddendum)
 	}
+	if codemodeAddendum := codemodeSystemAddendum(reg); codemodeAddendum != "" {
+		append_ = append(append_, codemodeAddendum)
+	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
 	primaryInteractive := interactiveMode && !args.ResidentChild
 	primaryOrchestrator := args.Orchestrate && !args.ResidentChild

@@ -62,6 +62,9 @@ func TestCodemodeResolveRegistration(t *testing.T) {
 	if _, ok := resolved.ToolRegistry["codemode"]; ok {
 		t.Fatal("codemode enabled by default")
 	}
+	if strings.Contains(resolved.SystemPrompt, "[codemode]") {
+		t.Fatal("codemode guidance enabled by default")
+	}
 	enabled := true
 	cfg := Config{Experimental: &ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/missing/python"}
 	if err := SaveConfig(cfg); err != nil {
@@ -71,6 +74,12 @@ func TestCodemodeResolveRegistration(t *testing.T) {
 	cm, ok := resolved.ToolRegistry["codemode"].(*tools.CodemodeTool)
 	if !ok || cm.Interpreter != cfg.PythonInterpreter || cm.CWD != project || cm.Sandbox != resolved.Sandbox {
 		t.Fatalf("codemode=%#v", resolved.ToolRegistry["codemode"])
+	}
+	if !strings.Contains(resolved.SystemPrompt, codemodeSystemAddendum(resolved.ToolRegistry)) || !strings.Contains(resolved.SystemPrompt, "[codemode]") {
+		t.Fatal("missing codemode guidance without MCP")
+	}
+	if strings.Contains(resolved.SystemPrompt, "MCP tools are not directly callable") {
+		t.Fatal("MCP deferral guidance without MCP")
 	}
 	for _, tc := range []struct {
 		name string
@@ -84,6 +93,9 @@ func TestCodemodeResolveRegistration(t *testing.T) {
 			r := resolvePython(t, tc.args)
 			if _, ok := r.ToolRegistry["codemode"]; ok {
 				t.Fatal("codemode registered")
+			}
+			if strings.Contains(r.SystemPrompt, "[codemode]") {
+				t.Fatal("codemode guidance without registration")
 			}
 		})
 	}
