@@ -327,7 +327,7 @@ func (d *Daemon) createHandleLocked(spec session.CreateSpec) (session.Handle, er
 	if cwd == "" {
 		cwd = info.CWD
 	}
-	if err := d.register(h, session.CreateSpec{CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre()}, lock); err != nil {
+	if err := d.register(h, session.CreateSpec{CWD: cwd, Env: spec.Env, Args: spec.Args, Headless: spec.Headless, Zutfile: spec.Zutfile.WithoutPre(), NoAdvisor: spec.NoAdvisor}, lock); err != nil {
 		return nil, err
 	}
 	return h, nil
@@ -544,7 +544,7 @@ func (d *Daemon) clear(c *client, id session.ID) (session.Info, error) {
 	if cwd == "" {
 		cwd = e.spec.CWD
 	}
-	spec := session.CreateSpec{CWD: cwd, Env: e.spec.Env, Args: clearArgs(e.spec.Args, old), Headless: e.spec.Headless, Zutfile: e.spec.Zutfile.WithoutPre()}
+	spec := session.CreateSpec{CWD: cwd, Env: e.spec.Env, Args: clearArgs(e.spec.Args, old), Headless: e.spec.Headless, Zutfile: e.spec.Zutfile.WithoutPre(), NoAdvisor: e.spec.NoAdvisor}
 	info, err := d.createLocked(spec)
 	if err != nil {
 		return session.Info{}, err
@@ -605,6 +605,9 @@ func (d *Daemon) forkSpec(spec session.CreateSpec) (session.CreateSpec, error) {
 	spec.Args = clearArgs(parent.spec.Args, info)
 	spec.Env = append([]string(nil), parent.spec.Env...)
 	spec.Zutfile = parent.spec.Zutfile.WithoutPre()
+	// NoAdvisor only narrows: a fork keeps the client's opt-out and the
+	// parent's.
+	spec.NoAdvisor = spec.NoAdvisor || parent.spec.NoAdvisor
 	return spec, nil
 }
 

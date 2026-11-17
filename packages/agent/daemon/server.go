@@ -516,6 +516,7 @@ type portParams struct {
 	PanelID      string                     `json:"panel_id"`
 	Key          extproto.PanelKeyFromHost  `json:"key"`
 	Text         string                     `json:"text"`
+	Advisor      session.AdvisorChange      `json:"advisor"`
 }
 
 // port dispatches a snake_case Port method (docs/daemon-protocol.md). Read
@@ -598,6 +599,8 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return nil, h.ClearProfile(ctx, p.Slot)
 	case "apply_settings":
 		return nil, h.ApplySettings(ctx, p.Patch)
+	case "set_advisor":
+		return h.SetAdvisor(ctx, p.Advisor)
 	case "set_goal":
 		var g session.GoalCommand
 		if err := unmarshalOptional(p.Command, &g); err != nil {

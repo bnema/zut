@@ -209,6 +209,18 @@ func TestClientAgainstRealDaemon(t *testing.T) {
 	require.NoError(t, port.AssignProfile(ctx, 2, prof, false))
 	require.ErrorIs(t, port.ClearProfile(ctx, 4), session.ErrProfileEmpty)
 
+	// Advisor changes round-trip with their status; busy maps back to ErrBusy.
+	advSpec := "anthropic/claude-opus-4-7:high"
+	advStatus := session.AdvisorStatus{Enabled: true, Model: advSpec, Mode: "auto", Effective: session.AdvisorEffectiveClient}
+	s1.h.EXPECT().SetAdvisor(mock.Anything, session.AdvisorChange{Model: &advSpec}).Return(advStatus, nil).Once()
+	gotAdv, err := port.SetAdvisor(ctx, session.AdvisorChange{Model: &advSpec})
+	require.NoError(t, err)
+	require.Equal(t, advStatus, gotAdv)
+	advOff := false
+	s1.h.EXPECT().SetAdvisor(mock.Anything, session.AdvisorChange{Enabled: &advOff}).Return(session.AdvisorStatus{}, session.ErrBusy).Once()
+	_, err = port.SetAdvisor(ctx, session.AdvisorChange{Enabled: &advOff})
+	require.ErrorIs(t, err, session.ErrBusy)
+
 	// Close requires control.
 	other := dial(t, path, Options{ClientVersion: "daemon-v"})
 	require.ErrorContains(t, other.Close(ctx, "s1", "user_exit"), daemon.ErrNotController.Error())

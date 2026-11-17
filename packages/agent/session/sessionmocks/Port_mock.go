@@ -1357,6 +1357,72 @@ func (_c *MockPort_SessionsQuery_Call) RunAndReturn(run func(ctx context.Context
 	return _c
 }
 
+// SetAdvisor provides a mock function for the type MockPort
+func (_mock *MockPort) SetAdvisor(ctx context.Context, change session.AdvisorChange) (session.AdvisorStatus, error) {
+	ret := _mock.Called(ctx, change)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SetAdvisor")
+	}
+
+	var r0 session.AdvisorStatus
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, session.AdvisorChange) (session.AdvisorStatus, error)); ok {
+		return returnFunc(ctx, change)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, session.AdvisorChange) session.AdvisorStatus); ok {
+		r0 = returnFunc(ctx, change)
+	} else {
+		r0 = ret.Get(0).(session.AdvisorStatus)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, session.AdvisorChange) error); ok {
+		r1 = returnFunc(ctx, change)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockPort_SetAdvisor_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAdvisor'
+type MockPort_SetAdvisor_Call struct {
+	*mock.Call
+}
+
+// SetAdvisor is a helper method to define mock.On call
+//   - ctx context.Context
+//   - change session.AdvisorChange
+func (_e *MockPort_Expecter) SetAdvisor(ctx any, change any) *MockPort_SetAdvisor_Call {
+	return &MockPort_SetAdvisor_Call{Call: _e.mock.On("SetAdvisor", ctx, change)}
+}
+
+func (_c *MockPort_SetAdvisor_Call) Run(run func(ctx context.Context, change session.AdvisorChange)) *MockPort_SetAdvisor_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 session.AdvisorChange
+		if args[1] != nil {
+			arg1 = args[1].(session.AdvisorChange)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockPort_SetAdvisor_Call) Return(advisorStatus session.AdvisorStatus, err error) *MockPort_SetAdvisor_Call {
+	_c.Call.Return(advisorStatus, err)
+	return _c
+}
+
+func (_c *MockPort_SetAdvisor_Call) RunAndReturn(run func(ctx context.Context, change session.AdvisorChange) (session.AdvisorStatus, error)) *MockPort_SetAdvisor_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetFastMode provides a mock function for the type MockPort
 func (_mock *MockPort) SetFastMode(ctx context.Context, enabled bool) error {
 	ret := _mock.Called(ctx, enabled)

@@ -46,6 +46,7 @@ packages:
             filename: residents_host_mock_test.go
             structname: mockResidentHostLocal
       SettingsStore:
+      AdvisorStore:
       ConfirmGate:
       ScheduleHost:
       DeferredStore:

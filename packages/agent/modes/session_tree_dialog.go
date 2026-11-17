@@ -1042,6 +1042,10 @@ func sessionTreePreview(msg provider.Message) string {
 			if b.Summary != "" {
 				parts = append(parts, "reasoning")
 			}
+		case provider.ServerToolBlock:
+			if b.Kind == provider.ServerToolKindAdvisorResult {
+				parts = append(parts, "advisor")
+			}
 		}
 	}
 	if len(parts) == 0 {

@@ -159,6 +159,7 @@ func NewContext(ctx context.Context, cfg Config) (*Runtime, error) {
 		NoTools:                cfg.NoTools,
 		WebSearchPolicy:        webSearchPolicy,
 		NoSess:                 true, // SDK callers manage persistence themselves
+		NoAdvisor:              true, // embedders never inherit the user's advisor config
 	}
 	r, err := agent.ResolveSDK(ctx, args)
 	if err != nil {

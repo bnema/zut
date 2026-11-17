@@ -605,7 +605,9 @@ func (c *Controller) applyAgentEvent(ev core.AgentEvent) {
 		}
 	case core.EvUsage:
 		c.turn.projection.Usage = c.turn.projection.Usage.Add(e.Usage)
-		c.turn.projection.ContextUsed = e.Usage.PromptTokens()
+		if !e.External {
+			c.turn.projection.ContextUsed = e.Usage.PromptTokens()
+		}
 	case core.EvAssistantMessage:
 		if c.deps.SessionStore != nil {
 			c.deps.SessionStore.FlushSession()

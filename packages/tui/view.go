@@ -893,6 +893,17 @@ func hashMessage(m provider.Message) uint64 {
 			h = fnv64aWrite(h, []byte(b.ID))
 			h = fnv64aWrite(h, []byte(b.Name))
 			h = fnv64aWrite(h, []byte(b.Arguments))
+		case provider.ServerToolBlock:
+			h = fnv64aWriteByte(h, 's')
+			h = fnv64aWrite(h, []byte(b.Kind))
+			h = fnv64aWrite(h, []byte(b.ID))
+			h = fnv64aWriteByte(h, 0)
+			h = fnv64aWrite(h, []byte(b.AdvisorText))
+			h = fnv64aWriteByte(h, 0)
+			h = fnv64aWrite(h, []byte(b.ErrorCode))
+			if b.Redacted {
+				h = fnv64aWriteByte(h, 'R')
+			}
 		case provider.ToolResultBlock:
 			h = fnv64aWriteByte(h, 'r')
 			h = fnv64aWrite(h, []byte(b.CallID))
@@ -1120,6 +1131,8 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			switch b := c.(type) {
 			case provider.TextBlock:
 				lines = append(lines, renderAssistantText(b.Text, v.Theme, width)...)
+			case provider.ServerToolBlock:
+				lines = append(lines, v.renderServerToolLine(b, width)...)
 			case provider.ToolCallBlock:
 				// The whole box (top + body + bottom) is rendered by
 				// the matching tool_result message so a single
@@ -3340,4 +3353,31 @@ func (v *View) renderNestedActivity(text string, width int) []string {
 		lines = append(lines, v.Theme.FGColor(color, truncateWithEllipsis(oneLineToolLabel(line), max(1, width))))
 	}
 	return lines
+}
+
+// renderServerToolLine shows a provider-executed server tool result (for
+// example the native advisor) as a compact muted line. The opaque Raw
+// payload is never displayed.
+func (v *View) renderServerToolLine(b provider.ServerToolBlock, width int) []string {
+	line := b.TranscriptLine()
+	if line == "" {
+		return nil
+	}
+	color := v.Theme.Muted
+	if b.ErrorCode != "" {
+		color = v.Theme.Error
+	}
+	bodyWidth := width - 2
+	if bodyWidth < 8 {
+		bodyWidth = 8
+	}
+	var out []string
+	for _, para := range strings.Split(line, "\n") {
+		// AdvisorText and ErrorCode are provider output: strip escapes
+		// and control characters before styling.
+		for _, l := range wrapLine(sanitizeLine(para, codeTabStop), bodyWidth, "") {
+			out = append(out, v.Theme.FGColor(color, "  "+l))
+		}
+	}
+	return out
 }

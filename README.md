@@ -363,6 +363,61 @@ Codemode has the same unrestricted host filesystem, network, and process access
 as `python`; it is not a sandbox. It is unavailable while jailed, with restricted
 permissions, in sub-agents or packaged agents, or in a strict orchestrator.
 
+### Advisor
+
+The advisor lets the working model (the executor) consult a stronger model
+mid-task through a no-argument `advisor` tool. The advisor reviews the work so
+far and returns advice; the executor decides what to do with it.
+
+**Privacy:** each consultation sends the full transcript, including the system
+prompt, tool definitions, and tool results, to the advisor model's provider.
+Advisor calls never ask for confirmation; enabling the advisor is the consent.
+
+The advisor is disabled by default. Configure it in `$ZUT_HOME/config.json`:
+
+```json
+{"advisor": {"enabled": true, "model": "anthropic/claude-opus-5-5:high", "mode": "auto", "max_tokens": 2048}}
+```
+
+- `model` is `provider/model[:reasoning]`. Reasoning defaults to `high` and is
+  clamped to the model; `:off` disables it.
+- `mode` is `auto` (default) or `client`.
+- `max_tokens` optionally caps each advisor answer.
+
+Slash command:
+
+- `/advisor` shows the current state.
+- `/advisor provider/model[:reasoning]` sets the model and enables the advisor.
+- `/advisor on` / `/advisor off` toggles it; `on` fails when no model is set.
+
+`--no-tools`, or a `--tools` list without `advisor`, removes it.
+
+Modes:
+
+- **Client**: zut runs the advisor as a separate request, so any provider pair
+  works (for example `openai-codex/gpt-6.1-sol` with a ChatGPT subscription,
+  or `openai/gpt-6.1-sol` with an OpenAI API key, as the advisor for any
+  executor). Each
+  call costs one extra request, and the advice is shown in the transcript.
+  The advisor sees the conversation transcript but not zut's per-request
+  dynamic context (such as turn and plan context).
+- **Native**: `auto` picks it when the executor uses first-party Anthropic and
+  the executor/advisor pair appears in Anthropic's advisor compatibility
+  table; otherwise `auto` uses client mode. Anthropic's server-side advisor
+  tool runs inside the same request. The `:reasoning` suffix is ignored. The
+  newest Opus advisors return encrypted advice that zut cannot display. Works
+  with subscription OAuth and API keys. Encrypted advice is tied to the
+  Anthropic account that produced it, so Anthropic may reject a session
+  resumed under another account.
+
+When an Anthropic session switches from native to client mode, earlier
+plaintext advice stays visible to the model as text notes and encrypted advice
+is dropped from what the model sees.
+
+Advisor tokens are charged at the advisor model's rates and included in session
+cost, but not in the context gauge. The advisor is unavailable to subagents,
+`/btw` side chats, `codemode`, named agents and zutfile runs, and SDK runtimes.
+
 ## Modes
 
 - **Interactive** (default): streaming chat TUI, spinner, cost meter, slash commands. `/settings`, `/subagents`, pickers, and confirmations use focused floating panes over the dimmed live view; below 80 columns, full-width bottom drawers.
@@ -419,6 +474,7 @@ TUI and messaging commands ignore name case, not argument case. Type `/` in the 
 | `/profile <1-9>` | Activate a [model profile](#model-profiles). |
 | `/reasoning` | Set reasoning for subsequent calls. |
 | `/fast` | Toggle fast mode. |
+| `/advisor` | Show or set the [advisor](#advisor) model, or turn it `on`/`off`. |
 | `/orchestrator` | Toggle proactive delegation. |
 | `/goal <objective>` | Start an autonomous interactive mission. |
 | `/llama` | Manage the configured llama.cpp router and GGUF models. |

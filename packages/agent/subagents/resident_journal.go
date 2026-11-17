@@ -210,7 +210,7 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 		j.usageMu.RLock()
 		contextUsed, contextMax, subscription := j.contextUsed, j.contextMax, j.subscription
 		j.usageMu.RUnlock()
-		if current := value.Usage.PromptTokens(); current > 0 {
+		if current := value.Usage.PromptTokens(); !value.External && current > 0 {
 			contextUsed = current
 		}
 		usage := value.Cumulative
@@ -250,7 +250,7 @@ func (j *ResidentJournal) RecordAgentEvent(event core.AgentEvent) error {
 		j.usage = usageEvent.Cumulative
 		j.usageRecordPersisted = true
 		j.usageMetadataPersisted = false
-		if current := usageEvent.Usage.PromptTokens(); current > 0 {
+		if current := usageEvent.Usage.PromptTokens(); !usageEvent.External && current > 0 {
 			j.contextUsed = current
 		}
 		j.usageMu.Unlock()

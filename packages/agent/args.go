@@ -38,9 +38,13 @@ type Args struct {
 	// ResidentChild marks internal child resolution so primary-only delegation
 	// policies and profile metadata are not added to worker prompts.
 	ResidentChild bool
-	Provider      string
-	Model         string
-	APIKey        string
+	// NoAdvisor keeps the advisor (client tool and native server tool) out
+	// of this runtime regardless of config: /btw side chats and SDK
+	// embedders must not inherit the user's advisor.
+	NoAdvisor bool
+	Provider  string
+	Model     string
+	APIKey    string
 
 	BaseURL string // override provider base URL (for tests/self-hosted)
 	// modelCatalog is set by ResolveSDK so dynamic model lookup uses the

@@ -181,3 +181,33 @@ func TestDaemonRegistrationPinsResolvedParentPath(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, os.SameFile(identity, got.Fork.ParentFile))
 }
+
+func TestDaemonForkCarriesNoAdvisor(t *testing.T) {
+	s1, s2, s3 := newTestSession(t, "s1"), newTestSession(t, "s2"), newTestSession(t, "s3")
+	require.NoError(t, os.WriteFile(s1.h.Info().SessionPath, nil, 0o600))
+	require.NoError(t, os.WriteFile(s2.h.Info().SessionPath, nil, 0o600))
+	f := sessionmocks.NewMockFactory(t)
+	f.EXPECT().Create(mock.Anything, mock.Anything).Return(s1.h, nil).Once()
+	specs := make(chan session.CreateSpec, 2)
+	f.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Handle, error) {
+		specs <- spec
+		return s2.h, nil
+	}).Once()
+	f.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Handle, error) {
+		specs <- spec
+		return s3.h, nil
+	}).Once()
+	r := startDaemon(t, f, t.TempDir(), Options{})
+	a := dial(t, r.sock)
+	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: session.CreateSpec{CWD: "/w"}}, nil))
+
+	// A /btw fork opts out of the advisor.
+	btw := session.CreateSpec{CWD: "/w", Fork: &session.ForkSpec{ParentPath: s1.h.Info().SessionPath}, Headless: true, NoAdvisor: true}
+	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: btw}, nil))
+	require.True(t, recv(t, specs).NoAdvisor)
+
+	// A fork of that fork inherits the opt-out even when the client omits it.
+	child := session.CreateSpec{CWD: "/w", Fork: &session.ForkSpec{ParentPath: s2.h.Info().SessionPath}, Headless: true}
+	require.NoError(t, a.call(t, daemonproto.CreateRequest{Type: "create", Spec: child}, nil))
+	require.True(t, recv(t, specs).NoAdvisor)
+}

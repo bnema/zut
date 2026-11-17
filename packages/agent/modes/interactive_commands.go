@@ -363,6 +363,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.applyQuickModelShortcut(int(parts[1][0] - '0'))
 	case "/reasoning":
 		i.openReasoningDialog()
+	case "/advisor":
+		i.runAdvisorCommand(parts[1:])
 	case "/fast":
 		if i.portMode.Load() {
 			i.portToggleFastMode()
@@ -1063,7 +1065,7 @@ func (i *Interactive) openPortBtwDialog(args []string) {
 	if cwd == "" {
 		cwd = i.cfg.CWD
 	}
-	spec := session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}, Headless: true}
+	spec := session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}, Headless: true, NoAdvisor: true}
 	seed := strings.TrimSpace(strings.Join(args, " "))
 	i.btwDialog.OpenPort(theme, client, spec, i.sessionCallTimeout(), cwd, seed, compact, flatTools, lineInput, i.invalidate)
 	i.invalidate()

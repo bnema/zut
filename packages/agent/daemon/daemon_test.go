@@ -333,6 +333,16 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_queued_user"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
 		t.Fatalf("clear_queued_user by non-controller = %v", err)
 	}
+	advSpec := "anthropic/claude-opus-4-7:high"
+	advStatus := session.AdvisorStatus{Enabled: true, Model: advSpec, Mode: "auto"}
+	s1.h.EXPECT().SetAdvisor(mock.Anything, session.AdvisorChange{Model: &advSpec}).Return(advStatus, nil).Once()
+	var gotAdvisor session.AdvisorStatus
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "set_advisor", Params: json.RawMessage(`{"advisor":{"model":"anthropic/claude-opus-4-7:high"}}`)}, &gotAdvisor); err != nil || gotAdvisor != advStatus {
+		t.Fatalf("set_advisor = %+v, %v", gotAdvisor, err)
+	}
+	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "set_advisor", Params: json.RawMessage(`{"advisor":{"enabled":false}}`)}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+		t.Fatalf("set_advisor by non-controller = %v", err)
+	}
 	if err := a.call(t, daemonproto.CloseRequest{Type: "close", Session: "s1"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
 		t.Fatalf("close by non-controller = %v", err)
 	}

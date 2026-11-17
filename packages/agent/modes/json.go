@@ -115,6 +115,19 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["delta"] = e.Delta
 	case core.EvToolUseEnd:
 		m["id"] = e.ID
+	case core.EvServerTool:
+		m["id"] = e.ID
+		m["name"] = e.Name
+		m["phase"] = e.Phase
+		if e.Text != "" {
+			m["text"] = e.Text
+		}
+		if e.ErrorCode != "" {
+			m["error_code"] = e.ErrorCode
+		}
+		if e.Redacted {
+			m["redacted"] = true
+		}
 	case core.EvToolCall:
 		m["id"] = e.ID
 		m["name"] = e.Name
@@ -168,6 +181,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["cache_measured_prompt"] = e.Usage.CacheMeasuredPromptTokens
 		m["cache_measured_read"] = e.Usage.CacheMeasuredReadTokens
 		m["cost_usd"] = e.Usage.CostUSD
+		if e.External {
+			m["external"] = true
+		}
 		m["cumulative"] = map[string]any{
 			"input":                 e.Cumulative.InputTokens,
 			"output":                e.Cumulative.OutputTokens,
@@ -217,6 +233,19 @@ func ContentToJSON(blocks []provider.Content) []map[string]any {
 				"is_error": v.IsError,
 				"content":  ContentToJSON(v.Content),
 			})
+		case provider.ServerToolBlock:
+			// Never project Raw: it is an opaque, possibly encrypted blob.
+			sm := map[string]any{"type": "server_tool", "kind": v.Kind, "id": v.ID, "name": v.Name}
+			if v.AdvisorText != "" {
+				sm["advisor_text"] = v.AdvisorText
+			}
+			if v.Redacted {
+				sm["redacted"] = true
+			}
+			if v.ErrorCode != "" {
+				sm["error_code"] = v.ErrorCode
+			}
+			out = append(out, sm)
 		}
 	}
 	return out

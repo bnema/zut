@@ -133,6 +133,19 @@ type NestedInvoker interface {
 
 type nestedInvokerKey struct{}
 
+type toolCallIDKey struct{}
+
+func withToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallIDFrom returns the provider call ID of the top-level tool call whose
+// Execute received ctx. Nested (codemode) calls see the parent call's ID.
+func ToolCallIDFrom(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(toolCallIDKey{}).(string)
+	return id, ok && id != ""
+}
+
 func withNestedInvoker(ctx context.Context, inv NestedInvoker) context.Context {
 	return context.WithValue(ctx, nestedInvokerKey{}, inv)
 }
@@ -372,6 +385,7 @@ func (n *nestedInvoker) Invoke(ctx context.Context, name string, args json.RawMe
 	if denied {
 		n.agent.markDeniedToolCall()
 	}
+	n.agent.foldToolUsage(&result, n.sink)
 	if n.sink != nil {
 		n.sink(EvNestedToolResult{ID: id, ParentID: n.parent.ID, Name: name, IsError: result.IsError, Denied: denied, Summary: nestedSummary(result.Content)})
 	}

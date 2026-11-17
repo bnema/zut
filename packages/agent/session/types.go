@@ -56,6 +56,37 @@ type Info struct {
 	Profiles []QuickModelShortcut `json:"profiles,omitempty"`
 	// ActiveProfile is this session's one-based active slot (0 none).
 	ActiveProfile int `json:"active_profile,omitempty"`
+	// Advisor is the persisted advisor configuration. Absent from older
+	// daemons and when the session has no advisor settings backend.
+	Advisor *AdvisorStatus `json:"advisor,omitempty"`
+}
+
+// Advisor effective modes reported in AdvisorStatus.Effective.
+const (
+	AdvisorEffectiveNative = "native"
+	AdvisorEffectiveClient = "client"
+)
+
+// AdvisorStatus is the effective advisor configuration.
+type AdvisorStatus struct {
+	Enabled bool `json:"enabled"`
+	// Model is the canonical "provider/model[:reasoning]" spec, or empty.
+	Model string `json:"model,omitempty"`
+	// Mode is "auto" or "client".
+	Mode string `json:"mode"`
+	// MaxTokens caps each advisor call; 0 uses the model default.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// Effective is the live advisor path: "native" (provider server tool;
+	// the spec's reasoning suffix is not used), "client" (the advisor tool),
+	// or empty when the session has no advisor.
+	Effective string `json:"effective,omitempty"`
+}
+
+// AdvisorChange updates the advisor configuration. A nil field is unchanged.
+// Setting Model also enables the advisor.
+type AdvisorChange struct {
+	Model   *string `json:"model,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
 }
 
 // ActivityKindWaitingResidents denotes an idle main turn awaiting running residents.
@@ -289,6 +320,10 @@ type CreateSpec struct {
 	// Zutfile carries `zut run` packaged-agent settings that have no CLI
 	// flag. Absent for ordinary sessions and older clients.
 	Zutfile *ZutfileSpec `json:"zutfile,omitempty"`
+	// NoAdvisor keeps the advisor out of this session (e.g. /btw side
+	// chats, which must not forward their transcript). Absent for older
+	// clients.
+	NoAdvisor bool `json:"no_advisor,omitempty"`
 }
 
 // ZutfileSpec is the packaged-agent part of a CreateSpec. Permissions is the

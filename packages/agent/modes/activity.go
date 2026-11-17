@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // activityKind describes a user-visible operation. It is deliberately local
@@ -29,6 +30,7 @@ const (
 	activityCompactingHistory    activityKind = "compacting_history"
 	activityCondensingHistory    activityKind = "condensing_history"
 	activityRunningShellCommand  activityKind = "running_shell_command"
+	activityConsultingServerTool activityKind = "consulting_server_tool"
 )
 
 type activity struct {
@@ -76,6 +78,8 @@ func (a activity) label() string {
 		return "Condensing conversation history"
 	case activityRunningShellCommand:
 		return "Running shell command"
+	case activityConsultingServerTool:
+		return "Consulting " + activityText(a.tool, "server tool") + "…"
 	default:
 		return ""
 	}
@@ -165,6 +169,16 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 				a.tool = name
 				return
 			}
+		}
+	case core.EvServerTool:
+		// A provider-executed tool (the native advisor) runs inside the
+		// model request; the outcome is shown in the transcript.
+		if e.Phase == provider.ServerToolPhaseStart {
+			a.kind = activityConsultingServerTool
+			a.tool = e.Name
+		} else if a.kind == activityConsultingServerTool {
+			a.kind = activityWaitingForResponse
+			a.tool = ""
 		}
 	case core.EvRetryScheduled:
 		// Agent retries discard the preceding partial assistant message.

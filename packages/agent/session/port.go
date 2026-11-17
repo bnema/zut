@@ -35,6 +35,9 @@ type Port interface {
 	// ClearProfile empties slot; an active slot detaches without a model change.
 	ClearProfile(ctx context.Context, slot int) error
 	ApplySettings(ctx context.Context, patch SettingsPatch) error
+	// SetAdvisor changes the persisted advisor configuration and refreshes
+	// the session tools so the advisor tool follows the enabled state.
+	SetAdvisor(ctx context.Context, change AdvisorChange) (AdvisorStatus, error)
 	SetGoal(ctx context.Context, command GoalCommand) error
 	ChangeCWD(ctx context.Context, path string) error
 	SetJail(ctx context.Context, enabled bool) error

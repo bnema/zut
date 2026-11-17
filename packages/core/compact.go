@@ -303,6 +303,11 @@ func serializeTranscript(msgs []provider.Message) string {
 				fmt.Fprintf(&sb, "[image: %s, %d bytes]\n", v.MimeType, len(v.Data))
 			case provider.ToolCallBlock:
 				fmt.Fprintf(&sb, "[tool_call %s %s]\n", v.Name, string(v.Arguments))
+			case provider.ServerToolBlock:
+				if line := v.TranscriptLine(); line != "" {
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
 			case provider.ToolResultBlock:
 				for _, inner := range v.Content {
 					if tb, ok := inner.(provider.TextBlock); ok {

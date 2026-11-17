@@ -145,7 +145,7 @@ func (p *residentLiveProjection) Apply(event core.AgentEvent) {
 		p.snapshot.AssistantText = ""
 	case core.EvUsage:
 		p.snapshot.Usage = value.Cumulative
-		if current := value.Usage.PromptTokens(); current > 0 {
+		if current := value.Usage.PromptTokens(); !value.External && current > 0 {
 			p.snapshot.ContextUsed = current
 		}
 	default:

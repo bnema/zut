@@ -125,7 +125,7 @@ func (b *codemodeBridge) serve(ctx context.Context, r io.ReadCloser, w io.WriteC
 
 func codemodeAllowed(name string) bool {
 	switch name {
-	case "codemode", "subagent", "ask_user_question", "plan", "update_goal", "schedule", "sessions":
+	case "codemode", "subagent", "ask_user_question", "plan", "update_goal", "schedule", "sessions", AdvisorToolName:
 		return false
 	}
 	return true

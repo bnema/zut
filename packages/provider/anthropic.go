@@ -228,11 +228,14 @@ type anthRequest struct {
 	MaxTokens    int               `json:"max_tokens"`
 	System       []anthSystemBlock `json:"system,omitempty"`
 	Messages     []anthMessage     `json:"messages"`
-	Tools        []anthTool        `json:"tools,omitempty"`
+	Tools        []any             `json:"tools,omitempty"`
 	Temperature  *float32          `json:"temperature,omitempty"`
 	Thinking     *anthThinking     `json:"thinking,omitempty"`
 	OutputConfig *anthOutputConfig `json:"output_config,omitempty"`
 	Stream       bool              `json:"stream"`
+
+	// advisorBeta requests the advisor beta header. Not serialized.
+	advisorBeta bool
 }
 
 // usesAdaptiveThinking reports whether a model only supports the
@@ -358,20 +361,37 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
+	firstParty := c.firstPartyAnthropic()
+	advisor := firstParty && req.Advisor != nil && strings.TrimSpace(req.Advisor.Model) != ""
+	if advisor {
+		// The advisor server tool goes first so the cache breakpoint stays
+		// on the last client tool. Its name is never Claude-Code-mapped.
+		out.Tools = append(out.Tools, anthAdvisorTool{
+			Type:      anthropicAdvisorToolType,
+			Name:      AdvisorToolName,
+			Model:     strings.TrimSpace(req.Advisor.Model),
+			MaxTokens: anthAdvisorMaxTokens(req.Advisor.MaxTokens),
+		})
+		out.advisorBeta = true
+	}
+	var clientTools []anthTool
 	for _, t := range activeToolDefinitions(req.Tools, messages) {
 		name := t.Name
 		if c.oauthTok != "" {
 			name = toClaudeCodeToolName(name)
 		}
-		out.Tools = append(out.Tools, anthTool{
+		clientTools = append(clientTools, anthTool{
 			Name:        name,
 			Description: t.Description,
 			InputSchema: t.Schema,
 		})
 	}
 	// Cache the last tool definition (applies cache breakpoint to the whole tools array).
-	if n := len(out.Tools); n > 0 {
-		out.Tools[n-1].CacheControl = &anthCacheCtrl{Type: "ephemeral"}
+	if n := len(clientTools); n > 0 {
+		clientTools[n-1].CacheControl = &anthCacheCtrl{Type: "ephemeral"}
+	}
+	for _, t := range clientTools {
+		out.Tools = append(out.Tools, t)
 	}
 
 	// Convert messages. Anthropic's wire format has only "user" and
@@ -394,6 +414,14 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	// turns, so the cache prefix matches for the entire history up
 	// to the newest block.
 	messages = RepairOrphanedToolResults(messages)
+	var hasServer bool
+	// Without a server advisor, a client tool named "advisor" makes the API
+	// reject replayed server blocks that reference that name.
+	replay := firstParty && (advisor || !hasToolNamed(req.Tools, AdvisorToolName))
+	messages, hasServer = prepareAnthServerBlocks(messages, replay, advisor)
+	if hasServer {
+		out.advisorBeta = true
+	}
 	for _, msg := range messages {
 		renameTools := c.oauthTok != ""
 		switch msg.Role {
@@ -516,6 +544,10 @@ func convertAnthContent(blocks []Content, renameTools bool) []interface{} {
 				Content:   content,
 				IsError:   v.IsError,
 			})
+		case ServerToolBlock:
+			// prepareAnthServerBlocks already removed blocks this client
+			// must not replay; the survivors go out verbatim.
+			out = append(out, v.Raw)
 		}
 	}
 	return out
@@ -603,7 +635,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 			// rate-limits (or outright blocks) the request.
 			httpReq.Header.Set("accept", "application/json")
 			httpReq.Header.Set("authorization", "Bearer "+c.oauthTok)
-			httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14")
+			beta := "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14"
+			if wire.advisorBeta {
+				beta += "," + anthropicAdvisorBeta
+			}
+			httpReq.Header.Set("anthropic-beta", beta)
 			httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
 			httpReq.Header.Set("user-agent", "claude-cli/"+claudeCodeVersion)
 			httpReq.Header.Set("x-app", "cli")
@@ -612,6 +648,9 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 			httpReq.Header.Set("accept", "text/event-stream")
 			if c.apiKey != "" {
 				httpReq.Header.Set("x-api-key", c.apiKey)
+			}
+			if wire.advisorBeta {
+				httpReq.Header.Set("anthropic-beta", anthropicAdvisorBeta)
 			}
 		}
 		// Extra headers (set by anthropic-messages-compatible third parties
@@ -656,7 +695,8 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 	// interleaved order the model emitted them in (text may come
 	// before OR after tool_use; mixing both happens frequently).
 	type blockEntry struct {
-		kind     string // "text" | "tool_use"
+		kind     string // "text" | "tool_use" | "server"
+		server   ServerToolBlock
 		textBuf  strings.Builder
 		toolCall ToolCallBlock
 		toolArgs strings.Builder
@@ -672,7 +712,18 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 		cacheReported bool
 		stop          = StopEnd
 		finalErr      error
+		// iterations is the latest usage.iterations array; advisor
+		// entries add cost but never tokens (top-level usage is
+		// executor-only).
+		iterations []anthUsageIteration
+		// pendingServer holds server_tool_use IDs still awaiting a result,
+		// seeded with calls the request resumes (mixed-turn case).
+		pendingServer = map[string]bool{}
 	)
+	if req.Advisor != nil && c.firstPartyAnthropic() {
+		// Only resumable calls are replayed when the advisor tool is sent.
+		pendingServer = pendingAnthServerUses(req.Messages)
+	}
 	_ = activeIdx // read-only indicator used for legacy parity
 
 	registerBlock := func(idx int, kind string) *blockEntry {
@@ -698,17 +749,27 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				tc := be.toolCall
 				tc.Arguments = normalizeToolArgs(be.toolArgs.String())
 				content = append(content, tc)
+			case "server":
+				content = append(content, be.server)
 			}
 		}
 		return Message{Role: RoleAssistant, Content: content, Time: time.Now()}
 	}
 
 	sendDone := func() {
+		// Top-level usage sums every executor iteration: price it as is,
+		// then report the context size of the last executor iteration so
+		// context gauges and auto-compaction are not inflated.
+		usage.CostUSD = ComputeCost(model, usage) + anthAdvisorIterationsCost(iterations)
+		if last, ok := lastAnthExecutorIteration(iterations); ok {
+			usage.InputTokens = last.InputTokens
+			usage.CacheReadTokens = last.CacheReadInputTokens
+			usage.CacheWriteTokens = last.CacheCreationInputTokens
+		}
 		if cacheReported {
 			usage.CacheMeasuredPromptTokens = usage.PromptTokens()
 			usage.CacheMeasuredReadTokens = usage.CacheReadTokens
 		}
-		usage.CostUSD = ComputeCost(model, usage)
 		out <- EventUsage{Usage: usage}
 		out <- EventDone{Stop: stop, Err: finalErr, Message: assembleMsg()}
 	}
@@ -764,6 +825,17 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					out <- EventToolStart{ID: block.ID, Name: name}
 				case "text":
 					registerBlock(idx, "text")
+				case ServerToolKindUse, ServerToolKindAdvisorResult:
+					if sb, sev, ok := anthServerBlockStart(payload["content_block"]); ok {
+						be := registerBlock(idx, "server")
+						be.server = sb
+						if sb.Kind == ServerToolKindUse {
+							pendingServer[sb.ID] = true
+						} else {
+							delete(pendingServer, sb.ID)
+						}
+						out <- sev
+					}
 				case "thinking":
 					// not surfaced
 				}
@@ -838,13 +910,17 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 						StopReason string `json:"stop_reason"`
 					} `json:"delta"`
 					Usage struct {
-						InputTokens              int  `json:"input_tokens"`
-						OutputTokens             int  `json:"output_tokens"`
-						CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
-						CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+						InputTokens              int                  `json:"input_tokens"`
+						OutputTokens             int                  `json:"output_tokens"`
+						CacheReadInputTokens     *int                 `json:"cache_read_input_tokens"`
+						CacheCreationInputTokens *int                 `json:"cache_creation_input_tokens"`
+						Iterations               []anthUsageIteration `json:"iterations"`
 					} `json:"usage"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &m)
+				if m.Usage.Iterations != nil {
+					iterations = m.Usage.Iterations
+				}
 				// Refresh usage from the latest cumulative totals
 				// Anthropic provides. Only apply non-zero fields in case
 				// a given delta only carries output tokens.
@@ -869,6 +945,17 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					stop = StopLength
 				case "tool_use":
 					stop = StopToolUse
+				case "pause_turn":
+					// A server tool (advisor) is pending; re-send the
+					// assistant message unchanged to resume.
+					stop = StopContinue
+				}
+			case "ping":
+				// A server tool (the advisor) can run for a long time with
+				// only pings on the wire; surface them as activity while
+				// one is pending, never otherwise.
+				if len(pendingServer) > 0 {
+					out <- EventKeepalive{}
 				}
 			case "message_stop":
 				sendDone()

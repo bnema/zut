@@ -52,6 +52,7 @@ type ExperimentalConfig struct {
 // Config is the persisted user configuration.
 type Config struct {
 	Experimental *ExperimentalConfig `json:"experimental,omitempty"`
+	Advisor      *AdvisorConfig      `json:"advisor,omitempty"`
 	Dictation    *DictationSettings  `json:"dictation,omitempty"`
 	Provider     string              `json:"provider"`
 	Model        string              `json:"model"`
@@ -339,6 +340,9 @@ func LoadConfig() (Config, error) {
 		return c, err
 	}
 	if err := validateSubagentConfig(c.Subagents); err != nil {
+		return c, err
+	}
+	if err := validateAdvisorConfig(c.Advisor); err != nil {
 		return c, err
 	}
 	return c, nil

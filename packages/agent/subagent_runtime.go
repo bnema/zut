@@ -369,7 +369,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 			continue
 		}
 		switch name {
-		case tools.SubagentToolName, "update_goal", tools.PlanToolName:
+		case tools.SubagentToolName, "update_goal", tools.PlanToolName, tools.AdvisorToolName:
 			continue
 		}
 		if _, ok := resolved.ToolRegistry[name]; !ok {

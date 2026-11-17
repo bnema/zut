@@ -134,7 +134,7 @@ func TestDeferredToolsFallbackToActiveTopLevelDefinitions(t *testing.T) {
 			}
 			names := make([]string, 0, len(wire.Tools))
 			for _, tool := range wire.Tools {
-				names = append(names, tool.Name)
+				names = append(names, tool.(anthTool).Name)
 			}
 			return names, nil
 		},

@@ -1548,6 +1548,72 @@ func (_c *MockHandle_SessionsQuery_Call) RunAndReturn(run func(ctx context.Conte
 	return _c
 }
 
+// SetAdvisor provides a mock function for the type MockHandle
+func (_mock *MockHandle) SetAdvisor(ctx context.Context, change session.AdvisorChange) (session.AdvisorStatus, error) {
+	ret := _mock.Called(ctx, change)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SetAdvisor")
+	}
+
+	var r0 session.AdvisorStatus
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, session.AdvisorChange) (session.AdvisorStatus, error)); ok {
+		return returnFunc(ctx, change)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, session.AdvisorChange) session.AdvisorStatus); ok {
+		r0 = returnFunc(ctx, change)
+	} else {
+		r0 = ret.Get(0).(session.AdvisorStatus)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, session.AdvisorChange) error); ok {
+		r1 = returnFunc(ctx, change)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockHandle_SetAdvisor_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SetAdvisor'
+type MockHandle_SetAdvisor_Call struct {
+	*mock.Call
+}
+
+// SetAdvisor is a helper method to define mock.On call
+//   - ctx context.Context
+//   - change session.AdvisorChange
+func (_e *MockHandle_Expecter) SetAdvisor(ctx any, change any) *MockHandle_SetAdvisor_Call {
+	return &MockHandle_SetAdvisor_Call{Call: _e.mock.On("SetAdvisor", ctx, change)}
+}
+
+func (_c *MockHandle_SetAdvisor_Call) Run(run func(ctx context.Context, change session.AdvisorChange)) *MockHandle_SetAdvisor_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 session.AdvisorChange
+		if args[1] != nil {
+			arg1 = args[1].(session.AdvisorChange)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHandle_SetAdvisor_Call) Return(advisorStatus session.AdvisorStatus, err error) *MockHandle_SetAdvisor_Call {
+	_c.Call.Return(advisorStatus, err)
+	return _c
+}
+
+func (_c *MockHandle_SetAdvisor_Call) RunAndReturn(run func(ctx context.Context, change session.AdvisorChange) (session.AdvisorStatus, error)) *MockHandle_SetAdvisor_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // SetAttach provides a mock function for the type MockHandle
 func (_mock *MockHandle) SetAttach(ctx context.Context, state session.AttachState, reason string) {
 	_mock.Called(ctx, state, reason)

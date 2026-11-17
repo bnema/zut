@@ -21,6 +21,8 @@ type settingsState struct {
 	// toolsDirty defers a RefreshToolsWhenIdle request until no turn or
 	// compaction runs.
 	toolsDirty bool
+	// advisor caches the persisted advisor status for Info.
+	advisor *AdvisorStatus
 }
 
 func (s *settingsState) snapshotInto(out *Snapshot) { out.Info.Title = s.title }
@@ -219,7 +221,11 @@ func (c *Controller) RequestToolRefresh() {
 
 // flushToolRefresh runs a deferred tool refresh when idle (actor only).
 func (c *Controller) flushToolRefresh() {
-	if !c.settings.toolsDirty || c.isBusy() || c.compact.busy {
+	if c.isBusy() || c.compact.busy {
+		return
+	}
+	c.syncAdvisorStatus()
+	if !c.settings.toolsDirty {
 		return
 	}
 	c.settings.toolsDirty = false

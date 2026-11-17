@@ -261,7 +261,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			break
 		}
 		i.cumUsage = e.Cumulative
-		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {
+		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; !e.External && contextUsed > 0 {
 			i.lastCtxInput = contextUsed
 		}
 	case core.EvTurnRecovery:

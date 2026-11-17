@@ -301,3 +301,9 @@ func OpenAICodexReasoningEffort(level, model string) string {
 		return ""
 	}
 }
+
+// IsReasoningLevel reports whether level is a canonical zut reasoning level
+// as returned by NormalizeReasoning, including "" for off.
+func IsReasoningLevel(level string) bool {
+	return containsReasoningLevel(reasoningLevelOrder, level)
+}

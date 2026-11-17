@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestToEventPreservesCacheDiagnostics(t *testing.T) {
@@ -130,5 +131,38 @@ func TestToEventNestedTools(t *testing.T) {
 		if strings.Contains(string(raw), `"`+field+`"`) {
 			t.Fatalf("optional %s included: %s", field, raw)
 		}
+	}
+}
+
+func TestToEventExternalUsage(t *testing.T) {
+	if toEvent(core.EvUsage{}).External {
+		t.Fatal("model usage marked external")
+	}
+	if !toEvent(core.EvUsage{External: true}).External {
+		t.Fatal("external flag lost")
+	}
+}
+
+func TestToEventServerTool(t *testing.T) {
+	ev := toEvent(core.EvServerTool{ID: "srvtoolu_test1", Name: "advisor", Phase: provider.ServerToolPhaseResult, Text: "advice", ErrorCode: "x", Redacted: true})
+	if ev.Type != "server_tool" || ev.ID != "srvtoolu_test1" || ev.Name != "advisor" || ev.Phase != "result" || ev.Text != "advice" || ev.ErrorCode != "x" || !ev.Redacted {
+		t.Fatalf("event = %+v", ev)
+	}
+	msg := toEvent(core.EvAssistantMessage{Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{
+		provider.ServerToolBlock{Provider: "anthropic", Kind: provider.ServerToolKindAdvisorResult, ID: "srvtoolu_test1", Name: "advisor", Redacted: true, Raw: json.RawMessage(`{"encrypted_content":"ZW5jcnlwdGVk"}`)},
+	}}})
+	if msg.Message == nil || len(msg.Message.Content) != 1 {
+		t.Fatalf("message = %+v", msg.Message)
+	}
+	b := msg.Message.Content[0]
+	if b.Type != "server_tool" || b.Kind != provider.ServerToolKindAdvisorResult || b.ID != "srvtoolu_test1" || !b.Redacted {
+		t.Fatalf("block = %+v", b)
+	}
+	if raw, _ := json.Marshal(msg); strings.Contains(string(raw), "ZW5jcnlwdGVk") {
+		t.Fatalf("raw leaked: %s", raw)
+	}
+	// Older consumers see no new fields on unrelated events.
+	if raw, _ := json.Marshal(toEvent(core.EvToolUseEnd{ID: "c"})); strings.Contains(string(raw), "phase") || strings.Contains(string(raw), "redacted") {
+		t.Fatalf("unexpected fields: %s", raw)
 	}
 }

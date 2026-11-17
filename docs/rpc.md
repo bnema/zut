@@ -210,6 +210,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_use_args` | `id`, `delta` | Partial tool-call argument JSON |
 | `tool_use_end` | `id` | Provider completed the tool-call argument stream |
 | `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
+| `server_tool` | `id`, `name`, `phase`, optional `text`, `error_code`, `redacted` | A provider-executed tool (for example Anthropic's native `advisor`) started (`phase=start`) or returned (`phase=result`). `text` is plaintext advice when the provider exposes it; `redacted: true` means the advice is encrypted. zut never executes these tools |
 | `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
 | `nested_tool_started` | `id`, `parent_id`, `name`, `args` | Experimental event emitted by `codemode` for a nested tool call. Emitted only when execution starts; `args` contains normalized execution arguments after guard rewrites. Nested calls never appear in the transcript; consumers may ignore these events. |
 | `nested_tool_result` | `id`, `parent_id`, `name`, `is_error`, `denied`, optional `summary` | Experimental event emitted by `codemode` once per nested invocation, including calls denied before execution (which have no started event). `summary` concatenates text content, truncated to 200 bytes at a UTF-8 rune boundary; omitted when empty. Nested calls never appear in the transcript; consumers may ignore these events. |
@@ -217,7 +218,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `plan_update` | optional `id`, nullable `explanation`, `plan` | The built-in `plan` tool changed the session checklist. Each plan item has `step` and `status`. `id` is the tool-call id that produced the update; it is omitted when empty. |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
-| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. |
+| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cache_measured_prompt`, `cache_measured_read`, `cost_usd`, `cumulative`, optional `external` | Per-turn + cumulative tokens / cost. Cache ratios use only the measured cache fields; `reasoning` is null when unavailable. `external` is true when a tool such as the advisor spent the tokens: they count toward cost, not context size. |
 | `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end`, `continue`, `tool_use`, `length`, `error`, or `aborted`. `continue` ends one inference, not the logical task: the agent issues another model call in the same turn |
 | `turn_recovery` | `reason`, `attempt` | The turn ended without a final answer, so the agent appended one bounded continuation. `reason` is `missing_answer` or `commentary_only`; `attempt` is always 1 |
 | `done` | (none) | The whole prompt/compact completed (success or error) |
@@ -251,7 +252,10 @@ Used by `get_messages` and inside `user_message` / `assistant_message` events.
 {"type": "image", "mime_type": "image/png", "bytes": 12345}
 {"type": "tool_call", "id": "toolu_xyz", "name": "read", "args": {"path": "..."}}
 {"type": "tool_result", "call_id": "toolu_xyz", "is_error": false, "content": [<content_block>...]}
+{"type": "server_tool", "kind": "advisor_tool_result", "id": "srvtoolu_xyz", "name": "advisor", "redacted": true}
 ```
+
+A `server_tool` block records a provider-executed tool. `kind` is `server_tool_use` or `advisor_tool_result`; results may carry `advisor_text` (plaintext advice), `redacted`, or `error_code`. The provider's opaque payload is never included.
 
 Image bytes are reported as a count rather than embedded base64 to keep transcript dumps small. Tool results may nest text and image blocks.
 

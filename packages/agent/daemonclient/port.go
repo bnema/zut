@@ -649,6 +649,15 @@ func (p *RemotePort) ApplySettings(ctx context.Context, patch session.SettingsPa
 	}{patch}, nil)
 }
 
+// SetAdvisor implements session.Port.
+func (p *RemotePort) SetAdvisor(ctx context.Context, change session.AdvisorChange) (session.AdvisorStatus, error) {
+	var status session.AdvisorStatus
+	err := p.port(ctx, "set_advisor", struct {
+		Advisor session.AdvisorChange `json:"advisor"`
+	}{change}, &status)
+	return status, err
+}
+
 // SetGoal implements session.Port.
 func (p *RemotePort) SetGoal(ctx context.Context, command session.GoalCommand) error {
 	return p.port(ctx, "set_goal", struct {

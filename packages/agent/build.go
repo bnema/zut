@@ -97,6 +97,9 @@ type Resolved struct {
 	systemCustom     string
 	skillAddendum    string
 	toolDescriptions map[string]string
+	// advisorSettings is the advisor config captured at resolve time; the
+	// native/client decision is made against the live executor model.
+	advisorSettings AdvisorSettings
 }
 
 // HasCredential reports whether the resolved configuration can create a client.
@@ -134,7 +137,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		// Web capability and other native names remain reserved even when their
 		// policy excludes the current session. An extension must not turn a
 		// normal CLI opt-out into a differently implemented capability.
-		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "glob" || info.Name == "ast" || info.Name == "python" || info.Name == "codemode" || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.PlanToolName || info.Name == tools.AskUserQuestionToolName {
+		if tools.IsWebCapabilityName(info.Name) || info.Name == "grep" || info.Name == "glob" || info.Name == "ast" || info.Name == "python" || info.Name == "codemode" || info.Name == tools.AdvisorToolName || info.Name == "schedule" || info.Name == tools.UpdateGoalToolName || info.Name == tools.PlanToolName || info.Name == tools.AskUserQuestionToolName {
 			continue
 		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
@@ -607,38 +610,9 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 		repairConfig = true
 	}
 
-	// An explicit auth:"none" custom provider ignores CLI, env, and stored
-	// credentials entirely and never runs a stored api-key command.
-	customCfg, customProvider := provider.CustomProviders()[provName]
-	keylessCustom := customProvider && !isBuiltinProvider(provName) && customCfg.NoAuth
-
-	var (
-		cred      string
-		method    string
-		accountID string
-		credErr   error
-		// hasRealOllamaCred tracks whether ResolveCredentialFull returned a
-		// genuine ollama credential (--api-key, OLLAMA_API_KEY, auth.json).
-		// It drives the cloud-vs-local endpoint default below; the dummy
-		// "ollama" credential never triggers the cloud default.
-		hasRealOllamaCred bool
-	)
-	if keylessCustom {
-		// Explicit keyless configuration takes precedence over CLI, env, and
-		// stored credentials. Never execute a stored API key command.
-		cred, method, accountID, credErr = "", "", "", nil
-	} else if provName == "ollama" {
-		cred, method, accountID, credErr = resolveCredentialFullEnv(context.Background(), provName, args.APIKey, apiKeyCommandExecute, argsGetenv(args))
-		if credErr != nil {
-			// Local ollama needs no key: fall back to the dummy
-			// credential instead of failing resolution.
-			cred, method, accountID, credErr = "ollama", "apikey", "", nil
-		} else {
-			hasRealOllamaCred = true
-		}
-	} else {
-		cred, method, accountID, credErr = resolveCredentialFullEnv(context.Background(), provName, args.APIKey, apiKeyCommandExecute, argsGetenv(args))
-	}
+	ec := resolveEndpointCredential(context.Background(), provName, args.APIKey, argsGetenv(args))
+	cred, method, accountID, credErr := ec.cred, ec.method, ec.accountID, ec.err
+	keylessCustom := ec.keyless
 
 	timer.phase("resolve: credential lookup", "provider", provName)
 	// Persist --api-key for custom providers so subsequent runs don't
@@ -877,59 +851,22 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	discoveredCustom := resolvedModel.Source == "live" && isDiscoverableCustomProvider(provName)
 	explicitBaseURL := args.BaseURL != "" || ((resolvedModel.Source == "user" || discoveredCustom) && resolvedModel.BaseURL != "")
 
-	// If the model defines a base URL (e.g. local ollama) and the
-	// user didn't pass --base-url, use the model's URL. For ollama,
-	// keep http://localhost:11434 as a fallback only after the model
-	// metadata has had a chance to provide a custom baseUrl.
-	if args.BaseURL == "" && resolvedModel.BaseURL != "" {
-		args.BaseURL = resolvedModel.BaseURL
+	ec.cred, ec.err = cred, credErr
+	ep, err := resolveEndpoint(context.Background(), endpointInput{
+		provider:        provName,
+		baseURL:         args.BaseURL,
+		model:           resolvedModel,
+		explicitBaseURL: explicitBaseURL,
+		insecure:        args.InsecureTLS || cfg.Insecure,
+		custom:          customProviderConfig,
+		getenv:          argsGetenv(args),
+	}, &ec)
+	if err != nil {
+		return Resolved{}, err
 	}
-	if args.BaseURL == "" && provName == "ollama" {
-		// A real ollama credential with no explicit endpoint means
-		// Ollama Cloud; without one, stay on the local server.
-		// Explicit --base-url and model-level baseUrl (applied above)
-		// both win over this default.
-		if hasRealOllamaCred {
-			args.BaseURL = provider.OllamaCloudBaseURL
-		} else {
-			args.BaseURL = "http://localhost:11434"
-		}
-	}
-	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
-		managementURL, _, configErr := resolveLlamaCPPConfigEnv(context.Background(), apiKeyCommandExecute, argsGetenv(args))
-		if configErr != nil {
-			return Resolved{}, configErr
-		}
-		var baseErr error
-		args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
-		if baseErr != nil {
-			return Resolved{}, baseErr
-		}
-	}
-
-	// Insecure TLS is intentionally scoped to explicit custom endpoints.
-	// Built-in provider base URLs, auth calls, and model discovery keep normal
-	// certificate verification even when --insecure is present.
-	insecureTLS := (args.InsecureTLS || cfg.Insecure) && explicitBaseURL
-
-	// If the model has a base URL, credentials are optional (local
-	// models like ollama don't need real API keys).
-	credentialOptional := false
-	if keylessCustom {
-		if args.BaseURL == "" {
-			return Resolved{}, fmt.Errorf("custom provider %q has auth none but no base URL", provName)
-		}
-		credentialOptional = true
-		requireCred = false
-	} else if resolvedModel.BaseURL != "" && credErr != nil {
-		if customProviderConfig != nil && !isBuiltinProvider(provName) {
-			// A custom endpoint may be configured for keyless access. Keep the
-			// credential empty so no placeholder token is ever sent.
-			credentialOptional = true
-		} else {
-			cred = "ollama"
-		}
-		credErr = nil
+	args.BaseURL, cred, credErr = ep.baseURL, ec.cred, ec.err
+	insecureTLS, credentialOptional := ep.insecureTLS, ep.credentialOptional
+	if ep.credRelaxed {
 		requireCred = false
 	}
 
@@ -951,6 +888,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	maybeAddPythonTool(reg, args, args.CWD, sandbox, cfg.PythonInterpreter)
 	addMCPTools(reg, args, codemodeToolAllowed(args, cfg) && cfg.CodemodeDeferMCP())
 	maybeAddCodemodeTool(reg, args, args.CWD, sandbox, cfg)
+	maybeAddAdvisorTool(reg, args, cfg)
 	timer.phase("resolve: tool registry", "tools", len(reg))
 
 	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
@@ -1003,6 +941,9 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	}
 	if codemodeAddendum := codemodeSystemAddendum(reg); codemodeAddendum != "" {
 		append_ = append(append_, codemodeAddendum)
+	}
+	if advisorAddendum := advisorSystemAddendum(reg); advisorAddendum != "" {
+		append_ = append(append_, advisorAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
 	primaryInteractive := interactiveMode && !args.ResidentChild
@@ -1099,6 +1040,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 		systemCustom:              custom,
 		skillAddendum:             skillAddendum,
 		toolDescriptions:          descMapFromSummaries(summaries),
+		advisorSettings:           cfg.AdvisorSettings(),
 	}, nil
 }
 
@@ -1428,7 +1370,21 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 
 // NewAgent constructs a core.Agent from r. Requires a credential.
 func (r Resolved) NewAgent() *core.Agent {
-	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
+	// Clone the registry: native mode removes the client tool, and
+	// r.ToolRegistry is shared with callers that may build more agents from
+	// r. The advisor tool is cloned too, because binding it to this agent
+	// must not rebind the shared instance.
+	registry := make(core.Registry, len(r.ToolRegistry))
+	for name, tool := range r.ToolRegistry {
+		if adv, ok := tool.(*tools.AdvisorTool); ok {
+			tool = adv.Clone()
+		}
+		registry[name] = tool
+	}
+	server := applyAdvisorMode(registry, r.advisorSettings, r.Provider, r.Model)
+	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, registry)
+	installServerAdvisor(a, server, r.advisorSettings)
+	bindAdvisorTool(registry, a)
 	a.MaxSteps = r.MaxSteps
 	a.DisableRepetitionGuard = r.DisableRepetitionGuard
 	a.ContextWindow = r.ContextWindow
@@ -1794,4 +1750,126 @@ func envVarName(provider string) string {
 	default:
 		return "ANTHROPIC"
 	}
+}
+
+// endpointCredential is the credential half of provider endpoint resolution.
+type endpointCredential struct {
+	cred, method, accountID string
+	err                     error
+	// keyless marks an explicit auth:"none" custom provider.
+	keyless bool
+	// hasRealOllamaCred tracks whether a genuine ollama credential
+	// (--api-key, OLLAMA_API_KEY, auth.json) was found. It drives the
+	// cloud-vs-local endpoint default; the dummy "ollama" credential never
+	// triggers the cloud default.
+	hasRealOllamaCred bool
+}
+
+// resolveEndpointCredential looks up the credential for provName. An explicit
+// auth:"none" custom provider ignores CLI, env, and stored credentials and
+// never runs a stored api-key command; local ollama falls back to a dummy
+// credential.
+func resolveEndpointCredential(ctx context.Context, provName, apiKey string, getenv func(string) string) endpointCredential {
+	var ec endpointCredential
+	customCfg, customProvider := provider.CustomProviders()[provName]
+	ec.keyless = customProvider && !isBuiltinProvider(provName) && customCfg.NoAuth
+	switch {
+	case ec.keyless:
+	case provName == "ollama":
+		ec.cred, ec.method, ec.accountID, ec.err = resolveCredentialFullEnv(ctx, provName, apiKey, apiKeyCommandExecute, getenv)
+		if ec.err != nil {
+			// Local ollama needs no key: fall back to the dummy
+			// credential instead of failing resolution.
+			ec.cred, ec.method, ec.accountID, ec.err = "ollama", "apikey", "", nil
+		} else {
+			ec.hasRealOllamaCred = true
+		}
+	default:
+		ec.cred, ec.method, ec.accountID, ec.err = resolveCredentialFullEnv(ctx, provName, apiKey, apiKeyCommandExecute, getenv)
+	}
+	return ec
+}
+
+// endpointInput describes the model endpoint to resolve.
+type endpointInput struct {
+	provider string
+	// baseURL is an explicit override (--base-url); empty uses defaults.
+	baseURL         string
+	model           provider.Model
+	explicitBaseURL bool
+	// insecure is the requested --insecure/config value; it applies only to
+	// explicit custom endpoints.
+	insecure bool
+	custom   *provider.CustomProviderConfig
+	getenv   func(string) string
+}
+
+type endpointResult struct {
+	baseURL            string
+	insecureTLS        bool
+	credentialOptional bool
+	// credRelaxed reports that a missing credential is acceptable for this
+	// endpoint (keyless custom provider or model-level base URL).
+	credRelaxed bool
+}
+
+// resolveEndpoint picks the base URL and keyless handling for a resolved
+// model. It may replace ec's credential with the local placeholder or clear
+// its error when the endpoint needs no key.
+func resolveEndpoint(ctx context.Context, in endpointInput, ec *endpointCredential) (endpointResult, error) {
+	out := endpointResult{baseURL: in.baseURL}
+	// If the model defines a base URL (e.g. local ollama) and the user
+	// didn't pass --base-url, use the model's URL. For ollama, keep
+	// http://localhost:11434 as a fallback only after the model metadata has
+	// had a chance to provide a custom baseUrl.
+	if out.baseURL == "" && in.model.BaseURL != "" {
+		out.baseURL = in.model.BaseURL
+	}
+	if out.baseURL == "" && in.provider == "ollama" {
+		// A real ollama credential with no explicit endpoint means Ollama
+		// Cloud; without one, stay on the local server. Explicit --base-url
+		// and model-level baseUrl (applied above) both win over this default.
+		if ec.hasRealOllamaCred {
+			out.baseURL = provider.OllamaCloudBaseURL
+		} else {
+			out.baseURL = "http://localhost:11434"
+		}
+	}
+	if out.baseURL == "" && in.provider == provider.LlamaCPPProviderID {
+		managementURL, _, configErr := resolveLlamaCPPConfigEnv(ctx, apiKeyCommandExecute, in.getenv)
+		if configErr != nil {
+			return endpointResult{}, configErr
+		}
+		var baseErr error
+		out.baseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
+		if baseErr != nil {
+			return endpointResult{}, baseErr
+		}
+	}
+
+	// Insecure TLS is intentionally scoped to explicit custom endpoints.
+	// Built-in provider base URLs, auth calls, and model discovery keep normal
+	// certificate verification even when --insecure is present.
+	out.insecureTLS = in.insecure && in.explicitBaseURL
+
+	// If the model has a base URL, credentials are optional (local models
+	// like ollama don't need real API keys).
+	if ec.keyless {
+		if out.baseURL == "" {
+			return endpointResult{}, fmt.Errorf("custom provider %q has auth none but no base URL", in.provider)
+		}
+		out.credentialOptional = true
+		out.credRelaxed = true
+	} else if in.model.BaseURL != "" && ec.err != nil {
+		if in.custom != nil && !isBuiltinProvider(in.provider) {
+			// A custom endpoint may be configured for keyless access. Keep
+			// the credential empty so no placeholder token is ever sent.
+			out.credentialOptional = true
+		} else {
+			ec.cred = "ollama"
+		}
+		ec.err = nil
+		out.credRelaxed = true
+	}
+	return out, nil
 }

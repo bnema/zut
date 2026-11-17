@@ -131,6 +131,55 @@ type ReasoningBlock struct {
 
 func (ReasoningBlock) isContent() {}
 
+// Server tool block kinds carried by ServerToolBlock.Kind.
+const (
+	ServerToolKindUse           = "server_tool_use"
+	ServerToolKindAdvisorResult = "advisor_tool_result"
+)
+
+// ServerToolBlock is an opaque block produced and executed by a provider's
+// own server-side tool (for example Anthropic's advisor). It is never a
+// ToolCallBlock: the host must not execute, pair, or repair it. Raw is the
+// verbatim wire JSON, replayed only to the producing provider; other
+// providers skip the block when building requests.
+type ServerToolBlock struct {
+	Provider string          `json:"provider"`
+	Kind     string          `json:"kind"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name,omitempty"`
+	Raw      json.RawMessage `json:"raw"`
+	// AdvisorText is the plaintext advice when the provider returned it
+	// unredacted. Encrypted results leave it empty.
+	AdvisorText string `json:"advisor_text,omitempty"`
+	// Redacted reports an encrypted advisor result.
+	Redacted bool `json:"redacted,omitempty"`
+	// ErrorCode is set when the server tool reported a failure.
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+func (ServerToolBlock) isContent() {}
+
+// TranscriptLine renders the block as a short human-readable line for
+// summaries and transcripts. It never includes Raw. A server_tool_use
+// renders as "": its result line carries the outcome.
+func (b ServerToolBlock) TranscriptLine() string {
+	switch b.Kind {
+	case ServerToolKindUse:
+		return ""
+	case ServerToolKindAdvisorResult:
+		switch {
+		case b.ErrorCode != "":
+			return "[advisor consulted] (error: " + b.ErrorCode + ")"
+		case b.AdvisorText != "":
+			return "[advisor consulted] " + b.AdvisorText
+		case b.Redacted:
+			return "[advisor consulted] (advice encrypted)"
+		}
+		return "[advisor consulted]"
+	}
+	return ""
+}
+
 // RepairOrphanedToolResults removes invalid tool_result content blocks
 // and entire messages that become empty. A result is invalid when there
 // is no preceding unmatched tool_use with the same ID in the messages.
@@ -306,6 +355,32 @@ type EventToolEnd struct {
 
 func (EventToolEnd) isEvent() {}
 
+// Server tool event phases.
+const (
+	ServerToolPhaseStart  = "start"
+	ServerToolPhaseResult = "result"
+)
+
+// EventServerTool reports progress of a provider-executed server tool so
+// UIs can display it. It never requires host action.
+type EventServerTool struct {
+	ID        string
+	Name      string
+	Phase     string // ServerToolPhaseStart | ServerToolPhaseResult
+	Text      string // plaintext result, if any
+	ErrorCode string
+	Redacted  bool
+}
+
+func (EventServerTool) isEvent() {}
+
+// EventKeepalive reports stream activity without content (for example an
+// SSE ping while a server tool runs). Consumers only use it to reset idle
+// timers.
+type EventKeepalive struct{}
+
+func (EventKeepalive) isEvent() {}
+
 type EventUsage struct {
 	Usage Usage
 }
@@ -410,9 +485,19 @@ type Request struct {
 	// Lifecycle receives in-memory request-attempt notifications. It is not
 	// included in any provider request payload.
 	Lifecycle RequestLifecycle
+	// Advisor enables a provider-native advisor server tool. Providers
+	// without native support ignore it.
+	Advisor *NativeAdvisor
 	// Context carries the stable logical session and turn identities for this
 	// request. Provider clients own any per-network-attempt identity.
 	Context RequestContext
+}
+
+// NativeAdvisor configures a provider-native advisor sub-inference.
+type NativeAdvisor struct {
+	Model string
+	// MaxTokens caps each advisor call; zero leaves it unset.
+	MaxTokens int
 }
 
 // SystemPrompt returns the stable system prompt plus optional model-only

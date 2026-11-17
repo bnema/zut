@@ -237,7 +237,7 @@ Tool names live in the same namespace as built-in tools (`read`,
 `web_open`, `web_find`, `web_click`, `schedule`, `update_goal`, `plan`, `ask_user_question`,
 `skill`). Conflicts with active built-ins are silently shadowed by the built-in.
 Every native public-web capability name, plus `grep`, `ast`, `python`, `schedule`,
-`update_goal`, `plan`, and `ask_user_question`, is reserved even when it is unavailable, so an
+`update_goal`, `plan`, `ask_user_question`, and `advisor`, is reserved even when it is unavailable, so an
 extension cannot claim or replace it.
 
 Set `"deferred": true` to register a tool without advertising its definition initially. A loader tool can activate registered deferred tools by returning their names in `activate_tools`:

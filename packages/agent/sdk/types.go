@@ -42,8 +42,15 @@ type Event struct {
 	Denied   bool   `json:"denied,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 
-	// tool_progress
+	// tool_progress; server_tool plaintext result
 	Text string `json:"text,omitempty"`
+
+	// server_tool: a provider-executed tool such as the native advisor.
+	// Phase is "start" or "result". ErrorCode is set on failure; Redacted
+	// marks advice the provider returned encrypted.
+	Phase     string `json:"phase,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Redacted  bool   `json:"redacted,omitempty"`
 
 	// tool_result
 	IsError bool           `json:"is_error,omitempty"`
@@ -56,6 +63,9 @@ type Event struct {
 	// usage
 	Usage      *Usage `json:"usage,omitempty"`
 	Cumulative *Usage `json:"cumulative,omitempty"`
+	// External marks usage spent by a tool (for example an advisor model).
+	// It counts toward cost but is not the current context size.
+	External bool `json:"external,omitempty"`
 
 	// cache_diagnostics
 	CacheDiagnostics *CacheDiagnostics `json:"cache_diagnostics,omitempty"`
@@ -95,6 +105,9 @@ type Message struct {
 //   - "image"       → MimeType + Data (or Bytes for size-only)
 //   - "tool_call"   → ID + Name + Args
 //   - "tool_result" → CallID + IsError + Content (recursive)
+//   - "server_tool" → Kind + ID + Name, optional AdvisorText / Redacted /
+//     ErrorCode. The provider's opaque payload is never exposed, so these
+//     blocks are display-only and are not replayed.
 type ContentBlock struct {
 	Type string `json:"type"`
 
@@ -108,6 +121,12 @@ type ContentBlock struct {
 	CallID   string          `json:"call_id,omitempty"`
 	IsError  bool            `json:"is_error,omitempty"`
 	Content  []ContentBlock  `json:"content,omitempty"`
+
+	// server_tool
+	Kind        string `json:"kind,omitempty"`
+	AdvisorText string `json:"advisor_text,omitempty"`
+	Redacted    bool   `json:"redacted,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
 }
 
 // Image is a single user-attached image for Prompt.
@@ -203,6 +222,9 @@ func toEvent(ev core.AgentEvent) Event {
 		out.Delta = e.Delta
 	case core.EvToolUseEnd:
 		out.ID = e.ID
+	case core.EvServerTool:
+		out.ID, out.Name, out.Phase = e.ID, e.Name, e.Phase
+		out.Text, out.ErrorCode, out.Redacted = e.Text, e.ErrorCode, e.Redacted
 	case core.EvToolCall:
 		out.ID = e.ID
 		out.Name = e.Name
@@ -249,6 +271,7 @@ func toEvent(ev core.AgentEvent) Event {
 			CacheMeasuredRead:   e.Usage.CacheMeasuredReadTokens,
 			CostUSD:             e.Usage.CostUSD,
 		}
+		out.External = e.External
 		out.Cumulative = &Usage{
 			Input:               e.Cumulative.InputTokens,
 			Output:              e.Cumulative.OutputTokens,
@@ -293,6 +316,11 @@ func convertContent(blocks []provider.Content) []ContentBlock {
 				CallID:  v.CallID,
 				IsError: v.IsError,
 				Content: convertContent(v.Content),
+			})
+		case provider.ServerToolBlock:
+			out = append(out, ContentBlock{
+				Type: "server_tool", Kind: v.Kind, ID: v.ID, Name: v.Name,
+				AdvisorText: v.AdvisorText, Redacted: v.Redacted, ErrorCode: v.ErrorCode,
 			})
 		}
 	}

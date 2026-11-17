@@ -1869,8 +1869,17 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			}
 			return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
 		}
-		// Discriminate by presence of fields.
+		// Discriminate by presence of fields. ServerToolBlock is checked
+		// first: it carries id/name too and must never become a tool call.
 		switch {
+		case fields["kind"] != nil && fields["raw"] != nil:
+			// An unusable server block is provider-private replay state;
+			// skip it rather than failing the whole session.
+			var sb provider.ServerToolBlock
+			if err := json.Unmarshal(raw, &sb); err != nil || sb.Kind == "" || sb.ID == "" || len(sb.Raw) == 0 {
+				continue
+			}
+			msg.Content = append(msg.Content, sb)
 		case head.ReasoningID != "" || head.Summary != "" || head.Encrypted != "":
 			msg.Content = append(msg.Content, provider.ReasoningBlock{
 				ID:        head.ReasoningID,

@@ -32,7 +32,7 @@ func replayContent(msg Message, providerName, model string) []Content {
 	content := make([]Content, 0, len(msg.Content))
 	for _, block := range msg.Content {
 		switch v := block.(type) {
-		case ReasoningBlock:
+		case ReasoningBlock, ServerToolBlock:
 			continue
 		case TextBlock:
 			v.ThoughtSignature = ""

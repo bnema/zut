@@ -17,8 +17,8 @@ version mismatch prints `daemon is running zut <v>; run "zut daemon restart"`
 and continues. `client_kind` is `tui`, `headless`, `cli`, or `bot`.
 
 ```json
-{"id":"1","type":"hello","protocol_version":2,"client_version":"0.0.0-dev","client_kind":"tui","pid":123}
-{"id":"1","type":"result","ok":true,"data":{"protocol_version":2,"daemon_version":"0.0.0-dev"}}
+{"id":"1","type":"hello","protocol_version":3,"client_version":"0.0.0-dev","client_kind":"tui","pid":123}
+{"id":"1","type":"result","ok":true,"data":{"protocol_version":3,"daemon_version":"0.0.0-dev"}}
 ```
 
 ## Requests
@@ -107,6 +107,19 @@ appended before the prompt by the turn cluster). `ExtInsertEvent.submit` is opti
 when true, the attached client executes the inserted input rather than only
 inserting it into the editor.
 
+`Info.advisor` is the persisted advisor configuration: `enabled`, `model`
+(canonical `provider/model[:reasoning]`, omitted when unset), and `mode`
+(`auto` or `client`). Older daemons omit it. `set_advisor` takes
+`{"advisor":{"model":"provider/model:reasoning"}}` (which also enables the
+advisor) or `{"advisor":{"enabled":false}}`, validates the model and its
+credential, persists the change, refreshes the session tools, and returns the
+resulting status. Enabling without a configured model fails.
+`Info.advisor.effective` is the advisor path in use, `native` or `client`; it
+is omitted until the session builds its agent, or when no advisor applies.
+
+`CreateSpec.no_advisor` (create and fork) disables the advisor for that
+session; `/btw` side chats set it, and forks inherit it.
+
 `Info.profiles` lists the nine model profile slots as `QuickModelShortcut`
 objects (`provider`, `model`, optional `reasoning` and `fast_mode`, matching
 config.json); an entry with empty `provider` and `model` is unassigned. Older
@@ -141,6 +154,7 @@ Clients should tolerate activity kinds they do not recognize.
 | assign_profile | `{"slot":1,"profile":{"provider":"openai","model":"gpt-5","reasoning":"high","fast_mode":true},"activate":true}` | omitted |
 | clear_profile | `{"slot":1}` | omitted |
 | apply_settings | `{"patch":SettingsPatch}` | omitted |
+| set_advisor | `{"advisor":{"model":"provider/model:reasoning","enabled":true}}` (fields optional) | AdvisorStatus (older daemons reply `unsupported port method`) |
 | set_goal | `{"command":{"op":"set","objective":"task"}}` | omitted |
 | change_cwd | `{"path":"/workspace"}` | omitted |
 | set_title | `{"title":"task"}` | omitted |
@@ -301,6 +315,12 @@ changes. Older daemons omit it; a missing value reads as zero, so such clients
 reload on state changes only. The counter restarts at zero when the daemon
 restarts.
 
+Agent kind `server_tool` (`core.EvServerTool`) reports a provider-executed
+tool such as the native advisor, with the fields documented in `docs/rpc.md`.
+Message content may contain `provider.ServerToolBlock` (codec content kind
+`server_tool`); the lossless codec keeps its opaque `Raw` payload so replay
+works, while `modes.EventToJSON` projections omit it.
+
 Unknown agent event kinds are ignorable and still advance the subscription sequence. Protocol version mismatches fail at hello; run `zut daemon restart` after upgrading.
 
-`zut daemon stop` and `zut daemon restart` negotiate the running daemon’s hello version solely to send `daemon_stop`, including protocol-1 daemons. Normal session connections still require the current protocol version. Shutdown waits for the daemon lock to be released before restart.
+`zut daemon stop` and `zut daemon restart` negotiate the running daemon’s hello version solely to send `daemon_stop`, including older-protocol daemons. Normal session connections still require the current protocol version. Shutdown waits for the daemon lock to be released before restart.

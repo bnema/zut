@@ -62,6 +62,13 @@ type ToolResult struct {
 	// pending commit. It is applied to agent state only after CommitToolResult
 	// succeeds.
 	PlanOperation *PlanOperation
+	// Usage reports model usage the tool spent itself (for example the
+	// advisor tool calling another model), with CostUSD already computed.
+	// Core folds it into the cumulative cost only, never into the context
+	// gauge, then clears it. It is never sent to the LLM or persisted in the
+	// tool-result block. Usage is lost when Execute returns an error, so a
+	// tool that spent money must report failure as an IsError result.
+	Usage *provider.Usage `json:"-"`
 }
 
 // Registry is a name->Tool map.

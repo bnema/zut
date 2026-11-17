@@ -71,6 +71,14 @@ type Agent struct {
 	// rejects it for providers that do not support that contract.
 	FastMode bool
 
+	// serverAdvisor is passed through as Request.Advisor on executor turns
+	// only (not compaction or titles). Guarded by mu.
+	serverAdvisor *provider.NativeAdvisor
+	// serverAdvisorFunc, when set, replaces serverAdvisor and is evaluated
+	// on every executor request so hosts can drop a stale native advisor.
+	// Guarded by mu; called without it.
+	serverAdvisorFunc func() *provider.NativeAdvisor
+
 	// ContextWindow is the effective input context capacity retained from
 	// model resolution. Hosts use it for proactive compaction even when the
 	// model was synthesized for an open-catalog provider.
@@ -300,6 +308,54 @@ func (a *Agent) SetFastMode(enabled bool) {
 	a.mu.Lock()
 	a.FastMode = enabled
 	a.mu.Unlock()
+}
+
+// SetServerAdvisor sets or clears (nil) the provider-native advisor sent with
+// every executor request.
+func (a *Agent) SetServerAdvisor(adv *provider.NativeAdvisor) {
+	if adv != nil {
+		c := *adv
+		adv = &c
+	}
+	a.mu.Lock()
+	a.serverAdvisor = adv
+	a.mu.Unlock()
+}
+
+// SetServerAdvisorFunc installs (or clears with nil) a per-request source for
+// the provider-native advisor. When set it takes precedence over
+// SetServerAdvisor for executor requests; compaction and titles never use it.
+func (a *Agent) SetServerAdvisorFunc(f func() *provider.NativeAdvisor) {
+	a.mu.Lock()
+	a.serverAdvisorFunc = f
+	a.mu.Unlock()
+}
+
+// requestServerAdvisor returns the native advisor for one executor request.
+func (a *Agent) requestServerAdvisor() *provider.NativeAdvisor {
+	a.mu.Lock()
+	f := a.serverAdvisorFunc
+	a.mu.Unlock()
+	if f == nil {
+		return a.ServerAdvisor()
+	}
+	adv := f()
+	if adv == nil {
+		return nil
+	}
+	c := *adv
+	return &c
+}
+
+// ServerAdvisor returns a copy of the provider-native advisor, or nil.
+func (a *Agent) ServerAdvisor() *provider.NativeAdvisor {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.serverAdvisor == nil {
+		return nil
+	}
+	c := *a.serverAdvisor
+	return &c
 }
 
 // FastModeEnabled returns the service-tier preference for a model call.
@@ -540,6 +596,15 @@ func (a *Agent) ToolsSnapshot() Registry {
 	return tools
 }
 
+// HasTool reports whether the current registry contains name, without
+// copying the registry.
+func (a *Agent) HasTool(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.Tools[name]
+	return ok
+}
+
 // SetMessages replaces the transcript without changing repetition history.
 // Call ResetRepetitionGuard when replacing it for a new conversation.
 func (a *Agent) SetMessages(msgs []provider.Message) {
@@ -594,6 +659,27 @@ func (a *Agent) addUsage(usage provider.Usage) provider.Usage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.cost.Add(usage)
+}
+
+// foldToolUsage moves usage reported by a tool result into the cumulative
+// cost without touching the context gauge, notifies OnUsage, emits an
+// external EvUsage when sink is set, and clears res.Usage so it is counted
+// exactly once.
+func (a *Agent) foldToolUsage(res *ToolResult, sink func(AgentEvent)) {
+	if res.Usage == nil {
+		return
+	}
+	u := *res.Usage
+	res.Usage = nil
+	a.mu.Lock()
+	cum := a.cost.AddExternal(u)
+	a.mu.Unlock()
+	if sink != nil {
+		sink(EvUsage{Usage: u, Cumulative: cum, External: true})
+	}
+	if a.OnUsage != nil {
+		a.OnUsage(cum)
+	}
 }
 
 // SeedCost sets the cumulative usage as a baseline before the first
@@ -1265,6 +1351,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
 		Lifecycle:   requestLifecycle,
+		Advisor:     a.requestServerAdvisor(),
 		Context:     requestContext,
 	}
 	sink(EvRequestStarted{
@@ -1356,6 +1443,10 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 			sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
 		case provider.EventToolEnd:
 			sink(EvToolUseEnd{ID: e.ID})
+		case provider.EventKeepalive:
+			// Activity only: the idle timer was reset above.
+		case provider.EventServerTool:
+			sink(EvServerTool{ID: e.ID, Name: e.Name, Phase: e.Phase, Text: e.Text, ErrorCode: e.ErrorCode, Redacted: e.Redacted})
 		case provider.EventUsage:
 			cum := a.addUsage(e.Usage)
 			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
@@ -1402,6 +1493,9 @@ streamDone:
 	// partial message already contained tool-call blocks we drop the
 	// whole thing, because an unmatched tool_use would fail the next
 	// turn with a tool_result mismatch error.
+	if stop == provider.StopAborted {
+		finalMsg.Content = dropDanglingServerToolUses(finalMsg.Content)
+	}
 	keep := len(finalMsg.Content) > 0
 	if stop == provider.StopAborted && keep {
 		hasToolCall := false
@@ -1615,12 +1709,13 @@ func (a *Agent) runOneToolWithDispatcher(ctx context.Context, tc provider.ToolCa
 	if tc.ID != "" {
 		inv = &nestedInvoker{agent: a, tools: tools, parent: tc, sink: sink}
 		ctx = withNestedInvoker(ctx, inv)
-
+		ctx = withToolCallID(ctx, tc.ID)
 	}
 	res, _ := a.invokeTool(ctx, tc, tools, invokeHooks{
 		started:  func(json.RawMessage) { sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name}) },
 		progress: func(text string) { sink(EvToolProgress{ID: tc.ID, Text: text}) },
 	})
+	a.foldToolUsage(&res, sink)
 	if inv != nil {
 		inv.close()
 	}
@@ -1719,6 +1814,36 @@ func replaceText(msg provider.Message, replacement string) provider.Message {
 	}
 	if !replaced {
 		out.Content = append(out.Content, provider.TextBlock{Text: replacement})
+	}
+	return out
+}
+
+// dropDanglingServerToolUses removes server tool calls that have no result in
+// the same content. An aborted partial must not persist one: the provider
+// rejects a pending server call that is not resumed immediately.
+func dropDanglingServerToolUses(content []provider.Content) []provider.Content {
+	answered := map[string]bool{}
+	dangling := false
+	for _, c := range content {
+		if b, ok := c.(provider.ServerToolBlock); ok && b.Kind != provider.ServerToolKindUse {
+			answered[b.ID] = true
+		}
+	}
+	for _, c := range content {
+		if b, ok := c.(provider.ServerToolBlock); ok && b.Kind == provider.ServerToolKindUse && !answered[b.ID] {
+			dangling = true
+			break
+		}
+	}
+	if !dangling {
+		return content
+	}
+	out := make([]provider.Content, 0, len(content))
+	for _, c := range content {
+		if b, ok := c.(provider.ServerToolBlock); ok && b.Kind == provider.ServerToolKindUse && !answered[b.ID] {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }

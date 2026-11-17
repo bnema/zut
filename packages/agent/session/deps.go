@@ -115,6 +115,14 @@ type SettingsStore interface {
 	SetTheme(name string) error
 }
 
+// AdvisorStore validates and persists the advisor configuration.
+type AdvisorStore interface {
+	AdvisorStatus() (AdvisorStatus, error)
+	// SetAdvisor validates change (model spec, credential), persists it and
+	// returns the resulting status.
+	SetAdvisor(change AdvisorChange) (AdvisorStatus, error)
+}
+
 // ConfirmGate is the existing confirmation gate boundary.
 type ConfirmGate interface {
 	Check(string, string) (bool, string, json.RawMessage)
@@ -171,6 +179,7 @@ type Deps struct {
 	ResidentManager                                                ResidentHost
 	ConfirmGate                                                    ConfirmGate
 	SettingsStore                                                  SettingsStore
+	Advisor                                                        AdvisorStore
 	AuthManager                                                    *auth.Manager
 	Directory                                                      Directory
 	Scheduler                                                      ScheduleHost

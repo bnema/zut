@@ -397,6 +397,14 @@ func buildTimelineEntries(data timelineData) []timelineEntry {
 					Time: message.Time, Payload: block.Summary,
 				})
 			}
+			if block, ok := content.(provider.ServerToolBlock); ok {
+				if line := block.TranscriptLine(); line != "" {
+					entries = append(entries, timelineEntry{
+						Kind: "advisor", Turn: turn, Label: "ADVISOR", Summary: firstTimelineLine(line),
+						Time: message.Time, Payload: line, IsError: block.ErrorCode != "",
+					})
+				}
+			}
 		}
 		textParts := timelineMessageText(message)
 		if len(textParts) > 0 {
@@ -474,6 +482,11 @@ func timelineMessagePayload(message provider.Message) any {
 			blocks = append(blocks, map[string]any{"type": "text", "text": block.Text})
 		case provider.ReasoningBlock:
 			blocks = append(blocks, map[string]any{"type": "reasoning", "summary": block.Summary})
+		case provider.ServerToolBlock:
+			// Raw is provider-private; show only the readable outcome.
+			if line := block.TranscriptLine(); line != "" {
+				blocks = append(blocks, map[string]any{"type": "server_tool", "summary": line})
+			}
 		case provider.ImageBlock:
 			blocks = append(blocks, map[string]any{"type": "image", "mime_type": block.MimeType, "bytes": len(block.Data)})
 		}
@@ -753,6 +766,8 @@ func estimateTimelineMessageTokens(messages []provider.Message) int {
 				// Sizes only: the encrypted payload is counted toward the
 				// estimate but never displayed.
 				bytes += len(block.Summary) + len(block.Encrypted)
+			case provider.ServerToolBlock:
+				bytes += len(block.Raw)
 			case provider.ImageBlock:
 				// JSON transports image bytes as base64, which expands by roughly 4/3.
 				bytes += (len(block.Data)*4 + 2) / 3

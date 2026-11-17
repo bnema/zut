@@ -146,6 +146,8 @@ func enrich(v reflect.Value, raw json.RawMessage) (json.RawMessage, error) {
 				kind = "tool_result"
 			case provider.ReasoningBlock:
 				kind = "reasoning"
+			case provider.ServerToolBlock:
+				kind = "server_tool"
 			default:
 				return nil, fmt.Errorf("unsupported content %T", c)
 			}
@@ -294,6 +296,8 @@ func hydrate(raw json.RawMessage, v reflect.Value) error {
 			c = provider.ToolResultBlock{}
 		case "reasoning":
 			c = provider.ReasoningBlock{}
+		case "server_tool":
+			c = provider.ServerToolBlock{}
 		default:
 			return fmt.Errorf("unknown content kind %q", h.Kind)
 		}

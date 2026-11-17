@@ -168,6 +168,7 @@ func NewControllerWithOptions(ctx context.Context, deps Deps, opts Options) *Con
 	c.residentSeam.residentsInit()
 	c.initConfirm()
 	c.initProfiles()
+	c.initAdvisor()
 	c.updateInfo()
 	go func() {
 		defer close(c.done)
@@ -293,6 +294,11 @@ func (c *Controller) updateInfo() {
 	if c.deps.FastMode != nil {
 		info.FastMode = *c.deps.FastMode
 	}
+	if a := c.settings.advisor; a != nil {
+		status := *a
+		status.Effective = advisorEffective(c.turn.agent, status)
+		info.Advisor = &status
+	}
 	if c.turnSeam != nil {
 		info.CurrentOrigin = c.turnSeam.turnOrigin()
 		projection := c.turnSeam.turnInfo()
@@ -332,6 +338,10 @@ func (c *Controller) Info() Info {
 	info := c.info.Load().(Info)
 	info.Residents = append([]ResidentSummary(nil), info.Residents...)
 	info.Profiles = append([]QuickModelShortcut(nil), info.Profiles...)
+	if info.Advisor != nil {
+		advisor := *info.Advisor
+		info.Advisor = &advisor
+	}
 	if info.Goal != nil {
 		goal := *info.Goal
 		info.Goal = &goal

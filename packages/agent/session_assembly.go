@@ -77,6 +77,7 @@ func newSessionDepsTimed(ctx context.Context, spec session.CreateSpec, version s
 		return session.Deps{}, nil, "", errors.New("resume requires a session id or ResumePath; pick on the client")
 	}
 	applyZutfileSpec(&args, spec.Zutfile)
+	args.NoAdvisor = spec.NoAdvisor
 	timer.phase("parse args")
 
 	a := &sessionAssembly{args: args, version: version, bind: newSessionBindings(), timer: timer, mcpPool: pool}
@@ -408,6 +409,17 @@ func (a *sessionAssembly) prepareResolvedRegistry(reg core.Registry, policy suba
 	a.runtime.PrepareResolvedRegistry(reg, policy)
 }
 
+// confirmationExempt names tools that never ask for per-call confirmation:
+// ask_user_question and sessions are user-facing already, and the advisor was
+// explicitly enabled by the user through config or /advisor.
+func confirmationExempt(name string) bool {
+	switch name {
+	case tools.AskUserQuestionToolName, tools.SessionsToolName, tools.AdvisorToolName:
+		return true
+	}
+	return false
+}
+
 // wireAgentExt mirrors runInteractive's extension and confirmation hooks.
 func (a *sessionAssembly) wireAgentExt(ctx context.Context, ag *core.Agent) *core.Agent {
 	if ag == nil {
@@ -423,7 +435,7 @@ func (a *sessionAssembly) wireAgentExt(ctx context.Context, ag *core.Agent) *cor
 		if len(r.ModifiedArgs) > 0 && json.Valid(r.ModifiedArgs) {
 			effectiveArgs = r.ModifiedArgs
 		}
-		if noYolo && call.Name != tools.AskUserQuestionToolName && call.Name != tools.SessionsToolName {
+		if noYolo && !confirmationExempt(call.Name) {
 			var content strings.Builder
 			_, currentTools := ag.PromptConfig()
 			key := confirmationKeyFor(currentTools, call.Name, effectiveArgs)
@@ -652,6 +664,7 @@ func (a *sessionAssembly) deps() session.Deps {
 		Extensions:                        &sessionExtensionHost{Manager: a.extMgr, bind: a.bind},
 		ConfirmGate:                       a.gate,
 		SettingsStore:                     configSettingsStore{},
+		Advisor:                           advisorSettingsStore{getenv: argsGetenv(a.args)},
 		AuthManager:                       a.authMgr,
 		Logger:                            slog.New(slog.DiscardHandler),
 		Env:                               append([]string{}, a.args.Env...),
@@ -1373,6 +1386,7 @@ var (
 	_ session.ResidentHost                = (*subagents.ResidentManager)(nil)
 	_ session.ConfirmGate                 = (*core.ConfirmGate)(nil)
 	_ session.SettingsStore               = configSettingsStore{}
+	_ session.AdvisorStore                = advisorSettingsStore{}
 	_ extensions.HostHooks                = (*lateHostHooks)(nil)
 	_ extensions.InteractiveToolHostHooks = (*lateHostHooks)(nil)
 	_ extensions.AlertHostHooks           = (*lateHostHooks)(nil)

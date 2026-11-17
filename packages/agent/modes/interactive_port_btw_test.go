@@ -15,7 +15,7 @@ import (
 )
 
 func btwForkSpec(upTo int) session.CreateSpec {
-	return session.CreateSpec{CWD: "/w", Fork: &session.ForkSpec{ParentPath: "/w/s1.jsonl", UpToMessage: upTo}, Headless: true}
+	return session.CreateSpec{CWD: "/w", Fork: &session.ForkSpec{ParentPath: "/w/s1.jsonl", UpToMessage: upTo}, Headless: true, NoAdvisor: true}
 }
 
 func btwRendered(r *sessionsRun) string {

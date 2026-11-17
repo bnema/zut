@@ -165,6 +165,22 @@ type EvToolUseEnd struct {
 
 func (EvToolUseEnd) Type() string { return "tool_use_end" }
 
+// EvServerTool reports a provider-executed server tool (for example the
+// native advisor). Phase is provider.ServerToolPhaseStart or
+// provider.ServerToolPhaseResult. Text is plaintext advice when the
+// provider returned it; Redacted marks encrypted advice. The host never
+// executes server tools.
+type EvServerTool struct {
+	ID        string
+	Name      string
+	Phase     string
+	Text      string `json:",omitempty"`
+	ErrorCode string `json:",omitempty"`
+	Redacted  bool   `json:",omitempty"`
+}
+
+func (EvServerTool) Type() string { return "server_tool" }
+
 type EvToolProgress struct {
 	ID   string
 	Text string
@@ -213,6 +229,10 @@ func (EvToolResult) Type() string { return "tool_result" }
 type EvUsage struct {
 	Usage      provider.Usage
 	Cumulative provider.Usage
+	// External marks usage spent by a tool rather than by the executor's
+	// model turn. It updates cost totals but must not be treated as the
+	// current context size.
+	External bool `json:",omitempty"`
 }
 
 func (EvUsage) Type() string { return "usage" }

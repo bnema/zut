@@ -690,7 +690,11 @@ func (d *btwDialog) submitRemoteLocked(rem *btwRemote, question string, invalida
 }
 
 func newBtwAgent(main *core.Agent, system, model, origin string) *core.Agent {
-	agent := core.NewAgent(main.Client, model, system, main.ToolsSnapshot())
+	registry := main.ToolsSnapshot()
+	// The advisor is bound to the main agent and would forward the main
+	// transcript instead of this side chat.
+	delete(registry, tools.AdvisorToolName)
+	agent := core.NewAgent(main.Client, model, system, registry)
 	agent.MaxSteps = main.MaxSteps
 	agent.DisableRepetitionGuard = main.DisableRepetitionGuard
 	agent.Reasoning = main.Reasoning
