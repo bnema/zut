@@ -322,7 +322,7 @@ report cache detail. Cache writes remain separate from that hit rate. Provider
 retention and eviction, request routing, and OpenAI's 1,024-token eligibility
 minimum can still produce a miss even when the stable prefix is unchanged.
 
-On the official public OpenAI Responses endpoint, GPT-5.6 and GPT-6 Astra
+On the official public OpenAI Responses endpoint, GPT-5.6 and GPT-6.x
 requests include an explicit cache breakpoint after the stable instruction/tool
 prefix while retaining implicit caching for conversation history. The Codex
 subscription route and custom Responses endpoints do not receive these explicit

@@ -43,43 +43,31 @@ func TestAstraReleasedMetadata(t *testing.T) {
 	}
 }
 
-func TestGPT61SolFamilyCapabilities(t *testing.T) {
-	for _, name := range []string{"openai", "openai-codex"} {
-		m, err := FindModel(name, "gpt-6.1-sol")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if m.Speculative || !slices.Contains(AvailableReasoningLevels(m), "max") || ClampReasoningForModel(m, "max") != "max" {
-			t.Fatalf("%s: native max unavailable: %+v", name, m)
-		}
-		if m.PriceTierInputTokens != 272000 || m.PriceInputAbove != 4 || m.PriceOutputAbove != 15 || m.PriceCacheReadAbove != 0.2 || m.PriceCacheWriteAbove != 5 {
-			t.Fatalf("%s: long-context rates: %+v", name, m)
-		}
-	}
-	if OpenAICodexReasoningEffort("max", "gpt-6.1-sol") != "max" || !supportsOpenAIExplicitPromptCache("gpt-6.1-sol") {
-		t.Fatal("gpt-6.1-sol must share GPT-6 max reasoning and explicit prompt caching")
-	}
-}
-
-func TestGPT62FamilyCapabilities(t *testing.T) {
+func TestGPT6xFamilyCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		id                                  string
 		inAbove, outAbove, crAbove, cwAbove float64
 	}{
+		{"gpt-6.1-sol", 4, 15, 0.2, 5},
 		{"gpt-6.2-astra", 16, 60, 0.8, 20},
 		{"gpt-6.2-sol", 4, 15, 0.2, 5},
 	} {
 		for _, name := range []string{"openai", "openai-codex"} {
-			m, err := FindModel(name, tc.id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if m.Speculative || !slices.Contains(AvailableReasoningLevels(m), "max") || ClampReasoningForModel(m, "max") != "max" {
-				t.Fatalf("%s/%s: native max unavailable: %+v", name, tc.id, m)
-			}
-			if m.PriceTierInputTokens != 272000 || m.PriceInputAbove != tc.inAbove || m.PriceOutputAbove != tc.outAbove || m.PriceCacheReadAbove != tc.crAbove || m.PriceCacheWriteAbove != tc.cwAbove {
-				t.Fatalf("%s/%s: long-context rates: %+v", name, tc.id, m)
-			}
+			t.Run(name+"/"+tc.id, func(t *testing.T) {
+				m, err := FindModel(name, tc.id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name == "openai" && m.API != APIResponses {
+					t.Fatalf("API = %q, want %q", m.API, APIResponses)
+				}
+				if m.Speculative || !slices.Contains(AvailableReasoningLevels(m), "max") || ClampReasoningForModel(m, "max") != "max" {
+					t.Fatalf("native max unavailable: %+v", m)
+				}
+				if m.PriceTierInputTokens != 272000 || m.PriceInputAbove != tc.inAbove || m.PriceOutputAbove != tc.outAbove || m.PriceCacheReadAbove != tc.crAbove || m.PriceCacheWriteAbove != tc.cwAbove {
+					t.Fatalf("long-context rates: %+v", m)
+				}
+			})
 		}
 		if OpenAICodexReasoningEffort("max", tc.id) != "max" || !supportsOpenAIExplicitPromptCache(tc.id) {
 			t.Fatalf("%s must share GPT-6 max reasoning and explicit prompt caching", tc.id)
