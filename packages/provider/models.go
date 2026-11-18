@@ -411,6 +411,20 @@ var Catalog = []Model{
 		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
 	},
 	{
+		Provider: "openai", ID: "gpt-6.2-astra", DisplayName: "GPT-6.2 Astra", API: APIResponses,
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 8, PriceOutput: 40, PriceCacheRead: 0.4, PriceCacheWrite: 10,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      16, PriceOutputAbove: 60, PriceCacheReadAbove: 0.8, PriceCacheWriteAbove: 20,
+	},
+	{
+		Provider: "openai", ID: "gpt-6.2-sol", DisplayName: "GPT-6.2 Sol", API: APIResponses,
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
+	},
+	{
 		Provider: "openai", ID: "gpt-6-sol", DisplayName: "GPT-6 Sol", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
@@ -483,6 +497,20 @@ var Catalog = []Model{
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol",
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
+	},
+	{
+		Provider: "openai-codex", ID: "gpt-6.2-astra", DisplayName: "GPT-6.2 Astra",
+		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 8, PriceOutput: 40, PriceCacheRead: 0.4, PriceCacheWrite: 10,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      16, PriceOutputAbove: 60, PriceCacheReadAbove: 0.8, PriceCacheWriteAbove: 20,
+	},
+	{
+		Provider: "openai-codex", ID: "gpt-6.2-sol", DisplayName: "GPT-6.2 Sol",
 		ContextWindow: openAIContextWindowTarget, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
 		PriceTierInputTokens: 272000,

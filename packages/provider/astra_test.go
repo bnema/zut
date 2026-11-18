@@ -61,6 +61,32 @@ func TestGPT61SolFamilyCapabilities(t *testing.T) {
 	}
 }
 
+func TestGPT62FamilyCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		id                                  string
+		inAbove, outAbove, crAbove, cwAbove float64
+	}{
+		{"gpt-6.2-astra", 16, 60, 0.8, 20},
+		{"gpt-6.2-sol", 4, 15, 0.2, 5},
+	} {
+		for _, name := range []string{"openai", "openai-codex"} {
+			m, err := FindModel(name, tc.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Speculative || !slices.Contains(AvailableReasoningLevels(m), "max") || ClampReasoningForModel(m, "max") != "max" {
+				t.Fatalf("%s/%s: native max unavailable: %+v", name, tc.id, m)
+			}
+			if m.PriceTierInputTokens != 272000 || m.PriceInputAbove != tc.inAbove || m.PriceOutputAbove != tc.outAbove || m.PriceCacheReadAbove != tc.crAbove || m.PriceCacheWriteAbove != tc.cwAbove {
+				t.Fatalf("%s/%s: long-context rates: %+v", name, tc.id, m)
+			}
+		}
+		if OpenAICodexReasoningEffort("max", tc.id) != "max" || !supportsOpenAIExplicitPromptCache(tc.id) {
+			t.Fatalf("%s must share GPT-6 max reasoning and explicit prompt caching", tc.id)
+		}
+	}
+}
+
 func TestAstraResponsesCapabilities(t *testing.T) {
 	public := NewOpenAIResponsesNamed("synthetic-token", "", "openai").(*renamedClient).inner.(*responsesWebSocketClient).http
 	custom := NewOpenAIResponsesNamed("synthetic-token", "https://example.com/v1/responses", "openai").(*renamedClient).inner.(*codexClient)
