@@ -11,21 +11,26 @@ import (
 
 // extractCopyText selects the last quote or fenced code block in source order.
 // Blocks are scanned as units so quote markers inside code remain literal.
+// Extracted blocks use "\n" line endings; /copy all keeps the raw bytes.
 func extractCopyText(markdown string, all bool) (text string, kind string) {
 	text, kind = markdown, "message"
 	if all {
 		return
 	}
-	lines := strings.Split(markdown, "\n")
+	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
 	for n := 0; n < len(lines); {
-		line := strings.TrimLeft(lines[n], " ")
+		line, ok := trimBlockIndent(lines[n])
+		if !ok {
+			n++
+			continue
+		}
 		if marker, size := copyFence(line); size >= 3 {
 			start := n + 1
 			n++
 			for n < len(lines) {
-				closer := strings.TrimSpace(lines[n])
+				closer, ok := trimBlockIndent(lines[n])
 				m, count := copyFence(closer)
-				if m == marker && count >= size && strings.TrimSpace(closer[count:]) == "" {
+				if ok && m == marker && count >= size && strings.TrimSpace(closer[count:]) == "" {
 					break
 				}
 				n++
@@ -37,8 +42,8 @@ func extractCopyText(markdown string, all bool) (text string, kind string) {
 		} else if strings.HasPrefix(line, ">") {
 			var quote []string
 			for n < len(lines) {
-				line = strings.TrimLeft(lines[n], " ")
-				if !strings.HasPrefix(line, ">") {
+				line, ok = trimBlockIndent(lines[n])
+				if !ok || !strings.HasPrefix(line, ">") {
 					break
 				}
 				quote = append(quote, strings.TrimPrefix(line[1:], " "))
@@ -50,6 +55,13 @@ func extractCopyText(markdown string, all bool) (text string, kind string) {
 		}
 	}
 	return
+}
+
+// trimBlockIndent strips up to three leading spaces, the Markdown limit for
+// fences and quote markers. Deeper indentation is literal content.
+func trimBlockIndent(line string) (string, bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	return trimmed, len(line)-len(trimmed) <= 3
 }
 
 func copyFence(line string) (byte, int) {
@@ -74,7 +86,10 @@ func lastAssistantCopyText(messages []provider.Message) (string, bool) {
 				text.WriteString(block.Text)
 			}
 		}
-		return text.String(), true
+		// Tool-call-only assistant turns carry no text; keep looking.
+		if text.Len() > 0 {
+			return text.String(), true
+		}
 	}
 	return "", false
 }

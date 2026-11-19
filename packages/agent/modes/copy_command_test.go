@@ -3,10 +3,9 @@ package modes
 import (
 	"context"
 	"encoding/base64"
-
-	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -27,6 +26,10 @@ func TestExtractCopyText(t *testing.T) {
 		{"long fence", "````md\n```\n````", false, "```", "code block"},
 		{"tilde fence", "~~~\ncode\n~~~", false, "code", "code block"},
 		{"unfinished fence", "```\ncode", false, "code", "code block"},
+		{"indented fence is code", "```\n    ```\n> literal\n```", false, "    ```\n> literal", "code block"},
+		{"crlf quote", "> first\r\n> second\r\nend", false, "first\nsecond", "quote block"},
+		{"crlf code", "```\r\ncode\r\n```\r\n", false, "code", "code block"},
+		{"crlf all keeps bytes", "> a\r\n", true, "> a\r\n", "message"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			text, kind := extractCopyText(tt.markdown, tt.all)
@@ -45,6 +48,10 @@ func TestLastAssistantCopyText(t *testing.T) {
 	}
 	if text, ok := lastAssistantCopyText(messages); !ok || text != "> raw markdown" {
 		t.Fatalf("got %q, %v", text, ok)
+	}
+	withToolCall := append(messages, provider.Message{Role: provider.RoleAssistant})
+	if text, ok := lastAssistantCopyText(withToolCall); !ok || text != "> raw markdown" {
+		t.Fatalf("text-less assistant turn: got %q, %v", text, ok)
 	}
 	if _, ok := lastAssistantCopyText(messages[2:]); ok {
 		t.Fatal("found an assistant in user-only transcript")
