@@ -31,6 +31,33 @@ func TestRenderMarkdownTableWrapsToWidth(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownBlockquoteBareSeparator(t *testing.T) {
+	in := strings.Join([]string{
+		"> First paragraph.",
+		">",
+		"> Second paragraph.",
+		">   ",
+		">Third paragraph.",
+	}, "\n")
+	plain := stripANSI(RenderMarkdown(in, Dark, 80))
+	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	want := []string{
+		"┃ First paragraph.",
+		"┃",
+		"┃ Second paragraph.",
+		"┃",
+		"┃ Third paragraph.",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), len(want), plain)
+	}
+	for i := range want {
+		if strings.TrimRight(lines[i], " ") != want[i] {
+			t.Fatalf("line %d = %q, want %q\n%s", i, lines[i], want[i], plain)
+		}
+	}
+}
+
 func TestRenderMarkdownTableAlignsColumns(t *testing.T) {
 	in := strings.Join([]string{
 		"| Tool | Core-Sprache | Runtime/Distribution |",

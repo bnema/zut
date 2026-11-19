@@ -133,8 +133,14 @@ func renderMarkdownRaw(lines []string, th Theme, width int, boundary func(line, 
 			continue
 		}
 		// Blockquote.
-		if strings.HasPrefix(trim, "> ") {
-			body := strings.TrimPrefix(trim, "> ")
+		// A bare ">" separates paragraphs inside one quote; render it
+		// as an empty quoted line instead of a literal ">".
+		if strings.HasPrefix(trim, ">") {
+			body := strings.TrimSpace(strings.TrimPrefix(trim, ">"))
+			if body == "" {
+				out.WriteString(th.FGColor(th.Muted, "┃") + "\n")
+				continue
+			}
 			out.WriteString(th.FGColor(th.Muted, "┃ ") + renderInline(body, th) + "\n")
 			continue
 		}
