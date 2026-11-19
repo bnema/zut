@@ -72,6 +72,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
 	{Name: "/settings", Desc: "open settings"},
+	{Name: "/copy", Desc: "copy the last assistant quote/code block (or /copy all)"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/detach", Desc: "detach from the daemon session (keeps it running)"},
 	{Name: "/exit", Desc: "exit zut"},

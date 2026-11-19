@@ -492,6 +492,7 @@ TUI and messaging commands ignore name case, not argument case. Type `/` in the 
 | `/reload-ext` | Re-read extension manifests, respawn subprocesses, and rebuild the tool registry. |
 | `/telegram` | Manage the Telegram bridge (alias `/tg`). |
 | `/settings` | Change persistent settings. |
+| `/copy [all]` | Copy the last blockquote or fenced code block of the last reply, without `>` markers or fences (the whole reply if it has neither). `/copy all` copies the whole raw Markdown. Uses OSC 52 when supported, otherwise the system clipboard. |
 | `/clear` | Clear the transcript. |
 | `/detach` | Leave the TUI with the daemon session running for `zut attach <id>`. |
 | `/exit` | Close the daemon session and exit zut. |

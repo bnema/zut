@@ -226,6 +226,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		if i.port != nil {
 			return i.portDetach()
 		}
+	case "/copy":
+		i.runCopy(ctx, parts[1:])
 	case "/clear":
 		if i.port != nil {
 			i.portClear(ctx)
