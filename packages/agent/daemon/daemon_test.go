@@ -47,9 +47,12 @@ func newTestSession(t *testing.T, id string) *testSession {
 		info:       session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
 		done:       make(chan struct{}),
 		subscribed: make(chan struct{}, 1),
-		closes:     make(chan string, 4),
-		attach:     make(chan session.AttachState, 16),
-		inputs:     make(chan session.Input, 4),
+		// closes and attach are read in order by tests, so sends must not be
+		// dropped; they also must not block shutdown. Each test drives a few
+		// attach/close operations per session, far below these bounds.
+		closes: make(chan string, 16),
+		attach: make(chan session.AttachState, 64),
+		inputs: make(chan session.Input, 4),
 	}
 	s.idle.Store(true)
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
@@ -82,9 +85,13 @@ func newTestSession(t *testing.T, id string) *testSession {
 		s.once.Do(func() { close(s.done) })
 		return nil
 	}).Maybe()
-	s.h.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, in session.Input) error {
-		s.inputs <- in
-		return nil
+	s.h.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, in session.Input) error {
+		select {
+		case s.inputs <- in:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}).Maybe()
 	return s
 }

@@ -42,8 +42,12 @@ func rateLimitedAgent(t *testing.T) *core.Agent {
 func promptAgent(t *testing.T, prompts chan<- string) *core.Agent {
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
-	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
-		prompts <- lastUserText(req)
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	})
 	return core.NewAgent(client, "new", "", nil)
@@ -197,12 +201,16 @@ func TestSubmitAfterAbortedRescueRunsQueueInOrder(t *testing.T) {
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
 	calls := 0
-	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 		calls++
 		if calls == 1 {
 			return nil, errors.New("http 503 service unavailable")
 		}
-		prompts <- lastUserText(req)
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	})
 	ag := core.NewAgent(client, "model", "", nil)
@@ -247,12 +255,16 @@ func TestFailedRescueWithQueuedInputReportsOnce(t *testing.T) {
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
 	calls := 0
-	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 		calls++
 		if calls == 1 {
 			return nil, errors.New("http 429: rate limit")
 		}
-		prompts <- lastUserText(req)
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	}).Twice()
 	ag := core.NewAgent(client, "old", "", nil)
@@ -276,12 +288,16 @@ func TestDeclinedTurnRescueKeepsOriginalErrorAndDrainsQueue(t *testing.T) {
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
 	calls := 0
-	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
 		calls++
 		if calls == 1 {
 			return nil, errors.New("http 429: rate limit")
 		}
-		prompts <- lastUserText(req)
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	}).Twice()
 	ag := core.NewAgent(client, "old", "", nil)
