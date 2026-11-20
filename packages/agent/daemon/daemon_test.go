@@ -1009,7 +1009,13 @@ func TestDirectoryStuckTargetDoesNotBlockOthers(t *testing.T) {
 	stuck.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Maybe()
 	stuck.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, string) error { close(stuckDone); return nil }).Maybe()
 	stuck.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ session.Input) error {
-		stuckIn <- struct{}{}
+		// After shutdown cancels ctx the worker may still pick queued inputs;
+		// never block it on a full stuckIn.
+		select {
+		case stuckIn <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		select {
 		case <-release:
 		case <-ctx.Done():
