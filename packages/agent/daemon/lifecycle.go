@@ -245,7 +245,14 @@ func (d *Daemon) shutdown() {
 func (d *Daemon) isStopping() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.stopping || d.ctx == nil
+	return d.stoppingLocked()
+}
+
+// stoppingLocked reports whether the daemon refuses new work. Run cancels
+// d.ctx before shutdown sets d.stopping, so a canceled context counts too.
+// d.mu must be held.
+func (d *Daemon) stoppingLocked() bool {
+	return d.ctx == nil || d.stopping || d.ctx.Err() != nil
 }
 
 // cleanupPreviousSessions removes metadata owned only by previous daemon sessions.
@@ -702,7 +709,7 @@ func (d *Daemon) acceptLoop(ctx context.Context, ln net.Listener) {
 
 // logDisconnect records connection loss, but not connections closed by shutdown.
 func (c *client) logDisconnect(err error) {
-	if c.d.isStopping() || c.d.ctx.Err() != nil {
+	if c.d.isStopping() {
 		return
 	}
 	reason := "error"

@@ -82,7 +82,7 @@ func (d *Daemon) enqueueDelivery(ctx context.Context, dst *entry, in session.Inp
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.stopping || d.ctx == nil || d.reg[dst.id] != dst {
+	if d.stoppingLocked() || d.reg[dst.id] != dst {
 		return fmt.Errorf("target %s: %w", dst.id, ErrUnknownSession)
 	}
 	select {

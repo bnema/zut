@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -343,15 +342,12 @@ func TestBotStartRacingShutdown(t *testing.T) {
 	}()
 	recv(t, inCreate)
 	r.d.Stop()
-	// Connections stay alive through persistence. Wait for the stopping flag
-	// before releasing Create, rather than waiting for connection closure.
-	deadline := time.Now().Add(5 * time.Second)
-	for !r.d.isStopping() {
-		if time.Now().After(deadline) {
-			t.Fatal("daemon did not begin stopping")
-		}
-		runtime.Gosched()
-	}
+	// Release Create as soon as Run's context is canceled, which can be
+	// before shutdown sets the stopping flag. The start must fail either way.
+	r.d.mu.Lock()
+	runCtx := r.d.ctx
+	r.d.mu.Unlock()
+	recv(t, runCtx.Done())
 	close(release)
 	if err := recv(t, errc); err == nil {
 		t.Fatal("bot_start succeeded during shutdown")
