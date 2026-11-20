@@ -66,13 +66,6 @@ type Config struct {
 	// requests at the provider boundary.
 	FastMode *bool `json:"fast_mode,omitempty"`
 
-	// ToolRender selects how tool calls are drawn in interactive mode.
-	// "box" (default, or empty) wraps each call in a bordered panel;
-	// "flat" drops the frame for a quiet header line plus indented,
-	// frameless output. The ZUT_FLAT_TOOLS env var overrides this when
-	// set ("1"/"true" forces flat, "0"/"false" forces box).
-	ToolRender string `json:"tool_render,omitempty"`
-
 	// CompactInput renders sent user messages as a single quiet gutter
 	// line instead of a padded, background-tinted bubble. nil/false
 	// (the default) keeps the bubble. The ZUT_COMPACT_INPUT env var
@@ -157,12 +150,6 @@ type Config struct {
 	// which is on; false shows ignored entries. Toggle from /settings.
 	RespectGitignore *bool `json:"respect_gitignore,omitempty"`
 
-	// CompactMode renders the interactive transcript with less chrome:
-	// tool calls use flat headers instead of bordered panels, and sent
-	// user messages render without padded background bubbles. Off by
-	// default; nil/missing means disabled. Toggle from /settings.
-	CompactMode *bool `json:"compact_mode,omitempty"`
-
 	// ShowInstructionsAtStartup lists loaded context files, extensions,
 	// and user-installed skills above the transcript. Off by default;
 	// nil/missing means disabled. Toggle from /settings.
@@ -243,23 +230,6 @@ func ZutHome() string {
 
 // ConfigPath returns the path to config.json.
 func ConfigPath() string { return filepath.Join(ZutHome(), "config.json") }
-
-// FlatToolRender reports whether tool calls should render flat (no
-// bordered panel). The ZUT_FLAT_TOOLS env var takes precedence over
-// the config when set: "1"/"true"/"yes"/"on" force flat, "0"/"false"/
-// "no"/"off" force box. Otherwise the config's tool_render is
-// consulted; "flat" is flat, anything else (including empty) is box.
-func (c Config) FlatToolRender() bool {
-	if v := strings.TrimSpace(strings.ToLower(os.Getenv("ZUT_FLAT_TOOLS"))); v != "" {
-		switch v {
-		case "1", "true", "yes", "on", "flat":
-			return true
-		case "0", "false", "no", "off", "box":
-			return false
-		}
-	}
-	return strings.EqualFold(strings.TrimSpace(c.ToolRender), "flat")
-}
 
 // CompactUserInput reports whether sent user messages should render as
 // a single quiet gutter line instead of a padded, background-tinted

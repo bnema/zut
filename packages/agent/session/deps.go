@@ -106,7 +106,6 @@ type SettingsStore interface {
 	SetJailByDefault(enabled bool) error
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error
-	SetCompactMode(enabled bool) error
 	SetTUIInputStyle(style string) error
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error

@@ -82,7 +82,7 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 
 func TestConfirmToolCallRejectsClosedSideChatGeneration(t *testing.T) {
 	i := newConfirmationInputInteractive()
-	i.btwDialog.Open(tui.Dark, i.agent, i.agent.System, i.agent.Model, t.TempDir(), "", false, false, true, nil)
+	i.btwDialog.Open(tui.Dark, i.agent, i.agent.System, i.agent.Model, t.TempDir(), "", true, nil)
 	i.btwDialog.mu.Lock()
 	origin := btwOrigin(i.btwDialog.generation)
 	i.btwDialog.mu.Unlock()

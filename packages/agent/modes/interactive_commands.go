@@ -1024,8 +1024,6 @@ func (i *Interactive) openBtwDialog(args []string) {
 	theme := i.cfg.Theme
 	model := i.cfg.Model
 	cwd := i.cfg.CWD
-	compact := i.compactModeEnabled()
-	flatTools := i.cfg.FlatTools
 	lineInput := tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines
 	i.mu.Unlock()
 	if ag == nil {
@@ -1035,7 +1033,7 @@ func (i *Interactive) openBtwDialog(args []string) {
 		return
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
-	i.btwDialog.Open(theme, ag, system, model, cwd, seed, compact, flatTools, lineInput, i.invalidate)
+	i.btwDialog.Open(theme, ag, system, model, cwd, seed, lineInput, i.invalidate)
 	i.invalidate()
 }
 
@@ -1059,8 +1057,6 @@ func (i *Interactive) openPortBtwDialog(args []string) {
 	i.mu.Lock()
 	upTo := len(i.view.Messages)
 	theme := i.cfg.Theme
-	compact := i.compactModeEnabled()
-	flatTools := i.cfg.FlatTools
 	lineInput := tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines
 	i.mu.Unlock()
 	cwd := info.CWD
@@ -1069,7 +1065,7 @@ func (i *Interactive) openPortBtwDialog(args []string) {
 	}
 	spec := session.CreateSpec{CWD: info.CWD, Fork: &session.ForkSpec{ParentPath: parent, UpToMessage: upTo}, Headless: true, NoAdvisor: true}
 	seed := strings.TrimSpace(strings.Join(args, " "))
-	i.btwDialog.OpenPort(theme, client, spec, i.sessionCallTimeout(), cwd, seed, compact, flatTools, lineInput, i.invalidate)
+	i.btwDialog.OpenPort(theme, client, spec, i.sessionCallTimeout(), cwd, seed, lineInput, i.invalidate)
 	i.invalidate()
 }
 func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {

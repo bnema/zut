@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -369,5 +371,21 @@ func TestConfigSettingsStorePersistsWebSearch(t *testing.T) {
 	}
 	if cfg.Theme != "dark" {
 		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
+func TestLoadConfigIgnoresRemovedRenderOptions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	body := []byte(`{"compact_mode":true,"tool_render":"flat","compact_input":true}`)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig with removed options: %v", err)
+	}
+	if cfg.CompactInput == nil || !*cfg.CompactInput {
+		t.Fatalf("compact_input not preserved: %#v", cfg.CompactInput)
 	}
 }

@@ -188,19 +188,10 @@ type InteractiveConfig struct {
 	// ThemeWatchInterval is test-only when non-zero; production uses 500ms.
 	ThemeWatchInterval time.Duration
 
-	// FlatTools renders tool calls without the bordered panel (a quiet
-	// header line plus indented, frameless output). Mirrors the
-	// resolved tool_render config / ZUT_FLAT_TOOLS env at startup.
-	FlatTools bool
-
 	// CompactUser renders sent user messages as a single quiet gutter
 	// line instead of a padded, tinted bubble. Mirrors the resolved
 	// compact_input config / ZUT_COMPACT_INPUT env at startup.
 	CompactUser bool
-
-	// CompactMode mirrors the persisted compact_mode flag at startup.
-	// When true, it enables both flat tool calls and compact user turns.
-	CompactMode *bool
 
 	// TUIInputStyle controls the main input rendering: plain or lines.
 	TUIInputStyle string
@@ -544,7 +535,6 @@ type SettingsStore interface {
 	SetJailByDefault(enabled bool) error
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error
-	SetCompactMode(enabled bool) error
 	SetTUIInputStyle(style string) error
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error
@@ -979,9 +969,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		view: &tui.View{
 			Theme:                 cfg.Theme,
 			ImageProto:            effectiveImageProtocol(cfg.InlineImagesEnabled),
-			FlatTools:             cfg.FlatTools,
 			CompactUser:           cfg.CompactUser,
-			CompactMode:           cfg.CompactMode != nil && *cfg.CompactMode,
 			StartupAgentName:      startupAgentName,
 			StartupContextPaths:   startupContextPaths,
 			StartupExtensionNames: startupExtensionNames,

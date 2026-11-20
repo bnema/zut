@@ -175,13 +175,6 @@ func (configSettingsStore) SetRespectGitignore(enabled bool) error {
 	})
 }
 
-func (configSettingsStore) SetCompactMode(enabled bool) error {
-	return updateConfig(func(c *Config) error {
-		c.CompactMode = &enabled
-		return nil
-	})
-}
-
 func (configSettingsStore) SetShowInstructionsAtStartup(enabled bool) error {
 	return updateConfig(func(c *Config) error {
 		c.ShowInstructionsAtStartup = &enabled

@@ -137,7 +137,7 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	}
 
 	d := newBtwDialog()
-	d.Open(tui.Theme{}, main, main.System, main.Model, t.TempDir(), "use the echo tool", false, false, true, nil)
+	d.Open(tui.Theme{}, main, main.System, main.Model, t.TempDir(), "use the echo tool", true, nil)
 
 	select {
 	case <-client.done:
@@ -275,7 +275,7 @@ func TestBtwToolConfirmationRoutesThroughSideAgent(t *testing.T) {
 		})
 	}
 
-	d.Open(tui.Dark, main, main.System, main.Model, t.TempDir(), "use the echo tool", false, false, true, nil)
+	d.Open(tui.Dark, main, main.System, main.Model, t.TempDir(), "use the echo tool", true, nil)
 	sideConfirmationFirst := func() bool {
 		i.confirmDialog.mu.Lock()
 		defer i.confirmDialog.mu.Unlock()

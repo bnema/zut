@@ -35,16 +35,15 @@ type btwTurn struct {
 // Cancellation: esc cancels an in-flight call when one is running,
 // otherwise closes the dialog.
 type btwDialog struct {
-	mu          sync.Mutex
-	active      bool
-	turns       []btwTurn
-	editor      *tui.Editor
-	loading     bool
-	compactMode bool
-	lineInput   bool
-	cancel      context.CancelFunc
-	generation  uint64
-	closeHook   func()
+	mu         sync.Mutex
+	active     bool
+	turns      []btwTurn
+	editor     *tui.Editor
+	loading    bool
+	lineInput  bool
+	cancel     context.CancelFunc
+	generation uint64
+	closeHook  func()
 	// pendingHook shows a forked session's confirmation or question; the
 	// answer callbacks route through the fork's port. resolvedHook removes
 	// a request resolved elsewhere. Both receive dialog-local request IDs.
@@ -314,14 +313,13 @@ func (d *btwDialog) setTheme(theme tui.Theme) {
 // auto-submitted (so /btw <text> starts a conversation right away).
 // invalidate, if non-nil, is called after each state change so the
 // host redraw loop can pick up the update without polling.
-func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, seed string, compactMode, flatTools bool, lineInput bool, invalidate func()) {
+func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, seed string, lineInput bool, invalidate func()) {
 	d.mu.Lock()
 	d.generation++
 	d.active = true
 	d.theme = th
-	d.compactMode = compactMode
 	d.lineInput = lineInput
-	d.toolView = &tui.View{Theme: th, CompactMode: compactMode, FlatTools: flatTools}
+	d.toolView = &tui.View{Theme: th}
 	d.turns = nil
 	d.loading = false
 	d.cancel = nil
@@ -346,15 +344,14 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 // OpenPort enters the side chat backed by a forked daemon session. The fork
 // (spec) is created, attached and subscribed in a goroutine so the render
 // loop never waits on the daemon. A seed is submitted once the fork is ready.
-func (d *btwDialog) OpenPort(th tui.Theme, client SessionClient, spec session.CreateSpec, timeout time.Duration, cwd, seed string, compactMode, flatTools, lineInput bool, invalidate func()) {
+func (d *btwDialog) OpenPort(th tui.Theme, client SessionClient, spec session.CreateSpec, timeout time.Duration, cwd, seed string, lineInput bool, invalidate func()) {
 	d.mu.Lock()
 	d.generation++
 	generation := d.generation
 	d.active = true
 	d.theme = th
-	d.compactMode = compactMode
 	d.lineInput = lineInput
-	d.toolView = &tui.View{Theme: th, CompactMode: compactMode, FlatTools: flatTools}
+	d.toolView = &tui.View{Theme: th}
 	d.turns = nil
 	d.loading = false
 	d.cancel = nil
@@ -826,7 +823,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 
 	for _, t := range d.turns {
 		out = append(out, "")
-		out = append(out, btwUserBubbleRows(th, t.User, width-2, d.compactMode)...)
+		out = append(out, btwUserBubbleRows(th, t.User, width-2)...)
 		if len(t.Tools) > 0 {
 			// Match the main transcript's inter-message separator between
 			// the user bubble and the first tool box.
@@ -907,7 +904,7 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 	}
 	for _, t := range d.turns {
 		editorOffset++ // blank
-		editorOffset += len(btwUserBubbleRows(d.theme, t.User, width-2, d.compactMode))
+		editorOffset += len(btwUserBubbleRows(d.theme, t.User, width-2))
 		if len(t.Tools) > 0 {
 			editorOffset++ // main transcript's user-to-tool separator
 		}
@@ -940,7 +937,7 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 // panel, left-edge ▌ bar, padding rows above and below). The frame
 // padding is the caller's job; bubbleWidth is the available row
 // width inside the frame.
-func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode bool) []string {
+func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int) []string {
 	const leftGutter = 0
 	const rightGutter = 2
 	innerWidth := bubbleWidth - 2 - leftGutter - rightGutter // 2 = bar's two cells
@@ -952,15 +949,6 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode b
 		inner := strings.Repeat(" ", leftGutter) + content
 		return "  " + bar + th.UserBubble(inner, bubbleWidth-2)
 	}
-	if compactMode {
-		innerWidth = bubbleWidth - 2
-		if innerWidth < 1 {
-			innerWidth = 1
-		}
-		row = func(content string) string {
-			return "  " + th.FGColor(th.Accent, "▌ ") + th.FGColor(th.Muted, content)
-		}
-	}
 	var bubble []string
 	for _, l := range strings.Split(text, "\n") {
 		for _, w := range tui.WrapANSILine(l, innerWidth) {
@@ -969,9 +957,6 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode b
 	}
 	if len(bubble) == 0 {
 		return nil
-	}
-	if compactMode {
-		return bubble
 	}
 	out := make([]string, 0, len(bubble)+2)
 	out = append(out, row(""))

@@ -191,7 +191,6 @@ func (i *Interactive) openSettingsDialog() {
 	jailByDefault := i.cfg.JailByDefault != nil && *i.cfg.JailByDefault
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
-	compactMode := i.compactModeEnabled()
 	showInstructions := i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	statusPosition := tui.NormalizeStatusPosition(i.cfg.TUIStatusPosition)
@@ -368,12 +367,6 @@ func (i *Interactive) openSettingsDialog() {
 			value: respectGitignore,
 		},
 		{
-			key:   "compact_mode",
-			label: "compact transcript rendering",
-			desc:  "reduce visual chrome by rendering tool calls without boxes and sent messages without padded bubbles",
-			value: compactMode,
-		},
-		{
 			key:   "show_instructions_at_startup",
 			label: "show loaded resources at startup",
 			desc:  "list loaded context files, extensions, and user-installed skills above the transcript",
@@ -506,9 +499,6 @@ func (i *Interactive) quickModelSettingItem(slot int) settingsItem {
 		picker: true,
 		hint:   hint,
 	}
-}
-func (i *Interactive) compactModeEnabled() bool {
-	return i.cfg.CompactMode != nil && *i.cfg.CompactMode
 }
 func quickModelShortcutSlot(k tui.Key) int {
 	if k.Kind != tui.KeyRune || k.Alt {
@@ -1024,23 +1014,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.fileSuggest.SetRespectGitignore(value)
 		i.mu.Lock()
 		i.statusOK = "hide gitignored files in @-picker " + onOff(value)
-		i.statusErr = ""
-		i.mu.Unlock()
-	case "compact_mode":
-		val := value
-		i.cfg.CompactMode = &val
-		if i.cfg.SettingsStore != nil {
-			if err := i.cfg.SettingsStore.SetCompactMode(value); err != nil {
-				i.mu.Lock()
-				i.statusErr = "settings: " + err.Error()
-				i.mu.Unlock()
-				return
-			}
-		}
-		i.mu.Lock()
-		i.view.CompactMode = value
-		i.view.InvalidateRenderCache()
-		i.statusOK = "compact transcript rendering " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "show_instructions_at_startup":
