@@ -465,8 +465,12 @@ func (p *Pool) Close() error {
 	p.closed = true
 	p.cancel()
 	var stops []func()
+	var flights []*poolFlight
 	for _, e := range p.entries {
 		e.mu.Lock()
+		if e.flight != nil {
+			flights = append(flights, e.flight)
+		}
 		stops = append(stops, e.retireLocked("pool closed"))
 		e.mu.Unlock()
 	}
@@ -477,6 +481,13 @@ func (p *Pool) Close() error {
 		go func() { defer wg.Done(); stop() }()
 	}
 	wg.Wait()
+	// A start still in flight was aborted by p.cancel; dial reaps its process
+	// (closeStartup escalates to SIGKILL within a bounded grace) before it
+	// closes done. Wait so no child outlives Close. The locks are released:
+	// dial's completion path takes p.mu and e.mu.
+	for _, f := range flights {
+		<-f.done
+	}
 	p.mu.Lock()
 	stderr := p.stderr
 	p.mu.Unlock()
