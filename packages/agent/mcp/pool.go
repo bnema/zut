@@ -25,6 +25,10 @@ type Pool struct {
 	// ctx bounds every pool-owned connect; Close cancels it.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// flights counts dial goroutines, including ones of retired entries.
+	// Add runs under e.mu while !e.closed; Close marks every entry closed
+	// before Wait, so no Add can follow Wait.
+	flights sync.WaitGroup
 
 	mu      sync.Mutex
 	closed  bool
@@ -341,6 +345,7 @@ func (e *poolEntry) connect(ctx context.Context, timeout time.Duration) (*Client
 	} else {
 		f = newPoolFlight(e.p.ctx, timeout)
 		e.flight = f
+		e.p.flights.Add(1)
 		stale, staleRefresher := e.client, e.refresher
 		e.client, e.refresher = nil, nil
 		e.p.log.Info("mcp pool start", e.logAttrs("restart", stale != nil)...)
@@ -371,6 +376,7 @@ func (e *poolEntry) connect(ctx context.Context, timeout time.Duration) (*Client
 }
 
 func (e *poolEntry) dial(f *poolFlight) {
+	defer e.p.flights.Done()
 	defer close(f.done)
 	defer f.cancel()
 	defer f.timer.Stop()
@@ -477,6 +483,11 @@ func (p *Pool) Close() error {
 		go func() { defer wg.Done(); stop() }()
 	}
 	wg.Wait()
+	// A start still in flight was aborted by p.cancel; dial reaps its process
+	// (closeStartup escalates to SIGKILL within a bounded grace) before it
+	// returns. Wait so no child outlives Close. The locks are released:
+	// dial's completion path takes p.mu and e.mu.
+	p.flights.Wait()
 	p.mu.Lock()
 	stderr := p.stderr
 	p.mu.Unlock()

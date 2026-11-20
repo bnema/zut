@@ -78,7 +78,11 @@ func compactingClient(t *testing.T, compactStarted chan<- struct{}, release <-ch
 			}()
 			return ch, nil
 		}
-		prompts <- lastUserText(req)
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	})
 	ag := core.NewAgent(client, "model", "", nil)
@@ -199,8 +203,12 @@ func TestRescueEligibleTurnErrorRetriesOnNewAgent(t *testing.T) {
 	prompts := make(chan string, 1)
 	newClient := providermocks.NewMockClient(t)
 	newClient.EXPECT().Name().Return("openai").Maybe()
-	newClient.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
-		prompts <- lastUserText(req)
+	newClient.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+		select {
+		case prompts <- lastUserText(req):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return reply("ok"), nil
 	}).Once()
 	next := core.NewAgent(newClient, "new", "", nil)

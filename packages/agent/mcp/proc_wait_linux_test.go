@@ -43,7 +43,15 @@ func TestStdioGroupCleanedBeforeLeaderIsReaped(t *testing.T) {
 				o.state = 'Z'
 			}
 		}
+		// Cleanup has sent SIGKILL to the group, but delivery is
+		// asynchronous; the leader stays unreaped while this hook runs, so
+		// polling here still observes the state before the reap.
+		deadline := time.Now().Add(2 * time.Second)
 		o.childAlive = processAlive(childPID)
+		for o.childAlive && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+			o.childAlive = processAlive(childPID)
+		}
 		select {
 		case obs <- o:
 		default:

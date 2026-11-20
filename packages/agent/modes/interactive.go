@@ -639,7 +639,10 @@ type Interactive struct {
 	// suggestView is the slash suggester copy redraw renders, published
 	// with edView; i.suggest itself is owned by the Run goroutine.
 	suggestView *slashSuggester
-	rend        *tui.Renderer
+	// fileSuggestView is the @-file picker copy redraw renders, published
+	// with edView; i.fileSuggest itself is owned by the Run goroutine.
+	fileSuggestView *fileSuggester
+	rend            *tui.Renderer
 
 	mu sync.Mutex
 	// --- L16 SHIM: DOMAIN fields from the R1 table (agent, agentMu, queued,

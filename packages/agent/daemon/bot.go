@@ -135,7 +135,7 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 	// finishes its cleanup (session close) before shutdown
 	// returns.
 	d.mu.Lock()
-	if d.ctx == nil || d.stopping {
+	if d.stoppingLocked() {
 		d.mu.Unlock()
 		return daemonproto.BotStatusData{}, ErrStopping
 	}
@@ -168,7 +168,7 @@ func (d *Daemon) botStart(spec daemonproto.BotSpec) (daemonproto.BotStatusData, 
 		return daemonproto.BotStatusData{}, err
 	}
 	d.mu.Lock()
-	if d.ctx == nil || d.stopping {
+	if d.stoppingLocked() {
 		d.mu.Unlock()
 		release()
 		// The session was created for this bot; do not leak it into a
@@ -352,7 +352,7 @@ func (d *Daemon) bridgeOn(ctx context.Context, kind string, id session.ID) (daem
 		<-prev.done
 	}
 	d.mu.Lock()
-	if d.ctx == nil || d.stopping {
+	if d.stoppingLocked() {
 		d.mu.Unlock()
 		return daemonproto.TelegramBridgeData{}, ErrStopping
 	}

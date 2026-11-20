@@ -47,9 +47,14 @@ func newTestSession(t *testing.T, id string) *testSession {
 		info:       session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
 		done:       make(chan struct{}),
 		subscribed: make(chan struct{}, 1),
-		closes:     make(chan string, 4),
-		attach:     make(chan session.AttachState, 16),
-		inputs:     make(chan session.Input, 4),
+		// The SetAttach and Close doubles send without a select: a ctx case
+		// would drop events tests read in order, and attach/detach pass an
+		// uncancellable ctx anyway. Only these buffer sizes keep them from
+		// blocking shutdown; each test drives a few attach/close operations
+		// per session, far below them.
+		closes: make(chan string, 16),
+		attach: make(chan session.AttachState, 64),
+		inputs: make(chan session.Input, 4),
 	}
 	s.idle.Store(true)
 	s.h.EXPECT().Info().RunAndReturn(func() session.Info { s.mu.Lock(); defer s.mu.Unlock(); return s.info }).Maybe()
@@ -82,9 +87,13 @@ func newTestSession(t *testing.T, id string) *testSession {
 		s.once.Do(func() { close(s.done) })
 		return nil
 	}).Maybe()
-	s.h.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, in session.Input) error {
-		s.inputs <- in
-		return nil
+	s.h.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, in session.Input) error {
+		select {
+		case s.inputs <- in:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}).Maybe()
 	return s
 }
@@ -1009,7 +1018,13 @@ func TestDirectoryStuckTargetDoesNotBlockOthers(t *testing.T) {
 	stuck.EXPECT().Subscribe(mock.Anything, mock.Anything).Return(make(chan session.Event), nil).Maybe()
 	stuck.EXPECT().Close(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, string) error { close(stuckDone); return nil }).Maybe()
 	stuck.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ session.Input) error {
-		stuckIn <- struct{}{}
+		// After shutdown cancels ctx the worker may still pick queued inputs;
+		// never block it on a full stuckIn.
+		select {
+		case stuckIn <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		select {
 		case <-release:
 		case <-ctx.Done():
