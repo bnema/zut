@@ -1159,13 +1159,20 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				// call's label followed by indented body rows. The label is
 				// looked up from the matching ToolCallBlock so multiple calls
 				// in one assistant message render as N adjacent blocks.
-				lines = append(lines, toolHeaderLine(v.Theme, label, width))
-				if tr.IsError {
-					lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error")))
-				}
 				mode := toolModeFor(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
 				if tr.IsError {
 					mode = modeDefault
+				}
+				stats := ""
+				for _, c := range tr.Content {
+					if tb, ok := c.(provider.TextBlock); ok {
+						stats = codeChangeStats(v.Theme, mode, tb.Text)
+						break
+					}
+				}
+				lines = append(lines, toolHeaderLine(v.Theme, label, stats, width))
+				if tr.IsError {
+					lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error")))
 				}
 				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, mode)...) {
 					// Image-footprint rows carry a sentinel tag; strip it so
@@ -1379,7 +1386,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			for len(body) < high {
 				body = append(body, "")
 			}
-			lines = append(lines, toolHeaderLine(v.Theme, label, width))
+			lines = append(lines, toolHeaderLine(v.Theme, label, "", width))
 			lines = append(lines, body...)
 			return lines
 		}
@@ -1394,7 +1401,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// directly closed by the bottom. Avoids a blank interior row
 	// for no-output tools without a nested-call recap.
 	if bodyText == "" && tc.Recap == "" {
-		lines = append(lines, toolHeaderLine(v.Theme, label, width))
+		lines = append(lines, toolHeaderLine(v.Theme, label, "", width))
 		return lines
 	}
 
@@ -1404,7 +1411,11 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if tc.Error {
 		color = v.Theme.Error
 	}
-	lines = append(lines, toolHeaderLine(v.Theme, label, width))
+	stats := ""
+	if !tc.Error {
+		stats = codeChangeStats(v.Theme, toolModeFor(tc.Name, json.RawMessage(tc.RawJSONBuf)), bodyText)
+	}
+	lines = append(lines, toolHeaderLine(v.Theme, label, stats, width))
 	body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color)
 	for _, l := range body {
 		_, stripped := parseImageFootprint(l)
@@ -1552,7 +1563,10 @@ func splitToolLabel(label string) (name, rest string) {
 // A single accent gutter glyph, the tool name in the foreground color,
 // and the argument summary muted, indented by toolOuterMargin so it
 // lines up with the column where user-bubble text begins.
-func toolHeaderLine(th Theme, label string, width int) string {
+//
+// stats (already styled, e.g. "+3 -1") follows the label after one space
+// and is never truncated; the label gives up room for it instead.
+func toolHeaderLine(th Theme, label, stats string, width int) string {
 	label = oneLineToolLabel(label)
 	name, rest := splitToolLabel(label)
 	margin := strings.Repeat(" ", toolOuterMargin)
@@ -1561,6 +1575,11 @@ func toolHeaderLine(th Theme, label string, width int) string {
 	// argument summary doesn't run off the right edge; truncate with
 	// an ellipsis.
 	avail := width - toolOuterMargin - visibleWidth("▌ ")
+	suffix := ""
+	if stats != "" {
+		avail -= visibleWidth(stats) + 1
+		suffix = " " + stats
+	}
 	if avail < 12 {
 		avail = 12
 	}
@@ -1571,7 +1590,47 @@ func toolHeaderLine(th Theme, label string, width int) string {
 			rest = ""
 		}
 	}
-	return margin + gutter + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest)
+	return margin + gutter + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest) + suffix
+}
+
+// codeChangeStats returns the styled header stats for a code-change
+// result: "+N -M" for diffs (zero sides omitted) and "+N" code lines for
+// written files. The diagnostics trailer is ignored; default mode and
+// empty text yield "".
+func codeChangeStats(th Theme, mode toolRenderMode, text string) string {
+	body, _ := splitDiagnosticsTrailer(text)
+	if body == "" {
+		return ""
+	}
+	adds, dels := 0, 0
+	switch mode {
+	case modeDiff:
+		if !looksLikeUnifiedDiff(body) {
+			return ""
+		}
+		for _, l := range strings.Split(body, "\n") {
+			switch {
+			case strings.HasPrefix(l, "+++"), strings.HasPrefix(l, "---"), strings.HasPrefix(l, "@@"):
+			case strings.HasPrefix(l, "+"):
+				adds++
+			case strings.HasPrefix(l, "-"):
+				dels++
+			}
+		}
+	case modeAddedFile:
+		code, _ := splitFileFooter(body)
+		adds = len(code)
+	default:
+		return ""
+	}
+	var parts []string
+	if adds > 0 {
+		parts = append(parts, th.FGColor(th.Tool, fmt.Sprintf("+%d", adds)))
+	}
+	if dels > 0 {
+		parts = append(parts, th.FGColor(th.Error, fmt.Sprintf("-%d", dels)))
+	}
+	return strings.Join(parts, " ")
 }
 
 // toolBodyLine indents a single tool body line. It trims part of the
@@ -1801,19 +1860,10 @@ func (v *View) renderCodeChange(text string, mode toolRenderMode, width int, col
 	return out
 }
 
-// addedFileHighlightMaxLines and addedFileHighlightMaxBytes cap syntax
-// highlighting of written files; larger content is still shown in full
-// with a plain foreground color.
-const (
-	addedFileHighlightMaxLines = 10_000
-	addedFileHighlightMaxBytes = 512 << 10
-)
-
-// renderAddedFile renders written file content as added diff rows: a
-// "%4d + " gutter, highlighted code, and the DiffAddBG tint across the
-// row. Trailing "..." footer lines (and one blank before them) render
-// muted, untinted, and unnumbered, as in renderRawFile.
-func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
+// splitFileFooter splits file text into code lines and trailing footer
+// lines: the trailing empty element is dropped, then trailing lines
+// starting with "..." plus one blank line before them form the footer.
+func splitFileFooter(text string) (code, footer []string) {
 	lines := strings.Split(text, "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
@@ -1829,8 +1879,23 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 	if codeEnd > 0 && codeEnd < len(lines) && lines[codeEnd-1] == "" {
 		codeEnd--
 	}
-	code := lines[:codeEnd]
-	footer := lines[codeEnd:]
+	return lines[:codeEnd], lines[codeEnd:]
+}
+
+// addedFileHighlightMaxLines and addedFileHighlightMaxBytes cap syntax
+// highlighting of written files; larger content is still shown in full
+// with a plain foreground color.
+const (
+	addedFileHighlightMaxLines = 10_000
+	addedFileHighlightMaxBytes = 512 << 10
+)
+
+// renderAddedFile renders written file content as added diff rows: a
+// "%4d + " gutter, highlighted code, and the DiffAddBG tint across the
+// row. Trailing "..." footer lines (and one blank before them) render
+// muted, untinted, and unnumbered, as in renderRawFile.
+func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
+	code, footer := splitFileFooter(text)
 	for i, c := range code {
 		code[i] = sanitizeLine(c, codeTabStop)
 	}
@@ -1849,7 +1914,7 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 
 	const indent = "    "
 	rowCells := width - len(indent)
-	out := make([]string, 0, len(lines))
+	out := make([]string, 0, len(code)+len(footer))
 	for i, h := range highlighted {
 		gutter := fmt.Sprintf("%4d + ", i+1)
 		blank := strings.Repeat(" ", visibleWidth(gutter))

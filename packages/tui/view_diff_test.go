@@ -244,3 +244,43 @@ func TestRenderAddedFileRows(t *testing.T) {
 		t.Fatalf("footer = %q", footer)
 	}
 }
+
+func TestToolHeaderShowsDiffStats(t *testing.T) {
+	result := "@@ -1,2 +1,4 @@\n a\n-b\n+c\n+d\n+e\n\nDiagnostics: 1 error (deduplicated 1)\n- x\n"
+	v := &View{Theme: Dark, Messages: toolTranscript("edit", `{"path":"a.go"}`, result, false)}
+	header := stripANSI(v.Build(80)[0])
+	if !strings.HasSuffix(header, "+3 -1") {
+		t.Fatalf("header = %q, want +3 -1 stats", header)
+	}
+}
+
+func TestToolHeaderShowsWriteStats(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 412; i++ {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	v := &View{Theme: Dark, Messages: toolTranscript("write", `{"path":"a.txt"}`, b.String(), false)}
+	if header := stripANSI(v.Build(80)[0]); !strings.HasSuffix(header, "+412") {
+		t.Fatalf("header = %q, want +412", header)
+	}
+	live := &View{Theme: Dark}
+	tc := ToolCallView{ID: "w", Name: "write", Args: "a.txt", Result: b.String(), Done: true}
+	if header := stripANSI(live.renderToolCall(tc, 80)[0]); !strings.HasSuffix(header, "+412") {
+		t.Fatalf("live header = %q, want +412", header)
+	}
+	tc.Error = true
+	if header := stripANSI(live.renderToolCall(tc, 80)[0]); strings.Contains(header, "+412") {
+		t.Fatalf("error header has stats: %q", header)
+	}
+}
+
+func TestToolHeaderStatsSurviveNarrowWidth(t *testing.T) {
+	stats := Dark.FGColor(Dark.Tool, "+3") + " " + Dark.FGColor(Dark.Error, "-1")
+	header := stripANSI(toolHeaderLine(Dark, "edit some/very/long/path/to/a/file.go", stats, 30))
+	if !strings.HasSuffix(header, "+3 -1") || !strings.Contains(header, "...") {
+		t.Fatalf("header = %q", header)
+	}
+	if w := visibleWidth(header); w > 30 {
+		t.Fatalf("header width %d > 30: %q", w, header)
+	}
+}
