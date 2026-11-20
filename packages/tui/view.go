@@ -1163,8 +1163,11 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if tr.IsError {
 					lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error")))
 				}
-				forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
-				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff)...) {
+				mode := toolModeFor(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
+				if tr.IsError {
+					mode = modeDefault
+				}
+				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, mode)...) {
 					// Image-footprint rows carry a sentinel tag; strip it so
 					// the row renders as-is under the header.
 					_, stripped := parseImageFootprint(line)
@@ -1412,8 +1415,13 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 
 // renderLiveToolResult uses the transcript's text renderer so every rich
 // confirmation preview immediately gets the same colors, numbered gutters,
-// and syntax highlighting as its final tool result.
-func (v *View) renderLiveToolResult(text string, width int, color TerminalColor, sourcePath string) []string {
+// and syntax highlighting as its final tool result. Code changes (non-default
+// modes) render in full like their finalized form; live rows sit in the
+// scrollable chat buffer and are cached per call revision.
+func (v *View) renderLiveToolResult(text string, width int, color TerminalColor, sourcePath string, mode toolRenderMode) []string {
+	if mode != modeDefault {
+		return v.renderCodeChange(text, mode, width, color, sourcePath, 1)
+	}
 	full := v.renderToolText(text, width, color, sourcePath, 1)
 	if v.ExpandAll || len(full) <= ToolCollapseLines {
 		return full
@@ -1689,7 +1697,10 @@ func trimLeadingSpaces(s string, n int) string {
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
-func (v *View) renderToolResultContent(blocks []provider.Content, width int, color TerminalColor, sourcePath string, startLine int, forceDiff bool) []string {
+//
+// Code-change modes (edit/write/mutating ast) render every row and never
+// collapse; the default mode collapses long output behind ctrl+o.
+func (v *View) renderToolResultContent(blocks []provider.Content, width int, color TerminalColor, sourcePath string, startLine int, mode toolRenderMode) []string {
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
@@ -1703,10 +1714,11 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 		switch bb := b.(type) {
 		case provider.TextBlock:
 			bodyWidth := flatToolBodyRenderWidth(width)
-			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
-			if forceDiff {
-				estimateWidth = max(1, bodyWidth-7)
+			if mode != modeDefault {
+				body = append(body, v.renderCodeChange(bb.Text, mode, bodyWidth, color, sourcePath, startLine)...)
+				continue
 			}
+			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
 			estimated := estimateToolTextLines(bb.Text, estimateWidth)
 			total += estimated
 			text := bb.Text
@@ -1716,16 +1728,144 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 			if !v.ExpandAll && !hasImage && estimated > ToolCollapseLines {
 				text = previewToolText(text, estimateWidth)
 			}
-			if forceDiff {
-				body = append(body, v.renderUnifiedDiff(text, bodyWidth, sourcePath)...)
-			} else {
-				body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
-			}
+			body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
 		case provider.ImageBlock:
 			body = append(body, v.renderImageBlock(bb, width)...)
 		}
 	}
+	if mode != modeDefault {
+		return body
+	}
 	return v.collapseToolBodyWithTotal(body, hasImage, total)
+}
+
+// toolRenderMode selects how a tool result body is presented.
+type toolRenderMode int
+
+const (
+	// modeDefault renders through renderToolText and collapses long output.
+	modeDefault toolRenderMode = iota
+	// modeDiff renders an edit/ast context diff in full.
+	modeDiff
+	// modeAddedFile renders written file content in full as added rows.
+	modeAddedFile
+)
+
+// toolModeFor picks the render mode from the tool name and arguments.
+// Callers force modeDefault for error results.
+func toolModeFor(name string, raw json.RawMessage) toolRenderMode {
+	switch name {
+	case "edit", "Edit":
+		return modeDiff
+	case "write", "Write":
+		return modeAddedFile
+	}
+	if astRewriteArgs(name, raw) {
+		return modeDiff
+	}
+	return modeDefault
+}
+
+// diagnosticsTrailerMarker separates LSP diagnostics appended to edit,
+// write, and ast results from the change itself.
+const diagnosticsTrailerMarker = "\n\nDiagnostics: "
+
+// splitDiagnosticsTrailer splits text at the last diagnostics trailer.
+// The trailer keeps its "Diagnostics: " prefix; it is "" when absent.
+func splitDiagnosticsTrailer(text string) (body, trailer string) {
+	i := strings.LastIndex(text, diagnosticsTrailerMarker)
+	if i < 0 {
+		return text, ""
+	}
+	return text[:i], text[i+2:]
+}
+
+// renderCodeChange renders a code-change result body in full: the diff or
+// added file first, then any diagnostics trailer as plain warning text.
+// Edit text that is not a diff falls back to renderToolText.
+func (v *View) renderCodeChange(text string, mode toolRenderMode, width int, color TerminalColor, sourcePath string, startLine int) []string {
+	body, trailer := splitDiagnosticsTrailer(text)
+	var out []string
+	switch {
+	case mode == modeAddedFile:
+		out = v.renderAddedFile(body, sourcePath, width)
+	case looksLikeUnifiedDiff(body):
+		out = v.renderUnifiedDiff(body, width, sourcePath)
+	default:
+		out = v.renderToolText(body, width, color, sourcePath, startLine)
+	}
+	if trailer != "" {
+		out = append(out, "")
+		out = append(out, v.renderToolText(trailer, width, v.Theme.Warning, "", 1)...)
+	}
+	return out
+}
+
+// addedFileHighlightMaxLines and addedFileHighlightMaxBytes cap syntax
+// highlighting of written files; larger content is still shown in full
+// with a plain foreground color.
+const (
+	addedFileHighlightMaxLines = 10_000
+	addedFileHighlightMaxBytes = 512 << 10
+)
+
+// renderAddedFile renders written file content as added diff rows: a
+// "%4d + " gutter, highlighted code, and the DiffAddBG tint across the
+// row. Trailing "..." footer lines (and one blank before them) render
+// muted, untinted, and unnumbered, as in renderRawFile.
+func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
+	lines := strings.Split(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	codeEnd := len(lines)
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "...") {
+			codeEnd = i
+			continue
+		}
+		break
+	}
+	if codeEnd > 0 && codeEnd < len(lines) && lines[codeEnd-1] == "" {
+		codeEnd--
+	}
+	code := lines[:codeEnd]
+	footer := lines[codeEnd:]
+	for i, c := range code {
+		code[i] = sanitizeLine(c, codeTabStop)
+	}
+
+	joined := strings.Join(code, "\n")
+	var highlighted []string
+	if lang := LanguageFromPath(sourcePath); lang != "" && len(code) <= addedFileHighlightMaxLines && len(joined) <= addedFileHighlightMaxBytes {
+		highlighted = v.Theme.HighlightCode(joined, lang)
+	}
+	if len(highlighted) != len(code) {
+		highlighted = make([]string, len(code))
+		for i, c := range code {
+			highlighted[i] = v.Theme.FGColor(v.Theme.Tool, c)
+		}
+	}
+
+	const indent = "    "
+	rowCells := width - len(indent)
+	out := make([]string, 0, len(lines))
+	for i, h := range highlighted {
+		gutter := fmt.Sprintf("%4d + ", i+1)
+		blank := strings.Repeat(" ", visibleWidth(gutter))
+		codeWidth := max(1, rowCells-visibleWidth(gutter))
+		for j, chunk := range wrapANSILine(h, codeWidth) {
+			g := v.Theme.FGColor(v.Theme.Tool, gutter)
+			if j > 0 {
+				g = blank
+			}
+			out = append(out, indent+v.Theme.tintRow(g+chunk, v.Theme.DiffAddBG, rowCells))
+		}
+	}
+	for _, f := range footer {
+		out = append(out, indent+v.Theme.FGColor(v.Theme.Muted, sanitizeLine(f, terminalTabStop)))
+	}
+	return out
 }
 
 // collapseToolBody trims lines to the configured preview size when the
@@ -3033,7 +3173,11 @@ func (v *View) toolBodyWithActivity(tc ToolCallView, text string, width int, col
 	if !tc.Done && tc.NestedActivity {
 		return v.renderNestedActivity(text, width)
 	}
-	return append(v.renderNestedActivity(tc.Recap, width), v.renderLiveToolResult(text, width, color, tc.LivePath)...)
+	mode := toolModeFor(tc.Name, json.RawMessage(tc.RawJSONBuf))
+	if tc.Error {
+		mode = modeDefault
+	}
+	return append(v.renderNestedActivity(tc.Recap, width), v.renderLiveToolResult(text, width, color, tc.LivePath, mode)...)
 }
 
 func (v *View) renderNestedActivity(text string, width int) []string {

@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/bnema/zut/packages/provider"
 )
 
 // diffGutterNumbers returns the line numbers shown in the gutter of
@@ -138,5 +142,105 @@ func TestClipToolRowKeepsTintReset(t *testing.T) {
 	clipped := clipToolRow(row, 20)
 	if visibleWidth(clipped) != 20 || !strings.HasSuffix(clipped, reset) {
 		t.Fatalf("clipped tinted row lost width or final reset: %q", clipped)
+	}
+}
+
+// toolTranscript builds a finished call/result pair for transcript renders.
+func toolTranscript(name, args, result string, isError bool) []provider.Message {
+	return []provider.Message{
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "c1", Name: name, Arguments: json.RawMessage(args)}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+			CallID: "c1", IsError: isError, Content: []provider.Content{provider.TextBlock{Text: result}},
+		}}},
+	}
+}
+
+func TestEditDiffNeverCollapses(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("@@ -1,200 +1,200 @@\n")
+	for i := 1; i <= 200; i++ {
+		fmt.Fprintf(&b, "+row%d\n", i)
+	}
+	v := &View{Theme: Dark, Messages: toolTranscript("edit", `{"path":"a.txt"}`, b.String(), false)}
+	plain := stripANSI(strings.Join(v.Build(100), "\n"))
+	if strings.Contains(plain, "ctrl+o") {
+		t.Fatalf("edit diff collapsed:\n%s", plain)
+	}
+	for _, want := range []string{"row1", "row100", "row200"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing %s", want)
+		}
+	}
+}
+
+func TestBashResultStillCollapses(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&b, "out %d\n", i)
+	}
+	v := &View{Theme: Dark, Messages: toolTranscript("bash", `{"command":"x"}`, b.String(), false)}
+	if plain := stripANSI(strings.Join(v.Build(100), "\n")); !strings.Contains(plain, "ctrl+o to expand") {
+		t.Fatalf("bash result did not collapse:\n%s", plain)
+	}
+}
+
+func TestEditDiffDiagnosticsTrailerIsPlain(t *testing.T) {
+	result := "@@ -1,1 +1,1 @@\n-a\n+b\n\nDiagnostics: 1 error (deduplicated 1)\n- a.go:1:1 boom\n"
+	v := &View{Theme: Dark, Messages: toolTranscript("edit", `{"path":"a.go"}`, result, false)}
+	rows := v.Build(80)
+	addBG := Dark.sgrBGColor(*Dark.DiffAddBG)
+	sawTint, sawDiag := false, false
+	for _, r := range rows {
+		plain := stripANSI(r)
+		if strings.Contains(plain, "+ b") && strings.Contains(r, addBG) {
+			sawTint = true
+		}
+		if strings.Contains(plain, "Diagnostics:") || strings.Contains(plain, "boom") {
+			sawDiag = true
+			if strings.Contains(r, "\x1b[48") {
+				t.Fatalf("diagnostics row is tinted: %q", r)
+			}
+			if f := strings.Fields(plain); len(f) > 0 {
+				if _, err := strconv.Atoi(f[0]); err == nil {
+					t.Fatalf("diagnostics row is numbered: %q", plain)
+				}
+			}
+		}
+	}
+	if !sawTint || !sawDiag {
+		t.Fatalf("tinted=%v diagnostics=%v\n%s", sawTint, sawDiag, stripANSI(strings.Join(rows, "\n")))
+	}
+}
+
+func TestWriteErrorRendersAsPlainText(t *testing.T) {
+	v := &View{Theme: Dark, Messages: toolTranscript("write", `{"path":"a.go"}`, "permission denied\nsecond line", true)}
+	rows := v.Build(80)
+	joined := strings.Join(rows, "\n")
+	if strings.Contains(stripANSI(joined), " + ") || strings.Contains(joined, "\x1b[48") {
+		t.Fatalf("error write rendered as added rows:\n%q", joined)
+	}
+	if !strings.Contains(stripANSI(joined), "permission denied") {
+		t.Fatalf("error text missing:\n%s", stripANSI(joined))
+	}
+}
+
+func TestRenderAddedFileRows(t *testing.T) {
+	v := &View{Theme: Dark}
+	rows := v.renderAddedFile("package main\n\nfunc main() {}\n\n... [truncated]\n", "a.go", 80)
+	if len(rows) != 5 {
+		t.Fatalf("rows = %d, want 3 code + blank + footer:\n%s", len(rows), stripANSI(strings.Join(rows, "\n")))
+	}
+	if got := strings.TrimLeft(stripANSI(rows[0]), " "); !strings.HasPrefix(got, "1 + package main") {
+		t.Fatalf("first row = %q", got)
+	}
+	addBG := Dark.sgrBGColor(*Dark.DiffAddBG)
+	for i := 0; i < 3; i++ {
+		if !strings.Contains(rows[i], addBG) {
+			t.Fatalf("code row %d untinted: %q", i, rows[i])
+		}
+	}
+	footer := rows[len(rows)-1]
+	if !strings.Contains(stripANSI(footer), "... [truncated]") || strings.Contains(footer, "\x1b[48") {
+		t.Fatalf("footer = %q", footer)
 	}
 }

@@ -90,7 +90,7 @@ func TestRenderLiveToolResultCollapseUsesRenderedLineCount(t *testing.T) {
 	}
 	view := &View{Theme: Dark}
 	full := view.renderToolText(text.String(), 20, Dark.ToolOut, "", 1)
-	collapsed := view.renderLiveToolResult(text.String(), 20, Dark.ToolOut, "")
+	collapsed := view.renderLiveToolResult(text.String(), 20, Dark.ToolOut, "", modeDefault)
 	joined := strings.Join(collapsed, "\n")
 	wantTotal := fmt.Sprintf("%d total", len(full))
 	if !strings.Contains(joined, wantTotal) {
