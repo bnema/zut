@@ -77,7 +77,9 @@ func TestLiveToolOverlayShowsFullBashCommandBeforeResult(t *testing.T) {
 	}
 
 	plain := stripANSI(strings.Join(v.BuildLive(100), "\n"))
-	if !strings.Contains(plain, "$ printf 'start' && sleep 60") || !strings.Contains(plain, "header truncation limit") {
+	// The command wraps across rows; compare with whitespace collapsed.
+	joined := strings.Join(strings.Fields(plain), " ")
+	if !strings.Contains(joined, "$ printf 'start' && sleep 60") || !strings.Contains(joined, "header truncation limit") {
 		t.Fatalf("bash command was not visible before result arrived:\n%s", plain)
 	}
 }
@@ -229,26 +231,23 @@ func TestMultiFileRewriteLabelShowsChangedFileCount(t *testing.T) {
 		{"single file", []string{"src/a.go"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, flat := range []bool{false, true} {
-				v := View{
-					Theme:     Dark,
-					FlatTools: flat,
-					Messages: []provider.Message{
-						{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "toolu_ast", Name: "ast", Arguments: args}}},
-						{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
-							CallID:  "toolu_ast",
-							Content: []provider.Content{provider.TextBlock{Text: "-old(value)\n+new(value)\n"}},
-							Context: provider.ToolContext{Mutates: tc.mutates},
-						}}},
-					},
-				}
-				plain := stripANSI(strings.Join(v.Build(80), "\n"))
-				if got := strings.Contains(plain, "ast src · 3 files changed"); got != tc.want {
-					t.Fatalf("flat=%v: file count shown = %v, want %v:\n%s", flat, got, tc.want, plain)
-				}
-				if strings.Contains(plain, "files changed") != tc.want {
-					t.Fatalf("flat=%v: unexpected file count label:\n%s", flat, plain)
-				}
+			v := View{
+				Theme: Dark,
+				Messages: []provider.Message{
+					{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "toolu_ast", Name: "ast", Arguments: args}}},
+					{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+						CallID:  "toolu_ast",
+						Content: []provider.Content{provider.TextBlock{Text: "-old(value)\n+new(value)\n"}},
+						Context: provider.ToolContext{Mutates: tc.mutates},
+					}}},
+				},
+			}
+			plain := stripANSI(strings.Join(v.Build(80), "\n"))
+			if got := strings.Contains(plain, "ast src · 3 files changed"); got != tc.want {
+				t.Fatalf("file count shown = %v, want %v:\n%s", got, tc.want, plain)
+			}
+			if strings.Contains(plain, "files changed") != tc.want {
+				t.Fatalf("unexpected file count label:\n%s", plain)
 			}
 		})
 	}

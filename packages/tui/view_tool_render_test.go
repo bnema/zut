@@ -9,39 +9,17 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// boxGlyphs are the runes that only appear when a tool call is drawn
-// inside the bordered panel. Flat mode must emit none of them.
+// boxGlyphs are bordered-panel runes; tool renders must emit none.
 const boxGlyphs = "┌└│┐┘"
 
 func assertNoBoxGlyphs(t *testing.T, plain string) {
 	t.Helper()
 	if strings.ContainsAny(plain, boxGlyphs) {
-		t.Fatalf("flat render still contains box glyphs:\n%s", plain)
+		t.Fatalf("tool render contains box glyphs:\n%s", plain)
 	}
 }
 
-func TestFlatToolRenderDropsBorders(t *testing.T) {
-	args := json.RawMessage(`{"command":"echo hi"}`)
-	v := View{
-		Theme:     Dark,
-		FlatTools: true,
-		ToolCalls: []ToolCallView{
-			{ID: "toolu_1", Name: "bash", Args: ShortArgs("bash", args), Result: "hi\n"},
-		},
-	}
-	plain := stripANSI(strings.Join(v.Build(80), "\n"))
-	assertNoBoxGlyphs(t, plain)
-	if !strings.Contains(plain, "bash") {
-		t.Fatalf("flat header lost the tool name:\n%s", plain)
-	}
-	if !strings.Contains(plain, "hi") {
-		t.Fatalf("flat render lost the output:\n%s", plain)
-	}
-}
-
-// The box render of the same call still has borders — the toggle is
-// what changes, not the data.
-func TestBoxToolRenderKeepsBorders(t *testing.T) {
+func TestToolRenderDropsBorders(t *testing.T) {
 	args := json.RawMessage(`{"command":"echo hi"}`)
 	v := View{
 		Theme: Dark,
@@ -50,16 +28,19 @@ func TestBoxToolRenderKeepsBorders(t *testing.T) {
 		},
 	}
 	plain := stripANSI(strings.Join(v.Build(80), "\n"))
-	if !strings.ContainsAny(plain, boxGlyphs) {
-		t.Fatalf("box render should contain border glyphs:\n%s", plain)
+	assertNoBoxGlyphs(t, plain)
+	if !strings.Contains(plain, "  ▌ bash echo hi") {
+		t.Fatalf("missing flat header line:\n%s", plain)
+	}
+	if !strings.Contains(plain, "\n      hi") {
+		t.Fatalf("body not indented under the header:\n%s", plain)
 	}
 }
 
-func TestFlatToolRenderLiveBodyHasNoBorders(t *testing.T) {
+func TestToolRenderLiveBodyHasNoBorders(t *testing.T) {
 	args := json.RawMessage(`{"command":"printf 'start' && sleep 60"}`)
 	v := View{
-		Theme:     Dark,
-		FlatTools: true,
+		Theme: Dark,
 		ToolCalls: []ToolCallView{
 			{ID: "toolu_1", Name: "bash", Args: ShortArgs("bash", args), RawJSONBuf: string(args)},
 		},
@@ -72,15 +53,14 @@ func TestFlatToolRenderLiveBodyHasNoBorders(t *testing.T) {
 }
 
 // Truncation + the ctrl+o expand footer must survive flat mode.
-func TestFlatToolRenderKeepsTruncationFooter(t *testing.T) {
+func TestToolRenderKeepsTruncationFooter(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < ToolCollapseLines+50; i++ {
 		fmt.Fprintf(&b, "line %d\n", i)
 	}
 	args := json.RawMessage(`{"command":"seq 999"}`)
 	collapsed := View{
-		Theme:     Dark,
-		FlatTools: true,
+		Theme: Dark,
 		ToolCalls: []ToolCallView{
 			{ID: "toolu_1", Name: "bash", Args: ShortArgs("bash", args), Result: b.String()},
 		},
@@ -106,11 +86,10 @@ func TestFlatToolRenderKeepsTruncationFooter(t *testing.T) {
 // A finished tool result that comes back as a RoleTool message (the
 // transcript path, distinct from the in-flight ToolCalls path) also
 // renders flat.
-func TestFlatToolRenderTranscriptResult(t *testing.T) {
+func TestToolRenderTranscriptResult(t *testing.T) {
 	callArgs := json.RawMessage(`{"command":"echo done"}`)
 	v := View{
-		Theme:     Dark,
-		FlatTools: true,
+		Theme: Dark,
 		Messages: []provider.Message{
 			{
 				Role: provider.RoleAssistant,

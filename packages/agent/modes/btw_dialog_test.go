@@ -191,18 +191,19 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	const paneWidth = 62
 	rows := d.Render(tui.Theme{}, paneWidth)
 	rendered := strings.Join(rows, "\n")
-	if !strings.Contains(rendered, "┌─") || !strings.Contains(rendered, "echo") || !strings.Contains(rendered, "└─") {
-		t.Fatalf("/btw did not use the standard bordered tool renderer:\n%s", rendered)
+	plain := stripANSIBytes(rendered)
+	if !strings.Contains(plain, "▌ echo") || strings.ContainsAny(plain, "┌└│") {
+		t.Fatalf("/btw did not use the standard flat tool renderer:\n%s", rendered)
 	}
 	toolRow := -1
 	for idx, row := range rows {
-		if strings.Contains(row, "┌─") {
+		if strings.Contains(stripANSIBytes(row), "▌ echo") {
 			toolRow = idx
 			break
 		}
 	}
 	if toolRow < 1 || rows[toolRow-1] != "" {
-		t.Fatalf("/btw tool box is not separated from the user bubble by a blank row:\n%s", rendered)
+		t.Fatalf("/btw tool header is not separated from the user bubble by a blank row:\n%s", rendered)
 	}
 	if cursorRow, _ := d.CursorPos(paneWidth); cursorRow != len(rows)-3 {
 		t.Fatalf("cursor row = %d, want editor row %d after tool spacing change", cursorRow, len(rows)-3)

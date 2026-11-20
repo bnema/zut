@@ -85,9 +85,9 @@ type View struct {
 	// raw (unnumbered) file content the model receives. Rebuilt on
 	// each Build().
 	toolStartLines map[string]int
-	// toolCallLabels maps tool_use_id to the box label (tool name +
+	// toolCallLabels maps tool_use_id to the header label (tool name +
 	// short args) for the call, so a tool_result message can render
-	// the box top edge without having to look back at the assistant
+	// the header line without having to look back at the assistant
 	// message that originated the call. Rebuilt on each Build().
 	toolCallLabels map[string]string
 	toolCallNames  map[string]string
@@ -117,30 +117,18 @@ type View struct {
 	Err                   string
 
 	// liveBodyHigh tracks the tallest live-preview body height seen
-	// per tool-call id, so a streaming edit/write/bash box never
+	// per tool-call id, so a streaming edit/write/bash preview never
 	// shrinks mid-stream. Keyed by ToolCallView.ID. Entries are only
 	// consulted while a call has no Result; interactive mode prunes
 	// the map when a turn ends.
 	liveBodyHigh      map[string]int
 	liveBodyExpandAll bool
 
-	// FlatTools renders tool calls without the bordered panel: a quiet
-	// header line per call plus indented, frameless output. The
-	// truncation/expand behaviour and theme colors are unchanged.
-	// False (the default) keeps the bordered box.
-	FlatTools bool
-
 	// CompactUser renders sent user messages as a single quiet gutter
 	// line per wrapped row instead of a tinted bubble with a blank
 	// padding row above and below. False (the default) keeps the
 	// padded, background-tinted bubble.
 	CompactUser bool
-
-	// CompactMode reduces visual chrome in the transcript. Tool calls
-	// render with a flat header and no bordered panel, and sent user
-	// messages render without padded background bubbles. False keeps
-	// the current spacious rendering.
-	CompactMode bool
 
 	// ExpandAll forces every long tool result to render in full.
 	// Toggled from the tui by ctrl+o. When false, results longer than
@@ -187,8 +175,6 @@ type msgVisualKey struct {
 	width       int
 	expandAll   bool
 	turnOpen    bool
-	flatTools   bool
-	compactMode bool
 	compactUser bool
 	imageProto  ImageProtocol
 	theme       uint64
@@ -219,8 +205,6 @@ type liveToolCacheKey struct {
 	content    uint64
 	width      int
 	expandAll  bool
-	flatTools  bool
-	compact    bool
 	imageProto ImageProtocol
 	theme      uint64
 }
@@ -608,9 +592,9 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		// Skip the inter-message blank for messages that rendered
 		// to nothing. An assistant message whose only content is
 		// ToolCallBlock(s) has no rendered output of its own (each
-		// tool result owns its box now), so emitting a blank for it
+		// tool result owns its block now), so emitting a blank for it
 		// would compound with the blank from the next real message
-		// and produce two blank rows between adjacent tool boxes.
+		// and produce two blank rows between adjacent tool blocks.
 		if len(rendered[idx]) == 0 {
 			continue
 		}
@@ -633,11 +617,11 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		out = append(out, v.liveTextRows(v.Streaming, width)...)
 		out = append(out, "")
 	}
-	// Live tool-call overlay: keep the in-flight box visible after
+	// Live tool-call overlay: keep the in-flight call visible after
 	// the assistant tool_use is appended, then hide it only when the
 	// matching tool_result reaches the transcript. Assistant tool_use
 	// blocks render no rows of their own, so suppressing the overlay
-	// at that point makes the box disappear while the tool is running.
+	// at that point makes the call disappear while the tool is running.
 	finalised := map[string]bool{}
 	for _, m := range v.Messages {
 		for _, c := range m.Content {
@@ -795,8 +779,6 @@ func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnO
 		width:       width,
 		expandAll:   v.ExpandAll,
 		turnOpen:    turnOpen,
-		flatTools:   v.FlatTools,
-		compactMode: v.CompactMode,
 		compactUser: v.CompactUser,
 		imageProto:  v.ImageProto,
 		theme:       themeKey,
@@ -1081,7 +1063,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			padded := v.Theme.UserBubble(inner, width-2)
 			return bar + padded
 		}
-		if v.CompactUser || v.CompactMode {
+		if v.CompactUser {
 			// Compact: no tinted bubble background and no padding rows.
 			// Each wrapped row is a quiet "▌ text" gutter line, matching
 			// the flat tool-call header so user turns still segment the
@@ -1091,9 +1073,6 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				innerWidth = 1
 			}
 			row = func(content string) string {
-				if v.CompactMode {
-					content = v.Theme.FGColor(v.Theme.Muted, content)
-				}
 				return v.Theme.FGColor(v.Theme.Accent, "▌ ") + content
 			}
 		}
@@ -1112,7 +1091,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			}
 		}
 		if len(bubble) > 0 {
-			if v.CompactUser || v.CompactMode {
+			if v.CompactUser {
 				// No tinted padding rows in compact mode; the inter-message
 				// blank from Build() already gives the turn breathing room.
 				lines = append(lines, bubble...)
@@ -1124,7 +1103,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		}
 	case provider.RoleAssistant:
 		// Assistant rows: no speaker label either. Prose still gets a
-		// small left indent so it visually aligns with tool box body
+		// small left indent so it visually aligns with tool body
 		// content, but no "zut" header.
 		_ = turnOpen
 		for _, c := range m.Content {
@@ -1134,11 +1113,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			case provider.ServerToolBlock:
 				lines = append(lines, v.renderServerToolLine(b, width)...)
 			case provider.ToolCallBlock:
-				// The whole box (top + body + bottom) is rendered by
-				// the matching tool_result message so a single
-				// assistant message that batches multiple tool_use
-				// blocks doesn't produce a stack of unclosed top
-				// edges. Each tool result owns its own box.
+				// The header and body are rendered by the matching
+				// tool_result message so a single assistant message
+				// that batches multiple tool_use blocks renders each
+				// call once, next to its result.
 				_ = b
 			}
 		}
@@ -1177,53 +1155,21 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 						break
 					}
 				}
-				// Each tool result owns a complete box: top edge with
-				// the call's label, body rows wrapped in vertical
-				// edges, bottom edge to close. The label is looked up
-				// from the matching ToolCallBlock so multiple calls
-				// in one assistant message render as N adjacent boxes
-				// instead of stacking unclosed top edges.
-				if v.FlatTools || v.CompactMode {
-					if v.CompactMode {
-						lines = append(lines, compactToolBlank(v.Theme, width))
-					}
-					lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-					if tr.IsError {
-						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error"), width, v.CompactMode))
-					}
-					forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
-					for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff)...) {
-						_, stripped := parseImageFootprint(line)
-						lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
-					}
-					if v.CompactMode {
-						lines = append(lines, compactToolBlank(v.Theme, width))
-					}
-					continue
-				}
-				lines = append(lines, toolBoxTop(v.Theme, label, width))
-				lines = append(lines, toolBoxSide(v.Theme, "", width))
+				// Each tool result renders as a flat header line with the
+				// call's label followed by indented body rows. The label is
+				// looked up from the matching ToolCallBlock so multiple calls
+				// in one assistant message render as N adjacent blocks.
+				lines = append(lines, toolHeaderLine(v.Theme, label, width))
 				if tr.IsError {
-					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FGColor(color, "  error"), width))
+					lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error")))
 				}
 				forceDiff := astRewriteArgs(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
 				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, forceDiff)...) {
-					// Image-footprint rows (the escape row, the blank
-					// reservation rows beneath it, and the gap row
-					// before the metadata caption) are tagged with the
-					// imageFootprintSentinel by renderImageBlock. Strip
-					// the tag, parse the optional width hint, then wrap
-					// the row in the usual │ ... │ box edges so the
-					// frame stays continuous around the image.
-					imgCells, stripped := parseImageFootprint(line)
-					if hasImageEscapeLine(stripped) {
-						lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
-					} else {
-						lines = append(lines, toolBoxSide(v.Theme, stripped, width))
-					}
+					// Image-footprint rows carry a sentinel tag; strip it so
+					// the row renders as-is under the header.
+					_, stripped := parseImageFootprint(line)
+					lines = append(lines, clipToolRow(toolBodyLine(v.Theme, stripped), width))
 				}
-				lines = append(lines, toolBoxSide(v.Theme, "", width))
-				lines = append(lines, toolBoxBottom(v.Theme, width))
 			}
 		}
 	}
@@ -1250,8 +1196,6 @@ func (v *View) renderToolCallCached(tc ToolCallView, width int, themeKey uint64)
 		content:    hashLiveTool(tc),
 		width:      width,
 		expandAll:  v.ExpandAll,
-		flatTools:  v.FlatTools,
-		compact:    v.CompactMode,
 		imageProto: v.ImageProto,
 		theme:      themeKey,
 	}
@@ -1396,21 +1340,21 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// No leading blank: Build()'s inter-message separator already
 	// places one blank row between the previous transcript content
 	// and the live overlay, matching the spacing the same call has
-	// once it finalises into a transcript box. Adding another blank
+	// once it finalises into the transcript. Adding another blank
 	// here would double the gap during streaming and visibly tighten
 	// when the overlay disappears.
 
 	// Live body (write/edit): keep the streamed preview visible until
 	// a proposed or real tool result arrives. The provider can finish the
 	// tool_use JSON before zut has executed the tool, so keying this on
-	// tc.Streaming makes write/edit boxes collapse for a moment between
+	// tc.Streaming makes write/edit previews collapse for a moment between
 	// EvToolUseEnd and confirmation or EvToolResult.
 	if tc.Preview == "" && tc.Result == "" {
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			// Pad the live preview up to the call's high-water height so
 			// it never shrinks mid-stream (e.g. between edit 1 and the
-			// start of edit 2). Padding sits inside the box as real
-			// box-side rows so the surrounding layout stays put. The
+			// start of edit 2). Padding rows are blank so the
+			// surrounding layout stays put. The
 			// high-water mark is per call id and is dropped the moment a
 			// Result lands (this branch only runs while Result == "").
 			high := len(body)
@@ -1427,28 +1371,11 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 				}
 				v.liveBodyHigh[tc.ID] = high
 			}
-			if v.FlatTools || v.CompactMode {
-				for len(body) < high {
-					body = append(body, "")
-				}
-				if v.CompactMode {
-					lines = append(lines, compactToolBlank(v.Theme, width))
-				}
-				lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-				lines = append(lines, body...)
-				if v.CompactMode {
-					lines = append(lines, compactToolBlank(v.Theme, width))
-				}
-				return lines
-			}
 			for len(body) < high {
-				body = append(body, toolBoxSide(v.Theme, "", width))
+				body = append(body, "")
 			}
-			lines = append(lines, toolBoxTop(v.Theme, label, width))
-			lines = append(lines, toolBoxSide(v.Theme, "", width))
+			lines = append(lines, toolHeaderLine(v.Theme, label, width))
 			lines = append(lines, body...)
-			lines = append(lines, toolBoxSide(v.Theme, "", width))
-			lines = append(lines, toolBoxBottom(v.Theme, width))
 			return lines
 		}
 	}
@@ -1462,58 +1389,22 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// directly closed by the bottom. Avoids a blank interior row
 	// for no-output tools without a nested-call recap.
 	if bodyText == "" && tc.Recap == "" {
-		if v.FlatTools || v.CompactMode {
-			if v.CompactMode {
-				lines = append(lines, compactToolBlank(v.Theme, width))
-			}
-			lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-			if v.CompactMode {
-				lines = append(lines, compactToolBlank(v.Theme, width))
-			}
-			return lines
-		}
-		lines = append(lines, toolBoxTop(v.Theme, label, width))
-		lines = append(lines, toolBoxBottom(v.Theme, width))
+		lines = append(lines, toolHeaderLine(v.Theme, label, width))
 		return lines
 	}
 
-	// Finished tool call with a result body. Top edge embeds the
-	// label; body lines go through toolBoxSide so each row gets
-	// vertical edges; bottom edge closes the box. Blank interior
-	// rows after the top and before the bottom give the body a bit
-	// of breathing room from the corners.
+	// Finished tool call with a result body: header line, then each
+	// body row indented by toolBodyLine.
 	color := v.Theme.ToolOut
 	if tc.Error {
 		color = v.Theme.Error
 	}
-	if v.FlatTools || v.CompactMode {
-		if v.CompactMode {
-			lines = append(lines, compactToolBlank(v.Theme, width))
-		}
-		lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-		body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color)
-		for _, l := range body {
-			_, stripped := parseImageFootprint(l)
-			lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
-		}
-		if v.CompactMode {
-			lines = append(lines, compactToolBlank(v.Theme, width))
-		}
-		return lines
-	}
-	lines = append(lines, toolBoxTop(v.Theme, label, width))
-	lines = append(lines, toolBoxSide(v.Theme, "", width))
-	body := v.toolBodyWithActivity(tc, bodyText, toolBoxBodyRenderWidth(width), color)
+	lines = append(lines, toolHeaderLine(v.Theme, label, width))
+	body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color)
 	for _, l := range body {
-		imgCells, stripped := parseImageFootprint(l)
-		if hasImageEscapeLine(stripped) {
-			lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
-			continue
-		}
-		lines = append(lines, toolBoxSide(v.Theme, stripped, width))
+		_, stripped := parseImageFootprint(l)
+		lines = append(lines, clipToolRow(toolBodyLine(v.Theme, stripped), width))
 	}
-	lines = append(lines, toolBoxSide(v.Theme, "", width))
-	lines = append(lines, toolBoxBottom(v.Theme, width))
 	return lines
 }
 
@@ -1570,10 +1461,7 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 }
 
 func (v *View) renderLiveBashCommand(command string, width int) []string {
-	inner := toolBoxBodyRenderWidth(width)
-	if v.FlatTools || v.CompactMode {
-		inner = flatToolBodyRenderWidth(width)
-	}
+	inner := flatToolBodyRenderWidth(width)
 	prompt := v.Theme.FGColor(v.Theme.Muted, "$ ")
 	var out []string
 	for i, line := range splitLines(sanitizeText(command, terminalTabStop)) {
@@ -1599,82 +1487,23 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 	return out
 }
 
-// wrapLiveBody returns the streaming body content as a list of
-// box-side rows: each line wrapped in │ ... │ with right padding so
-// the closing edge sits at column width-1. The caller (renderToolCall)
-// supplies the surrounding top/bottom edges so the live overlay
-// renders as a closed box matching the finalised transcript form.
+// wrapLiveBody returns the streaming body content as indented tool
+// body rows. The caller (renderToolCall) supplies the header line so
+// the live overlay matches the finalised transcript form.
 func (v *View) wrapLiveBody(body []string, width int) []string {
 	body = v.collapseToolBody(body, false)
 	out := make([]string, 0, len(body))
-	if v.FlatTools || v.CompactMode {
-		for _, l := range body {
-			_, stripped := parseImageFootprint(l)
-			out = append(out, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
-		}
-		return out
-	}
 	for _, l := range body {
-		imgCells, stripped := parseImageFootprint(l)
-		if hasImageEscapeLine(stripped) {
-			out = append(out, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
-			continue
-		}
-		out = append(out, toolBoxSide(v.Theme, stripped, width))
+		_, stripped := parseImageFootprint(l)
+		out = append(out, clipToolRow(toolBodyLine(v.Theme, stripped), width))
 	}
 	return out
 }
 
-// toolBoxInnerPad is the number of blank cells kept between a box
-// edge (┌, │, └) and the content inside it. One cell of breathing
-// room makes the label read as part of the box rather than fused to
-// the corner, and gives body lines a tiny gutter from the left side.
-const toolBoxInnerPad = 1
-
-// toolBoxOuterMargin is the number of blank cells kept to the left of
-// the opening corner and to the right of the closing corner. Aligns
-// the box's frame with the column where user-bubble text begins, so
-// the conversation reads as one column instead of having tool boxes
-// running edge-to-edge while user/assistant rows sit indented.
-const toolBoxOuterMargin = 2
-
-// toolBoxTop renders the labelled top edge of a tool block:
-//
-//	┌─  bash xcrun simctl list devices ─────────────────────────────┐
-//
-// The label is the tool name + short args (the same string previously
-// shown on its own row beneath the rule). Padding fills the remainder
-// of the line so the right corner sits at column width-1, matching the
-// closing edge.
-func toolBoxTop(th Theme, label string, width int) string {
-	label = oneLineToolLabel(label)
-	w := width - 2*toolBoxOuterMargin
-	if w < 12 {
-		w = 12
-	}
-	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	innerPad := strings.Repeat(" ", toolBoxInnerPad)
-	// "┌─" + innerPad + " " + label + " " + innerPad = used; pad
-	// with ─ to width-1, then "┐".
-	prefix := "┌─" + innerPad + " "
-	suffix := " " + innerPad
-	used := visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix)
-	fill := w - used - 1 // -1 for the closing corner
-	if fill < 0 {
-		// Label overflows; truncate with an ellipsis so the right
-		// corner still lands on the right edge. Rare on real
-		// terminals (the chat column is usually wide enough).
-		label = truncateWithEllipsis(label, visibleWidth(label)+fill)
-		used = visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix)
-		fill = w - used - 1
-		if fill < 0 {
-			fill = 0
-		}
-	}
-	fillStr := strings.Repeat("─", fill)
-	name, rest := splitToolLabel(label)
-	return margin + th.FGColor(th.Muted, prefix) + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest+suffix+fillStr+"┐") + margin
-}
+// toolOuterMargin is the number of blank cells kept to the left of a
+// tool header. Aligns tool rows with the column where user-bubble text
+// begins, so the conversation reads as one column.
+const toolOuterMargin = 2
 
 // truncateWithEllipsis shortens plain text to at most limit terminal
 // cells, ending with "..." when it had to cut. Counting cells rather than
@@ -1706,31 +1535,22 @@ func splitToolLabel(label string) (name, rest string) {
 	return label[:idx], label[idx:]
 }
 
-// flatToolHeader renders the boxless header line for a tool call:
+// toolHeaderLine renders the header line for a tool call:
 //
 //	▌ bash xcrun simctl list devices
 //
-// It carries the same information as toolBoxTop (tool name + short
-// args) but drops the frame: a single accent gutter glyph, the tool
-// name in the foreground color, and the argument summary muted. The
-// line is left-aligned at the same column the box's opening corner
-// used (toolBoxOuterMargin) so flat and box renders share a column.
-func toolHeaderLine(th Theme, label string, width int, compact bool) string {
-	if compact {
-		return compactToolHeader(th, label, width)
-	}
-	return flatToolHeader(th, label, width)
-}
-
-func flatToolHeader(th Theme, label string, width int) string {
+// A single accent gutter glyph, the tool name in the foreground color,
+// and the argument summary muted, indented by toolOuterMargin so it
+// lines up with the column where user-bubble text begins.
+func toolHeaderLine(th Theme, label string, width int) string {
 	label = oneLineToolLabel(label)
 	name, rest := splitToolLabel(label)
-	margin := strings.Repeat(" ", toolBoxOuterMargin)
+	margin := strings.Repeat(" ", toolOuterMargin)
 	gutter := th.FGColor(th.Assistant, "▌") + " "
 	// Budget the visible text to the content width so a very long
 	// argument summary doesn't run off the right edge; truncate with
-	// an ellipsis like the box header does.
-	avail := width - toolBoxOuterMargin - visibleWidth("▌ ")
+	// an ellipsis.
+	avail := width - toolOuterMargin - visibleWidth("▌ ")
 	if avail < 12 {
 		avail = 12
 	}
@@ -1744,102 +1564,26 @@ func flatToolHeader(th Theme, label string, width int) string {
 	return margin + gutter + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest)
 }
 
-func compactToolBlank(th Theme, width int) string {
-	if width < 1 {
-		width = 1
-	}
-	return th.sgrBGColor(th.UserBubbleBG) + strings.Repeat(" ", width) + reset
-}
-
-func compactToolHeader(th Theme, label string, width int) string {
-	label = oneLineToolLabel(label)
-	name, rest := splitToolLabel(label)
-	pad := "  "
-	avail := width - visibleWidth(pad)*2
-	if avail < 12 {
-		avail = 12
-	}
-	if visibleWidth(name+rest) > avail {
-		if visibleWidth(name)+3 < avail {
-			rest = truncateWithEllipsis(rest, avail-visibleWidth(name))
-		} else if visibleWidth(name) <= avail {
-			rest = ""
-		}
-	}
-	plain := pad + name + rest
-	visible := visibleWidth(plain)
-	fill := ""
-	if visible < width {
-		fill = strings.Repeat(" ", width-visible)
-	}
-	bg := th.sgrBGColor(th.UserBubbleBG)
-	return bg + pad + th.fgPrefix(th.FG) + name + bg + th.fgPrefix(th.Muted) + rest + bg + fill + reset
-}
-
-func toolBodyLine(th Theme, line string, width int, compact bool) string {
-	line = flatToolBody(th, line)
-	if compact {
-		return compactToolBody(th, line, width)
-	}
-	return line
-}
-
-// flatToolBody indents a single body line for boxless rendering. It
-// trims the same leading padding box bodies do, then prepends a fixed
-// gutter indent so output sits in a readable column under the header
-// without any vertical frame. ANSI styling in the line is preserved.
-func flatToolBody(th Theme, line string) string {
+// toolBodyLine indents a single tool body line. It trims part of the
+// renderers' own indent, then prepends a fixed gutter so output sits in
+// a readable column under the header. ANSI styling is preserved.
+func toolBodyLine(th Theme, line string) string {
 	_ = th
-	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
-	return strings.Repeat(" ", toolBoxOuterMargin+2) + line
-}
-
-func compactToolBody(th Theme, line string, width int) string {
-	visible := visibleWidth(line)
-	fill := ""
-	if visible < width {
-		fill = strings.Repeat(" ", width-visible)
-	}
-	bg := th.sgrBGColor(th.UserBubbleBG)
-	return bg + strings.ReplaceAll(line, reset, reset+bg) + bg + fill + reset
-}
-
-// toolBoxBottom renders the bottom edge of a tool block:
-//
-//	└─────────────────────────────────────────────────────────────────────────────┘
-//
-// Spans the same width as toolBoxTop so the corners line up.
-func toolBoxBottom(th Theme, width int) string {
-	w := width - 2*toolBoxOuterMargin
-	if w < 12 {
-		w = 12
-	}
-	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	line := "└" + strings.Repeat("─", w-2) + "┘"
-	return margin + th.FGColor(th.Muted, line) + margin
-}
-
-// hasImageEscapeLine reports whether s contains a Kitty (\x1b_G) or
-// iTerm2 (\x1b]1337;File=) inline-image escape. Such rows draw into
-// the terminal's graphics layer and shouldn't be wrapped with text
-// box edges.
-func hasImageEscapeLine(s string) bool {
-	return strings.Contains(s, "\x1b]1337;File=") || strings.Contains(s, "\x1b_G")
+	line = trimLeadingSpaces(line, toolBodyTrimLeft)
+	return strings.Repeat(" ", toolOuterMargin+2) + line
 }
 
 // imageFootprintSentinel marks rows that belong to an inline-image's
 // reserved footprint — the escape row plus the blank rows below it
-// plus the gap row before the metadata caption. Any consumer that
-// wraps content in box edges (│ ... │) detects the sentinel, strips
-// it, and emits the row — the image graphics rectangle paints over
-// whatever was drawn there. Uses a non-printing C0 control byte so
+// plus the gap row before the metadata caption. Consumers detect the
+// sentinel, strip it, and emit the row — the image graphics rectangle
+// paints over whatever was drawn there. Uses a non-printing C0 control byte so
 // it can never appear in normal text or in an ANSI escape sequence
 // body.
 //
 // The escape row carries an extra width hint between two sentinels:
 // "\x1e<cells>\x1e<spaces+escape>". Wrappers parse the cells count
-// to know how wide the image is in terminal cells and how many cells
-// of trailing padding are needed before the closing box edge.
+// to know how wide the image is in terminal cells.
 const imageFootprintSentinel = "\x1e"
 
 // parseImageFootprint splits a footprint-tagged row into (cellsWide,
@@ -1861,118 +1605,35 @@ func parseImageFootprint(s string) (int, string) {
 	return w, rest[end+len(imageFootprintSentinel):]
 }
 
-// toolBoxBodyTrimLeft is the number of leading literal spaces stripped
-// from each body line as it enters toolBoxSide. Body renderers
-// (renderToolText, renderRawFile, the diff/bash helpers, ...) all
-// emit a 4-cell indent so the content aligns with the assistant body
-// column when there's no box around it. Inside a box the box edge +
-// inner pad already supply most of that gutter, so we drop a couple
-// of cells from the body's own indent to keep the content from
-// drifting too far right.
-const toolBoxBodyTrimLeft = 2
-
-// toolBoxBodyRenderWidth is the width body renderers should target before
-// their rows are wrapped by toolBoxSide. Most body renderers emit a four-cell
-// indent; toolBoxSide trims toolBoxBodyTrimLeft cells from that indent and
-// then adds the box edge/padding. Passing the full terminal width lets long
-// bash/heredoc lines overrun the inner box and makes terminals soft-wrap,
-// visually breaking the right edge. This returns the maximum renderer width
-// whose post-trim visible width fits inside the box.
-func toolBoxBodyRenderWidth(width int) int {
-	w := width - 2*toolBoxOuterMargin
-	if w < 12 {
-		w = 12
+// clipToolRow truncates an indented tool body row that would overflow
+// the terminal. Some renderers (numbered file content, raw live write
+// content) do not wrap, so this is the last resort. truncateToWidth
+// keeps SGR state so clipped rows retain their syntax colors. Inline
+// image rows draw into the graphics layer and pass through untouched.
+func clipToolRow(line string, width int) string {
+	if containsImageEscape(line) || visibleWidth(line) <= width {
+		return line
 	}
-	inner := w - 2 - 2*toolBoxInnerPad
-	if inner < 1 {
-		inner = 1
-	}
-	return inner + toolBoxBodyTrimLeft
+	return truncateToWidth(line, width)
 }
 
-// flatToolBodyRenderWidth is the width body renderers should target in
-// flat mode. There's no box frame, just the flatToolBody indent
-// (toolBoxOuterMargin+2 cells), so the renderable width is the
-// terminal width minus that indent. Renderers emit a 4-cell indent of
-// their own which flatToolBody trims toolBoxBodyTrimLeft cells from,
-// so add that back like toolBoxBodyRenderWidth does.
+// toolBodyTrimLeft is the number of leading literal spaces stripped
+// from each body line by toolBodyLine. Body renderers (renderToolText,
+// renderRawFile, the diff/bash helpers, ...) all emit a 4-cell indent;
+// dropping a couple of cells keeps content from drifting too far right
+// under the header.
+const toolBodyTrimLeft = 2
+
+// flatToolBodyRenderWidth is the width body renderers should target.
+// toolBodyLine indents rows by toolOuterMargin+2 cells after trimming
+// toolBodyTrimLeft cells from the renderers' own 4-cell indent, so the
+// renderable width is the terminal width minus that indent plus the trim.
 func flatToolBodyRenderWidth(width int) int {
-	inner := width - (toolBoxOuterMargin + 2)
+	inner := width - (toolOuterMargin + 2)
 	if inner < 1 {
 		inner = 1
 	}
-	return inner + toolBoxBodyTrimLeft
-}
-
-// toolBoxSide wraps a single body line with vertical box edges:
-//
-//	│  foo bar baz                                            │
-//
-// The middle preserves the line verbatim (including any ANSI escapes)
-// after stripping toolBoxBodyTrimLeft leading literal spaces. One cell
-// of inner padding sits on each side so the content breathes from the
-// edges; the right padding fills to column width-1.
-func toolBoxSide(th Theme, line string, width int) string {
-	w := width - 2*toolBoxOuterMargin
-	if w < 12 {
-		w = 12
-	}
-	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	mutedEdge := th.FGColor(th.Muted, "│")
-	left := mutedEdge + strings.Repeat(" ", toolBoxInnerPad)
-	right := strings.Repeat(" ", toolBoxInnerPad) + mutedEdge
-	inner := w - 2 - 2*toolBoxInnerPad // available between the two pads
-	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
-
-	cur := visibleWidth(line)
-	if cur > inner {
-		// Last-resort truncation must retain syntax foreground escapes.
-		// Stripping ANSI here made long read results switch from their
-		// configured syntax color to the terminal's default foreground
-		// whenever the window became narrow enough to clip a line.
-		line = truncateToWidth(line, inner)
-		cur = visibleWidth(line)
-	}
-	pad := inner - cur
-	if pad < 0 {
-		pad = 0
-	}
-	return margin + left + line + strings.Repeat(" ", pad) + right + margin
-}
-
-// toolBoxSideWithImage wraps a row that carries an inline-image
-// escape sequence. The image protocols are configured to not move
-// the cursor after rendering (iTerm: doNotMoveCursor=1, kitty/
-// ghostty: C=1), so the only visible cell advance on the row is
-// from the leading indent spaces before the escape. We pad from
-// there to the right edge column and draw the closing │ there.
-// imgCells is unused (kept in the signature for compatibility with
-// the parseImageFootprint width hint).
-func toolBoxSideWithImage(th Theme, line string, imgCells, width int) string {
-	_ = imgCells
-	w := width - 2*toolBoxOuterMargin
-	if w < 12 {
-		w = 12
-	}
-	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	mutedEdge := th.FGColor(th.Muted, "│")
-	left := mutedEdge + strings.Repeat(" ", toolBoxInnerPad)
-	right := strings.Repeat(" ", toolBoxInnerPad) + mutedEdge
-	inner := w - 2 - 2*toolBoxInnerPad
-
-	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
-
-	// Count leading spaces (visible cells consumed before the escape).
-	leading := 0
-	for leading < len(line) && line[leading] == ' ' {
-		leading++
-	}
-
-	pad := inner - leading
-	if pad < 0 {
-		pad = 0
-	}
-	return margin + left + line + strings.Repeat(" ", pad) + right + margin
+	return inner + toolBodyTrimLeft
 }
 
 // trimLeadingSpaces removes up to n literal space characters from the
@@ -2032,10 +1693,7 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
-			bodyWidth := toolBoxBodyRenderWidth(width)
-			if v.FlatTools || v.CompactMode {
-				bodyWidth = flatToolBodyRenderWidth(width)
-			}
+			bodyWidth := flatToolBodyRenderWidth(width)
 			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
 			if forceDiff {
 				estimateWidth = max(1, bodyWidth-5)
@@ -2431,16 +2089,12 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			// caption breathing room from the image's last pixel row.
 			//
 			// Every footprint row (escape, reservations, gap) is tagged
-			// with imageFootprintSentinel so callers wrapping content in
-			// box edges can recognise these rows and emit them bare —
-			// the image's graphics rectangle paints over them and any
-			// │ character drawn alongside would visibly bleed through.
-			// 4 leading cells push the escape past the box's left
-			// edge plus a small interior gutter so the image rectangle
-			// sits visibly inside the frame instead of kissing the │.
-			// The escape row carries a width hint after the sentinel
-			// ("\x1e<cells>\x1e...") so toolBoxSide knows how many
-			// cells the image occupies and can pad to the right edge.
+			// with imageFootprintSentinel so callers can recognise these
+			// rows and emit them bare — the image's graphics rectangle
+			// paints over them. 4 leading cells align the escape with
+			// the tool body indent. The escape row carries a width hint
+			// after the sentinel ("\x1e<cells>\x1e...") giving the
+			// cells the image occupies.
 			widthHint := fmt.Sprintf("%s%d%s", imageFootprintSentinel, actualCells, imageFootprintSentinel)
 			out := make([]string, 0, rows+3)
 			out = append(out, widthHint+"    "+seq)

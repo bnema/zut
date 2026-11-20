@@ -37,12 +37,9 @@ func TestCodemodeTranscriptRecap(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "p", Name: "codemode", Arguments: json.RawMessage(`{"code":"print(1)"}`)}}},
 		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "p", Content: []provider.Content{provider.TextBlock{Text: "raw output"}}}}},
 	}}
-	for _, flat := range []bool{false, true} {
-		v.FlatTools = flat
-		rendered := strings.Join(v.Build(80), "\n")
-		if !strings.Contains(rendered, "✓ ↳ bash pwd") || strings.Index(rendered, "✓ ↳ bash pwd") > strings.Index(rendered, "raw output") {
-			t.Fatalf("missing/late recap: %s", rendered)
-		}
+	rendered := strings.Join(v.Build(80), "\n")
+	if !strings.Contains(rendered, "✓ ↳ bash pwd") || strings.Index(rendered, "✓ ↳ bash pwd") > strings.Index(rendered, "raw output") {
+		t.Fatalf("missing/late recap: %s", rendered)
 	}
 	lines := v.renderNestedActivity("✓ ↳ bash "+strings.Repeat("界", 100), 20)
 	if visibleWidth(lines[0]) > 20 {
@@ -51,30 +48,19 @@ func TestCodemodeTranscriptRecap(t *testing.T) {
 }
 
 func TestCodemodeEmptyResultRecap(t *testing.T) {
-	for _, mode := range []struct {
-		name          string
-		flat, compact bool
-	}{
-		{name: "boxed"},
-		{name: "flat", flat: true},
-		{name: "compact", compact: true},
-	} {
-		t.Run(mode.name, func(t *testing.T) {
-			v := &View{Theme: Dark, FlatTools: mode.flat, CompactMode: mode.compact}
-			const recap = "✓ ↳ bash pwd"
-			for _, done := range []bool{false, true} {
-				call := ToolCallView{ID: "p", Name: "codemode", Done: done, Recap: recap}
-				rendered := strings.Join(v.renderToolCall(call, 80), "\n")
-				if !strings.Contains(rendered, recap) {
-					t.Fatalf("done=%v: missing recap in empty result: %s", done, rendered)
-				}
-				call.Recap = ""
-				without := strings.Join(v.renderToolCall(call, 80), "\n")
-				if strings.Contains(without, recap) {
-					t.Fatalf("done=%v: unexpected recap: %s", done, without)
-				}
-			}
-		})
+	v := &View{Theme: Dark}
+	const recap = "✓ ↳ bash pwd"
+	for _, done := range []bool{false, true} {
+		call := ToolCallView{ID: "p", Name: "codemode", Done: done, Recap: recap}
+		rendered := strings.Join(v.renderToolCall(call, 80), "\n")
+		if !strings.Contains(rendered, recap) {
+			t.Fatalf("done=%v: missing recap in empty result: %s", done, rendered)
+		}
+		call.Recap = ""
+		without := strings.Join(v.renderToolCall(call, 80), "\n")
+		if strings.Contains(without, recap) {
+			t.Fatalf("done=%v: unexpected recap: %s", done, without)
+		}
 	}
 }
 

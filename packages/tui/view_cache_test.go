@@ -102,7 +102,8 @@ func cacheTestResult(prefix string) string {
 	var b strings.Builder
 	for n := 0; n < 32; n++ {
 		b.WriteString(prefix)
-		b.WriteString(" line ")
+		// Long enough to wrap at 40 columns so a resize changes rows.
+		b.WriteString(" line with enough words to wrap at forty columns ")
 		b.WriteString(string(rune('a' + n%26)))
 		b.WriteByte('\n')
 	}
