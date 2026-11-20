@@ -80,6 +80,14 @@ type fileEntry struct {
 // setting is known.
 func newFileSuggester() *fileSuggester { return &fileSuggester{respectGitignore: true} }
 
+// Clone returns a copy the render goroutine can draw without touching the
+// Run goroutine's picker. Cached slices are shared; neither copy mutates
+// them in place.
+func (s *fileSuggester) Clone() *fileSuggester {
+	c := *s
+	return &c
+}
+
 // SetCWD updates the project root.
 func (s *fileSuggester) SetCWD(cwd string) {
 	if s.cwd != cwd {

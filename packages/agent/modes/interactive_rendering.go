@@ -488,11 +488,21 @@ func (i *Interactive) publishEditorView() {
 	i.mu.Lock()
 	i.applyEditorPrompt(i.ed)
 	cols := i.lastCols()
+	cwd := i.cfg.CWD
+	theme := i.cfg.Theme
 	i.mu.Unlock()
 	i.ed.Render(cols)
 	view := i.ed.Clone()
 	input := view.Value()
+	// The file picker scans the filesystem, so refresh it outside i.mu.
+	// Render records the matches and cursor that Up/Down/Right navigate.
+	i.fileSuggest.SetCWD(cwd)
+	if i.fileSuggest.Active(input) {
+		i.fileSuggest.Render(input, theme, cols)
+	}
+	fileView := i.fileSuggest.Clone()
 	i.mu.Lock()
+	i.fileSuggestView = fileView
 	i.edView = view
 	i.refreshSuggesterLocked(input)
 	if i.suggest.Active(input) {
@@ -666,16 +676,21 @@ func (i *Interactive) redraw() {
 	// they show up in tab-complete + the popup alongside the built-ins.
 	var currentInput string
 	suggester := i.suggestView
+	fileSuggester := i.fileSuggestView
 	if i.edView != nil {
 		currentInput = i.edView.Value()
 	} else {
 		// Direct redraw without a Run loop (tests): refresh the live
-		// suggester on this goroutine.
+		// suggesters on this goroutine.
 		currentInput = i.ed.Value()
 		i.refreshSuggesterLocked(currentInput)
+		i.fileSuggest.SetCWD(i.cfg.CWD)
 	}
 	if suggester == nil {
 		suggester = i.suggest
+	}
+	if fileSuggester == nil {
+		fileSuggester = i.fileSuggest
 	}
 	var suggest []string
 	// Slash popup renders even while the agent is busy so the user
@@ -684,12 +699,11 @@ func (i *Interactive) redraw() {
 	// without waiting for the current turn to finish. The dispatcher
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
-	i.fileSuggest.SetCWD(i.cfg.CWD)
 	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActiveLocked())
 	if mainInputFocused && suggester.Active(currentInput) {
 		suggest = suggester.Render(currentInput, i.cfg.Theme, mainCols)
-	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
-		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, mainCols)
+	} else if mainInputFocused && fileSuggester.Active(currentInput) {
+		suggest = fileSuggester.Render(currentInput, i.cfg.Theme, mainCols)
 	}
 
 	// Detect overlay close (any dialog or slash/file suggestion popup

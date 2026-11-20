@@ -414,3 +414,31 @@ func TestFileSuggesterToggleResetsCache(t *testing.T) {
 		t.Fatal("recursive mode did not surface nested.go after toggle")
 	}
 }
+
+// TestRedrawUsesPublishedFileSuggesterView guards the render/input split:
+// redraw draws the published picker copy, so the Run goroutine may mutate
+// i.fileSuggest concurrently. Run with -race.
+func TestRedrawUsesPublishedFileSuggesterView(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i := NewInteractive(InteractiveConfig{Terminal: &alertTestTerminal{}, CWD: dir})
+	i.ed.SetValue("@")
+	i.publishEditorView()
+	if i.fileSuggestView == nil || len(i.fileSuggestView.lastMatches) == 0 {
+		t.Fatal("publishEditorView did not publish a rendered file picker view")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for n := 0; n < 50; n++ {
+			i.redraw()
+		}
+	}()
+	for n := 0; n < 50; n++ {
+		i.fileSuggest.Reset()
+		i.fileSuggest.SetCWD(dir)
+	}
+	<-done
+}
