@@ -121,7 +121,10 @@ type View struct {
 	// shrinks mid-stream. Keyed by ToolCallView.ID. Entries are only
 	// consulted while a call has no Result; interactive mode prunes
 	// the map when a turn ends.
-	liveBodyHigh      map[string]int
+	liveBodyHigh map[string]int
+	// liveCode caches highlighted complete lines of streaming write/edit
+	// bodies per tool-call id. Pruned with liveBodyHigh.
+	liveCode          map[string]*liveCodeState
 	liveBodyExpandAll bool
 
 	// CompactUser renders sent user messages as a single quiet gutter
@@ -225,6 +228,7 @@ func (v *View) InvalidateRenderCache() {
 	v.messageCachePrefix = 0
 	v.messageCachePrefixOK = false
 	v.toolPathRevision = 0
+	v.liveCode = nil
 }
 
 // CloneForRender returns an immutable render snapshot. Its mutable cache
@@ -247,6 +251,13 @@ func (v *View) CloneForRender() *View {
 	clone.toolCallArgs = cloneRawMessageMap(v.toolCallArgs)
 	clone.PlanUpdates = clonePlanUpdateMap(v.PlanUpdates)
 	clone.liveBodyHigh = cloneIntMap(v.liveBodyHigh)
+	// liveCodeState values are immutable, so copying the map suffices.
+	if v.liveCode != nil {
+		clone.liveCode = make(map[string]*liveCodeState, len(v.liveCode))
+		for id, st := range v.liveCode {
+			clone.liveCode[id] = st
+		}
+	}
 	if v.renderCache != nil {
 		clone.renderCache = make(map[msgCacheKey][]string, len(v.renderCache))
 		for key, lines := range v.renderCache {
@@ -321,6 +332,7 @@ func clonePlanUpdateMap(src map[string]core.PlanUpdate) map[string]core.PlanUpda
 func (v *View) AdoptRenderCacheFrom(snapshot *View) {
 	v.renderCache = snapshot.renderCache
 	v.liveRenderCache = snapshot.liveRenderCache
+	v.liveCode = snapshot.liveCode
 	v.messageCache = snapshot.messageCache
 	v.messageCacheStart = snapshot.messageCacheStart
 	v.messageCacheRevision = snapshot.messageCacheRevision
@@ -668,6 +680,11 @@ func (v *View) prepareLiveToolState() {
 	for id := range v.liveBodyHigh {
 		if !activeCalls[id] {
 			delete(v.liveBodyHigh, id)
+		}
+	}
+	for id := range v.liveCode {
+		if !activeCalls[id] {
+			delete(v.liveCode, id)
 		}
 	}
 	for key := range v.liveRenderCache {

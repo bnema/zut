@@ -153,3 +153,41 @@ func TestExtractPartialStringField(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractCurrentEdit(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want LiveEdit
+	}{
+		{
+			name: "second edit newText partial",
+			raw:  `{"edits":[{"oldText":"x","newText":"y"},{"oldText":"a\nb","newText":"c\nd`,
+			want: LiveEdit{Idx: 2, OldText: "a\nb", OldDone: true, NewText: "c\nd"},
+		},
+		{
+			name: "third oldText started",
+			raw:  `{"edits":[{"oldText":"x","newText":"y"},{"oldText":"a","newText":"b"},{"oldText":"q`,
+			want: LiveEdit{Idx: 3, OldText: "q"},
+		},
+		{
+			name: "no edits yet",
+			raw:  `{"path":"a.go","edits":[`,
+			want: LiveEdit{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ExtractCurrentEdit(c.raw); got != c.want {
+				t.Fatalf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractLastStringField(t *testing.T) {
+	v, ok, done, idx := ExtractLastStringField(`{"a":"1","a":"two\tx`, "a")
+	if v != "two\tx" || !ok || done || idx != 2 {
+		t.Fatalf("got (%q %v %v %d)", v, ok, done, idx)
+	}
+}

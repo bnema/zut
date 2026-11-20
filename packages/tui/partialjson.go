@@ -119,38 +119,57 @@ func ExtractPartialStringField(raw, field string) (value string, ok, done bool) 
 //
 // We want to show `b<streaming>` while it grows.
 func ExtractLastNewText(raw string) (value string, ok, done bool, editIdx int) {
-	// Find every occurrence of `"newText":` and return a partial
-	// extraction starting at the last one. Earlier occurrences
-	// have already finished streaming.
-	needle := "\"newText\":"
-	last := -1
-	for i := 0; i+len(needle) <= len(raw); {
-		idx := strings.Index(raw[i:], needle)
-		if idx < 0 {
-			break
-		}
-		last = i + idx
-		i = last + len(needle)
-	}
+	return ExtractLastStringField(raw, "newText")
+}
+
+// ExtractLastStringField finds the last `"<field>":` key in raw and
+// returns its partial string value the same way ExtractPartialStringField
+// does, plus the 1-indexed occurrence number of that key (0 when the key
+// has not appeared yet).
+func ExtractLastStringField(raw, field string) (value string, ok, done bool, idx int) {
+	needle := "\"" + field + "\":"
+	last := strings.LastIndex(raw, needle)
 	if last < 0 {
 		return "", false, false, 0
 	}
-	// Count how many `"newText":` occurrences preceded this one; +1
-	// gives us the 1-indexed edit number.
-	editIdx = strings.Count(raw[:last], needle) + 1
+	idx = strings.Count(raw[:last], needle) + 1
 	suffix := raw[last+len(needle):]
 	j := 0
 	for j < len(suffix) && (suffix[j] == ' ' || suffix[j] == '\t' || suffix[j] == '\n' || suffix[j] == '\r') {
 		j++
 	}
 	if j >= len(suffix) || suffix[j] != '"' {
-		return "", false, false, editIdx
+		return "", false, false, idx
 	}
 	// Reuse the single-field extractor by feeding it a synthetic
-	// {"newText":...} wrapper so all its escape handling stays in
+	// {"<field>":...} wrapper so all its escape handling stays in
 	// one place.
-	value, ok, done = ExtractPartialStringField("{\"newText\":"+suffix[j:], "newText")
-	return value, ok, done, editIdx
+	value, ok, done = ExtractPartialStringField("{"+needle+suffix[j:], field)
+	return value, ok, done, idx
+}
+
+// LiveEdit is the edit currently streaming in an `edit` call's args.
+type LiveEdit struct {
+	Idx     int    // 1-indexed edit number; 0 when no oldText has started
+	OldText string // partial or complete oldText of edit Idx
+	OldDone bool
+	NewText string // partial newText of edit Idx; "" until it starts
+	NewDone bool
+}
+
+// ExtractCurrentEdit returns the edit being streamed. The current edit is
+// the last oldText; its newText is the last newText only when both share
+// the same index, otherwise the newText has not started yet.
+func ExtractCurrentEdit(raw string) LiveEdit {
+	oldText, _, oldDone, idx := ExtractLastStringField(raw, "oldText")
+	e := LiveEdit{Idx: idx, OldText: oldText, OldDone: oldDone}
+	if idx == 0 {
+		return e
+	}
+	if newText, _, newDone, newIdx := ExtractLastStringField(raw, "newText"); newIdx == idx {
+		e.NewText, e.NewDone = newText, newDone
+	}
+	return e
 }
 
 func parseHex4(s string) int {

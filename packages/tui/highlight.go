@@ -31,22 +31,33 @@ func (th Theme) HighlightCode(src, lang string) []string {
 	if out, ok := highlightCache.lookup(styleKey, lang, src); ok {
 		return out
 	}
+	out, cacheable := th.highlightCode(src, lang)
+	if cacheable {
+		highlightCache.store(styleKey, lang, src, out)
+	}
+	return out
+}
+
+// highlightCodeUncached highlights src without touching highlightCache.
+// Live streaming uses it so ever-growing prefixes never fill the cache.
+func (th Theme) highlightCodeUncached(src, lang string) []string {
+	out, _ := th.highlightCode(src, lang)
+	return out
+}
+
+// highlightCode does the highlighting work. cacheable is false only when
+// no formatter is available, matching the historical cache behavior.
+func (th Theme) highlightCode(src, lang string) (out []string, cacheable bool) {
 	lexer := chooseLexer(lang)
 	if lexer == nil {
-		out := strings.Split(src, "\n")
-		highlightCache.store(styleKey, lang, src, out)
-		return out
+		return strings.Split(src, "\n"), true
 	}
 	iterator, err := lexer.Tokenise(nil, src)
 	if err != nil {
-		out := strings.Split(src, "\n")
-		highlightCache.store(styleKey, lang, src, out)
-		return out
+		return strings.Split(src, "\n"), true
 	}
 	if th.UseTerminalPalette {
-		out := formatTerminalTokens(th, iterator)
-		highlightCache.store(styleKey, lang, src, out)
-		return out
+		return formatTerminalTokens(th, iterator), true
 	}
 	style := th.chromaStyle()
 	formatterName := "terminal256"
@@ -55,17 +66,13 @@ func (th Theme) HighlightCode(src, lang string) []string {
 	}
 	formatter := formatters.Get(formatterName)
 	if formatter == nil {
-		return strings.Split(src, "\n")
+		return strings.Split(src, "\n"), false
 	}
 	var buf bytes.Buffer
 	if err := formatter.Format(&buf, style, iterator); err != nil {
-		out := strings.Split(src, "\n")
-		highlightCache.store(styleKey, lang, src, out)
-		return out
+		return strings.Split(src, "\n"), true
 	}
-	out := strings.Split(strings.TrimRight(stripANSIBackgrounds(buf.String()), "\n"), "\n")
-	highlightCache.store(styleKey, lang, src, out)
-	return out
+	return strings.Split(strings.TrimRight(stripANSIBackgrounds(buf.String()), "\n"), "\n"), true
 }
 
 // formatTerminalTokens keeps Chroma's lexer but owns terminal formatting for
