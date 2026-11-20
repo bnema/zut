@@ -177,3 +177,44 @@ func TestResolveThemeCustomUsesReportedScheme(t *testing.T) {
 		t.Fatalf("dark branch accent = %#v, want 20", got)
 	}
 }
+
+func TestLoadThemeDiffBackgroundOverrides(t *testing.T) {
+	home := writeThemeFile(t, "diff", `{"colors":{"dark":{"diff_add_bg":"#112233","diff_del_bg":"#445566"}}}`)
+	th, _, err := LoadThemeFromHome(home, "diff", Dark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th.DiffAddBG == nil || *th.DiffAddBG != ColorRGB(0x11, 0x22, 0x33) {
+		t.Fatalf("diff_add_bg = %#v", th.DiffAddBG)
+	}
+	if th.DiffDelBG == nil || *th.DiffDelBG != ColorRGB(0x44, 0x55, 0x66) {
+		t.Fatalf("diff_del_bg = %#v", th.DiffDelBG)
+	}
+}
+
+func TestBuiltinThemesHaveDiffTints(t *testing.T) {
+	for name, th := range map[string]Theme{"dark": Dark, "light": Light} {
+		if th.DiffAddBG == nil || th.DiffDelBG == nil {
+			t.Fatalf("%s theme lacks diff tints", name)
+		}
+	}
+}
+
+func TestTerminalThemeDiffTints(t *testing.T) {
+	if th := TerminalTheme(TerminalProfile{}); th.DiffAddBG != nil || th.DiffDelBG != nil {
+		t.Fatalf("auto theme without profile colors has tints: %#v %#v", th.DiffAddBG, th.DiffDelBG)
+	}
+	profile := TerminalProfile{
+		Foreground: ColorRGB(220, 220, 220), HasForeground: true,
+		Background: ColorRGB(0, 0, 0), HasBackground: true,
+	}
+	profile.Palette[10] = ColorRGB(0, 200, 0)
+	profile.PaletteKnown = 1 << 10
+	th := TerminalTheme(profile)
+	if th.DiffAddBG == nil || *th.DiffAddBG != blendTerminalColors(profile.Background, profile.Palette[10], 18) {
+		t.Fatalf("diff add tint = %#v", th.DiffAddBG)
+	}
+	if th.DiffDelBG != nil {
+		t.Fatalf("unreported red slot produced a tint: %#v", th.DiffDelBG)
+	}
+}

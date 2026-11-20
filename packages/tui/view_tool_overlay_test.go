@@ -213,7 +213,7 @@ func TestCompletedASTRewriteRendersPersistentDiff(t *testing.T) {
 
 	rendered := strings.Join(v.Build(80), "\n")
 	plain := stripANSI(rendered)
-	for _, want := range []string{"ast sample.go", "-  2 old(value)", "+  2 new(value)"} {
+	for _, want := range []string{"ast sample.go", "   2 - old(value)", "   2 + new(value)"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("completed AST rewrite missing %q:\n%s", want, plain)
 		}
@@ -287,14 +287,14 @@ func TestEditConfirmationPreviewRendersDiffInsteadOfNewText(t *testing.T) {
 
 	rendered := strings.Join(v.Build(80), "\n")
 	plain := stripANSI(rendered)
-	for _, want := range []string{"-  1 old value", "+  1 new value"} {
+	for _, want := range []string{"   1 - old value", "   1 + new value"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("confirmation preview missing numbered diff row %q:\n%s", want, plain)
 		}
 	}
 	for _, want := range []string{
-		Dark.FGColor(Dark.Error, "-  1 "),
-		Dark.FGColor(Dark.Tool, "+  1 "),
+		Dark.FGColor(Dark.Error, "   1 - "),
+		Dark.FGColor(Dark.Tool, "   1 + "),
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("confirmation preview missing diff color %q:\n%s", want, rendered)

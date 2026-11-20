@@ -78,3 +78,65 @@ func TestRenderUnifiedDiffLegacyEllipsis(t *testing.T) {
 		t.Fatalf("legacy diff render lost rows:\n%s", plain)
 	}
 }
+
+func TestRenderDiffRowTintsAddedRowAcrossResets(t *testing.T) {
+	v := &View{Theme: Dark}
+	const width = 60
+	rows := v.renderDiffRow("+x := 1 // c", width, Dark.Tool, 3, '+', "a.go")
+	if len(rows) != 1 {
+		t.Fatalf("rows = %q", rows)
+	}
+	row := rows[0]
+	bg := Dark.sgrBGColor(*Dark.DiffAddBG)
+	if !strings.HasPrefix(row, "    "+bg) {
+		t.Fatalf("indent tinted or row untinted: %q", row)
+	}
+	inner := strings.TrimSuffix(row, reset)
+	if n := strings.Count(inner, reset); n == 0 || strings.Count(inner, reset+bg) != n {
+		t.Fatalf("not every inner reset re-applies the tint: %q", row)
+	}
+	if got := visibleWidth(row); got != width {
+		t.Fatalf("row width = %d, want %d", got, width)
+	}
+	del := v.renderDiffRow("-y", width, Dark.Error, 3, '-', "")
+	if !strings.Contains(del[0], Dark.sgrBGColor(*Dark.DiffDelBG)) {
+		t.Fatalf("removed row lacks the delete tint: %q", del[0])
+	}
+	ctx := v.renderDiffRow(" z", width, Dark.Muted, 3, ' ', "")
+	if strings.Contains(ctx[0], "\x1b[48") {
+		t.Fatalf("context row is tinted: %q", ctx[0])
+	}
+}
+
+func TestRenderDiffRowNilTintsEmitNoBackground(t *testing.T) {
+	th := Dark
+	th.DiffAddBG, th.DiffDelBG = nil, nil
+	v := &View{Theme: th}
+	rows := v.renderUnifiedDiff("@@ -1,1 +1,1 @@\n-a := 1\n+a := 2\n", 60, "a.go")
+	if joined := strings.Join(rows, "\n"); strings.Contains(joined, "\x1b[48") {
+		t.Fatalf("nil tints still emit background SGR: %q", joined)
+	}
+}
+
+func TestRenderDiffRowTintsWrappedRows(t *testing.T) {
+	v := &View{Theme: Dark}
+	const width = 30
+	rows := v.renderDiffRow("+"+strings.Repeat("word ", 20), width, Dark.Tool, 1, '+', "")
+	if len(rows) < 3 {
+		t.Fatalf("long line did not wrap: %q", rows)
+	}
+	bg := Dark.sgrBGColor(*Dark.DiffAddBG)
+	for i, r := range rows {
+		if !strings.HasPrefix(r, "    "+bg) || visibleWidth(r) != width {
+			t.Fatalf("wrapped row %d not fully tinted (width %d): %q", i, visibleWidth(r), r)
+		}
+	}
+}
+
+func TestClipToolRowKeepsTintReset(t *testing.T) {
+	row := Dark.tintRow(Dark.FGColor(Dark.Tool, strings.Repeat("x", 40)), Dark.DiffAddBG, 40)
+	clipped := clipToolRow(row, 20)
+	if visibleWidth(clipped) != 20 || !strings.HasSuffix(clipped, reset) {
+		t.Fatalf("clipped tinted row lost width or final reset: %q", clipped)
+	}
+}

@@ -1269,11 +1269,13 @@ func toolThemeKey(theme Theme) uint64 {
 	} {
 		h = hashThemeColor(h, c)
 	}
-	if theme.Background == nil {
-		h = fnv64aWriteByte(h, 0)
-	} else {
-		h = fnv64aWriteByte(h, 1)
-		h = hashThemeColor(h, *theme.Background)
+	for _, c := range []*TerminalColor{theme.Background, theme.DiffAddBG, theme.DiffDelBG} {
+		if c == nil {
+			h = fnv64aWriteByte(h, 0)
+		} else {
+			h = fnv64aWriteByte(h, 1)
+			h = hashThemeColor(h, *c)
+		}
 	}
 	h = fnv64aWriteByte(h, 0xff)
 	h = fnv64aWriteUint64(h, uint64(len(theme.Terminal.Palette)))
@@ -1608,13 +1610,20 @@ func parseImageFootprint(s string) (int, string) {
 // clipToolRow truncates an indented tool body row that would overflow
 // the terminal. Some renderers (numbered file content, raw live write
 // content) do not wrap, so this is the last resort. truncateToWidth
-// keeps SGR state so clipped rows retain their syntax colors. Inline
+// keeps SGR state so clipped rows retain their syntax colors, and a final
+// reset is added so a clipped tint cannot bleed into later rows. Inline
 // image rows draw into the graphics layer and pass through untouched.
 func clipToolRow(line string, width int) string {
 	if containsImageEscape(line) || visibleWidth(line) <= width {
 		return line
 	}
-	return truncateToWidth(line, width)
+	clipped := truncateToWidth(line, width)
+	// truncateToWidth drops escapes that follow the cut text, so close
+	// any open SGR state (e.g. a diff tint) explicitly.
+	if strings.Contains(clipped, "\x1b[") && !strings.HasSuffix(clipped, reset) {
+		clipped += reset
+	}
+	return clipped
 }
 
 // toolBodyTrimLeft is the number of leading literal spaces stripped
@@ -1696,7 +1705,7 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 			bodyWidth := flatToolBodyRenderWidth(width)
 			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
 			if forceDiff {
-				estimateWidth = max(1, bodyWidth-5)
+				estimateWidth = max(1, bodyWidth-7)
 			}
 			estimated := estimateToolTextLines(bb.Text, estimateWidth)
 			total += estimated
@@ -1751,12 +1760,12 @@ func (v *View) collapseToolBodyWithTotal(lines []string, hasImage bool, total in
 
 func effectiveToolTextWidth(text string, width int) int {
 	// renderToolText prefixes ordinary rows with a four-cell gutter before
-	// wrapping them. Diff rows also carry a five-cell read gutter. Estimating
+	// wrapping them. Diff rows also carry a seven-cell number and sign gutter. Estimating
 	// against the outer body width undercounts long rows and produces an
 	// incorrect collapse total.
 	width -= 4
 	if looksLikeUnifiedDiff(text) {
-		width -= 5
+		width -= 7
 	}
 	if width < 1 {
 		return 1
@@ -1947,36 +1956,37 @@ func parseHunkHeader(l string) (oldStart, newStart int, ok bool) {
 }
 
 // renderDiffRow renders one unified-diff source line as one or more visual
-// rows. The first row carries the read-style line-number gutter; continuation
-// rows use a blank gutter so wrapped content cannot be mistaken for another
-// source line. Code is syntax-highlighted if sourcePath hints at a known
-// language and otherwise uses the diff color.
+// rows: a 4-cell indent, a "%4d s " gutter (number, sign, space), then the
+// code. The number and sign share the add/remove color; context gutters are
+// muted. Wrapped continuation rows use a blank gutter so they cannot be
+// mistaken for another source line. For +/- rows the gutter and code are
+// tinted with DiffAddBG/DiffDelBG out to the full body width; the indent
+// stays untinted.
 func (v *View) renderDiffRow(line string, width int, color TerminalColor, lineNo int, mark byte, sourcePath string) []string {
 	if len(line) == 0 {
 		return []string{""}
 	}
 	code := sanitizeLine(line[1:], codeTabStop) // strip the leading marker
 
-	// Gutter shape: sign + number share a color so they read as one
-	// visual token ("+123") instead of a neutral line number next to
-	// a stray marker. Unchanged context lines get a muted gutter and
-	// a leading space so column alignment stays consistent with +/-
-	// rows.
-	var gutterText string
-	switch mark {
-	case '+':
-		gutterText = fmt.Sprintf("+%3d ", lineNo)
-	case '-':
-		gutterText = fmt.Sprintf("-%3d ", lineNo)
-	default:
-		gutterText = fmt.Sprintf(" %3d ", lineNo)
+	sign := mark
+	if sign != '+' && sign != '-' {
+		sign = ' '
 	}
+	gutterText := fmt.Sprintf("%4d %c ", lineNo, sign)
 	gutterColor := color
-	if mark == ' ' {
+	var tint *TerminalColor
+	switch sign {
+	case '+':
+		tint = v.Theme.DiffAddBG
+	case '-':
+		tint = v.Theme.DiffDelBG
+	default:
 		gutterColor = v.Theme.Muted
 	}
 
-	maxCode := width - visibleWidth("    "+gutterText)
+	const indent = "    "
+	rowCells := width - len(indent)
+	maxCode := rowCells - visibleWidth(gutterText)
 	if maxCode < 1 {
 		maxCode = 1
 	}
@@ -1996,14 +2006,33 @@ func (v *View) renderDiffRow(line string, width int, color TerminalColor, lineNo
 		}
 		if codeRendered == "" {
 			codeColor := color
-			if mark == ' ' {
+			if sign == ' ' {
 				codeColor = v.Theme.Muted
 			}
 			codeRendered = v.Theme.FGColor(codeColor, chunk)
 		}
-		out = append(out, "    "+v.Theme.FGColor(gutterColor, rowGutter)+codeRendered)
+		out = append(out, indent+v.Theme.tintRow(v.Theme.FGColor(gutterColor, rowGutter)+codeRendered, tint, rowCells))
 	}
 	return out
+}
+
+// tintRow paints content on bg and pads it with tinted spaces to cells
+// visible cells. Every SGR reset or default-background sequence inside
+// content is followed by the tint again, so syntax highlighting cannot
+// punch holes in the row. A nil bg returns content unchanged.
+func (th Theme) tintRow(content string, bg *TerminalColor, cells int) string {
+	if bg == nil {
+		return content
+	}
+	b := th.sgrBGColor(*bg)
+	for _, seq := range []string{reset, "\x1b[m", "\x1b[49m"} {
+		content = strings.ReplaceAll(content, seq, seq+b)
+	}
+	pad := ""
+	if n := cells - visibleWidth(content); n > 0 {
+		pad = strings.Repeat(" ", n)
+	}
+	return b + content + pad + reset
 }
 
 // wrapCodeLine splits code to a terminal cell width without dropping any

@@ -34,8 +34,9 @@ func TerminalDefault() TerminalColor { return TerminalColor{Mode: terminalColorD
 func TerminalPaletteSlot(index int) TerminalColor {
 	return TerminalColor{Mode: terminalColorPalette, Index: index}
 }
-func Color256(index int) TerminalColor { return TerminalColor{Mode: terminalColor256, Index: index} }
-func ColorANSI(sgr int) TerminalColor  { return TerminalColor{Mode: terminalColorANSI, Index: sgr} }
+func colorPtr(c TerminalColor) *TerminalColor { return &c }
+func Color256(index int) TerminalColor        { return TerminalColor{Mode: terminalColor256, Index: index} }
+func ColorANSI(sgr int) TerminalColor         { return TerminalColor{Mode: terminalColorANSI, Index: sgr} }
 func ColorRGB(r, g, b int) TerminalColor {
 	return TerminalColor{Mode: terminalColorRGB, R: r, G: g, B: b}
 }
@@ -108,6 +109,10 @@ type Theme struct {
 	ThinkingMax  TerminalColor // status color for the opt-in max reasoning level
 	SelectionBG  TerminalColor // background for highlighted rows
 	SelectionFG  TerminalColor // foreground for highlighted rows
+	// DiffAddBG/DiffDelBG tint whole added/removed diff rows. nil leaves
+	// those rows on the terminal background (foreground color only).
+	DiffAddBG *TerminalColor
+	DiffDelBG *TerminalColor
 
 	// UseTerminalPalette resolves TerminalPaletteSlot roles against the
 	// reported palette on truecolor terminals. It has no effect on explicit
@@ -196,6 +201,8 @@ var Dark = Theme{
 	ThinkingMax:       Color256(207), // vivid magenta
 	SelectionBG:       Color256(24),  // deep blue background
 	SelectionFG:       Color256(231), // near-white foreground
+	DiffAddBG:         colorPtr(ColorRGB(0x21, 0x3A, 0x2B)),
+	DiffDelBG:         colorPtr(ColorRGB(0x4A, 0x22, 0x1D)),
 	SpinnerFrames:     defaultSpinnerFrames,
 	SpinnerIntervalMS: 80,
 	SyntaxBaseStyle:   "monokai",
@@ -218,6 +225,8 @@ var Light = Theme{
 	ThinkingMax:       Color256(127), // deep magenta
 	SelectionBG:       Color256(153), // light blue
 	SelectionFG:       Color256(232), // near-black
+	DiffAddBG:         colorPtr(ColorRGB(0xDA, 0xFB, 0xE1)),
+	DiffDelBG:         colorPtr(ColorRGB(0xFF, 0xEB, 0xE9)),
 	SpinnerFrames:     defaultSpinnerFrames,
 	SpinnerIntervalMS: 80,
 	SyntaxBaseStyle:   "monokai",

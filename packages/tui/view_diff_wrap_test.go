@@ -8,7 +8,10 @@ import (
 func TestRenderDiffRowWrapsWithoutLosingContent(t *testing.T) {
 	const width = 30
 	code := `const message = "alpha beta gamma delta epsilon"`
-	v := View{Theme: Dark}
+	// Content-preservation check: no tint, so rows carry no padding.
+	th := Dark
+	th.DiffAddBG, th.DiffDelBG = nil, nil
+	v := View{Theme: th}
 
 	rows := v.renderDiffRow("+"+code, width, v.Theme.Tool, 7, '+', "sample.go")
 	if len(rows) < 2 {
@@ -21,9 +24,9 @@ func TestRenderDiffRowWrapsWithoutLosingContent(t *testing.T) {
 		if got := visibleWidth(row); got > width {
 			t.Errorf("row %d width = %d, want <= %d: %q", i, got, width, plain)
 		}
-		prefix := "         "
+		prefix := "           "
 		if i == 0 {
-			prefix = "    +  7 "
+			prefix = "       7 + "
 		}
 		if !strings.HasPrefix(plain, prefix) {
 			t.Fatalf("row %d prefix = %q, want %q", i, plain, prefix)
@@ -41,7 +44,10 @@ func TestRenderDiffRowWrapsWithoutLosingContent(t *testing.T) {
 func TestRenderDiffRowWrapsUnicodeByDisplayWidth(t *testing.T) {
 	const width = 18
 	code := "名前 = 🙂🙂🙂 café résumé"
-	v := View{Theme: Dark}
+	// Content-preservation check: no tint, so rows carry no padding.
+	th := Dark
+	th.DiffAddBG, th.DiffDelBG = nil, nil
+	v := View{Theme: th}
 
 	rows := v.renderDiffRow("-"+code, width, v.Theme.Error, 12, '-', "")
 	if len(rows) < 2 {
@@ -54,9 +60,9 @@ func TestRenderDiffRowWrapsUnicodeByDisplayWidth(t *testing.T) {
 		if got := visibleWidth(row); got > width {
 			t.Errorf("row %d width = %d, want <= %d: %q", i, got, width, plain)
 		}
-		prefix := "         "
+		prefix := "           "
 		if i == 0 {
-			prefix = "    - 12 "
+			prefix = "      12 - "
 		}
 		if !strings.HasPrefix(plain, prefix) {
 			t.Fatalf("row %d prefix = %q, want %q", i, plain, prefix)

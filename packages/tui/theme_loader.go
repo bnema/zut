@@ -107,6 +107,8 @@ type ThemeOverrides struct {
 	ThinkingMax       *TerminalColorValue  `json:"thinking_max,omitempty"`
 	ThinkingMaxCamel  *TerminalColorValue  `json:"thinkingMax,omitempty"`
 	SelectionBG       *TerminalColorValue  `json:"selection_bg,omitempty"`
+	DiffAddBG         *TerminalColorValue  `json:"diff_add_bg,omitempty"`
+	DiffDelBG         *TerminalColorValue  `json:"diff_del_bg,omitempty"`
 	SelectionFG       *TerminalColorValue  `json:"selection_fg,omitempty"`
 	SpinnerFrames     []string             `json:"spinner_frames,omitempty"`
 	SpinnerIntervalMS *int                 `json:"spinner_interval_ms,omitempty"`
@@ -216,6 +218,14 @@ func TerminalTheme(profile TerminalProfile) Theme {
 		t.ToolOut = t.Muted
 		t.UserBubbleBG = blendTerminalColors(profile.Background, profile.Foreground, 12)
 		t.SelectionBG = blendTerminalColors(profile.Background, profile.Foreground, 25)
+		// Diff tints blend the reported green/red palette slots into the
+		// background; without a reported slot there is no tint.
+		if add, ok := profile.PaletteColor(10); ok {
+			t.DiffAddBG = colorPtr(blendTerminalColors(profile.Background, add, 18))
+		}
+		if del, ok := profile.PaletteColor(9); ok {
+			t.DiffDelBG = colorPtr(blendTerminalColors(profile.Background, del, 18))
+		}
 	}
 	// Auto must leave both the terminal background and cursor color owned by
 	// the terminal. Custom themes can intentionally override Background.
@@ -546,6 +556,12 @@ func applyThemeOverrides(th Theme, o ThemeOverrides) Theme {
 	if o.SelectionBG != nil {
 		th.SelectionBG = o.SelectionBG.TerminalColor
 	}
+	if o.DiffAddBG != nil {
+		th.DiffAddBG = colorPtr(o.DiffAddBG.TerminalColor)
+	}
+	if o.DiffDelBG != nil {
+		th.DiffDelBG = colorPtr(o.DiffDelBG.TerminalColor)
+	}
 	if o.SelectionFG != nil {
 		th.SelectionFG = o.SelectionFG.TerminalColor
 	}
@@ -650,7 +666,7 @@ func validateThemeFile(file ThemeFile) error {
 }
 
 func validateThemeOverrides(o ThemeOverrides) error {
-	for _, color := range []*TerminalColorValue{o.FG, o.Muted, o.Accent, o.Background, o.User, o.UserBubbleBG, o.UserBubbleFG, o.Assistant, o.Tool, o.ToolOut, o.Error, o.Warning, o.Spinner, o.ThinkingMax, o.ThinkingMaxCamel, o.SelectionBG, o.SelectionFG} {
+	for _, color := range []*TerminalColorValue{o.FG, o.Muted, o.Accent, o.Background, o.User, o.UserBubbleBG, o.UserBubbleFG, o.Assistant, o.Tool, o.ToolOut, o.Error, o.Warning, o.Spinner, o.ThinkingMax, o.ThinkingMaxCamel, o.SelectionBG, o.SelectionFG, o.DiffAddBG, o.DiffDelBG} {
 		if color != nil {
 			if err := validateExplicitTerminalColor(color.TerminalColor); err != nil {
 				return err
