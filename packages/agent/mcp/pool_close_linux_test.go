@@ -36,11 +36,17 @@ func pidsWithEnv(entry string) []int {
 }
 
 // Close must not return while a start it aborted still has a live process.
-func TestPoolCloseReapsInFlightStart(t *testing.T) {
+func TestPoolCloseReapsInFlightStart(t *testing.T) { testPoolCloseReapsInFlightStart(t, time.Minute) }
+
+// With a zero idle delay the cancelled caller's release retires the entry
+// while its start is still in flight; Close must wait for that start too.
+func TestPoolCloseReapsRetiredInFlightStart(t *testing.T) { testPoolCloseReapsInFlightStart(t, 0) }
+
+func testPoolCloseReapsInFlightStart(t *testing.T, idle time.Duration) {
 	gate := filepath.Join(t.TempDir(), "release")
 	cfg, events := fakeStdioConfig(t, map[string]string{"FAKE_INIT_GATE": gate})
 	cfg.StartupTimeoutSec = 30
-	pool := NewPool(time.Minute, nil)
+	pool := NewPool(idle, nil)
 	t.Cleanup(func() { _ = pool.Close() })
 	m := NewManager(Config{Servers: map[string]ServerConfig{"fake": cfg}}, t.TempDir(), ClientInfo{}, nil)
 	m.SetPool(pool)
@@ -48,13 +54,17 @@ func TestPoolCloseReapsInFlightStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _, _ = m.Start(ctx); close(done) }()
+	// The server is a real subprocess: its readiness is only observable
+	// through the event file it writes.
 	waitEvent(t, events, "init-held")
-	pids := pidsWithEnv("FAKE_INIT_GATE=" + gate)
+	entry := "FAKE_INIT_GATE=" + gate
+	pids := pidsWithEnv(entry)
 	if len(pids) == 0 {
 		t.Fatal("held server process not found")
 	}
 	t.Cleanup(func() {
-		for _, pid := range pids {
+		// Re-match so a reaped pid reused by another process is never hit.
+		for _, pid := range pidsWithEnv(entry) {
 			killPID(pid)
 		}
 	})
@@ -63,6 +73,16 @@ func TestPoolCloseReapsInFlightStart(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("cancelled caller did not return")
+	}
+	if idle == 0 {
+		// Releasing the lease retires the entry with its start in flight.
+		_ = m.Close()
+		pool.mu.Lock()
+		n := len(pool.entries)
+		pool.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("entries = %d after release, want the entry retired", n)
+		}
 	}
 	_ = pool.Close()
 	for _, pid := range pids {
