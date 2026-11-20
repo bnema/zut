@@ -1932,7 +1932,8 @@ func parseHunkHeader(l string) (oldStart, newStart int, ok bool) {
 			s = s[:c]
 		}
 		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
+		// 0 is valid: git uses it for an empty side at the top of a file.
+		if err != nil || n < 0 {
 			return 0, false
 		}
 		return n, true
@@ -2263,7 +2264,7 @@ func astRewriteArgs(name string, raw json.RawMessage) bool {
 
 // looksLikeUnifiedDiff reports whether text is a context diff as
 // emitted by edit and ast. Every non-empty row must start with a diff
-// marker, except for the bounded-output truncation notice. The presence
+// marker or be a "@@" hunk header (or a legacy "..." separator). The presence
 // of at least one '+' or '-' row distinguishes a diff from ordinary text.
 func looksLikeUnifiedDiff(text string) bool {
 	lines := strings.Split(text, "\n")
@@ -2276,6 +2277,12 @@ func looksLikeUnifiedDiff(text string) bool {
 			continue
 		}
 		if l == "..." {
+			continue
+		}
+		if strings.HasPrefix(l, "@@") {
+			if _, _, ok := parseHunkHeader(l); !ok {
+				return false
+			}
 			continue
 		}
 		switch l[0] {
@@ -2293,23 +2300,35 @@ func looksLikeUnifiedDiff(text string) bool {
 // renderUnifiedDiff renders the edit tool's context diff. Each
 // kept row shows a line-number gutter plus a marker column: '+'
 // for additions (colored like add), '-' for deletions (colored
-// like remove), and unmarked context in muted type. A literal
-// "..." line between hunks renders as an ellipsis in muted type,
-// indicating skipped unchanged rows. The old and new line
-// counters advance so each row carries its actual position in
-// the pre- or post-edit file. Heuristic: when we hit a "...", we
-// can't know where the next hunk starts, so we don't reset the
-// counters — they stay approximate in the rare multi-hunk case.
+// like remove), and unmarked context in muted type. A "@@" hunk
+// header sets the old/new line counters to the hunk's real start;
+// the header itself is not shown, and a muted "⋮" row separates
+// later hunks from the previous one. Legacy diffs use a literal
+// "..." between hunks instead; the counters are not reset there,
+// so their numbers stay approximate.
 func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []string {
 	lines := strings.Split(text, "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
 	oldLine, newLine := 1, 1
+	sawHunk := false
 	var out []string
 	for _, l := range lines {
 		if l == "" {
 			out = append(out, "")
+			continue
+		}
+		if strings.HasPrefix(l, "@@") {
+			if o, n, ok := parseHunkHeader(l); ok {
+				// A zero-count side starts at the preceding line (0 at
+				// the top of a file); it has no rows, so clamp to 1.
+				oldLine, newLine = max(o, 1), max(n, 1)
+			}
+			if sawHunk {
+				out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, "⋮"))
+			}
+			sawHunk = true
 			continue
 		}
 		if l == "..." {

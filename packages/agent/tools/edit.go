@@ -35,7 +35,7 @@ const editSchema = `{"type":"object","properties":{"path":{"type":"string","desc
 
 func (t *EditTool) Name() string { return "edit" }
 func (t *EditTool) Description() string {
-	return "Apply exact substitutions to an existing file. Inspect that file before editing and take every oldText directly from its current contents. Use a verbatim excerpt with enough surrounding text to identify exactly one location; choose write when replacing most or all of a file."
+	return "Apply exact substitutions to an existing file. Inspect that file before editing and take every oldText directly from its current contents. Use a verbatim excerpt with enough surrounding text to identify exactly one location; choose write when replacing most or all of a file. Keep each substitution as small as the requested change allows: replace only the lines that actually change plus the minimal surrounding text needed for a unique match."
 }
 func (t *EditTool) Schema() json.RawMessage { return json.RawMessage(editSchema) }
 
@@ -251,24 +251,31 @@ const diffContextLines = 3
 
 // unifiedDiff emits a context diff for the edit tool's result.
 //
-// Shape: each output row is either
+// Shape: each hunk starts with a header
+//   - "@@ -oldStart,oldCount +newStart,newCount @@"
+//
+// followed by rows that are either
 //   - " <line>"       unchanged context
 //   - "-<line>"       deletion (from a)
 //   - "+<line>"       addition (to b)
-//   - "..."           context break between hunks
 //
-// The legacy "--- name / +++ name" header is omitted because the
-// tool-call header above the result already shows the path. Only
-// lines within diffContextLines of a +/- row are kept; longer
-// runs of unchanged content collapse into a single "..." row so
-// a one-line edit in a thousand-line file produces a short
-// transcript.
+// Line numbers are 1-based; as in git, a side with a zero count uses
+// the number of the line preceding the hunk (0 at the top of a file).
+// The "--- name / +++ name" header is omitted because the tool-call
+// header above the result already shows the path. Only lines within
+// diffContextLines of a +/- row are kept, so a one-line edit in a
+// thousand-line file produces a short transcript.
 func unifiedDiff(name, a, b string) string {
 	if a == b {
 		return ""
 	}
-	aLines := strings.Split(a, "\n")
-	bLines := strings.Split(b, "\n")
+	aLines, bLines := diffSplitLines(a), diffSplitLines(b)
+	// When both files are empty or end in a newline, drop the phantom
+	// empty element Split leaves after the final newline so it is not
+	// counted as a line.
+	if (a == "" || strings.HasSuffix(a, "\n")) && (b == "" || strings.HasSuffix(b, "\n")) {
+		aLines, bLines = dropPhantomLine(aLines), dropPhantomLine(bLines)
+	}
 	ops := diffLines(aLines, bLines)
 
 	// Mark ops that sit within diffContextLines of any +/- op.
@@ -288,32 +295,59 @@ func unifiedDiff(name, a, b string) string {
 	}
 
 	var sb strings.Builder
-	prevKept := false
-	anyOutput := false
-	for i, op := range ops {
+	// oldLine/newLine count lines consumed so far in each file.
+	oldLine, newLine := 0, 0
+	for i := 0; i < len(ops); {
 		if !keep[i] {
-			if prevKept {
-				sb.WriteString("...\n")
-				prevKept = false
-			}
+			oldLine++
+			newLine++ // dropped ops are always unchanged context
+			i++
 			continue
 		}
-		if !prevKept && anyOutput {
-			sb.WriteString("...\n")
+		j := i
+		oldCount, newCount := 0, 0
+		for ; j < len(ops) && keep[j]; j++ {
+			switch ops[j].kind {
+			case ' ':
+				oldCount++
+				newCount++
+			case '-':
+				oldCount++
+			case '+':
+				newCount++
+			}
 		}
-		switch op.kind {
-		case ' ':
-			fmt.Fprintf(&sb, " %s\n", op.line)
-		case '-':
-			fmt.Fprintf(&sb, "-%s\n", op.line)
-		case '+':
-			fmt.Fprintf(&sb, "+%s\n", op.line)
+		oldStart, newStart := oldLine, newLine
+		if oldCount > 0 {
+			oldStart++
 		}
-		prevKept = true
-		anyOutput = true
+		if newCount > 0 {
+			newStart++
+		}
+		fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+		for ; i < j; i++ {
+			fmt.Fprintf(&sb, "%c%s\n", ops[i].kind, ops[i].line)
+		}
+		oldLine += oldCount
+		newLine += newCount
 	}
 	_ = name // header dropped; kept in signature for call-site stability
 	return sb.String()
+}
+
+// diffSplitLines splits file content into lines; empty content has none.
+func diffSplitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func dropPhantomLine(lines []string) []string {
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		return lines[:n-1]
+	}
+	return lines
 }
 
 type diffOp struct {
