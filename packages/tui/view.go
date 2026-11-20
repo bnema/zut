@@ -117,8 +117,9 @@ type View struct {
 	Err                   string
 
 	// liveBodyHigh tracks the tallest live-preview body height seen
-	// per tool-call id, so a streaming edit/write/bash preview never
-	// shrinks mid-stream. Keyed by ToolCallView.ID. Entries are only
+	// per tool-call id so a streaming bash preview never shrinks
+	// mid-stream. write/edit bodies are a fixed-height window and never
+	// shrink on their own. Keyed by ToolCallView.ID. Entries are only
 	// consulted while a call has no Result; interactive mode prunes
 	// the map when a turn ends.
 	liveBodyHigh map[string]int
@@ -332,7 +333,8 @@ func clonePlanUpdateMap(src map[string]core.PlanUpdate) map[string]core.PlanUpda
 func (v *View) AdoptRenderCacheFrom(snapshot *View) {
 	v.renderCache = snapshot.renderCache
 	v.liveRenderCache = snapshot.liveRenderCache
-	v.liveCode = snapshot.liveCode
+	// liveCode stays with the owning view: stable-row snapshots render
+	// without live calls and prune it, so adopting would drop live state.
 	v.messageCache = snapshot.messageCache
 	v.messageCacheStart = snapshot.messageCacheStart
 	v.messageCacheRevision = snapshot.messageCacheRevision
@@ -1210,6 +1212,13 @@ func (v *View) RenderToolCall(tc ToolCallView, width int) []string {
 	if v.liveBodyHigh == nil {
 		v.liveBodyHigh = make(map[string]int)
 	}
+	if tc.Done || tc.Result != "" {
+		for id := range v.liveCode {
+			if liveCodeCallID(id) == tc.ID {
+				delete(v.liveCode, id)
+			}
+		}
+	}
 	return v.renderToolCallCached(tc, width, toolThemeKey(v.Theme))
 }
 
@@ -1469,13 +1478,13 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 	switch tc.Name {
 	case "write", "Write":
 		content, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "content")
-		if !ok || content == "" {
+		if !ok {
 			return nil
 		}
 		return v.liveRows(v.renderLiveWrite(tc, content, flatToolBodyRenderWidth(width)), width)
 	case "edit", "Edit":
 		edit := ExtractCurrentEdit(tc.RawJSONBuf)
-		if edit.Idx == 0 || (edit.OldText == "" && edit.NewText == "") {
+		if edit.Idx == 0 {
 			return nil
 		}
 		return v.liveRows(v.renderLiveEdit(tc, edit, flatToolBodyRenderWidth(width)), width)
@@ -1913,16 +1922,11 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 	}
 
 	joined := strings.Join(code, "\n")
-	var highlighted []string
-	if lang := LanguageFromPath(sourcePath); lang != "" && len(code) <= addedFileHighlightMaxLines && len(joined) <= addedFileHighlightMaxBytes {
-		highlighted = v.Theme.HighlightCode(joined, lang)
+	lang := LanguageFromPath(sourcePath)
+	if len(code) > addedFileHighlightMaxLines || len(joined) > addedFileHighlightMaxBytes {
+		lang = ""
 	}
-	if len(highlighted) != len(code) {
-		highlighted = make([]string, len(code))
-		for i, c := range code {
-			highlighted[i] = v.Theme.FGColor(v.Theme.Tool, c)
-		}
-	}
+	highlighted := v.highlightOrPlain(code, lang, v.Theme.HighlightCode)
 
 	const indent = "    "
 	rowCells := width - len(indent)

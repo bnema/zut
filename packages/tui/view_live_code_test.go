@@ -96,3 +96,32 @@ func TestLiveCodeCacheSurvivesPruning(t *testing.T) {
 		t.Fatalf("live code states pruned while call active: %d", len(v.liveCode))
 	}
 }
+
+func TestLiveEditKeepsWindowBetweenEdits(t *testing.T) {
+	v := &View{Theme: Dark}
+	tc := ToolCallView{ID: "e", Name: "edit", LivePath: "a.txt",
+		RawJSONBuf: `{"path":"a.txt","edits":[{"oldText":"a","newText":"b"},{"oldText":"`}
+	body := liveBody(t, v, tc)
+	if len(body) != liveCodeRows+1 {
+		t.Fatalf("rows = %d", len(body))
+	}
+	if got := strings.TrimSpace(stripANSI(body[0])); got != "edit 2 · -0 +0" {
+		t.Fatalf("progress = %q", got)
+	}
+}
+
+func TestLiveWriteWindowOnEmptyContent(t *testing.T) {
+	v := &View{Theme: Dark}
+	body := liveBody(t, v, liveWriteCall(""))
+	if len(body) != liveCodeRows+1 {
+		t.Fatalf("rows = %d", len(body))
+	}
+}
+
+func TestRenderAddedFileHighlightsWithTrailingBlankLines(t *testing.T) {
+	v := &View{Theme: Dark}
+	rows := v.renderAddedFile("package main\n\n\n", "a.go", 80)
+	if len(rows) == 0 || !strings.Contains(rows[0], "\x1b[38") {
+		t.Fatalf("first row not highlighted: %q", rows)
+	}
+}

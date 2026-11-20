@@ -18,7 +18,7 @@ func TestLiveHighlightedRecomputesOnlyOnNewLines(t *testing.T) {
 	var done []string
 	var partial string
 	for i := 1; i <= len(src); i++ {
-		done, partial = v.liveHighlighted("w", "content", "go", src[:i])
+		done, _, partial = v.liveHighlighted("w", "content", "go", src[:i])
 		if strings.Contains(partial, "\x1b[") {
 			t.Fatalf("partial line carries SGR: %q", partial)
 		}
@@ -38,7 +38,7 @@ func TestLiveHighlightedRecomputesOnlyOnNewLines(t *testing.T) {
 func TestLiveHighlightedResetsOnKeyChange(t *testing.T) {
 	v := &View{Theme: Dark}
 	v.liveHighlighted("e", "oldText#1", "go", "a\nb\n")
-	done, _ := v.liveHighlighted("e", "oldText#2", "go", "c\n")
+	done, _, _ := v.liveHighlighted("e", "oldText#2", "go", "c\n")
 	if len(done) != 1 || v.liveCode["e"].recomputes != 1 {
 		t.Fatalf("state not reset: lines=%d recomputes=%d", len(done), v.liveCode["e"].recomputes)
 	}
@@ -47,12 +47,62 @@ func TestLiveHighlightedResetsOnKeyChange(t *testing.T) {
 func TestLiveHighlightedWindowsLongBodies(t *testing.T) {
 	v := &View{Theme: Dark}
 	text := strings.Repeat("x := 1\n", liveCodeHighlightWindow+50)
-	done, _ := v.liveHighlighted("w", "content", "go", text)
-	if len(done) != liveCodeHighlightWindow+50 {
-		t.Fatalf("lines = %d", len(done))
+	tail, complete, _ := v.liveHighlighted("w", "content", "go", text)
+	if complete != liveCodeHighlightWindow+50 || len(tail) != liveCodeHighlightWindow {
+		t.Fatalf("complete = %d tail = %d", complete, len(tail))
 	}
-	if done[0] != Dark.FGColor(Dark.Tool, "x := 1") {
-		t.Fatalf("pre-window row not plain: %q", done[0])
+	if !strings.Contains(tail[0], "\x1b[") {
+		t.Fatalf("tail row not highlighted: %q", tail[0])
+	}
+}
+
+func TestLiveHighlightedKeepsHighlightWithTrailingBlankLines(t *testing.T) {
+	v := &View{Theme: Dark}
+	src := "package main\n\n"
+	for i := 1; i <= len(src); i++ {
+		tail, _, _ := v.liveHighlighted("w", "content", "go", src[:i])
+		if len(tail) > 0 && !strings.Contains(tail[0], "\x1b[") {
+			t.Fatalf("prefix %q: first row lost highlight: %q", src[:i], tail[0])
+		}
+	}
+}
+
+func TestLiveHighlightedRecomputesOnSameLengthChange(t *testing.T) {
+	v := &View{Theme: Dark}
+	v.liveHighlighted("w", "content", "", "aaa\nb")
+	tail, _, _ := v.liveHighlighted("w", "content", "", "zzz\nb")
+	if v.liveCode["w"].recomputes != 2 || stripANSI(tail[0]) != "zzz" {
+		t.Fatalf("stale cache: recomputes=%d tail=%q", v.liveCode["w"].recomputes, tail)
+	}
+}
+
+func TestLiveHighlightedChangedLengthRecomputes(t *testing.T) {
+	v := &View{Theme: Dark}
+	v.liveHighlighted("w", "content", "", "aaa\nb")
+	tail, _, _ := v.liveHighlighted("w", "content", "", "aaaa\nb")
+	if stripANSI(tail[0]) != "aaaa" {
+		t.Fatalf("stale cache: %q", tail)
+	}
+}
+
+func TestAdoptRenderCacheKeepsLiveCode(t *testing.T) {
+	v := &View{Theme: Dark}
+	v.liveHighlighted("w", "content", "go", "a\n")
+	snap := &View{Theme: Dark}
+	v.AdoptRenderCacheFrom(snap)
+	if v.liveCode["w"] == nil {
+		t.Fatal("adopt dropped live code state")
+	}
+}
+
+func TestRenderToolCallPrunesFinishedLiveCode(t *testing.T) {
+	v := &View{Theme: Dark}
+	v.liveHighlighted("w", "content", "go", "a\n")
+	v.liveHighlighted("w"+liveCodeIDSep+"oldText", "oldText#1", "go", "a\n")
+	v.liveHighlighted("other", "content", "go", "a\n")
+	v.RenderToolCall(ToolCallView{ID: "w", Name: "write", Done: true, Result: "ok"}, 80)
+	if len(v.liveCode) != 1 || v.liveCode["other"] == nil {
+		t.Fatalf("liveCode = %v", v.liveCode)
 	}
 }
 
