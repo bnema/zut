@@ -262,7 +262,7 @@ func LanguageFromPath(p string) string {
 // terminal syntax formatters while preserving foreground colors and styles.
 // Chroma's inherited styles can assign black backgrounds to a few tokens
 // (notably punctuation/error-ish spans), which looks like random black blocks
-// inside zut's dark-gray tool boxes. Foreground color is enough for code.
+// inside zut's tool bodies. Foreground color is enough for code.
 //
 // Extended color parameters ("38;5;N", "38;2;R;G;B" and their "48;..."
 // background twins) are consumed as whole units. The color index of an

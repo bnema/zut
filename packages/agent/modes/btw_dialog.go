@@ -252,7 +252,7 @@ func (d *btwDialog) Loading() bool {
 }
 
 // enqueueToolConfirmation attaches the side-effect-free confirmation preview
-// to the matching side-chat tool box and queues its prompt while d.mu is
+// to the matching side-chat tool call and queues its prompt while d.mu is
 // held. Keeping both actions together prevents Close from advancing the
 // generation between the ownership check and the confirmation enqueue.
 func (d *btwDialog) enqueueToolConfirmation(origin, id, summary, content string, enqueue func()) bool {
@@ -826,7 +826,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		out = append(out, btwUserBubbleRows(th, t.User, width-2)...)
 		if len(t.Tools) > 0 {
 			// Match the main transcript's inter-message separator between
-			// the user bubble and the first tool box.
+			// the user bubble and the first tool header.
 			out = append(out, "")
 		}
 		for _, tool := range t.Tools {

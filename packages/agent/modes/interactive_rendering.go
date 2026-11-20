@@ -1260,10 +1260,9 @@ func clipBottomClippedImages(lines []string) []string {
 		// the current chat slice, the image would paint down into the
 		// fixed status bar area. Suppress that image for this frame.
 		//
-		// When the image lives inside a tool box, the reservation rows
-		// are wrapped in vertical box edges ("│  ...  │"); those rows
-		// look non-blank under a naive whitespace check but are still
-		// reservation rows for this scan, so treat them as blank.
+		// When the image lives in a tool body, the reservation rows are
+		// indented under the tool header; isBoxBlankLine also tolerates
+		// legacy "│" edges, so treat those rows as blank.
 		foundInfo := false
 		for j := i + 1; j < len(out); j++ {
 			if strings.Contains(out[j], "image - ") {
@@ -1280,6 +1279,9 @@ func clipBottomClippedImages(lines []string) []string {
 	}
 	return out
 }
+
+// isBoxBlankLine reports whether line is empty after stripping ANSI
+// escapes, whitespace, and "│" edges.
 func isBoxBlankLine(line string) bool {
 	stripped := stripANSIBytes(line)
 	stripped = strings.TrimSpace(stripped)

@@ -124,9 +124,8 @@ func renderITerm2(data []byte, maxCellsWide, maxCellsHigh int) string {
 	}
 	sb.WriteString(";preserveAspectRatio=1")
 	// doNotMoveCursor=1 keeps the cursor at the start of the image
-	// after rendering. We need that so the caller can pad with spaces
-	// and draw the box's closing │ at a fixed terminal column without
-	// having to know how many cells the image actually occupied (the
+	// after rendering. We need that so the caller can pad the tool body
+	// row with spaces at a fixed terminal column without having to know how many cells the image actually occupied (the
 	// rendered width depends on the terminal's cell aspect ratio).
 	sb.WriteString(";doNotMoveCursor=1:")
 	sb.WriteString(b64)
@@ -180,9 +179,8 @@ func renderKitty(data []byte, maxCellsWide, maxCellsHigh int) string {
 	// preserves aspect ratio when exactly one of c/r is provided.
 	//
 	// C=1 tells kitty/ghostty to not move the cursor after rendering
-	// the image. We need that so the caller can pad with spaces and
-	// draw the box's closing │ at a fixed terminal column without
-	// having to know how many cells the image actually occupied (the
+	// the image. We need that so the caller can pad the tool body row
+	// with spaces at a fixed terminal column without having to know how many cells the image actually occupied (the
 	// rendered width depends on the terminal's cell aspect ratio,
 	// which differs across fonts/terminals).
 	hdr := "a=T,f=100,C=1"

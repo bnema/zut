@@ -415,7 +415,7 @@ func (t Theme) UserBubble(s string, width int) string {
 // width-2 (the bar + its trailing space).
 func (t Theme) UserBubbleRow(content string, width int) string {
 	// Bar plus a single space gutter, in the assistant accent colour
-	// so it matches the tool-box / app accent and reads as zut's voice
+	// so it matches the tool header / app accent and reads as zut's voice
 	// marker. Two cells wide.
 	bar := t.FGColor(t.Assistant, "▌ ")
 	bubbleW := width - 2

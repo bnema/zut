@@ -1178,10 +1178,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				// call's label followed by indented body rows. The label is
 				// looked up from the matching ToolCallBlock so multiple calls
 				// in one assistant message render as N adjacent blocks.
-				mode := toolModeFor(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID])
-				if tr.IsError {
-					mode = modeDefault
-				}
+				mode := toolModeFor(v.toolCallNames[tr.CallID], v.toolCallArgs[tr.CallID], tr.IsError)
 				stats := ""
 				for _, c := range tr.Content {
 					if tb, ok := c.(provider.TextBlock); ok {
@@ -1191,13 +1188,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				}
 				lines = append(lines, toolHeaderLine(v.Theme, label, stats, width))
 				if tr.IsError {
-					lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error")))
+					lines = append(lines, toolBodyLine(v.Theme.FGColor(color, "  error")))
 				}
 				for _, line := range append(v.renderNestedActivity(recap, width-8), v.renderToolResultContent(tr.Content, width, color, path, startLine, mode)...) {
-					// Image-footprint rows carry a sentinel tag; strip it so
-					// the row renders as-is under the header.
-					_, stripped := parseImageFootprint(line)
-					lines = append(lines, clipToolRow(toolBodyLine(v.Theme, stripped), width))
+					lines = append(lines, toolBodyRow(line, width))
 				}
 			}
 		}
@@ -1419,9 +1413,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		bodyText = tc.Preview
 	}
 
-	// Finished tool call with no body: just the labelled top edge
-	// directly closed by the bottom. Avoids a blank interior row
-	// for no-output tools without a nested-call recap.
+	// Finished tool call with no body: just the tool header. Avoids a
+	// blank body row for no-output tools without a nested-call recap.
 	if bodyText == "" && tc.Recap == "" {
 		lines = append(lines, toolHeaderLine(v.Theme, label, "", width))
 		return lines
@@ -1433,15 +1426,12 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if tc.Error {
 		color = v.Theme.Error
 	}
-	stats := ""
-	if !tc.Error {
-		stats = codeChangeStats(v.Theme, toolModeFor(tc.Name, json.RawMessage(tc.RawJSONBuf)), bodyText)
-	}
+	mode := toolModeFor(tc.Name, json.RawMessage(tc.RawJSONBuf), tc.Error)
+	stats := codeChangeStats(v.Theme, mode, bodyText)
 	lines = append(lines, toolHeaderLine(v.Theme, label, stats, width))
-	body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color)
+	body := v.toolBodyWithActivity(tc, bodyText, flatToolBodyRenderWidth(width), color, mode)
 	for _, l := range body {
-		_, stripped := parseImageFootprint(l)
-		lines = append(lines, clipToolRow(toolBodyLine(v.Theme, stripped), width))
+		lines = append(lines, toolBodyRow(l, width))
 	}
 	return lines
 }
@@ -1493,7 +1483,7 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 		if !ok || strings.TrimSpace(command) == "" {
 			return nil
 		}
-		return v.wrapLiveBody(v.renderLiveBashCommand(command, width), width)
+		return v.liveRows(v.collapseToolBody(v.renderLiveBashCommand(command, width), false), width)
 	}
 	return nil
 }
@@ -1525,19 +1515,11 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 	return out
 }
 
-// wrapLiveBody returns the streaming body content as indented tool
-// body rows. The caller (renderToolCall) supplies the header line so
-// the live overlay matches the finalised transcript form.
-func (v *View) wrapLiveBody(body []string, width int) []string {
-	return v.liveRows(v.collapseToolBody(body, false), width)
-}
-
 // liveRows indents live body rows under the header without collapsing.
 func (v *View) liveRows(body []string, width int) []string {
 	out := make([]string, 0, len(body))
 	for _, l := range body {
-		_, stripped := parseImageFootprint(l)
-		out = append(out, clipToolRow(toolBodyLine(v.Theme, stripped), width))
+		out = append(out, toolBodyRow(l, width))
 	}
 	return out
 }
@@ -1673,10 +1655,17 @@ func codeChangeStats(th Theme, mode toolRenderMode, text string) string {
 // toolBodyLine indents a single tool body line. It trims part of the
 // renderers' own indent, then prepends a fixed gutter so output sits in
 // a readable column under the header. ANSI styling is preserved.
-func toolBodyLine(th Theme, line string) string {
-	_ = th
+func toolBodyLine(line string) string {
 	line = trimLeadingSpaces(line, toolBodyTrimLeft)
 	return strings.Repeat(" ", toolOuterMargin+2) + line
+}
+
+// toolBodyRow turns one rendered body line into a final tool body row:
+// it strips the image-footprint sentinel, indents the line, and clips it
+// to width.
+func toolBodyRow(line string, width int) string {
+	_, stripped := parseImageFootprint(line)
+	return clipToolRow(toolBodyLine(stripped), width)
 }
 
 // imageFootprintSentinel marks rows that belong to an inline-image's
@@ -1848,8 +1837,11 @@ const (
 )
 
 // toolModeFor picks the render mode from the tool name and arguments.
-// Callers force modeDefault for error results.
-func toolModeFor(name string, raw json.RawMessage) toolRenderMode {
+// Error results always use modeDefault.
+func toolModeFor(name string, raw json.RawMessage, isError bool) toolRenderMode {
+	if isError {
+		return modeDefault
+	}
 	switch name {
 	case "edit", "Edit":
 		return modeDiff
@@ -1967,15 +1959,8 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 	rowCells := width - len(indent)
 	out := make([]string, 0, len(code))
 	for i, h := range highlighted {
-		gutter := fmt.Sprintf("%4d + ", i+1)
-		blank := strings.Repeat(" ", visibleWidth(gutter))
-		codeWidth := max(1, rowCells-visibleWidth(gutter))
-		for j, chunk := range wrapANSILine(h, codeWidth) {
-			g := v.Theme.FGColor(v.Theme.Tool, gutter)
-			if j > 0 {
-				g = blank
-			}
-			out = append(out, indent+v.Theme.tintRow(g+chunk, v.Theme.DiffAddBG, rowCells))
+		for _, row := range v.codeChangeRow(liveCodeLine{text: h, sign: '+', number: i + 1}, rowCells) {
+			out = append(out, indent+row)
 		}
 	}
 	return out
@@ -3283,13 +3268,9 @@ var osUserHome = func() string {
 	return ""
 }
 
-func (v *View) toolBodyWithActivity(tc ToolCallView, text string, width int, color TerminalColor) []string {
+func (v *View) toolBodyWithActivity(tc ToolCallView, text string, width int, color TerminalColor, mode toolRenderMode) []string {
 	if !tc.Done && tc.NestedActivity {
 		return v.renderNestedActivity(text, width)
-	}
-	mode := toolModeFor(tc.Name, json.RawMessage(tc.RawJSONBuf))
-	if tc.Error {
-		mode = modeDefault
 	}
 	return append(v.renderNestedActivity(tc.Recap, width), v.renderLiveToolResult(text, width, color, tc.LivePath, mode)...)
 }

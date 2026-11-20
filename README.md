@@ -1209,8 +1209,8 @@ Image frames fully repaint to prevent stale pixels on scroll, costing one termin
 
 Each tool call renders as a `▌ name args` header followed by indented output in theme colors.
 
-- **Code changes** (`edit`, `write`, and `ast` rewrites) always render in full. Diffs show real file line numbers, `⋮` between hunks, and green/red row tints; written files show as added lines. The header shows `+N -M` change counts. LSP diagnostics follow the change as plain text.
-- **While streaming**, `write` and `edit` show a fixed-height window: a progress row plus the last 12 lines of the content being written (for `edit`, the current edit's old text as `-` rows, then its new text as `+` rows).
+- **Code changes** (`edit`, `write`, and `ast` rewrites) always render in full. Diffs show real file line numbers, `⋮` between hunks, and green/red row tints; written files show as added lines. The header shows `+N -M` change counts. LSP diagnostics follow the change as warning-colored text.
+- **While streaming**, `write` and `edit` show a fixed-height window: a progress row plus the last 12 rows of the content being written (for `edit`, the current edit's old text as `-` rows, then its new text as `+` rows).
 - **Other tools** collapse results longer than ~12 lines to a preview with `... (N more lines, ctrl+o to expand)`.
 
 Diff tints come from the theme (`diff_add_bg`, `diff_del_bg`; see [docs/themes.md](docs/themes.md)).

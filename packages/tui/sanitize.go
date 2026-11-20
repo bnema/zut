@@ -17,11 +17,11 @@ const (
 )
 
 // Text from models, tools, and paste is untrusted terminal input. Layout
-// code measures rows with visibleWidth and pads box edges from that
+// code measures rows with visibleWidth and pads and tints rows from that
 // measurement, so every such string must pass through sanitizeText or
 // sanitizeLine before layout. Tabs, carriage returns, escape sequences, and
 // other controls move the real cursor differently from what visibleWidth
-// counts, which misplaces box edges and leaves stale cells on screen.
+// counts, which misaligns rows and leaves stale cells on screen.
 
 // splitLines splits s into rows, treating CRLF and lone CR as line breaks
 // so carriage-return progress output becomes separate rows.

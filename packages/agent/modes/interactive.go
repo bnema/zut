@@ -1685,12 +1685,6 @@ const (
 	shellEscapeMetaKey            = "shell_escape"
 )
 
-// isBoxBlankLine reports whether line is visually empty after
-// stripping ANSI escape sequences, surrounding whitespace, and the
-// vertical box edges drawn by the tool-box renderer. Used by
-// clipBottomClippedImages so an image's reservation rows still count
-// as blank when those rows are wrapped in "│  ...  │" inside a tool box.
-
 // stripANSIBytes removes ANSI CSI escape sequences (ESC '[' ... final
 // byte) from s without pulling in the regexp package. Mirrors the
 // internal helper in package tui; the duplicated copy avoids exporting

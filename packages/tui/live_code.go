@@ -111,7 +111,7 @@ func (v *View) highlightOrPlain(lines []string, lang string, hl func(src, lang s
 // window. One progress row sits above them.
 const liveCodeRows = 12
 
-// liveCodeLine is one source line of a live tail window.
+// liveCodeLine is one added or removed source line of a code-change body.
 type liveCodeLine struct {
 	text   string // highlighted (complete) or sanitized plain (partial)
 	sign   byte   // '+' or '-'
@@ -208,7 +208,7 @@ func (v *View) liveCodeWindow(progress string, lines []liveCodeLine, width int) 
 	rowCells := width - len(indent)
 	var tail []string
 	for i := len(lines) - 1; i >= 0 && len(tail) < liveCodeRows; i-- {
-		rows := v.liveCodeRow(lines[i], rowCells)
+		rows := v.codeChangeRow(lines[i], rowCells)
 		for j := len(rows) - 1; j >= 0 && len(tail) < liveCodeRows; j-- {
 			tail = append(tail, indent+rows[j])
 		}
@@ -224,9 +224,11 @@ func (v *View) liveCodeWindow(progress string, lines []liveCodeLine, width int) 
 	return out
 }
 
-// liveCodeRow renders one source line with the 7-cell diff gutter and the
-// add/remove tint, wrapping long lines onto blank-gutter rows.
-func (v *View) liveCodeRow(l liveCodeLine, rowCells int) []string {
+// codeChangeRow renders one added or removed source line with the 7-cell
+// diff gutter and the add/remove tint, wrapping long lines onto
+// blank-gutter rows. Live write/edit windows and written-file results
+// share it.
+func (v *View) codeChangeRow(l liveCodeLine, rowCells int) []string {
 	color, tint := v.Theme.Tool, v.Theme.DiffAddBG
 	if l.sign == '-' {
 		color, tint = v.Theme.Error, v.Theme.DiffDelBG
@@ -235,15 +237,20 @@ func (v *View) liveCodeRow(l liveCodeLine, rowCells int) []string {
 	if l.number > 0 {
 		gutter = fmt.Sprintf("%4d %c ", l.number, l.sign)
 	}
-	blank := strings.Repeat(" ", visibleWidth(gutter))
-	chunks := wrapANSILine(l.text, max(1, rowCells-visibleWidth(gutter)))
+	gutterWidth := visibleWidth(gutter)
+	first := v.Theme.FGColor(color, gutter)
+	chunks := wrapANSILine(l.text, max(1, rowCells-gutterWidth))
 	if len(chunks) == 0 {
 		chunks = []string{""}
 	}
 	rows := make([]string, len(chunks))
+	blank := ""
 	for i, chunk := range chunks {
-		g := v.Theme.FGColor(color, gutter)
+		g := first
 		if i > 0 {
+			if blank == "" {
+				blank = strings.Repeat(" ", gutterWidth)
+			}
 			g = blank
 		}
 		rows[i] = v.Theme.tintRow(g+chunk, tint, rowCells)
