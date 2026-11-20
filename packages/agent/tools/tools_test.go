@@ -328,6 +328,34 @@ func TestEditPreservesCRLF(t *testing.T) {
 	}
 }
 
+func TestEditCRLFDiffIsLineLevel(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("\xEF\xBB\xBFa\r\nb\r\nc\r\nd\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &EditTool{CWD: dir}
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
+		"path":  "a.txt",
+		"edits": []map[string]any{{"oldText": "b", "newText": "B"}},
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Content[0].(provider.TextBlock).Text
+	want := "@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n d\n"
+	if got != want {
+		t.Fatalf("diff = %q, want %q", got, want)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "\xEF\xBB\xBFa\r\nB\r\nc\r\nd\r\n" {
+		t.Fatalf("file = %q", string(b))
+	}
+}
+
 func TestResolveShell(t *testing.T) {
 	notFound := errors.New("not found")
 	tests := []struct {

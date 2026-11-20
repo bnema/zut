@@ -162,6 +162,8 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 	}
 	out.WriteString(body[prev:])
 	newBody := out.String()
+	// Diff the LF-normalized, BOM-free bodies so CRLF files diff per line.
+	diff := unifiedDiff(a.Path, body, newBody)
 
 	// Restore line endings.
 	if nl == "\r\n" {
@@ -170,7 +172,6 @@ func (t *EditTool) plan(raw json.RawMessage) (editPlan, error) {
 	final := append([]byte{}, bom...)
 	final = append(final, []byte(newBody)...)
 
-	diff := unifiedDiff(a.Path, string(orig), strings.ReplaceAll(newBody, "\r\n", "\n"))
 	// The tool-call header renders the path above the result, so the
 	// result body is just the context diff. Details carries metadata for
 	// programmatic consumers and confirmation previews.
