@@ -67,6 +67,23 @@ type fileSuggester struct {
 	// Stat is cheap (single syscall) so doing it per keystroke while
 	// the popup is open does not impact responsiveness.
 	cachedMTime time.Time
+	// rank memoizes the last matches() result. It is valid while the
+	// query, mode, and scan result (by slice identity) are unchanged, so
+	// repeated frames skip fuzzy ranking; scan() still stats the
+	// directory every call and replaces cachedAll when it changes.
+	rank fileRankMemo
+}
+
+type fileRankMemo struct {
+	all       []fileEntry
+	query     string
+	recursive bool
+	out       []fileEntry
+}
+
+func (m *fileRankMemo) hit(all []fileEntry, query string, recursive bool) bool {
+	return len(m.all) > 0 && len(m.all) == len(all) && &m.all[0] == &all[0] &&
+		m.query == query && m.recursive == recursive
 }
 
 type fileEntry struct {
@@ -342,6 +359,9 @@ func (s *fileSuggester) matches(input string) []fileEntry {
 	if query == "" {
 		return all
 	}
+	if s.rank.hit(all, query, s.recursive) {
+		return s.rank.out
+	}
 	haystack := make([]string, len(all))
 	for i, e := range all {
 		if s.recursive {
@@ -357,6 +377,7 @@ func (s *fileSuggester) matches(input string) []fileEntry {
 			out = append(out, all[m.Index])
 		}
 	}
+	s.rank = fileRankMemo{all: all, query: query, recursive: s.recursive, out: out}
 	return out
 }
 

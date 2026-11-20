@@ -442,3 +442,49 @@ func TestRedrawUsesPublishedFileSuggesterView(t *testing.T) {
 	}
 	<-done
 }
+
+// TestFileSuggesterMatchesMemoizesRanking checks that an unchanged query
+// and directory reuse the ranked result, while a new file (dir mtime
+// change) or a mode toggle ranks again.
+func TestFileSuggesterMatchesMemoizesRanking(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"alpha.go", "beta.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newFileSuggester()
+	s.SetCWD(dir)
+	first := s.matches("@a")
+	second := s.matches("@a")
+	if len(first) == 0 || &first[0] != &second[0] {
+		t.Fatal("same input should reuse the ranked slice")
+	}
+	if clone := s.Clone().matches("@a"); &clone[0] != &first[0] {
+		t.Fatal("clone should inherit the ranking memo")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "gamma.go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(dir, future, future); err != nil {
+		t.Fatal(err)
+	}
+	fresh := s.matches("@a")
+	if &fresh[0] == &first[0] {
+		t.Fatal("dir mtime change should re-rank")
+	}
+	found := false
+	for _, e := range fresh {
+		found = found || e.name == "gamma.go"
+	}
+	if !found {
+		t.Fatal("new file missing after dir change")
+	}
+
+	s.SetRecursive(true)
+	if toggled := s.matches("@a"); len(toggled) == 0 || &toggled[0] == &fresh[0] {
+		t.Fatal("recursive toggle should re-rank")
+	}
+}
