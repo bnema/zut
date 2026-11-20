@@ -393,12 +393,14 @@ func (s *fileSuggester) Reset() {
 	s.browseRel = ""
 	s.cachedDir = ""
 	s.cachedAll = nil
+	s.rank = fileRankMemo{}
 }
 
 // Invalidate forces a rescan.
 func (s *fileSuggester) Invalidate() {
 	s.cachedDir = ""
 	s.cachedAll = nil
+	s.rank = fileRankMemo{}
 }
 
 func (s *fileSuggester) Up() {
