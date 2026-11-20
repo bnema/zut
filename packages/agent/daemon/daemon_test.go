@@ -47,12 +47,11 @@ func newTestSession(t *testing.T, id string) *testSession {
 		info:       session.Info{ID: id, CWD: "/w/" + id, Attach: session.AttachStateDetached, Run: session.RunStateIdle, SessionPath: filepath.Join(t.TempDir(), id+".jsonl")},
 		done:       make(chan struct{}),
 		subscribed: make(chan struct{}, 1),
-		// closes and attach are read in order by tests, so sends must not be
-		// dropped, and attach/detach call SetAttach with an uncancellable
-		// context. The SetAttach and Close doubles below therefore send
-		// without a select; only these buffer sizes keep them from blocking
-		// shutdown. Each test drives a few attach/close operations per
-		// session, far below them.
+		// The SetAttach and Close doubles send without a select: a ctx case
+		// would drop events tests read in order, and attach/detach pass an
+		// uncancellable ctx anyway. Only these buffer sizes keep them from
+		// blocking shutdown; each test drives a few attach/close operations
+		// per session, far below them.
 		closes: make(chan string, 16),
 		attach: make(chan session.AttachState, 64),
 		inputs: make(chan session.Input, 4),
