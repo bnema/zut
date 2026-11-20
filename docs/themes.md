@@ -118,9 +118,10 @@ paints the full zut row; omit it to retain terminal background ownership.
 
 `diff_add_bg` and `diff_del_bg` tint whole added and removed rows in edit
 diffs and written files. The built-in `dark` and `light` themes set both.
-`auto` derives them by blending the terminal background with its reported
-bright green and bright red palette colors; when the terminal does not report
-a color, that tint is off and rows keep only their foreground color.
+`auto` derives them by blending the terminal background with its bright green
+and bright red palette colors, using the standard xterm colors when the
+terminal does not report its palette. When the terminal background is unknown,
+rows keep only their foreground color.
 
 `spinner_frames` contains 1–64 non-empty frames. `spinner_interval_ms` must be
 between 10 and 10000. Theme files are limited to 1 MiB.

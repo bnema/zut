@@ -214,7 +214,8 @@ func TestTerminalThemeDiffTints(t *testing.T) {
 	if th.DiffAddBG == nil || *th.DiffAddBG != blendTerminalColors(profile.Background, profile.Palette[10], 18) {
 		t.Fatalf("diff add tint = %#v", th.DiffAddBG)
 	}
-	if th.DiffDelBG != nil {
-		t.Fatalf("unreported red slot produced a tint: %#v", th.DiffDelBG)
+	// An unreported slot falls back to the standard xterm color.
+	if th.DiffDelBG == nil || *th.DiffDelBG != blendTerminalColors(profile.Background, TerminalPaletteSlot(9), 18) {
+		t.Fatalf("diff del tint = %#v", th.DiffDelBG)
 	}
 }

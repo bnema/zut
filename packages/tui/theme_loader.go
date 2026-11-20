@@ -218,14 +218,19 @@ func TerminalTheme(profile TerminalProfile) Theme {
 		t.ToolOut = t.Muted
 		t.UserBubbleBG = blendTerminalColors(profile.Background, profile.Foreground, 12)
 		t.SelectionBG = blendTerminalColors(profile.Background, profile.Foreground, 25)
-		// Diff tints blend the reported green/red palette slots into the
-		// background; without a reported slot there is no tint.
-		if add, ok := profile.PaletteColor(10); ok {
-			t.DiffAddBG = colorPtr(blendTerminalColors(profile.Background, add, 18))
+		// Diff tints blend the bright green/red palette slots into the
+		// background. Terminals that do not report their palette fall back to
+		// the standard xterm slot colors, so a known background always tints.
+		add, ok := profile.PaletteColor(10)
+		if !ok {
+			add = TerminalPaletteSlot(10)
 		}
-		if del, ok := profile.PaletteColor(9); ok {
-			t.DiffDelBG = colorPtr(blendTerminalColors(profile.Background, del, 18))
+		del, ok := profile.PaletteColor(9)
+		if !ok {
+			del = TerminalPaletteSlot(9)
 		}
+		t.DiffAddBG = colorPtr(blendTerminalColors(profile.Background, add, 18))
+		t.DiffDelBG = colorPtr(blendTerminalColors(profile.Background, del, 18))
 	}
 	// Auto must leave both the terminal background and cursor color owned by
 	// the terminal. Custom themes can intentionally override Background.
