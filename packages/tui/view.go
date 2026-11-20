@@ -1611,7 +1611,7 @@ func toolHeaderLine(th Theme, label, stats string, width int) string {
 			rest = ""
 		}
 	}
-	return margin + gutter + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest) + suffix
+	return clipToolRow(margin+gutter+th.FGColor(th.FG, name)+th.FGColor(th.Muted, rest)+suffix, width)
 }
 
 // codeChangeStats returns the styled header stats for a code-change
@@ -1629,18 +1629,34 @@ func codeChangeStats(th Theme, mode toolRenderMode, text string) string {
 		if !looksLikeUnifiedDiff(body) {
 			return ""
 		}
+		// Count by first byte like renderUnifiedDiff. "--- "/"+++ " are
+		// file headers only before the first hunk or change row (legacy
+		// sessions); later they are a "-- …" deletion or "++…" addition.
+		inBody := false
 		for _, l := range strings.Split(body, "\n") {
-			switch {
-			case strings.HasPrefix(l, "+++"), strings.HasPrefix(l, "---"), strings.HasPrefix(l, "@@"):
-			case strings.HasPrefix(l, "+"):
+			if l == "" || l == "..." || strings.HasPrefix(l, "... [") {
+				continue
+			}
+			if strings.HasPrefix(l, "@@") {
+				inBody = true
+				continue
+			}
+			if !inBody && (strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ")) {
+				continue
+			}
+			switch l[0] {
+			case '+':
 				adds++
-			case strings.HasPrefix(l, "-"):
+				inBody = true
+			case '-':
 				dels++
+				inBody = true
+			case ' ':
+				inBody = true
 			}
 		}
 	case modeAddedFile:
-		code, _ := splitFileFooter(body)
-		adds = len(code)
+		adds = len(addedFileLines(body))
 	default:
 		return ""
 	}
@@ -1857,7 +1873,27 @@ func splitDiagnosticsTrailer(text string) (body, trailer string) {
 	if i < 0 {
 		return text, ""
 	}
-	return text[:i], text[i+2:]
+	trailer = text[i+2:]
+	first, _, _ := strings.Cut(trailer, "\n")
+	if !diagnosticsHeaderRE.MatchString(first) {
+		return text, ""
+	}
+	return text[:i], trailer
+}
+
+// diagnosticsHeaderRE matches the first trailer line written by
+// packages/agent/lsp (FormatDiagnostics).
+var diagnosticsHeaderRE = regexp.MustCompile(`^Diagnostics: .+ \(deduplicated \d+\)$`)
+
+// addedFileLines splits written file content into lines, dropping the
+// phantom empty element after a final newline. Write results are raw
+// content, so no footer is split off.
+func addedFileLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return lines
 }
 
 // renderCodeChange renders a code-change result body in full: the diff or
@@ -1913,10 +1949,9 @@ const (
 
 // renderAddedFile renders written file content as added diff rows: a
 // "%4d + " gutter, highlighted code, and the DiffAddBG tint across the
-// row. Trailing "..." footer lines (and one blank before them) render
-// muted, untinted, and unnumbered, as in renderRawFile.
+// row. Every line is file content; write results carry no footer.
 func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
-	code, footer := splitFileFooter(text)
+	code := addedFileLines(text)
 	for i, c := range code {
 		code[i] = sanitizeLine(c, codeTabStop)
 	}
@@ -1930,7 +1965,7 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 
 	const indent = "    "
 	rowCells := width - len(indent)
-	out := make([]string, 0, len(code)+len(footer))
+	out := make([]string, 0, len(code))
 	for i, h := range highlighted {
 		gutter := fmt.Sprintf("%4d + ", i+1)
 		blank := strings.Repeat(" ", visibleWidth(gutter))
@@ -1942,9 +1977,6 @@ func (v *View) renderAddedFile(text, sourcePath string, width int) []string {
 			}
 			out = append(out, indent+v.Theme.tintRow(g+chunk, v.Theme.DiffAddBG, rowCells))
 		}
-	}
-	for _, f := range footer {
-		out = append(out, indent+v.Theme.FGColor(v.Theme.Muted, sanitizeLine(f, terminalTabStop)))
 	}
 	return out
 }
@@ -2522,7 +2554,7 @@ func looksLikeUnifiedDiff(text string) bool {
 		return false
 	}
 	sawChange := false
-	for _, l := range lines {
+	for i, l := range lines {
 		if l == "" {
 			continue
 		}
@@ -2532,7 +2564,7 @@ func looksLikeUnifiedDiff(text string) bool {
 			continue
 		}
 		if strings.HasPrefix(l, "@@") {
-			if _, _, ok := parseHunkHeader(l); !ok {
+			if _, _, ok := parseHunkHeader(l); !ok && !truncatedTail(lines[i+1:]) {
 				return false
 			}
 			continue
@@ -2547,6 +2579,19 @@ func looksLikeUnifiedDiff(text string) bool {
 		}
 	}
 	return sawChange
+}
+
+// truncatedTail reports whether rest (the lines after a row) holds no
+// further content or starts with a "... [" truncation notice: a bounded
+// result may cut a hunk header short.
+func truncatedTail(rest []string) bool {
+	for _, l := range rest {
+		if l == "" {
+			continue
+		}
+		return strings.HasPrefix(l, "... [")
+	}
+	return true
 }
 
 // renderUnifiedDiff renders the edit tool's context diff. Each
@@ -2572,11 +2617,17 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 			continue
 		}
 		if strings.HasPrefix(l, "@@") {
-			if o, n, ok := parseHunkHeader(l); ok {
-				// A zero-count side starts at the preceding line (0 at
-				// the top of a file); it has no rows, so clamp to 1.
-				oldLine, newLine = max(o, 1), max(n, 1)
+			o, n, ok := parseHunkHeader(l)
+			if !ok {
+				// A header cut short by output bounds: show it muted.
+				for _, w := range wrapLine(sanitizeLine(l, terminalTabStop), width-4, "    ") {
+					out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, w))
+				}
+				continue
 			}
+			// A zero-count side starts at the preceding line (0 at the
+			// top of a file); it has no rows, so clamp to 1.
+			oldLine, newLine = max(o, 1), max(n, 1)
 			if sawHunk {
 				out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, "⋮"))
 			}
@@ -2620,29 +2671,9 @@ func looksLikeFileContent(text string) bool {
 // "%6d \t" starting at startLine, highlights the code using the
 // source path's language, and returns the formatted lines.
 func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
-	lines := strings.Split(text, "\n")
-	// Drop the trailing empty line that Split produces when text ends
-	// in "\n" so the gutter doesn't show a phantom last number.
-	if n := len(lines); n > 0 && lines[n-1] == "" {
-		lines = lines[:n-1]
-	}
-	// Split code from trailing footer lines ("... [truncated ...]")
-	// so we don't number the footer. A single blank separator line
-	// immediately before the footer is also pulled out so the
-	// gutter doesn't render a phantom number for it.
-	codeEnd := len(lines)
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(lines[i], "...") {
-			codeEnd = i
-			continue
-		}
-		break
-	}
-	if codeEnd > 0 && codeEnd < len(lines) && lines[codeEnd-1] == "" {
-		codeEnd--
-	}
-	code := lines[:codeEnd]
-	footer := lines[codeEnd:]
+	// Split code from trailing footer lines ("... [truncated ...]") so
+	// the footer is not numbered.
+	code, footer := splitFileFooter(text)
 
 	for i, c := range code {
 		code[i] = sanitizeLine(c, codeTabStop)
@@ -2668,7 +2699,7 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 		}
 	}
 
-	out := make([]string, 0, len(lines))
+	out := make([]string, 0, len(code)+len(footer))
 	for i, c := range highlighted {
 		gutter := fmt.Sprintf("%4d ", startLine+i)
 		out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, gutter)+c)

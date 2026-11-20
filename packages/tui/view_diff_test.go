@@ -226,9 +226,9 @@ func TestWriteErrorRendersAsPlainText(t *testing.T) {
 
 func TestRenderAddedFileRows(t *testing.T) {
 	v := &View{Theme: Dark}
-	rows := v.renderAddedFile("package main\n\nfunc main() {}\n\n... [truncated]\n", "a.go", 80)
-	if len(rows) != 5 {
-		t.Fatalf("rows = %d, want 3 code + blank + footer:\n%s", len(rows), stripANSI(strings.Join(rows, "\n")))
+	rows := v.renderAddedFile("package main\n\nfunc main() {}\n", "a.go", 80)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3:\n%s", len(rows), stripANSI(strings.Join(rows, "\n")))
 	}
 	if got := strings.TrimLeft(stripANSI(rows[0]), " "); !strings.HasPrefix(got, "1 + package main") {
 		t.Fatalf("first row = %q", got)
@@ -238,10 +238,6 @@ func TestRenderAddedFileRows(t *testing.T) {
 		if !strings.Contains(rows[i], addBG) {
 			t.Fatalf("code row %d untinted: %q", i, rows[i])
 		}
-	}
-	footer := rows[len(rows)-1]
-	if !strings.Contains(stripANSI(footer), "... [truncated]") || strings.Contains(footer, "\x1b[48") {
-		t.Fatalf("footer = %q", footer)
 	}
 }
 
