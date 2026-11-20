@@ -104,24 +104,6 @@ func ExtractPartialStringField(raw, field string) (value string, ok, done bool) 
 	return sb.String(), true, false
 }
 
-// ExtractLastNewText finds the most recent `"newText"` field
-// inside an array of edit objects, scanning from the end of raw
-// backwards so we get the one currently being streamed rather
-// than an earlier completed edit. Returns the partial string
-// value the same way ExtractPartialStringField does, plus the
-// 1-indexed edit number in the array (so the UI can show
-// "edit 2 of N" or similar).
-//
-// This is aimed at the `edit` tool's streaming shape:
-//
-//	{"path":"...","edits":[{"oldText":"x","newText":"y"},
-//	                         {"oldText":"a","newText":"b<streaming>
-//
-// We want to show `b<streaming>` while it grows.
-func ExtractLastNewText(raw string) (value string, ok, done bool, editIdx int) {
-	return ExtractLastStringField(raw, "newText")
-}
-
 // ExtractLastStringField finds the last `"<field>":` key in raw and
 // returns its partial string value the same way ExtractPartialStringField
 // does, plus the 1-indexed occurrence number of that key (0 when the key

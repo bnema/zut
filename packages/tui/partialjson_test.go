@@ -2,59 +2,6 @@ package tui
 
 import "testing"
 
-func TestExtractLastNewText(t *testing.T) {
-	cases := []struct {
-		name      string
-		raw       string
-		wantValue string
-		wantOK    bool
-		wantDone  bool
-		wantIdx   int
-	}{
-		{
-			name:      "no newText yet",
-			raw:       `{"path":"/x","edits":[{"oldText":"a"}`,
-			wantValue: "",
-			wantOK:    false,
-			wantDone:  false,
-			wantIdx:   0,
-		},
-		{
-			name:      "single newText partial",
-			raw:       `{"edits":[{"oldText":"a","newText":"b`,
-			wantValue: "b",
-			wantOK:    true,
-			wantDone:  false,
-			wantIdx:   1,
-		},
-		{
-			name:      "single newText complete",
-			raw:       `{"edits":[{"oldText":"a","newText":"b"}]`,
-			wantValue: "b",
-			wantOK:    true,
-			wantDone:  true,
-			wantIdx:   1,
-		},
-		{
-			name:      "two edits, second still streaming",
-			raw:       `{"edits":[{"oldText":"x","newText":"y"},{"oldText":"a","newText":"hello wor`,
-			wantValue: "hello wor",
-			wantOK:    true,
-			wantDone:  false,
-			wantIdx:   2,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			v, ok, done, idx := ExtractLastNewText(c.raw)
-			if v != c.wantValue || ok != c.wantOK || done != c.wantDone || idx != c.wantIdx {
-				t.Errorf("want (v=%q ok=%v done=%v idx=%d), got (v=%q ok=%v done=%v idx=%d)",
-					c.wantValue, c.wantOK, c.wantDone, c.wantIdx, v, ok, done, idx)
-			}
-		})
-	}
-}
-
 func TestExtractPartialStringField(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -186,8 +133,23 @@ func TestExtractCurrentEdit(t *testing.T) {
 }
 
 func TestExtractLastStringField(t *testing.T) {
-	v, ok, done, idx := ExtractLastStringField(`{"a":"1","a":"two\tx`, "a")
-	if v != "two\tx" || !ok || done || idx != 2 {
-		t.Fatalf("got (%q %v %v %d)", v, ok, done, idx)
+	cases := []struct {
+		name, field, raw string
+		value            string
+		ok, done         bool
+		idx              int
+	}{
+		{"missing", "newText", `{"edits":[{"oldText":"a"}`, "", false, false, 0},
+		{"key without value yet", "newText", `{"edits":[{"oldText":"a","newText":`, "", false, false, 1},
+		{"complete", "newText", `{"edits":[{"oldText":"a","newText":"b"}]`, "b", true, true, 1},
+		{"last of several, escaped", "a", `{"a":"1","a":"two\tx`, "two\tx", true, false, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v, ok, done, idx := ExtractLastStringField(c.raw, c.field)
+			if v != c.value || ok != c.ok || done != c.done || idx != c.idx {
+				t.Fatalf("got (%q %v %v %d), want (%q %v %v %d)", v, ok, done, idx, c.value, c.ok, c.done, c.idx)
+			}
+		})
 	}
 }

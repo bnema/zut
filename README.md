@@ -661,7 +661,6 @@ Without spawn permission, metadata is omitted; the proactive interactive primary
 - **lsp in sub-agents:** on by default; `subagent_lsp_enabled` applies to newly started children.
 - **auto-compact threshold:** `off`, `70%`, `80%`, `85%` (default), `90%`, or `95%` of advertised model context; `auto_compact_threshold`. Controls before/after interactive-turn compaction. Accounting includes uncached input plus provider cache reads/writes, so cached turns still qualify. See `/compact` for recovery, handoff, and cancellation rules; `off` disables only percentage triggers.
 - **jail new sessions by default:** off by default; `jail_by_default` confines new interactive, print, JSON, RPC, and background agents to their cwd and updates the current interactive session immediately. `/jail` and `/unjail` override only that session, not the default.
-- **compact transcript rendering:** off by default; immediate; `compact_mode`. Tool calls use quiet headers and indented output rather than boxes; sent messages omit padded background bubbles.
 - **show loaded resources at startup:** off by default; immediate; `show_instructions_at_startup`. Compact sections above the transcript list the active Zutfile agent (`zut run`), loaded `AGENTS.md` paths, extensions, and user-installed skills, excluding built-ins.
 - **TUI settings:** sub-view ordered status, working spinner, input, subagent operations. **Input style:** `plain` (default prompt line), `lines` (separators above/below), or `block` (user-bubble style). **Status position:** model/usage/cwd above or below input. **Working spinner position:** busy spinner above or below input. Immediate; keys `tui_input_style`, `tui_status_position`, `tui_working_position`.
 - **reasoning level:** off, minimum, low, medium, high, xhigh, max; saved in `config.json`, effective next call. Selector shows only distinct supported levels; non-reasoning models offer only `off`. Opt-in `max` is native on GPT-5.6 and adaptive-thinking Claude; other backends clamp to highest accepted effort. `/reasoning` opens it; `Ctrl+R` cycles supported levels.
@@ -1208,35 +1207,13 @@ Image frames fully repaint to prevent stale pixels on scroll, costing one termin
 
 ## Tool rendering
 
-Tool calls (bash, read, write, edit, worktree, grep, lsp) default to bordered panels (`┌─ header ─┐`, `│` body, `└─┘` footer). Flat mode uses `▌ bash …` and indented output. Both show tool name, args, streamed output, and `... (N more lines, ctrl+o to expand)` truncation.
+Each tool call renders as a `▌ name args` header followed by indented output in theme colors.
 
-In `$ZUT_HOME/config.json`:
+- **Code changes** (`edit`, `write`, and `ast` rewrites) always render in full. Diffs show real file line numbers, `⋮` between hunks, and green/red row tints; written files show as added lines. The header shows `+N -M` change counts. LSP diagnostics follow the change as plain text.
+- **While streaming**, `write` and `edit` show a fixed-height window: a progress row plus the last 12 lines of the content being written (for `edit`, the current edit's old text as `-` rows, then its new text as `+` rows).
+- **Other tools** collapse results longer than ~12 lines to a preview with `... (N more lines, ctrl+o to expand)`.
 
-```json
-{
-  "tool_render": "flat"
-}
-```
-
-| Value | Effect |
-|---|---|
-| unset / `"box"` (default) | Bordered panels. |
-| `"flat"` | Header and indented output, no borders. |
-
-`ZUT_FLAT_TOOLS` overrides config for one run:
-
-| Value | Effect |
-|---|---|
-| `1`, `true`, `yes`, `on`, `flat` | Force flat. |
-| `0`, `false`, `no`, `off`, `box` | Force boxes. |
-| unset | Use `tool_render`. |
-
-```sh
-ZUT_FLAT_TOOLS=1 zut   # flat, just this run
-ZUT_FLAT_TOOLS=0 zut   # boxes, even if config.json says "flat"
-```
-
-Both use theme colors (accent/foreground headers, tool-output body); `ctrl+o` expands truncated results.
+Diff tints come from the theme (`diff_add_bg`, `diff_del_bg`; see [docs/themes.md](docs/themes.md)).
 
 ### Tool arg width
 
@@ -1306,7 +1283,7 @@ Busy slash commands:
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste text into focused chat, side chat, dialog, filter, or credential input. Main chat attaches images to the next prompt via macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`. Linux text uses `wl-paste`, `xclip`, or `xsel`; native bracketed paste needs none. |
-| `ctrl+o` | Expand/collapse read, write, edit, bash, worktree, grep, glob, lsp, web_search results over ~12 lines. |
+| `ctrl+o` | Expand/collapse long tool results (read, bash, worktree, grep, glob, lsp, web_search, …). `edit`, `write`, and `ast` rewrites always render in full. |
 | `ctrl+r` | Cycle supported reasoning levels; applies to future calls and persists in `config.json`. |
 | `ctrl+1` ... `ctrl+9` | Activate persistent model/reasoning/fast-mode profile; empty slots open picker. French AZERTY Ctrl + top-row symbols work if forwarded. Rejected during turns. See [Model profiles](#model-profiles); fallback: `/profile N`. |
 | `alt+v` | Start/stop-and-transcribe dictation; `esc` cancels. Needs ChatGPT login. See [Dictation](#dictation). |
