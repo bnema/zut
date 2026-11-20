@@ -284,3 +284,21 @@ func TestToolHeaderStatsSurviveNarrowWidth(t *testing.T) {
 		t.Fatalf("header width %d > 30: %q", w, header)
 	}
 }
+
+func TestASTDiffWithTruncationNoticeRendersAsDiff(t *testing.T) {
+	text := "@@ -3,1 +3,1 @@\n-foo()\n+bar()\n\n... [truncated at 100 bytes]"
+	if !looksLikeUnifiedDiff(text) {
+		t.Fatal("truncated ast diff not detected as a diff")
+	}
+	v := &View{Theme: Dark, Messages: toolTranscript("ast", `{"path":".","rewrite":"bar()"}`, text, false)}
+	out := stripANSI(strings.Join(v.Build(100), "\n"))
+	if !strings.Contains(out, "+1 -1") {
+		t.Fatalf("missing stats:\n%s", out)
+	}
+	if !strings.Contains(out, "3 + bar()") || strings.Contains(out, "@@") {
+		t.Fatalf("not rendered as a diff:\n%s", out)
+	}
+	if !strings.Contains(out, "... [truncated at 100 bytes]") {
+		t.Fatalf("truncation notice dropped:\n%s", out)
+	}
+}

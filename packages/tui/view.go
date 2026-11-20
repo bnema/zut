@@ -2522,7 +2522,9 @@ func looksLikeUnifiedDiff(text string) bool {
 		if l == "" {
 			continue
 		}
-		if l == "..." {
+		// "..." is the legacy hunk separator; "... [" starts a bounded-output
+		// truncation notice such as ast's "... [truncated at N bytes]".
+		if l == "..." || strings.HasPrefix(l, "... [") {
 			continue
 		}
 		if strings.HasPrefix(l, "@@") {
