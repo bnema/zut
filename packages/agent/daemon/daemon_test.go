@@ -48,8 +48,11 @@ func newTestSession(t *testing.T, id string) *testSession {
 		done:       make(chan struct{}),
 		subscribed: make(chan struct{}, 1),
 		// closes and attach are read in order by tests, so sends must not be
-		// dropped; they also must not block shutdown. Each test drives a few
-		// attach/close operations per session, far below these bounds.
+		// dropped, and attach/detach call SetAttach with an uncancellable
+		// context. The SetAttach and Close doubles below therefore send
+		// without a select; only these buffer sizes keep them from blocking
+		// shutdown. Each test drives a few attach/close operations per
+		// session, far below them.
 		closes: make(chan string, 16),
 		attach: make(chan session.AttachState, 64),
 		inputs: make(chan session.Input, 4),
