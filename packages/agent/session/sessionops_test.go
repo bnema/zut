@@ -148,6 +148,10 @@ func TestCloseMidTurnWaitsForTurnGoroutine(t *testing.T) {
 		return nil, sctx.Err()
 	}).Maybe()
 	ag := core.NewAgent(client, "m", "", nil)
+	// With an idle timeout, the agent opens Stream in a detached goroutine and
+	// Prompt returns on cancellation without waiting for it. This test targets
+	// session Close waiting for the turn goroutine, so keep Stream inline on it.
+	ag.StreamIdleTimeout = 0
 	// A preset title keeps title generation (another Stream call) out of the test.
 	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag; c.settings.title = "t" }))
 	require.NoError(t, c.Submit(ctx, Input{Text: "hi"}))
