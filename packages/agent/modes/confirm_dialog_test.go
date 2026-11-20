@@ -377,12 +377,10 @@ func TestConfirmDialogAllowsToolExpansion(t *testing.T) {
 		preview:  "large edit",
 		resp:     resp,
 	})
+	// Live write/edit bodies use a fixed tail window; a long bash
+	// command is the live body that still collapses behind ctrl+o.
 	args, err := json.Marshal(map[string]any{
-		"path": "sample.ts",
-		"edits": []map[string]string{{
-			"oldText": "old",
-			"newText": strings.Repeat("const value = 1\n", 20),
-		}},
+		"command": strings.Repeat("echo value\n", 20),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -390,9 +388,8 @@ func TestConfirmDialogAllowsToolExpansion(t *testing.T) {
 	view := &tui.View{
 		ToolCalls: []tui.ToolCallView{{
 			ID:         "call-1",
-			Name:       "edit",
+			Name:       "bash",
 			RawJSONBuf: string(args),
-			LivePath:   "sample.ts",
 		}},
 	}
 	i := &Interactive{
@@ -410,7 +407,7 @@ func TestConfirmDialogAllowsToolExpansion(t *testing.T) {
 		t.Fatal("ctrl+o did not expand tool previews while confirmation was active")
 	}
 	if rendered := strings.Join(view.Build(80), "\n"); strings.Contains(rendered, "ctrl+o to expand") {
-		t.Fatalf("live edit preview remained collapsed after ctrl+o:\n%s", rendered)
+		t.Fatalf("live bash preview remained collapsed after ctrl+o:\n%s", rendered)
 	}
 	if !dialog.Active() {
 		t.Fatal("ctrl+o closed the confirmation dialog")

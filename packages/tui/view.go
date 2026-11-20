@@ -683,7 +683,7 @@ func (v *View) prepareLiveToolState() {
 		}
 	}
 	for id := range v.liveCode {
-		if !activeCalls[id] {
+		if !activeCalls[liveCodeCallID(id)] {
 			delete(v.liveCode, id)
 		}
 	}
@@ -1386,14 +1386,10 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			// surrounding layout stays put. The
 			// high-water mark is per call id and is dropped the moment a
 			// Result lands (this branch only runs while Result == "").
+			// write/edit bodies are a fixed liveCodeRows+1 tail window
+			// from their first visible frame, so they never move the
+			// editor while streaming.
 			high := len(body)
-			// Live edits otherwise grow from a few rows to the collapsed
-			// preview limit as newText arrives, moving the editor on every
-			// line. Reserve the final collapsed height from the first visible
-			// edit frame; ctrl+o still opts into unconstrained growth.
-			if !v.ExpandAll && (tc.Name == "edit" || tc.Name == "Edit") && high < ToolCollapsePreview+2 {
-				high = ToolCollapsePreview + 2
-			}
 			if v.liveBodyHigh != nil {
 				if prev := v.liveBodyHigh[tc.ID]; prev > high {
 					high = prev
@@ -1472,22 +1468,17 @@ func (v *View) renderLiveToolResult(text string, width int, color TerminalColor,
 func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 	switch tc.Name {
 	case "write", "Write":
-		partial, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "content")
-		if !ok || partial == "" {
+		content, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "content")
+		if !ok || content == "" {
 			return nil
 		}
-		return v.wrapLiveBody(v.renderRawFile(partial, tc.LivePath, 1), width)
+		return v.liveRows(v.renderLiveWrite(tc, content, flatToolBodyRenderWidth(width)), width)
 	case "edit", "Edit":
-		partial, ok, _, idx := ExtractLastNewText(tc.RawJSONBuf)
-		if !ok || partial == "" {
+		edit := ExtractCurrentEdit(tc.RawJSONBuf)
+		if edit.Idx == 0 || (edit.OldText == "" && edit.NewText == "") {
 			return nil
 		}
-		// Header line hints which edit is streaming and, when more
-		// than one has landed, how many the model is doing.
-		hint := fmt.Sprintf("edit %d (streaming)", idx)
-		body := []string{"    " + v.Theme.FGColor(v.Theme.Muted, hint), ""}
-		body = append(body, v.renderRawFile(partial, tc.LivePath, 1)...)
-		return v.wrapLiveBody(body, width)
+		return v.liveRows(v.renderLiveEdit(tc, edit, flatToolBodyRenderWidth(width)), width)
 	case "bash", "Bash":
 		command, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "command")
 		if !ok || strings.TrimSpace(command) == "" {
@@ -1529,7 +1520,11 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 // body rows. The caller (renderToolCall) supplies the header line so
 // the live overlay matches the finalised transcript form.
 func (v *View) wrapLiveBody(body []string, width int) []string {
-	body = v.collapseToolBody(body, false)
+	return v.liveRows(v.collapseToolBody(body, false), width)
+}
+
+// liveRows indents live body rows under the header without collapsing.
+func (v *View) liveRows(body []string, width int) []string {
 	out := make([]string, 0, len(body))
 	for _, l := range body {
 		_, stripped := parseImageFootprint(l)

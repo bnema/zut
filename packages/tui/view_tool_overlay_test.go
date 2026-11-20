@@ -306,11 +306,12 @@ func TestEditConfirmationPreviewRendersDiffInsteadOfNewText(t *testing.T) {
 }
 
 func TestLiveToolReservationResetsWhenExpansionChanges(t *testing.T) {
-	args := json.RawMessage(`{"path":"sample.ts","content":"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20"}`)
+	// Live bash bodies still collapse; write/edit use a fixed tail window.
+	args := json.RawMessage(`{"command":"line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20"}`)
 	v := View{
 		Theme: Dark,
 		ToolCalls: []ToolCallView{
-			{ID: "toolu_1", Name: "write", RawJSONBuf: string(args), LivePath: "sample.ts"},
+			{ID: "toolu_1", Name: "bash", Args: ShortArgs("bash", args), RawJSONBuf: string(args)},
 		},
 	}
 
