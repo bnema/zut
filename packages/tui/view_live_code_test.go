@@ -125,3 +125,22 @@ func TestRenderAddedFileHighlightsWithTrailingBlankLines(t *testing.T) {
 		t.Fatalf("first row not highlighted: %q", rows)
 	}
 }
+
+func TestLiveWriteNumbersPastHighlightWindow(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 100; i++ {
+		fmt.Fprintf(&b, "x%d := %d\n", i, i)
+	}
+	b.WriteString("y := 1")
+	v := &View{Theme: Dark}
+	body := liveBody(t, v, liveWriteCall(b.String()))
+	if len(body) != liveCodeRows+1 {
+		t.Fatalf("rows = %d", len(body))
+	}
+	if got := strings.TrimSpace(stripANSI(body[1])); !strings.HasPrefix(got, "90 + x90 := 90") {
+		t.Fatalf("first code row = %q", got)
+	}
+	if got := strings.TrimSpace(stripANSI(body[len(body)-1])); !strings.HasPrefix(got, "101 + y := 1") {
+		t.Fatalf("last row = %q", got)
+	}
+}

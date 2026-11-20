@@ -71,3 +71,14 @@ func TestToolHeaderLineFitsWidth(t *testing.T) {
 		t.Fatalf("width = %d: %q", w, stripANSI(h))
 	}
 }
+
+func TestRenderUnifiedDiffSkipsLegacyFileHeaders(t *testing.T) {
+	v := &View{Theme: Dark}
+	rows := v.renderUnifiedDiff("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n", 80, "")
+	if len(rows) != 2 {
+		t.Fatalf("rows = %q", rows)
+	}
+	if got := strings.TrimSpace(stripANSI(rows[0])); got != "1 - a" {
+		t.Fatalf("first row = %q", got)
+	}
+}

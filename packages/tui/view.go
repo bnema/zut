@@ -2595,12 +2595,20 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 	}
 	oldLine, newLine := 1, 1
 	sawHunk := false
+	inBody := false
 	var out []string
 	for _, l := range lines {
 		if l == "" {
 			out = append(out, "")
 			continue
 		}
+		// Legacy sessions may start with "--- name"/"+++ name" file
+		// headers; the tool header already names the file, so skip them.
+		// codeChangeStats applies the same rule.
+		if !inBody && (strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ")) {
+			continue
+		}
+		inBody = true
 		if strings.HasPrefix(l, "@@") {
 			o, n, ok := parseHunkHeader(l)
 			if !ok {
