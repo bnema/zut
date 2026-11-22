@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/advisor"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAdvisorRegistrationPolicy(t *testing.T) {
@@ -61,7 +63,7 @@ func TestAdvisorResolveRegistrationAndPrompt(t *testing.T) {
 	if _, ok := r.ToolRegistry[tools.AdvisorToolName].(*tools.AdvisorTool); !ok {
 		t.Fatalf("advisor not registered: %#v", r.ToolRegistry[tools.AdvisorToolName])
 	}
-	for _, want := range []string{"[advisor]", "You have access to an `advisor` tool", "Give the advice serious weight."} {
+	for _, want := range []string{"[advisor]", "An advisor (a stronger reviewer model) watches your work", "Do not call it on your own initiative."} {
 		if !strings.Contains(r.SystemPrompt, want) {
 			t.Fatalf("system prompt missing %q", want)
 		}
@@ -113,7 +115,8 @@ func TestAdvisorToolTargetErrors(t *testing.T) {
 	}
 }
 
-func TestAdvisorBindForwardsLiveAgentContext(t *testing.T) {
+func TestInstallAdvisorForwardsLiveAgentContext(t *testing.T) {
+	pythonTestEnv(t)
 	advisorClient := providermocks.NewMockClient(t)
 	var body string
 	advisorClient.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
@@ -125,17 +128,20 @@ func TestAdvisorBindForwardsLiveAgentContext(t *testing.T) {
 		return ch, nil
 	})
 	newTool := func() *tools.AdvisorTool {
-		return &tools.AdvisorTool{Target: func(context.Context) (tools.AdvisorTarget, error) {
-			return tools.AdvisorTarget{Client: advisorClient, Model: provider.Model{ID: "adv"}}, nil
+		return &tools.AdvisorTool{Target: func(context.Context) (advisor.Target, error) {
+			return advisor.Target{Client: advisorClient, Model: provider.Model{ID: "adv"}}, nil
 		}}
 	}
 	first := core.Registry{tools.AdvisorToolName: newTool()}
 	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "first system", first)
-	bindAdvisorTool(first, ag)
+	installAdvisor(ag, clientAdvisorTool(first), nil, AdvisorSettings{})
+	if ag.Watcher() == nil {
+		t.Fatal("installAdvisor must install the passive watcher")
+	}
 
 	// A refresh installs a freshly built registry; it must be bound too.
 	second := core.Registry{tools.AdvisorToolName: newTool()}
-	bindAdvisorTool(second, ag)
+	installAdvisor(ag, clientAdvisorTool(second), nil, AdvisorSettings{})
 	ag.SetPromptConfig("refreshed system", second)
 	ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "user task"}}}})
 
@@ -173,7 +179,7 @@ func TestAdvisorSettingsStoreSetAdvisor(t *testing.T) {
 	if err != nil || status != (session.AdvisorStatus{Mode: "auto"}) {
 		t.Fatalf("empty change: %+v %v", status, err)
 	}
-	if _, err := store.SetAdvisor(session.AdvisorChange{Enabled: boolp(true)}); !errors.Is(err, tools.ErrNoAdvisorModel) {
+	if _, err := store.SetAdvisor(session.AdvisorChange{Enabled: boolp(true)}); !errors.Is(err, advisor.ErrNoModel) {
 		t.Fatalf("enable without model: %v", err)
 	}
 	if _, err := store.SetAdvisor(session.AdvisorChange{Model: str("anthropic/nope")}); err == nil || !strings.Contains(err.Error(), "unknown advisor model") {
@@ -483,4 +489,39 @@ func TestNewAgentBindsClonedAdvisorTool(t *testing.T) {
 	if res, _ := shared.Execute(context.Background(), nil, nil); !res.IsError {
 		t.Fatal("shared advisor tool was bound by NewAgent")
 	}
+}
+
+func TestInstallAdvisorKeepsWatcherAcrossRefreshAndClearsWhenOff(t *testing.T) {
+	pythonTestEnv(t)
+	newTool := func() *tools.AdvisorTool {
+		return &tools.AdvisorTool{Target: func(context.Context) (advisor.Target, error) { return advisor.Target{}, advisor.ErrNoModel }}
+	}
+	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "system", core.Registry{})
+	installAdvisor(ag, newTool(), nil, AdvisorSettings{Mode: AdvisorModeAuto})
+	first := ag.Watcher()
+	require.NotNil(t, first)
+
+	installAdvisor(ag, newTool(), nil, AdvisorSettings{Mode: AdvisorModeAuto})
+	require.Same(t, first, ag.Watcher(), "a refresh keeps the advisor's conversation")
+
+	installAdvisor(ag, nil, nil, AdvisorSettings{})
+	require.Nil(t, ag.Watcher(), "/advisor off removes the watcher")
+}
+
+func TestInstallAdvisorPausesWhenSettingsChanged(t *testing.T) {
+	pythonTestEnv(t)
+	advisorClient := providermocks.NewMockClient(t) // any review would fail the test
+	tool := &tools.AdvisorTool{Target: func(context.Context) (advisor.Target, error) {
+		return advisor.Target{Client: advisorClient, Model: provider.Model{ID: "adv"}}, nil
+	}}
+	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "system", core.Registry{})
+	// The session decided from settings that another session has since
+	// changed: the watcher must stay quiet until the next refresh.
+	installAdvisor(ag, tool, nil, AdvisorSettings{Enabled: true, Model: "anthropic/x", Mode: AdvisorModeAuto})
+	w := ag.Watcher()
+	ctx := context.Background()
+	w.RunStarted(ctx)
+	defer w.RunEnded()
+	edit := provider.ToolCallBlock{ID: "e", Name: "edit", Arguments: []byte(`{}`)}
+	require.Equal(t, core.WatcherVerdict{}, w.BeforeTool(ctx, edit))
 }

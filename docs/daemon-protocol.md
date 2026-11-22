@@ -321,6 +321,11 @@ Message content may contain `provider.ServerToolBlock` (codec content kind
 `server_tool`); the lossless codec keeps its opaque `Raw` payload so replay
 works, while `modes.EventToJSON` projections omit it.
 
+Agent kind `advisor_review` (`core.EvAdvisorReview`) reports a blocking
+advisor review. A `user_message` carrying an advisor note keeps
+`Meta["zut_advisor_note"]` through the lossless codec; projections expose it
+as `advisor_note`. Both are documented in `docs/rpc.md`.
+
 Unknown agent event kinds are ignorable and still advance the subscription sequence. Protocol version mismatches fail at hello; run `zut daemon restart` after upgrading.
 
 `zut daemon stop` and `zut daemon restart` negotiate the running daemon’s hello version solely to send `daemon_stop`, including older-protocol daemons. Normal session connections still require the current protocol version. Shutdown waits for the daemon lock to be released before restart.

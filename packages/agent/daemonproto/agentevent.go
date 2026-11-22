@@ -32,6 +32,9 @@ func eventProjection(ev core.AgentEvent) map[string]any {
 	case core.EvUserMessage:
 		m["content"] = contentProjection(e.Message.Content)
 		m["time"] = e.Message.Time
+		if e.Message.Meta[core.WatcherNoteMetaKey] == "true" {
+			m["advisor_note"] = true
+		}
 	case core.EvAssistantMessage:
 		m["content"] = contentProjection(e.Message.Content)
 		m["time"] = e.Message.Time
@@ -50,6 +53,9 @@ func eventProjection(ev core.AgentEvent) map[string]any {
 		m["delta"] = e.Delta
 	case core.EvToolUseEnd:
 		m["id"] = e.ID
+	case core.EvAdvisorReview:
+		m["kind"] = e.Kind
+		m["phase"] = e.Phase
 	case core.EvServerTool:
 		m["id"] = e.ID
 		m["name"] = e.Name
@@ -333,6 +339,8 @@ func agentTarget(kind string) (any, error) {
 		return &core.EvToolUseEnd{}, nil
 	case "server_tool":
 		return &core.EvServerTool{}, nil
+	case "advisor_review":
+		return &core.EvAdvisorReview{}, nil
 	case "tool_progress":
 		return &core.EvToolProgress{}, nil
 	case "plan_update":

@@ -1029,7 +1029,7 @@ func firstUserTextFromMessagesAfter(msgs []provider.Message, start int) string {
 		start = 0
 	}
 	for idx, msg := range msgs {
-		if idx < start || msg.Role != provider.RoleUser {
+		if idx < start || msg.Role != provider.RoleUser || msg.Meta[WatcherNoteMetaKey] == "true" {
 			continue
 		}
 		if text := firstTextFromMessage(msg); text != "" {

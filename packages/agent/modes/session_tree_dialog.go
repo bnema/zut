@@ -967,7 +967,7 @@ func isForkableSessionTreeMessage(msg provider.Message) bool {
 }
 
 func isForkableUserMessage(msg provider.Message) bool {
-	if msg.Role != provider.RoleUser || isHiddenTranscriptMessage(msg) || msg.Meta[shellEscapeMetaKey] == "true" || msg.Meta[autoCompactContinueMetaKey] == "true" || msg.Meta["compaction"] == "true" || isCompactionSummaryMessage(msg) {
+	if msg.Role != provider.RoleUser || isHiddenTranscriptMessage(msg) || msg.Meta[core.WatcherNoteMetaKey] == "true" || msg.Meta[shellEscapeMetaKey] == "true" || msg.Meta[autoCompactContinueMetaKey] == "true" || msg.Meta["compaction"] == "true" || isCompactionSummaryMessage(msg) {
 		return false
 	}
 	return sessionTreePreview(msg) != "(empty)"

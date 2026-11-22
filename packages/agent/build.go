@@ -1381,10 +1381,10 @@ func (r Resolved) NewAgent() *core.Agent {
 		}
 		registry[name] = tool
 	}
+	adv := clientAdvisorTool(registry)
 	server := applyAdvisorMode(registry, r.advisorSettings, r.Provider, r.Model)
 	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, registry)
-	installServerAdvisor(a, server, r.advisorSettings)
-	bindAdvisorTool(registry, a)
+	installAdvisor(a, adv, server, r.advisorSettings)
 	a.MaxSteps = r.MaxSteps
 	a.DisableRepetitionGuard = r.DisableRepetitionGuard
 	a.ContextWindow = r.ContextWindow

@@ -1054,6 +1054,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		return nil
 	}
 
+	if m.Meta[core.WatcherNoteMetaKey] == "true" {
+		return v.renderAdvisorNote(m, width)
+	}
+
 	switch m.Role {
 	case provider.RoleUser:
 		// User rows: no speaker label. Each line is painted with a
@@ -2867,6 +2871,58 @@ func toInt(v any) (int, bool) {
 		return i, true
 	}
 	return 0, false
+}
+
+// renderAdvisorNote renders a note the passive advisor sent to the
+// executor: a warning-colored header taken from the note's "[tag]" and its
+// title line, then the note body, muted and wrapped. It is not a user turn, so it skips the
+// user bubble.
+func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
+	th := v.Theme
+	const indent = "  "
+	var text strings.Builder
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			text.WriteString(tb.Text)
+		}
+	}
+	header, body := advisorNoteHeader(strings.TrimSpace(text.String()))
+	inner := width - len(indent)
+	if inner < 1 {
+		inner = 1
+	}
+	lines := []string{"", th.FGColor(th.Warning, "◆ "+truncateToWidth(header, width-2))}
+	for _, l := range splitLines(body) {
+		l = sanitizeLine(l, codeTabStop)
+		for _, w := range wrapLine(l, inner, "") {
+			lines = append(lines, indent+th.FGColor(th.Muted, w))
+		}
+	}
+	return lines
+}
+
+// advisorNoteHeader splits a note such as "[advisor] Before you finish:\n..."
+// into a header ("advisor · Before you finish") and its body. A one-line
+// note keeps the text after its tag as the body.
+func advisorNoteHeader(note string) (header, body string) {
+	if !strings.HasPrefix(note, "[") {
+		return "advisor", note
+	}
+	end := strings.IndexByte(note, ']')
+	if end < 0 {
+		return "advisor", note
+	}
+	header = strings.TrimSpace(note[1:end])
+	rest := note[end+1:]
+	title, after, multiline := strings.Cut(rest, "\n")
+	title = strings.TrimSuffix(strings.TrimSpace(title), ":")
+	if !multiline {
+		return header, strings.TrimSpace(rest)
+	}
+	if title != "" {
+		header += " · " + title
+	}
+	return header, strings.TrimSpace(after)
 }
 
 // renderCompactionBlock renders a compaction summary as a distinct

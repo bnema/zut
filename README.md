@@ -365,13 +365,40 @@ permissions, in sub-agents or packaged agents, or in a strict orchestrator.
 
 ### Advisor
 
-The advisor lets the working model (the executor) consult a stronger model
-mid-task through a no-argument `advisor` tool. The advisor reviews the work so
-far and returns advice; the executor decides what to do with it.
+The advisor is a stronger model that watches the working model (the executor)
+and steps in only when it has a concrete reason: a wrong assumption, a missed
+requirement, a risky change, wasted effort, or an unverified "done". The
+executor keeps working on its own and decides what to do with the advice.
 
-**Privacy:** each consultation sends the full transcript, including the system
-prompt, tool definitions, and tool results, to the advisor model's provider.
-Advisor calls never ask for confirmation; enabling the advisor is the consent.
+The advisor intervenes at these points:
+
+- **Background reviews** (client mode): after each tool batch the advisor
+  reviews what is new. If it has something to say, its note reaches the
+  executor before the next model call. One review runs at a time, the advisor
+  skips two steps after a note, and it sends at most three background notes
+  per request.
+- **First change**: before the first edit, write, ast rewrite, `python` or
+  `codemode` run, or state-changing shell command of a request, the executor
+  waits for a review. A `STOP` holds that call, and the rest of its batch, and
+  tells the executor why. MCP and extension tools are not treated as changes.
+- **Final answer**: when a request changed something, the advisor reviews the
+  final answer once. A `STOP` or a note sends the executor back for one more
+  turn with it.
+- **On demand**: ask the executor to consult the advisor ("ask the advisor")
+  and it calls the no-argument `advisor` tool. It does not call it on its own.
+
+Each checkpoint runs at most once per request, so the two models cannot
+ping-pong. A failed review, or one that takes longer than three minutes, lets
+the executor proceed, and cancelling the request (Esc) during a review never
+runs the held call. While the executor waits, the status bar shows the
+review. Notes appear in the transcript as `◆ advisor` blocks; notes left
+over when a request ends are dropped. If another session changes the advisor
+settings, the watcher pauses until this session reloads its tools.
+
+**Privacy:** the advisor receives the whole transcript, including the system
+prompt, tool definitions, and tool results, through the advisor model's
+provider. Advisor reviews never ask for confirmation; enabling the advisor is
+the consent.
 
 The advisor is disabled by default. Configure it in `$ZUT_HOME/config.json`:
 
@@ -390,25 +417,35 @@ Slash command:
 - `/advisor provider/model[:reasoning]` sets the model and enables the advisor.
 - `/advisor on` / `/advisor off` toggles it; `on` fails when no model is set.
 
-`--no-tools`, or a `--tools` list without `advisor`, removes it.
+`--no-tools`, or a `--tools` list without `advisor`, disables the advisor,
+including background reviews and checkpoints.
 
 Modes:
 
-- **Client**: zut runs the advisor as a separate request, so any provider pair
+- **Client**: zut runs the advisor as separate requests, so any provider pair
   works (for example `openai-codex/gpt-6.1-sol` with a ChatGPT subscription,
   or `openai/gpt-6.1-sol` with an OpenAI API key, as the advisor for any
-  executor). Each
-  call costs one extra request, and the advice is shown in the transcript.
-  The advisor sees the conversation transcript but not zut's per-request
-  dynamic context (such as turn and plan context).
+  executor). The advisor keeps its own conversation: it receives the executor
+  context once, then only the new transcript at each review, so it remembers
+  what it saw and said. A compaction, fork, or resume starts it fresh, and so
+  does a conversation that outgrows half of the advisor model's context
+  window: the fresh one keeps the most recent transcript that fits, plus the
+  advice already given so the advisor does not repeat itself. It sees the
+  conversation transcript but not zut's per-request dynamic context (such as
+  turn and plan context).
 - **Native**: `auto` picks it when the executor uses first-party Anthropic and
   the executor/advisor pair appears in Anthropic's advisor compatibility
   table; otherwise `auto` uses client mode. Anthropic's server-side advisor
-  tool runs inside the same request. The `:reasoning` suffix is ignored. The
-  newest Opus advisors return encrypted advice that zut cannot display. Works
-  with subscription OAuth and API keys. Encrypted advice is tied to the
-  Anthropic account that produced it, so Anthropic may reject a session
-  resumed under another account.
+  tool runs inside the executor's request, and only when the executor calls
+  it. Native mode therefore has no background reviews. At the first change,
+  unless the executor already consulted the advisor in this request, zut
+  holds the call and asks the executor to call `advisor()` first. At the final
+  answer, unless it consulted the advisor after its last change, zut asks it
+  to call `advisor()` before answering. The `:reasoning`
+  suffix is ignored. The newest Opus advisors return encrypted advice that zut
+  cannot display. Works with subscription OAuth and API keys. Encrypted advice
+  is tied to the Anthropic account that produced it, so Anthropic may reject a
+  session resumed under another account.
 
 When an Anthropic session switches from native to client mode, earlier
 plaintext advice stays visible to the model as text notes and encrypted advice

@@ -97,6 +97,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvUserMessage:
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
+		if e.Message.Meta[core.WatcherNoteMetaKey] == "true" {
+			m["advisor_note"] = true
+		}
 	case core.EvAssistantMessage:
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
@@ -115,6 +118,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["delta"] = e.Delta
 	case core.EvToolUseEnd:
 		m["id"] = e.ID
+	case core.EvAdvisorReview:
+		m["kind"] = e.Kind
+		m["phase"] = e.Phase
 	case core.EvServerTool:
 		m["id"] = e.ID
 		m["name"] = e.Name

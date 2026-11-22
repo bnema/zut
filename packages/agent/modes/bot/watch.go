@@ -88,6 +88,10 @@ func (t *turnTracker) apply(ev session.Event) (TurnResult, bool) {
 				t.text = s
 			}
 		case core.EvUserMessage:
+			// Advisor notes are host messages to the agent, not user prompts.
+			if e.Message.Meta[core.WatcherNoteMetaKey] == "true" {
+				break
+			}
 			if s := messageText(e.Message); s != "" {
 				t.prompts = append(t.prompts, s)
 			}

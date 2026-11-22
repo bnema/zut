@@ -122,7 +122,7 @@ func TestServerToolTranscriptsOmitRaw(t *testing.T) {
 	msgs[3].Content = append(msgs[3].Content, plain)
 	for name, out := range map[string]string{
 		"compaction": serializeTranscript(msgs),
-		"advisor":    SerializeAdvisorTranscript("", nil, msgs, ""),
+		"advisor":    advisorTranscript("", nil, msgs, ""),
 	} {
 		if strings.Contains(out, "ZW5jcnlwdGVk") || strings.Contains(out, "secret") {
 			t.Errorf("%s leaked raw: %s", name, out)

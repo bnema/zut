@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/advisor"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
 	"github.com/stretchr/testify/mock"
@@ -15,14 +16,14 @@ func advisorTestModel() provider.Model {
 	return provider.Model{Provider: "test", ID: "advisor-model", MaxOutput: 4096, PriceInput: 10, PriceOutput: 20}
 }
 
-func boundAdvisor(target func(context.Context) (AdvisorTarget, error)) *AdvisorTool {
+func boundAdvisor(target func(context.Context) (advisor.Target, error)) *AdvisorTool {
 	tool := &AdvisorTool{Target: target}
-	tool.Bind(func() AdvisorSnapshot {
-		return AdvisorSnapshot{
+	tool.Bind(advisor.NewReviewer(target, func() advisor.Snapshot {
+		return advisor.Snapshot{
 			System:   "executor system",
 			Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "fix the parser"}}}},
 		}
-	})
+	}))
 	return tool
 }
 
@@ -37,7 +38,7 @@ func eventStream(events ...provider.Event) <-chan provider.Event {
 
 func TestAdvisorToolContract(t *testing.T) {
 	tool := &AdvisorTool{}
-	if tool.Name() != "advisor" || !strings.HasPrefix(tool.Description(), "Consult a stronger reviewer") {
+	if tool.Name() != "advisor" || !strings.HasPrefix(tool.Description(), "Consult the advisor") {
 		t.Fatalf("name=%q desc=%q", tool.Name(), tool.Description())
 	}
 	if string(tool.Schema()) != `{"type":"object","properties":{}}` {
@@ -50,7 +51,7 @@ func TestAdvisorToolContract(t *testing.T) {
 }
 
 func TestAdvisorToolNoModel(t *testing.T) {
-	tool := boundAdvisor(func(context.Context) (AdvisorTarget, error) { return AdvisorTarget{}, ErrNoAdvisorModel })
+	tool := boundAdvisor(func(context.Context) (advisor.Target, error) { return advisor.Target{}, advisor.ErrNoModel })
 	r, err := tool.Execute(context.Background(), nil, nil)
 	if err != nil || !r.IsError || resultText(r) != "no advisor model configured; run /advisor provider/model:reasoning" || r.Usage != nil {
 		t.Fatalf("result=%+v err=%v", r, err)
@@ -78,8 +79,8 @@ func TestAdvisorToolSuccess(t *testing.T) {
 			provider.EventDone{Stop: provider.StopEnd},
 		), nil
 	})
-	tool := boundAdvisor(func(context.Context) (AdvisorTarget, error) {
-		return AdvisorTarget{Client: client, Model: model, Reasoning: "high", MaxTokens: 2048}, nil
+	tool := boundAdvisor(func(context.Context) (advisor.Target, error) {
+		return advisor.Target{Client: client, Model: model, Reasoning: "high", MaxTokens: 2048}, nil
 	})
 	var progress []string
 	r, err := tool.Execute(context.Background(), nil, func(s string) { progress = append(progress, s) })
@@ -101,7 +102,7 @@ func TestAdvisorToolMaxTokensDefaultsToModelLimit(t *testing.T) {
 	}{
 		{0, 4096, 4096},
 		{100000, 4096, 4096},
-		{0, 0, defaultAdvisorMaxTokens},
+		{0, 0, advisor.DefaultMaxTokens},
 	} {
 		client := providermocks.NewMockClient(t)
 		client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
@@ -112,8 +113,8 @@ func TestAdvisorToolMaxTokensDefaultsToModelLimit(t *testing.T) {
 		})
 		model := advisorTestModel()
 		model.MaxOutput = tc.modelMax
-		tool := boundAdvisor(func(context.Context) (AdvisorTarget, error) {
-			return AdvisorTarget{Client: client, Model: model, MaxTokens: tc.configured}, nil
+		tool := boundAdvisor(func(context.Context) (advisor.Target, error) {
+			return advisor.Target{Client: client, Model: model, MaxTokens: tc.configured}, nil
 		})
 		if r, err := tool.Execute(context.Background(), nil, nil); err != nil || r.IsError {
 			t.Fatalf("%+v: %+v %v", tc, r, err)
@@ -136,14 +137,14 @@ func TestAdvisorToolProviderErrors(t *testing.T) {
 		{"target error", nil, "no credential", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			target := func(context.Context) (AdvisorTarget, error) {
-				return AdvisorTarget{}, errors.New("no credential for advisor provider")
+			target := func(context.Context) (advisor.Target, error) {
+				return advisor.Target{}, errors.New("no credential for advisor provider")
 			}
 			if tc.stream != nil {
 				client := providermocks.NewMockClient(t)
 				client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.Request) (<-chan provider.Event, error) { return tc.stream() })
-				target = func(context.Context) (AdvisorTarget, error) {
-					return AdvisorTarget{Client: client, Model: advisorTestModel()}, nil
+				target = func(context.Context) (advisor.Target, error) {
+					return advisor.Target{Client: client, Model: advisorTestModel()}, nil
 				}
 			}
 			r, err := boundAdvisor(target).Execute(context.Background(), nil, nil)
@@ -167,8 +168,8 @@ func TestAdvisorToolCancellation(t *testing.T) {
 		}()
 		return ch, nil
 	})
-	tool := boundAdvisor(func(context.Context) (AdvisorTarget, error) {
-		return AdvisorTarget{Client: client, Model: advisorTestModel()}, nil
+	tool := boundAdvisor(func(context.Context) (advisor.Target, error) {
+		return advisor.Target{Client: client, Model: advisorTestModel()}, nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()

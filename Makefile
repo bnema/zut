@@ -89,11 +89,11 @@ release:
 	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-windows-amd64.exe" $(PKG)
 
 MOCKERY ?= $(HOME)/go/bin/mockery
-MOCK_PATHS := packages/agent/session/sessionmocks packages/provider/providermocks ':(glob)packages/agent/session/*_mock_test.go' packages/agent/tools/sessionDirectory_mock_test.go packages/agent/modes/sessionClient_mock_test.go ':(glob)packages/agent/daemon/*_mock_test.go' ':(glob)packages/agent/modes/bot/*_mock_test.go'
+MOCK_PATHS := packages/core/watcher_mock_test.go packages/agent/session/sessionmocks packages/provider/providermocks ':(glob)packages/agent/session/*_mock_test.go' packages/agent/tools/sessionDirectory_mock_test.go packages/agent/modes/sessionClient_mock_test.go ':(glob)packages/agent/daemon/*_mock_test.go' ':(glob)packages/agent/modes/bot/*_mock_test.go'
 NEW_PACKAGES := packages/agent/session packages/agent/daemon packages/agent/daemonproto packages/agent/daemonclient packages/agent/internal
 # Remove only Mockery output, including mocks of deleted interfaces.
 mocks:
-	rm -rf packages/agent/session/sessionmocks packages/provider/providermocks
+	rm -rf packages/agent/session/sessionmocks packages/provider/providermocks packages/core/watcher_mock_test.go
 	@for dir in $(NEW_PACKAGES); do if [ -d "$$dir" ]; then find "$$dir" -name '*_mock_test.go' -delete; fi; done
 	@if [ "$$($(MOCKERY) version)" = "v3.9.0" ]; then $(MOCKERY); else $(GO) run github.com/vektra/mockery/v3@v3.9.0; fi
 

@@ -203,7 +203,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `request_started` | `provider`, `model`, `scope`, `attempt`, `max_attempts` | A provider (`scope=provider`) or agent (`scope=agent`) request attempt started |
 | `cache_diagnostics` | `eligible`, `mode`, `transport`, `continuation` | Sanitized cache-routing state. `eligible` is a conservative local prompt-length estimate; it never includes prompts, IDs, request bodies, or credentials |
 | `retry_scheduled` | `scope`, `attempt`, `max_attempts`, `delay_ms`, optional `reason` | The upcoming attempt is scheduled; `delay_ms` is a non-negative integer and is `0` for immediate retries. `reason` is a human-readable string such as `idle timeout (n/N)` for stream idle-timeout retries |
-| `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
+| `user_message` | `content`, `time`, optional `advisor_note` | The submitted prompt as it was added to the transcript. `advisor_note: true` marks a note from the passive advisor rather than user input |
 | `assistant_start` | (none) | Provider connection opened; waiting for assistant streaming |
 | `text_delta` | `delta` | Partial assistant text. Concatenate to build the full reply |
 | `tool_use_start` | `id`, `name` | Provider started streaming a tool call |
@@ -211,6 +211,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_use_end` | `id` | Provider completed the tool-call argument stream |
 | `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
 | `server_tool` | `id`, `name`, `phase`, optional `text`, `error_code`, `redacted` | A provider-executed tool (for example Anthropic's native `advisor`) started (`phase=start`) or returned (`phase=result`). `text` is plaintext advice when the provider exposes it; `redacted: true` means the advice is encrypted. zut never executes these tools |
+| `advisor_review` | `kind`, `phase` | The executor waits on a blocking advisor review: `kind` is `change` (its first change) or `finish` (its final answer), `phase` is `start` or `end` |
 | `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
 | `nested_tool_started` | `id`, `parent_id`, `name`, `args` | Experimental event emitted by `codemode` for a nested tool call. Emitted only when execution starts; `args` contains normalized execution arguments after guard rewrites. Nested calls never appear in the transcript; consumers may ignore these events. |
 | `nested_tool_result` | `id`, `parent_id`, `name`, `is_error`, `denied`, optional `summary` | Experimental event emitted by `codemode` once per nested invocation, including calls denied before execution (which have no started event). `summary` concatenates text content, truncated to 200 bytes at a UTF-8 rune boundary; omitted when empty. Nested calls never appear in the transcript; consumers may ignore these events. |

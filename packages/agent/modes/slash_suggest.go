@@ -54,7 +54,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/reasoning", Desc: "set the reasoning level"},
 	{Name: "/profile", Desc: "activate model + reasoning + fast-mode profile (/profile <1-9>)"},
 	{Name: "/fast", Desc: "toggle fast mode"},
-	{Name: "/advisor", Desc: "consult a stronger model (/advisor provider/model:reasoning | on | off)"},
+	{Name: "/advisor", Desc: "passive reviewer model watching the agent (/advisor provider/model:reasoning | on | off)"},
 	{Name: "/orchestrator", Desc: "toggle automatic subagent orchestration"},
 	{Name: "/goal", Desc: "start or control an autonomous goal"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
