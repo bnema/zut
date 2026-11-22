@@ -32,6 +32,9 @@ func eventProjection(ev core.AgentEvent) map[string]any {
 	case core.EvUserMessage:
 		m["content"] = contentProjection(e.Message.Content)
 		m["time"] = e.Message.Time
+		if e.Message.Meta[core.WatcherNoteMetaKey] == "true" {
+			m["advisor_note"] = true
+		}
 	case core.EvAssistantMessage:
 		m["content"] = contentProjection(e.Message.Content)
 		m["time"] = e.Message.Time

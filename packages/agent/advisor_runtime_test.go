@@ -61,7 +61,7 @@ func TestAdvisorResolveRegistrationAndPrompt(t *testing.T) {
 	if _, ok := r.ToolRegistry[tools.AdvisorToolName].(*tools.AdvisorTool); !ok {
 		t.Fatalf("advisor not registered: %#v", r.ToolRegistry[tools.AdvisorToolName])
 	}
-	for _, want := range []string{"[advisor]", "You have access to an `advisor` tool", "Give the advice serious weight."} {
+	for _, want := range []string{"[advisor]", "An advisor (a stronger reviewer model) watches your work", "Do not call it on your own initiative."} {
 		if !strings.Contains(r.SystemPrompt, want) {
 			t.Fatalf("system prompt missing %q", want)
 		}
@@ -113,7 +113,7 @@ func TestAdvisorToolTargetErrors(t *testing.T) {
 	}
 }
 
-func TestAdvisorBindForwardsLiveAgentContext(t *testing.T) {
+func TestInstallAdvisorForwardsLiveAgentContext(t *testing.T) {
 	advisorClient := providermocks.NewMockClient(t)
 	var body string
 	advisorClient.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
@@ -131,11 +131,14 @@ func TestAdvisorBindForwardsLiveAgentContext(t *testing.T) {
 	}
 	first := core.Registry{tools.AdvisorToolName: newTool()}
 	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "first system", first)
-	bindAdvisorTool(first, ag)
+	installAdvisor(ag, clientAdvisorTool(first), nil, AdvisorSettings{})
+	if ag.Watcher() == nil {
+		t.Fatal("installAdvisor must install the passive watcher")
+	}
 
 	// A refresh installs a freshly built registry; it must be bound too.
 	second := core.Registry{tools.AdvisorToolName: newTool()}
-	bindAdvisorTool(second, ag)
+	installAdvisor(ag, clientAdvisorTool(second), nil, AdvisorSettings{})
 	ag.SetPromptConfig("refreshed system", second)
 	ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "user task"}}}})
 

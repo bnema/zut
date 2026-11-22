@@ -969,6 +969,7 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 	}
 	// args may still name the launch model after a /model switch, so the
 	// advisor mode follows the live executor instead.
+	adv := clientAdvisorTool(reg)
 	server := applyAdvisorMode(reg, resolved.advisorSettings, ag.Client.Name(), ag.Model)
 	if interactive != nil {
 		oldTools, applied := interactive.ApplyAgentPromptConfigAtWebSearchGeneration(ag, resolved.SystemPrompt, reg, webSearchPolicyGeneration)
@@ -976,16 +977,14 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 			_ = tools.CloseLSPManagers(reg)
 			return subagents.WebSearchDeny, errInteractiveAgentChanged
 		}
-		installServerAdvisor(ag, server, resolved.advisorSettings)
-		bindAdvisorTool(reg, ag)
+		installAdvisor(ag, adv, server, resolved.advisorSettings)
 		interactive.DeferUntilIdle(func() {
 			_ = tools.CloseLSPManagers(oldTools)
 		})
 		return webSearchPolicyForRegistry(resolved.WebSearchPolicy, ag.ToolsSnapshot()), nil
 	}
 	oldTools := ag.SetPromptConfig(resolved.SystemPrompt, reg)
-	installServerAdvisor(ag, server, resolved.advisorSettings)
-	bindAdvisorTool(reg, ag)
+	installAdvisor(ag, adv, server, resolved.advisorSettings)
 	_ = tools.CloseLSPManagers(oldTools)
 	return webSearchPolicyForRegistry(resolved.WebSearchPolicy, reg), nil
 }

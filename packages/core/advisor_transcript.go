@@ -17,6 +17,13 @@ import (
 // placeholders. Deferred tools are listed only once a tool result activated
 // them, matching what providers send.
 func SerializeAdvisorTranscript(system string, tools []provider.Tool, msgs []provider.Message, pendingCallID string) string {
+	return SerializeAdvisorContext(system, tools, msgs) + "\n=== transcript ===\n" + SerializeAdvisorMessages(msgs, pendingCallID)
+}
+
+// SerializeAdvisorContext renders the executor's system prompt and the tool
+// definitions it can currently see. msgs decide which deferred tools are
+// active.
+func SerializeAdvisorContext(system string, tools []provider.Tool, msgs []provider.Message) string {
 	msgs = projectProviderMessages(msgs)
 	var sb strings.Builder
 
@@ -46,7 +53,14 @@ func SerializeAdvisorTranscript(system string, tools []provider.Tool, msgs []pro
 			sb.WriteString("\n")
 		}
 	}
+	return sb.String()
+}
 
+// SerializeAdvisorMessages renders msgs (a whole transcript or a later slice
+// of it) in the provider-visible projection. See SerializeAdvisorTranscript.
+func SerializeAdvisorMessages(msgs []provider.Message, pendingCallID string) string {
+	msgs = projectProviderMessages(msgs)
+	var sb strings.Builder
 	answered := make(map[string]bool)
 	for _, m := range msgs {
 		for _, c := range m.Content {
@@ -56,7 +70,6 @@ func SerializeAdvisorTranscript(system string, tools []provider.Tool, msgs []pro
 		}
 	}
 
-	sb.WriteString("\n=== transcript ===\n")
 	for _, m := range msgs {
 		var body strings.Builder
 		for _, c := range m.Content {

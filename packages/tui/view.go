@@ -1054,6 +1054,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		return nil
 	}
 
+	if m.Meta[core.WatcherNoteMetaKey] == "true" {
+		return v.renderAdvisorNote(m, width)
+	}
+
 	switch m.Role {
 	case provider.RoleUser:
 		// User rows: no speaker label. Each line is painted with a
@@ -2873,6 +2877,39 @@ func toInt(v any) (int, bool) {
 // visual block in the chat. When collapsed it shows a one-line label
 // with the pre-compaction token count; when expanded (ctrl+o) it
 // shows the full summary text.
+// renderAdvisorNote renders a note the passive advisor sent to the
+// executor: a warning-colored header taken from the note's first line, then
+// the note body, muted and wrapped. It is not a user turn, so it skips the
+// user bubble.
+func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
+	th := v.Theme
+	const indent = "  "
+	var text strings.Builder
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			text.WriteString(tb.Text)
+		}
+	}
+	body := strings.TrimSpace(text.String())
+	header := "advisor"
+	if first, rest, ok := strings.Cut(body, "\n"); ok && strings.HasPrefix(first, "[advisor") {
+		header = strings.Trim(first, "[]: ")
+		body = strings.TrimSpace(rest)
+	}
+	inner := width - len(indent)
+	if inner < 1 {
+		inner = 1
+	}
+	lines := []string{"", th.FGColor(th.Warning, "◆ "+truncateToWidth(header, width-2))}
+	for _, l := range splitLines(body) {
+		l = sanitizeLine(l, codeTabStop)
+		for _, w := range wrapLine(l, inner, "") {
+			lines = append(lines, indent+th.FGColor(th.Muted, w))
+		}
+	}
+	return lines
+}
+
 func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 	th := v.Theme
 	const indent = "    "

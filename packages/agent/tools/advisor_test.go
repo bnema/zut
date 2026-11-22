@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/advisor"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/providermocks"
 	"github.com/stretchr/testify/mock"
@@ -17,12 +18,12 @@ func advisorTestModel() provider.Model {
 
 func boundAdvisor(target func(context.Context) (AdvisorTarget, error)) *AdvisorTool {
 	tool := &AdvisorTool{Target: target}
-	tool.Bind(func() AdvisorSnapshot {
-		return AdvisorSnapshot{
+	tool.Bind(advisor.NewReviewer(target, func() advisor.Snapshot {
+		return advisor.Snapshot{
 			System:   "executor system",
 			Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "fix the parser"}}}},
 		}
-	})
+	}))
 	return tool
 }
 
@@ -37,7 +38,7 @@ func eventStream(events ...provider.Event) <-chan provider.Event {
 
 func TestAdvisorToolContract(t *testing.T) {
 	tool := &AdvisorTool{}
-	if tool.Name() != "advisor" || !strings.HasPrefix(tool.Description(), "Consult a stronger reviewer") {
+	if tool.Name() != "advisor" || !strings.HasPrefix(tool.Description(), "Consult the advisor") {
 		t.Fatalf("name=%q desc=%q", tool.Name(), tool.Description())
 	}
 	if string(tool.Schema()) != `{"type":"object","properties":{}}` {
@@ -101,7 +102,7 @@ func TestAdvisorToolMaxTokensDefaultsToModelLimit(t *testing.T) {
 	}{
 		{0, 4096, 4096},
 		{100000, 4096, 4096},
-		{0, 0, defaultAdvisorMaxTokens},
+		{0, 0, advisor.DefaultMaxTokens},
 	} {
 		client := providermocks.NewMockClient(t)
 		client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {

@@ -35,6 +35,9 @@ type QueuedMessage struct {
 	// HostEvent distinguishes host evidence from ordinary input so hosts can
 	// retain it after a failed turn. Explicit cancellation may still discard it.
 	HostEvent bool
+	// Meta is copied to the appended transcript message, so hosts can tag
+	// host messages (for example advisor notes) for rendering and replay.
+	Meta map[string]string
 }
 
 type queuedMessage struct {
@@ -78,6 +81,8 @@ type Agent struct {
 	// on every executor request so hosts can drop a stale native advisor.
 	// Guarded by mu; called without it.
 	serverAdvisorFunc func() *provider.NativeAdvisor
+	// watcher observes the loop; see Watcher. Guarded by mu.
+	watcher Watcher
 
 	// ContextWindow is the effective input context capacity retained from
 	// model resolution. Hosts use it for proactive compaction even when the
@@ -453,6 +458,12 @@ func (a *Agent) DrainQueuedMessages() []QueuedMessage {
 
 func cloneQueuedMessage(message QueuedMessage) QueuedMessage {
 	clone := QueuedMessage{Text: message.Text, HostEvent: message.HostEvent, SubmissionSequence: message.SubmissionSequence}
+	if len(message.Meta) > 0 {
+		clone.Meta = make(map[string]string, len(message.Meta))
+		for k, v := range message.Meta {
+			clone.Meta[k] = v
+		}
+	}
 	if len(message.Images) == 0 {
 		return clone
 	}
@@ -489,6 +500,7 @@ func (a *Agent) appendQueuedAsUser(messages []queuedMessage, sink func(AgentEven
 			Role:    provider.RoleUser,
 			Content: content,
 			Time:    accepted,
+			Meta:    queued.message.Meta,
 		}
 		a.mu.Lock()
 		if !queued.message.HostEvent {
@@ -776,6 +788,14 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 }
 
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestContext provider.RequestContext) error {
+	if w := a.Watcher(); w != nil {
+		w.RunStarted(ctx)
+		defer w.RunEnded()
+	}
+	return a.runSteps(ctx, sink, requestContext)
+}
+
+func (a *Agent) runSteps(ctx context.Context, sink func(AgentEvent), requestContext provider.RequestContext) error {
 	a.resetDeniedToolCalls()
 	recoveryUsed := false
 	for step := 1; a.MaxSteps <= 0 || step <= a.MaxSteps; step++ {
@@ -786,6 +806,9 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 		// started yet.
 		if pending := a.drainQueuedMessages(); len(pending) > 0 {
 			a.appendQueuedAsUser(pending, sink)
+		}
+		if w := a.Watcher(); w != nil {
+			a.foldWatcherUsage(w, sink)
 		}
 		if a.repetitionStopped() {
 			sink(EvDone{})
@@ -962,6 +985,9 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				return err
 			}
 			_ = hadError
+			if w := a.Watcher(); w != nil {
+				w.StepCompleted()
+			}
 			for _, observation := range observations {
 				decision := a.observeRepetition(observation.fingerprint, observation.kind, observation.toolName)
 				if decision.stage != "" && a.handleRepetitionDecision(decision, sink) {
@@ -1006,6 +1032,24 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestConte
 				}
 				sink(EvDone{})
 				return ErrIncompleteTurn
+			}
+		}
+
+		// A watcher may hold a final answer once it reviewed it: its note is
+		// queued and the loop runs again so the executor can act on it.
+		if stop == provider.StopEnd && !a.sawDeniedToolCall() && ctx.Err() == nil {
+			if w := a.Watcher(); w != nil {
+				v := w.BeforeFinish(ctx)
+				a.foldWatcherUsage(w, sink)
+				if v.Hold {
+					a.QueueWatcherNote(v.Note)
+				}
+				// Anything queued during the review (the held note, a
+				// watcher note, host events) is answered now instead of
+				// waiting for the next prompt.
+				if ctx.Err() == nil && a.QueuedMessageCount() > 0 {
+					continue
+				}
 			}
 		}
 
@@ -1596,6 +1640,9 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 	sink = dispatcher.emit
 	var executed provider.Message
 	skipping := false
+	// watcherHeld skips the rest of a batch once the watcher held a call, so
+	// later calls never run ahead of the advice.
+	watcherHeld := false
 	var results []provider.Content
 	var addedTools []string
 	hadError := false
@@ -1622,6 +1669,14 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 				Content: []provider.Content{provider.TextBlock{Text: "Skipped: the user sent a new message before this tool ran. Read it, then re-run this tool if still needed."}},
 				IsError: true,
 			}
+		} else if watcherHeld {
+			res = ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: "Skipped: an earlier call in this batch was held by the advisor. Reconsider, then re-run this tool if still needed."}},
+				IsError: true,
+			}
+		} else if held, ok := a.watcherHold(ctx, tc); ok {
+			res = held
+			watcherHeld = true
 		} else {
 			executed.Content = append(executed.Content, tc)
 			res = a.runOneToolWithDispatcher(ctx, tc, tools, dispatcher)

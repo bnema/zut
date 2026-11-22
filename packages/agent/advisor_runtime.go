@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/advisor"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -59,21 +60,56 @@ func maybeAddAdvisorTool(reg core.Registry, args Args, cfg Config) {
 	}
 }
 
-// bindAdvisorTool attaches ag's transcript to the advisor tool in reg, if any.
-func bindAdvisorTool(reg core.Registry, ag *core.Agent) {
-	adv, ok := reg[tools.AdvisorToolName].(*tools.AdvisorTool)
-	if !ok || ag == nil {
+// clientAdvisorTool returns the client advisor tool in reg, if any. Call it
+// before applyAdvisorMode, which removes the tool in native mode.
+func clientAdvisorTool(reg core.Registry) *tools.AdvisorTool {
+	adv, _ := reg[tools.AdvisorToolName].(*tools.AdvisorTool)
+	return adv
+}
+
+// installAdvisor sets the decided native advisor on ag and installs the
+// passive advisor watcher. adv is the session's client advisor tool taken
+// before applyAdvisorMode (nil when the session admits no advisor); it is
+// bound to the watcher's reviewer so explicit consultations share the
+// advisor's conversation. A registry refresh keeps the agent's existing
+// watcher, so the advisor keeps what it already reviewed.
+func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.NativeAdvisor, decided AdvisorSettings) {
+	if ag == nil {
 		return
 	}
-	adv.Bind(func() tools.AdvisorSnapshot {
+	installServerAdvisor(ag, server, decided)
+	if adv == nil {
+		ag.SetWatcher(nil)
+		return
+	}
+	native := func() bool { return false }
+	if server != nil {
+		native = func() bool {
+			cfg, err := LoadConfig()
+			return err == nil && cfg.AdvisorSettings() == decided
+		}
+	}
+	if w, ok := ag.Watcher().(*advisor.Watcher); ok && w.Reviewer() != nil {
+		adv.Bind(w.Reviewer())
+		w.SetNative(native)
+		return
+	}
+	reviewer := advisor.NewReviewer(adv.Target, func() advisor.Snapshot {
 		system, current := ag.PromptConfig()
-		return tools.AdvisorSnapshot{System: system, Tools: current.Specs(), Messages: ag.Messages()}
+		return advisor.Snapshot{System: system, Tools: current.Specs(), Messages: ag.Messages()}
 	})
+	adv.Bind(reviewer)
+	ag.SetWatcher(advisor.NewWatcher(advisor.WatcherConfig{
+		Reviewer: reviewer,
+		Native:   native,
+		Queue:    ag.QueueWatcherNote,
+		Messages: ag.Messages,
+	}))
 }
 
 // resolveAdvisorTarget loads the current advisor settings and builds a
 // client for the configured model.
-func resolveAdvisorTarget(ctx context.Context, getenv func(string) string) (tools.AdvisorTarget, error) {
+func resolveAdvisorTarget(ctx context.Context, getenv func(string) string) (advisor.Target, error) {
 	cfg, err := LoadConfig()
 	if err != nil {
 		return tools.AdvisorTarget{}, fmt.Errorf("load advisor config: %w", err)

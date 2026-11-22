@@ -149,3 +149,11 @@ packages:
           filename: signaler_mock_test.go
           structname: mockSignaler
           build-tags: '!windows'
+  github.com/bnema/zut/packages/core:
+    interfaces:
+      Watcher:
+        config:
+          dir: packages/core
+          pkgname: core
+          filename: watcher_mock_test.go
+          structname: mockWatcher

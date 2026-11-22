@@ -22,7 +22,7 @@ func terminalTitleEnabled(enabled *bool) bool {
 // user-role messages internally.
 func hasRealUserPrompt(messages []provider.Message) bool {
 	for _, message := range messages {
-		if message.Role != provider.RoleUser || isHiddenTranscriptMessage(message) || message.Meta[shellEscapeMetaKey] == "true" {
+		if message.Role != provider.RoleUser || isHiddenTranscriptMessage(message) || message.Meta[shellEscapeMetaKey] == "true" || message.Meta[core.WatcherNoteMetaKey] == "true" {
 			continue
 		}
 		if strings.TrimSpace(userMessageText(message)) != "" || len(message.Content) > 0 {
