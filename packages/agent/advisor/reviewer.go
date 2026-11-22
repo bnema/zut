@@ -121,9 +121,12 @@ type Reviewer struct {
 	consulted map[string]bool
 	// notes is the advice already given (most recent last). It is replayed
 	// after a reset so the advisor does not repeat itself.
-	notes    []string
-	usage    provider.Usage
-	hasUsage bool
+	notes []string
+	// undelivered reports that the last reply was dropped before reaching
+	// the executor; the next prompt says so.
+	undelivered bool
+	usage       provider.Usage
+	hasUsage    bool
 }
 
 // NewReviewer returns a reviewer resolving its target and executor snapshot
@@ -218,9 +221,26 @@ func (r *Reviewer) acquire(ctx context.Context) error {
 
 func (r *Reviewer) release() { <-r.turn }
 
+// Undelivered records that the watcher dropped note (a review that finished
+// after its run or checkpoint moved on): it is forgotten, and the advisor is
+// told on its next request so it can raise it again if still relevant.
+func (r *Reviewer) Undelivered(note string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	note = strings.TrimSpace(note)
+	for i := len(r.notes) - 1; i >= 0; i-- {
+		if r.notes[i] == note || strings.HasPrefix(note, strings.TrimSuffix(r.notes[i], "…")) {
+			r.notes = append(r.notes[:i], r.notes[i+1:]...)
+			break
+		}
+	}
+	r.undelivered = true
+}
+
 // ask sends the new part of the executor transcript plus instruction and
-// returns the advisor's reply. The conversation advances only on success,
-// so a failed request is retried with the same delta next time.
+// returns the advisor's reply. A reset decided by buildPrompt applies even
+// when the request fails; otherwise the conversation advances only on
+// success, so a failed request is retried with the same delta next time.
 func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, started func(), progress func(string)) (string, *provider.Usage, error) {
 	if r == nil || r.snapshot == nil {
 		return "", nil, errors.New("advisor is not available in this session")
@@ -320,7 +340,8 @@ func (r *Reviewer) buildPrompt(snap Snapshot, budget int, pendingCallID, instruc
 		body = strings.TrimSpace(core.SerializeAdvisorMessages(r.visible(msgs), pendingCallID))
 		// A transcript too long for the advisor keeps only its most recent
 		// part, so the next reviews do not reset and resend it every time.
-		if limit := budget/2 - prompt.Len(); limit > 0 && len(body) > limit {
+		// A large executor context still leaves room for recent work.
+		if limit := max(budget/2-prompt.Len(), budget/8); len(body) > limit {
 			body = "(earlier transcript omitted)\n" + tailFromLine(body, limit)
 		}
 	}
@@ -331,6 +352,12 @@ func (r *Reviewer) buildPrompt(snap Snapshot, budget int, pendingCallID, instruc
 	} else {
 		prompt.WriteString("No new executor activity since your last reply.\n\n")
 	}
+	r.mu.Lock()
+	if r.undelivered {
+		prompt.WriteString("Your previous note was not delivered to the executor.\n\n")
+		r.undelivered = false
+	}
+	r.mu.Unlock()
 	prompt.WriteString(instruction)
 	return prompt.String()
 }

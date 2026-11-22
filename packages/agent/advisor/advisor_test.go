@@ -315,3 +315,43 @@ func TestTailFromLineKeepsRunes(t *testing.T) {
 	require.Equal(t, "", tailFromLine("aé", 1), "never starts inside a rune")
 	require.Equal(t, "line2", tailFromLine("line1\nline2", 8))
 }
+
+func TestReviewerTrimKeepsRoomBesideLargeContext(t *testing.T) {
+	client := providermocks.NewMockClient(t)
+	var req provider.Request
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, r provider.Request) (<-chan provider.Event, error) {
+		req = r
+		return reply("SILENT"), nil
+	})
+	tr := &transcript{}
+	tr.set(text(provider.RoleAssistant, strings.Repeat("z", 20000)+"\nlatest step", time.Unix(1, 0)))
+	// The executor system prompt alone exceeds half of the advisor budget.
+	r := NewReviewer(func(context.Context) (Target, error) {
+		return Target{Client: client, Model: provider.Model{ID: "adv", ContextWindow: 4000}}, nil
+	}, func() Snapshot { return Snapshot{System: strings.Repeat("s", 4000), Messages: tr.get()} })
+	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	require.NoError(t, err)
+	body := lastUserText(req)
+	require.Contains(t, body, "(earlier transcript omitted)")
+	require.Contains(t, body, "latest step")
+	require.Less(t, len(body), 4000+6000/8+2000)
+}
+
+func TestReviewerUndeliveredNoteIsForgottenAndAnnounced(t *testing.T) {
+	client := providermocks.NewMockClient(t)
+	var reqs []provider.Request
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, r provider.Request) (<-chan provider.Event, error) {
+		reqs = append(reqs, r)
+		return reply("NOTE: check lexer.go"), nil
+	})
+	tr := &transcript{}
+	tr.set(text(provider.RoleUser, "task", time.Unix(1, 0)))
+	r := newTestReviewer(client, tr)
+	v, err := r.Review(context.Background(), KindStep, nil, nil)
+	require.NoError(t, err)
+	r.Undelivered(v.Text)
+	require.Empty(t, r.notes)
+	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, lastUserText(reqs[1]), "Your previous note was not delivered")
+}

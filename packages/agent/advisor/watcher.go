@@ -207,6 +207,10 @@ func (w *Watcher) backgroundReviews(ctx context.Context, gen uint64) {
 		v, err := w.reviewer.Review(reviewCtx, KindStep, nil, nil)
 		cancel()
 		w.mu.Lock()
+		dropped := gen != w.gen || w.bgCtx != ctx || ctx.Err() != nil
+		if dropped && err == nil && v.Decision != Silent {
+			w.reviewer.Undelivered(v.Text)
+		}
 		if gen != w.gen || w.bgCtx != ctx {
 			// A newer run or checkpoint owns the background state.
 			w.mu.Unlock()
@@ -273,6 +277,10 @@ func (w *Watcher) BeforeTool(ctx context.Context, call provider.ToolCallBlock) c
 func (w *Watcher) BeforeFinish(ctx context.Context) core.WatcherVerdict {
 	w.mu.Lock()
 	if w.finishDone || !w.changed {
+		// The answer is final: a background review still in flight would
+		// only add a turn after it. Work that follows (host events) gets a
+		// fresh background scope.
+		w.rearmLocked()
 		w.mu.Unlock()
 		return core.WatcherVerdict{}
 	}

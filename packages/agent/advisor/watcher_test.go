@@ -303,3 +303,20 @@ func TestConsultedSinceIgnoresStartPastCompactedTranscript(t *testing.T) {
 	require.False(t, consultedSince(msgs, 5))
 	require.True(t, consultedSince(msgs, 0))
 }
+
+func TestWatcherFinishWithoutChangeStopsBackgroundReview(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := providermocks.NewMockClient(t)
+		started := make(chan struct{})
+		client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(blockingReply(started)).Once()
+		h := newHarness(t, client, Client)
+		ctx := context.Background()
+		h.w.RunStarted(ctx)
+		defer h.w.RunEnded()
+		h.w.StepCompleted()
+		<-started
+		require.Equal(t, core.WatcherVerdict{}, h.w.BeforeFinish(ctx))
+		synctest.Wait()
+		require.Empty(t, h.notes, "no note lands after a final read-only answer")
+	})
+}

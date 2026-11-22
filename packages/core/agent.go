@@ -1670,8 +1670,12 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 				IsError: true,
 			}
 		} else if watcherHeld {
+			text := "Skipped: an earlier call in this batch was held by the advisor. Reconsider, then re-run this tool if still needed."
+			if err := ctx.Err(); err != nil {
+				text = "Aborted: " + err.Error()
+			}
 			res = ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: "Skipped: an earlier call in this batch was held by the advisor. Reconsider, then re-run this tool if still needed."}},
+				Content: []provider.Content{provider.TextBlock{Text: text}},
 				IsError: true,
 			}
 		} else if held, ok := a.watcherHold(ctx, tc, sink); ok {
