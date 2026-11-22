@@ -1039,7 +1039,7 @@ func (a *Agent) runSteps(ctx context.Context, sink func(AgentEvent), requestCont
 		// queued and the loop runs again so the executor can act on it.
 		if stop == provider.StopEnd && !a.sawDeniedToolCall() && ctx.Err() == nil {
 			if w := a.Watcher(); w != nil {
-				v := w.BeforeFinish(ctx)
+				v := w.BeforeFinish(withWatcherReport(ctx, sink))
 				a.foldWatcherUsage(w, sink)
 				if v.Hold {
 					a.QueueWatcherNote(v.Note)
@@ -1674,7 +1674,7 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 				Content: []provider.Content{provider.TextBlock{Text: "Skipped: an earlier call in this batch was held by the advisor. Reconsider, then re-run this tool if still needed."}},
 				IsError: true,
 			}
-		} else if held, ok := a.watcherHold(ctx, tc); ok {
+		} else if held, ok := a.watcherHold(ctx, tc, sink); ok {
 			res = held
 			watcherHeld = true
 		} else {

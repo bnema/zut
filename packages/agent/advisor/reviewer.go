@@ -59,6 +59,17 @@ const (
 	KindFinish
 )
 
+// String names the checkpoint, as reported in core.EvAdvisorReview.
+func (k Kind) String() string {
+	switch k {
+	case KindChange:
+		return "change"
+	case KindFinish:
+		return "finish"
+	}
+	return "step"
+}
+
 // Decision is the advisor's choice in a watcher review.
 type Decision string
 

@@ -92,3 +92,23 @@ func TestActivityWaitingResidentsLabel(t *testing.T) {
 		t.Fatalf("label = %q", got)
 	}
 }
+
+func TestAgentActivityShowsAdvisorReview(t *testing.T) {
+	a := newAgentActivity("anthropic", "claude-test")
+	a.apply(core.EvToolCall{ID: "e1", Name: "edit"})
+	if got := a.label(); got != "Preparing tool: edit" {
+		t.Fatalf("label = %q", got)
+	}
+	a.apply(core.EvAdvisorReview{Kind: "change", Phase: core.AdvisorReviewStart})
+	if got := a.label(); got != "Advisor reviewing the first change…" {
+		t.Fatalf("label = %q", got)
+	}
+	a.apply(core.EvAdvisorReview{Kind: "change", Phase: core.AdvisorReviewEnd})
+	if got := a.label(); got != "Preparing tool: edit" {
+		t.Fatalf("label after review = %q", got)
+	}
+	a.apply(core.EvAdvisorReview{Kind: "finish", Phase: core.AdvisorReviewStart})
+	if got := a.label(); got != "Advisor reviewing the final answer…" {
+		t.Fatalf("label = %q", got)
+	}
+}

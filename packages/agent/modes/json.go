@@ -118,6 +118,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["delta"] = e.Delta
 	case core.EvToolUseEnd:
 		m["id"] = e.ID
+	case core.EvAdvisorReview:
+		m["kind"] = e.Kind
+		m["phase"] = e.Phase
 	case core.EvServerTool:
 		m["id"] = e.ID
 		m["name"] = e.Name

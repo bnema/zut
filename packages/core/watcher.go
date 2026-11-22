@@ -78,14 +78,38 @@ func (a *Agent) QueueWatcherNote(note string) bool {
 	return a.QueuePrompt(QueuedMessage{Text: note, HostEvent: true, Meta: map[string]string{WatcherNoteMetaKey: "true"}})
 }
 
+type watcherReportKey struct{}
+
+// withWatcherReport lets a watcher checkpoint report its blocking review on
+// the loop's event sink.
+func withWatcherReport(ctx context.Context, sink func(AgentEvent)) context.Context {
+	if sink == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, watcherReportKey{}, sink)
+}
+
+// ReportWatcherReview announces that the executor is waiting on a blocking
+// review of kind ("change" or "finish") and returns the call that ends it.
+// Watchers call it from BeforeTool or BeforeFinish only when they actually
+// review; it is a no-op outside a checkpoint.
+func ReportWatcherReview(ctx context.Context, kind string) (done func()) {
+	sink, _ := ctx.Value(watcherReportKey{}).(func(AgentEvent))
+	if sink == nil {
+		return func() {}
+	}
+	sink(EvAdvisorReview{Kind: kind, Phase: AdvisorReviewStart})
+	return func() { sink(EvAdvisorReview{Kind: kind, Phase: AdvisorReviewEnd}) }
+}
+
 // watcherHold asks the watcher about tc and returns the error result to use
 // instead of running it when the watcher holds the call.
-func (a *Agent) watcherHold(ctx context.Context, tc provider.ToolCallBlock) (ToolResult, bool) {
+func (a *Agent) watcherHold(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) (ToolResult, bool) {
 	w := a.Watcher()
 	if w == nil {
 		return ToolResult{}, false
 	}
-	v := w.BeforeTool(ctx, tc)
+	v := w.BeforeTool(withWatcherReport(ctx, sink), tc)
 	if !v.Hold {
 		return ToolResult{}, false
 	}

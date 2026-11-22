@@ -138,3 +138,27 @@ func TestWatcherHoldSkipsRestOfBatch(t *testing.T) {
 	require.Equal(t, "held", results[0].Content[0].(provider.TextBlock).Text)
 	require.Contains(t, results[1].Content[0].(provider.TextBlock).Text, "held by the advisor")
 }
+
+func TestReportWatcherReviewEmitsOnLoopSink(t *testing.T) {
+	w := newMockWatcher(t)
+	w.EXPECT().RunStarted(mock.Anything).Once()
+	w.EXPECT().TakeUsage().Return(provider.Usage{}, false)
+	w.EXPECT().BeforeTool(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ provider.ToolCallBlock) WatcherVerdict {
+		done := ReportWatcherReview(ctx, "change")
+		done()
+		return WatcherVerdict{}
+	}).Once()
+	w.EXPECT().StepCompleted().Once()
+	w.EXPECT().BeforeFinish(mock.Anything).Return(WatcherVerdict{}).Once()
+	w.EXPECT().RunEnded().Once()
+
+	a, _ := watcherTestAgent(t, w)
+	var got []EvAdvisorReview
+	require.NoError(t, a.Prompt(context.Background(), "go", nil, func(ev AgentEvent) {
+		if r, ok := ev.(EvAdvisorReview); ok {
+			got = append(got, r)
+		}
+	}))
+	require.Equal(t, []EvAdvisorReview{{Kind: "change", Phase: AdvisorReviewStart}, {Kind: "change", Phase: AdvisorReviewEnd}}, got)
+	ReportWatcherReview(context.Background(), "change")() // no-op outside a checkpoint
+}

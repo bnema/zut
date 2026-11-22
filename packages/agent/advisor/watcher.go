@@ -247,7 +247,9 @@ func (w *Watcher) checkpoint(ctx context.Context, kind Kind, pending *provider.T
 	}
 	reviewCtx, cancel := context.WithTimeout(ctx, checkpointTimeout)
 	defer cancel()
+	done := core.ReportWatcherReview(ctx, kind.String())
 	v, err := w.reviewer.Review(reviewCtx, kind, pending)
+	done()
 	if err != nil || ctx.Err() != nil || v.Text == "" {
 		return core.WatcherVerdict{}
 	}

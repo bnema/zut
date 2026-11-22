@@ -35,3 +35,22 @@ func TestAdvisorNoteUserMessageRoundTrip(t *testing.T) {
 		t.Fatalf("decoded meta = %#v", msg.Meta)
 	}
 }
+
+func TestAdvisorReviewRoundTrip(t *testing.T) {
+	ev := core.EvAdvisorReview{Kind: "finish", Phase: core.AdvisorReviewStart}
+	kind, raw, err := daemonproto.EncodeAgentEvent(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["kind"] != "finish" || wire["phase"] != "start" {
+		t.Fatalf("projection = %#v", wire)
+	}
+	got, err := daemonproto.DecodeAgentEvent(kind, raw)
+	if err != nil || got != ev {
+		t.Fatalf("round trip = %#v, %v", got, err)
+	}
+}

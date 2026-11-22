@@ -181,6 +181,23 @@ type EvServerTool struct {
 
 func (EvServerTool) Type() string { return "server_tool" }
 
+// Advisor review phases for EvAdvisorReview.
+const (
+	AdvisorReviewStart = "start"
+	AdvisorReviewEnd   = "end"
+)
+
+// EvAdvisorReview reports a blocking advisor review: the executor waits
+// between Phase start and end. Kind is "change" (its first change) or
+// "finish" (its final answer). Background reviews never block and emit no
+// event.
+type EvAdvisorReview struct {
+	Kind  string
+	Phase string
+}
+
+func (EvAdvisorReview) Type() string { return "advisor_review" }
+
 type EvToolProgress struct {
 	ID   string
 	Text string
