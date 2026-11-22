@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -63,9 +64,9 @@ const (
 func (k Kind) String() string {
 	switch k {
 	case KindChange:
-		return "change"
+		return core.AdvisorReviewChange
 	case KindFinish:
-		return "finish"
+		return core.AdvisorReviewFinish
 	}
 	return "step"
 }
@@ -85,15 +86,23 @@ type Verdict struct {
 	Text     string
 }
 
+// maxRememberedNotes bounds the advice carried over a conversation reset.
+const maxRememberedNotes = 8
+
+// maxRememberedNoteChars bounds each carried-over note.
+const maxRememberedNoteChars = 600
+
 // Reviewer keeps the advisor's own conversation for one executor. The
 // executor context is sent once; later requests carry only the transcript
 // that is new since the previous one, so the advisor remembers what it saw
-// and said, and the stable prefix stays cacheable. Requests are serialized.
+// and said, and the stable prefix stays cacheable. Requests are serialized;
+// waiting for a turn honors ctx.
 type Reviewer struct {
-	target   func(ctx context.Context) (Target, error)
 	snapshot func() Snapshot
 
-	mu sync.Mutex // held for a whole request; guards the fields below
+	// turn is a one-slot semaphore held for a whole request; it guards the
+	// conversation fields below.
+	turn chan struct{}
 	// conv is the advisor conversation: alternating user/assistant turns.
 	conv     []provider.Message
 	convSize int
@@ -102,13 +111,17 @@ type Reviewer struct {
 	// resets the conversation.
 	sent   int
 	anchor time.Time
-	// consulted holds advisor tool call IDs whose results are the advice
-	// itself, already in conv as an assistant turn.
-	consulted map[string]bool
 	// cacheID keeps one prompt-cache affinity per conversation.
 	cacheID string
 
-	usageMu  sync.Mutex
+	mu     sync.Mutex // guards the fields below; never held during a request
+	target func(ctx context.Context) (Target, error)
+	// consulted holds advisor tool call IDs whose results are the advice
+	// itself, already known to the advisor.
+	consulted map[string]bool
+	// notes is the advice already given (most recent last). It is replayed
+	// after a reset so the advisor does not repeat itself.
+	notes    []string
 	usage    provider.Usage
 	hasUsage bool
 }
@@ -116,61 +129,114 @@ type Reviewer struct {
 // NewReviewer returns a reviewer resolving its target and executor snapshot
 // on every request, so config changes apply without rebuilding it.
 func NewReviewer(target func(ctx context.Context) (Target, error), snapshot func() Snapshot) *Reviewer {
-	return &Reviewer{target: target, snapshot: snapshot, consulted: map[string]bool{}}
+	return &Reviewer{target: target, snapshot: snapshot, turn: make(chan struct{}, 1), consulted: map[string]bool{}}
+}
+
+// SetTarget replaces the target resolver, for example after the session
+// rebuilt its advisor tool.
+func (r *Reviewer) SetTarget(target func(ctx context.Context) (Target, error)) {
+	r.mu.Lock()
+	r.target = target
+	r.mu.Unlock()
 }
 
 // Review runs a watcher review and returns the advisor's verdict. pending is
-// the held call at a KindChange review. Its usage is collected for TakeUsage.
-func (r *Reviewer) Review(ctx context.Context, kind Kind, pending *provider.ToolCallBlock) (Verdict, error) {
-	text, usage, err := r.ask(ctx, reviewInstruction(kind, pending), "", nil)
+// the held call at a KindChange review. started, when set, runs once the
+// advisor target resolved and the request is about to be sent. Its usage is
+// collected for TakeUsage.
+func (r *Reviewer) Review(ctx context.Context, kind Kind, pending *provider.ToolCallBlock, started func()) (Verdict, error) {
+	text, usage, err := r.ask(ctx, reviewInstruction(kind, pending), "", started, nil)
 	if usage != nil {
 		r.addUsage(*usage)
 	}
 	if err != nil {
 		return Verdict{}, err
 	}
-	return parseVerdict(text), nil
+	v := parseVerdict(text)
+	if v.Decision != Silent {
+		r.remember(v.Text)
+	}
+	return v, nil
 }
 
 // Consult answers an explicit request for advice from the executor's advisor
 // tool call callID. Its usage is returned for the tool result.
 func (r *Reviewer) Consult(ctx context.Context, callID string, progress func(string)) (string, *provider.Usage, error) {
-	text, usage, err := r.ask(ctx, consultInstruction, callID, progress)
-	if err == nil && callID != "" {
+	text, usage, err := r.ask(ctx, consultInstruction, callID, nil, progress)
+	if err == nil {
 		r.mu.Lock()
-		r.consulted[callID] = true
+		if callID != "" {
+			r.consulted[callID] = true
+		}
 		r.mu.Unlock()
+		r.remember(text)
 	}
 	return text, usage, err
 }
 
 // TakeUsage returns and clears the usage of watcher reviews.
 func (r *Reviewer) TakeUsage() (provider.Usage, bool) {
-	r.usageMu.Lock()
-	defer r.usageMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	u, ok := r.usage, r.hasUsage
 	r.usage, r.hasUsage = provider.Usage{}, false
 	return u, ok
 }
 
 func (r *Reviewer) addUsage(u provider.Usage) {
-	r.usageMu.Lock()
+	r.mu.Lock()
 	r.usage = r.usage.Add(u)
 	r.hasUsage = true
-	r.usageMu.Unlock()
+	r.mu.Unlock()
 }
+
+func (r *Reviewer) remember(note string) {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return
+	}
+	if len(note) > maxRememberedNoteChars {
+		note = truncateUTF8(note, maxRememberedNoteChars) + "…"
+	}
+	r.mu.Lock()
+	r.notes = append(r.notes, note)
+	if over := len(r.notes) - maxRememberedNotes; over > 0 {
+		r.notes = append(r.notes[:0], r.notes[over:]...)
+	}
+	r.mu.Unlock()
+}
+
+// acquire waits for the request slot or ctx.
+func (r *Reviewer) acquire(ctx context.Context) error {
+	select {
+	case r.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("advisor call canceled: %w", ctx.Err())
+	}
+}
+
+func (r *Reviewer) release() { <-r.turn }
 
 // ask sends the new part of the executor transcript plus instruction and
 // returns the advisor's reply. The conversation advances only on success,
 // so a failed request is retried with the same delta next time.
-func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, progress func(string)) (string, *provider.Usage, error) {
-	if r == nil || r.target == nil || r.snapshot == nil {
+func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, started func(), progress func(string)) (string, *provider.Usage, error) {
+	if r == nil || r.snapshot == nil {
 		return "", nil, errors.New("advisor is not available in this session")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	resolve := r.target
+	r.mu.Unlock()
+	if resolve == nil {
+		return "", nil, errors.New("advisor is not available in this session")
+	}
+	if err := r.acquire(ctx); err != nil {
+		return "", nil, err
+	}
+	defer r.release()
 
-	target, err := r.target(ctx)
+	target, err := resolve(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -178,41 +244,8 @@ func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, p
 		defer func() { _ = closer.Close() }()
 	}
 	snap := r.snapshot()
-	msgs := snap.Messages
-	budget := contextBudget(target.Model)
-	if r.needsReset(msgs, budget) {
-		r.conv, r.convSize, r.sent, r.anchor = nil, 0, 0, time.Time{}
-	}
-	if len(r.conv) == 0 {
-		r.cacheID = newCacheID()
-	}
-
-	var prompt strings.Builder
-	delta := r.visible(msgs[r.sent:])
-	body := strings.TrimSpace(core.SerializeAdvisorMessages(delta, pendingCallID))
-	if len(r.conv) == 0 {
-		prompt.WriteString("Executor context:\n\n<context>\n")
-		prompt.WriteString(core.SerializeAdvisorContext(snap.System, snap.Tools, msgs))
-		prompt.WriteString("</context>\n\n")
-		// A transcript too long for the advisor keeps only its most recent
-		// part, so the next reviews do not reset and resend it every time.
-		if limit := budget/2 - prompt.Len(); limit > 0 && len(body) > limit {
-			cut := len(body) - limit
-			if i := strings.IndexByte(body[cut:], '\n'); i >= 0 {
-				cut += i + 1
-			}
-			body = "(earlier transcript omitted)\n" + body[cut:]
-		}
-	}
-	if body != "" {
-		prompt.WriteString("New executor transcript:\n\n<transcript>\n")
-		prompt.WriteString(body)
-		prompt.WriteString("\n</transcript>\n\n")
-	} else {
-		prompt.WriteString("No new executor activity since your last reply.\n\n")
-	}
-	prompt.WriteString(instruction)
-	user := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: prompt.String()}}}
+	prompt := r.buildPrompt(snap, contextBudget(target.Model), pendingCallID, instruction)
+	user := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: prompt}}}
 
 	maxTokens := target.MaxTokens
 	if limit := target.Model.MaxOutput; limit > 0 && (maxTokens <= 0 || maxTokens > limit) {
@@ -229,6 +262,81 @@ func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, p
 		Reasoning: target.Reasoning,
 		Context:   provider.RequestContext{CacheSessionID: r.cacheID, ThreadID: r.cacheID},
 	}
+	if started != nil {
+		started()
+	}
+	text, usage, err := streamReply(ctx, target, req, progress)
+	if err != nil {
+		return "", usage, err
+	}
+
+	msgs := snap.Messages
+	assistant := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: text}}}
+	r.conv = append(r.conv, user, assistant)
+	r.convSize += len(prompt) + len(text)
+	r.sent = len(msgs)
+	if len(msgs) > 0 {
+		r.anchor = msgs[len(msgs)-1].Time
+	}
+	return text, usage, nil
+}
+
+// buildPrompt renders the next advisor user turn. It resets the
+// conversation first when the transcript was rewritten or the turn would
+// overflow the budget; a fresh conversation carries the executor context,
+// the advisor's earlier notes, and as much recent transcript as fits.
+func (r *Reviewer) buildPrompt(snap Snapshot, budget int, pendingCallID, instruction string) string {
+	msgs := snap.Messages
+	rewritten := r.sent > len(msgs) || (r.sent > 0 && !msgs[r.sent-1].Time.Equal(r.anchor))
+	var body string
+	if len(r.conv) > 0 && !rewritten {
+		body = strings.TrimSpace(core.SerializeAdvisorMessages(r.visible(msgs[r.sent:]), pendingCallID))
+		if r.convSize+len(body)+len(instruction) > budget {
+			rewritten = true
+		}
+	}
+	if len(r.conv) == 0 || rewritten {
+		r.conv, r.convSize, r.sent, r.anchor = nil, 0, 0, time.Time{}
+		r.cacheID = newCacheID()
+	}
+
+	var prompt strings.Builder
+	if len(r.conv) == 0 {
+		prompt.WriteString("Executor context:\n\n<context>\n")
+		prompt.WriteString(core.SerializeAdvisorContext(snap.System, snap.Tools, msgs))
+		prompt.WriteString("</context>\n\n")
+		r.mu.Lock()
+		notes := append([]string(nil), r.notes...)
+		r.mu.Unlock()
+		if len(notes) > 0 {
+			prompt.WriteString("Advice you already gave in this session (do not repeat it):\n")
+			for _, n := range notes {
+				prompt.WriteString("- ")
+				prompt.WriteString(strings.ReplaceAll(n, "\n", " "))
+				prompt.WriteString("\n")
+			}
+			prompt.WriteString("\n")
+		}
+		body = strings.TrimSpace(core.SerializeAdvisorMessages(r.visible(msgs), pendingCallID))
+		// A transcript too long for the advisor keeps only its most recent
+		// part, so the next reviews do not reset and resend it every time.
+		if limit := budget/2 - prompt.Len(); limit > 0 && len(body) > limit {
+			body = "(earlier transcript omitted)\n" + tailFromLine(body, limit)
+		}
+	}
+	if body != "" {
+		prompt.WriteString("New executor transcript:\n\n<transcript>\n")
+		prompt.WriteString(body)
+		prompt.WriteString("\n</transcript>\n\n")
+	} else {
+		prompt.WriteString("No new executor activity since your last reply.\n\n")
+	}
+	prompt.WriteString(instruction)
+	return prompt.String()
+}
+
+// streamReply sends req and collects the advisor's text and usage.
+func streamReply(ctx context.Context, target Target, req provider.Request, progress func(string)) (string, *provider.Usage, error) {
 	events, err := target.Client.Stream(ctx, req)
 	if err != nil {
 		return "", nil, fmt.Errorf("advisor request failed: %w", err)
@@ -268,27 +376,30 @@ func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, p
 	if text == "" {
 		return "", usagePtr, errors.New("advisor returned no advice")
 	}
-
-	assistant := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: text}}}
-	r.conv = append(r.conv, user, assistant)
-	r.convSize += prompt.Len() + len(text)
-	r.sent = len(msgs)
-	if len(msgs) > 0 {
-		r.anchor = msgs[len(msgs)-1].Time
-	}
 	return text, usagePtr, nil
 }
 
-// needsReset reports whether the conversation no longer continues msgs or
-// has grown past budget characters.
-func (r *Reviewer) needsReset(msgs []provider.Message, budget int) bool {
-	if len(r.conv) == 0 {
-		return false
+// tailFromLine returns about the last limit bytes of s, starting at a line
+// boundary when one is available and never inside a UTF-8 sequence.
+func tailFromLine(s string, limit int) string {
+	cut := len(s) - limit
+	if i := strings.IndexByte(s[cut:], '\n'); i >= 0 {
+		return s[cut+i+1:]
 	}
-	if r.sent > len(msgs) || (r.sent > 0 && !msgs[r.sent-1].Time.Equal(r.anchor)) {
-		return true
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
 	}
-	return r.convSize > budget
+	return s[cut:]
+}
+
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }
 
 // contextBudget is the advisor conversation size, in characters, that fits
@@ -307,18 +418,25 @@ func newCacheID() string {
 	return "advisor-" + hex.EncodeToString(b[:])
 }
 
-// visible drops what the advisor already has: its own notes injected into
-// the executor transcript and the results of explicit consultations.
+// visible drops what the advisor already knows: its own notes injected into
+// the executor transcript and the results of explicit consultations (both
+// kept in notes).
 func (r *Reviewer) visible(msgs []provider.Message) []provider.Message {
+	r.mu.Lock()
+	consulted := make(map[string]bool, len(r.consulted))
+	for id := range r.consulted {
+		consulted[id] = true
+	}
+	r.mu.Unlock()
 	out := make([]provider.Message, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Meta[core.WatcherNoteMetaKey] == "true" {
 			continue
 		}
-		if m.Role == provider.RoleTool && len(r.consulted) > 0 {
+		if m.Role == provider.RoleTool && len(consulted) > 0 {
 			kept := make([]provider.Content, 0, len(m.Content))
 			for _, c := range m.Content {
-				if res, ok := c.(provider.ToolResultBlock); ok && r.consulted[res.CallID] {
+				if res, ok := c.(provider.ToolResultBlock); ok && consulted[res.CallID] {
 					continue
 				}
 				kept = append(kept, c)

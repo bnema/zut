@@ -54,7 +54,7 @@ func maybeAddAdvisorTool(reg core.Registry, args Args, cfg Config) {
 	}
 	getenv := argsGetenv(args)
 	reg[tools.AdvisorToolName] = &tools.AdvisorTool{
-		Target: func(ctx context.Context) (tools.AdvisorTarget, error) {
+		Target: func(ctx context.Context) (advisor.Target, error) {
 			return resolveAdvisorTarget(ctx, getenv)
 		},
 	}
@@ -82,16 +82,23 @@ func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.
 		ag.SetWatcher(nil)
 		return
 	}
-	native := func() bool { return false }
-	if server != nil {
-		native = func() bool {
-			cfg, err := LoadConfig()
-			return err == nil && cfg.AdvisorSettings() == decided
+	// While the persisted settings no longer match this decision (another
+	// session ran /advisor), the watcher pauses until the next refresh
+	// decides again. In native mode this keeps it from silently switching to
+	// billed client reviews.
+	mode := func() advisor.Mode {
+		if !advisorStillDecided(decided) {
+			return advisor.Off
 		}
+		if server != nil {
+			return advisor.Native
+		}
+		return advisor.Client
 	}
 	if w, ok := ag.Watcher().(*advisor.Watcher); ok && w.Reviewer() != nil {
+		w.Reviewer().SetTarget(adv.Target)
 		adv.Bind(w.Reviewer())
-		w.SetNative(native)
+		w.SetMode(mode)
 		return
 	}
 	reviewer := advisor.NewReviewer(adv.Target, func() advisor.Snapshot {
@@ -101,10 +108,18 @@ func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.
 	adv.Bind(reviewer)
 	ag.SetWatcher(advisor.NewWatcher(advisor.WatcherConfig{
 		Reviewer: reviewer,
-		Native:   native,
+		Mode:     mode,
 		Queue:    ag.QueueWatcherNote,
 		Messages: ag.Messages,
 	}))
+}
+
+// advisorStillDecided reports whether the persisted advisor settings still
+// match the ones a session decided its advisor mode from. config.json is
+// shared by every session, so another session may have changed them.
+func advisorStillDecided(decided AdvisorSettings) bool {
+	cfg, err := LoadConfig()
+	return err == nil && cfg.AdvisorSettings() == decided
 }
 
 // resolveAdvisorTarget loads the current advisor settings and builds a
@@ -112,24 +127,24 @@ func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.
 func resolveAdvisorTarget(ctx context.Context, getenv func(string) string) (advisor.Target, error) {
 	cfg, err := LoadConfig()
 	if err != nil {
-		return tools.AdvisorTarget{}, fmt.Errorf("load advisor config: %w", err)
+		return advisor.Target{}, fmt.Errorf("load advisor config: %w", err)
 	}
 	settings := cfg.AdvisorSettings()
 	if !settings.Enabled {
-		return tools.AdvisorTarget{}, errors.New("advisor is disabled; run /advisor on")
+		return advisor.Target{}, errors.New("advisor is disabled; run /advisor on")
 	}
 	if settings.Model == "" {
-		return tools.AdvisorTarget{}, tools.ErrNoAdvisorModel
+		return advisor.Target{}, advisor.ErrNoModel
 	}
 	spec, err := ParseAdvisorModelSpec(settings.Model)
 	if err != nil {
-		return tools.AdvisorTarget{}, err
+		return advisor.Target{}, err
 	}
 	client, model, err := newAdvisorClient(ctx, spec, getenv)
 	if err != nil {
-		return tools.AdvisorTarget{}, err
+		return advisor.Target{}, err
 	}
-	return tools.AdvisorTarget{Client: client, Model: model, Reasoning: spec.Reasoning, MaxTokens: settings.MaxTokens}, nil
+	return advisor.Target{Client: client, Model: model, Reasoning: spec.Reasoning, MaxTokens: settings.MaxTokens}, nil
 }
 
 // resolveAdvisorEndpoint resolves credential and endpoint for an advisor
@@ -255,7 +270,7 @@ func (s advisorSettingsStore) SetAdvisor(change session.AdvisorChange) (session.
 			next.Enabled = *change.Enabled
 		}
 		if next.Enabled && strings.TrimSpace(next.Model) == "" {
-			return tools.ErrNoAdvisorModel
+			return advisor.ErrNoModel
 		}
 		if c.Advisor == nil && !next.Enabled && next.Model == "" {
 			status = advisorStatusFromConfig(*c)
@@ -313,8 +328,7 @@ func installServerAdvisor(ag *core.Agent, server *providerpkg.NativeAdvisor, dec
 	}
 	adv := *server
 	ag.SetServerAdvisorFunc(func() *providerpkg.NativeAdvisor {
-		cfg, err := LoadConfig()
-		if err != nil || cfg.AdvisorSettings() != decided {
+		if !advisorStillDecided(decided) {
 			return nil
 		}
 		out := adv

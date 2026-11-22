@@ -162,3 +162,43 @@ func TestReportWatcherReviewEmitsOnLoopSink(t *testing.T) {
 	require.Equal(t, []EvAdvisorReview{{Kind: "change", Phase: AdvisorReviewStart}, {Kind: "change", Phase: AdvisorReviewEnd}}, got)
 	ReportWatcherReview(context.Background(), "change")() // no-op outside a checkpoint
 }
+
+func TestWatcherCancelDuringReviewNeverRunsTheCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newMockWatcher(t)
+	w.EXPECT().RunStarted(mock.Anything).Once()
+	w.EXPECT().TakeUsage().Return(provider.Usage{}, false)
+	w.EXPECT().BeforeTool(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.ToolCallBlock) WatcherVerdict {
+		cancel() // the user presses Esc while the advisor reviews
+		return WatcherVerdict{}
+	}).Once()
+	w.EXPECT().StepCompleted().Maybe()
+	w.EXPECT().RunEnded().Once()
+
+	a, tool := watcherTestAgent(t, w)
+	require.Error(t, a.Prompt(ctx, "go", nil, nil))
+	require.Nil(t, tool.lastArgs, "a call reviewed under a canceled run must not run")
+}
+
+func TestEndWatcherRunDropsStaleNotesOnly(t *testing.T) {
+	w := newMockWatcher(t)
+	w.EXPECT().RunEnded().Once()
+	w.EXPECT().TakeUsage().Return(provider.Usage{CostUSD: 0.25}, true).Once()
+	a := NewAgent(&queueFakeClient{}, "m", "s", Registry{})
+	require.True(t, a.QueueWatcherNote("[advisor note]\nstale"))
+	require.True(t, a.QueuePrompt(QueuedMessage{Text: "resident report", HostEvent: true}))
+	a.endWatcherRun(w)
+
+	pending := a.PendingQueuedMessages()
+	require.Len(t, pending, 1)
+	require.Equal(t, "resident report", pending[0].Text)
+	require.InDelta(t, 0.25, a.Cost().CostUSD, 1e-9, "late review usage is still recorded")
+}
+
+func TestSessionTextHelpersSkipAdvisorNotes(t *testing.T) {
+	note := provider.Message{Role: provider.RoleUser, Meta: map[string]string{WatcherNoteMetaKey: "true"},
+		Content: []provider.Content{provider.TextBlock{Text: "[advisor] Before you finish:\nrun the tests"}}}
+	user := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "fix the parser"}}}
+	require.Equal(t, "fix the parser", lastUserText([]provider.Message{user, note}))
+	require.Equal(t, "fix the parser", firstUserTextFromMessagesAfter([]provider.Message{note, user}, 0))
+}

@@ -181,10 +181,12 @@ type EvServerTool struct {
 
 func (EvServerTool) Type() string { return "server_tool" }
 
-// Advisor review phases for EvAdvisorReview.
+// Advisor review kinds and phases for EvAdvisorReview.
 const (
-	AdvisorReviewStart = "start"
-	AdvisorReviewEnd   = "end"
+	AdvisorReviewChange = "change"
+	AdvisorReviewFinish = "finish"
+	AdvisorReviewStart  = "start"
+	AdvisorReviewEnd    = "end"
 )
 
 // EvAdvisorReview reports a blocking advisor review: the executor waits

@@ -9,6 +9,12 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+// advisorTranscript is the full rendering the reviewer sends on a fresh
+// advisor conversation.
+func advisorTranscript(system string, tools []provider.Tool, msgs []provider.Message, pendingCallID string) string {
+	return SerializeAdvisorContext(system, tools, msgs) + "\n=== transcript ===\n" + SerializeAdvisorMessages(msgs, pendingCallID)
+}
+
 func TestSerializeAdvisorTranscript(t *testing.T) {
 	tools := []provider.Tool{
 		{Name: "read", Description: "Read a file", Schema: json.RawMessage(`{"type":"object"}`)},
@@ -30,7 +36,7 @@ func TestSerializeAdvisorTranscript(t *testing.T) {
 			provider.ToolCallBlock{ID: "adv", Name: "advisor", Arguments: json.RawMessage(`{}`)},
 		}},
 	}
-	got := SerializeAdvisorTranscript("SYSTEM PROMPT", tools, msgs, "adv")
+	got := advisorTranscript("SYSTEM PROMPT", tools, msgs, "adv")
 
 	for _, want := range []string{
 		"SYSTEM PROMPT",
@@ -59,7 +65,7 @@ func TestSerializeAdvisorTranscriptSkipsEmptyAssistant(t *testing.T) {
 		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hi"}}},
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "adv", Name: "advisor"}}},
 	}
-	got := SerializeAdvisorTranscript("", nil, msgs, "adv")
+	got := advisorTranscript("", nil, msgs, "adv")
 	if strings.Contains(got, "--- assistant ---") {
 		t.Fatalf("empty assistant header rendered:\n%s", got)
 	}

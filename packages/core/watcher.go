@@ -73,7 +73,8 @@ func (a *Agent) foldWatcherUsage(w Watcher, sink func(AgentEvent)) {
 const WatcherNoteMetaKey = "zut_advisor_note"
 
 // QueueWatcherNote queues a watcher note as a tagged host message, delivered
-// before the next model call.
+// before the next model call. Notes still queued when the run ends are
+// dropped.
 func (a *Agent) QueueWatcherNote(note string) bool {
 	return a.QueuePrompt(QueuedMessage{Text: note, HostEvent: true, Meta: map[string]string{WatcherNoteMetaKey: "true"}})
 }
@@ -110,12 +111,41 @@ func (a *Agent) watcherHold(ctx context.Context, tc provider.ToolCallBlock, sink
 		return ToolResult{}, false
 	}
 	v := w.BeforeTool(withWatcherReport(ctx, sink), tc)
+	// A cancel while the watcher reviewed must not let the call run: tools
+	// do not all check ctx before acting.
+	if err := ctx.Err(); err != nil {
+		return ToolResult{Content: []provider.Content{provider.TextBlock{Text: "Aborted: " + err.Error()}}, IsError: true}, true
+	}
 	if !v.Hold {
 		return ToolResult{}, false
 	}
-	note := v.Note
+	return ToolResult{Content: []provider.Content{provider.TextBlock{Text: watcherNoteText(v.Note)}}, IsError: true}, true
+}
+
+func watcherNoteText(note string) string {
 	if note == "" {
-		note = "Held by the advisor before running."
+		return "Held by the advisor."
 	}
-	return ToolResult{Content: []provider.Content{provider.TextBlock{Text: note}}, IsError: true}, true
+	return note
+}
+
+// endWatcherRun closes the watcher's run: watcher notes still queued belong
+// to the run that ended (an error, length, or step-limit exit) and must not
+// steer the next request, and usage spent since the last fold is recorded.
+func (a *Agent) endWatcherRun(w Watcher) {
+	w.RunEnded()
+	a.mu.Lock()
+	kept := a.queued[:0]
+	for _, q := range a.queued {
+		if q.message.Meta[WatcherNoteMetaKey] != "true" {
+			kept = append(kept, q)
+		}
+	}
+	for i := len(kept); i < len(a.queued); i++ {
+		a.queued[i] = queuedMessage{}
+	}
+	a.queued = kept
+	a.mu.Unlock()
+	// The run's events are over, so the cost is recorded without an event.
+	a.foldWatcherUsage(w, nil)
 }

@@ -389,7 +389,11 @@ The advisor intervenes at these points:
 
 Each checkpoint runs at most once per request, so the two models cannot
 ping-pong. A failed review, or one that takes longer than three minutes, lets
-the executor proceed. Notes appear in the transcript as `◆ advisor` blocks.
+the executor proceed, and cancelling the request (Esc) during a review never
+runs the held call. While the executor waits, the status bar shows the
+review. Notes appear in the transcript as `◆ advisor` blocks; notes left
+over when a request ends are dropped. If another session changes the advisor
+settings, the watcher pauses until this session reloads its tools.
 
 **Privacy:** the advisor receives the whole transcript, including the system
 prompt, tool definitions, and tool results, through the advisor model's
@@ -413,7 +417,8 @@ Slash command:
 - `/advisor provider/model[:reasoning]` sets the model and enables the advisor.
 - `/advisor on` / `/advisor off` toggles it; `on` fails when no model is set.
 
-`--no-tools`, or a `--tools` list without `advisor`, removes it.
+`--no-tools`, or a `--tools` list without `advisor`, disables the advisor,
+including background reviews and checkpoints.
 
 Modes:
 
@@ -422,16 +427,21 @@ Modes:
   or `openai/gpt-6.1-sol` with an OpenAI API key, as the advisor for any
   executor). The advisor keeps its own conversation: it receives the executor
   context once, then only the new transcript at each review, so it remembers
-  what it saw and said. A compaction, fork, or resume starts it fresh. It sees
-  the conversation transcript but not zut's per-request dynamic context (such
-  as turn and plan context).
+  what it saw and said. A compaction, fork, or resume starts it fresh, and so
+  does a conversation that outgrows half of the advisor model's context
+  window: the fresh one keeps the most recent transcript that fits, plus the
+  advice already given so the advisor does not repeat itself. It sees the
+  conversation transcript but not zut's per-request dynamic context (such as
+  turn and plan context).
 - **Native**: `auto` picks it when the executor uses first-party Anthropic and
   the executor/advisor pair appears in Anthropic's advisor compatibility
   table; otherwise `auto` uses client mode. Anthropic's server-side advisor
   tool runs inside the executor's request, and only when the executor calls
-  it. Native mode therefore has no background reviews: at the first-change and
-  final-answer checkpoints, zut asks the executor to call `advisor()`, unless
-  it already consulted the advisor since its last change. The `:reasoning`
+  it. Native mode therefore has no background reviews. At the first change,
+  unless the executor already consulted the advisor in this request, zut
+  holds the call and asks the executor to call `advisor()` first. At the final
+  answer, unless it consulted the advisor after its last change, zut asks it
+  to call `advisor()` before answering. The `:reasoning`
   suffix is ignored. The newest Opus advisors return encrypted advice that zut
   cannot display. Works with subscription OAuth and API keys. Encrypted advice
   is tied to the Anthropic account that produced it, so Anthropic may reject a

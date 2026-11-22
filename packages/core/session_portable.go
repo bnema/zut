@@ -825,7 +825,7 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 
 func lastUserText(msgs []provider.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != provider.RoleUser {
+		if msgs[i].Role != provider.RoleUser || msgs[i].Meta[WatcherNoteMetaKey] == "true" {
 			continue
 		}
 		if text := strings.TrimSpace(firstTextFromMessage(msgs[i])); text != "" {

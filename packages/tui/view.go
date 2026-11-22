@@ -2873,13 +2873,9 @@ func toInt(v any) (int, bool) {
 	return 0, false
 }
 
-// renderCompactionBlock renders a compaction summary as a distinct
-// visual block in the chat. When collapsed it shows a one-line label
-// with the pre-compaction token count; when expanded (ctrl+o) it
-// shows the full summary text.
 // renderAdvisorNote renders a note the passive advisor sent to the
-// executor: a warning-colored header taken from the note's first line, then
-// the note body, muted and wrapped. It is not a user turn, so it skips the
+// executor: a warning-colored header taken from the note's "[tag]" and its
+// title line, then the note body, muted and wrapped. It is not a user turn, so it skips the
 // user bubble.
 func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
 	th := v.Theme
@@ -2890,12 +2886,7 @@ func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
 			text.WriteString(tb.Text)
 		}
 	}
-	body := strings.TrimSpace(text.String())
-	header := "advisor"
-	if first, rest, ok := strings.Cut(body, "\n"); ok && strings.HasPrefix(first, "[advisor") {
-		header = strings.Trim(first, "[]: ")
-		body = strings.TrimSpace(rest)
-	}
+	header, body := advisorNoteHeader(strings.TrimSpace(text.String()))
 	inner := width - len(indent)
 	if inner < 1 {
 		inner = 1
@@ -2910,6 +2901,34 @@ func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
 	return lines
 }
 
+// advisorNoteHeader splits a note such as "[advisor] Before you finish:\n..."
+// into a header ("advisor · Before you finish") and its body. A one-line
+// note keeps the text after its tag as the body.
+func advisorNoteHeader(note string) (header, body string) {
+	if !strings.HasPrefix(note, "[") {
+		return "advisor", note
+	}
+	end := strings.IndexByte(note, ']')
+	if end < 0 {
+		return "advisor", note
+	}
+	header = strings.TrimSpace(note[1:end])
+	rest := note[end+1:]
+	title, after, multiline := strings.Cut(rest, "\n")
+	title = strings.TrimSuffix(strings.TrimSpace(title), ":")
+	if !multiline {
+		return header, strings.TrimSpace(rest)
+	}
+	if title != "" {
+		header += " · " + title
+	}
+	return header, strings.TrimSpace(after)
+}
+
+// renderCompactionBlock renders a compaction summary as a distinct
+// visual block in the chat. When collapsed it shows a one-line label
+// with the pre-compaction token count; when expanded (ctrl+o) it
+// shows the full summary text.
 func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 	th := v.Theme
 	const indent = "    "

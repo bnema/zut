@@ -790,7 +790,7 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent), requestContext provider.RequestContext) error {
 	if w := a.Watcher(); w != nil {
 		w.RunStarted(ctx)
-		defer w.RunEnded()
+		defer a.endWatcherRun(w)
 	}
 	return a.runSteps(ctx, sink, requestContext)
 }
@@ -1042,7 +1042,7 @@ func (a *Agent) runSteps(ctx context.Context, sink func(AgentEvent), requestCont
 				v := w.BeforeFinish(withWatcherReport(ctx, sink))
 				a.foldWatcherUsage(w, sink)
 				if v.Hold {
-					a.QueueWatcherNote(v.Note)
+					a.QueueWatcherNote(watcherNoteText(v.Note))
 				}
 				// Anything queued during the review (the held note, a
 				// watcher note, host events) is answered now instead of

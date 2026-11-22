@@ -13,23 +13,16 @@ import (
 // AdvisorToolName is the model-visible name of the advisor tool.
 const AdvisorToolName = provider.AdvisorToolName
 
-// ErrNoAdvisorModel is returned by an AdvisorTarget resolver when the advisor
-// is enabled but no model has been configured.
-var ErrNoAdvisorModel = advisor.ErrNoModel
-
 const advisorDescription = "Consult the advisor, a stronger reviewer that already watches your work and sees your full conversation transcript. No parameters. Call it only when the user asks you to, or when an [advisor checkpoint] message asks you to."
-
-// AdvisorTarget is a ready advisor endpoint for one call.
-type AdvisorTarget = advisor.Target
 
 // AdvisorTool lets the executor consult the advisor explicitly. It shares
 // the advisor conversation with the passive watcher, so the advisor answers
 // with everything it has already reviewed. It has no arguments and no local
 // side effects.
 type AdvisorTool struct {
-	// Target resolves the configured advisor model and builds its client on
-	// each call, so config changes apply without rebuilding the tool.
-	Target func(ctx context.Context) (AdvisorTarget, error)
+	// Target resolves the configured advisor model. The host passes it to
+	// the reviewer it binds with Bind; Execute does not use it directly.
+	Target func(ctx context.Context) (advisor.Target, error)
 
 	mu       sync.Mutex
 	reviewer *advisor.Reviewer

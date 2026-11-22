@@ -8,19 +8,27 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestViewRendersAdvisorNoteApartFromUserTurns(t *testing.T) {
-	note := provider.Message{
-		Role:    provider.RoleUser,
-		Meta:    map[string]string{core.WatcherNoteMetaKey: "true"},
-		Content: []provider.Content{provider.TextBlock{Text: "[advisor note]\nThe bug is in lexer.go, not parser.go."}},
-	}
-	view := &View{Theme: Dark, Messages: []provider.Message{note}}
-	raw := strings.Join(view.Build(60), "\n")
-	plain := stripANSI(raw)
-	if !strings.Contains(plain, "◆ advisor note") || !strings.Contains(plain, "The bug is in lexer.go") {
-		t.Fatalf("advisor note not rendered:\n%s", plain)
-	}
-	if strings.Contains(plain, "[advisor note]") || strings.Contains(plain, "▌") {
-		t.Fatalf("advisor note rendered as a user bubble:\n%s", plain)
+func TestViewRendersAdvisorNotesApartFromUserTurns(t *testing.T) {
+	for _, tc := range []struct {
+		note, header, body string
+	}{
+		{"[advisor note]\nThe bug is in lexer.go.\n\nYou decide.", "◆ advisor note", "The bug is in lexer.go."},
+		{"[advisor] Stop and reconsider:\nwrong file", "◆ advisor · Stop and reconsider", "wrong file"},
+		{"[advisor] Before you finish:\ntests not run", "◆ advisor · Before you finish", "tests not run"},
+		{"[advisor checkpoint] Before your final answer, call advisor().", "◆ advisor checkpoint", "Before your final answer, call advisor()."},
+	} {
+		note := provider.Message{
+			Role:    provider.RoleUser,
+			Meta:    map[string]string{core.WatcherNoteMetaKey: "true"},
+			Content: []provider.Content{provider.TextBlock{Text: tc.note}},
+		}
+		view := &View{Theme: Dark, Messages: []provider.Message{note}}
+		plain := stripANSI(strings.Join(view.Build(80), "\n"))
+		if !strings.Contains(plain, tc.header+"\n") || !strings.Contains(plain, tc.body) {
+			t.Fatalf("note %q rendered:\n%s", tc.note, plain)
+		}
+		if strings.Contains(plain, "]") || strings.Contains(plain, "▌") {
+			t.Fatalf("note %q leaked its tag or a user bubble:\n%s", tc.note, plain)
+		}
 	}
 }

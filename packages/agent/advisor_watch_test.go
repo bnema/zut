@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/advisor"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -37,6 +38,7 @@ func stream(events ...provider.Event) <-chan provider.Event {
 }
 
 func TestAdvisorWatcherEndToEnd(t *testing.T) {
+	pythonTestEnv(t) // isolated, empty config: the decided settings match it
 	// The advisor answers by checkpoint: STOP at the first change, a NOTE at
 	// the final answer, SILENT in background reviews.
 	advisorClient := providermocks.NewMockClient(t)
@@ -80,12 +82,12 @@ func TestAdvisorWatcherEndToEnd(t *testing.T) {
 	})
 
 	edit := &countingEditTool{}
-	adv := &tools.AdvisorTool{Target: func(context.Context) (tools.AdvisorTarget, error) {
-		return tools.AdvisorTarget{Client: advisorClient, Model: provider.Model{ID: "adv"}}, nil
+	adv := &tools.AdvisorTool{Target: func(context.Context) (advisor.Target, error) {
+		return advisor.Target{Client: advisorClient, Model: provider.Model{ID: "adv"}}, nil
 	}}
 	reg := core.Registry{"edit": edit, tools.AdvisorToolName: adv}
 	ag := core.NewAgent(executor, "exec", "system", reg)
-	installAdvisor(ag, clientAdvisorTool(reg), nil, AdvisorSettings{})
+	installAdvisor(ag, clientAdvisorTool(reg), nil, AdvisorSettings{Mode: AdvisorModeAuto})
 
 	require.NoError(t, ag.Prompt(context.Background(), "fix the parse bug", nil, nil))
 

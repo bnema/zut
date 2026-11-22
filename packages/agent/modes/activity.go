@@ -86,7 +86,7 @@ func (a activity) label() string {
 	case activityConsultingServerTool:
 		return "Consulting " + activityText(a.tool, "server tool") + "…"
 	case activityAdvisorReview:
-		if a.review == "finish" {
+		if a.review == core.AdvisorReviewFinish {
 			return "Advisor reviewing the final answer…"
 		}
 		return "Advisor reviewing the first change…"

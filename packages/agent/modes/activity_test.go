@@ -112,3 +112,18 @@ func TestAgentActivityShowsAdvisorReview(t *testing.T) {
 		t.Fatalf("label = %q", got)
 	}
 }
+
+func TestEventToJSONMarksAdvisorEvents(t *testing.T) {
+	note := core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Meta: map[string]string{core.WatcherNoteMetaKey: "true"},
+		Content: []provider.Content{provider.TextBlock{Text: "[advisor note]\nx"}}}}
+	if got := EventToJSON(note); got["advisor_note"] != true {
+		t.Fatalf("advisor note event = %#v", got)
+	}
+	if got := EventToJSON(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser}}); got["advisor_note"] != nil {
+		t.Fatalf("plain user event = %#v", got)
+	}
+	got := EventToJSON(core.EvAdvisorReview{Kind: core.AdvisorReviewChange, Phase: core.AdvisorReviewStart})
+	if got["type"] != "advisor_review" || got["kind"] != "change" || got["phase"] != "start" {
+		t.Fatalf("advisor review event = %#v", got)
+	}
+}

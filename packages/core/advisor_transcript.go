@@ -7,18 +7,16 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
-// SerializeAdvisorTranscript renders the executor's context as plain text for
-// an advisor model: the system prompt, the tool definitions the model can
-// currently see, and every message in the provider-visible projection.
+// SerializeAdvisorContext and SerializeAdvisorMessages render the executor's
+// context as plain text for an advisor model: the system prompt, the tool
+// definitions the model can currently see, and messages in the
+// provider-visible projection.
 //
-// The tool call whose ID is pendingCallID (the in-flight advisor call) is
+// The tool call whose ID is pendingCallID (an in-flight advisor call) is
 // omitted. Other tool calls without a matching result are marked
 // "(result pending)". Reasoning blocks are omitted and images are rendered as
 // placeholders. Deferred tools are listed only once a tool result activated
 // them, matching what providers send.
-func SerializeAdvisorTranscript(system string, tools []provider.Tool, msgs []provider.Message, pendingCallID string) string {
-	return SerializeAdvisorContext(system, tools, msgs) + "\n=== transcript ===\n" + SerializeAdvisorMessages(msgs, pendingCallID)
-}
 
 // SerializeAdvisorContext renders the executor's system prompt and the tool
 // definitions it can currently see. msgs decide which deferred tools are
@@ -57,7 +55,7 @@ func SerializeAdvisorContext(system string, tools []provider.Tool, msgs []provid
 }
 
 // SerializeAdvisorMessages renders msgs (a whole transcript or a later slice
-// of it) in the provider-visible projection. See SerializeAdvisorTranscript.
+// of it) in the provider-visible projection.
 func SerializeAdvisorMessages(msgs []provider.Message, pendingCallID string) string {
 	msgs = projectProviderMessages(msgs)
 	var sb strings.Builder
