@@ -95,6 +95,7 @@ func TestRescueDialogPendingUsesCatalogAndShowsHelpWhenEmpty(t *testing.T) {
 	text := stripANSIBytes(strings.Join(d.Render(tui.Dark, 70, 20), "\n"))
 	require.Contains(t, text, "no other models available")
 	require.Contains(t, text, "tab full error")
+	require.NotContains(t, text, "──────\n \n", "no empty detail row without candidates")
 }
 
 // TestRescueDialogFitsPaneThroughFrame renders through the floating pane
@@ -110,6 +111,11 @@ func TestRescueDialogFitsPaneThroughFrame(t *testing.T) {
 	for n := 0; n < 15; n++ {
 		d.HandleKey(tui.Key{Kind: tui.KeyDown})
 	}
+	// Below the minimum height the body may overflow, but the caret
+	// still lands on the query line.
+	_, body, removed := floatingDialogBody(padDialogFrame(d.Render(tui.Dark, 60, 4)))
+	r, _ := d.CursorPos()
+	require.Contains(t, stripANSIBytes(body[r-removed]), " >")
 	for _, h := range []int{8, 12, 17, 40} {
 		_, body, removed := floatingDialogBody(padDialogFrame(d.Render(tui.Dark, 60, h)))
 		require.LessOrEqual(t, len(body), h, "height %d", h)

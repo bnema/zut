@@ -332,6 +332,8 @@ func (d *modelDialog) Render(th tui.Theme, width, height int) []string {
 		}
 		rows = min(rows, height-chrome)
 	}
+	// Below the minimum (height <= top) one list row overflows the pane,
+	// which scrolls to keep the query line visible.
 	rows = max(rows, 1)
 	d.listRows = rows
 

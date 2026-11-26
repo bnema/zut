@@ -112,3 +112,20 @@ func TestModelLookupMatchesFindModel(t *testing.T) {
 		t.Fatal("lookup found an unknown model")
 	}
 }
+
+func TestModelLookupDuplicateKeyMatchesFindModel(t *testing.T) {
+	snapshot := SnapshotCatalog()
+	t.Cleanup(func() { RestoreCatalog(snapshot) })
+	SetManagedModels([]Model{
+		{Provider: "test-dup", ID: "same-id", DisplayName: "First"},
+		{Provider: "test-dup", ID: "same-id", DisplayName: "Second"},
+	})
+	want, err := FindModel("test-dup", "same-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := ModelLookup()("test-dup", "same-id")
+	if !ok || got.DisplayName != want.DisplayName {
+		t.Fatalf("lookup = %q, %v; FindModel = %q", got.DisplayName, ok, want.DisplayName)
+	}
+}

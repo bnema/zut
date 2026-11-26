@@ -24,7 +24,6 @@ type rescueDialog struct {
 	cursor   int
 	viewTop  int
 	queryRow int    // row of the query line in the last Render
-	listRows int    // list height of the last Render
 	current  string // currently active model id (excluded from view)
 	query    pickerQuery
 	failedAt string // failed provider/model pair, e.g. "kimi/kimi-for-coding"
@@ -198,7 +197,7 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 	if d.reason != "" {
 		errLines = min(3, len(errorRows))
 	}
-	footer, detail := true, true
+	footer, detail := true, len(d.view) > 0 // no detail without a model
 	rows := min(rescueListRows, max(len(d.view), 1))
 	if height > 0 {
 		want := min(rows, modelPickerMinRows)
@@ -222,12 +221,13 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 			case errLines > 0:
 				errLines--
 			default:
-				break shrink // nothing left to drop: one list row
+				// Below the minimum the body overflows by a few rows;
+				// the pane scrolls to keep the query line visible.
+				break shrink
 			}
 		}
 		rows = min(rows, max(height-chrome(), 1))
 	}
-	d.listRows = rows
 	for _, row := range errorRows[:errLines] {
 		lines = append(lines, th.FGColor(th.Warning, row))
 	}
