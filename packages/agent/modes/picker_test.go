@@ -47,3 +47,15 @@ func TestPickerQueryEditAndCaret(t *testing.T) {
 	q.Reset()
 	require.Empty(t, q.String())
 }
+
+func TestPickerTabsOverflowKeepActiveVisible(t *testing.T) {
+	names := []string{"all", "anthropic", "openai", "openai-codex", "openrouter", "vercel-ai-gateway"}
+	for active := range names {
+		line := renderPickerTabs(tui.Dark, names, active, "9 models", tui.Dark.Muted, 40)
+		plain := stripANSIBytes(line)
+		require.Equal(t, 40, runewidth.StringWidth(plain), "active %d: %q", active, plain)
+		require.Contains(t, line, tui.Dark.FGColor(tui.Dark.Accent, "["+names[active]+"]"), "active %d: %q", active, plain)
+	}
+	plain := stripANSIBytes(renderPickerTabs(tui.Dark, names, 5, "", tui.Dark.Muted, 40))
+	require.True(t, strings.HasPrefix(plain, " … "), plain)
+}

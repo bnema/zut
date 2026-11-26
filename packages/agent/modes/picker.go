@@ -158,7 +158,7 @@ func renderPickerTabs(th tui.Theme, names []string, active int, status string, s
 		tabsW += len(labels) - 1
 	}
 	if tabsW > w {
-		return th.FGColor(th.Muted, pickerFit(" "+strings.Join(labels, " "), w))
+		return renderPickerTabsOverflow(th, labels, active, w)
 	}
 	var b strings.Builder
 	b.WriteString(" ")
@@ -180,6 +180,57 @@ func renderPickerTabs(th tui.Theme, names []string, active int, status string, s
 	}
 	b.WriteString(strings.Repeat(" ", w-tabsW-sw))
 	b.WriteString(th.FGColor(statusColor, status))
+	return b.String()
+}
+
+// renderPickerTabsOverflow draws tabs that do not fit in w cells: leading
+// tabs give way ("… " prefix) until the active one is visible, trailing
+// tabs that do not fit are dropped, and the status is omitted.
+func renderPickerTabsOverflow(th tui.Theme, labels []string, active, w int) string {
+	width := func(start int) int { // cells up to the end of the active tab
+		lead := " "
+		if start > 0 {
+			lead = " … "
+		}
+		return runewidth.StringWidth(lead + strings.Join(labels[start:active+1], " "))
+	}
+	start := 0
+	for start < active && width(start) > w {
+		start++
+	}
+	var b strings.Builder
+	used := 1
+	b.WriteString(" ")
+	if start > 0 {
+		b.WriteString(th.FGColor(th.Muted, "… "))
+		used += 2
+	}
+	for i := start; i < len(labels); i++ {
+		lw := runewidth.StringWidth(labels[i])
+		sep := 0
+		if i > start {
+			sep = 1
+		}
+		if used+sep+lw > w {
+			if i == active {
+				// Even alone the active tab is too wide: truncate it.
+				b.WriteString(strings.Repeat(" ", sep))
+				b.WriteString(th.FGColor(th.Accent, pickerFit(labels[i], w-used-sep)))
+				used = w
+			}
+			break
+		}
+		b.WriteString(strings.Repeat(" ", sep))
+		color := th.Muted
+		if i == active {
+			color = th.Accent
+		}
+		b.WriteString(th.FGColor(color, labels[i]))
+		used += sep + lw
+	}
+	if used < w {
+		b.WriteString(strings.Repeat(" ", w-used))
+	}
 	return b.String()
 }
 
@@ -262,7 +313,9 @@ func renderPickerRow(th tui.Theme, row pickerRow, selected bool, cols pickerColu
 	var b strings.Builder
 	b.WriteString(marker)
 	b.WriteString(renderPickerLabel(th, label, labelW))
-	b.WriteString(th.FGColor(th.DimColor(th.Muted, 40), note))
+	if note != "" {
+		b.WriteString(th.FGColor(th.DimColor(th.Muted, 40), note))
+	}
 	b.WriteString(th.FGColor(th.Muted, detailCol))
 	b.WriteString(countCol)
 	if row.Mark != "" {
