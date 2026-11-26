@@ -147,8 +147,8 @@ func TestGhostStripsOSCAndBidiControls(t *testing.T) {
 		"osc8 bel":         "\x1b]8;;https://x.test\x07link\x1b]8;;\x07 text",
 		"osc8 st":          "\x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\ text",
 		"c1 osc":           "\u009d8;;https://x.test\u009clink\u009d8;;\u0007 text",
-		"bidi override":    "‮link‬ text",
-		"bidi isolate":     "⁦link⁩ text",
+		"bidi override":    "\u202elink\u202c text",
+		"bidi isolate":     "\u2066link\u2069 text",
 		"unterminated osc": "link text\x1b]8;;https://x.test",
 	}
 	for name, in := range cases {
@@ -159,8 +159,8 @@ func TestGhostStripsOSCAndBidiControls(t *testing.T) {
 		}
 	}
 	e := NewEditor("> ")
-	e.SetGhost("👩‍💻 code")
-	if got := e.Ghost(); got != "👩‍💻 code" {
+	e.SetGhost("👩\u200d💻 code")
+	if got := e.Ghost(); got != "👩\u200d💻 code" {
 		t.Errorf("ZWJ sequence altered: %q", got)
 	}
 }
