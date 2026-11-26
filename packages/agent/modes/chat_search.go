@@ -129,9 +129,9 @@ func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) 
 	if first {
 		msgs := r.view.Messages
 		for idx, m := range msgs {
-			// Messages that render no rows (collapsed compaction summaries)
-			// cannot be shown or tinted.
-			if !searchReaderMatches(searchReaderMessageText(m), r.terms) || anchorRows(anchors, len(rows), idx) == 0 {
+			// Messages that render no rows cannot be shown or tinted, and a
+			// compaction summary renders as a separator without its text.
+			if m.Meta["compaction"] == "true" || !searchReaderMatches(searchReaderMessageText(m), r.terms) || anchorRows(anchors, len(rows), idx) == 0 {
 				continue
 			}
 			matches = append(matches, idx)

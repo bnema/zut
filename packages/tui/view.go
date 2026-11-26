@@ -1044,14 +1044,10 @@ func (v *View) renderPlanCompact(tc ToolCallView, width int) []string {
 func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []string {
 	var lines []string
 
-	// Compaction summary: render as a single muted line at the end
-	// of the chat instead of as a user message.
+	// Compaction summary: a separator where the compaction happened
+	// (the summary itself when expanded) instead of a user message.
 	if m.Meta["compaction"] == "true" {
-		if v.ExpandAll {
-			return v.renderCompactionBlock(m, width)
-		}
-		// Collapsed: skip entirely. The status bar shows the info.
-		return nil
+		return v.renderCompactionBlock(m, width)
 	}
 
 	if m.Meta[core.WatcherNoteMetaKey] == "true" {
@@ -2961,9 +2957,42 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 		return lines
 	}
 
-	// Collapsed: single line, no banner.
-	line := th.FGColor(th.Muted, fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens))
-	return []string{indent + line}
+	return []string{CompactionSeparator(th, width, compactionTokensLabel(m.Meta["tokens_before"]), "older messages not in model context · ctrl+o")}
+}
+
+// compactionTokensLabel renders a tokens_before value as "~182k tokens",
+// or "" when it is missing or invalid.
+func compactionTokensLabel(raw string) string {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return ""
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("~%dk tokens", (n+500)/1000)
+	}
+	return fmt.Sprintf("~%d tokens", n)
+}
+
+// CompactionSeparator renders "── compacted · <parts> ──" across width
+// cells in the muted color. Empty parts are left out; the label is
+// truncated on narrow widths.
+func CompactionSeparator(th Theme, width int, parts ...string) string {
+	labels := []string{"compacted"}
+	for _, p := range parts {
+		if p != "" {
+			labels = append(labels, p)
+		}
+	}
+	if width <= 0 {
+		return ""
+	}
+	label := " " + strings.Join(labels, " · ") + " "
+	if width < 6 {
+		return th.FGColor(th.Muted, strings.Repeat("─", width))
+	}
+	label = truncateToWidth(label, width-4)
+	rest := width - 2 - runewidth.StringWidth(label)
+	return th.FGColor(th.Muted, "──"+label+strings.Repeat("─", max(rest, 0)))
 }
 
 // StatusBarParams groups the many bits of state the status bar needs.
