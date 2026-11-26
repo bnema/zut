@@ -49,6 +49,7 @@ type finderHit struct {
 	Role      provider.Role
 	Time      time.Time
 	Compacted bool
+	Text      string // snippet, filled lazily via ApplySnippets
 }
 
 type finderActionKind int
@@ -93,7 +94,9 @@ type finderModel struct {
 
 	gen     uint64
 	loading bool
-	err     string
+	// loadingSince drives the spinner animation of the in-flight search.
+	loadingSince time.Time
+	err          string
 
 	confirmDelete bool
 }
@@ -157,6 +160,7 @@ func (m *finderModel) search() finderAction {
 		return finderAction{}
 	}
 	m.loading = true
+	m.loadingSince = time.Now()
 	text := string(m.query)
 	_, here := sessionindex.ParseQuery(text)
 	return finderAction{
@@ -196,6 +200,31 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	}
 	m.confirmDelete = false
 	return true
+}
+
+// ApplySnippets sets hit snippet texts (keyed by hit index) on the item
+// with the given key, for results of generation gen. It reports whether
+// anything was applied.
+func (m *finderModel) ApplySnippets(gen uint64, key string, texts map[int]string) bool {
+	if !m.active || gen != m.gen {
+		return false
+	}
+	for i := range m.items {
+		if m.items[i].Key != key {
+			continue
+		}
+		applied := false
+		hits := append([]finderHit(nil), m.items[i].Hits...)
+		for idx, text := range texts {
+			if idx >= 0 && idx < len(hits) {
+				hits[idx].Text = text
+				applied = true
+			}
+		}
+		m.items[i].Hits = hits
+		return applied
+	}
+	return false
 }
 
 // HandleKey advances the finder and returns the action to apply.
