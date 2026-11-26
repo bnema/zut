@@ -97,11 +97,17 @@ func TestPredictNextPromptSharesTurnRequestPrefix(t *testing.T) {
 	}
 	strip := func(r provider.Request) provider.Request {
 		r.Messages, r.Lifecycle = nil, nil
-		r.Context.TurnID = ""
+		r.Context = provider.RequestContext{}
 		return r
 	}
 	if !reflect.DeepEqual(strip(turn), strip(side)) {
 		t.Fatalf("prefix fields differ:\nturn=%#v\nside=%#v", strip(turn), strip(side))
+	}
+	if side.Context.ThreadID != "" {
+		t.Fatalf("side ThreadID = %q, want empty", side.Context.ThreadID)
+	}
+	if side.Context.CacheSessionID == "" || side.Context.CacheSessionID != turn.Context.CacheSessionID {
+		t.Fatalf("side CacheSessionID = %q, turn = %q", side.Context.CacheSessionID, turn.Context.CacheSessionID)
 	}
 	if side.Context.TurnID == "" || side.Context.TurnID == turn.Context.TurnID {
 		t.Fatalf("side TurnID = %q, turn TurnID = %q", side.Context.TurnID, turn.Context.TurnID)

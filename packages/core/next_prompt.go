@@ -47,12 +47,14 @@ func (a *Agent) PredictNextPrompt(ctx context.Context) (string, error) {
 		Role:    provider.RoleUser,
 		Content: []provider.Content{provider.TextBlock{Text: nextPromptInstruction}},
 	})
-	// CacheSessionID and ThreadID match the agent's turns because providers
-	// key prompt-cache affinity and routing on them. TurnID is fresh: this is
-	// a distinct logical request and must not reuse an accepted turn's ID.
+	// CacheSessionID matches the agent's turns so providers keep prompt-cache
+	// affinity. ThreadID stays empty: the Responses websocket client then uses
+	// HTTP, so the side request neither waits on the thread lock nor replaces
+	// the main chain's continuation state. TurnID is fresh because this is a
+	// distinct logical request.
 	a.mu.Lock()
 	a.ensureRequestIdentityLocked()
-	req.Context = provider.RequestContext{CacheSessionID: a.cacheSessionID, ThreadID: a.sessionID, TurnID: uuid.NewString()}
+	req.Context = provider.RequestContext{CacheSessionID: a.cacheSessionID, TurnID: uuid.NewString()}
 	a.mu.Unlock()
 
 	stream, err := a.Client.Stream(ctx, req)
