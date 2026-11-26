@@ -229,6 +229,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/copy":
 		i.runCopy(ctx, parts[1:])
 	case "/clear":
+		i.clearChatSearch()
 		if i.port != nil {
 			i.portClear(ctx)
 			return false

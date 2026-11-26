@@ -1149,6 +1149,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			return true
 		}
 		i.sessionGen++
+		i.clearChatSearchLocked()
 		if i.subCancel != nil {
 			i.subCancel()
 		}
@@ -1177,6 +1178,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			return false
 		}
 		i.sessionGen++
+		i.clearChatSearchLocked()
 		// Cancelling the old controlling stream releases it (detach).
 		if i.subCancel != nil {
 			i.subCancel()
@@ -1228,6 +1230,7 @@ func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port ses
 	i.stopSubscription()
 	i.mu.Lock()
 	i.sessionGen++
+	i.clearChatSearchLocked()
 	i.port = port
 	if port != nil {
 		i.portMode.Store(true)

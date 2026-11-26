@@ -748,6 +748,13 @@ type Interactive struct {
 	stableChatCacheKey   chatCacheKey
 	stableChatCacheValid bool
 
+	// In-chat search (chat_search.go). stableChatAnchors maps view messages
+	// to stable transcript rows; chatRowBase counts rows prepended above them.
+	chatSearch        chatSearch
+	stableChatAnchors []tui.MessageAnchor
+	stableChatLen     int
+	chatRowBase       int
+
 	// Messages typed while a turn is in flight. Each is delivered as
 	// steering input at the next safe model/tool boundary. Rendered
 	// above the status bar as "sliding in: ..." chips.

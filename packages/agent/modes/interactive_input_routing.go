@@ -553,6 +553,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	}
 
+	// In-chat search owns ctrl+n/ctrl+p and a single Esc while active, ahead
+	// of the double-Esc gesture and turn cancellation.
+	if i.handleChatSearchKey(k) {
+		return false
+	}
+
 	// The first eligible bare Escape is deliberately left to the existing
 	// Escape path (which clears idle input or cancels a turn). A second tap
 	// within the gesture window only gets first refusal while the cheap,
