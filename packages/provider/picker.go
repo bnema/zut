@@ -49,7 +49,7 @@ func PickerModels(models []Model) []PickerModel {
 			if c := compareVersions(modelVersion(ab), modelVersion(bb)); c != 0 {
 				return c > 0
 			}
-			return ab < bb
+			return ab > bb // same version: later id (newer date) first
 		}
 		// Same alias: the alias first, then its snapshots newest first.
 		if (a.SnapshotOf == "") != (b.SnapshotOf == "") {
@@ -78,11 +78,13 @@ func snapshotAlias(m Model, ids map[string]bool) string {
 }
 
 // modelVersion extracts the version numbers of a model id: the digits of
-// the first token that has any, followed by the next all-digit tokens.
-// "claude-opus-4-5" -> [4 5], "gpt-5.2-codex" -> [5 2], "qwen3-coder-480b"
-// -> [3], "gpt-4o" -> [4]. A trailing release date is ignored; "-0"
-// aliases compare equal to their major version. Ids without digits return
-// nil.
+// the first token that has any, followed by the next short all-digit
+// tokens. "claude-opus-4-5" -> [4 5], "gpt-5.2-codex" -> [5 2],
+// "qwen3-coder-480b" -> [3], "gpt-4o" -> [4], "kimi-k2p5" -> [2 5]. Size
+// tokens ("120b", "8x22b") are not versions, and digit runs of four or
+// more are dates ("kimi-k2-0905", "magistral-small-2509"), so they end the
+// version. "-0" aliases compare equal to their major version. Ids without
+// a version return nil.
 func modelVersion(id string) []int {
 	id = snapshotSuffix.ReplaceAllString(id, "")
 	if i := strings.LastIndexByte(id, '/'); i >= 0 {
@@ -92,13 +94,21 @@ func modelVersion(id string) []int {
 	var out []int
 	for _, tok := range tokens {
 		if len(out) == 0 {
-			if n, ok := tokenDigits(tok); ok {
-				out = append(out, n)
+			if sizeToken.MatchString(tok) {
+				continue
 			}
+			nums, ok := tokenVersion(tok)
+			if !ok {
+				if strings.IndexFunc(tok, unicode.IsDigit) >= 0 {
+					return nil // a date-like run before any version
+				}
+				continue
+			}
+			out = append(out, nums...)
 			continue
 		}
 		n, err := strconv.Atoi(tok)
-		if err != nil || len(tok) > 4 {
+		if err != nil || len(tok) > 3 {
 			break
 		}
 		out = append(out, n)
@@ -106,22 +116,35 @@ func modelVersion(id string) []int {
 	return out
 }
 
-// tokenDigits returns the digit run of a token: its leading digits
-// ("4o" -> 4) or, after a letter prefix, its trailing digits ("qwen3" -> 3).
-func tokenDigits(tok string) (int, bool) {
+// sizeToken matches parameter-count tokens such as "120b", "8x22b", "7m".
+var sizeToken = regexp.MustCompile(`^\d+(x\d+)?[bBmMkK]$`)
+
+// tokenVersion returns the version digits of a token: its leading digits
+// ("4o" -> [4]) or, after a letter prefix, its digits ("qwen3" -> [3]); a
+// "p" between digits is a decimal point ("k2p5" -> [2 5]). Runs of four
+// or more digits are dates, not versions.
+func tokenVersion(tok string) ([]int, bool) {
 	start := strings.IndexFunc(tok, unicode.IsDigit)
 	if start < 0 {
-		return 0, false
+		return nil, false
 	}
-	end := start
-	for end < len(tok) && unicode.IsDigit(rune(tok[end])) {
-		end++
+	var out []int
+	for {
+		end := start
+		for end < len(tok) && unicode.IsDigit(rune(tok[end])) {
+			end++
+		}
+		if end-start > 3 {
+			return nil, false
+		}
+		n, _ := strconv.Atoi(tok[start:end])
+		out = append(out, n)
+		if end+1 < len(tok) && tok[end] == 'p' && unicode.IsDigit(rune(tok[end+1])) {
+			start = end + 1
+			continue
+		}
+		return out, true
 	}
-	if end-start > 4 {
-		return 0, false // a size or date, not a version
-	}
-	n, err := strconv.Atoi(tok[start:end])
-	return n, err == nil
 }
 
 // compareVersions compares version number lists; missing parts count as 0

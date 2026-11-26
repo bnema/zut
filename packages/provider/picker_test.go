@@ -17,6 +17,12 @@ func TestModelVersion(t *testing.T) {
 		"llama-3.1-405b":             {3, 1},
 		"anthropic/claude-opus-4.5":  {4, 5},
 		"kimi-for-coding":            nil,
+		"gpt-oss-120b":               nil,
+		"open-mixtral-8x22b":         nil,
+		"magistral-small-2509":       nil,
+		"kimi-k2-0905-preview":       {2},
+		"grok-4.20-0309-reasoning":   {4, 20},
+		"kimi-k2p6":                  {2, 6},
 	}
 	for id, want := range tests {
 		if got := modelVersion(id); !reflect.DeepEqual(got, want) {
@@ -47,8 +53,8 @@ func TestPickerModelsOrderAndSnapshots(t *testing.T) {
 	}
 	want := []row{
 		{"claude-opus-5-5", ""},
-		{"claude-opus-5", ""},
 		{"claude-sonnet-5", ""},
+		{"claude-opus-5", ""},
 		{"claude-opus-4-5", ""},
 		{"claude-opus-4-5-20251101", "claude-opus-4-5"},
 		{"claude-opus-4-0", ""},
@@ -63,6 +69,20 @@ func TestPickerModelsOrderAndSnapshots(t *testing.T) {
 	}
 	if in[0].ID != "gpt-4o-2024-08-06" {
 		t.Fatal("PickerModels modified its input")
+	}
+}
+
+func TestPickerModelsNewestDateFirstWithoutAlias(t *testing.T) {
+	got := PickerModels([]Model{
+		{Provider: "anthropic", ID: "claude-3-5-sonnet-20240620"},
+		{Provider: "anthropic", ID: "claude-3-5-sonnet-20241022"},
+		{Provider: "groq", ID: "gpt-oss-120b"},
+		{Provider: "groq", ID: "llama-3.3-70b"},
+	})
+	ids := []string{got[0].ID, got[1].ID, got[2].ID, got[3].ID}
+	want := []string{"claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "llama-3.3-70b", "gpt-oss-120b"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("order = %v, want %v", ids, want)
 	}
 }
 
