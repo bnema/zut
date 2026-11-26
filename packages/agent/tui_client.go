@@ -99,7 +99,7 @@ func (a *daemonSessionClient) detacher(held func() session.ID) func() {
 
 // runTUIClient ensures a daemon, attaches to attachID (or creates a session
 // from spec when attachID is empty) and runs the interactive TUI on it.
-func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer) int {
+func runTUIClient(ctx context.Context, attachID session.ID, spec *session.CreateSpec, out io.Writer, version string) int {
 	streamLog, closeStreamLog := clientTimingLog()
 	defer closeStreamLog()
 	c, err := daemonclient.EnsureDaemon(ctx, withColdStartFeedback(os.Stderr, daemonclient.EnsureOptions{Options: daemonclient.Options{ClientKind: "tui", Logger: streamLog}}))
@@ -107,7 +107,7 @@ func runTUIClient(ctx context.Context, attachID session.ID, spec *session.Create
 		fmt.Fprintln(out, err)
 		return 1
 	}
-	return runTUIWithClientLog(ctx, c, attachID, spec, out, streamLog)
+	return runTUIWithClientLog(ctx, c, attachID, spec, out, streamLog, version)
 }
 
 // clientLogPath returns $ZUT_HOME/logs/client.log.
@@ -124,7 +124,9 @@ func clientTimingLog() (*slog.Logger, func()) {
 	return logger, func() { _ = closer.Close() }
 }
 
-func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger) int {
+// version is this binary's version, recorded in sessions the TUI writes
+// (finder forks); empty falls back to the daemon's version.
+func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger, version string) int {
 	defer c.Disconnect()
 	start := time.Now()
 	setupCrashOutput(ZutHome(), "client", tlog)
@@ -157,6 +159,10 @@ func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID s
 	}
 	logPhase("attached", "session", attachID)
 	cfg := tuiClientConfig(out, launch)
+	cfg.Version = version
+	if cfg.Version == "" {
+		cfg.Version = c.DaemonVersion()
+	}
 	var ui *modes.Interactive
 	defer cfg.AuthManager.Close()
 	cfg.Port, cfg.Client = port, client
@@ -234,6 +240,8 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		args, err := ParseArgs(launch.Args)
 		if err == nil { // Creation already validated these arguments.
 			applyZutfileSpec(&args, launch.Zutfile)
+			// The Finder and forks use the namespace this session was created in.
+			ui.SessionsRoot = agentSessionsRoot(ZutHome(), args)
 			web := webSearchToolAllowedForSession(args)
 			spawn, status := autoSubagentsToolAllowed(args), autoSubagentsStatusToolAllowed(args)
 			stop, resume := autoSubagentsStopToolAllowed(args), autoSubagentsResumeToolAllowed(args)
@@ -290,7 +298,7 @@ func runAttachCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "zut attach:", err)
 		return 1
 	}
-	return runTUIWithClientLog(ctx, c, session.ID(id), nil, stderr, streamLog)
+	return runTUIWithClientLog(ctx, c, session.ID(id), nil, stderr, streamLog, "")
 }
 
 // resolveAttachTarget matches an exact ID, a unique ID prefix, then a unique

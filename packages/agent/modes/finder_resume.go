@@ -136,7 +136,7 @@ func (c *resumeConfirm) Render(th tui.Theme, width int) []string {
 			for _, part := range wrapPlain(lead, text) {
 				row(finderFit(part, text))
 			}
-			lead, styledLead, leadW = "", "", 0
+			styledLead, leadW = "", 0
 		}
 		for idx, part := range wrapPlain(line.text, text-leadW) {
 			prefix := strings.Repeat(" ", leadW)

@@ -86,7 +86,8 @@ func TestFinderOpenLocalSameDirResumesAndJumps(t *testing.T) {
 	path := newTreeTestSession(t, l.root, cwd, finderExecMessages())
 	finderSearchQuery(t, l.i, "refacto")
 
-	l.i.finderOpen(finderExecItem(path), 0)
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
 	require.Equal(t, path, l.finishJump(t))
 	cur, ok := chatSearchCur(l.i)
 	require.True(t, ok)
@@ -101,7 +102,8 @@ func TestFinderOpenLocalSwitchResumes(t *testing.T) {
 	path := newTreeTestSession(t, l.root, other, finderExecMessages())
 	finderSearchQuery(t, l.i, "refacto")
 
-	l.i.finderOpen(finderExecItem(path), 0)
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
 	require.NotNil(t, l.i.finderResume, "other directory asks first")
 	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.Equal(t, path, l.finishJump(t))
@@ -118,8 +120,10 @@ func TestFinderOpenLocalForkKeepsOriginal(t *testing.T) {
 	require.NoError(t, err)
 	finderSearchQuery(t, l.i, "refacto")
 
-	l.i.finderOpen(finderExecItem(path), 0)
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
 	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'n'})
+	runLoopCall(t, l.i)
 	newPath := l.finishJump(t)
 	require.NotEqual(t, path, newPath)
 	meta, err := core.ManagedSessionMeta(context.Background(), l.root, newPath)
@@ -141,7 +145,8 @@ func TestFinderOpenRejectsUnmanagedPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(stray, nil, 0o600))
 	finderSearchQuery(t, l.i, "refacto")
 
-	l.i.finderOpen(finderExecItem(stray), 0)
+	l.i.finderOpenItem(finderExecItem(stray), 0)
+	runLoopCall(t, l.i)
 	require.Contains(t, l.i.statusErr, "cannot open session")
 	require.Nil(t, l.i.pendingFinderJump)
 	require.Empty(t, l.loaded)
@@ -152,9 +157,10 @@ func TestFinderResumeCancelAndMismatchDropPendingJump(t *testing.T) {
 	l := newFinderExecLocal(t, cwd)
 	path := newTreeTestSession(t, l.root, other, finderExecMessages())
 	finderSearchQuery(t, l.i, "refacto")
-	l.i.finderOpen(finderExecItem(path), 0)
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
 	require.NotNil(t, l.i.pendingFinderJump)
-	l.i.finderResumeChoice(l.i.finderResume.plan, resumeChoiceCancel)
+	l.i.finderExecuteResume(l.i.finderResume.plan, resumeChoiceCancel)
 	require.Nil(t, l.i.pendingFinderJump)
 
 	l.i.pendingFinderJump = &pendingFinderJump{path: path, terms: []string{"refacto"}}
@@ -192,7 +198,8 @@ func TestFinderPortSwitchSendsSessionCWD(t *testing.T) {
 	path := newTreeTestSession(t, root, other, finderExecMessages())
 	specs := expectPortCreate(t, client, path)
 
-	i.finderOpen(finderExecItem(path), 0)
+	i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, i)
 	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	spec := <-specs
 	require.Equal(t, other, spec.CWD)
@@ -209,8 +216,10 @@ func TestFinderPortForkSendsCurrentCWD(t *testing.T) {
 	path := newTreeTestSession(t, root, other, finderExecMessages())
 	specs := expectPortCreate(t, client, path)
 
-	i.finderOpen(finderExecItem(path), 0)
+	i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, i)
 	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'n'})
+	runLoopCall(t, i)
 	spec := <-specs
 	require.Equal(t, cwd, spec.CWD)
 	require.NotEqual(t, path, spec.ResumePath)
@@ -223,17 +232,22 @@ func TestFinderPortForkSendsCurrentCWD(t *testing.T) {
 
 func TestFinderPortAttachUsesLiveID(t *testing.T) {
 	cwd, other := t.TempDir(), t.TempDir()
-	i, client, root := newFinderExecPort(t, cwd)
-	path := newTreeTestSession(t, root, other, finderExecMessages())
+	i, client, _ := newFinderExecPort(t, cwd)
+	// A live session outside the namespace root (agents/, --session files):
+	// attaching must not require ManagedSessionMeta.
+	path := filepath.Join(t.TempDir(), "elsewhere.jsonl")
 	attached := make(chan session.ID, 1)
 	client.EXPECT().Attach(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, id session.ID) (session.Port, error) {
 		attached <- id
 		return nil, context.Canceled
 	}).Once()
 	item := finderExecItem(path)
-	item.Live, item.LiveID = true, "live-7"
+	item.Live, item.LiveID, item.LiveCWD = true, "live-7", other
 
-	i.finderOpen(item, 0)
+	i.finderOpenItem(item, 0)
+	require.True(t, i.finderResume.Active())
+	require.Equal(t, other, i.finderResume.plan.TargetCWD)
+	require.False(t, i.finderResume.plan.CWDExists)
 	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.Equal(t, session.ID("live-7"), <-attached)
 	awaitResumeResult(t, i)
@@ -244,7 +258,8 @@ func TestFinderResumeEscDropsPendingJump(t *testing.T) {
 	l := newFinderExecLocal(t, cwd)
 	path := newTreeTestSession(t, l.root, other, finderExecMessages())
 	finderSearchQuery(t, l.i, "refacto")
-	l.i.finderOpen(finderExecItem(path), 0)
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
 	require.NotNil(t, l.i.pendingFinderJump)
 
 	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyEsc})
@@ -273,7 +288,8 @@ func TestFinderPortSwitchRunsJumpAfterHydrate(t *testing.T) {
 	expectPortSubscribe(target, make(chan session.Event), nil)
 	client.EXPECT().Attach(mock.Anything, session.ID("target")).Return(target, nil).Once()
 
-	i.finderOpen(finderExecItem(path), 0)
+	i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, i)
 	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	res := awaitResumeResult(t, i)
 	require.NoError(t, res.err)
@@ -297,18 +313,19 @@ func TestFinderResumeRefusedWhileBusy(t *testing.T) {
 
 	// Busy at open: no confirm, no load, jump dropped.
 	l.i.busy = true
-	l.i.finderOpen(finderExecItem(same), 0)
+	l.i.finderOpenItem(finderExecItem(same), 0)
 	require.Equal(t, finderResumeBusyMsg, l.i.statusErr)
 	require.Nil(t, l.i.pendingFinderJump)
 	require.False(t, l.i.finderResume.Active())
-	l.i.finderOpen(finderExecItem(away), 0)
+	l.i.finderOpenItem(finderExecItem(away), 0)
 	require.False(t, l.i.finderResume.Active(), "no y/n prompt while busy")
 
 	// Idle at open, busy by the time the user picks: switch and fork refused.
 	for _, key := range []rune{'y', 'n'} {
 		l.i.busy = false
 		l.i.statusErr = ""
-		l.i.finderOpen(finderExecItem(away), 0)
+		l.i.finderOpenItem(finderExecItem(away), 0)
+		runLoopCall(t, l.i)
 		require.True(t, l.i.finderResume.Active())
 		l.i.busy = true
 		l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: key})
@@ -329,4 +346,121 @@ func countJSONL(t *testing.T, root string) int {
 		return err
 	}))
 	return n
+}
+
+func TestFinderOpenCurrentSessionJumpsInPlaceLocal(t *testing.T) {
+	cwd := t.TempDir()
+	l := newFinderExecLocal(t, cwd)
+	path := newTreeTestSession(t, l.root, cwd, finderExecMessages())
+	finderSearchQuery(t, l.i, "refacto")
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, l.i)
+	l.finishJump(t)
+
+	// Pick the same session again: no reload, the jump runs directly.
+	l.i.clearChatSearch()
+	finderSearchQuery(t, l.i, "refacto")
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	require.Empty(t, l.loaded)
+	require.Empty(t, l.i.loopCalls)
+	cur, ok := chatSearchCur(l.i)
+	require.True(t, ok)
+	require.Equal(t, 3, cur)
+	require.Nil(t, l.i.pendingFinderJump)
+	require.False(t, l.i.finder.Active())
+}
+
+func TestFinderOpenCurrentSessionJumpsInPlacePort(t *testing.T) {
+	cwd := t.TempDir()
+	root := t.TempDir()
+	path := newTreeTestSession(t, root, cwd, finderExecMessages())
+	i, _, _, _ := newTreePortInteractive(t, root, cwd, finderExecMessages())
+	i.cfg.Theme, i.cfg.Terminal, i.cfg.CWD = tui.Dark, &alertTestTerminal{}, cwd
+	i.mu.Lock()
+	i.portInfo.SessionPath = path
+	i.mu.Unlock()
+	i.finder = newFinderModel(cwd)
+	finderSearchQuery(t, i, "refacto")
+
+	// Live row for the attached session itself: no attach, no client call.
+	item := finderExecItem(path)
+	item.Live, item.LiveID, item.LiveCWD = true, string(i.SessionID()), cwd
+	i.finderOpenItem(item, 0)
+	cur, ok := chatSearchCur(i)
+	require.True(t, ok)
+	require.Equal(t, 3, cur)
+	require.Nil(t, i.pendingFinderJump)
+}
+
+func TestFinderOpenMarksLoadingUntilResolved(t *testing.T) {
+	cwd := t.TempDir()
+	l := newFinderExecLocal(t, cwd)
+	path := newTreeTestSession(t, l.root, cwd, finderExecMessages())
+	finderSearchQuery(t, l.i, "refacto")
+	l.i.finderOpenItem(finderExecItem(path), 0)
+	require.False(t, l.i.finder.Active())
+	l.i.mu.Lock()
+	loading, status := l.i.sessionLoading, l.i.statusOK
+	l.i.mu.Unlock()
+	require.True(t, loading, "busy guard covers the background lookup")
+	require.Equal(t, "opening session…", status)
+	require.False(t, l.i.canResumeSessionSelection())
+	runLoopCall(t, l.i)
+	l.finishJump(t)
+	require.False(t, l.i.sessionLoading)
+}
+
+func TestFinderJumpWithoutHitSkipsChatSearch(t *testing.T) {
+	cwd := t.TempDir()
+	l := newFinderExecLocal(t, cwd)
+	path := newTreeTestSession(t, l.root, cwd, finderExecMessages())
+	finderSearchQuery(t, l.i, "zzznomatch")
+	item := finderExecItem(path)
+	item.Hits = nil // title-only match
+	l.i.finderOpenItem(item, -1)
+	runLoopCall(t, l.i)
+	l.finishJump(t)
+	_, ok := chatSearchCur(l.i)
+	require.False(t, ok)
+	require.Empty(t, l.i.statusErr, "no misleading no-match error")
+
+	// A fork note is shown even without a message hit.
+	l.i.pendingFinderJump = &pendingFinderJump{path: path, terms: []string{"zzznomatch"}, note: "forked into ~/x (new session)"}
+	l.i.runPendingFinderJump(path)
+	require.Equal(t, "forked into ~/x (new session)", l.i.statusOK)
+	require.Empty(t, l.i.statusErr)
+}
+
+func TestChatSearchClearedWhenTranscriptReplaced(t *testing.T) {
+	i, _ := chatSearchFixture(t)
+	i.startChatSearch([]string{"watcher"}, 0)
+	i.mu.Lock()
+	i.hydrateLocked(session.Snapshot{Messages: []provider.Message{jumpTextMsg(provider.RoleUser, "x")}})
+	i.mu.Unlock()
+	_, ok := chatSearchCur(i)
+	require.False(t, ok)
+	// A stale step after the reset is a no-op, not an index panic.
+	i.chatSearchNext()
+	i.chatSearchJump()
+}
+
+func TestFinderPortForkFailureRemovesOrphan(t *testing.T) {
+	cwd, other := t.TempDir(), t.TempDir()
+	i, client, root := newFinderExecPort(t, cwd)
+	path := newTreeTestSession(t, root, other, finderExecMessages())
+	specs := expectPortCreate(t, client, path)
+	i.finderOpenItem(finderExecItem(path), 0)
+	runLoopCall(t, i)
+	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'n'})
+	runLoopCall(t, i)
+	spec := <-specs
+	_, err := os.Stat(spec.ResumePath)
+	require.NoError(t, err, "fork written before resume")
+	res := awaitResumeResult(t, i)
+	require.Error(t, res.err)
+	i.applySessionResult(context.Background(), res)
+	_, err = os.Stat(spec.ResumePath)
+	require.True(t, os.IsNotExist(err), "orphan fork removed")
+	_, err = os.Stat(path)
+	require.NoError(t, err, "original kept")
 }

@@ -43,12 +43,13 @@ func finderLiveItems(infos []session.Info) []finderItem {
 			when = info.UpdatedAt
 		}
 		items = append(items, finderItem{
-			Key:    key,
-			Label:  sessionProject(info.RepoRoot, info.CWD) + " · " + title,
-			Detail: formatRelative(when),
-			Live:   true,
-			LiveID: info.ID,
-			Title:  raw,
+			Key:     key,
+			Label:   sessionProject(info.RepoRoot, info.CWD) + " · " + title,
+			Detail:  formatRelative(when),
+			Live:    true,
+			LiveID:  info.ID,
+			Title:   raw,
+			LiveCWD: info.CWD,
 		})
 	}
 	return items
@@ -58,6 +59,7 @@ func finderLiveItems(infos []session.Info) []finderItem {
 // keeping the cursor on the same key and any snippets already loaded.
 func (m *finderModel) SetLive(items []finderItem) {
 	m.live = items
+	m.liveLoaded = true
 	if !m.Active() {
 		return
 	}
@@ -101,7 +103,7 @@ func (m *finderModel) decorateLive(raw []finderItem) []finderItem {
 		key := finderLiveKey(item.Key)
 		seen[key] = true
 		if live, ok := byKey[key]; ok {
-			item.Live, item.LiveID = true, live.LiveID
+			item.Live, item.LiveID, item.LiveCWD = true, live.LiveID, live.LiveCWD
 		}
 		out = append(out, item)
 	}
@@ -119,8 +121,8 @@ func (m *finderModel) decorateLive(raw []finderItem) []finderItem {
 }
 
 // loadFinderLive fetches daemon sessions once for the open finder (port
-// mode only) and applies them on the Run loop. Errors leave the finder
-// without live marks.
+// mode only) and applies them on the Run loop. An error is reported in the
+// status line and leaves the finder without live marks.
 func (i *Interactive) loadFinderLive(ctx context.Context) {
 	if !i.portMode.Load() {
 		return
@@ -138,6 +140,12 @@ func (i *Interactive) loadFinderLive(ctx context.Context) {
 		infos, err := client.List(callCtx)
 		cancel()
 		if err != nil {
+			// Without the list, rename and delete stay refused in port mode.
+			msg := "finder: list running sessions: " + err.Error()
+			select {
+			case i.loopCalls <- func() { i.setFinderStatusErr(msg) }:
+			case <-ctx.Done():
+			}
 			return
 		}
 		items := finderLiveItems(infos)

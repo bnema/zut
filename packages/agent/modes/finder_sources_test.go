@@ -221,7 +221,7 @@ func TestFinderOpenUpdatesIndexAndShowsProgress(t *testing.T) {
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlF})
 	require.True(t, i.finder.Active())
 	require.True(t, i.finder.indexing)
-	require.Contains(t, stripANSIBytes(i.finder.Render(tui.Dark, 120, 20)[1]), "indexing")
+	require.Contains(t, stripANSIBytes(i.finder.Render(tui.Dark, 120, 20)[finderTabsRow]), "indexing")
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyPaste, Paste: "needle"})
 
 	deadline := time.After(10 * time.Second)

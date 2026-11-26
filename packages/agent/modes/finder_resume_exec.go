@@ -13,62 +13,134 @@ import (
 // pendingFinderJump is the in-chat jump to run once the session opened from
 // the finder becomes current. Guarded by Interactive.mu.
 type pendingFinderJump struct {
-	path  string // session expected to become current
-	hit   *sessionindex.HitRef
-	terms []string
-	note  string // status shown once the jump ran (e.g. after a fork)
+	path     string // session expected to become current
+	hit      *sessionindex.HitRef
+	terms    []string
+	note     string // status shown once the jump ran (e.g. after a fork)
+	forkPath string // fork written for this open; removed if the resume fails
 }
 
-// finderOpenItem validates the picked session, closes the finder, records
-// the pending jump, and resumes (or asks how to resume) the session.
+// finderOpenItem resolves the picked session off the input loop, then
+// resumes it or asks how to. Picking the current session jumps in place.
 func (i *Interactive) finderOpenItem(item finderItem, hit int) {
-	ctx := i.runCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	meta, err := core.ManagedSessionMeta(ctx, i.sessionsRoot(), item.Key)
-	if err != nil {
-		i.setFinderStatusErr("finder: cannot open session: " + err.Error())
-		return
-	}
-	exists := false
-	if meta.CWD != "" {
-		if st, statErr := os.Stat(meta.CWD); statErr == nil && st.IsDir() {
-			exists = true
-		}
-	}
-	if !(item.Live && i.portMode.Load()) && i.finderResumeBusy() {
-		return
-	}
-	i.mu.Lock()
-	plan := resumePlan{
-		Path:       item.Key,
-		LiveID:     item.LiveID,
-		TargetCWD:  meta.CWD,
-		CurrentCWD: i.cfg.CWD,
-		CWDExists:  exists,
-		Live:       item.Live,
-	}
 	jump := &pendingFinderJump{path: item.Key}
+	i.mu.Lock()
 	if i.finder != nil {
 		jump.terms, _ = sessionindex.ParseQuery(i.finder.Query())
 	}
+	i.mu.Unlock()
 	if hit >= 0 && hit < len(item.Hits) {
 		if ref, ok := item.Hits[hit].Ref.(sessionindex.HitRef); ok {
 			jump.hit = &ref
 		}
 	}
+	port := i.portMode.Load()
+	if i.isCurrentFinderSession(item.Key) || (port && item.Live && item.LiveID != "" && session.ID(item.LiveID) == i.SessionID()) {
+		i.closeFinder()
+		i.finderJumpHere(jump)
+		return
+	}
+	if port && item.Live {
+		// Live sessions attach; they need not live in this namespace's
+		// root, so skip ManagedSessionMeta and use the daemon's cwd.
+		i.mu.Lock()
+		plan := resumePlan{Path: item.Key, LiveID: item.LiveID, TargetCWD: item.LiveCWD, CurrentCWD: i.cfg.CWD, Live: true}
+		i.pendingFinderJump = jump
+		i.mu.Unlock()
+		i.closeFinder()
+		i.openFinderResume(plan)
+		return
+	}
+	if i.finderResumeBusy() {
+		return
+	}
+	root, path := i.sessionsRoot(), item.Key
+	i.closeFinder()
+	i.runFinderAsync("opening session…", func(ctx context.Context) func() {
+		meta, err := core.ManagedSessionMeta(ctx, root, path)
+		if err != nil {
+			return func() { i.setFinderStatusErr("finder: cannot open session: " + err.Error()) }
+		}
+		exists := false
+		if meta.CWD != "" {
+			if st, statErr := os.Stat(meta.CWD); statErr == nil && st.IsDir() {
+				exists = true
+			}
+		}
+		return func() {
+			i.mu.Lock()
+			plan := resumePlan{Path: path, TargetCWD: meta.CWD, CurrentCWD: i.cfg.CWD, CWDExists: exists}
+			i.pendingFinderJump = jump
+			i.statusOK = ""
+			i.mu.Unlock()
+			i.openFinderResume(plan)
+		}
+	})
+}
+
+// runFinderAsync runs work on a goroutine with sessionLoading set, so the
+// busy guard refuses other resumes meanwhile, and applies its result on the
+// Run loop.
+func (i *Interactive) runFinderAsync(status string, work func(context.Context) func()) {
+	ctx := i.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	i.mu.Lock()
+	i.sessionLoading = true
+	i.statusOK, i.statusErr = status, ""
+	i.mu.Unlock()
+	i.invalidate()
+	go func() {
+		apply := work(ctx)
+		select {
+		case i.loopCalls <- func() {
+			i.mu.Lock()
+			i.sessionLoading = false
+			i.mu.Unlock()
+			apply()
+			i.invalidate()
+		}:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// isCurrentFinderSession reports whether path is the attached session.
+func (i *Interactive) isCurrentFinderSession(path string) bool {
+	cur := i.currentSessionPath()
+	return cur != "" && path != "" && normalizedSessionPath(cur) == normalizedSessionPath(path)
+}
+
+// finderJumpHere runs jump in the current session without reloading it.
+func (i *Interactive) finderJumpHere(jump *pendingFinderJump) {
+	cur := i.currentSessionPath()
+	jump.path = cur
+	i.mu.Lock()
 	i.pendingFinderJump = jump
 	i.mu.Unlock()
-	i.closeFinder()
-	i.openFinderResume(plan)
+	i.runPendingFinderJump(cur)
 }
 
 // finderExecuteResume runs the chosen way to open plan.
 func (i *Interactive) finderExecuteResume(plan resumePlan, choice resumeChoice) {
+	if choice == resumeChoiceCancel || choice == resumeChoiceNone {
+		i.dropPendingFinderJump()
+		return
+	}
 	port := i.portMode.Load()
+	if i.isCurrentFinderSession(plan.Path) || (port && plan.Live && plan.LiveID != "" && session.ID(plan.LiveID) == i.SessionID()) {
+		i.mu.Lock()
+		jump := i.pendingFinderJump
+		i.mu.Unlock()
+		if jump == nil {
+			jump = &pendingFinderJump{}
+		}
+		i.finderJumpHere(jump)
+		return
+	}
 	attach := choice == resumeChoiceAttach || (choice == resumeChoiceResume && port && plan.Live && plan.LiveID != "")
-	if !attach && choice != resumeChoiceCancel && i.finderResumeBusy() {
+	if !attach && i.finderResumeBusy() {
 		return
 	}
 	switch choice {
@@ -96,38 +168,60 @@ func (i *Interactive) finderExecuteResume(plan resumePlan, choice resumeChoice) 
 		i.portAttachSession(session.ID(plan.LiveID))
 	case resumeChoiceFork:
 		i.finderFork(plan, port)
-	default:
-		i.dropPendingFinderJump()
 	}
 }
 
+// finderFork copies plan's session into the current directory off the
+// input loop, then resumes the copy.
 func (i *Interactive) finderFork(plan resumePlan, port bool) {
-	ctx := i.runCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	newPath, err := core.ForkSessionToCWD(ctx, plan.Path, i.sessionsRoot(), plan.CurrentCWD, i.cfg.Version)
-	if err != nil {
+	if !port && i.cfg.LoadSession == nil {
 		i.dropPendingFinderJump()
-		i.mu.Lock()
-		i.statusErr, i.statusOK = "fork: "+err.Error(), ""
-		i.mu.Unlock()
-		i.invalidate()
+		i.setFinderStatusErr("session loading is not wired in this build")
 		return
 	}
-	// Same messages in the fork, so the hit fingerprint still resolves.
-	note := fmt.Sprintf("forked into %s (new session)", friendlyPath(plan.CurrentCWD))
-	i.mu.Lock()
-	if i.pendingFinderJump == nil {
-		i.pendingFinderJump = &pendingFinderJump{}
+	root, version := i.sessionsRoot(), i.cfg.Version
+	i.runFinderAsync("forking session…", func(ctx context.Context) func() {
+		newPath, err := core.ForkSessionToCWD(ctx, plan.Path, root, plan.CurrentCWD, version)
+		if err != nil {
+			return func() {
+				i.dropPendingFinderJump()
+				i.setFinderStatusErr("fork: " + err.Error())
+			}
+		}
+		return func() {
+			// Same messages in the fork, so the hit fingerprint still resolves.
+			i.mu.Lock()
+			if i.pendingFinderJump == nil {
+				i.pendingFinderJump = &pendingFinderJump{}
+			}
+			i.pendingFinderJump.path = newPath
+			i.pendingFinderJump.forkPath = newPath
+			i.pendingFinderJump.note = fmt.Sprintf("forked into %s (new session)", friendlyPath(plan.CurrentCWD))
+			i.statusOK = ""
+			i.mu.Unlock()
+			if port {
+				i.portResumeSession(newPath, plan.CurrentCWD)
+			} else {
+				i.applySessionSelection(newPath)
+			}
+		}
+	})
+}
+
+// failPendingFinderJumpLocked drops the pending jump after its resume failed
+// and returns a fork file written for it, which the caller removes without
+// holding i.mu.
+func (i *Interactive) failPendingFinderJumpLocked() (orphan string) {
+	if i.pendingFinderJump != nil {
+		orphan = i.pendingFinderJump.forkPath
 	}
-	i.pendingFinderJump.path = newPath
-	i.pendingFinderJump.note = note
-	i.mu.Unlock()
-	if port {
-		i.portResumeSession(newPath, plan.CurrentCWD)
-	} else {
-		i.applySessionSelection(newPath)
+	i.pendingFinderJump = nil
+	return orphan
+}
+
+func removeFinderOrphanFork(path string) {
+	if path != "" {
+		_ = os.Remove(path)
 	}
 }
 
@@ -142,11 +236,13 @@ func (i *Interactive) dropPendingFinderJump() {
 func (i *Interactive) queuePendingFinderJump(path string, err error) {
 	i.mu.Lock()
 	has := i.pendingFinderJump != nil
+	orphan := ""
 	if has && err != nil {
-		i.pendingFinderJump = nil
+		orphan = i.failPendingFinderJumpLocked()
 		has = false
 	}
 	i.mu.Unlock()
+	removeFinderOrphanFork(orphan)
 	if !has || i.loopCalls == nil {
 		return
 	}
@@ -177,26 +273,27 @@ func (i *Interactive) runPendingFinderJump(current string) {
 		normalizedSessionPath(current) != normalizedSessionPath(jump.path) {
 		return
 	}
-	focus, note := len(msgs)-1, jump.note
-	if jump.hit != nil {
+	note := jump.note
+	// Only a message hit locates a message; title or session-level matches
+	// would make the in-chat search report a misleading "no match".
+	if jump.hit != nil && len(jump.terms) > 0 {
+		focus := len(msgs) - 1
 		if idx, ok := resolveHitInView(msgs, jump.hit.Fingerprint, jump.hit.MsgSeq, jump.hit.TotalMsgs); ok {
 			focus = idx
 		} else {
 			note = joinStatus(note, "match is in compacted history")
 		}
-	}
-	if len(jump.terms) > 0 {
 		i.startChatSearch(jump.terms, focus)
 	}
 	if note == "" {
 		return
 	}
 	i.mu.Lock()
+	i.statusErr = ""
 	if i.chatSearch.active {
-		i.statusErr = ""
 		i.statusOK = joinStatus(note, i.chatSearch.hint)
 		i.chatSearch.hint = i.statusOK
-	} else if i.statusErr == "" {
+	} else {
 		i.statusOK = note
 	}
 	i.mu.Unlock()

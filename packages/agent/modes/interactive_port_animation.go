@@ -24,8 +24,9 @@ func (i *Interactive) redrawAnimationTick(requestRedraw func()) {
 	dictating := i.dictation.phase != ""
 	// Resident activity comes only from the session-published summaries.
 	residentAnimating := hasActivePortResidents(i.portInfo.Residents)
+	finderAnimating := i.finder.Active() && (i.finder.loading || i.finder.indexing)
 	i.mu.Unlock()
-	if busy || dictating || i.btwDialog.Loading() || residentAnimating {
+	if busy || dictating || i.btwDialog.Loading() || residentAnimating || finderAnimating {
 		requestRedraw()
 	}
 }

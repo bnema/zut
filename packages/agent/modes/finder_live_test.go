@@ -24,6 +24,7 @@ func TestFinderLiveItems(t *testing.T) {
 	require.Equal(t, finderItem{Key: "/s/a/one.jsonl", Label: "zut · Run", Detail: "just now", Live: true, LiveID: "l1", Title: "Run"}, items[0])
 	require.Equal(t, "gordon · (new session)", items[1].Label)
 	require.Equal(t, "l3", items[1].LiveID)
+	require.Equal(t, "/work/gordon", items[1].LiveCWD)
 }
 
 func TestFinderDecorateLive(t *testing.T) {
@@ -35,7 +36,7 @@ func TestFinderDecorateLive(t *testing.T) {
 	require.True(t, m.ApplySnippets(m.Generation(), "/s/./live.jsonl", map[int]string{0: "snippet"}))
 
 	m.SetLive([]finderItem{
-		{Key: "/s/live.jsonl", Live: true, LiveID: "l1"},
+		{Key: "/s/live.jsonl", Live: true, LiveID: "l1", LiveCWD: "/work/live"},
 		{Key: "/s/new.jsonl", Label: "unindexed", Live: true, LiveID: "l2"},
 	})
 	require.Equal(t, []string{"/s/new.jsonl", "/s/old.jsonl", "/s/./live.jsonl"}, finderKeys(m.items))
@@ -43,6 +44,7 @@ func TestFinderDecorateLive(t *testing.T) {
 	require.False(t, m.items[1].Live)
 	require.True(t, m.items[2].Live)
 	require.Equal(t, "l1", m.items[2].LiveID)
+	require.Equal(t, "/work/live", m.items[2].LiveCWD, "indexed live rows carry the daemon cwd")
 	require.Equal(t, 2, m.cursor, "cursor stays on the same key")
 	require.Equal(t, "snippet", m.items[2].Hits[0].Text, "loaded snippets survive")
 	require.Equal(t, "indexed live", m.items[2].Label)
@@ -106,7 +108,20 @@ func TestFinderPortModeListErrorLeavesNoLiveMarks(t *testing.T) {
 	<-listed
 	driveFinderLoop(t, i, func() bool { return !i.finder.indexing && !i.finder.loading && len(i.finder.items) == 1 })
 	require.False(t, i.finder.items[0].Live)
-	require.Empty(t, i.statusErr)
+	driveFinderLoop(t, i, func() bool { return i.statusErr != "" })
+	require.Equal(t, "finder: list running sessions: daemon down", i.statusErr)
+	require.False(t, i.finder.liveLoaded)
+
+	// Without the live list, delete and rename stay refused.
+	path := i.finder.items[0].Key
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlD})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'y'})
+	require.Equal(t, "finder: running sessions are not known yet; try again", i.statusErr)
+	require.FileExists(t, path)
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlR})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '!'})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+	require.Equal(t, "finder: running sessions are not known yet; try again", i.statusErr)
 }
 
 func TestFinderLocalModeSkipsLiveList(t *testing.T) {

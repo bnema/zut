@@ -68,6 +68,11 @@ func TestFinderOpenRejectedWithoutSessionsOrSources(t *testing.T) {
 	i = NewInteractive(InteractiveConfig{})
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlF})
 	require.False(t, i.finder.Active())
+	require.Equal(t, "finder: sessionindex: empty root", i.statusErr)
+
+	i = NewInteractive(InteractiveConfig{})
+	i.finderSources = func() []finderSource { return nil }
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlF})
 	require.Equal(t, "finder unavailable", i.statusErr)
 }
 
@@ -144,18 +149,19 @@ func TestFinderRendersInFrameWithVisibleCaret(t *testing.T) {
 		runFinderLoopCall(t, i)
 	}
 	i.redraw()
-	require.Contains(t, stripANSIBytes(term.String()), "╭─ Find")
+	require.Contains(t, stripANSIBytes(term.String()), "Find")
+	require.Equal(t, 1, strings.Count(stripANSIBytes(term.String()), "╭"), "the pane frame is the only box")
 
 	lines := i.finder.Render(tui.Dark, 80, 20)
-	query := stripANSIBytes(lines[1])
+	query := stripANSIBytes(lines[finderQueryRow])
 	require.Contains(t, query, "END")
 	_, col := i.finder.CursorPos()
 	require.Less(t, col, 80)
-	require.Equal(t, 4+runewidth.StringWidth(string(i.finder.query[i.finder.qscroll:])), col)
+	require.Equal(t, 3+runewidth.StringWidth(string(i.finder.query[i.finder.qscroll:])), col)
 
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyHome})
 	lines = i.finder.Render(tui.Dark, 80, 20)
 	_, col = i.finder.CursorPos()
-	require.Equal(t, 4, col)
-	require.Contains(t, stripANSIBytes(lines[1]), "> abcdefghij")
+	require.Equal(t, 3, col)
+	require.Contains(t, stripANSIBytes(lines[finderQueryRow]), "> abcdefghij")
 }

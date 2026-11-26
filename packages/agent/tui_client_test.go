@@ -445,3 +445,15 @@ func TestDaemonClientRepeatedSlowDropsRecover(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+func TestTUIClientConfigSessionNamespace(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	cfg := tuiClientConfig(&bytes.Buffer{}, nil)
+	require.Empty(t, cfg.SessionsRoot, "attach falls back to ZutHome")
+
+	cfg = tuiClientConfig(&bytes.Buffer{}, &session.CreateSpec{})
+	require.Equal(t, ZutHome(), cfg.SessionsRoot)
+
+	cfg = tuiClientConfig(&bytes.Buffer{}, &session.CreateSpec{Zutfile: &session.ZutfileSpec{Name: "helper"}})
+	require.Equal(t, agentSessionsRoot(ZutHome(), Args{AgentName: "helper"}), cfg.SessionsRoot)
+}

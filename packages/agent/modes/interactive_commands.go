@@ -1223,6 +1223,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 	i.restoreLoadedSessionTitle()
 	i.mu.Lock()
 	i.sessionLoading = false
+	i.clearChatSearchLocked() // matches index the replaced transcript
 	i.resetNestedRecapsLocked()
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""

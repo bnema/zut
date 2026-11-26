@@ -603,7 +603,7 @@ func (i *Interactive) redraw() {
 		dialog = i.finderResume.Render(i.cfg.Theme, dialogWidth)
 	case i.finder.Active():
 		dialogID = "finder"
-		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, max(finderMinHeight, paneMax.ContentHeight()))
+		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.residentSubagentsDialog.Active():
 		dialogID = "subagents"
 		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())

@@ -7,7 +7,7 @@ import (
 )
 
 // ansiToken is one piece of a rendered line: either an escape sequence
-// (CSI or OSC) or a single visible rune.
+// (CSI, or an OSC/DCS/APC/PM/SOS string) or a single visible rune.
 type ansiToken struct {
 	esc  string
 	r    rune
@@ -18,7 +18,7 @@ type ansiToken struct {
 func tokenizeANSI(s string) []ansiToken {
 	var toks []ansiToken
 	for i := 0; i < len(s); {
-		if s[i] == 0x1b && i+1 < len(s) && (s[i+1] == '[' || s[i+1] == ']') {
+		if s[i] == 0x1b && i+1 < len(s) && isEscapeIntroducer(s[i+1]) {
 			j := escapeEnd(s, i)
 			toks = append(toks, ansiToken{esc: s[i:j], isFn: true})
 			i = j
@@ -31,6 +31,23 @@ func tokenizeANSI(s string) []ansiToken {
 	return toks
 }
 
+// isEscapeIntroducer reports whether ESC b starts a sequence tokenizeANSI
+// keeps whole: CSI, OSC, and the string sequences DCS (P), APC (_), PM (^),
+// and SOS (X) used by image protocols such as kitty graphics and sixel.
+func isEscapeIntroducer(b byte) bool {
+	switch b {
+	case '[', ']', 'P', '_', '^', 'X':
+		return true
+	}
+	return false
+}
+
+// hasImageEscape reports whether line carries inline image data (kitty
+// graphics APC, sixel DCS, or iTerm2 OSC 1337 File).
+func hasImageEscape(line string) bool {
+	return strings.Contains(line, "\x1b_G") || strings.Contains(line, "\x1bP") || strings.Contains(line, "\x1b]1337;File=")
+}
+
 // escapeEnd returns the index just past the escape sequence starting at i.
 func escapeEnd(s string, i int) int {
 	if s[i+1] == '[' {
@@ -41,7 +58,7 @@ func escapeEnd(s string, i int) int {
 		}
 		return len(s)
 	}
-	// OSC: terminated by BEL or ST (ESC \).
+	// OSC and string sequences: terminated by BEL or ST (ESC \).
 	for j := i + 2; j < len(s); j++ {
 		if s[j] == 0x07 {
 			return j + 1
@@ -136,7 +153,7 @@ func HighlightTerms(line string, terms []string, th Theme) (string, bool) {
 			needles = append(needles, rs)
 		}
 	}
-	if len(needles) == 0 || line == "" {
+	if len(needles) == 0 || line == "" || hasImageEscape(line) {
 		return line, false
 	}
 	toks := tokenizeANSI(line)

@@ -116,6 +116,10 @@ func (i *Interactive) chatSearchStep(delta int) {
 // chatSearchJump scrolls to the current match and refreshes the hint.
 func (i *Interactive) chatSearchJump() {
 	i.mu.Lock()
+	if !i.chatSearch.active || len(i.chatSearch.matches) == 0 {
+		i.mu.Unlock()
+		return
+	}
 	msgIdx := i.chatSearch.matches[i.chatSearch.cur]
 	turn := 0
 	for k := 0; k <= msgIdx && k < len(i.view.Messages); k++ {

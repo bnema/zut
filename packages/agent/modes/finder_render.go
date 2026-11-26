@@ -34,125 +34,147 @@ func finderFit(s string, w int) string {
 
 // finderLayout is the row budget of one Render call.
 type finderLayout struct {
-	width, inner int
-	split        bool // list and preview side by side
-	leftW        int
-	rightW       int
-	listRows     int
-	previewRows  int // stacked preview rows; 0 in split mode
-	oneLine      bool
+	width       int
+	split       bool // list and preview side by side
+	leftW       int
+	rightW      int
+	listRows    int
+	previewRows int // stacked preview rows; 0 in split mode
+	oneLine     bool
+	footer      bool
 }
 
+// Render rows that precede the result list: the frame header (moved into
+// the pane title), a spacer, the tabs/status line, and the query line.
+const (
+	finderHeaderRow = 0
+	finderTabsRow   = 2
+	finderQueryRow  = 3
+)
+
+// layout splits the body height. When rows are short it degrades in this
+// order: stacked preview becomes one preview line, then the preview, then
+// the footer is dropped.
 func (m *finderModel) layout(width, height int) finderLayout {
-	l := finderLayout{width: width, inner: max(width-2, 0)}
-	fixed := 6 // top, query, separator, separator, footer, bottom
+	l := finderLayout{width: width, footer: true}
+	fixed := 4 // spacer, tabs, query, rule under the query
 	if m.err != "" {
 		fixed++
 	}
-	body := max(height-fixed, 1)
+	body := height - fixed - 2 // rule + footer
+	if body < 2 {
+		l.footer = false
+		body = height - fixed
+	}
+	body = max(body, 1)
 	switch {
 	case width >= finderSplitMinWidth:
 		l.split = true
-		l.leftW = (l.inner - 1) * 45 / 100
-		l.rightW = l.inner - 1 - l.leftW
+		l.leftW = (width - 1) * 45 / 100
+		l.rightW = width - 1 - l.leftW
 		l.listRows = body
-	case width >= finderPreviewMinWidth && body >= 3:
-		// One extra separator row between list and preview.
+	case width >= finderPreviewMinWidth && body >= 5:
+		// One rule row between list and preview.
 		l.listRows = max((body-1)*60/100, 1)
 		l.previewRows = max(body-1-l.listRows, 1)
-	default:
-		// Narrow or short: list plus a one-line preview of the current hit.
-		l.listRows = max(body-1, 1)
+	case body >= 3:
+		// List, rule, and one preview line of the current hit.
+		l.listRows = body - 2
 		l.oneLine = true
+	default:
+		l.listRows = body
 	}
 	return l
 }
 
-// Render draws the finder box. Every returned line is exactly width
-// display cells wide. Render updates the list scroll offset.
+// Render draws the finder as a dialog: a "── Find" frame header that the
+// floating pane turns into its title, then height body rows. Every line is
+// exactly width display cells wide. Render updates the scroll offsets.
 func (m *finderModel) Render(th tui.Theme, width, height int) []string {
-	if width < 4 {
+	if width < 4 || height < 1 {
 		return nil
 	}
 	l := m.layout(width, height)
 	m.viewTop = clampViewTop(m.viewTop, m.cursor, l.listRows, len(m.items))
-	border := func(s string) string { return th.FGColor(th.Muted, s) }
-	row := func(content string) string { return border("│") + content + border("│") }
+	muted := func(s string) string { return th.FGColor(th.Muted, s) }
+	rule := muted(strings.Repeat("─", width))
 
-	lines := []string{m.renderTop(th, l), row(m.renderQuery(th, l.inner))}
+	lines := []string{frameHeader(th, "Find", width), strings.Repeat(" ", width), m.renderTop(th, width), m.renderQuery(th, width)}
 	if m.err != "" {
-		lines = append(lines, row(th.FGColor(th.Warning, finderFit(" "+sanitizeSessionTreeText(m.err), l.inner))))
+		lines = append(lines, th.FGColor(th.Warning, finderFit(" "+sanitizeSessionTreeText(m.err), width)))
 	}
 	terms, _ := sessionindex.ParseQuery(m.Query())
-
 	if l.split {
-		lines = append(lines, border("├"+strings.Repeat("─", l.leftW)+"┬"+strings.Repeat("─", l.rightW)+"┤"))
+		lines = append(lines, muted(strings.Repeat("─", l.leftW)+"┬"+strings.Repeat("─", l.rightW)))
 		list := m.renderList(th, l.leftW, l.listRows)
 		preview := m.renderPreview(th, terms, l.rightW, l.listRows)
 		for i := range list {
-			lines = append(lines, border("│")+list[i]+border("│")+preview[i]+border("│"))
+			lines = append(lines, list[i]+muted("│")+preview[i])
 		}
-		lines = append(lines, border("├"+strings.Repeat("─", l.leftW)+"┴"+strings.Repeat("─", l.rightW)+"┤"))
+		if l.footer {
+			lines = append(lines, muted(strings.Repeat("─", l.leftW)+"┴"+strings.Repeat("─", l.rightW)))
+		}
 	} else {
-		rule := border("├" + strings.Repeat("─", l.inner) + "┤")
 		lines = append(lines, rule)
-		for _, r := range m.renderList(th, l.inner, l.listRows) {
-			lines = append(lines, row(r))
+		lines = append(lines, m.renderList(th, width, l.listRows)...)
+		switch {
+		case l.oneLine:
+			lines = append(lines, rule, m.renderOneLinePreview(th, terms, width))
+		case l.previewRows > 0:
+			lines = append(lines, rule)
+			lines = append(lines, m.renderPreview(th, terms, width, l.previewRows)...)
 		}
-		lines = append(lines, rule)
-		if l.oneLine {
-			lines = append(lines, row(m.renderOneLinePreview(th, terms, l.inner)))
-		} else {
-			for _, r := range m.renderPreview(th, terms, l.inner, l.previewRows) {
-				lines = append(lines, row(r))
-			}
-		}
-		if !l.oneLine {
+		if l.footer {
 			lines = append(lines, rule)
 		}
 	}
-	lines = append(lines, row(m.renderFooter(th, l.inner)))
-	lines = append(lines, border("╰"+strings.Repeat("─", l.inner)+"╯"))
+	if l.footer {
+		lines = append(lines, m.renderFooter(th, width))
+	}
+	// Very short panes: never exceed the budget.
+	if len(lines) > height+1 {
+		lines = lines[:height+1]
+	}
 	return lines
 }
 
-// CursorPos returns the 0-based row/col of the query caret within the
-// rendered box, or -1, -1 when the finder is closed. It uses the query
-// scroll offset computed by the last Render.
+// CursorPos returns the 0-based row/col of the query caret in the lines
+// returned by Render, or -1, -1 when the finder is closed. It uses the
+// scroll offsets computed by the last Render.
 func (m *finderModel) CursorPos() (row, col int) {
 	if !m.Active() {
 		return -1, -1
 	}
 	if m.renaming {
-		return 1, 1 + m.renameCaret
+		return finderQueryRow, m.renameCaret
 	}
 	start := min(m.qscroll, m.qcursor)
-	return 1, 4 + runewidth.StringWidth(string(m.query[start:m.qcursor]))
+	return finderQueryRow, 3 + runewidth.StringWidth(string(m.query[start:m.qcursor]))
 }
 
-func (m *finderModel) renderTop(th tui.Theme, l finderLayout) string {
-	title := "╭─ Find "
-	end := " ─╮"
-	var tabsPlain []string
-	tabsWidth := 0
+// renderTop draws the tabs (active one bracketed in the accent color) and
+// the right-aligned status in exactly w cells; the status is dropped first
+// when space runs out.
+func (m *finderModel) renderTop(th tui.Theme, w int) string {
+	var names []string
+	tabsW := 1 // leading space
 	for i, src := range m.tabs {
 		name := sanitizeSessionTreeText(src.Title())
 		if i == m.tab {
 			name = "[" + name + "]"
 		}
-		tabsPlain = append(tabsPlain, name)
-		tabsWidth += runewidth.StringWidth(name)
+		names = append(names, name)
+		tabsW += runewidth.StringWidth(name)
 	}
-	if len(tabsPlain) > 1 {
-		tabsWidth += len(tabsPlain) - 1
+	if len(names) > 1 {
+		tabsW += len(names) - 1
 	}
-	fill := l.width - runewidth.StringWidth(title) - runewidth.StringWidth(end) - tabsWidth - 1
-	if len(tabsPlain) == 0 || fill < 1 {
-		return th.FGColor(th.Muted, finderFitBorder(title, "╮", l.width))
+	if tabsW > w {
+		return th.FGColor(th.Muted, finderFit(" "+strings.Join(names, " "), w))
 	}
 	var b strings.Builder
-	b.WriteString(th.FGColor(th.Muted, title+strings.Repeat("─", fill)+" "))
-	for i, name := range tabsPlain {
+	b.WriteString(" ")
+	for i, name := range names {
 		if i > 0 {
 			b.WriteString(" ")
 		}
@@ -162,7 +184,15 @@ func (m *finderModel) renderTop(th tui.Theme, l finderLayout) string {
 			b.WriteString(th.FGColor(th.Muted, name))
 		}
 	}
-	b.WriteString(th.FGColor(th.Muted, end))
+	status, color := m.status(th)
+	status += " "
+	sw := runewidth.StringWidth(status)
+	if tabsW+1+sw > w {
+		b.WriteString(strings.Repeat(" ", w-tabsW))
+		return b.String()
+	}
+	b.WriteString(strings.Repeat(" ", w-tabsW-sw))
+	b.WriteString(th.FGColor(color, status))
 	return b.String()
 }
 
@@ -206,21 +236,16 @@ func (m *finderModel) renderQuery(th tui.Theme, w int) string {
 		return line
 	}
 	prompt := " > "
-	status, color := m.status(th)
-	status += " "
-	room := w - runewidth.StringWidth(prompt)
-	sw := runewidth.StringWidth(status)
-	qw := runewidth.StringWidth(string(m.query))
-	if qw+1+sw <= room {
-		m.qscroll = 0
-		return th.FGColor(th.Accent, prompt) + string(m.query) + strings.Repeat(" ", room-qw-sw) + th.FGColor(color, status)
-	}
-	// The query wins over the status; scroll it horizontally so the caret
-	// (one cell after the text before it) stays inside the field.
+	room := max(w-runewidth.StringWidth(prompt), 0)
+	// Scroll horizontally so the caret (one cell after the text before it)
+	// stays inside the field.
 	field := max(room-1, 0)
 	m.qscroll = min(m.qscroll, m.qcursor)
 	for m.qscroll < m.qcursor && runewidth.StringWidth(string(m.query[m.qscroll:m.qcursor])) > field {
 		m.qscroll++
+	}
+	if runewidth.StringWidth(string(m.query)) <= field {
+		m.qscroll = 0
 	}
 	return th.FGColor(th.Accent, prompt) + finderFit(string(m.query[m.qscroll:]), room)
 }

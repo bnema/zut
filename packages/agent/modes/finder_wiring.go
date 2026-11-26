@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/sessionindex"
@@ -13,8 +14,6 @@ const (
 	// finderSearchDebounce delays searches triggered by query edits so a
 	// burst of keystrokes runs one search.
 	finderSearchDebounce = 80 * time.Millisecond
-	// finderMinHeight is the smallest box Render lays out without overflow.
-	finderMinHeight = 9
 	// finderIndexRetryDelay waits for another process's index update
 	// before retrying once.
 	finderIndexRetryDelay = time.Second
@@ -40,7 +39,12 @@ func (i *Interactive) openFinder(ctx context.Context) {
 		sources = i.finderSources()
 	}
 	if len(sources) == 0 {
-		i.setFinderStatusErr("finder unavailable")
+		i.mu.Lock()
+		reported := strings.HasPrefix(i.statusErr, "finder: ")
+		i.mu.Unlock()
+		if !reported {
+			i.setFinderStatusErr("finder unavailable")
+		}
 		return
 	}
 	i.mu.Lock()
@@ -88,7 +92,7 @@ func (i *Interactive) handleFinderKey(ctx context.Context, k tui.Key) {
 	case finderActionClose:
 		i.closeFinder()
 	case finderActionOpen:
-		i.finderOpen(act.Item, act.Hit)
+		i.finderOpenItem(act.Item, act.Hit)
 	case finderActionRename:
 		i.finderRename(ctx, act.Item, act.Title)
 	case finderActionDelete:
@@ -109,6 +113,8 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 	i.mu.Lock()
 	previous := i.finderCancel
 	i.finderCancel = cancel
+	// gen restarts with each model, so results are tied to this one.
+	model := i.finder
 	i.mu.Unlock()
 	if previous != nil {
 		previous()
@@ -129,7 +135,7 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 		}
 		apply := func() {
 			i.mu.Lock()
-			applied := i.finder.ApplyResults(act.Gen, act.TabID, results, err)
+			applied := i.finder == model && model.ApplyResults(act.Gen, act.TabID, results, err)
 			i.mu.Unlock()
 			if applied {
 				i.requestFinderSnippets(ctx)
@@ -143,17 +149,12 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 	}()
 }
 
-// finderOpen opens the chosen item and jumps to the hit once resumed.
-func (i *Interactive) finderOpen(item finderItem, hit int) {
-	i.finderOpenItem(item, hit)
-}
-
 // openFinderResume resumes plan directly when it ran in this directory,
 // otherwise shows the resume confirmation.
 func (i *Interactive) openFinderResume(plan resumePlan) {
 	confirm := decideResume(plan)
 	if confirm == nil {
-		i.finderResumeChoice(plan, resumeChoiceResume)
+		i.finderExecuteResume(plan, resumeChoiceResume)
 		return
 	}
 	i.mu.Lock()
@@ -174,21 +175,17 @@ func (i *Interactive) handleFinderResumeKey(k tui.Key) {
 	if choice == resumeChoiceCancel {
 		i.dropPendingFinderJump()
 	} else if choice != resumeChoiceNone {
-		i.finderResumeChoice(confirm.plan, choice)
+		i.finderExecuteResume(confirm.plan, choice)
 	}
 	i.invalidate()
-}
-
-// finderResumeChoice executes the chosen way to open plan.
-func (i *Interactive) finderResumeChoice(plan resumePlan, choice resumeChoice) {
-	i.finderExecuteResume(plan, choice)
 }
 
 // defaultFinderSources opens the session index on first use and returns
 // the Sessions and Messages tabs, or nil when the index cannot be opened.
 func (i *Interactive) defaultFinderSources() []finderSource {
-	index := i.ensureFinderIndex()
-	if index == nil {
+	index, err := i.ensureFinderIndex()
+	if err != nil {
+		i.setFinderStatusErr("finder: " + err.Error())
 		return nil
 	}
 	return []finderSource{
@@ -197,18 +194,27 @@ func (i *Interactive) defaultFinderSources() []finderSource {
 	}
 }
 
-func (i *Interactive) ensureFinderIndex() *sessionindex.Index {
+// ensureFinderIndex returns the session index, opening it on first use.
+// Open runs outside i.mu; a concurrent opener's index wins.
+func (i *Interactive) ensureFinderIndex() (*sessionindex.Index, error) {
 	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.finderIndex != nil {
-		return i.finderIndex
+	index := i.finderIndex
+	i.mu.Unlock()
+	if index != nil {
+		return index, nil
 	}
 	index, err := sessionindex.Open(i.sessionsRoot(), sessionindex.Options{Skip: isHiddenTranscriptMessage})
 	if err != nil {
-		return nil
+		return nil, err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.finderIndex != nil {
+		_ = index.Close()
+		return i.finderIndex, nil
 	}
 	i.finderIndex = index
-	return index
+	return index, nil
 }
 
 // startFinderIndexUpdate refreshes the index in the background, shows
@@ -226,8 +232,13 @@ func (i *Interactive) startFinderIndexUpdate(ctx context.Context) {
 	updateCtx, cancel := context.WithCancel(ctx)
 	i.finderUpdateCancel = cancel
 	retry := i.finderRetryDelay
-	if i.finder != nil {
-		i.finder.SetIndexing(true, 0, 0)
+	// Finder overlays (rename/delete) may clear only after an update that
+	// started after them; seq records the actions this update covers.
+	model := i.finder
+	var seq uint64
+	if model != nil {
+		model.SetIndexing(true, 0, 0)
+		seq = model.overlaySeq
 	}
 	i.mu.Unlock()
 
@@ -262,20 +273,30 @@ func (i *Interactive) startFinderIndexUpdate(ctx context.Context) {
 			i.finderUpdating = false
 			i.finderUpdateCancel = nil
 			var act finderAction
+			again := false
 			if i.finder != nil {
 				i.finder.SetIndexing(false, 0, 0)
 				act = i.finder.Refresh()
+				// An action during this update is not covered by it: keep
+				// its overlay and index again.
+				again = err == nil && i.finder == model && !model.ClearOverlay(seq)
 			}
 			i.mu.Unlock()
 			if err != nil && !errors.Is(err, sessionindex.ErrBusy) && updateCtx.Err() == nil {
 				i.setFinderStatusErr("finder: index update: " + err.Error())
 			}
 			i.dispatchFinderSearch(ctx, act, 0)
+			if again {
+				i.startFinderIndexUpdate(ctx)
+			}
 			i.invalidate()
 		}
+		// closeFinderIndex cancels updateCtx on shutdown, when the Run loop
+		// no longer drains loopCalls.
 		select {
 		case i.loopCalls <- finish:
 		case <-ctx.Done():
+		case <-updateCtx.Done():
 		}
 	}()
 }

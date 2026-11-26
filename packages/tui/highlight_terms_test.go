@@ -142,3 +142,27 @@ func TestHighlightLineUsesSearchLineBG(t *testing.T) {
 		}
 	}
 }
+
+func TestHighlightTermsKeepsStringEscapesWhole(t *testing.T) {
+	th := Dark
+	for _, seq := range []string{
+		"\x1b_Ga=T,f=100;cmVmYWN0bw==refacto\x1b\\", // kitty APC with the term in the payload
+		"\x1bPq#0refacto\x1b\\",                     // sixel DCS
+		"\x1b^refacto\x1b\\",                        // PM
+		"\x1bXrefacto\x07",                          // SOS ended by BEL
+	} {
+		toks := tokenizeANSI("a" + seq + "b")
+		if len(toks) != 3 || !toks[1].isFn || toks[1].esc != seq {
+			t.Fatalf("tokenizeANSI(%q) = %#v, want the sequence as one escape", seq, toks)
+		}
+	}
+	image := "refacto \x1b_Ga=T;refacto\x1b\\"
+	if got, ok := HighlightTerms(image, []string{"refacto"}, th); ok || got != image {
+		t.Fatalf("image row was modified: %q", got)
+	}
+	pm := "refacto \x1b^refacto\x1b\\ end"
+	got, ok := HighlightTerms(pm, []string{"refacto"}, th)
+	if !ok || !strings.Contains(got, "\x1b^refacto\x1b\\") || strings.Count(got, th.SelectionStyle()) != 1 {
+		t.Fatalf("PM payload was highlighted: %q", got)
+	}
+}

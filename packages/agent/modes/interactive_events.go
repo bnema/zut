@@ -591,6 +591,8 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	}
 	i.resetTranscriptRenderLocked()
 	i.stableChatCacheValid = false
+	// Search matches are view indexes into the replaced transcript.
+	i.clearChatSearchLocked()
 	i.stream.Reset()
 	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
@@ -1174,8 +1176,9 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		}
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
-			i.pendingFinderJump = nil
+			orphan := i.failPendingFinderJumpLocked()
 			i.mu.Unlock()
+			removeFinderOrphanFork(orphan)
 			i.invalidate()
 			return false
 		}

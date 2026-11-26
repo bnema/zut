@@ -43,6 +43,8 @@ type finderItem struct {
 	Live   bool
 	LiveID string // daemon session id when Live
 	Title  string // raw title, prefilled when renaming
+	// LiveCWD is the daemon session's working directory when Live.
+	LiveCWD string
 }
 
 // finderHit is one match inside an item; Ref is opaque to the model and
@@ -113,6 +115,15 @@ type finderModel struct {
 	// result list so live data arriving later can be re-applied.
 	live []finderItem
 	raw  []finderItem
+	// liveLoaded is set once the daemon live list arrived (port mode);
+	// rename and delete wait for it.
+	liveLoaded bool
+
+	// deleted and renamed overlay results until an index update that
+	// started after the action finishes (see overlaySeq).
+	deleted    map[string]bool
+	renamed    map[string]string
+	overlaySeq uint64
 
 	confirmDelete bool
 
@@ -213,13 +224,19 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	if item, ok := m.selected(); ok {
 		prevKey = item.Key
 	}
-	m.raw, m.partial, m.hint = res.Items, res.Partial, res.Hint
-	m.items = m.decorateLive(res.Items)
+	prevHit := m.hit
+	// Copy: rename overlays edit rows in place and must not touch the
+	// source's slice.
+	m.raw, m.partial, m.hint = m.applyOverlay(append([]finderItem(nil), res.Items...)), res.Partial, res.Hint
+	m.items = m.decorateLive(m.raw)
 	m.cursor, m.hit = 0, 0
 	if prevKey != "" {
 		for i, item := range m.items {
 			if item.Key == prevKey {
 				m.cursor = i
+				if prevHit < len(item.Hits) {
+					m.hit = prevHit
+				}
 				break
 			}
 		}

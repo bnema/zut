@@ -41,11 +41,13 @@ func requireExactWidth(t *testing.T, lines []string, width int) {
 
 func TestFinderRenderWidthInvariants(t *testing.T) {
 	for _, width := range []int{40, 60, 100, 160} {
-		for _, height := range []int{8, 24} {
+		for _, height := range []int{3, 6, 8, 12, 24} {
 			m := renderFinderFixture(t)
 			lines := m.Render(tui.Dark, width, height)
 			requireExactWidth(t, lines, width)
-			require.Equal(t, height, len(lines), "width %d", width)
+			require.Equal(t, height+1, len(lines), "width %d height %d: header plus height body rows", width, height)
+			require.True(t, isFrameHeaderLine(lines[0]))
+			require.Equal(t, lines, padDialogFrame(lines), "no extra spacer rows from the pane")
 			m.HandleKey(tui.Key{Kind: tui.KeyDown})
 			m.HandleKey(tui.Key{Kind: tui.KeyCtrlD})
 			requireExactWidth(t, m.Render(tui.Dark, width, height), width)
@@ -59,20 +61,24 @@ func TestFinderRenderWidthInvariants(t *testing.T) {
 func TestFinderRenderHeaderAndList(t *testing.T) {
 	m := renderFinderFixture(t)
 	lines := m.Render(tui.Dark, 160, 20)
-	top := stripANSIBytes(lines[0])
-	require.Contains(t, top, "Find")
-	require.Contains(t, top, "[Sessions] Messages")
-	query := stripANSIBytes(lines[1])
+	title, body, removed := floatingDialogBody(lines)
+	require.Equal(t, "Find", title)
+	require.Equal(t, 1, removed)
+	require.Len(t, body, 20)
+	require.NotContains(t, stripANSIBytes(strings.Join(body, "")), "╭")
+	tabs := stripANSIBytes(lines[finderTabsRow])
+	require.Contains(t, tabs, "[Sessions] Messages")
+	require.Contains(t, tabs, "20 hits · 3 sessions · partial")
+	query := stripANSIBytes(lines[finderQueryRow])
 	require.Contains(t, query, "> refacto")
-	require.Contains(t, query, "20 hits · 3 sessions · partial")
-	body := stripANSIBytes(lines[3])
-	require.Contains(t, body, "▸ zut · advisor")
-	require.Contains(t, body, "12 ●")
+	row := stripANSIBytes(lines[finderQueryRow+2])
+	require.Contains(t, row, "▸ zut · advisor")
+	require.Contains(t, row, "12 ●")
 	require.NotContains(t, strings.Join(lines, "\n"), "\x1b[31mwatcher")
-	require.Contains(t, stripANSIBytes(lines[len(lines)-2]), "tab source")
+	require.Contains(t, stripANSIBytes(lines[len(lines)-1]), "tab source")
 
 	m.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: 'x'})
-	require.Contains(t, stripANSIBytes(m.Render(tui.Dark, 160, 20)[1]), "searching")
+	require.Contains(t, stripANSIBytes(m.Render(tui.Dark, 160, 20)[finderTabsRow]), "searching")
 }
 
 func TestFinderRenderPreviewHighlights(t *testing.T) {
@@ -97,8 +103,8 @@ func TestFinderRenderPreviewHighlights(t *testing.T) {
 func TestFinderRenderLayouts(t *testing.T) {
 	m := renderFinderFixture(t)
 	wide := m.Render(tui.Dark, 120, 20)
-	require.Contains(t, stripANSIBytes(wide[2]), "┬")
-	require.Contains(t, stripANSIBytes(wide[3]), "you ·")
+	require.Contains(t, stripANSIBytes(wide[finderQueryRow+1]), "┬")
+	require.Contains(t, stripANSIBytes(wide[finderQueryRow+2]), "you ·")
 
 	stacked := m.Render(tui.Dark, 80, 20)
 	require.NotContains(t, stripANSIBytes(strings.Join(stacked, "")), "┬")
@@ -115,6 +121,10 @@ func TestFinderRenderLayouts(t *testing.T) {
 	require.Greater(t, previewRow, listRow)
 	require.GreaterOrEqual(t, listRow, 0)
 
+	short := stripANSIBytes(strings.Join(m.Render(tui.Dark, 160, 6), "\n"))
+	require.Contains(t, short, "▸ zut")
+	require.NotContains(t, short, "tab source", "footer dropped when short")
+
 	narrow := m.Render(tui.Dark, 40, 20)
 	joined := stripANSIBytes(strings.Join(narrow, "\n"))
 	require.NotContains(t, joined, "you ·")
@@ -125,7 +135,7 @@ func TestFinderRenderDeleteConfirmFooter(t *testing.T) {
 	m := renderFinderFixture(t)
 	m.HandleKey(tui.Key{Kind: tui.KeyCtrlD})
 	lines := m.Render(tui.Dark, 100, 20)
-	footer := stripANSIBytes(lines[len(lines)-2])
+	footer := stripANSIBytes(lines[len(lines)-1])
 	require.Contains(t, footer, "delete zut · advisor")
 	require.Contains(t, footer, "y confirm · any key cancel")
 	require.NotContains(t, footer, "tab source")
@@ -164,8 +174,8 @@ func TestFinderCursorPos(t *testing.T) {
 	finderRunes(m, "界a")
 	m.HandleKey(tui.Key{Kind: tui.KeyLeft})
 	row, col = m.CursorPos()
-	require.Equal(t, 1, row)
-	require.Equal(t, 6, col)
-	line := stripANSIBytes(m.Render(tui.Dark, 60, 10)[1])
-	require.Equal(t, "│ > 界", runewidth.Truncate(line, 6, ""))
+	require.Equal(t, finderQueryRow, row)
+	require.Equal(t, 5, col)
+	line := stripANSIBytes(m.Render(tui.Dark, 60, 10)[row])
+	require.Equal(t, " > 界", runewidth.Truncate(line, col, ""))
 }
