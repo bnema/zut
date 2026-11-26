@@ -315,3 +315,25 @@ func readTextRow(t *testing.T, path string, off, n int64) (SessionTextRow, error
 	defer f.Close()
 	return ReadSessionTextRowAt(f, off, n)
 }
+
+func TestScanSessionTextUsageCost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	user := sessionTextMsg(t, textMsg(provider.RoleUser, provider.TextBlock{Text: "one"}))
+	writeSessionText(t, path, sessionTextMeta(t, "s1"), user)
+	_, cur, _ := scanAll(t, path, SessionScanCursor{})
+	if cur.SawCost {
+		t.Fatal("no usage row, but SawCost is set")
+	}
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := func(cost float64) string {
+		return sessionTextLine(t, sessionLine{Type: "usage", Usage: &provider.Usage{}, Cumulative: &provider.Usage{CostUSD: cost}})
+	}
+	writeSessionText(t, path, string(base), usage(0.5), usage(1.25))
+	_, got, _ := scanAll(t, path, cur)
+	if !got.SawCost || got.Cost != 1.25 || got.SawMetaChange || got.Reset {
+		t.Fatalf("cursor = %+v", got)
+	}
+}

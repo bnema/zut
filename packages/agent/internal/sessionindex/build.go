@@ -202,10 +202,14 @@ func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
 		TotalMsgs:  cur.MsgSeq,
 	}
 	doc.Cursor.Reset, doc.Cursor.SawMetaChange = false, false
+	doc.Cursor.Cost, doc.Cursor.SawCost = 0, false
 	reuse := job.old != nil && !cur.Reset && !cur.SawMetaChange && meta.Parent == "" && job.old.Title != ""
 	if reuse {
 		doc.ID, doc.CWD, doc.Title, doc.Started = job.old.ID, job.old.CWD, job.old.Title, job.old.Started
 		doc.Model, doc.Provider, doc.Cost = job.old.Model, job.old.Provider, job.old.Cost
+		if cur.SawCost {
+			doc.Cost = cur.Cost // usage rows append without a meta change
+		}
 	} else {
 		if !checked && job.root != "" {
 			scanned += size

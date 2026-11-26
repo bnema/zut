@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -34,11 +35,21 @@ func TestOverview(t *testing.T) {
 		t.Fatalf("last ref = %+v", ov.Last.Ref)
 	}
 
-	// A plain append reuses the stored model.
+	// A plain append reuses the stored model and picks up the latest cost.
 	appendSession(t, empty, msg(provider.RoleAssistant, "later"))
+	s, _, err := core.OpenSession(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendUsage(provider.Usage{CostUSD: 0.25}, provider.Usage{CostUSD: 0.75}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	mustUpdate(t, x)
 	ov, ok, err = x.Overview(ctx, empty)
-	if err != nil || !ok || ov.UserMsgs != 1 || ov.AgentMsgs != 1 || ov.First == nil || ov.Last == nil || ov.Doc.Model != "m" {
+	if err != nil || !ok || ov.UserMsgs != 1 || ov.AgentMsgs != 1 || ov.First == nil || ov.Last == nil || ov.Doc.Model != "m" || ov.Doc.Cost != 0.75 {
 		t.Fatalf("appended overview = %+v ok=%v err=%v", ov, ok, err)
 	}
 

@@ -64,6 +64,12 @@ type SessionScanCursor struct {
 	// malformed, untyped, or oversized and not message rows. Callers caching
 	// a summary must refresh it then. It is ignored on input.
 	SawMetaChange bool
+	// Cost is the cumulative cost in USD of the last usage row consumed; it
+	// is valid when SawCost is set. Usage rows do not set SawMetaChange, so
+	// callers caching the cost apply it on plain appends. Both are ignored
+	// on input.
+	Cost    float64
+	SawCost bool
 }
 
 // MessageTextFingerprint hashes the role and the non-empty text blocks of m.
@@ -179,6 +185,10 @@ func ScanSessionText(ctx context.Context, path string, from SessionScanCursor, f
 		switch wire.Type {
 		case "meta", "rename", "compaction", "":
 			cur.SawMetaChange = true
+		case "usage":
+			if wire.Cumulative != nil {
+				cur.Cost, cur.SawCost = wire.Cumulative.CostUSD, true
+			}
 		case "message":
 			seq := cur.MsgSeq
 			cur.MsgSeq++
@@ -230,8 +240,11 @@ func SessionHeadHash(r io.Reader) (hash uint64, ok bool, err error) {
 
 // textRowWire is the one decode of a JSONL row done by the text scanner.
 type textRowWire struct {
-	Type    string          `json:"type"`
-	Message json.RawMessage `json:"message"`
+	Type       string          `json:"type"`
+	Message    json.RawMessage `json:"message"`
+	Cumulative *struct {
+		CostUSD float64 `json:"cost_usd"`
+	} `json:"cumulative"`
 }
 
 func decodeTextMessage(raw json.RawMessage) (SessionTextRow, bool) {
