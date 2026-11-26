@@ -66,6 +66,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	return chatCacheKey{
 		cols:                 cols,
 		agentRev:             rev,
+		archiveRev:           i.chatArchive.rev,
 		statusOK:             i.statusOK,
 		statusFaded:          i.statusFlashFadedLocked(now),
 		statusErr:            i.statusErr,
@@ -224,9 +225,14 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	renderView.ToolCalls = nil
 	renderView.Err = ""
 	infoBlocks := append([]sessionInfoBlock(nil), i.sessionInfoBlocks...)
+	archived, renderArchive, storeArchive := i.chatArchiveRowsLocked(cols)
 	if !i.renderOutsideLock {
+		if renderArchive != nil {
+			archived = renderArchive()
+			storeArchive(archived)
+		}
 		rows, anchors := renderView.BuildWithAnchors(cols)
-		rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
+		rows = append(archived, insertSessionInfoBlocks(rows, anchors, infoBlocks)...)
 		i.stableChatCache = append(i.stableChatCache[:0], rows...)
 		i.stableChatCacheKey = key
 		i.stableChatCacheValid = true
@@ -236,9 +242,15 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	// a frame. Build the immutable snapshot without holding the interactive
 	// mutex so key processing can continue while a cold transcript renders.
 	i.mu.Unlock()
+	if renderArchive != nil {
+		archived = renderArchive()
+	}
 	rows, anchors := renderView.BuildWithAnchors(cols)
-	rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
+	rows = append(archived, insertSessionInfoBlocks(rows, anchors, infoBlocks)...)
 	i.mu.Lock()
+	if storeArchive != nil {
+		storeArchive(archived)
+	}
 	if i.chatCacheKeyLocked(cols) != key {
 		// State changed while mu was released (e.g. a snapshot hydrate).
 		// Its own invalidate() may not have run yet, so the caller's

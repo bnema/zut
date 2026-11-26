@@ -487,6 +487,7 @@ type modelRefreshResult struct{ err error }
 type chatCacheKey struct {
 	cols                 int
 	agentRev             uint64
+	archiveRev           uint64
 	statusOK             string
 	statusFaded          bool
 	statusErr            string
@@ -623,6 +624,8 @@ type Interactive struct {
 	// i.ed (extension inserts) to the Run loop. Bounded: senders fail fast
 	// when it is full instead of blocking.
 	loopCalls chan func()
+	// chatArchive is the dimmed pre-compaction history above the chat.
+	chatArchive chatArchiveState
 
 	// sessionTimeout bounds async daemon calls (default 10s).
 	sessionTimeout time.Duration
@@ -1179,6 +1182,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer i.cancelSessionTitle()
 	defer i.closeFinder()
 	defer i.closeFinderIndex()
+	defer i.cancelChatArchive()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()

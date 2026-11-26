@@ -596,6 +596,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	i.stream.Reset()
 	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
+	i.refreshChatArchiveLocked()
 	// A snapshot is authoritative for the title: a fresh successor (/clear,
 	// new) is untitled. Run starts the UI before attaching, so show it here.
 	i.sessionTitle = core.NormalizeSessionTitle(snap.Info.Title)
