@@ -46,20 +46,7 @@ func ListSessionPathsContext(ctx context.Context, root, cwd string, all bool) []
 
 	var dirs []string
 	if all {
-		sessionsDir := filepath.Join(root, "sessions")
-		entries, err := os.ReadDir(sessionsDir)
-		if err != nil {
-			return nil
-		}
-		for _, entry := range entries {
-			if err := contextErr(ctx); err != nil {
-				return nil
-			}
-			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || !isSessionBucketName(entry.Name()) {
-				continue
-			}
-			dirs = append(dirs, filepath.Join(sessionsDir, entry.Name()))
-		}
+		dirs = sessionBucketDirs(ctx, root)
 	} else {
 		dir := SessionsDir(root, cwd)
 		info, err := os.Lstat(dir)
@@ -74,38 +61,15 @@ func ListSessionPathsContext(ctx context.Context, root, cwd string, all bool) []
 		mod  time.Time
 	}
 	var candidates []candidate
-	for _, dir := range dirs {
-		if err := contextErr(ctx); err != nil {
-			return nil
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
+	for _, file := range sessionFilesIn(ctx, dirs) {
+		meta, ok := listableSessionMeta(ctx, root, file.Path)
+		if !ok || (!all && meta.CWD != cwd) {
 			continue
 		}
-		for _, entry := range entries {
-			if err := contextErr(ctx); err != nil {
-				return nil
-			}
-			if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			path := filepath.Join(dir, entry.Name())
-			meta, err := scanSessionMetaContext(ctx, path)
-			if err != nil || meta.ID == "" || meta.CWD == "" || meta.HideFromSessions {
-				continue
-			}
-			if filepath.Clean(SessionsDir(root, meta.CWD)) != filepath.Clean(dir) {
-				continue
-			}
-			if !all && meta.CWD != cwd {
-				continue
-			}
-			candidates = append(candidates, candidate{path: path, mod: info.ModTime()})
-		}
+		candidates = append(candidates, candidate{path: file.Path, mod: file.Info.ModTime()})
+	}
+	if err := contextErr(ctx); err != nil {
+		return nil
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if !candidates[i].mod.Equal(candidates[j].mod) {
@@ -118,6 +82,85 @@ func ListSessionPathsContext(ctx context.Context, root, cwd string, all bool) []
 		paths[i] = candidate.path
 	}
 	return paths
+}
+
+// SessionFile is a candidate session file found without reading it.
+type SessionFile struct {
+	Path string
+	Info os.FileInfo
+}
+
+// SessionFiles lists regular *.jsonl files in every cwd bucket of root's
+// session namespace without reading them. Callers that cache eligibility
+// (the search index) pair it with SessionListable for new or changed files;
+// ListSessionPathsContext applies the same two steps.
+func SessionFiles(ctx context.Context, root string) []SessionFile {
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	return sessionFilesIn(ctx, sessionBucketDirs(ctx, root))
+}
+
+// SessionListable reports whether path is a session the flat picker lists:
+// valid metadata, not hidden, and stored in the bucket its cwd hashes to.
+// It reads the whole file to find the latest metadata.
+func SessionListable(ctx context.Context, root, path string) bool {
+	_, ok := listableSessionMeta(ctx, root, path)
+	return ok
+}
+
+func listableSessionMeta(ctx context.Context, root, path string) (SessionMeta, bool) {
+	meta, err := scanSessionMetaContext(ctx, path)
+	if err != nil || meta.ID == "" || meta.CWD == "" || meta.HideFromSessions {
+		return SessionMeta{}, false
+	}
+	if filepath.Clean(SessionsDir(root, meta.CWD)) != filepath.Clean(filepath.Dir(path)) {
+		return SessionMeta{}, false
+	}
+	return meta, true
+}
+
+func sessionBucketDirs(ctx context.Context, root string) []string {
+	sessionsDir := filepath.Join(root, "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if contextErr(ctx) != nil {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || !isSessionBucketName(entry.Name()) {
+			continue
+		}
+		dirs = append(dirs, filepath.Join(sessionsDir, entry.Name()))
+	}
+	return dirs
+}
+
+func sessionFilesIn(ctx context.Context, dirs []string) []SessionFile {
+	var files []SessionFile
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if contextErr(ctx) != nil {
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			files = append(files, SessionFile{Path: filepath.Join(dir, entry.Name()), Info: info})
+		}
+	}
+	return files
 }
 
 // ManagedSessionMeta validates that path is a regular session file directly
