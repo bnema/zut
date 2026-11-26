@@ -72,6 +72,7 @@ func (i *Interactive) closeFinder() {
 		i.finder.Close()
 	}
 	i.finderSnippets.reset()
+	i.finderCard.reset()
 	cancel := i.finderCancel
 	i.finderCancel = nil
 	i.mu.Unlock()
@@ -99,6 +100,7 @@ func (i *Interactive) handleFinderKey(ctx context.Context, k tui.Key) {
 		i.finderDelete(ctx, act.Item)
 	}
 	i.requestFinderSnippets(ctx)
+	i.requestFinderCard(ctx)
 	i.invalidate()
 }
 
@@ -139,6 +141,7 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 			i.mu.Unlock()
 			if applied {
 				i.requestFinderSnippets(ctx)
+				i.requestFinderCard(ctx)
 				i.invalidate()
 			}
 		}

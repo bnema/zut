@@ -793,6 +793,8 @@ type Interactive struct {
 	finderRetryDelay time.Duration
 	// finderSnippets caches and fetches hit snippets for the open finder.
 	finderSnippets finderSnippetState
+	// finderCard tracks the card fetch for the selected item without hits.
+	finderCard finderCardState
 
 	dialog                  *loginDialog
 	modelDialog             *modelDialog

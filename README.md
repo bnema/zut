@@ -589,6 +589,8 @@ Tabs (`tab` switches):
 - **Sessions**: sessions that contain every search word, plus sessions whose project or title fuzzy-matches the query. An empty query lists recent sessions. In daemon mode, running sessions are marked `●`.
 - **Messages**: messages that contain every search word, grouped by session.
 
+The preview beside the list shows each match with its role and time. For a session without matches, it shows the session's directory, start and last activity, message counts, model and cost, its first request, and its last reply.
+
 Searching:
 - Typing searches immediately. Words match by prefix: `refacto` finds `refactoring`.
 - Words shorter than 2 characters are ignored.

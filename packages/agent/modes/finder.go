@@ -108,6 +108,8 @@ type finderModel struct {
 	viewTop int
 
 	gen uint64
+	// cards caches previews of items without hits, by Key.
+	cards map[string]finderCard
 	// results counts installed result sets; snippet fetches are tied to
 	// it, not to gen, since a keystroke bumps gen before results change.
 	results uint64
@@ -162,6 +164,24 @@ func (m *finderModel) Open(tab int) finderAction {
 	m.err = ""
 	m.mode, m.rename, m.renameKey = finderModeList, nil, ""
 	return m.search()
+}
+
+// SetCard stores the preview card of the item with key and reports
+// whether the finder is active.
+func (m *finderModel) SetCard(key string, card finderCard) bool {
+	if !m.Active() {
+		return false
+	}
+	if m.cards == nil {
+		m.cards = map[string]finderCard{}
+	}
+	m.cards[key] = card
+	return true
+}
+
+func (m *finderModel) hasCard(key string) bool {
+	_, ok := m.cards[key]
+	return ok
 }
 
 // Close deactivates the finder; in-flight results become stale.
@@ -267,6 +287,7 @@ func (m *finderModel) Refresh() finderAction {
 	if !m.Active() {
 		return finderAction{}
 	}
+	m.cards = nil // the index may have changed
 	return m.search()
 }
 

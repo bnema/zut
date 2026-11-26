@@ -328,13 +328,7 @@ func (m *finderModel) renderItem(th tui.Theme, item finderItem, selected bool, c
 	}
 	var b strings.Builder
 	b.WriteString(marker)
-	if group, rest, ok := strings.Cut(label, " · "); ok {
-		b.WriteString(th.FGColor(th.Accent, group))
-		b.WriteString(th.FGColor(th.Muted, " · "))
-		b.WriteString(rest)
-	} else {
-		b.WriteString(label)
-	}
+	b.WriteString(renderFinderLabel(th, label, avail))
 	b.WriteString(th.FGColor(th.Muted, detailCol))
 	b.WriteString(countCol)
 	if item.Live {
@@ -343,6 +337,17 @@ func (m *finderModel) renderItem(th tui.Theme, item finderItem, selected bool, c
 		b.WriteString(tail)
 	}
 	return b.String()
+}
+
+// renderFinderLabel fits label to w cells; a "group · rest" label shows
+// its group in the accent color.
+func renderFinderLabel(th tui.Theme, label string, w int) string {
+	label = finderFit(label, w)
+	group, rest, ok := strings.Cut(label, " · ")
+	if !ok {
+		return label
+	}
+	return th.FGColor(th.Accent, group) + th.FGColor(th.Muted, " · ") + rest
 }
 
 func finderRoleLabel(role provider.Role) string {
@@ -410,6 +415,8 @@ func (m *finderModel) renderPreview(th tui.Theme, terms []string, w, rows int) [
 				out = append(out, snippet)
 			}
 		}
+	} else if card, has := m.cards[item.Key]; ok && rows > 0 && has && !card.empty() {
+		out = renderFinderCard(th, item, card, w, rows)
 	} else if ok && rows > 0 {
 		out = append(out, th.FGColor(th.Muted, finderFit(" "+sanitizeSessionTreeText(item.Detail), w)))
 	}
