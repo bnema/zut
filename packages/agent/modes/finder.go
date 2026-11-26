@@ -5,7 +5,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -20,8 +19,7 @@ type finderSource interface {
 
 // finderQuery is the source-agnostic search request built from the query line.
 type finderQuery struct {
-	Text string // raw query line, including any "@here" token
-	Here bool   // query contains "@here": restrict to CWD
+	Text string // raw query line; sources parse "@here" from it
 	CWD  string
 }
 
@@ -82,6 +80,15 @@ type finderAction struct {
 	Title  string // new title for Rename
 }
 
+// finderMode is what keys currently drive.
+type finderMode int
+
+const (
+	finderModeList finderMode = iota
+	finderModeRename
+	finderModeConfirmDelete
+)
+
 // finderModel holds finder state and key handling; it does no rendering
 // and no I/O.
 type finderModel struct {
@@ -125,10 +132,9 @@ type finderModel struct {
 	renamed    map[string]string
 	overlaySeq uint64
 
-	confirmDelete bool
-
-	// renaming edits rename for the selected item (keys in finder_actions.go).
-	renaming  bool
+	// mode is list, rename (rename edits the selected item's title; keys
+	// in finder_actions.go), or delete confirmation.
+	mode      finderMode
 	rename    []rune
 	renameKey string
 	// renameCaret is the caret column computed by the last Render.
@@ -151,8 +157,7 @@ func (m *finderModel) Open(tab int) finderAction {
 	m.items, m.partial, m.hint = nil, false, ""
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	m.err = ""
-	m.confirmDelete = false
-	m.renaming, m.rename, m.renameKey = false, nil, ""
+	m.mode, m.rename, m.renameKey = finderModeList, nil, ""
 	return m.search()
 }
 
@@ -160,8 +165,7 @@ func (m *finderModel) Open(tab int) finderAction {
 func (m *finderModel) Close() {
 	m.active = false
 	m.loading = false
-	m.confirmDelete = false
-	m.renaming, m.rename, m.renameKey = false, nil, ""
+	m.mode, m.rename, m.renameKey = finderModeList, nil, ""
 	m.gen++
 }
 
@@ -198,13 +202,12 @@ func (m *finderModel) search() finderAction {
 	m.loading = true
 	m.loadingSince = time.Now()
 	text := string(m.query)
-	_, here := sessionindex.ParseQuery(text)
 	return finderAction{
 		Kind:   finderActionSearch,
 		Source: src,
 		TabID:  src.ID(),
 		Gen:    m.gen,
-		Query:  finderQuery{Text: text, Here: here, CWD: m.cwd},
+		Query:  finderQuery{Text: text, CWD: m.cwd},
 	}
 }
 
@@ -241,7 +244,9 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 			}
 		}
 	}
-	m.confirmDelete = false
+	if m.mode == finderModeConfirmDelete {
+		m.mode = finderModeList
+	}
 	return true
 }
 
@@ -285,11 +290,11 @@ func (m *finderModel) ApplySnippets(gen uint64, key string, texts map[int]string
 
 // HandleKey advances the finder and returns the action to apply.
 func (m *finderModel) HandleKey(k tui.Key) finderAction {
-	if m.renaming {
+	if m.mode == finderModeRename {
 		return m.handleRenameKey(k)
 	}
-	if m.confirmDelete {
-		m.confirmDelete = false
+	if m.mode == finderModeConfirmDelete {
+		m.mode = finderModeList
 		if k.Kind == tui.KeyRune && (k.Rune == 'y' || k.Rune == 'Y') && !k.Ctrl && !k.Alt {
 			if item, ok := m.selected(); ok {
 				return finderAction{Kind: finderActionDelete, Item: item, Hit: m.hitIndex(item)}
@@ -309,7 +314,7 @@ func (m *finderModel) HandleKey(k tui.Key) finderAction {
 		m.startRename()
 	case tui.KeyCtrlD:
 		if _, ok := m.selected(); ok {
-			m.confirmDelete = true
+			m.mode = finderModeConfirmDelete
 		}
 	case tui.KeyUp:
 		m.moveCursor(-1)
@@ -374,15 +379,7 @@ func (m *finderModel) editQuery(k tui.Key) bool {
 		}
 		return m.insert([]rune{k.Rune})
 	case tui.KeyPaste:
-		var rs []rune
-		for _, r := range k.Paste {
-			if unicode.IsPrint(r) {
-				rs = append(rs, r)
-			} else if unicode.IsSpace(r) {
-				rs = append(rs, ' ')
-			}
-		}
-		return m.insert(rs)
+		return m.insert(finderPasteRunes(k.Paste))
 	case tui.KeyBackspace:
 		if m.qcursor == 0 {
 			return false
@@ -435,4 +432,18 @@ func (m *finderModel) insert(rs []rune) bool {
 	m.query = next
 	m.qcursor += len(rs)
 	return true
+}
+
+// finderPasteRunes keeps the printable runes of a paste for a single-line
+// field; other whitespace (newlines, tabs) becomes a space.
+func finderPasteRunes(paste string) []rune {
+	var rs []rune
+	for _, r := range paste {
+		if unicode.IsPrint(r) {
+			rs = append(rs, r)
+		} else if unicode.IsSpace(r) {
+			rs = append(rs, ' ')
+		}
+	}
+	return rs
 }

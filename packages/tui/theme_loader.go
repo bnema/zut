@@ -191,13 +191,16 @@ func (c *TerminalColorValue) UnmarshalJSON(data []byte) error {
 // because a terminal reports a light background.
 func TerminalTheme(profile TerminalProfile) Theme {
 	t := Theme{
-		FG:                 TerminalDefault(),
-		Muted:              TerminalPaletteSlot(8),
-		Accent:             TerminalPaletteSlot(12),
-		User:               TerminalPaletteSlot(13),
-		UserBubbleBG:       TerminalPaletteSlot(8),
-		UserBubbleFG:       TerminalDefault(),
-		SearchLineBG:       TerminalPaletteSlot(3),
+		FG:           TerminalDefault(),
+		Muted:        TerminalPaletteSlot(8),
+		Accent:       TerminalPaletteSlot(12),
+		User:         TerminalPaletteSlot(13),
+		UserBubbleBG: TerminalPaletteSlot(8),
+		UserBubbleFG: TerminalDefault(),
+		// No search line tint unless the background is known (blended below):
+		// a solid palette slot would paint whole rows. Terms keep their
+		// selection highlight.
+		SearchLineBG:       TerminalDefault(),
 		Assistant:          TerminalPaletteSlot(12),
 		Tool:               TerminalPaletteSlot(10),
 		ToolOut:            TerminalPaletteSlot(8),

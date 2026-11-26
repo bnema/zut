@@ -193,7 +193,7 @@ func TestResumePlanSnapshotsUseFullTranscriptBeyondTrimWindow(t *testing.T) {
 }
 
 // TestResumeSeedsInteractivePlanCountersAndSnapshots covers the CLI resume
-// wiring the session picker shares: the candidate agent is seeded from
+// wiring the Finder resume shares: the candidate agent is seeded from
 // SessionMeta.Plan, and the Interactive reconstructs its counters and per-call
 // snapshot map from the resume result.
 func TestResumeSeedsInteractivePlanCountersAndSnapshots(t *testing.T) {

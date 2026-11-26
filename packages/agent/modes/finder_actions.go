@@ -22,8 +22,7 @@ func (m *finderModel) startRename() {
 	if !ok {
 		return
 	}
-	m.confirmDelete = false
-	m.renaming = true
+	m.mode = finderModeRename
 	m.renameKey = item.Key
 	m.rename = []rune(core.NormalizeSessionTitle(item.Title))
 }
@@ -33,10 +32,10 @@ func (m *finderModel) startRename() {
 func (m *finderModel) handleRenameKey(k tui.Key) finderAction {
 	switch k.Kind {
 	case tui.KeyEsc, tui.KeyCtrlC:
-		m.renaming, m.rename, m.renameKey = false, nil, ""
+		m.mode, m.rename, m.renameKey = finderModeList, nil, ""
 	case tui.KeyEnter:
 		title, key := string(m.rename), m.renameKey
-		m.renaming, m.rename, m.renameKey = false, nil, ""
+		m.mode, m.rename, m.renameKey = finderModeList, nil, ""
 		for _, item := range m.items {
 			if item.Key == key {
 				return finderAction{Kind: finderActionRename, Item: item, Hit: -1, Title: title}
@@ -58,13 +57,7 @@ func (m *finderModel) handleRenameKey(k tui.Key) finderAction {
 		}
 		m.rename = m.rename[:end]
 	case tui.KeyPaste:
-		for _, r := range k.Paste {
-			if unicode.IsPrint(r) {
-				m.rename = append(m.rename, r)
-			} else if unicode.IsSpace(r) {
-				m.rename = append(m.rename, ' ')
-			}
-		}
+		m.rename = append(m.rename, finderPasteRunes(k.Paste)...)
 	case tui.KeyRune:
 		if !k.Ctrl && unicode.IsPrint(k.Rune) {
 			m.rename = append(m.rename, k.Rune)

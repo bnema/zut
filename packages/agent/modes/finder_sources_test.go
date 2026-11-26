@@ -70,7 +70,7 @@ func TestFinderSessionSourceContentQuery(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, zut, ref.Path)
 
-	res, err = src.Search(context.Background(), finderQuery{Text: "refacto @here", Here: true, CWD: "/work/gordon"})
+	res, err = src.Search(context.Background(), finderQuery{Text: "refacto @here", CWD: "/work/gordon"})
 	require.NoError(t, err)
 	require.Equal(t, []string{gordon}, finderKeys(res.Items))
 
@@ -132,7 +132,7 @@ func TestFinderSessionSourceEmptyQueryListsRecent(t *testing.T) {
 	require.Equal(t, "gordon · newer", res.Items[0].Label)
 	require.Equal(t, "2 d ago", res.Items[1].Detail)
 
-	res, err = src.Search(context.Background(), finderQuery{Text: "@here", Here: true, CWD: "/work/zut"})
+	res, err = src.Search(context.Background(), finderQuery{Text: "@here", CWD: "/work/zut"})
 	require.NoError(t, err)
 	require.Equal(t, []string{older}, finderKeys(res.Items))
 }

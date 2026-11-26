@@ -49,8 +49,15 @@ func TestFinderDecorateLive(t *testing.T) {
 	require.Equal(t, "snippet", m.items[2].Hits[0].Text, "loaded snippets survive")
 	require.Equal(t, "indexed live", m.items[2].Label)
 
+	// A one-rune query has no index tokens: still the recent list, so live
+	// sessions stay on top.
+	act = finderRunes(m, "a")
+	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: raw}, nil))
+	require.Equal(t, "/s/new.jsonl", m.items[0].Key)
+	m.HandleKey(tui.Key{Kind: tui.KeyCtrlU})
+
 	// A query keeps live marks but does not prepend unindexed sessions.
-	act = finderRunes(m, "x")
+	act = finderRunes(m, "xy")
 	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: raw}, nil))
 	require.Equal(t, []string{"/s/old.jsonl", "/s/./live.jsonl"}, finderKeys(m.items))
 	require.True(t, m.items[1].Live)

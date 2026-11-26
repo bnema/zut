@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 
@@ -145,7 +143,7 @@ func (m *finderModel) CursorPos() (row, col int) {
 	if !m.Active() {
 		return -1, -1
 	}
-	if m.renaming {
+	if m.mode == finderModeRename {
 		return finderQueryRow, m.renameCaret
 	}
 	start := min(m.qscroll, m.qcursor)
@@ -230,7 +228,7 @@ func (m *finderModel) status(th tui.Theme) (string, tui.TerminalColor) {
 }
 
 func (m *finderModel) renderQuery(th tui.Theme, w int) string {
-	if m.renaming {
+	if m.mode == finderModeRename {
 		line, caret := m.renderRename(th, w)
 		m.renameCaret = caret
 		return line
@@ -349,42 +347,10 @@ func renderHitSnippet(th tui.Theme, text string, terms []string, w int) string {
 	if text == "" {
 		return th.FGColor(th.DimColor(th.Muted, 40), finderFit(" …", w))
 	}
-	var indexes []int
-	if at := finderFirstMatch(text, terms); at >= 0 {
-		indexes = []int{at}
-	}
-	text, _ = windowSessionSearchExcerpt(text, indexes, max(w-1, 1))
+	text = windowSessionSearchExcerpt(text, tui.FirstTermMatch(text, terms), max(w-1, 1))
 	line := th.FGColor(th.Muted, finderFit(" "+text, w))
 	line, _ = tui.HighlightTerms(line, terms, th)
 	return line
-}
-
-// finderFirstMatch returns the byte offset of the first word-prefix match
-// of any term in text, or -1.
-func finderFirstMatch(text string, terms []string) int {
-	prev := rune(-1)
-	for i, r := range text {
-		if prev < 0 || !(unicode.IsLetter(prev) || unicode.IsDigit(prev) || prev == '_') {
-			for _, t := range terms {
-				if t != "" && finderHasPrefixFold(text[i:], t) {
-					return i
-				}
-			}
-		}
-		prev = r
-	}
-	return -1
-}
-
-func finderHasPrefixFold(s, prefix string) bool {
-	for _, pr := range prefix {
-		r, size := utf8.DecodeRuneInString(s)
-		if size == 0 || unicode.ToLower(r) != unicode.ToLower(pr) {
-			return false
-		}
-		s = s[size:]
-	}
-	return true
 }
 
 func (m *finderModel) renderPreview(th tui.Theme, terms []string, w, rows int) []string {
@@ -426,7 +392,7 @@ func (m *finderModel) renderOneLinePreview(th tui.Theme, terms []string, w int) 
 }
 
 func (m *finderModel) renderFooter(th tui.Theme, w int) string {
-	if m.confirmDelete {
+	if m.mode == finderModeConfirmDelete {
 		label := ""
 		if item, ok := m.selected(); ok {
 			label = sanitizeSessionTreeText(item.Label)

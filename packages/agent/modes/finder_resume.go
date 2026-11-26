@@ -133,12 +133,12 @@ func (c *resumeConfirm) Render(th tui.Theme, width int) []string {
 		}
 		if leadW > text/2 {
 			// Too narrow to indent under the lead: give it its own rows.
-			for _, part := range wrapPlain(lead, text) {
+			for _, part := range tui.WrapANSILine(lead, text) {
 				row(finderFit(part, text))
 			}
 			styledLead, leadW = "", 0
 		}
-		for idx, part := range wrapPlain(line.text, text-leadW) {
+		for idx, part := range tui.WrapANSILine(line.text, text-leadW) {
 			prefix := strings.Repeat(" ", leadW)
 			if idx == 0 {
 				prefix = styledLead
@@ -152,42 +152,4 @@ func (c *resumeConfirm) Render(th tui.Theme, width int) []string {
 	}
 	out = append(out, border("╰"+strings.Repeat("─", inner)+"╯"))
 	return out
-}
-
-// wrapPlain wraps plain text to w cells, breaking at spaces and hard-
-// breaking words wider than w.
-func wrapPlain(s string, w int) []string {
-	if w <= 0 {
-		return []string{""}
-	}
-	var rows []string
-	var cur strings.Builder
-	curW := 0
-	flush := func() {
-		rows = append(rows, cur.String())
-		cur.Reset()
-		curW = 0
-	}
-	for _, word := range strings.Fields(s) {
-		ww := runewidth.StringWidth(word)
-		if curW > 0 && curW+1+ww > w {
-			flush()
-		}
-		if curW > 0 {
-			cur.WriteByte(' ')
-			curW++
-		}
-		for _, r := range word {
-			rw := runewidth.RuneWidth(r)
-			if curW+rw > w && curW > 0 {
-				flush()
-			}
-			cur.WriteRune(r)
-			curW += rw
-		}
-	}
-	if cur.Len() > 0 || len(rows) == 0 {
-		flush()
-	}
-	return rows
 }

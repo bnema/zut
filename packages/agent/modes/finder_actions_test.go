@@ -42,11 +42,11 @@ func TestFinderRenameKeys(t *testing.T) {
 	require.Equal(t, finderActionRename, act.Kind)
 	require.Equal(t, "a", act.Item.Key)
 	require.Equal(t, "olX new name", act.Title)
-	require.False(t, m.renaming)
+	require.NotEqual(t, finderModeRename, m.mode)
 
 	m.HandleKey(tui.Key{Kind: tui.KeyCtrlR})
 	require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: tui.KeyEsc}).Kind)
-	require.False(t, m.renaming)
+	require.NotEqual(t, finderModeRename, m.mode)
 	require.True(t, m.Active(), "esc cancels the rename, not the finder")
 }
 

@@ -328,7 +328,7 @@ type InteractiveConfig struct {
 	// LoadSession swaps the current session for the one at path. The
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
-	// LoadSessionContext is the cancellation-aware picker path. Embedders that
+	// LoadSessionContext is the cancellation-aware session-selection path. Embedders that
 	// only implement LoadSession retain the existing synchronous contract.
 	LoadSessionContext func(context.Context, string) error
 
@@ -911,8 +911,8 @@ type Interactive struct {
 	// lets ctrl+c/exit remain responsive for very large JSONL sessions.
 	sessionLoading bool
 
-	// sessionTreeLoads delivers asynchronously-read tree rows. Like the flat
-	// picker, the main loop is the sole owner of dialog mutation and rendering.
+	// sessionTreeLoads delivers asynchronously-read tree rows. The main loop
+	// is the sole owner of dialog mutation and rendering.
 	sessionTreeLoads <-chan sessionTreeLoadEvent
 
 	clipboardImages []clipboardImageAttachment

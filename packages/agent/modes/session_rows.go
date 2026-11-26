@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // clampViewTop returns a viewTop that keeps cursor visible in a
@@ -38,24 +39,21 @@ func clampViewTop(viewTop, cursor, window, total int) int {
 	return viewTop
 }
 
-func windowSessionSearchExcerpt(text string, indexes []int, limit int) (string, []int) {
+// windowSessionSearchExcerpt returns at most limit runes of text, centred
+// on the byte offset at (the first match, or -1 for none) and marked with
+// "..." where text was cut.
+func windowSessionSearchExcerpt(text string, at, limit int) string {
 	runes := []rune(text)
 	if limit <= 0 || len(runes) <= limit {
-		return text, indexes
+		return text
 	}
 	matchRune := 0
-	if len(indexes) > 0 {
-		for runeIndex, byteIndex := range runeByteOffsets(text) {
-			if byteIndex <= indexes[0] {
-				matchRune = runeIndex
-			} else {
-				break
-			}
-		}
+	if at > 0 && at <= len(text) {
+		matchRune = utf8.RuneCountInString(text[:at])
 	}
 	room := limit - 3
 	if room < 1 {
-		return string(runes[:limit]), nil
+		return string(runes[:limit])
 	}
 	start := max(0, matchRune-room/2)
 	if start+room > len(runes) {
@@ -70,23 +68,7 @@ func windowSessionSearchExcerpt(text string, indexes []int, limit int) (string, 
 	if end < len(runes) {
 		suffix = "..."
 	}
-	base := len(string(runes[:start]))
-	stop := len(string(runes[:end]))
-	rebased := make([]int, 0, len(indexes))
-	for _, index := range indexes {
-		if index >= base && index < stop {
-			rebased = append(rebased, len(prefix)+index-base)
-		}
-	}
-	return prefix + string(runes[start:end]) + suffix, rebased
-}
-
-func runeByteOffsets(text string) []int {
-	offsets := make([]int, 0, len(text))
-	for index := range text {
-		offsets = append(offsets, index)
-	}
-	return offsets
+	return prefix + string(runes[start:end]) + suffix
 }
 
 func formatRelative(t time.Time) string {

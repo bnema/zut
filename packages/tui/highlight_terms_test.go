@@ -166,3 +166,54 @@ func TestHighlightTermsKeepsStringEscapesWhole(t *testing.T) {
 		t.Fatalf("PM payload was highlighted: %q", got)
 	}
 }
+
+func TestHighlightTermsUnderscoreSeparatesWords(t *testing.T) {
+	th := highlightTestTheme()
+	got, ok := HighlightTerms("snake_case", []string{"case"}, th)
+	if !ok || !strings.Contains(got, th.SelectionStyle()+"case") {
+		t.Fatalf("\"case\" in snake_case not highlighted: %q", got)
+	}
+	if at := FirstTermMatch("snake_case", []string{"case"}); at != len("snake_") {
+		t.Fatalf("FirstTermMatch = %d", at)
+	}
+}
+
+func TestFirstTermMatchFolding(t *testing.T) {
+	for _, tc := range []struct {
+		text, term string
+		want       int
+	}{
+		{"x Kelvin", "kelvin", 2}, // KELVIN SIGN folds to k
+		{"x ſtate", "state", 2},   // long s folds to s
+		{"日本 Refactoring", "refacto", len("日本 ")},
+		{"unrefactored", "refacto", -1},
+		{"none", "", -1},
+	} {
+		if got := FirstTermMatch(tc.text, []string{tc.term}); got != tc.want {
+			t.Fatalf("FirstTermMatch(%q, %q) = %d, want %d", tc.text, tc.term, got, tc.want)
+		}
+		if tc.want >= 0 {
+			if _, ok := HighlightTerms(tc.text, []string{tc.term}, highlightTestTheme()); !ok {
+				t.Fatalf("HighlightTerms disagrees on %q", tc.text)
+			}
+		}
+	}
+}
+
+func TestTerminalThemeWithoutColorsHasNoSearchLineTint(t *testing.T) {
+	th := TerminalTheme(TerminalProfile{})
+	if th.SearchLineBG != TerminalDefault() {
+		t.Fatalf("SearchLineBG = %+v, want terminal default", th.SearchLineBG)
+	}
+	line := "plain match"
+	if got := HighlightLine(line, th); got != line {
+		t.Fatalf("HighlightLine tinted without known colors: %q", got)
+	}
+	if _, ok := HighlightTerms(line, []string{"match"}, th); !ok {
+		t.Fatal("terms must still be highlighted")
+	}
+	known := TerminalTheme(TerminalProfile{HasForeground: true, HasBackground: true, Foreground: Color256(250), Background: Color256(234)})
+	if known.SearchLineBG == TerminalDefault() {
+		t.Fatal("a known background still gets a blended tint")
+	}
+}

@@ -83,7 +83,7 @@ func TestFinderQueryHereToken(t *testing.T) {
 	m := newFinderModel("/work", newTestFinderSource(t, "sessions"))
 	m.Open(0)
 	act := finderRunes(m, "bug @here")
-	require.Equal(t, finderQuery{Text: "bug @here", Here: true, CWD: "/work"}, act.Query)
+	require.Equal(t, finderQuery{Text: "bug @here", CWD: "/work"}, act.Query)
 }
 
 func TestFinderApplyResultsDropsStale(t *testing.T) {
@@ -154,7 +154,7 @@ func TestFinderCursorAndHitNavigation(t *testing.T) {
 	require.Equal(t, -1, act.Hit)
 
 	require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: tui.KeyCtrlR}).Kind)
-	require.True(t, m.renaming)
+	require.Equal(t, finderModeRename, m.mode)
 	act = m.HandleKey(tui.Key{Kind: tui.KeyEnter})
 	require.Equal(t, finderActionRename, act.Kind)
 	require.Equal(t, "b", act.Item.Key)
@@ -165,8 +165,8 @@ func TestFinderEmptyListKeysAreNoops(t *testing.T) {
 	for _, k := range []tui.KeyKind{tui.KeyEnter, tui.KeyCtrlR, tui.KeyCtrlD, tui.KeyUp, tui.KeyDown, tui.KeyCtrlN, tui.KeyCtrlP} {
 		require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: k}).Kind)
 	}
-	require.False(t, m.confirmDelete)
-	require.False(t, m.renaming)
+	require.NotEqual(t, finderModeConfirmDelete, m.mode)
+	require.NotEqual(t, finderModeRename, m.mode)
 }
 
 func TestFinderDeleteConfirm(t *testing.T) {
@@ -183,10 +183,10 @@ func TestFinderDeleteConfirm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := openFinderWithItems(t, finderItem{Key: "a"})
 			require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: tui.KeyCtrlD}).Kind)
-			require.True(t, m.confirmDelete)
+			require.Equal(t, finderModeConfirmDelete, m.mode)
 			act := m.HandleKey(tc.key)
 			require.Equal(t, tc.want, act.Kind)
-			require.False(t, m.confirmDelete)
+			require.NotEqual(t, finderModeConfirmDelete, m.mode)
 			require.True(t, m.Active())
 			require.Empty(t, m.Query())
 			if tc.want == finderActionDelete {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/agent/session"
 )
 
@@ -108,7 +109,9 @@ func (m *finderModel) decorateLive(raw []finderItem) []finderItem {
 		out = append(out, item)
 	}
 	lister, ok := m.source().(finderLiveLister)
-	if !ok || !lister.ListsLive() || finderFuzzyText(string(m.query)) != "" {
+	// Same empty-query rule as the sources: no index tokens means the
+	// source lists recent sessions.
+	if tokens, _ := sessionindex.ParseQuery(string(m.query)); !ok || !lister.ListsLive() || len(tokens) > 0 {
 		return out
 	}
 	var top []finderItem

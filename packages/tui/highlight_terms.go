@@ -7,7 +7,8 @@ import (
 )
 
 // ansiToken is one piece of a rendered line: either an escape sequence
-// (CSI, or an OSC/DCS/APC/PM/SOS string) or a single visible rune.
+// (as delimited by skipEscapeSequence: CSI, OSC/DCS/APC/PM/SOS strings, or
+// a two-byte escape) or a single visible rune.
 type ansiToken struct {
 	esc  string
 	r    rune
@@ -18,8 +19,8 @@ type ansiToken struct {
 func tokenizeANSI(s string) []ansiToken {
 	var toks []ansiToken
 	for i := 0; i < len(s); {
-		if s[i] == 0x1b && i+1 < len(s) && isEscapeIntroducer(s[i+1]) {
-			j := escapeEnd(s, i)
+		if s[i] == 0x1b && i+1 < len(s) {
+			j := skipEscapeSequence(s, i)
 			toks = append(toks, ansiToken{esc: s[i:j], isFn: true})
 			i = j
 			continue
@@ -31,43 +32,10 @@ func tokenizeANSI(s string) []ansiToken {
 	return toks
 }
 
-// isEscapeIntroducer reports whether ESC b starts a sequence tokenizeANSI
-// keeps whole: CSI, OSC, and the string sequences DCS (P), APC (_), PM (^),
-// and SOS (X) used by image protocols such as kitty graphics and sixel.
-func isEscapeIntroducer(b byte) bool {
-	switch b {
-	case '[', ']', 'P', '_', '^', 'X':
-		return true
-	}
-	return false
-}
-
 // hasImageEscape reports whether line carries inline image data (kitty
 // graphics APC, sixel DCS, or iTerm2 OSC 1337 File).
 func hasImageEscape(line string) bool {
 	return strings.Contains(line, "\x1b_G") || strings.Contains(line, "\x1bP") || strings.Contains(line, "\x1b]1337;File=")
-}
-
-// escapeEnd returns the index just past the escape sequence starting at i.
-func escapeEnd(s string, i int) int {
-	if s[i+1] == '[' {
-		for j := i + 2; j < len(s); j++ {
-			if s[j] >= 0x40 && s[j] <= 0x7e {
-				return j + 1
-			}
-		}
-		return len(s)
-	}
-	// OSC and string sequences: terminated by BEL or ST (ESC \).
-	for j := i + 2; j < len(s); j++ {
-		if s[j] == 0x07 {
-			return j + 1
-		}
-		if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
-			return j + 2
-		}
-	}
-	return len(s)
 }
 
 // isSGR reports whether esc is an SGR sequence (ESC [ ... m).
@@ -115,7 +83,9 @@ func sgrHasParam(esc string, want ...string) bool {
 }
 
 func isWordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+	// Letters and digits only, like the session index tokenizer: "_" and
+	// other punctuation separate words.
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func runeEqualFold(a, b rune) bool {
@@ -147,12 +117,7 @@ func runeEqualFold(a, b rune) bool {
 // sequences active since the last reset. Only SGR styling is added, so
 // display width is unchanged. With no match the input is returned as-is.
 func HighlightTerms(line string, terms []string, th Theme) (string, bool) {
-	var needles [][]rune
-	for _, t := range terms {
-		if rs := []rune(t); len(rs) > 0 {
-			needles = append(needles, rs)
-		}
-	}
+	needles := termNeedles(terms)
 	if len(needles) == 0 || line == "" || hasImageEscape(line) {
 		return line, false
 	}
@@ -168,25 +133,7 @@ func HighlightTerms(line string, terms []string, th Theme) (string, bool) {
 	marked := make([]bool, len(visible))
 	matched := false
 	for p := 0; p < len(visible); p++ {
-		if p > 0 && isWordRune(visible[p-1]) {
-			continue
-		}
-		best := 0
-		for _, n := range needles {
-			if len(n) <= best || p+len(n) > len(visible) {
-				continue
-			}
-			ok := true
-			for k, r := range n {
-				if !runeEqualFold(visible[p+k], r) {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				best = len(n)
-			}
-		}
+		best := termMatchAt(visible, p, needles)
 		for k := 0; k < best; k++ {
 			marked[p+k] = true
 		}
@@ -243,7 +190,11 @@ func HighlightTerms(line string, terms []string, th Theme) (string, bool) {
 // and background styles are kept; the tint is re-applied after any SGR
 // sequence that resets the background. The result ends with a reset.
 // Width is unchanged; callers pad the line first for a full-row tint.
+// A terminal-default SearchLineBG means no tint: the line is returned as-is.
 func HighlightLine(line string, th Theme) string {
+	if th.SearchLineBG.Mode == terminalColorDefault {
+		return line
+	}
 	bg := th.bgPrefix(th.SearchLineBG)
 	var b strings.Builder
 	b.WriteString(bg)
@@ -259,4 +210,62 @@ func HighlightLine(line string, th Theme) string {
 	}
 	b.WriteString(reset)
 	return b.String()
+}
+
+// termNeedles converts terms to rune slices, dropping empty ones.
+func termNeedles(terms []string) [][]rune {
+	var needles [][]rune
+	for _, t := range terms {
+		if rs := []rune(t); len(rs) > 0 {
+			needles = append(needles, rs)
+		}
+	}
+	return needles
+}
+
+// termMatchAt returns the length in runes of the longest needle matching
+// at visible[p] as a word prefix (case-insensitive, Unicode simple
+// folding), or 0.
+func termMatchAt(visible []rune, p int, needles [][]rune) int {
+	if p > 0 && isWordRune(visible[p-1]) {
+		return 0
+	}
+	best := 0
+	for _, n := range needles {
+		if len(n) <= best || p+len(n) > len(visible) {
+			continue
+		}
+		ok := true
+		for k, r := range n {
+			if !runeEqualFold(visible[p+k], r) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			best = len(n)
+		}
+	}
+	return best
+}
+
+// FirstTermMatch returns the byte offset in plain text of the first match
+// HighlightTerms would paint, or -1.
+func FirstTermMatch(text string, terms []string) int {
+	needles := termNeedles(terms)
+	if len(needles) == 0 {
+		return -1
+	}
+	var visible []rune
+	var offsets []int
+	for i, r := range text {
+		visible = append(visible, r)
+		offsets = append(offsets, i)
+	}
+	for p := range visible {
+		if termMatchAt(visible, p, needles) > 0 {
+			return offsets[p]
+		}
+	}
+	return -1
 }
