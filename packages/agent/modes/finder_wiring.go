@@ -90,9 +90,9 @@ func (i *Interactive) handleFinderKey(ctx context.Context, k tui.Key) {
 	case finderActionOpen:
 		i.finderOpen(act.Item, act.Hit)
 	case finderActionRename:
-		i.finderRename(act.Item)
+		i.finderRename(ctx, act.Item, act.Title)
 	case finderActionDelete:
-		i.finderDelete(act.Item)
+		i.finderDelete(ctx, act.Item)
 	}
 	i.requestFinderSnippets(ctx)
 	i.invalidate()
@@ -148,18 +148,6 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 func (i *Interactive) finderOpen(item finderItem, hit int) {
 	_, _ = item, hit
 	i.setFinderStatusErr("finder: open is not implemented yet")
-}
-
-// finderRename renames the chosen item. TODO: inline rename.
-func (i *Interactive) finderRename(item finderItem) {
-	_ = item
-	i.setFinderStatusErr("finder: rename is not implemented yet")
-}
-
-// finderDelete deletes the chosen item. TODO: delete the session file.
-func (i *Interactive) finderDelete(item finderItem) {
-	_ = item
-	i.setFinderStatusErr("finder: delete is not implemented yet")
 }
 
 // openFinderResume resumes plan directly when it ran in this directory,

@@ -33,7 +33,8 @@ func finderLiveItems(infos []session.Info) []finderItem {
 		if key == "" {
 			continue // not persisted: nothing to match or resume
 		}
-		title := strings.TrimSpace(info.Title)
+		raw := sanitizeSessionTreeText(strings.TrimSpace(info.Title))
+		title := raw
 		if title == "" {
 			title = "(new session)"
 		}
@@ -43,10 +44,11 @@ func finderLiveItems(infos []session.Info) []finderItem {
 		}
 		items = append(items, finderItem{
 			Key:    key,
-			Label:  sessionProject(info.RepoRoot, info.CWD) + " · " + sanitizeSessionTreeText(title),
+			Label:  sessionProject(info.RepoRoot, info.CWD) + " · " + title,
 			Detail: formatRelative(when),
 			Live:   true,
 			LiveID: info.ID,
+			Title:  raw,
 		})
 	}
 	return items

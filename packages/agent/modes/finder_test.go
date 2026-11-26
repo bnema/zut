@@ -153,7 +153,9 @@ func TestFinderCursorAndHitNavigation(t *testing.T) {
 	require.Equal(t, "b", act.Item.Key)
 	require.Equal(t, -1, act.Hit)
 
-	act = m.HandleKey(tui.Key{Kind: tui.KeyCtrlR})
+	require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: tui.KeyCtrlR}).Kind)
+	require.True(t, m.renaming)
+	act = m.HandleKey(tui.Key{Kind: tui.KeyEnter})
 	require.Equal(t, finderActionRename, act.Kind)
 	require.Equal(t, "b", act.Item.Key)
 }
@@ -164,6 +166,7 @@ func TestFinderEmptyListKeysAreNoops(t *testing.T) {
 		require.Equal(t, finderActionNone, m.HandleKey(tui.Key{Kind: k}).Kind)
 	}
 	require.False(t, m.confirmDelete)
+	require.False(t, m.renaming)
 }
 
 func TestFinderDeleteConfirm(t *testing.T) {

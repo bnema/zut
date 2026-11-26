@@ -137,6 +137,7 @@ func finderMatchItem(match sessionindex.SessionMatch) finderItem {
 		when = match.Doc.Started
 	}
 	item := finderItem{
+		Title:  match.Doc.Title,
 		Key:    match.Doc.Path,
 		Label:  finderDocLabel(match.Doc),
 		Detail: formatRelative(when),

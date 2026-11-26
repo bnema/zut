@@ -42,6 +42,7 @@ type finderItem struct {
 	Hits   []finderHit
 	Live   bool
 	LiveID string // daemon session id when Live
+	Title  string // raw title, prefilled when renaming
 }
 
 // finderHit is one match inside an item; Ref is opaque to the model and
@@ -75,7 +76,8 @@ type finderAction struct {
 	Gen    uint64
 	Query  finderQuery
 	Item   finderItem
-	Hit    int // index into Item.Hits, -1 when the item has no hits
+	Hit    int    // index into Item.Hits, -1 when the item has no hits
+	Title  string // new title for Rename
 }
 
 // finderModel holds finder state and key handling; it does no rendering
@@ -113,6 +115,13 @@ type finderModel struct {
 	raw  []finderItem
 
 	confirmDelete bool
+
+	// renaming edits rename for the selected item (keys in finder_actions.go).
+	renaming  bool
+	rename    []rune
+	renameKey string
+	// renameCaret is the caret column computed by the last Render.
+	renameCaret int
 }
 
 func newFinderModel(cwd string, tabs ...finderSource) *finderModel {
@@ -132,6 +141,7 @@ func (m *finderModel) Open(tab int) finderAction {
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	m.err = ""
 	m.confirmDelete = false
+	m.renaming, m.rename, m.renameKey = false, nil, ""
 	return m.search()
 }
 
@@ -140,6 +150,7 @@ func (m *finderModel) Close() {
 	m.active = false
 	m.loading = false
 	m.confirmDelete = false
+	m.renaming, m.rename, m.renameKey = false, nil, ""
 	m.gen++
 }
 
@@ -257,6 +268,9 @@ func (m *finderModel) ApplySnippets(gen uint64, key string, texts map[int]string
 
 // HandleKey advances the finder and returns the action to apply.
 func (m *finderModel) HandleKey(k tui.Key) finderAction {
+	if m.renaming {
+		return m.handleRenameKey(k)
+	}
 	if m.confirmDelete {
 		m.confirmDelete = false
 		if k.Kind == tui.KeyRune && (k.Rune == 'y' || k.Rune == 'Y') && !k.Ctrl && !k.Alt {
@@ -275,9 +289,7 @@ func (m *finderModel) HandleKey(k tui.Key) finderAction {
 			return finderAction{Kind: finderActionOpen, Item: item, Hit: m.hitIndex(item)}
 		}
 	case tui.KeyCtrlR:
-		if item, ok := m.selected(); ok {
-			return finderAction{Kind: finderActionRename, Item: item, Hit: m.hitIndex(item)}
-		}
+		m.startRename()
 	case tui.KeyCtrlD:
 		if _, ok := m.selected(); ok {
 			m.confirmDelete = true

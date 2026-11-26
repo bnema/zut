@@ -123,6 +123,9 @@ func (m *finderModel) CursorPos() (row, col int) {
 	if !m.Active() {
 		return -1, -1
 	}
+	if m.renaming {
+		return 1, 1 + m.renameCaret
+	}
 	start := min(m.qscroll, m.qcursor)
 	return 1, 4 + runewidth.StringWidth(string(m.query[start:m.qcursor]))
 }
@@ -197,6 +200,11 @@ func (m *finderModel) status(th tui.Theme) (string, tui.TerminalColor) {
 }
 
 func (m *finderModel) renderQuery(th tui.Theme, w int) string {
+	if m.renaming {
+		line, caret := m.renderRename(th, w)
+		m.renameCaret = caret
+		return line
+	}
 	prompt := " > "
 	status, color := m.status(th)
 	status += " "
