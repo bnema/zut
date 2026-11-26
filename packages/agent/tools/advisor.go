@@ -13,7 +13,7 @@ import (
 // AdvisorToolName is the model-visible name of the advisor tool.
 const AdvisorToolName = provider.AdvisorToolName
 
-const advisorDescription = "Consult the advisor, a stronger reviewer that already watches your work and sees your full conversation transcript. No parameters. Call it only when the user asks you to, or when an [advisor checkpoint] message asks you to."
+const advisorDescription = "Consult the advisor, a stronger reviewer model that sees your full conversation transcript. No parameters. See the [advisor] section of the system prompt for when to call it."
 
 // AdvisorTool lets the executor consult the advisor explicitly. It shares
 // the advisor conversation with the passive watcher, so the advisor answers

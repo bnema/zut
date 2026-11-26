@@ -110,7 +110,6 @@ func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.
 		Reviewer: reviewer,
 		Mode:     mode,
 		Queue:    ag.QueueWatcherNote,
-		Messages: ag.Messages,
 	}))
 }
 

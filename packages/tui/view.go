@@ -2897,8 +2897,8 @@ func (v *View) renderAdvisorNote(m provider.Message, width int) []string {
 	return lines
 }
 
-// advisorNoteHeader splits a note such as "[advisor] Before you finish:\n..."
-// into a header ("advisor · Before you finish") and its body. A one-line
+// advisorNoteHeader splits a note such as "[advisor] Stop and reconsider:\n..."
+// into a header ("advisor · Stop and reconsider") and its body. A one-line
 // note keeps the text after its tag as the body.
 func advisorNoteHeader(note string) (header, body string) {
 	if !strings.HasPrefix(note, "[") {

@@ -36,21 +36,12 @@ func TestAdvisorNoteUserMessageRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAdvisorReviewRoundTrip(t *testing.T) {
-	ev := core.EvAdvisorReview{Kind: "finish", Phase: core.AdvisorReviewStart}
-	kind, raw, err := daemonproto.EncodeAgentEvent(ev)
+func TestLegacyAdvisorReviewIsUnknown(t *testing.T) {
+	ev, err := daemonproto.DecodeAgentEvent("advisor_review", json.RawMessage(`{"type":"advisor_review","value":{"Kind":"change","Phase":"start"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var wire map[string]any
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		t.Fatal(err)
-	}
-	if wire["kind"] != "finish" || wire["phase"] != "start" {
-		t.Fatalf("projection = %#v", wire)
-	}
-	got, err := daemonproto.DecodeAgentEvent(kind, raw)
-	if err != nil || got != ev {
-		t.Fatalf("round trip = %#v, %v", got, err)
+	if ev == nil || ev.Type() != "advisor_review" {
+		t.Fatalf("unknown event = %#v", ev)
 	}
 }

@@ -93,26 +93,6 @@ func TestActivityWaitingResidentsLabel(t *testing.T) {
 	}
 }
 
-func TestAgentActivityShowsAdvisorReview(t *testing.T) {
-	a := newAgentActivity("anthropic", "claude-test")
-	a.apply(core.EvToolCall{ID: "e1", Name: "edit"})
-	if got := a.label(); got != "Preparing tool: edit" {
-		t.Fatalf("label = %q", got)
-	}
-	a.apply(core.EvAdvisorReview{Kind: "change", Phase: core.AdvisorReviewStart})
-	if got := a.label(); got != "Advisor reviewing the first change…" {
-		t.Fatalf("label = %q", got)
-	}
-	a.apply(core.EvAdvisorReview{Kind: "change", Phase: core.AdvisorReviewEnd})
-	if got := a.label(); got != "Preparing tool: edit" {
-		t.Fatalf("label after review = %q", got)
-	}
-	a.apply(core.EvAdvisorReview{Kind: "finish", Phase: core.AdvisorReviewStart})
-	if got := a.label(); got != "Advisor reviewing the final answer…" {
-		t.Fatalf("label = %q", got)
-	}
-}
-
 func TestEventToJSONMarksAdvisorEvents(t *testing.T) {
 	note := core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser, Meta: map[string]string{core.WatcherNoteMetaKey: "true"},
 		Content: []provider.Content{provider.TextBlock{Text: "[advisor note]\nx"}}}}
@@ -121,9 +101,5 @@ func TestEventToJSONMarksAdvisorEvents(t *testing.T) {
 	}
 	if got := EventToJSON(core.EvUserMessage{Message: provider.Message{Role: provider.RoleUser}}); got["advisor_note"] != nil {
 		t.Fatalf("plain user event = %#v", got)
-	}
-	got := EventToJSON(core.EvAdvisorReview{Kind: core.AdvisorReviewChange, Phase: core.AdvisorReviewStart})
-	if got["type"] != "advisor_review" || got["kind"] != "change" || got["phase"] != "start" {
-		t.Fatalf("advisor review event = %#v", got)
 	}
 }

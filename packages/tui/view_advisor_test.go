@@ -14,8 +14,7 @@ func TestViewRendersAdvisorNotesApartFromUserTurns(t *testing.T) {
 	}{
 		{"[advisor note]\nThe bug is in lexer.go.\n\nYou decide.", "◆ advisor note", "The bug is in lexer.go."},
 		{"[advisor] Stop and reconsider:\nwrong file", "◆ advisor · Stop and reconsider", "wrong file"},
-		{"[advisor] Before you finish:\ntests not run", "◆ advisor · Before you finish", "tests not run"},
-		{"[advisor checkpoint] Before your final answer, call advisor().", "◆ advisor checkpoint", "Before your final answer, call advisor()."},
+		{"[advisor note] tests not run", "◆ advisor note", "tests not run"},
 	} {
 		note := provider.Message{
 			Role:    provider.RoleUser,

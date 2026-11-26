@@ -47,30 +47,6 @@ type Snapshot struct {
 	Messages []provider.Message
 }
 
-// Kind is the moment a watcher review happens.
-type Kind int
-
-const (
-	// KindStep reviews progress in the background after a tool batch.
-	KindStep Kind = iota
-	// KindChange reviews the executor's first change of a request, before it
-	// runs.
-	KindChange
-	// KindFinish reviews a final answer before the request ends.
-	KindFinish
-)
-
-// String names the checkpoint, as reported in core.EvAdvisorReview.
-func (k Kind) String() string {
-	switch k {
-	case KindChange:
-		return core.AdvisorReviewChange
-	case KindFinish:
-		return core.AdvisorReviewFinish
-	}
-	return "step"
-}
-
 // Decision is the advisor's choice in a watcher review.
 type Decision string
 
@@ -143,12 +119,9 @@ func (r *Reviewer) SetTarget(target func(ctx context.Context) (Target, error)) {
 	r.mu.Unlock()
 }
 
-// Review runs a watcher review and returns the advisor's verdict. pending is
-// the held call at a KindChange review. started, when set, runs once the
-// advisor target resolved and the request is about to be sent. Its usage is
-// collected for TakeUsage.
-func (r *Reviewer) Review(ctx context.Context, kind Kind, pending *provider.ToolCallBlock, started func()) (Verdict, error) {
-	text, usage, err := r.ask(ctx, reviewInstruction(kind, pending), "", started, nil)
+// Review runs a background watcher review and collects its usage for TakeUsage.
+func (r *Reviewer) Review(ctx context.Context) (Verdict, error) {
+	text, usage, err := r.ask(ctx, reviewInstruction, "", nil)
 	if usage != nil {
 		r.addUsage(*usage)
 	}
@@ -165,7 +138,7 @@ func (r *Reviewer) Review(ctx context.Context, kind Kind, pending *provider.Tool
 // Consult answers an explicit request for advice from the executor's advisor
 // tool call callID. Its usage is returned for the tool result.
 func (r *Reviewer) Consult(ctx context.Context, callID string, progress func(string)) (string, *provider.Usage, error) {
-	text, usage, err := r.ask(ctx, consultInstruction, callID, nil, progress)
+	text, usage, err := r.ask(ctx, consultInstruction, callID, progress)
 	if err == nil {
 		r.mu.Lock()
 		if callID != "" {
@@ -222,7 +195,7 @@ func (r *Reviewer) acquire(ctx context.Context) error {
 func (r *Reviewer) release() { <-r.turn }
 
 // Undelivered records that the watcher dropped note (a review that finished
-// after its run or checkpoint moved on): it is forgotten, and the advisor is
+// after its run moved on): it is forgotten, and the advisor is
 // told on its next request so it can raise it again if still relevant.
 func (r *Reviewer) Undelivered(note string) {
 	r.mu.Lock()
@@ -241,7 +214,7 @@ func (r *Reviewer) Undelivered(note string) {
 // returns the advisor's reply. A reset decided by buildPrompt applies even
 // when the request fails; otherwise the conversation advances only on
 // success, so a failed request is retried with the same delta next time.
-func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, started func(), progress func(string)) (string, *provider.Usage, error) {
+func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, progress func(string)) (string, *provider.Usage, error) {
 	if r == nil || r.snapshot == nil {
 		return "", nil, errors.New("advisor is not available in this session")
 	}
@@ -281,9 +254,6 @@ func (r *Reviewer) ask(ctx context.Context, instruction, pendingCallID string, s
 		MaxTokens: maxTokens,
 		Reasoning: target.Reasoning,
 		Context:   provider.RequestContext{CacheSessionID: r.cacheID, ThreadID: r.cacheID},
-	}
-	if started != nil {
-		started()
 	}
 	text, usage, err := streamReply(ctx, target, req, progress)
 	if err != nil {

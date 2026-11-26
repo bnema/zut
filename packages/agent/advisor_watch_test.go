@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -17,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// countingEditTool stands in for the edit tool: the watcher keys on the name.
+// countingEditTool stands in for the edit tool and counts its runs.
 type countingEditTool struct{ runs atomic.Int32 }
 
 func (t *countingEditTool) Name() string            { return "edit" }
@@ -39,27 +37,15 @@ func stream(events ...provider.Event) <-chan provider.Event {
 
 func TestAdvisorWatcherEndToEnd(t *testing.T) {
 	pythonTestEnv(t) // isolated, empty config: the decided settings match it
-	// The advisor answers by checkpoint: STOP at the first change, a NOTE at
-	// the final answer, SILENT in background reviews.
+	// Background reviews must not hold either edit or the final answer. They
+	// run asynchronously and are canceled at run end, so the advisor may not
+	// be called at all; delivery is covered by the watcher unit tests.
 	advisorClient := providermocks.NewMockClient(t)
-	var reviewsMu sync.Mutex
-	var reviews []string
 	advisorClient.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
 		body := req.Messages[len(req.Messages)-1].Content[0].(provider.TextBlock).Text
-		answer := "SILENT"
-		switch {
-		case strings.Contains(body, "about to make its first change"):
-			answer, body = "STOP: the bug is in lexer.go, not parser.go", "change"
-		case strings.Contains(body, "final answer"):
-			answer, body = "NOTE: mention that tests were not run", "finish"
-		default:
-			body = "step"
-		}
-		reviewsMu.Lock()
-		reviews = append(reviews, body)
-		reviewsMu.Unlock()
-		return stream(provider.EventTextDelta{Delta: answer}, provider.EventDone{Stop: provider.StopEnd}), nil
-	})
+		require.Contains(t, body, "latest activity")
+		return stream(provider.EventTextDelta{Delta: "SILENT"}, provider.EventDone{Stop: provider.StopEnd}), nil
+	}).Maybe()
 
 	executor := providermocks.NewMockClient(t)
 	executor.EXPECT().Name().Return("mock").Maybe()
@@ -91,25 +77,14 @@ func TestAdvisorWatcherEndToEnd(t *testing.T) {
 
 	require.NoError(t, ag.Prompt(context.Background(), "fix the parse bug", nil, nil))
 
-	require.EqualValues(t, 1, edit.runs.Load(), "the held edit never runs; the corrected one does")
-	require.EqualValues(t, 4, turns.Load(), "held change, corrected change, answer, answer after the note")
-
-	var held, noted bool
+	require.EqualValues(t, 2, edit.runs.Load(), "both edits run without blocking review")
+	require.EqualValues(t, 3, turns.Load(), "two tool batches and one final answer")
 	for _, m := range ag.Messages() {
+		require.NotEqual(t, "true", m.Meta[core.WatcherNoteMetaKey])
 		for _, c := range m.Content {
-			if r, ok := c.(provider.ToolResultBlock); ok && r.CallID == "e1" {
-				held = r.IsError && strings.Contains(r.Content[0].(provider.TextBlock).Text, "lexer.go")
+			if r, ok := c.(provider.ToolResultBlock); ok {
+				require.False(t, r.IsError)
 			}
 		}
-		if m.Meta[core.WatcherNoteMetaKey] == "true" && strings.Contains(m.Content[0].(provider.TextBlock).Text, "tests were not run") {
-			noted = true
-		}
 	}
-	require.True(t, held, "the first change is held with the advisor's reason")
-	require.True(t, noted, "the final-answer note reaches the executor")
-
-	reviewsMu.Lock()
-	defer reviewsMu.Unlock()
-	require.Contains(t, reviews, "change")
-	require.Contains(t, reviews, "finish")
 }

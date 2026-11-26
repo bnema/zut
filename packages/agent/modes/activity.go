@@ -31,7 +31,6 @@ const (
 	activityCondensingHistory    activityKind = "condensing_history"
 	activityRunningShellCommand  activityKind = "running_shell_command"
 	activityConsultingServerTool activityKind = "consulting_server_tool"
-	activityAdvisorReview        activityKind = "advisor_review"
 )
 
 type activity struct {
@@ -43,10 +42,6 @@ type activity struct {
 	maxTries    int
 	retryIn     time.Duration
 	retryReason string
-	// review is the advisor checkpoint being reviewed ("change", "finish").
-	review string
-	// resume is the activity shown again when the review ends.
-	resume activityKind
 }
 
 func (a activity) label() string {
@@ -85,11 +80,6 @@ func (a activity) label() string {
 		return "Running shell command"
 	case activityConsultingServerTool:
 		return "Consulting " + activityText(a.tool, "server tool") + "…"
-	case activityAdvisorReview:
-		if a.review == core.AdvisorReviewFinish {
-			return "Advisor reviewing the final answer…"
-		}
-		return "Advisor reviewing the first change…"
 	default:
 		return ""
 	}
@@ -189,17 +179,6 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 		} else if a.kind == activityConsultingServerTool {
 			a.kind = activityWaitingForResponse
 			a.tool = ""
-		}
-	case core.EvAdvisorReview:
-		if e.Phase == core.AdvisorReviewStart {
-			if a.kind != activityAdvisorReview {
-				a.resume = a.kind
-			}
-			a.kind = activityAdvisorReview
-			a.review = e.Kind
-		} else if a.kind == activityAdvisorReview {
-			a.kind = a.resume
-			a.review = ""
 		}
 	case core.EvRetryScheduled:
 		// Agent retries discard the preceding partial assistant message.

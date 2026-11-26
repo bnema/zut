@@ -1035,24 +1035,6 @@ func (a *Agent) runSteps(ctx context.Context, sink func(AgentEvent), requestCont
 			}
 		}
 
-		// A watcher may hold a final answer once it reviewed it: its note is
-		// queued and the loop runs again so the executor can act on it.
-		if stop == provider.StopEnd && !a.sawDeniedToolCall() && ctx.Err() == nil {
-			if w := a.Watcher(); w != nil {
-				v := w.BeforeFinish(withWatcherReport(ctx, sink))
-				a.foldWatcherUsage(w, sink)
-				if v.Hold {
-					a.QueueWatcherNote(watcherNoteText(v.Note))
-				}
-				// Anything queued during the review (the held note, a
-				// watcher note, host events) is answered now instead of
-				// waiting for the next prompt.
-				if ctx.Err() == nil && a.QueuedMessageCount() > 0 {
-					continue
-				}
-			}
-		}
-
 		// Terminal stop (end, length, error, aborted).
 		sink(EvDone{})
 		return nil
@@ -1651,9 +1633,6 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 	sink = dispatcher.emit
 	var executed provider.Message
 	skipping := false
-	// watcherHeld skips the rest of a batch once the watcher held a call, so
-	// later calls never run ahead of the advice.
-	watcherHeld := false
 	var results []provider.Content
 	var addedTools []string
 	hadError := false
@@ -1680,18 +1659,6 @@ func (a *Agent) executeToolsWithObservations(ctx context.Context, msg provider.M
 				Content: []provider.Content{provider.TextBlock{Text: "Skipped: the user sent a new message before this tool ran. Read it, then re-run this tool if still needed."}},
 				IsError: true,
 			}
-		} else if watcherHeld {
-			text := "Skipped: an earlier call in this batch was held by the advisor. Reconsider, then re-run this tool if still needed."
-			if err := ctx.Err(); err != nil {
-				text = "Aborted: " + err.Error()
-			}
-			res = ToolResult{
-				Content: []provider.Content{provider.TextBlock{Text: text}},
-				IsError: true,
-			}
-		} else if held, ok := a.watcherHold(ctx, tc, sink); ok {
-			res = held
-			watcherHeld = true
 		} else {
 			executed.Content = append(executed.Content, tc)
 			res = a.runOneToolWithDispatcher(ctx, tc, tools, dispatcher)

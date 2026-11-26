@@ -63,7 +63,7 @@ func TestAdvisorResolveRegistrationAndPrompt(t *testing.T) {
 	if _, ok := r.ToolRegistry[tools.AdvisorToolName].(*tools.AdvisorTool); !ok {
 		t.Fatalf("advisor not registered: %#v", r.ToolRegistry[tools.AdvisorToolName])
 	}
-	for _, want := range []string{"[advisor]", "An advisor (a stronger reviewer model) watches your work", "Do not call it on your own initiative."} {
+	for _, want := range []string{"[advisor]", "Call advisor BEFORE substantive work", "When you believe the task is complete.", "When stuck", "[advisor note]"} {
 		if !strings.Contains(r.SystemPrompt, want) {
 			t.Fatalf("system prompt missing %q", want)
 		}
@@ -522,6 +522,5 @@ func TestInstallAdvisorPausesWhenSettingsChanged(t *testing.T) {
 	ctx := context.Background()
 	w.RunStarted(ctx)
 	defer w.RunEnded()
-	edit := provider.ToolCallBlock{ID: "e", Name: "edit", Arguments: []byte(`{}`)}
-	require.Equal(t, core.WatcherVerdict{}, w.BeforeTool(ctx, edit))
+	w.StepCompleted()
 }

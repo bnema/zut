@@ -76,12 +76,12 @@ func TestReviewerSendsContextOnceThenOnlyDelta(t *testing.T) {
 	tr.set(text(provider.RoleUser, "fix the parser", t0))
 	r := newTestReviewer(client, tr)
 
-	v, err := r.Review(context.Background(), KindStep, nil, nil)
+	v, err := r.Review(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, Silent, v.Decision)
 
 	tr.add(text(provider.RoleAssistant, "reading parser.go", t0.Add(time.Second)))
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 
 	require.Len(t, reqs, 2)
@@ -113,12 +113,12 @@ func TestReviewerResetsWhenTranscriptIsRewritten(t *testing.T) {
 	tr := &transcript{}
 	tr.set(text(provider.RoleUser, "a", t0), text(provider.RoleAssistant, "b", t0.Add(time.Second)))
 	r := newTestReviewer(client, tr)
-	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	_, err := r.Review(context.Background())
 	require.NoError(t, err)
 
 	// Compaction replaces the transcript with a summary.
 	tr.set(text(provider.RoleUser, "summary", t0.Add(time.Minute)))
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 	require.Len(t, reqs[1].Messages, 1, "a rewritten transcript starts a fresh conversation")
 	require.Contains(t, lastUserText(reqs[1]), "exec system")
@@ -147,7 +147,7 @@ func TestReviewerSkipsItsOwnNotesAndConsultResults(t *testing.T) {
 	tr.add(provider.Message{Role: provider.RoleTool, Time: t0.Add(2 * time.Second), Content: []provider.Content{
 		provider.ToolResultBlock{CallID: "adv1", Content: []provider.Content{provider.TextBlock{Text: "check the caller"}}},
 	}}, note, text(provider.RoleAssistant, "fresh work", t0.Add(3*time.Second)))
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 	delta := lastUserText(reqs[1])
 	require.Contains(t, delta, "fresh work")
@@ -173,9 +173,9 @@ func TestReviewerFailureKeepsDeltaForRetry(t *testing.T) {
 	tr := &transcript{}
 	tr.set(text(provider.RoleUser, "task", time.Unix(1, 0)))
 	r := newTestReviewer(client, tr)
-	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	_, err := r.Review(context.Background())
 	require.Error(t, err)
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 	require.Len(t, last.Messages, 1)
 	require.Contains(t, lastUserText(last), "task")
@@ -192,50 +192,6 @@ func TestParseVerdict(t *testing.T) {
 	} {
 		require.Equal(t, want, parseVerdict(in), in)
 	}
-}
-
-func bashCall(cmd string) provider.ToolCallBlock {
-	args, _ := json.Marshal(map[string]string{"command": cmd})
-	return provider.ToolCallBlock{ID: "b", Name: "bash", Arguments: args}
-}
-
-func TestIsChange(t *testing.T) {
-	changes := []string{
-		"rm -rf build", "git commit -m x", "sed -i 's/a/b/' f.go", "echo hi > out.txt",
-		"cat a >> b", "go mod tidy", "npm install", "mkdir -p x && touch x/y", "gofmt -w .",
-		"git branch -D old",
-	}
-	for _, cmd := range changes {
-		require.True(t, IsChange(bashCall(cmd)), cmd)
-	}
-	reads := []string{
-		"ls -la", "git status --short", "git diff", "grep -rn foo .", "go test ./... 2>&1 | tail",
-		"cat f > /dev/null", "go vet ./...", "sed -n 1,20p f.go", "git log --oneline -5",
-		`grep -rn "=>" .`, `rg 'foo->bar' src`, `grep -n "rm -rf" docs/`,
-		"git log --grep rm", "a->b", "time go test ./...",
-	}
-	for _, cmd := range reads {
-		require.False(t, IsChange(bashCall(cmd)), cmd)
-	}
-	for _, cmd := range []string{
-		`git commit -m "use => arrows"`, `bash -c 'rm -rf build'`, "sed -i.bak s/a/b/ f", "sed -Ei s/a/b/ f",
-		"sed --in-place s/a/b/ f", "gofmt -l -w .", "go test ./... 2>err.log", "npm ci",
-		"cd x && git commit -m y", "find . -name '*.o' -exec rm {} +", "sudo rm f",
-	} {
-		require.True(t, IsChange(bashCall(cmd)), cmd)
-	}
-	require.True(t, IsChange(provider.ToolCallBlock{Name: "python"}))
-	require.True(t, IsChange(provider.ToolCallBlock{Name: "edit"}))
-	require.True(t, IsChange(provider.ToolCallBlock{Name: "write"}))
-	require.False(t, IsChange(provider.ToolCallBlock{Name: "read"}))
-	require.True(t, IsChange(provider.ToolCallBlock{Name: "ast", Arguments: json.RawMessage(`{"pattern":"x","rewrite":"y"}`)}))
-	require.False(t, IsChange(provider.ToolCallBlock{Name: "ast", Arguments: json.RawMessage(`{"pattern":"x"}`)}))
-}
-
-func TestReviewInstructionNamesPendingCall(t *testing.T) {
-	call := provider.ToolCallBlock{ID: "e2", Name: "edit", Arguments: json.RawMessage(`{"path":"lexer.go"}`)}
-	got := reviewInstruction(KindChange, &call)
-	require.Contains(t, got, `[tool_call id=e2 edit {"path":"lexer.go"}]`)
 }
 
 func TestReviewerTrimsOversizedTranscript(t *testing.T) {
@@ -255,7 +211,7 @@ func TestReviewerTrimsOversizedTranscript(t *testing.T) {
 	r := NewReviewer(func(context.Context) (Target, error) {
 		return Target{Client: client, Model: provider.Model{ID: "adv", ContextWindow: 4000}}, nil
 	}, func() Snapshot { return Snapshot{System: "exec system", Messages: tr.get()} })
-	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	_, err := r.Review(context.Background())
 	require.NoError(t, err)
 	body := lastUserText(req)
 	require.Contains(t, body, "(earlier transcript omitted)")
@@ -276,11 +232,11 @@ func TestReviewerResetsBeforeOversizedDelta(t *testing.T) {
 	r := NewReviewer(func(context.Context) (Target, error) {
 		return Target{Client: client, Model: provider.Model{ID: "adv", ContextWindow: 4000}}, nil
 	}, func() Snapshot { return Snapshot{System: "exec system", Messages: tr.get()} })
-	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	_, err := r.Review(context.Background())
 	require.NoError(t, err)
 
 	tr.add(text(provider.RoleAssistant, strings.Repeat("y", 20000)+"\nlatest step", time.Unix(2, 0)))
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 	second := reqs[1]
 	require.Len(t, second.Messages, 1, "an oversized delta starts a fresh, trimmed conversation")
@@ -297,17 +253,9 @@ func TestReviewerWaitHonorsContext(t *testing.T) {
 	require.NoError(t, r.acquire(context.Background()))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := r.Review(ctx, KindStep, nil, nil)
+	_, err := r.Review(ctx)
 	require.ErrorIs(t, err, context.Canceled)
 	r.release()
-}
-
-func TestReviewerStartedOnlyAfterTargetResolves(t *testing.T) {
-	r := NewReviewer(func(context.Context) (Target, error) { return Target{}, ErrNoModel }, func() Snapshot { return Snapshot{} })
-	called := false
-	_, err := r.Review(context.Background(), KindChange, nil, func() { called = true })
-	require.ErrorIs(t, err, ErrNoModel)
-	require.False(t, called, "no review status when the advisor cannot run")
 }
 
 func TestTailFromLineKeepsRunes(t *testing.T) {
@@ -329,7 +277,7 @@ func TestReviewerTrimKeepsRoomBesideLargeContext(t *testing.T) {
 	r := NewReviewer(func(context.Context) (Target, error) {
 		return Target{Client: client, Model: provider.Model{ID: "adv", ContextWindow: 4000}}, nil
 	}, func() Snapshot { return Snapshot{System: strings.Repeat("s", 4000), Messages: tr.get()} })
-	_, err := r.Review(context.Background(), KindStep, nil, nil)
+	_, err := r.Review(context.Background())
 	require.NoError(t, err)
 	body := lastUserText(req)
 	require.Contains(t, body, "(earlier transcript omitted)")
@@ -347,11 +295,11 @@ func TestReviewerUndeliveredNoteIsForgottenAndAnnounced(t *testing.T) {
 	tr := &transcript{}
 	tr.set(text(provider.RoleUser, "task", time.Unix(1, 0)))
 	r := newTestReviewer(client, tr)
-	v, err := r.Review(context.Background(), KindStep, nil, nil)
+	v, err := r.Review(context.Background())
 	require.NoError(t, err)
 	r.Undelivered(v.Text)
 	require.Empty(t, r.notes)
-	_, err = r.Review(context.Background(), KindStep, nil, nil)
+	_, err = r.Review(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, lastUserText(reqs[1]), "Your previous note was not delivered")
 }

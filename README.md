@@ -366,33 +366,20 @@ permissions, in sub-agents or packaged agents, or in a strict orchestrator.
 
 ### Advisor
 
-The advisor is a stronger model that watches the working model (the executor)
-and steps in only when it has a concrete reason: a wrong assumption, a missed
-requirement, a risky change, wasted effort, or an unverified "done". The
-executor keeps working on its own and decides what to do with the advice.
+The advisor is a stronger reviewer model that sees the executor's conversation.
+The executor owns the task and decides when to call the no-argument `advisor()`
+tool and what to do with its advice.
 
-The advisor intervenes at these points:
-
-- **Background reviews** (client mode): after each tool batch the advisor
+- **Executor consultations**: call before substantive work (after orientation
+  if needed), when stuck or considering a new approach, and before declaring
+  done. You can also ask the executor to consult the advisor.
+- **Background reviews** (client mode only): after each tool batch the advisor
   reviews what is new. If it has something to say, its note reaches the
   executor before the next model call. One review runs at a time, the advisor
   skips two steps after a note, and it sends at most three background notes
   per request.
-- **First change**: before the first edit, write, ast rewrite, `python` or
-  `codemode` run, or state-changing shell command of a request, the executor
-  waits for a review. A `STOP` holds that call, and the rest of its batch, and
-  tells the executor why. MCP and extension tools are not treated as changes.
-- **Final answer**: when a request changed something, the advisor reviews the
-  final answer once. A `STOP` or a note sends the executor back for one more
-  turn with it.
-- **On demand**: ask the executor to consult the advisor ("ask the advisor")
-  and it calls the no-argument `advisor` tool. It does not call it on its own.
 
-Each checkpoint runs at most once per request, so the two models cannot
-ping-pong. A failed review, or one that takes longer than three minutes, lets
-the executor proceed, and cancelling the request (Esc) during a review never
-runs the held call. While the executor waits, the status bar shows the
-review. Notes appear in the transcript as `◆ advisor` blocks; notes left
+Background notes appear in the transcript as `◆ advisor` blocks; notes left
 over when a request ends are dropped. If another session changes the advisor
 settings, the watcher pauses until this session reloads its tools.
 
@@ -419,7 +406,7 @@ Slash command:
 - `/advisor on` / `/advisor off` toggles it; `on` fails when no model is set.
 
 `--no-tools`, or a `--tools` list without `advisor`, disables the advisor,
-including background reviews and checkpoints.
+including background reviews and executor consultations.
 
 Modes:
 
@@ -438,11 +425,7 @@ Modes:
   the executor/advisor pair appears in Anthropic's advisor compatibility
   table; otherwise `auto` uses client mode. Anthropic's server-side advisor
   tool runs inside the executor's request, and only when the executor calls
-  it. Native mode therefore has no background reviews. At the first change,
-  unless the executor already consulted the advisor in this request, zut
-  holds the call and asks the executor to call `advisor()` first. At the final
-  answer, unless it consulted the advisor after its last change, zut asks it
-  to call `advisor()` before answering. The `:reasoning`
+  it. Native mode therefore has no background reviews. The `:reasoning`
   suffix is ignored. The newest Opus advisors return encrypted advice that zut
   cannot display. Works with subscription OAuth and API keys. Encrypted advice
   is tied to the Anthropic account that produced it, so Anthropic may reject a

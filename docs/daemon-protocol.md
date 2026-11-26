@@ -322,10 +322,9 @@ Message content may contain `provider.ServerToolBlock` (codec content kind
 `server_tool`); the lossless codec keeps its opaque `Raw` payload so replay
 works, while `modes.EventToJSON` projections omit it.
 
-Agent kind `advisor_review` (`core.EvAdvisorReview`) reports a blocking
-advisor review. A `user_message` carrying an advisor note keeps
-`Meta["zut_advisor_note"]` through the lossless codec; projections expose it
-as `advisor_note`. Both are documented in `docs/rpc.md`.
+A `user_message` carrying an advisor note keeps `Meta["zut_advisor_note"]`
+through the lossless codec; projections expose it as `advisor_note`, as
+documented in `docs/rpc.md`.
 
 Unknown agent event kinds are ignorable and still advance the subscription sequence. Protocol version mismatches fail at hello; run `zut daemon restart` after upgrading.
 
