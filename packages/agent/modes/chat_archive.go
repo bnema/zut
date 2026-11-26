@@ -20,6 +20,7 @@ import (
 type chatArchiveState struct {
 	gen         uint64 // bumped per load request; stale results are dropped
 	sessionPath string // path of the last hydrated session
+	summaryKey  string // latestSummaryKey of the last hydrated session
 	path        string // session path the current load or result belongs to
 	cancel      context.CancelFunc
 	hist        core.ArchivedHistory
@@ -51,6 +52,17 @@ func hasCompactionSummary(msgs []provider.Message) bool {
 	return false
 }
 
+// latestSummaryKey identifies the latest compaction summary in msgs, or ""
+// when there is none.
+func latestSummaryKey(msgs []provider.Message) string {
+	for idx := len(msgs) - 1; idx >= 0; idx-- {
+		if m := msgs[idx]; m.Meta["compaction"] == "true" {
+			return fmt.Sprintf("%x/%s/%d", core.MessageTextFingerprint(m), m.Meta["tokens_before"], m.Time.UnixNano())
+		}
+	}
+	return ""
+}
+
 // skipArchivedMessage drops archived messages never shown: hidden rows and
 // compaction summaries a fork copied in as normal message rows.
 func skipArchivedMessage(m provider.Message) bool {
@@ -69,31 +81,28 @@ func (i *Interactive) sessionPathLocked() string {
 }
 
 // refreshChatArchiveLocked starts loading the archived history when the
-// hydrated session path changed. A resnapshot of the same session (live
-// compaction) keeps the archive as is: its rows are already in scrollback,
-// and the next resume shows the new archive.
+// hydrated session path changed. A resnapshot of the same session keeps the
+// archive, except after a live compaction: the shown archive then belongs to
+// an older compaction and a later full repaint would place it above the new
+// separator, so it is dropped (without a repaint; the rows already printed
+// stay in scrollback) and the next resume shows the new archive.
 func (i *Interactive) refreshChatArchiveLocked() {
 	a := &i.chatArchive
 	path := i.sessionPathLocked()
+	key := latestSummaryKey(i.portMsgs)
 	if path != "" && path == a.sessionPath {
+		if key != a.summaryKey {
+			a.summaryKey = key
+			a.dropLocked()
+		}
 		return
 	}
-	a.sessionPath = path
-	if a.cancel != nil {
-		a.cancel()
-		a.cancel = nil
-	}
-	a.gen++
-	a.pending = nil
-	a.path = ""
-	if len(a.hist.Rows) > 0 || len(a.hist.Marks) > 0 || a.hist.Older > 0 {
-		// Another session: never show its predecessor's archive.
-		a.hist, a.budget = core.ArchivedHistory{}, 0
-		a.rev++
-	}
-	if path == "" || !hasCompactionSummary(i.portMsgs) {
+	a.sessionPath, a.summaryKey = path, key
+	a.dropLocked()
+	if path == "" || key == "" {
 		return
 	}
+	a.path = path
 	a.path = path
 	parent := i.runCtx
 	if parent == nil {
@@ -120,6 +129,22 @@ func (i *Interactive) refreshChatArchiveLocked() {
 		case <-ctx.Done():
 		}
 	}()
+}
+
+// dropLocked cancels any load and clears the shown archive and any pending
+// result.
+func (a *chatArchiveState) dropLocked() {
+	if a.cancel != nil {
+		a.cancel()
+		a.cancel = nil
+	}
+	a.gen++
+	a.pending = nil
+	a.path = ""
+	if len(a.hist.Rows) > 0 || len(a.hist.Marks) > 0 || a.hist.Older > 0 {
+		a.hist, a.budget = core.ArchivedHistory{}, 0
+		a.rev++
+	}
 }
 
 // applyChatArchive installs a load result on the Run loop unless a newer

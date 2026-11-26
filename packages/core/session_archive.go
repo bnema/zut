@@ -71,6 +71,9 @@ func ReadArchivedSessionText(ctx context.Context, path string, opt ArchivedOptio
 			return nil
 		}
 		if oversized {
+			// Too large to decode: assume a real compaction (summary-less
+			// dynamic-context rows are small). Safer to show no archive than
+			// one built from an older compaction.
 			latestRow, latestOversized = rowIdx, true
 			return nil
 		}

@@ -178,8 +178,8 @@ func TestChatArchiveSameSessionResnapshotKeepsArchive(t *testing.T) {
 	waitArchive(t, i, 0)
 	rev, gen, _, _ := archiveState(i)
 
-	// Live compaction: same path, new transcript. No reload, no change.
-	hydrateArchive(i, path, []provider.Message{archiveSummaryMsg("5000"), jumpTextMsg(provider.RoleUser, "newer")})
+	// Same session, same compaction (a new turn): no reload, no change.
+	hydrateArchive(i, path, append(append([]provider.Message(nil), live...), jumpTextMsg(provider.RoleUser, "next turn")))
 	rev2, gen2, _, _ := archiveState(i)
 	require.Equal(t, gen, gen2, "no new load for the same session")
 	require.Equal(t, rev, rev2)
@@ -187,6 +187,16 @@ func TestChatArchiveSameSessionResnapshotKeepsArchive(t *testing.T) {
 	require.Nil(t, i.chatArchive.cancel)
 	i.mu.Unlock()
 	require.Contains(t, archiveChat(i), "old question")
+
+	// Live compaction: the archive of the older compaction is dropped so a
+	// full repaint never shows it above the new separator. No reload.
+	hydrateArchive(i, path, []provider.Message{archiveSummaryMsg("5000"), jumpTextMsg(provider.RoleUser, "newer")})
+	_, _, pending, _ := archiveState(i)
+	require.False(t, pending)
+	i.mu.Lock()
+	require.Nil(t, i.chatArchive.cancel, "no reload during the session")
+	i.mu.Unlock()
+	require.NotContains(t, archiveChat(i), "old question")
 }
 
 func TestChatArchiveEqualResultDoesNotRepaint(t *testing.T) {
