@@ -26,6 +26,10 @@ type docEntry struct {
 	// TotalMsgs is the number of message rows (Cursor.MsgSeq). Global
 	// message IDs of this doc are first[d] .. first[d]+TotalMsgs-1.
 	TotalMsgs int
+	// Excluded marks a file that is not listable (hidden or invalid). It is
+	// kept with only Path, Size, and Updated so unchanged files are not
+	// re-checked; it has no rows or postings.
+	Excluded bool
 }
 
 // rowEntry locates one indexed message row. It is fixed width on disk.
@@ -58,76 +62,103 @@ type docBuild struct {
 	terms map[string][]uint32 // term -> ascending local MsgSeq
 	rows  []rowEntry          // MsgID holds the local MsgSeq
 	skip  bool                // hidden or unreadable: not indexed
+	// reset reports that a resumed scan restarted at 0 (file rewritten).
+	reset bool
+	// scanned is the number of file bytes consumed by the scan.
+	scanned int64
 }
 
 func buildWorkers() int { return max(1, runtime.NumCPU()/2) }
 
+// scanJob is one file to scan, from a zero cursor or a resume cursor.
+type scanJob struct {
+	path string
+	from core.SessionScanCursor
+	// root, when set, requires core.SessionListable(root, path).
+	root string
+}
+
 // buildMem indexes paths. Hidden sessions and unreadable files are left out.
 func buildMem(ctx context.Context, paths []string, opts Options, progress func(done, total int)) (*memIndex, error) {
-	results := make([]docBuild, len(paths))
-	jobs := make(chan int)
+	jobs := make([]scanJob, len(paths))
+	for i, p := range paths {
+		jobs[i] = scanJob{path: p}
+	}
+	results, err := scanDocs(ctx, jobs, opts, progress)
+	if err != nil {
+		return nil, err
+	}
+	return mergeDocs(results), nil
+}
+
+// scanDocs runs jobs on buildWorkers goroutines. Results keep job order.
+// Only cancellation is returned as an error.
+func scanDocs(ctx context.Context, jobs []scanJob, opts Options, progress func(done, total int)) ([]docBuild, error) {
+	results := make([]docBuild, len(jobs))
+	feed := make(chan int)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var firstErr error
 	done := 0
 	for range buildWorkers() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := range jobs {
-				b, err := buildDoc(ctx, paths[i], opts)
+			for i := range feed {
+				b := buildDoc(ctx, jobs[i], opts)
 				mu.Lock()
-				if err != nil && firstErr == nil {
-					firstErr = err
-				}
 				results[i] = b
 				done++
 				if progress != nil {
-					progress(done, len(paths))
+					progress(done, len(jobs))
 				}
 				mu.Unlock()
 			}
 		}()
 	}
-feed:
-	for i := range paths {
+loop:
+	for i := range jobs {
 		select {
-		case jobs <- i:
+		case feed <- i:
 		case <-ctx.Done():
-			break feed
+			break loop
 		}
 	}
-	close(jobs)
+	close(feed)
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return mergeDocs(results), nil
+	return results, nil
 }
 
-// buildDoc extracts one session. Only cancellation is returned as an error;
-// files that vanish or fail to scan are marked skip.
-func buildDoc(ctx context.Context, path string, opts Options) (docBuild, error) {
+// buildDoc extracts one session from cursor from. Files that vanish, are
+// hidden, or fail to scan are marked skip. With a non-zero from, terms and
+// rows hold only the tail, unless the scan restarted (reset).
+func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
+	path, from := job.path, job.from
 	info, err := os.Stat(path)
 	if err != nil {
-		return docBuild{skip: true}, nil
+		return docBuild{skip: true}
+	}
+	excluded := docBuild{skip: true, doc: docEntry{SessionDoc: SessionDoc{Path: path, Updated: info.ModTime()}, Size: info.Size(), Excluded: true}}
+	if job.root != "" && !core.SessionListable(ctx, job.root, path) {
+		return excluded
 	}
 	sum := core.DescribeSessionContext(ctx, path)
-	if err := ctx.Err(); err != nil {
-		return docBuild{}, err
+	if ctx.Err() != nil {
+		return docBuild{skip: true}
 	}
 	if sum.HideFromSessions {
-		return docBuild{skip: true}, nil
+		return excluded
 	}
 	title := sum.Title
 	if title == "" {
 		title = sum.FirstUserText
 	}
 	b := docBuild{terms: map[string][]uint32{}}
-	cur, meta, err := core.ScanSessionText(ctx, path, core.SessionScanCursor{}, func(row core.SessionTextRow) error {
+	// ScanSessionText decides a restart before emitting any row, so on
+	// Reset every collected row belongs to the full rescan.
+	cur, meta, err := core.ScanSessionText(ctx, path, from, func(row core.SessionTextRow) error {
 		if opts.Skip != nil && opts.Skip(row.Message) {
 			return nil
 		}
@@ -144,10 +175,12 @@ func buildDoc(ctx context.Context, path string, opts Options) (docBuild, error) 
 		return nil
 	})
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return docBuild{}, ctxErr
-		}
-		return docBuild{skip: true}, nil
+		return docBuild{skip: true}
+	}
+	b.reset = cur.Reset
+	b.scanned = cur.Offset - from.Offset
+	if cur.Reset {
+		b.scanned = cur.Offset
 	}
 	b.doc = docEntry{
 		SessionDoc: SessionDoc{Path: path, ID: meta.ID, CWD: sum.CWD, Title: title, Started: sum.Started, Updated: info.ModTime()},
@@ -155,41 +188,19 @@ func buildDoc(ctx context.Context, path string, opts Options) (docBuild, error) 
 		Cursor:     cur,
 		TotalMsgs:  cur.MsgSeq,
 	}
-	return b, nil
+	b.doc.Cursor.Reset = false
+	return b
 }
 
+// mergeDocs builds an index from fresh full scans.
 func mergeDocs(results []docBuild) *memIndex {
-	m := &memIndex{first: []uint32{0}, rowFirst: []uint32{0}}
-	all := map[string][]uint32{}
+	entries := make([]mergeEntry, 0, len(results))
 	for _, r := range results {
-		if r.skip {
-			continue
+		if !r.skip {
+			entries = append(entries, mergeEntry{oldDoc: -1, doc: r.doc, add: r})
 		}
-		base := m.first[len(m.first)-1]
-		for t, seqs := range r.terms {
-			g := all[t]
-			for _, s := range seqs {
-				g = append(g, base+s)
-			}
-			all[t] = g
-		}
-		for _, row := range r.rows {
-			row.MsgID += base
-			m.rows = append(m.rows, row)
-		}
-		m.docs = append(m.docs, r.doc)
-		m.first = append(m.first, base+uint32(r.doc.TotalMsgs))
-		m.rowFirst = append(m.rowFirst, uint32(len(m.rows)))
 	}
-	m.terms = make([]string, 0, len(all))
-	for t := range all {
-		m.terms = append(m.terms, t)
-	}
-	sort.Strings(m.terms)
-	m.postings = make([][]uint32, len(m.terms))
-	for i, t := range m.terms {
-		m.postings[i] = all[t]
-	}
+	m, _ := mergeEntries(nil, entries) // no old segment: cannot fail
 	return m
 }
 

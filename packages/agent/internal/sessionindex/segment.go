@@ -31,7 +31,8 @@ import (
 //	  docs      per doc: str Path, str ID, str CWD, str Title,
 //	            Started i64, Updated i64 (unix ns, minInt64 = zero time),
 //	            Size varint, Cursor.Offset varint, Cursor.MsgSeq uvarint,
-//	            str Cursor.MetaID, Cursor.HeadHash u64, TotalMsgs uvarint
+//	            str Cursor.MetaID, Cursor.HeadHash u64, TotalMsgs uvarint,
+//	            flags u8 (bit 0 = Excluded)
 //	            (str = uvarint length + bytes)
 //	  first     u32 x (nDocs+1)
 //	  rowFirst  u32 x (nDocs+1)
@@ -43,7 +44,7 @@ import (
 //	            Len u32, Role u8, Time i64, Fingerprint u64
 const (
 	segmentMagic     = "ZUTSIDX\x00"
-	formatVersion    = 1
+	formatVersion    = 2
 	tokenizerVersion = 1
 	headerSize       = 128
 	rowSize          = 33
@@ -129,6 +130,11 @@ func encodeSegment(m *memIndex) []byte {
 		str(d.Cursor.MetaID)
 		buf = le.AppendUint64(buf, d.Cursor.HeadHash)
 		buf = binary.AppendUvarint(buf, uint64(d.TotalMsgs))
+		var flags byte
+		if d.Excluded {
+			flags |= 1
+		}
+		buf = append(buf, flags)
 	}
 	mark(secFirst)
 	for _, v := range m.first {
@@ -415,6 +421,12 @@ func decodeDocs(b []byte, n int) ([]docEntry, error) {
 		d.Cursor.MetaID = str()
 		d.Cursor.HeadHash = u64()
 		d.TotalMsgs = int(uv())
+		if len(b) == 0 || b[0] > 1 {
+			bad = true
+		} else {
+			d.Excluded = b[0] == 1
+			b = b[1:]
+		}
 		if bad {
 			return nil, corrupt("docs")
 		}
