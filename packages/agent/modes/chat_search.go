@@ -48,6 +48,14 @@ type searchReaderTarget struct {
 
 func (r *searchReader) Active() bool { return r != nil }
 
+// finderViewActive reports whether the finder, its resume prompt, or the
+// search reader is open.
+func (i *Interactive) finderViewActive() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.finder.Active() || i.finderResume.Active() || i.searchReader.Active()
+}
+
 const searchReaderFooter = "^n/^p match · ↑↓ PgUp/PgDn scroll · esc close"
 
 // searchReaderMessageText returns the searchable text of a user or

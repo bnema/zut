@@ -591,6 +591,7 @@ Tabs (`tab` switches):
 
 Searching:
 - Typing searches immediately. Words match by prefix: `refacto` finds `refactoring`.
+- Words shorter than 2 characters are ignored.
 - Only user and assistant text is searched; tool calls and results are not.
 - All projects by default; `@here` limits results to the current directory.
 
@@ -599,14 +600,14 @@ Keys:
 - `enter`: open; `ctrl+r`: rename; `ctrl+d` then `y`: delete.
 - `esc`: close.
 
-The active session and sessions running elsewhere in the daemon cannot be deleted. Sessions open in other in-process zut instances are not detected.
+The active session cannot be deleted. Sessions running elsewhere in the daemon cannot be renamed or deleted from the Finder; in daemon mode, rename and delete wait until the running-session list is known. Sessions open in zut processes running without the daemon are not detected.
 
 Opening a session from another directory asks first:
 - `[y]`: switch to that directory and resume.
 - `[n]`: fork into the current directory as a new session; the original stays untouched. This is the only option when the original directory no longer exists.
 - `esc`: cancel.
 
-Sessions running in the daemon can only be attached. Sessions from the current directory open directly.
+Sessions running in the daemon can only be attached. Sessions from the current directory open directly. Opening, switching, and forking are refused while work is active; attaching a running daemon session follows the daemon's own rule.
 
 Opening a message hit shows it in a read-only reader over the chat: a snapshot of the transcript with the search words highlighted and the matched message tinted. Title matches open the session without the reader. If the hit was compacted away, the status says so and the reader opens on the next other match, if any.
 - `ctrl+n`/`ctrl+p`: next/previous matching message.
@@ -615,7 +616,7 @@ Opening a message hit shows it in a read-only reader over the chat: a snapshot o
 
 Resume switches the workspace to the recorded cwd before replay, updating tools, instructions, sandbox, and file suggestions. It restores provider/model, rebuilding the agent if needed. Failed staged switches leave the current session unchanged.
 
-The search index lives in `search/` next to `sessions/` (`$ZUT_HOME/search` by default). It updates incrementally each time the Finder opens and drops the text of deleted sessions. Deleting it is safe; it is rebuilt on the next open.
+The search index lives in `search/` next to `sessions/` (`$ZUT_HOME/search` by default) and holds words from session transcripts. It updates incrementally each time the Finder opens, so sessions removed outside zut (`zut sessions prune`, `rm`) keep their words in `search/` until the next Finder open. Deleting a session from the Finder removes its words right away. Deleting it is safe; it is rebuilt on the next open.
 
 Tree-navigation branches appear only in `/session tree`. Unavailable with `--no-session`. Fresh interactive sessions get a concise model title after the first real prompt; resume restores it (see AI terminal titles).
 

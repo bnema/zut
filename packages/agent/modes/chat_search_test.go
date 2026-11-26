@@ -341,6 +341,14 @@ func TestSearchReaderConfirmationTakesOverKeysAndScreen(t *testing.T) {
 	out := stripANSIBytes(term.String())
 	require.Contains(t, out, "rm -rf build", "the confirmation that owns the keys is what is shown")
 
+	// "/" does not blur the shown confirmation behind the reader, and
+	// nothing reaches the hidden editor.
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '/'})
+	require.True(t, i.confirmDialog.Focused())
+	require.True(t, i.ed.IsEmpty())
+	i.redraw()
+	require.Contains(t, stripANSIBytes(term.String()), "rm -rf build")
+
 	// Esc answers the visible confirmation, not the hidden reader.
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
 	select {

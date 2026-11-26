@@ -120,7 +120,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// focus to the main editor without answering the pending request, so
 	// slash commands and the dialogs they open can run first.
 	if i.confirmDialog.Focused() {
-		if k.Kind == tui.KeyRune && k.Rune == '/' {
+		// Over a finder view the confirmation is what is shown; blurring it
+		// would hide it behind that modal view and send "/" to an unseen
+		// editor, so "/" is handled by the confirmation like any key there.
+		if k.Kind == tui.KeyRune && k.Rune == '/' && !i.finderViewActive() {
 			i.confirmDialog.Blur()
 			i.ed.Insert("/")
 			i.suggest.Reset()
