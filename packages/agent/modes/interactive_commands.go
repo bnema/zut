@@ -1222,7 +1222,7 @@ func (i *Interactive) applySessionDeletion(path string) {
 
 func (i *Interactive) applySessionSelection(path string) {
 	if i.portMode.Load() {
-		i.portResumeSession(path)
+		i.portResumeSession(path, "")
 		return
 	}
 	if i.cfg.LoadSession == nil {
@@ -1262,6 +1262,7 @@ func (i *Interactive) applySessionSelection(path string) {
 }
 
 func (i *Interactive) finishSessionSelection(path string, err error) {
+	defer i.queuePendingFinderJump(path, err)
 	if err != nil {
 		i.restoreFailedSessionTitle()
 		i.mu.Lock()
@@ -1626,8 +1627,11 @@ func (i *Interactive) portAttachSession(id session.ID) {
 }
 
 // portResumeSession asks the daemon to resume the on-disk session at path.
-func (i *Interactive) portResumeSession(path string) {
-	cwd := i.SessionInfo().CWD
+// cwd is the workspace for a newly created session; "" keeps the current one.
+func (i *Interactive) portResumeSession(path, cwd string) {
+	if cwd == "" {
+		cwd = i.SessionInfo().CWD
+	}
 	i.portSwitchAsync("resume", func(ctx context.Context, client SessionClient) (session.ID, error) {
 		// Resolve against the daemon, not the possibly empty or stale picker.
 		infos, err := client.List(ctx)

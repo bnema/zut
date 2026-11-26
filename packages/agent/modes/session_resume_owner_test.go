@@ -98,7 +98,7 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 			i.sessionDialog.liveFocus = false
 			act := i.sessionDialog.HandleKey(tui.Key{Kind: tui.KeyEnter})
 			require.True(t, act.Select)
-			i.portResumeSession(act.Path)
+			i.portResumeSession(act.Path, "")
 			res := awaitResumeResult(t, i)
 			require.NoError(t, res.err)
 			require.Equal(t, session.ID(owner), res.id)
@@ -141,7 +141,7 @@ func TestResumeListFailureDoesNotCreate(t *testing.T) {
 	client := newMockSessionClient(t)
 	client.EXPECT().List(mock.Anything).Return(nil, errors.New("list unavailable")).Once()
 	i := &Interactive{client: client, sessionResults: make(chan sessionResult, 1)}
-	i.portResumeSession("missing.jsonl")
+	i.portResumeSession("missing.jsonl", "")
 	require.ErrorContains(t, awaitResumeResult(t, i).err, "list live sessions: list unavailable")
 	client.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }

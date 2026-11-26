@@ -143,11 +143,9 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 	}()
 }
 
-// finderOpen opens the chosen item. TODO: resume or attach the session and
-// jump to the hit.
+// finderOpen opens the chosen item and jumps to the hit once resumed.
 func (i *Interactive) finderOpen(item finderItem, hit int) {
-	_, _ = item, hit
-	i.setFinderStatusErr("finder: open is not implemented yet")
+	i.finderOpenItem(item, hit)
 }
 
 // openFinderResume resumes plan directly when it ran in this directory,
@@ -179,11 +177,9 @@ func (i *Interactive) handleFinderResumeKey(k tui.Key) {
 	i.invalidate()
 }
 
-// finderResumeChoice executes the chosen way to open plan. TODO: resume,
-// switch directory, fork, or attach.
+// finderResumeChoice executes the chosen way to open plan.
 func (i *Interactive) finderResumeChoice(plan resumePlan, choice resumeChoice) {
-	_, _ = plan, choice
-	i.setFinderStatusErr("finder: resume is not implemented yet")
+	i.finderExecuteResume(plan, choice)
 }
 
 // defaultFinderSources opens the session index on first use and returns

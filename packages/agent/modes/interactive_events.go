@@ -1165,6 +1165,8 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		i.sessionDialog.Close()
 		i.statusErr, i.statusOK = "", ""
 		i.mu.Unlock()
+		// Already in the target session: jump without a switch.
+		i.runPendingFinderJump(i.currentSessionPath())
 		i.invalidate()
 		return false
 	case sessionResultSwitch:
@@ -1173,6 +1175,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		}
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
+			i.pendingFinderJump = nil
 			i.mu.Unlock()
 			i.invalidate()
 			return false
@@ -1218,6 +1221,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 	i.mu.Unlock()
 	i.syncPortDialogs()
 	i.scrollToBottom()
+	i.runPendingFinderJump(i.currentSessionPath())
 	i.invalidate()
 	return false
 }

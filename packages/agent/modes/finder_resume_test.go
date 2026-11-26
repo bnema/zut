@@ -103,7 +103,7 @@ func TestFinderResumeWiring(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Terminal: &alertTestTerminal{}})
 	i.openFinderResume(resumePlan{TargetCWD: "/a", CurrentCWD: "/a"})
 	require.False(t, i.finderResume.Active())
-	require.Equal(t, "finder: resume is not implemented yet", i.statusErr)
+	require.Equal(t, "session loading is not wired in this build", i.statusErr)
 
 	i.statusErr = ""
 	i.openFinderResume(resumePlan{TargetCWD: "/a/g", CurrentCWD: "/a/z", Live: true})
@@ -120,5 +120,5 @@ func TestFinderResumeWiring(t *testing.T) {
 	i.openFinderResume(resumePlan{TargetCWD: "/a/g", CurrentCWD: "/a/z", Live: true})
 	i.handleKey(t.Context(), tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.False(t, i.finderResume.Active())
-	require.Equal(t, "finder: resume is not implemented yet", i.statusErr)
+	require.Equal(t, "finder: attaching a live session needs the daemon", i.statusErr)
 }

@@ -755,6 +755,9 @@ type Interactive struct {
 	stableChatLen     int
 	chatRowBase       int
 
+	// pendingFinderJump runs after a finder resume (finder_resume_exec.go).
+	pendingFinderJump *pendingFinderJump
+
 	// Messages typed while a turn is in flight. Each is delivered as
 	// steering input at the next safe model/tool boundary. Rendered
 	// above the status bar as "sliding in: ..." chips.
