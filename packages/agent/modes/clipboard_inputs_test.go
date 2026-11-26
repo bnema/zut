@@ -23,8 +23,8 @@ func TestFilterInputsAcceptPaste(t *testing.T) {
 
 	rescue := &rescueDialog{}
 	rescue.HandleKey(paste)
-	if rescue.query != "pasted query" {
-		t.Fatalf("rescue query = %q", rescue.query)
+	if rescue.query.String() != "pasted query" {
+		t.Fatalf("rescue query = %q", rescue.query.String())
 	}
 
 	login := &loginDialog{step: loginStepProvider}

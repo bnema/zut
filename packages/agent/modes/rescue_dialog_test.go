@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -53,4 +56,29 @@ func TestRescueDialogFullErrorView(t *testing.T) {
 	if d.Active() {
 		t.Fatal("escape should dismiss picker")
 	}
+}
+
+func TestRescueDialogUsesSharedPicker(t *testing.T) {
+	d := newRescueDialog()
+	d.OpenPending("r1", session.RescueOptions{
+		Error:      "rate limited",
+		Candidates: []string{"openai/gpt-5.2", "anthropic/claude-opus-4-5", "openrouter/anthropic/claude-opus-4.5"},
+	}, nil)
+	for _, r := range "opus45" {
+		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
+	}
+	require.Len(t, d.view, 2)
+	const width = 70
+	rows := d.Render(tui.Dark, width, 20)
+	assertRowsFitWidth(t, rows, width)
+	text := stripANSIBytes(strings.Join(rows, "\n"))
+	require.Contains(t, text, "anthropic · claude-opus-4-5")
+	require.Contains(t, text, "enter retry")
+	row, col := d.CursorPos()
+	require.Contains(t, stripANSIBytes(rows[row]), " > opus45")
+	require.Equal(t, 3+len("opus45"), col)
+
+	d.HandleKey(tui.Key{Kind: tui.KeyTab})
+	row, _ = d.CursorPos()
+	require.Equal(t, -1, row, "the error view has no query caret")
 }

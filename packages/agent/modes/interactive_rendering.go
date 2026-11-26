@@ -1137,6 +1137,13 @@ func (i *Interactive) redraw() {
 			cursorCol = 0
 		}
 	}
+	if dialogID == "rescue" {
+		if r, c := i.rescueDialog.CursorPos(); r >= 0 {
+			cursorRow = dialogLead + r
+			cursorCol = c
+			cursorInDialog = true
+		}
+	}
 	if dialogID == "model" {
 		if r, c := i.modelDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
