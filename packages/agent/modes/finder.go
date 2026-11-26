@@ -99,6 +99,11 @@ type finderModel struct {
 	loadingSince time.Time
 	err          string
 
+	// indexing is set while the index updates; indexDone/indexTotal count
+	// scanned session files.
+	indexing              bool
+	indexDone, indexTotal int
+
 	confirmDelete bool
 }
 
@@ -201,6 +206,19 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	}
 	m.confirmDelete = false
 	return true
+}
+
+// SetIndexing records index update progress for the header.
+func (m *finderModel) SetIndexing(active bool, done, total int) {
+	m.indexing, m.indexDone, m.indexTotal = active, done, total
+}
+
+// Refresh re-runs the current search, for example after the index changed.
+func (m *finderModel) Refresh() finderAction {
+	if !m.Active() {
+		return finderAction{}
+	}
+	return m.search()
 }
 
 // ApplySnippets sets hit snippet texts (keyed by hit index) on the item

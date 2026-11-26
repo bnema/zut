@@ -172,6 +172,14 @@ func finderFitBorder(left, corner string, w int) string {
 }
 
 func (m *finderModel) status(th tui.Theme) (string, tui.TerminalColor) {
+	if m.indexing {
+		s := newSpinner(th)
+		s.startedAt = m.loadingSince
+		if m.indexTotal > 0 {
+			return fmt.Sprintf("%s indexing %d/%d", s.Frame(), m.indexDone, m.indexTotal), th.Spinner
+		}
+		return s.Frame() + " indexing", th.Spinner
+	}
 	if m.loading {
 		s := newSpinner(th)
 		s.startedAt = m.loadingSince

@@ -2,8 +2,10 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/tui"
 )
 
@@ -13,6 +15,9 @@ const (
 	finderSearchDebounce = 80 * time.Millisecond
 	// finderMinHeight is the smallest box Render lays out without overflow.
 	finderMinHeight = 9
+	// finderIndexRetryDelay waits for another process's index update
+	// before retrying once.
+	finderIndexRetryDelay = time.Second
 )
 
 // openFinderShortcut opens the finder from ctrl+f unless another dialog
@@ -43,6 +48,7 @@ func (i *Interactive) openFinder(ctx context.Context) {
 	act := i.finder.Open(0)
 	i.mu.Unlock()
 	i.dispatchFinderSearch(ctx, act, 0)
+	i.startFinderIndexUpdate(ctx)
 	i.invalidate()
 }
 
@@ -185,4 +191,116 @@ func (i *Interactive) handleFinderResumeKey(k tui.Key) {
 func (i *Interactive) finderResumeChoice(plan resumePlan, choice resumeChoice) {
 	_, _ = plan, choice
 	i.setFinderStatusErr("finder: resume is not implemented yet")
+}
+
+// defaultFinderSources opens the session index on first use and returns
+// the Sessions and Messages tabs, or nil when the index cannot be opened.
+func (i *Interactive) defaultFinderSources() []finderSource {
+	index := i.ensureFinderIndex()
+	if index == nil {
+		return nil
+	}
+	return []finderSource{
+		&finderSessionSource{index: index, now: time.Now},
+		&finderMessageSource{index: index},
+	}
+}
+
+func (i *Interactive) ensureFinderIndex() *sessionindex.Index {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.finderIndex != nil {
+		return i.finderIndex
+	}
+	index, err := sessionindex.Open(i.sessionsRoot(), sessionindex.Options{Skip: isHiddenTranscriptMessage})
+	if err != nil {
+		return nil
+	}
+	i.finderIndex = index
+	return index
+}
+
+// startFinderIndexUpdate refreshes the index in the background, shows
+// progress in the finder header, and re-runs the current search when done.
+// ErrBusy (another process is updating) is retried once after
+// finderRetryDelay; the finder keeps searching the current generation.
+func (i *Interactive) startFinderIndexUpdate(ctx context.Context) {
+	i.mu.Lock()
+	index := i.finderIndex
+	if index == nil || i.finderUpdating {
+		i.mu.Unlock()
+		return
+	}
+	i.finderUpdating = true
+	updateCtx, cancel := context.WithCancel(ctx)
+	i.finderUpdateCancel = cancel
+	retry := i.finderRetryDelay
+	if i.finder != nil {
+		i.finder.SetIndexing(true, 0, 0)
+	}
+	i.mu.Unlock()
+
+	progress := func(done, total int) {
+		select {
+		case i.loopCalls <- func() {
+			i.mu.Lock()
+			if i.finder != nil && i.finderUpdating {
+				i.finder.SetIndexing(true, done, total)
+			}
+			i.mu.Unlock()
+			i.invalidate()
+		}:
+		default: // progress is best-effort; never block the scan
+		}
+	}
+	go func() {
+		defer cancel()
+		err := index.Update(updateCtx, progress)
+		if errors.Is(err, sessionindex.ErrBusy) {
+			timer := time.NewTimer(retry)
+			select {
+			case <-timer.C:
+				err = index.Update(updateCtx, progress)
+			case <-updateCtx.Done():
+				timer.Stop()
+				err = updateCtx.Err()
+			}
+		}
+		finish := func() {
+			i.mu.Lock()
+			i.finderUpdating = false
+			i.finderUpdateCancel = nil
+			var act finderAction
+			if i.finder != nil {
+				i.finder.SetIndexing(false, 0, 0)
+				act = i.finder.Refresh()
+			}
+			i.mu.Unlock()
+			if err != nil && !errors.Is(err, sessionindex.ErrBusy) && updateCtx.Err() == nil {
+				i.setFinderStatusErr("finder: index update: " + err.Error())
+			}
+			i.dispatchFinderSearch(ctx, act, 0)
+			i.invalidate()
+		}
+		select {
+		case i.loopCalls <- finish:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// closeFinderIndex stops a running update and closes the index.
+func (i *Interactive) closeFinderIndex() {
+	i.mu.Lock()
+	cancel := i.finderUpdateCancel
+	index := i.finderIndex
+	i.finderUpdateCancel = nil
+	i.finderIndex = nil
+	i.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if index != nil {
+		_ = index.Close()
+	}
 }

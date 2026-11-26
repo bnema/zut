@@ -10,6 +10,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
@@ -776,6 +777,14 @@ type Interactive struct {
 	finderDelay time.Duration
 	// finderResume asks how to open a session from another directory.
 	finderResume *resumeConfirm
+	// finderIndex is the session text index, opened on first finder use.
+	finderIndex *sessionindex.Index
+	// finderUpdating is set while a background index Update runs.
+	finderUpdating bool
+	// finderUpdateCancel stops the background index Update on shutdown.
+	finderUpdateCancel context.CancelFunc
+	// finderRetryDelay waits before retrying an Update that hit ErrBusy.
+	finderRetryDelay time.Duration
 
 	dialog                  *loginDialog
 	modelDialog             *modelDialog
@@ -978,6 +987,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		loopCalls:         make(chan func(), loopCallsCap),
 		sessionTimeout:    defaultSessionTimeout,
 		finderDelay:       finderSearchDebounce,
+		finderRetryDelay:  finderIndexRetryDelay,
 		terminalProfile:   profile,
 		activeThemeSource: source,
 		themeWatchEvents:  make(chan themeWatchEvent, 8),
@@ -1072,6 +1082,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.SetPinnedSkillsPending(true)
 	}
 	i.portMode.Store(cfg.Port != nil)
+	i.finderSources = i.defaultFinderSources
 	return i
 }
 
@@ -1168,6 +1179,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer i.cancelSessionTitle()
 	defer i.sessionDialog.Close()
 	defer i.closeFinder()
+	defer i.closeFinderIndex()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
