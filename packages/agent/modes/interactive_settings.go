@@ -545,9 +545,10 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
+	models := reachablePickerModels(loggedIn)
 	i.mu.Lock()
 	// The renderer reads the dialog under i.mu.
-	i.modelDialog.Open(currentProvider, current, loggedIn, reasoning)
+	i.modelDialog.Open(currentProvider, current, models, reasoning)
 	i.mu.Unlock()
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {

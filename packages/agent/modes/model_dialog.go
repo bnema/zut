@@ -22,6 +22,7 @@ import (
 type modelDialog struct {
 	active        bool
 	all           []provider.PickerModel // reachable models, picker order
+	texts         []pickerModelText      // search text of all, same index
 	tabs          []string               // "" (all), then provider ids
 	tab           int
 	view          []provider.PickerModel // selectable rows, display order
@@ -56,15 +57,14 @@ func newModelDialog() *modelDialog {
 	return &modelDialog{}
 }
 
-// Open shows the dialog. currentProvider/current is the active model so
-// it can be pre-selected and marked.
-func (d *modelDialog) Open(currentProvider, current string, loggedInProviders []string, reasoning ...string) {
-	d.active = true
-	// Only surface models the user can actually reach: a provider is
-	// shown only when it has a resolvable credential (api key, oauth
-	// subscription, or the always-available ollama). An empty
-	// loggedInProviders list therefore yields an empty picker rather
-	// than dumping the entire ~900-model catalog.
+// reachablePickerModels returns, in picker order, the models of the
+// providers the user can actually reach: a provider is shown only when it
+// has a resolvable credential (api key, oauth subscription, or the
+// always-available ollama). An empty loggedInProviders list therefore
+// yields an empty picker rather than dumping the entire ~900-model
+// catalog. Callers build it before taking the interactive mutex: ordering
+// the catalog is the costly part of opening the picker.
+func reachablePickerModels(loggedInProviders []string) []provider.PickerModel {
 	provSet := map[string]bool{}
 	for _, p := range loggedInProviders {
 		provSet[p] = true
@@ -75,19 +75,28 @@ func (d *modelDialog) Open(currentProvider, current string, loggedInProviders []
 			filtered = append(filtered, m)
 		}
 	}
+	return provider.PickerModels(filtered)
+}
+
+// Open shows the dialog over models (see reachablePickerModels).
+// currentProvider/current is the active model so it can be pre-selected
+// and marked.
+func (d *modelDialog) Open(currentProvider, current string, models []provider.PickerModel, reasoning ...string) {
+	d.active = true
 	d.reasoning = ""
 	d.showReasoning = len(reasoning) > 0
 	if d.showReasoning {
 		d.reasoning = provider.NormalizeReasoning(reasoning[0])
 	}
-	d.setModels(filtered, currentProvider, current)
+	d.setModels(models, currentProvider, current)
 }
 
-// setModels lists models with current pre-selected, on the "all" tab with
-// an empty query.
-func (d *modelDialog) setModels(models []provider.Model, currentProvider, current string) {
+// setModels lists models (picker order) with current pre-selected, on the
+// "all" tab with an empty query.
+func (d *modelDialog) setModels(models []provider.PickerModel, currentProvider, current string) {
 	d.current, d.currentProv = current, currentProvider
-	d.all = d.currentProviderFirst(provider.PickerModels(models))
+	d.all = d.currentProviderFirst(append([]provider.PickerModel(nil), models...))
+	d.texts = pickerModelTexts(d.all)
 	d.tabs = []string{""}
 	for _, m := range d.all {
 		if d.tabs[len(d.tabs)-1] != m.Provider {
@@ -138,13 +147,19 @@ func (d *modelDialog) grouped() bool {
 // cursor goes to the best match while searching, else to the current
 // model (if visible) or the first row.
 func (d *modelDialog) refilter() {
-	var models []provider.PickerModel
-	for _, m := range d.all {
-		if d.tab == 0 || m.Provider == d.tabs[d.tab] {
-			models = append(models, m)
+	models := d.all
+	texts := d.texts
+	if d.tab > 0 {
+		models = make([]provider.PickerModel, 0, len(d.all))
+		texts = make([]pickerModelText, 0, len(d.all))
+		for i, m := range d.all {
+			if m.Provider == d.tabs[d.tab] {
+				models = append(models, m)
+				texts = append(texts, d.texts[i])
+			}
 		}
 	}
-	d.view = rankPickerModels(models, d.query.String(), d.isCurrent)
+	d.view = rankPickerModels(models, texts, d.query.String(), d.isCurrent)
 	d.cursor, d.viewTop = 0, 0
 	if d.query.String() != "" {
 		return
@@ -157,14 +172,28 @@ func (d *modelDialog) refilter() {
 	}
 }
 
-// rankPickerModels filters models for a picker query. An empty query
+// pickerModelText is the search text of a model: "provider name id" and
+// its normalizeModelQuery form.
+type pickerModelText struct{ hay, norm string }
+
+func pickerModelTexts(models []provider.PickerModel) []pickerModelText {
+	out := make([]pickerModelText, len(models))
+	for i, m := range models {
+		hay := m.Provider + " " + m.DisplayName + " " + m.ID
+		out[i] = pickerModelText{hay: hay, norm: normalizeModelQuery(hay)}
+	}
+	return out
+}
+
+// rankPickerModels filters models (texts[i] is the search text of
+// models[i]) for a picker query. An empty query
 // keeps the given order and drops dated snapshots of listed aliases,
 // except the one keep accepts (the current model; keep may be nil).
 // Otherwise every query word must fuzzy-match "provider name id"; models
 // containing a word literally (ignoring punctuation and case, so "opus46"
 // finds claude-opus-4-6) rank first, then by fuzzy score, ties keeping
 // the given order.
-func rankPickerModels(models []provider.PickerModel, query string, keep func(provider.PickerModel) bool) []provider.PickerModel {
+func rankPickerModels(models []provider.PickerModel, texts []pickerModelText, query string, keep func(provider.PickerModel) bool) []provider.PickerModel {
 	words := strings.Fields(query)
 	if len(words) == 0 {
 		out := make([]provider.PickerModel, 0, len(models))
@@ -175,11 +204,9 @@ func rankPickerModels(models []provider.PickerModel, query string, keep func(pro
 		}
 		return out
 	}
-	haystacks := make([]string, len(models))
-	normalized := make([]string, len(models))
-	for i, m := range models {
-		haystacks[i] = m.Provider + " " + m.DisplayName + " " + m.ID
-		normalized[i] = normalizeModelQuery(haystacks[i])
+	haystacks := make([]string, len(texts))
+	for i, t := range texts {
+		haystacks[i] = t.hay
 	}
 	const literalBonus = 1000
 	total := make([]int, len(models))
@@ -196,7 +223,7 @@ func rankPickerModels(models []provider.PickerModel, query string, keep func(pro
 				continue
 			}
 			total[i] += scores[i]
-			if needle != "" && strings.Contains(normalized[i], needle) {
+			if needle != "" && strings.Contains(texts[i].norm, needle) {
 				total[i] += literalBonus
 			}
 		}
@@ -279,43 +306,36 @@ func (d *modelDialog) Render(th tui.Theme, width, height int) []string {
 		status = "1 model"
 	}
 	lines := d.lines()
-	// Chrome around the list, dropped in this order when the pane is too
-	// short for a few list rows: footer, spacer, detail (with its rule).
-	top := 3 // tabs, query, rule
+	// Chrome around the list: the spacer under the header always stays
+	// (the pane frame would add it back), the footer and then the detail
+	// (with its rule) go when the pane is too short for a few list rows.
+	top := 4 // spacer, tabs, query, rule
 	if d.showReasoning {
 		top++
 	}
-	spacer, detail, footer := true, true, true
+	detail, footer := true, true
 	rows := len(lines)
 	if height > 0 {
-		chrome := func() int {
-			n := top
-			for _, on := range []bool{spacer, footer} {
-				if on {
-					n++
-				}
-			}
-			if detail {
-				n += 2
-			}
-			return n
-		}
 		want := min(len(lines), modelPickerMinRows)
-		for _, drop := range []*bool{&footer, &spacer, &detail} {
-			if height-chrome() >= want {
-				break
-			}
-			*drop = false
+		if height-top-3 < want {
+			footer = false
 		}
-		rows = min(rows, height-chrome())
+		if height-top-2 < want {
+			detail = false
+		}
+		chrome := top
+		if footer {
+			chrome++
+		}
+		if detail {
+			chrome += 2
+		}
+		rows = min(rows, height-chrome)
 	}
 	rows = max(rows, 1)
 	d.listRows = rows
 
-	out := []string{frameHeader(th, "model", width)}
-	if spacer {
-		out = append(out, strings.Repeat(" ", width))
-	}
+	out := []string{frameHeader(th, "model", width), strings.Repeat(" ", width)}
 	out = append(out, renderPickerTabs(th, names, d.tab, status, th.Muted, width))
 	d.queryRow = len(out)
 	out = append(out, d.query.Render(th, width))
@@ -390,6 +410,7 @@ func (d *modelDialog) renderList(th tui.Theme, lines []modelPickerLine, width, r
 		}
 	}
 	cols := pickerListColumns(visible)
+	next := 0 // index into visible
 	for _, l := range lines[d.viewTop:end] {
 		if l.model < 0 {
 			label := pickerFit(" "+provider.ProviderLabel(l.header), width)
@@ -398,7 +419,8 @@ func (d *modelDialog) renderList(th tui.Theme, lines []modelPickerLine, width, r
 			out = append(out, th.FGColor(th.Accent, label)+th.FGColor(th.Muted, pickerFit(count, width-runewidth.StringWidth(label))))
 			continue
 		}
-		out = append(out, renderPickerRow(th, d.row(d.view[l.model]), l.model == d.cursor, cols, width))
+		out = append(out, renderPickerRow(th, visible[next], l.model == d.cursor, cols, width))
+		next++
 	}
 	for len(out) < rows {
 		out = append(out, strings.Repeat(" ", width))

@@ -615,9 +615,10 @@ func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
+	models := reachablePickerModels(loggedIn)
 	i.mu.Lock()
 	// The renderer reads the dialog under i.mu.
-	i.modelDialog.Open(i.cfg.Provider, i.cfg.Model, loggedIn, i.cfg.Reasoning)
+	i.modelDialog.Open(i.cfg.Provider, i.cfg.Model, models, i.cfg.Reasoning)
 	if refreshErr != nil {
 		i.statusErr = "model refresh: " + refreshErr.Error()
 		i.statusOK = ""
