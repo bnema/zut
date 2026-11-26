@@ -123,7 +123,8 @@ func (x *Index) Update(ctx context.Context, progress func(done, total int)) erro
 	return err
 }
 
-// Query runs q against the current generation. Without an index yet it
+// Query runs q against the current generation. A query without tokens
+// (empty, or only "@here") returns the Recent sessions with no hits. Without an index yet it
 // returns an empty Partial result. A corrupt index returns an error wrapping
 // ErrCorrupt; Update rebuilds it.
 func (x *Index) Query(ctx context.Context, q Query) (Result, error) {
@@ -168,6 +169,22 @@ func (x *Index) currentLocked() (*segment, error) {
 	}
 	x.seg, x.segGen = seg, gen
 	return seg, nil
+}
+
+// Recent returns indexed sessions newest first (Updated, then path),
+// filtered by cwd when non-empty and capped by limit when positive. It reads
+// no postings or rows. Without an index it returns nil.
+func (x *Index) Recent(ctx context.Context, cwd string, limit int) ([]SessionDoc, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	seg, err := x.currentLocked()
+	if err != nil || seg == nil {
+		return nil, err
+	}
+	return recentDocs(seg.docs, cwd, limit), nil
 }
 
 // maxSnippetRunes caps the text returned per snippet.

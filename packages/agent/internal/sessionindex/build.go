@@ -249,7 +249,13 @@ func runQuery(ctx context.Context, src querySource, q Query) (Result, error) {
 	tokens, _ := ParseQuery(q.Text)
 	docs, first := src.docList(), src.firstIDs()
 	var res Result
-	if len(tokens) == 0 || len(docs) == 0 {
+	if len(tokens) == 0 {
+		for _, d := range recentDocs(docs, q.CWD, q.Limit) {
+			res.Sessions = append(res.Sessions, SessionMatch{Doc: d})
+		}
+		return res, nil
+	}
+	if len(docs) == 0 {
 		return res, nil
 	}
 	nMsgs := int(first[len(first)-1])
@@ -271,7 +277,7 @@ func runQuery(ctx context.Context, src querySource, q Query) (Result, error) {
 	var hits bitset
 	keepDoc := make([]bool, len(docs))
 	for i := range keepDoc {
-		keepDoc[i] = q.CWD == "" || docs[i].CWD == q.CWD
+		keepDoc[i] = !docs[i].Excluded && (q.CWD == "" || docs[i].CWD == q.CWD)
 	}
 	if q.Mode == ModeMessages {
 		hits = sets[0].clone()
@@ -372,4 +378,25 @@ func (b bitset) each(fn func(uint32)) {
 			v &= v - 1
 		}
 	}
+}
+
+// recentDocs returns non-excluded docs, newest Updated first (then path),
+// filtered by cwd when non-empty and capped by limit when positive.
+func recentDocs(docs []docEntry, cwd string, limit int) []SessionDoc {
+	var out []SessionDoc
+	for _, d := range docs {
+		if !d.Excluded && (cwd == "" || d.CWD == cwd) {
+			out = append(out, d.SessionDoc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Updated.Equal(out[j].Updated) {
+			return out[i].Updated.After(out[j].Updated)
+		}
+		return out[i].Path < out[j].Path
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }

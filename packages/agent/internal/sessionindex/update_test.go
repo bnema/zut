@@ -385,3 +385,58 @@ func TestUpdateExcludedNotRescanned(t *testing.T) {
 		t.Fatal("excluded doc returned")
 	}
 }
+
+func TestRecentAndEmptyQuery(t *testing.T) {
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	a := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "one"))
+	b := newRootSession(t, root, "/proj/b", msg(provider.RoleUser, "two"))
+	c := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "three"))
+	now := time.Now()
+	for i, p := range []string{a, b, c} {
+		mt := now.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hidden := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "four"))
+	raw, _ := os.ReadFile(hidden)
+	if err := os.WriteFile(hidden, bytes.Replace(raw, []byte(`"meta":{`), []byte(`"meta":{"hide_from_sessions":true,`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustUpdate(t, x)
+
+	docPaths := func(docs []SessionDoc) []string {
+		var out []string
+		for _, d := range docs {
+			out = append(out, d.Path)
+		}
+		return out
+	}
+	got, err := x.Recent(context.Background(), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := docPaths(got); len(p) != 3 || p[0] != c || p[1] != b || p[2] != a {
+		t.Fatalf("recent order wrong (%d)", len(p))
+	}
+	if got, _ = x.Recent(context.Background(), "/proj/a", 1); len(got) != 1 || got[0].Path != c {
+		t.Fatalf("recent cwd/limit = %v", docPaths(got))
+	}
+	for _, text := range []string{"", "  ", "@here"} {
+		r, err := x.Query(context.Background(), Query{Text: text, CWD: "/proj/a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Sessions) != 2 || r.Sessions[0].Doc.Path != c || r.Sessions[1].Doc.Path != a || len(r.Sessions[0].Hits) != 0 || r.Sessions[0].Count != 0 {
+			t.Fatalf("empty query %q = %d sessions", text, len(r.Sessions))
+		}
+	}
+	if r, _ := x.Query(context.Background(), Query{Text: "", Limit: 2}); len(r.Sessions) != 2 {
+		t.Fatalf("empty query limit = %d", len(r.Sessions))
+	}
+	fresh := openTestIndex(t, t.TempDir())
+	if got, err := fresh.Recent(context.Background(), "", 0); err != nil || got != nil {
+		t.Fatalf("recent without index = %v, %v", got, err)
+	}
+}
