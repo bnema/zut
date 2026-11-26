@@ -72,7 +72,7 @@ func TestRescueDialogUsesSharedPicker(t *testing.T) {
 	rows := d.Render(tui.Dark, width, 20)
 	assertRowsFitWidth(t, rows, width)
 	text := stripANSIBytes(strings.Join(rows, "\n"))
-	require.Contains(t, text, "anthropic · claude-opus-4-5")
+	require.Contains(t, text, "anthropic · Claude Opus 4.5")
 	require.Contains(t, text, "enter retry")
 	row, col := d.CursorPos()
 	require.Contains(t, stripANSIBytes(rows[row]), " > opus45")
@@ -81,4 +81,17 @@ func TestRescueDialogUsesSharedPicker(t *testing.T) {
 	d.HandleKey(tui.Key{Kind: tui.KeyTab})
 	row, _ = d.CursorPos()
 	require.Equal(t, -1, row, "the error view has no query caret")
+}
+
+func TestRescueDialogPendingUsesCatalogAndShowsHelpWhenEmpty(t *testing.T) {
+	d := newRescueDialog()
+	d.OpenPending("r1", session.RescueOptions{Error: "rate limited", Candidates: []string{"anthropic/claude-opus-4-5"}}, nil)
+	require.Len(t, d.all, 1)
+	require.NotEmpty(t, d.all[0].DisplayName, "catalog metadata fills pending candidates")
+	require.True(t, d.all[0].Reasoning)
+
+	d.OpenPending("r2", session.RescueOptions{Error: "rate limited"}, nil)
+	text := stripANSIBytes(strings.Join(d.Render(tui.Dark, 70, 20), "\n"))
+	require.Contains(t, text, "no other models available")
+	require.Contains(t, text, "tab full error")
 }

@@ -97,9 +97,17 @@ func (d *rescueDialog) OpenPending(id string, opts session.RescueOptions, onAnsw
 	d.pendingID, d.onAnswer = id, onAnswer
 	d.all = nil
 	for _, c := range opts.Candidates {
-		if p, m, ok := strings.Cut(c, "/"); ok && p != "" && m != "" {
-			d.all = append(d.all, provider.PickerModel{Model: provider.Model{Provider: p, ID: m}})
+		p, id, ok := strings.Cut(c, "/")
+		if !ok || p == "" || id == "" {
+			continue
 		}
+		// Catalog metadata feeds the row name and the detail line; the
+		// session's candidate order is kept.
+		m, err := provider.FindModel(p, id)
+		if err != nil {
+			m = provider.Model{Provider: p, ID: id}
+		}
+		d.all = append(d.all, provider.PickerModel{Model: m})
 	}
 	d.refilter()
 }
@@ -192,6 +200,7 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 		}
 		lines = append(lines, th.FGColor(th.Muted, pickerFit(msg, width)))
 		lines = append(lines, frameRule(th, width))
+		lines = append(lines, th.FGColor(th.Muted, pickerFit(" tab full error · esc cancel", width)))
 		return lines
 	}
 
@@ -201,11 +210,7 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 	end := min(len(d.view), d.viewTop+rows)
 	pickerRows := make([]pickerRow, 0, end-d.viewTop)
 	for _, m := range d.view[d.viewTop:end] {
-		name := m.DisplayName
-		if name == "" {
-			name = m.ID
-		}
-		pickerRows = append(pickerRows, pickerRow{Label: m.Provider + " · " + name, Note: modelNote(m), Detail: m.ID})
+		pickerRows = append(pickerRows, modelPickerRow(m, true, false))
 	}
 	cols := pickerListColumns(pickerRows)
 	for n, row := range pickerRows {
@@ -250,7 +255,7 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 			d.cursor++
 		}
 	case tui.KeyPaste:
-		if d.query.insert([]rune(singleLinePaste(k.Paste))) {
+		if d.query.InsertLine(k.Paste) {
 			d.refilter()
 		}
 	case tui.KeyEsc:
