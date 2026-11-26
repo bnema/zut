@@ -1,7 +1,19 @@
 package modes
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
+	"time"
+
+	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
+	"github.com/stretchr/testify/mock"
 
 	"github.com/stretchr/testify/require"
 )
@@ -41,4 +53,193 @@ func TestNextPromptSuggestionsSettingDefaultsEnabledAndToggles(t *testing.T) {
 	i.applySettingToggle("next_prompt_suggestions_enabled", true)
 	require.True(t, *i.cfg.NextPromptSuggestionsEnabled)
 	require.Equal(t, []bool{false, true}, store.calls)
+}
+
+// newPortNextPromptInteractive attaches an idle daemon session; tests feed
+// turns through runNextPromptTurn and drain i.loopCalls themselves.
+func newPortNextPromptInteractive(t *testing.T, enabled *bool) (*Interactive, *sessionmocks.MockPort, context.Context) {
+	t.Helper()
+	port := sessionmocks.NewMockPort(t)
+	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "np", Run: session.RunStateIdle}, Seq: 1}, nil).Once()
+	port.EXPECT().Subscribe(mock.Anything, uint64(0x1)).Return(make(chan session.Event), nil).Once()
+	i := NewInteractive(InteractiveConfig{Port: port, Terminal: &alertTestTerminal{}, NextPromptSuggestionsEnabled: enabled})
+	i.rend = tui.NewRenderer(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	require.NoError(t, i.attachPort(ctx))
+	return i, port, ctx
+}
+
+func runNextPromptTurn(ctx context.Context, i *Interactive, seq *uint64, queue []session.QueuedInput, end core.EvTurnEnd) {
+	next := func() uint64 { *seq++; return *seq }
+	i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "np", Run: session.RunStateRunning}}})
+	i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvAgent, Agent: end})
+	if queue != nil {
+		i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvQueue, Data: session.QueueEvent{Queue: queue}})
+	}
+	i.handleSessionEvent(ctx, session.Event{Seq: next(), Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "np", Run: session.RunStateIdle}}})
+}
+
+func drainLoopCall(t *testing.T, i *Interactive) {
+	t.Helper()
+	select {
+	case fn := <-i.loopCalls:
+		fn()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no loop call delivered")
+	}
+}
+
+func nextPromptInFlight(i *Interactive) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.nextPromptCancel != nil
+}
+
+func TestNextPromptShownAfterCleanTurn(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	port.EXPECT().PredictNextPrompt(mock.Anything).Return("run the tests", nil).Once()
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	drainLoopCall(t, i)
+	require.Equal(t, "run the tests", i.ed.Ghost())
+	require.False(t, nextPromptInFlight(i))
+}
+
+func TestNextPromptNotRequested(t *testing.T) {
+	disabled := false
+	cases := map[string]struct {
+		enabled *bool
+		end     core.EvTurnEnd
+		queue   []session.QueuedInput
+		draft   string
+	}{
+		"setting off":   {enabled: &disabled, end: core.EvTurnEnd{Stop: provider.StopEnd}},
+		"cancelled":     {end: core.EvTurnEnd{Stop: provider.StopAborted, Err: context.Canceled}},
+		"aborted":       {end: core.EvTurnEnd{Stop: provider.StopAborted}},
+		"length":        {end: core.EvTurnEnd{Stop: provider.StopLength}},
+		"errored":       {end: core.EvTurnEnd{Err: errors.New("boom")}},
+		"queue pending": {end: core.EvTurnEnd{Stop: provider.StopEnd}, queue: []session.QueuedInput{{Input: session.Input{Text: "next"}}}},
+		"input typed":   {end: core.EvTurnEnd{Stop: provider.StopEnd}, draft: "draft"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// No PredictNextPrompt expectation: any call fails the mock.
+			i, _, ctx := newPortNextPromptInteractive(t, tc.enabled)
+			i.ed.SetValue(tc.draft)
+			var seq uint64 = 1
+			runNextPromptTurn(ctx, i, &seq, tc.queue, tc.end)
+			require.False(t, nextPromptInFlight(i))
+			require.Empty(t, i.loopCalls)
+		})
+	}
+}
+
+// blockingPrediction makes PredictNextPrompt wait for cancellation and
+// returns a channel closed once the request observed it.
+func blockingPrediction(port *sessionmocks.MockPort) chan struct{} {
+	cancelled := make(chan struct{})
+	port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		close(cancelled)
+		return "late", nil
+	}).Once()
+	return cancelled
+}
+
+func waitClosed(t *testing.T, ch chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not happen", what)
+	}
+}
+
+func TestNextPromptStaleAfterKeypress(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	cancelled := blockingPrediction(port)
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	i.mu.Lock()
+	version := i.nextPromptVersion
+	i.mu.Unlock()
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyRune, Rune: 'x'})
+	waitClosed(t, cancelled, "request cancellation")
+	i.ed.Clear()
+	i.applyNextPrompt(version, "late")
+	require.Empty(t, i.ed.Ghost(), "a result from before the keypress must be dropped")
+}
+
+func TestNextPromptStaleAfterSubmit(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	cancelled := blockingPrediction(port)
+	submitted := make(chan struct{})
+	port.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, session.Input) error { close(submitted); return nil }).Once()
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	i.mu.Lock()
+	version := i.nextPromptVersion
+	i.mu.Unlock()
+	i.portSubmit(ctx, "hello", nil)
+	waitClosed(t, cancelled, "request cancellation")
+	waitClosed(t, submitted, "submit")
+	i.applyNextPrompt(version, "late")
+	require.Empty(t, i.ed.Ghost())
+}
+
+func TestNextPromptUnknownRequestIsSilent(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	done := make(chan struct{})
+	port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(context.Context) (string, error) {
+		defer close(done)
+		return "", fmt.Errorf("predict: %w", session.ErrUnknownRequest)
+	}).Once()
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	waitClosed(t, done, "prediction")
+	require.Empty(t, i.ed.Ghost())
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.Empty(t, i.statusErr)
+}
+
+func TestNextPromptTabAcceptsWithoutSubmitting(t *testing.T) {
+	// No Submit/ApplyProfile expectation: Tab must neither send nor cycle.
+	i, _ := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5}))
+	i.ed.SetGhost("run the tests")
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	require.Equal(t, "run the tests", i.ed.Value())
+	require.Empty(t, i.ed.Ghost())
+}
+
+func TestNextPromptTabWithoutShownGhostCyclesProfile(t *testing.T) {
+	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5}))
+	called := profExpectApply(port, 2, nil)
+	i.ed.SetGhost("run the tests")
+	i.ed.SetValue("hello") // a non-empty buffer hides the ghost
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	profWait(t, called, "ApplyProfile")
+	require.Equal(t, "hello", i.ed.Value())
+}
+
+func TestNextPromptEscDismissesWithoutArmingTree(t *testing.T) {
+	i, _, _, _ := newTreePortInteractive(t, t.TempDir(), "/workspace/next-prompt-esc", []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "message"}}}})
+	require.True(t, i.canArmSessionTreeEscape(), "precondition: a bare Escape could arm the tree gesture")
+	i.ed.SetGhost("run the tests")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+	require.Empty(t, i.ed.Ghost())
+	require.True(t, i.ed.IsEmpty())
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.False(t, i.doubleEscape.armed, "the dismissing Escape must not arm the session-tree gesture")
+}
+
+func TestNextPromptEnterDoesNotSubmitGhost(t *testing.T) {
+	// No Submit expectation: Enter on the empty input must not send.
+	i, _ := newPortProfileInteractive(t, profileInfo(1, nil))
+	i.ed.SetGhost("run the tests")
+	profKey(i, tui.Key{Kind: tui.KeyEnter})
+	require.Empty(t, i.ed.Ghost())
+	require.True(t, i.ed.IsEmpty())
 }

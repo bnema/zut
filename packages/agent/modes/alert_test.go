@@ -84,7 +84,10 @@ func newPortAlertInteractive(t *testing.T, term *alertTestTerminal) (*Interactiv
 	port := sessionmocks.NewMockPort(t)
 	port.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{Info: session.Info{ID: "alert", Run: session.RunStateIdle}, Seq: 1}, nil).Once()
 	port.EXPECT().Subscribe(mock.Anything, uint64(0x1)).Return(make(chan session.Event), nil).Once()
-	i := NewInteractive(InteractiveConfig{Port: port, Terminal: term})
+	// Next prompt suggestions have their own tests; keep the extra request
+	// out of the alert mocks.
+	noSuggestions := false
+	i := NewInteractive(InteractiveConfig{Port: port, Terminal: term, NextPromptSuggestionsEnabled: &noSuggestions})
 	i.rend = tui.NewRenderer(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

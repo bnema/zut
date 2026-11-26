@@ -110,6 +110,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if k, ok = i.prepareInputKey(k); !ok {
 		return false
 	}
+	i.noteNextPromptKey(k)
 	if i.handleDictationKey(ctx, k) {
 		return false
 	}
@@ -488,6 +489,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 
 	if slot := quickModelShortcutSlot(k); slot > 0 {
 		i.applyQuickModelShortcut(slot)
+		return false
+	}
+
+	if i.handleNextPromptKey(k) {
 		return false
 	}
 

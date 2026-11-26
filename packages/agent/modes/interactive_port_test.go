@@ -41,7 +41,10 @@ type portRun struct {
 func startPortInteractive(t *testing.T, port session.Port, client SessionClient, configure ...func(*Interactive)) *portRun {
 	t.Helper()
 	term := &alertTestTerminal{}
-	i := NewInteractive(InteractiveConfig{Terminal: term, Port: port, Client: client})
+	// Next prompt suggestions have their own tests; keep the extra request
+	// out of these port mocks.
+	noSuggestions := false
+	i := NewInteractive(InteractiveConfig{Terminal: term, Port: port, Client: client, NextPromptSuggestionsEnabled: &noSuggestions})
 	for _, fn := range configure {
 		fn(i)
 	}

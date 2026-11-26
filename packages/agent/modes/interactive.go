@@ -890,7 +890,11 @@ type Interactive struct {
 	firstRealPrompt        string
 	titleVersion           uint64
 	titleCancel            context.CancelFunc
-	sessionTitle           string
+	// nextPromptVersion/nextPromptCancel track the in-flight next prompt
+	// prediction (guarded by mu); see next_prompt.go.
+	nextPromptVersion uint64
+	nextPromptCancel  context.CancelFunc
+	sessionTitle      string
 
 	// extNotes are one-shot styled lines pushed by extensions via
 	// Notify / Display. They live above the editor (just below the
@@ -1094,6 +1098,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	i.portMode.Store(cfg.Port != nil)
 	i.finderSources = i.defaultFinderSources
+	i.ed.GhostStyle = nextPromptGhostStyle(i.cfg.Theme)
 	return i
 }
 

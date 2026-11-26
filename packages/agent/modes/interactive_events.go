@@ -577,6 +577,7 @@ func (i *Interactive) stopSubscription() {
 
 // hydrateLocked replaces every presentation projection with snap.
 func (i *Interactive) hydrateLocked(snap session.Snapshot) {
+	i.dismissNextPromptLocked()
 	if snap.Info.ID != "" {
 		i.sessionID = session.ID(snap.Info.ID)
 	}
@@ -698,6 +699,7 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 	}
 	busy := info.Run == session.RunStateRunning || info.Run == session.RunStateCompacting
 	if busy && !i.busy {
+		i.dismissNextPromptLocked()
 		i.spin.Start()
 		i.pendingAlert = nil
 	}
@@ -930,7 +932,11 @@ func (i *Interactive) applySessionViewEventLocked(ev session.Event) {
 				status = core.GoalStatus(d.Info.Goal.Status)
 			}
 			i.alertGoalTransitionLocked(i.goalStatus, status)
+			wasBusy, end := i.busy, i.portTurnEnd
 			i.applyInfoLocked(d.Info)
+			if wasBusy && !i.busy {
+				i.maybeRequestNextPromptLocked(end)
+			}
 		}
 	case session.QueueEvent:
 		i.portQueue = append([]session.QueuedInput(nil), d.Queue...)

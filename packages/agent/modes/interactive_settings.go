@@ -1217,6 +1217,7 @@ func (i *Interactive) installResolvedTheme(resolution tui.ThemeResolution) {
 	i.chatCacheValid = false
 	i.stableChatCacheValid = false
 	i.ed.Prompt = th.AccentBar(th.Accent)
+	i.ed.GhostStyle = nextPromptGhostStyle(th)
 	i.mu.Unlock()
 	i.btwDialog.setTheme(th)
 	if i.residentChildSession != nil {
