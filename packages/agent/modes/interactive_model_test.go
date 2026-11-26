@@ -135,7 +135,7 @@ func TestReasoningCommandOpensDirectSelector(t *testing.T) {
 
 func TestModelDialogAdvertisesReasoningNavigation(t *testing.T) {
 	d := newModelDialog()
-	d.Open("", nil, "high")
+	d.Open("", "", nil, "high")
 	d.view = pickerView(provider.Model{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true})
 
 	text := strings.Join(d.Render(tui.Dark, 100, 30), "\n")

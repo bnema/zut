@@ -186,7 +186,7 @@ func modelPickerText(d *modelDialog, width, height int) []string {
 
 func TestModelPickerGroupsByProviderCurrentFirst(t *testing.T) {
 	d := &modelDialog{active: true}
-	d.setModels(pickerTestModels(), "gpt-5.2")
+	d.setModels(pickerTestModels(), "", "gpt-5.2")
 
 	require.Equal(t, []string{"", "openai", "anthropic", "openrouter"}, d.tabs)
 	require.Equal(t, "gpt-5.2", d.view[d.cursor].ID, "cursor starts on the current model")
@@ -211,7 +211,7 @@ func TestModelPickerGroupsByProviderCurrentFirst(t *testing.T) {
 
 func TestModelPickerTabFiltersProvider(t *testing.T) {
 	d := &modelDialog{active: true}
-	d.setModels(pickerTestModels(), "gpt-5.2")
+	d.setModels(pickerTestModels(), "", "gpt-5.2")
 	d.HandleKey(tui.Key{Kind: tui.KeyTab})
 	d.HandleKey(tui.Key{Kind: tui.KeyTab})
 	require.Equal(t, "anthropic", d.tabs[d.tab])
@@ -228,7 +228,7 @@ func TestModelPickerTabFiltersProvider(t *testing.T) {
 
 func TestModelPickerQueryRanksAndShowsSnapshots(t *testing.T) {
 	d := &modelDialog{active: true}
-	d.setModels(pickerTestModels(), "")
+	d.setModels(pickerTestModels(), "", "")
 	for _, r := range "opus45" {
 		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
 	}
@@ -246,22 +246,73 @@ func TestModelPickerQueryRanksAndShowsSnapshots(t *testing.T) {
 
 func TestModelPickerDetailLine(t *testing.T) {
 	d := &modelDialog{active: true}
-	d.setModels(pickerTestModels(), "claude-opus-4-5")
+	d.setModels(pickerTestModels(), "", "claude-opus-4-5")
 	text := strings.Join(modelPickerText(d, 140, 30), "\n")
 	require.Contains(t, text, "200k ctx · 64k out · $5 in / $25 out per 1M · cache $0.5 · reasoning off→")
-	require.Equal(t, "1M", modelTokens(1<<20))
-	require.Equal(t, "128k", modelTokens(131072))
-	require.Equal(t, "1.5M", modelTokens(1_500_000))
+	for n, want := range map[int]string{1 << 20: "1M", 1_000_000: "1M", 131072: "128k", 128000: "128k", 256000: "256k", 200000: "200k", 32768: "32k", 1_500_000: "1.5M", 500: "500"} {
+		require.Equal(t, want, modelTokens(n), "modelTokens(%d)", n)
+	}
 }
 
 func TestModelPickerFitsShortPane(t *testing.T) {
 	d := &modelDialog{active: true, showReasoning: true}
-	d.setModels(pickerTestModels(), "anthropic/claude-opus-4.5")
+	d.setModels(pickerTestModels(), "", "anthropic/claude-opus-4.5")
 	rows := d.Render(tui.Dark, 60, 10)
 	require.LessOrEqual(t, len(rows), 11)
 	require.Contains(t, stripANSIBytes(strings.Join(rows, "\n")), "Anthropic: Claude Opus 4.5", "the cursor row stays visible")
 	r, c := d.CursorPos()
-	require.Equal(t, modelPickerQueryRow, r)
 	require.Equal(t, 3, c)
 	require.Contains(t, stripANSIBytes(rows[r]), " > ")
+}
+
+func TestModelPickerKeepsCurrentSnapshotVisible(t *testing.T) {
+	d := &modelDialog{active: true}
+	d.setModels(pickerTestModels(), "anthropic", "claude-opus-4-5-20251101")
+	require.Equal(t, "claude-opus-4-5-20251101", d.view[d.cursor].ID)
+	require.Regexp(t, `▸ Claude Opus 4\.5 snapshot +claude-opus-4-5-20251101 ● `, strings.Join(modelPickerText(d, 100, 30), "\n"))
+}
+
+func TestModelPickerQueryMovesCursorToBestMatch(t *testing.T) {
+	d := &modelDialog{active: true}
+	d.setModels(pickerTestModels(), "anthropic", "claude-opus-4-8")
+	require.Equal(t, "claude-opus-4-8", d.view[d.cursor].ID)
+	for _, r := range "gpt" {
+		d.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: r})
+	}
+	require.Equal(t, 0, d.cursor)
+	require.Equal(t, "gpt-5.2", d.view[0].ID)
+	d.HandleKey(tui.Key{Kind: tui.KeyCtrlU})
+	require.Equal(t, "claude-opus-4-8", d.view[d.cursor].ID, "clearing the query returns to the current model")
+}
+
+func TestModelPickerMatchesCurrentProvider(t *testing.T) {
+	models := []provider.Model{
+		{Provider: "github-copilot", ID: "gpt-5.5"},
+		{Provider: "openai-codex", ID: "gpt-5.5"},
+	}
+	d := &modelDialog{active: true}
+	d.setModels(models, "openai-codex", "gpt-5.5")
+	require.Equal(t, []string{"", "openai-codex", "github-copilot"}, d.tabs)
+	require.Equal(t, "openai-codex", d.view[d.cursor].Provider)
+	text := strings.Join(modelPickerText(d, 80, 30), "\n")
+	require.Equal(t, 1, strings.Count(text, "●"), text)
+}
+
+func TestModelPickerPasteDropsControlRunes(t *testing.T) {
+	d := &modelDialog{active: true}
+	d.HandleKey(tui.Key{Kind: tui.KeyPaste, Paste: "a\x1b[31mb"})
+	require.Equal(t, "a[31mb", d.query.String())
+}
+
+func TestModelPickerTinyPaneKeepsCursorRow(t *testing.T) {
+	d := &modelDialog{active: true, showReasoning: true}
+	d.setModels(pickerTestModels(), "openai", "gpt-5.2")
+	for _, h := range []int{5, 6, 8} { // 5: tabs, query, reasoning, rule and one row
+		rows := d.Render(tui.Dark, 12, h)
+		require.LessOrEqual(t, len(rows), h+1, "height %d", h)
+		assertRowsFitWidth(t, rows, 12)
+		require.Contains(t, stripANSIBytes(strings.Join(rows, "\n")), "▸", "height %d", h)
+		r, _ := d.CursorPos()
+		require.Contains(t, stripANSIBytes(rows[r]), " >", "height %d", h)
+	}
 }

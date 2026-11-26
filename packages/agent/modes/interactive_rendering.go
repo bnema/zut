@@ -1137,14 +1137,14 @@ func (i *Interactive) redraw() {
 			cursorCol = 0
 		}
 	}
-	if i.modelDialog.Active() {
+	if dialogID == "model" {
 		if r, c := i.modelDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true
 		}
 	}
-	if i.finder.Active() {
+	if dialogID == "finder" {
 		if r, c := i.finder.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
