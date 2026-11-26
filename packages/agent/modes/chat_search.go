@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/bnema/zut/packages/agent/internal/sessionindex"
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
@@ -22,9 +24,18 @@ type searchReader struct {
 	terms   []string
 	view    *tui.View // private snapshot; never the live view
 	target  searchReaderTarget
-	matches []int // message indexes in view.Messages, ascending
+	matches []int // display message indexes (see archive), ascending
 	cur     int   // position in matches
 	ready   bool  // first build published
+
+	// archivePath, when set, is loaded by the first build: the full
+	// archived (pre-compaction) history of the session, shown dimmed above
+	// the live rows. Display indexes 0..len(archive.Rows)-1 are archived
+	// rows; live message idx is len(archive.Rows)+idx. Written only by the
+	// first build before it publishes; dropped with the reader.
+	archivePath string
+	archive     core.ArchivedHistory
+	sepRows     map[int]bool // rows of inner compaction separators
 
 	// Built rows, cached per width; rebuilt off the lock on resize.
 	width    int
@@ -111,40 +122,144 @@ func (i *Interactive) openSearchReader(target searchReaderTarget) {
 	// terminal. The reader shows the text fallback.
 	view.ImageProto = tui.ImageProtocolNone
 	r := &searchReader{terms: terms, view: view, target: target, width: width, building: true}
+	if hasCompactionSummary(view.Messages) {
+		r.archivePath = i.sessionPathLocked()
+	}
 	i.searchReader = r
 	i.mu.Unlock()
 	i.invalidate()
 	go i.buildSearchReader(r, width, true)
 }
 
+// loadSearchReaderArchive reads the full archived history of r's session
+// (first build only). A failure leaves the reader with live rows only.
+func (i *Interactive) loadSearchReaderArchive(r *searchReader) {
+	if r.archivePath == "" {
+		return
+	}
+	ctx := i.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if flush := i.cfg.FlushSession; flush != nil {
+		flush()
+	}
+	hist, err := core.ReadArchivedSessionText(ctx, r.archivePath, core.ArchivedOptions{Skip: isHiddenTranscriptMessage})
+	if err != nil {
+		return
+	}
+	r.archive = hist
+}
+
+// buildSearchReaderRows renders the archived rows (dimmed, with a
+// separator at each inner compaction mark) above the live snapshot. It
+// returns anchors indexed by display message index, the separator rows,
+// and the display indexes that render no rows.
+func (r *searchReader) buildSearchReaderRows(width int) (rows []string, anchors []tui.MessageAnchor, seps map[int]bool, empty map[int]bool) {
+	empty = map[int]bool{}
+	add := func(segRows []string, segAnchors []tui.MessageAnchor, base int, count int, dim bool) {
+		if dim {
+			segRows = tui.DimLines(segRows)
+		}
+		for k := range count {
+			if anchorRows(segAnchors, len(segRows), k) == 0 {
+				empty[base+k] = true
+			}
+		}
+		for _, a := range segAnchors {
+			anchors = append(anchors, tui.MessageAnchor{MessageIdx: base + a.MessageIdx, Row: len(rows) + a.Row})
+		}
+		rows = append(rows, segRows...)
+	}
+	hist := r.archive
+	segment := func(from, to int) {
+		if from >= to {
+			return
+		}
+		msgs := make([]provider.Message, 0, to-from)
+		for _, row := range hist.Rows[from:to] {
+			msgs = append(msgs, row.Message)
+		}
+		v := &tui.View{Theme: r.view.Theme, Messages: msgs, ImageProto: tui.ImageProtocolNone}
+		segRows, segAnchors := v.BuildWithAnchors(width)
+		add(segRows, segAnchors, from, to-from, true)
+	}
+	from := 0
+	for _, m := range hist.Marks {
+		if m.Index <= 0 || m.Index >= len(hist.Rows) {
+			continue // the latest mark is the live summary separator
+		}
+		segment(from, m.Index)
+		if seps == nil {
+			seps = map[int]bool{}
+		}
+		seps[len(rows)] = true
+		rows = append(rows, tui.Dim(tui.CompactionSeparator(r.view.Theme, width, tui.CompactionTokensLabel(m.TokensBefore))))
+		from = m.Index
+	}
+	segment(from, len(hist.Rows))
+	liveRows, liveAnchors := r.view.BuildWithAnchors(width)
+	add(liveRows, liveAnchors, len(hist.Rows), len(r.view.Messages), false)
+	return rows, anchors, seps, empty
+}
+
+// resolveHitInArchive returns the display index of the archived row a
+// search hit points to: same MsgSeq and, when the hit carries one, same
+// text fingerprint.
+func resolveHitInArchive(rows []core.ArchivedRow, fp uint64, msgSeq int) (int, bool) {
+	for k, row := range rows {
+		if row.MsgSeq == msgSeq && (fp == 0 || core.MessageTextFingerprint(row.Message) == fp) {
+			return k, true
+		}
+	}
+	return 0, false
+}
+
 // buildSearchReader computes matches (first build) and rows for width on
-// the private snapshot, then publishes them on the Run loop if r is still
-// the open reader.
+// the private snapshot (plus the archived history, loaded by the first
+// build), then publishes them on the Run loop if r is still the open
+// reader.
 func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) {
-	rows, anchors := r.view.BuildWithAnchors(width)
+	if first {
+		i.loadSearchReaderArchive(r)
+	}
+	rows, anchors, seps, empty := r.buildSearchReaderRows(width)
 	var matches []int
 	cur := 0
 	// r.target is written only before the first build starts.
 	note := r.target.note
 	if first {
+		arch := r.archive.Rows
+		for k, row := range arch {
+			if !empty[k] && searchReaderMatches(searchReaderMessageText(row.Message), r.terms) {
+				matches = append(matches, k)
+			}
+		}
+		base := len(arch)
 		msgs := r.view.Messages
 		for idx, m := range msgs {
 			// Messages that render no rows cannot be shown or tinted, and a
 			// compaction summary renders as a separator without its text.
-			if m.Meta["compaction"] == "true" || !searchReaderMatches(searchReaderMessageText(m), r.terms) || anchorRows(anchors, len(rows), idx) == 0 {
+			if m.Meta["compaction"] == "true" || !searchReaderMatches(searchReaderMessageText(m), r.terms) || empty[base+idx] {
 				continue
 			}
-			matches = append(matches, idx)
+			matches = append(matches, base+idx)
 		}
-		focus := r.target.focus
+		focus := base + r.target.focus
 		if h := r.target.hit; h != nil {
 			if idx, ok := resolveHitInView(msgs, h.Fingerprint, h.MsgSeq, h.TotalMsgs); ok {
-				focus = idx
+				focus = base + idx
+			} else if k, ok := resolveHitInArchive(arch, h.Fingerprint, h.MsgSeq); ok {
+				focus = k
 			} else {
 				// The hit is gone: open on the next other match at or after
 				// where it was, else the last one.
-				focus = max(0, len(msgs)-(h.TotalMsgs-h.MsgSeq))
-				note = joinStatus(note, "match is in compacted history")
+				focus = base + max(0, len(msgs)-(h.TotalMsgs-h.MsgSeq))
+				if r.archivePath != "" {
+					note = joinStatus(note, "match is no longer in the session history")
+				} else {
+					note = joinStatus(note, "match is in compacted history")
+				}
 			}
 		}
 		cur = len(matches) - 1
@@ -162,7 +277,7 @@ func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) 
 		if i.searchReader != r {
 			return
 		}
-		r.rows, r.anchors, r.width, r.building, r.recenter = rows, anchors, width, false, true
+		r.rows, r.anchors, r.sepRows, r.width, r.building, r.recenter = rows, anchors, seps, width, false, true
 		if !first {
 			return
 		}
@@ -271,6 +386,9 @@ func (r *searchReader) title() string {
 
 // messageAt returns the message index owning row, or -1.
 func (r *searchReader) messageAt(row int) int {
+	if r.sepRows[row] {
+		return -1
+	}
 	k := sort.Search(len(r.anchors), func(n int) bool { return r.anchors[n].Row > row }) - 1
 	if k < 0 {
 		return -1
