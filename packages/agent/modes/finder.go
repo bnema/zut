@@ -41,6 +41,7 @@ type finderItem struct {
 	Count  int
 	Hits   []finderHit
 	Live   bool
+	LiveID string // daemon session id when Live
 }
 
 // finderHit is one match inside an item; Ref is opaque to the model and
@@ -105,6 +106,11 @@ type finderModel struct {
 	// scanned session files.
 	indexing              bool
 	indexDone, indexTotal int
+
+	// live holds daemon sessions (port mode); raw is the last undecorated
+	// result list so live data arriving later can be re-applied.
+	live []finderItem
+	raw  []finderItem
 
 	confirmDelete bool
 }
@@ -196,7 +202,8 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	if item, ok := m.selected(); ok {
 		prevKey = item.Key
 	}
-	m.items, m.partial, m.hint = res.Items, res.Partial, res.Hint
+	m.raw, m.partial, m.hint = res.Items, res.Partial, res.Hint
+	m.items = m.decorateLive(res.Items)
 	m.cursor, m.hit = 0, 0
 	if prevKey != "" {
 		for i, item := range m.items {

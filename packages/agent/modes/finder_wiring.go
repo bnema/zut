@@ -50,6 +50,7 @@ func (i *Interactive) openFinder(ctx context.Context) {
 	i.mu.Unlock()
 	i.dispatchFinderSearch(ctx, act, 0)
 	i.startFinderIndexUpdate(ctx)
+	i.loadFinderLive(ctx)
 	i.invalidate()
 }
 
