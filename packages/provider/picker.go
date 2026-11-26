@@ -29,27 +29,31 @@ func PickerModels(models []Model) []PickerModel {
 	for _, m := range models {
 		ids[m.Provider+"\x00"+m.ID] = true
 	}
-	out := make([]PickerModel, len(models))
+	// Decorate once: version parsing is too costly to repeat per comparison.
+	type entry struct {
+		PickerModel
+		base    string
+		version []int
+	}
+	entries := make([]entry, len(models))
 	for i, m := range models {
-		out[i] = PickerModel{Model: m, SnapshotOf: snapshotAlias(m, ids)}
-	}
-	base := func(p PickerModel) string {
-		if p.SnapshotOf != "" {
-			return p.SnapshotOf
+		e := entry{PickerModel: PickerModel{Model: m, SnapshotOf: snapshotAlias(m, ids)}, base: m.ID}
+		if e.SnapshotOf != "" {
+			e.base = e.SnapshotOf
 		}
-		return p.ID
+		e.version = modelVersion(e.base)
+		entries[i] = e
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := &entries[i], &entries[j]
 		if a.Provider != b.Provider {
 			return a.Provider < b.Provider
 		}
-		ab, bb := base(a), base(b)
-		if ab != bb {
-			if c := compareVersions(modelVersion(ab), modelVersion(bb)); c != 0 {
+		if a.base != b.base {
+			if c := compareVersions(a.version, b.version); c != 0 {
 				return c > 0
 			}
-			return ab > bb // same version: later id (newer date) first
+			return a.base > b.base // same version: later id (newer date) first
 		}
 		// Same alias: the alias first, then its snapshots newest first.
 		if (a.SnapshotOf == "") != (b.SnapshotOf == "") {
@@ -57,6 +61,10 @@ func PickerModels(models []Model) []PickerModel {
 		}
 		return a.ID > b.ID
 	})
+	out := make([]PickerModel, len(entries))
+	for i := range entries {
+		out[i] = entries[i].PickerModel
+	}
 	return out
 }
 
