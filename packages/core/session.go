@@ -843,7 +843,8 @@ type SessionSummary struct {
 	TotalCost     float64
 	Title         string
 	BranchDepth   int
-	// HideFromSessions marks internal branches omitted from the flat picker.
+	// HideFromSessions marks internal branches that session lists and
+	// search leave out.
 	HideFromSessions bool
 }
 
@@ -1098,7 +1099,7 @@ func sessionHasNoMessages(path string) bool {
 // modified first. Sorting on filesystem ModTime instead of the
 // timestamp embedded in the filename means a long-running session
 // the user actually returned to recently floats to the top of
-// the Finder, /continue, and the resume picker, even when it was
+// /continue and other recency-ordered lists, even when it was
 // originally created days earlier than newer but idle sessions.
 // Files with identical ModTime fall back to filename desc so the
 // order stays stable across calls.
