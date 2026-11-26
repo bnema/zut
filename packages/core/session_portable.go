@@ -328,6 +328,30 @@ func branchSession(ctx context.Context, parentPath, root, cwd, version string, u
 	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions, extensionState, compactHandoff, goal)
 }
 
+// ForkSessionToCWD copies the full effective transcript of a non-live session
+// into a new visible session owned by cwd. The parent file is only read; the
+// new session records the parent ID and starts from the parent's latest
+// extension state, compaction handoff, goal, and plan.
+func ForkSessionToCWD(ctx context.Context, parentPath, root, cwd, version string) (string, error) {
+	if parentPath == "" {
+		return "", errors.New("fork: parent path is empty")
+	}
+	if cwd == "" || !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("fork: cwd %q must be an absolute path", cwd)
+	}
+	snapshot, err := readSessionSnapshot(ctx, parentPath)
+	if err != nil {
+		return "", fmt.Errorf("fork: read parent snapshot: %w", err)
+	}
+	if err := contextErr(ctx); err != nil {
+		return "", err
+	}
+	limit := len(snapshot.Messages)
+	compactHandoff := compactHandoffAtBranch(snapshot.Meta, snapshot.Messages, limit)
+	goal := goalAtBranch(snapshot.Meta, snapshot.Messages, limit)
+	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, false, snapshot.ExtensionState, compactHandoff, goal)
+}
+
 // BranchSessionHiddenFromHistory creates a hidden tree branch from a
 // pre-compaction transcript segment. The segment is already repaired and is
 // kept separate from the effective snapshot so normal resume semantics remain
