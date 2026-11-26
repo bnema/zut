@@ -638,9 +638,9 @@ Tree-navigation branches appear only in `/session tree`. Unavailable with `--no-
 - **`/fork`**, also **`/session fork`**: a `/jump`-style picker copies through a past user turn into a new branch, switching without a provider call. Parent stays on disk. Try another question or rewind; tree user rows instead restore editable prompts with images.
 
   Daemon `/fork`, tree branches, and `/btw` inherit only registered-parent launch settings: cwd, tool/extension policy, confirmation/sandbox, environment, zutfile permissions. No client overrides; unregistered parents fail with `parent session not found`.
-- **`/session tree`**: browse root ancestor/descendants, not unrelated cwd roots. Opens immediately; history loads in the background, newest first. `up`/`down`, `enter` select available rows; `esc` cancels loading or closes.
+- **`/session tree`**: browse root ancestor/descendants, not unrelated cwd roots. Opens immediately; history loads in the background, recent messages first. Rows read oldest to newest like the chat, each with role, date and time to the second, and message text. `up`/`down`, `enter` select available rows; `esc` cancels loading or closes.
 
-  Pre-compaction user/assistant messages remain forkable; tools, compaction checkpoints, shell/image helpers, and internal context are hidden. Messages indent at branch points; `[current]` marks the endpoint. Empty/detached points have boundary rows. Fork points lost to compaction appear detached under the parent's current tail. Parentless/orphaned sessions are roots.
+  Pre-compaction user/assistant messages remain forkable; tools, compaction checkpoints, shell/image helpers, and internal context are hidden. Messages indent at branch points; `current` marks the endpoint. Empty/detached points have boundary rows. Fork points lost to compaction appear detached under the parent's current tail. Parentless/orphaned sessions are roots.
 
   User rows branch **before** the message, restoring editable text blocks/images with no provider call until submission. Assistant rows check out safe message boundaries; empty/detached boundaries open an empty editor. Navigation branches appear only in the tree.
 

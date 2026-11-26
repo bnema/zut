@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
@@ -71,8 +72,12 @@ func (t sessionTreeTarget) IsDetachedBoundary() bool {
 // new branch.
 type sessionTreeDialog struct {
 	active bool
-	items  []sessionTreeItem
-	cursor int
+	// items are oldest first, except while a load streams its preview:
+	// newestFirst then means items are stored newest first (appending is
+	// cheap) and item() maps display rows, which are always oldest first.
+	items       []sessionTreeItem
+	newestFirst bool
+	cursor      int
 
 	loading        bool
 	loadingDone    int
@@ -99,6 +104,10 @@ type sessionTreeItem struct {
 	depth      int
 	current    bool
 	target     sessionTreeTarget
+	// text is the message preview and when its timestamp; both are empty
+	// for boundary rows, which render label.
+	text string
+	when time.Time
 }
 
 // sessionTreeAction is returned by HandleKey. Target is the structured API
@@ -138,7 +147,9 @@ type sessionTreeLoadEvent struct {
 	kind       sessionTreeLoadEventKind
 	generation uint64
 	item       sessionTreeItem
-	err        error
+	// items is the complete family, oldest first, on sessionTreeLoadFinished.
+	items []sessionTreeItem
+	err   error
 }
 
 const defaultSessionTreeRows = 12
@@ -169,9 +180,11 @@ func (d *sessionTreeDialog) OpenSessionFamily(root, cwd, currentPath string) boo
 	return true
 }
 
-// OpenSessionFamilyAsync shows the tree immediately and streams rows from the
-// newest visible content toward the oldest. The caller applies returned events
-// on its UI goroutine, so disk reads never contend with input or rendering.
+// OpenSessionFamilyAsync shows the tree immediately, streams the current
+// session's rows from the newest toward the oldest (each added above the
+// previous one, so the list reads oldest first like the chat), then replaces
+// them with the complete family. The caller applies returned events on its UI
+// goroutine, so disk reads never contend with input or rendering.
 func (d *sessionTreeDialog) OpenSessionFamilyAsync(parent context.Context, root, cwd, currentPath string, beforeLoad func()) <-chan sessionTreeLoadEvent {
 	if d.loadCancel != nil {
 		d.loadCancel()
@@ -185,7 +198,7 @@ func (d *sessionTreeDialog) OpenSessionFamilyAsync(parent context.Context, root,
 	d.loadGeneration++
 	generation := d.loadGeneration
 	d.loadDone = make(chan struct{})
-	d.items = nil
+	d.items, d.newestFirst = nil, false
 	d.cursor = 0
 	d.viewTop = 0
 	d.loading = true
@@ -227,17 +240,12 @@ func (d *sessionTreeDialog) OpenSessionFamilyAsync(parent context.Context, root,
 		emit := func(item sessionTreeItem) bool {
 			return send(sessionTreeLoadEvent{kind: sessionTreeLoadEntry, generation: generation, item: item})
 		}
+		var items []sessionTreeItem
 		var err error
 		if loadFamily != nil {
-			items, loadErr := loadFamily(ctx, root, cwd, currentPath)
-			err = loadErr
-			for index := len(items) - 1; err == nil && index >= 0; index-- {
-				if !emit(items[index]) {
-					return
-				}
-			}
+			items, err = loadFamily(ctx, root, cwd, currentPath)
 		} else {
-			err = streamSessionTreeFamily(ctx, root, cwd, currentPath, emit)
+			items, err = streamSessionTreeFamily(ctx, root, cwd, currentPath, emit)
 		}
 		if err != nil {
 			if ctx.Err() == nil {
@@ -245,7 +253,7 @@ func (d *sessionTreeDialog) OpenSessionFamilyAsync(parent context.Context, root,
 			}
 			return
 		}
-		send(sessionTreeLoadEvent{kind: sessionTreeLoadFinished, generation: generation})
+		send(sessionTreeLoadEvent{kind: sessionTreeLoadFinished, generation: generation, items: items})
 	}()
 	return events
 }
@@ -260,12 +268,38 @@ func (d *sessionTreeDialog) ApplyLoad(event sessionTreeLoadEvent) error {
 	switch event.kind {
 	case sessionTreeLoadStarted:
 	case sessionTreeLoadEntry:
+		// Entries arrive newest first and go on top. The cursor stays on the
+		// newest row, or on the row the user moved to.
+		atNewest := d.cursor >= len(d.items)-1
 		d.items = append(d.items, event.item)
+		d.newestFirst = true
 		d.loadingDone++
-	case sessionTreeLoadFinished:
-		if cursor := indexCurrentTreeItem(d.items); cursor >= 0 {
-			d.cursor = cursor
+		if atNewest {
+			d.cursor = len(d.items) - 1
+		} else {
+			d.cursor++
+			d.viewTop++
 		}
+	case sessionTreeLoadFinished:
+		// Keep a row the user moved to during the preview; otherwise select
+		// the current row.
+		var picked *sessionTreeTarget
+		if len(d.items) > 0 && d.cursor < len(d.items)-1 {
+			target := d.item(d.cursor).target
+			picked = &target
+		}
+		d.items, d.newestFirst = event.items, false
+		d.loadingDone = len(d.items)
+		d.cursor = indexCurrentTreeItem(d.items)
+		if picked != nil {
+			for i := range d.items {
+				if d.items[i].target == *picked {
+					d.cursor = i
+					break
+				}
+			}
+		}
+		d.viewTop = 0
 		d.finishLoad()
 	case sessionTreeLoadFailed:
 		d.finishLoad()
@@ -310,55 +344,47 @@ func loadSessionTreeFamily(ctx context.Context, root, cwd, currentPath string) (
 	return items, nil
 }
 
-func streamSessionTreeFamily(ctx context.Context, root, cwd, currentPath string, emit func(sessionTreeItem) bool) error {
+// streamSessionTreeFamily emits the current session's rows newest first as
+// a preview, then returns the complete family, oldest first.
+func streamSessionTreeFamily(ctx context.Context, root, cwd, currentPath string, emit func(sessionTreeItem) bool) ([]sessionTreeItem, error) {
 	roots, err := core.BuildSessionTreeFamilyContext(ctx, root, cwd, currentPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(roots) == 0 {
-		return fmt.Errorf("session tree: no readable session family")
+		return nil, fmt.Errorf("session tree: no readable session family")
 	}
 	familyRoot := roots[0]
 	current := findSessionTreeNode(familyRoot, currentPath)
 	if current == nil {
-		return fmt.Errorf("session tree: current session is missing from its family")
+		return nil, fmt.Errorf("session tree: current session is missing from its family")
 	}
 	currentHistory, err := core.ReadSessionHistoryContext(ctx, current.Summary.Path)
 	if err != nil {
-		return fmt.Errorf("session tree: read current %q: %w", current.Summary.Path, err)
+		return nil, fmt.Errorf("session tree: read current %q: %w", current.Summary.Path, err)
 	}
 	if currentHistory.Meta.ID != current.Meta.ID {
-		return fmt.Errorf("session tree: current session id changed in %q", current.Summary.Path)
+		return nil, fmt.Errorf("session tree: current session id changed in %q", current.Summary.Path)
 	}
 	currentSnapshots := map[string]sessionTreeSnapshot{
 		current.Summary.Path: {path: current.Summary.Path, messages: sessionHistoryMessages(currentHistory), history: currentHistory.Segments},
 	}
 	preview := flattenSessionNode(current, currentPath, currentSnapshots, 0, current.Meta.ForkPoint, false, false)
-	seen := make(map[sessionTreeTarget]struct{}, len(preview))
 	for index := len(preview) - 1; index >= 0; index-- {
-		seen[preview[index].target] = struct{}{}
 		if !emit(preview[index]) {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
 
 	snapshots, err := preflightSessionTreeFamilyContext(ctx, familyRoot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	items := flattenSessionFamilySnapshot(familyRoot, currentPath, snapshots)
 	if len(items) == 0 || !sessionTreeItemsMeaningful(items, familyRoot.Summary.Path) {
-		return fmt.Errorf("session tree: no messages in this family")
+		return nil, fmt.Errorf("session tree: no messages in this family")
 	}
-	for index := len(items) - 1; index >= 0; index-- {
-		if _, alreadyEmitted := seen[items[index].target]; alreadyEmitted {
-			continue
-		}
-		if !emit(items[index]) {
-			return ctx.Err()
-		}
-	}
-	return nil
+	return items, nil
 }
 
 func findSessionTreeNode(node *core.TreeNode, path string) *core.TreeNode {
@@ -404,7 +430,7 @@ func (d *sessionTreeDialog) activate(items []sessionTreeItem, cursor int) {
 	if cursor >= len(items) {
 		cursor = len(items) - 1
 	}
-	d.items = items
+	d.items, d.newestFirst = items, false
 	d.cursor = cursor
 	d.viewTop = 0
 	d.active = true
@@ -425,6 +451,14 @@ func (d *sessionTreeDialog) CursorPos() (row, col int) { return -1, -1 }
 
 // Active reports whether the dialog consumes input.
 func (d *sessionTreeDialog) Active() bool { return d != nil && d.active }
+
+// item returns the row shown at display index i (oldest first).
+func (d *sessionTreeDialog) item(i int) sessionTreeItem {
+	if d.newestFirst {
+		return d.items[len(d.items)-1-i]
+	}
+	return d.items[i]
+}
 
 func (d *sessionTreeDialog) pageRows() int {
 	if d.MaxRows > 0 {
@@ -488,7 +522,7 @@ func (d *sessionTreeDialog) HandleKey(k tui.Key) sessionTreeAction {
 			d.Close()
 			return sessionTreeAction{Close: true}
 		}
-		it := d.items[d.cursor]
+		it := d.item(d.cursor)
 		d.Close()
 		return sessionTreeActionForTarget(it.target, it.turnNo)
 	}
@@ -535,7 +569,7 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, line(th.FGColor(th.Muted, progress)))
 		if len(d.items) == 0 {
 			lines = append(lines,
-				line(th.FGColor(th.Muted, "recent messages appear first; esc cancels")),
+				line(th.FGColor(th.Muted, "recent messages load first; esc cancels")),
 				line(frameRule(th, renderWidth)),
 			)
 			return lines
@@ -549,11 +583,11 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		)
 		return lines
 	}
-	hint := "session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):"
+	hint := " ↑↓ pick · pgup/pgdn · home/end · enter checkout · esc cancel"
 	if d.loading {
-		hint = "session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel; more loading):"
+		hint += " · loading branches…"
 	}
-	lines = append(lines, line(th.FGColor(th.Muted, hint)))
+	lines = append(lines, line(th.FGColor(th.DimColor(th.Muted, 40), hint)))
 
 	d.followCursor()
 	start := d.viewTop
@@ -567,14 +601,16 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 	if start > 0 {
 		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↑ %d more above", start))))
 	}
+	// Show times on every visible row or none, so the text column lines up.
+	showTime := true
 	for i := start; i < end; i++ {
-		it := d.items[i]
-		plain := fitSessionTreeItemPlain(it, renderWidth)
-		if i == d.cursor {
-			lines = append(lines, line(th.PadHighlight(plain, renderWidth)))
-		} else {
-			lines = append(lines, line(colorSessionTreeLine(th, plain)))
+		if it := d.item(i); !it.target.IsBoundary() && renderWidth-sessionTreeRowFixedWidth(it, true) < sessionTreeMinText {
+			showTime = false
+			break
 		}
+	}
+	for i := start; i < end; i++ {
+		lines = append(lines, line(renderSessionTreeRow(th, d.item(i), renderWidth, i == d.cursor, showTime)))
 	}
 	if end < len(d.items) {
 		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end))))
@@ -602,6 +638,69 @@ func clampSessionTreeViewTop(viewTop, cursor, window, total int) int {
 	return viewTop
 }
 
+// sessionTreeTimeLayout is the fixed-width message time of a tree row.
+const sessionTreeTimeLayout = "01-02 15:04:05"
+
+// sessionTreeMinText is the fewest text cells a row keeps before the
+// dialog drops the time column.
+const sessionTreeMinText = 12
+
+// sessionTreeRowFixedWidth is the width of a message row without its text.
+func sessionTreeRowFixedWidth(it sessionTreeItem, showTime bool) int {
+	w := 2 + 2*it.depth + 3 + 2 // indent, role, gap before the text
+	if showTime {
+		w += 2 + len(sessionTreeTimeLayout)
+	}
+	if it.current {
+		w += len("  current")
+	}
+	return w
+}
+
+// renderSessionTreeRow renders "  you  11-24 14:32:05  text  current":
+// the role in its chat color, the time dimmed (blank when unknown), the
+// text in the normal color. Boundary rows and very narrow widths use the
+// plain label.
+func renderSessionTreeRow(th tui.Theme, it sessionTreeItem, width int, selected, showTime bool) string {
+	if it.target.IsBoundary() || it.role == "" {
+		plain := fitSessionTreeItemPlain(it, width)
+		if selected {
+			return th.PadHighlight(plain, width)
+		}
+		return th.FGColor(th.Muted, plain)
+	}
+	prefix := "  " + strings.Repeat("  ", it.depth)
+	role := fmt.Sprintf("%-3s", sessionTreeRoleLabel(it.role))
+	stamp := ""
+	if showTime {
+		stamp = "  " + strings.Repeat(" ", len(sessionTreeTimeLayout))
+		if !it.when.IsZero() {
+			stamp = "  " + it.when.Local().Format(sessionTreeTimeLayout)
+		}
+	}
+	suffix := ""
+	if it.current {
+		suffix = "  current"
+	}
+	room := width - sessionTreeRowFixedWidth(it, showTime)
+	if room < 1 {
+		plain := fitSessionTreeItemPlain(it, width)
+		if selected {
+			return th.PadHighlight(plain, width)
+		}
+		return th.FGColor(th.FG, plain)
+	}
+	text := fitSessionTreeLabel(it.text, room)
+	if selected {
+		return th.PadHighlight(prefix+role+stamp+"  "+text+suffix, width)
+	}
+	color := th.Assistant
+	if it.role == provider.RoleUser {
+		color = th.User
+	}
+	return prefix + th.FGColor(color, role) + th.FGColor(th.DimColor(th.Muted, 40), stamp) + "  " + th.FGColor(th.FG, text) + th.FGColor(th.Accent, suffix)
+}
+
 func fitSessionTreeItemPlain(it sessionTreeItem, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
@@ -609,7 +708,7 @@ func fitSessionTreeItemPlain(it sessionTreeItem, maxWidth int) string {
 	prefix := "  " + strings.Repeat("  ", it.depth)
 	suffix := ""
 	if it.current {
-		suffix = "  [current]"
+		suffix = "  current"
 	}
 	prefixWidth := runewidth.StringWidth(prefix)
 	suffixWidth := runewidth.StringWidth(suffix)
@@ -900,6 +999,8 @@ func buildSessionTreeSegmentItems(path string, msgs []provider.Message, depth in
 			depth:      depth,
 			current:    currentPath && visibleIndex == len(visible)-1,
 			target:     target,
+			text:       preview,
+			when:       msg.Time,
 		})
 	}
 	return out
@@ -1093,20 +1194,6 @@ func sanitizeSessionTreeText(s string) string {
 		i++
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
-}
-
-func colorSessionTreeLine(th tui.Theme, line string) string {
-	plain := strings.TrimSpace(line)
-	switch {
-	case strings.HasPrefix(plain, "you:"):
-		return th.FGColor(th.FG, line)
-	case strings.HasPrefix(plain, "zut:"):
-		return th.FGColor(th.Muted, line)
-	case strings.HasPrefix(plain, "tool:"):
-		return th.FGColor(th.ToolOut, line)
-	default:
-		return th.FGColor(th.Muted, line)
-	}
 }
 
 // fitSessionTreeLabel truncates by terminal cells, not Go runes. This is

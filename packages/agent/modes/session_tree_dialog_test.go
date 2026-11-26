@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSessionTreeAsyncLoadOpensImmediatelyAndStreamsNewestFirst(t *testing.T) {
+func TestSessionTreeAsyncLoadOpensImmediatelyAndListsOldestFirst(t *testing.T) {
 	d := newSessionTreeDialog()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -48,8 +48,8 @@ func TestSessionTreeAsyncLoadOpensImmediatelyAndStreamsNewestFirst(t *testing.T)
 	if d.loading {
 		t.Fatal("tree remained loading after its terminal event")
 	}
-	if got := []string{d.items[0].label, d.items[1].label}; !reflect.DeepEqual(got, []string{"newest", "oldest"}) {
-		t.Fatalf("stream order = %v, want newest to oldest", got)
+	if got := []string{d.item(0).label, d.item(1).label}; !reflect.DeepEqual(got, []string{"oldest", "newest"}) {
+		t.Fatalf("display order = %v, want oldest to newest like the chat", got)
 	}
 }
 
@@ -556,4 +556,99 @@ func newTreeTestSession(t *testing.T, root, cwd string, msgs []provider.Message)
 		t.Fatal(err)
 	}
 	return sess.Path
+}
+
+func TestSessionTreePreviewEntriesShowOldestFirstAndKeepTheCursor(t *testing.T) {
+	d := newSessionTreeDialog()
+	d.active, d.loading, d.loadGeneration = true, true, 1
+	entry := func(label string) sessionTreeLoadEvent {
+		return sessionTreeLoadEvent{kind: sessionTreeLoadEntry, generation: 1, item: sessionTreeItem{label: label}}
+	}
+	labels := func() []string {
+		var out []string
+		for i := range d.items {
+			out = append(out, d.item(i).label)
+		}
+		return out
+	}
+	require.NoError(t, d.ApplyLoad(entry("c")))
+	require.NoError(t, d.ApplyLoad(entry("b")))
+	require.Equal(t, []string{"b", "c"}, labels())
+	require.Equal(t, 1, d.cursor, "the cursor starts on the newest row")
+
+	d.HandleKey(tui.Key{Kind: tui.KeyUp})
+	require.Equal(t, "b", d.item(d.cursor).label)
+	require.NoError(t, d.ApplyLoad(entry("a")))
+	require.Equal(t, []string{"a", "b", "c"}, labels())
+	require.Equal(t, "b", d.item(d.cursor).label, "an older row loading above keeps the picked row")
+
+	act := d.HandleKey(tui.Key{Kind: tui.KeyEnter})
+	require.True(t, act.Select)
+
+	// On the newest row, the finished family selects the current row.
+	d.active, d.loading = true, true
+	d.cursor = len(d.items) - 1
+	full := []sessionTreeItem{{label: "x"}, {label: "y", current: true}, {label: "z"}}
+	require.NoError(t, d.ApplyLoad(sessionTreeLoadEvent{kind: sessionTreeLoadFinished, generation: 1, items: full}))
+	require.False(t, d.newestFirst)
+	require.Equal(t, []string{"x", "y", "z"}, labels())
+	require.Equal(t, 1, d.cursor)
+
+	// A row picked during the preview stays picked.
+	target := func(i int) sessionTreeTarget { return sessionTreeTarget{SourcePath: "s", EffectiveIndex: i} }
+	d.items, d.newestFirst, d.active, d.loading = nil, false, true, true
+	for _, i := range []int{3, 2} {
+		require.NoError(t, d.ApplyLoad(sessionTreeLoadEvent{kind: sessionTreeLoadEntry, generation: 1, item: sessionTreeItem{label: "p", target: target(i)}}))
+	}
+	d.HandleKey(tui.Key{Kind: tui.KeyUp})
+	require.Equal(t, target(2), d.item(d.cursor).target)
+	family := []sessionTreeItem{{target: target(1)}, {target: target(2)}, {target: target(3), current: true}}
+	require.NoError(t, d.ApplyLoad(sessionTreeLoadEvent{kind: sessionTreeLoadFinished, generation: 1, items: family}))
+	require.Equal(t, 1, d.cursor, "the picked row survives the family replacing the preview")
+}
+
+func TestSessionTreeRowColorsMetadataApartFromText(t *testing.T) {
+	th := tui.Dark
+	when := time.Date(2026, 11, 24, 14, 32, 5, 0, time.Local)
+	it := sessionTreeItem{role: provider.RoleAssistant, text: "the reply", when: when, current: true}
+	row := renderSessionTreeRow(th, it, 80, false, true)
+	require.Equal(t, "  zut  11-24 14:32:05  the reply  current", stripANSIBytes(row))
+	require.Contains(t, row, th.FGColor(th.Assistant, "zut"))
+	require.Contains(t, row, th.FGColor(th.DimColor(th.Muted, 40), "  11-24 14:32:05"))
+	require.Contains(t, row, th.FGColor(th.FG, "the reply"))
+
+	user := renderSessionTreeRow(th, sessionTreeItem{role: provider.RoleUser, text: "ask", when: when}, 80, false, true)
+	require.Contains(t, user, th.FGColor(th.User, "you"))
+	// An unknown time keeps the text column aligned.
+	untimed := stripANSIBytes(renderSessionTreeRow(th, sessionTreeItem{role: provider.RoleUser, text: "ask"}, 80, false, true))
+	require.Equal(t, strings.Index(stripANSIBytes(user), "ask"), strings.Index(untimed, "ask"))
+	for _, w := range []int{0, 1, 5, 12, 30, 80} {
+		for _, show := range []bool{true, false} {
+			require.LessOrEqual(t, sessionTreeANSIWidth(renderSessionTreeRow(th, it, w, true, show)), max(w, 0))
+			require.LessOrEqual(t, sessionTreeANSIWidth(renderSessionTreeRow(th, it, w, false, show)), max(w, 0))
+		}
+	}
+
+	// The dialog drops the time on every row when one row would get too
+	// little text, so the text column lines up.
+	d := newSessionTreeDialog()
+	d.activate([]sessionTreeItem{
+		{role: provider.RoleUser, text: "ask", when: when},
+		{role: provider.RoleAssistant, text: "reply", when: when, current: true, depth: 2},
+	}, 1)
+	wide := stripANSIBytes(strings.Join(d.Render(th, 80), "\n"))
+	require.Contains(t, wide, "11-24 14:32:05")
+	narrow := strings.Split(stripANSIBytes(strings.Join(d.Render(th, 32), "\n")), "\n")
+	require.NotContains(t, strings.Join(narrow, "\n"), "14:32")
+	var cols []int
+	for _, l := range narrow {
+		if i := strings.Index(l, "ask"); i >= 0 {
+			cols = append(cols, i)
+		}
+		if i := strings.Index(l, "reply"); i >= 0 {
+			cols = append(cols, i-4) // reply is indented two levels deeper
+		}
+	}
+	require.Len(t, cols, 2)
+	require.Equal(t, cols[0], cols[1])
 }
