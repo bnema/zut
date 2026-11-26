@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -15,6 +16,11 @@ import (
 const NextPromptNoPrediction = "NO_PREDICTION"
 
 const nextPromptMaxRunes = 300
+
+// nextPromptMaxStreamBytes bounds how much reply text is read before the
+// prediction is abandoned. MaxTokens is not lowered because it is part of the
+// cached request prefix.
+const nextPromptMaxStreamBytes = nextPromptMaxRunes * 4
 
 const nextPromptInstruction = `[Side request: ignore the coding task for this one reply and do not call any tools.]
 Guess the next message I am most likely to type to you now.
@@ -32,6 +38,9 @@ Guess the next message I am most likely to type to you now.
 func (a *Agent) PredictNextPrompt(ctx context.Context) (string, error) {
 	if a.Client == nil {
 		return "", fmt.Errorf("next prompt prediction: provider client is nil")
+	}
+	if !provider.SupportsSidePrediction(a.Client) {
+		return "", nil
 	}
 	fastMode := a.FastModeEnabled()
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
@@ -52,54 +61,24 @@ func (a *Agent) PredictNextPrompt(ctx context.Context) (string, error) {
 	// HTTP, so the side request neither waits on the thread lock nor replaces
 	// the main chain's continuation state. TurnID is fresh because this is a
 	// distinct logical request.
-	a.mu.Lock()
-	a.ensureRequestIdentityLocked()
-	req.Context = provider.RequestContext{CacheSessionID: a.cacheSessionID, TurnID: uuid.NewString()}
-	a.mu.Unlock()
+	req.Context = provider.RequestContext{CacheSessionID: a.CacheSessionID(), TurnID: uuid.NewString()}
 
-	stream, err := a.Client.Stream(ctx, req)
+	// Cancel the stream on return so a reply cut at the byte cap stops
+	// generating on the provider side.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := a.Client.Stream(streamCtx, req)
 	if err != nil {
 		return "", fmt.Errorf("next prompt prediction request: %w", err)
 	}
-	var (
-		text     strings.Builder
-		done     bool
-		finalErr error
-		finalMsg provider.Message
-	)
-	streamOpen := true
-	for streamOpen && !done {
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("next prompt prediction stream: %w", ctx.Err())
-		case event, ok := <-stream:
-			if !ok {
-				streamOpen = false
-				continue
-			}
-			switch e := event.(type) {
-			case provider.EventTextDelta:
-				text.WriteString(e.Delta)
-			case provider.EventDone:
-				done = true
-				finalErr = e.Err
-				finalMsg = e.Message
-			}
-		}
+	text, err := collectStreamText(streamCtx, stream, "next prompt prediction", nextPromptMaxStreamBytes)
+	if errors.Is(err, errStreamTextLimit) {
+		return "", nil
 	}
-	if finalErr != nil {
-		return "", fmt.Errorf("next prompt prediction stream: %w", finalErr)
+	if err != nil {
+		return "", err
 	}
-	if !done {
-		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("next prompt prediction stream: %w", err)
-		}
-		return "", fmt.Errorf("next prompt prediction stream ended without a result")
-	}
-	if text.Len() == 0 {
-		text.WriteString(textFromMessage(finalMsg))
-	}
-	return normalizeNextPrompt(text.String()), nil
+	return normalizeNextPrompt(text), nil
 }
 
 // normalizeNextPrompt reduces a model reply to one safe line, or "" when the
@@ -122,7 +101,7 @@ func normalizeNextPrompt(text string) string {
 			text = strings.TrimSpace(text[1 : n-1])
 		}
 	}
-	if text == "" || text == NextPromptNoPrediction || len([]rune(text)) > nextPromptMaxRunes {
+	if text == "" || strings.HasPrefix(strings.ToUpper(text), NextPromptNoPrediction) || len([]rune(text)) > nextPromptMaxRunes {
 		return ""
 	}
 	return text
@@ -149,7 +128,7 @@ func stripANSI(text string) string {
 			i = j
 		case ']':
 			j := i + 2
-			for j < len(text) && text[j] != 0x07 && !(text[j] == 0x1b && j+1 < len(text) && text[j+1] == '\\') {
+			for j < len(text) && text[j] != 0x07 && (text[j] != 0x1b || j+1 >= len(text) || text[j+1] != '\\') {
 				j++
 			}
 			if j < len(text) && text[j] == 0x1b {

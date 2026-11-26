@@ -89,12 +89,6 @@ func TestPredictNextPromptSharesTurnRequestPrefix(t *testing.T) {
 	if block, ok := last.Content[0].(provider.TextBlock); !ok || !strings.Contains(block.Text, NextPromptNoPrediction) {
 		t.Fatalf("trailing content = %#v", last.Content[0])
 	}
-	// The side request must equal what the next agent turn would send, plus
-	// one message. Compare against a fresh turn request on the same state.
-	want := agent.buildTurnRequest(agent.FastModeEnabled())
-	if !reflect.DeepEqual(side.Messages[:len(side.Messages)-1], want.Messages) {
-		t.Fatal("side request messages differ from the turn prefix")
-	}
 	strip := func(r provider.Request) provider.Request {
 		r.Messages, r.Lifecycle = nil, nil
 		r.Context = provider.RequestContext{}
@@ -118,6 +112,21 @@ func TestPredictNextPromptSharesTurnRequestPrefix(t *testing.T) {
 	if !reflect.DeepEqual(agent.Messages(), before) {
 		t.Fatal("transcript changed after prediction")
 	}
+	// The real next turn must send the prediction's prefix unchanged.
+	if err := agent.Prompt(context.Background(), "commit it", nil, func(AgentEvent) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("requests = %d", len(client.requests))
+	}
+	next := client.requests[2]
+	prefix := side.Messages[:len(side.Messages)-1]
+	if len(next.Messages) <= len(prefix) || !reflect.DeepEqual(next.Messages[:len(prefix)], prefix) {
+		t.Fatal("next turn does not extend the prediction's message prefix")
+	}
+	if !reflect.DeepEqual(strip(next), strip(side)) {
+		t.Fatalf("next turn fields differ:\nnext=%#v\nside=%#v", strip(next), strip(side))
+	}
 }
 
 func TestPredictNextPromptNormalizesReplies(t *testing.T) {
@@ -130,6 +139,8 @@ func TestPredictNextPromptNormalizesReplies(t *testing.T) {
 		"\x1b[31mred\x1b[0m text\a":  "red text",
 		strings.Repeat("a", 301):     "",
 		"   ":                        "",
+		"no_prediction.":             "",
+		"NO_PREDICTION - unsure":     "",
 	}
 	for in, want := range cases {
 		client := &predictTestClient{scripts: [][]provider.Event{assistantDone(in)}}
@@ -215,5 +226,54 @@ func TestPredictNextPromptHonorsCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("prediction did not stop after cancel")
+	}
+}
+
+type noSidePredictionClient struct{ predictTestClient }
+
+func (*noSidePredictionClient) SupportsSidePrediction() bool { return false }
+
+func TestPredictNextPromptSkipsUnsupportedProviders(t *testing.T) {
+	client := &noSidePredictionClient{predictTestClient{scripts: [][]provider.Event{assistantDone("x")}}}
+	got, err := newPredictAgent(t, client).PredictNextPrompt(context.Background())
+	if err != nil || got != "" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatal("unsupported provider must not receive a request")
+	}
+}
+
+// endlessTextClient streams text deltas until its context is cancelled.
+type endlessTextClient struct{ cancelled chan struct{} }
+
+func (c *endlessTextClient) Name() string { return "endless" }
+
+func (c *endlessTextClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				close(c.cancelled)
+				return
+			case out <- provider.EventTextDelta{Delta: "word "}:
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestPredictNextPromptStopsAtByteCap(t *testing.T) {
+	client := &endlessTextClient{cancelled: make(chan struct{})}
+	got, err := newPredictAgent(t, client).PredictNextPrompt(context.Background())
+	if err != nil || got != "" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	select {
+	case <-client.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream context was not cancelled after the cap")
 	}
 }

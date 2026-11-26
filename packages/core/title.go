@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -46,45 +47,11 @@ func GenerateSessionTitle(ctx context.Context, client provider.Client, model, pr
 		return "", fmt.Errorf("title generation request: %w", err)
 	}
 
-	var (
-		text     strings.Builder
-		done     bool
-		finalErr error
-		finalMsg provider.Message
-	)
-	streamOpen := true
-	for streamOpen && !done {
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("title generation stream: %w", ctx.Err())
-		case event, ok := <-stream:
-			if !ok {
-				streamOpen = false
-				continue
-			}
-			switch e := event.(type) {
-			case provider.EventTextDelta:
-				text.WriteString(e.Delta)
-			case provider.EventDone:
-				done = true
-				finalErr = e.Err
-				finalMsg = e.Message
-			}
-		}
+	text, err := collectStreamText(ctx, stream, "title generation", 0)
+	if err != nil {
+		return "", err
 	}
-	if finalErr != nil {
-		return "", fmt.Errorf("title generation stream: %w", finalErr)
-	}
-	if !done {
-		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("title generation stream: %w", err)
-		}
-		return "", fmt.Errorf("title generation stream ended without a result")
-	}
-	if text.Len() == 0 {
-		text.WriteString(textFromMessage(finalMsg))
-	}
-	if title := NormalizeSessionTitle(text.String()); title != "" {
+	if title := NormalizeSessionTitle(text); title != "" {
 		return title, nil
 	}
 	return "", fmt.Errorf("title generation returned an empty title")
@@ -123,6 +90,64 @@ func NormalizeSessionTitle(text string) string {
 		return string(runes[:SessionTitleMaxChars-1]) + "…"
 	}
 	return text
+}
+
+// errStreamTextLimit reports that collectStreamText stopped at its byte cap.
+var errStreamTextLimit = errors.New("stream text exceeds limit")
+
+// collectStreamText gathers the text of one provider stream for a hidden side
+// request. It falls back to the final message text when no deltas arrive and
+// ignores tool calls and reasoning. maxBytes > 0 stops reading once the text
+// exceeds it and returns errStreamTextLimit. The stream is drained in the
+// background on every return so the provider goroutine never blocks. op
+// prefixes error messages.
+func collectStreamText(ctx context.Context, stream <-chan provider.Event, op string, maxBytes int) (string, error) {
+	defer func() { go drainProviderStream(stream) }()
+	var (
+		text     strings.Builder
+		done     bool
+		finalErr error
+		finalMsg provider.Message
+	)
+	streamOpen := true
+	for streamOpen && !done {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%s stream: %w", op, ctx.Err())
+		case event, ok := <-stream:
+			if !ok {
+				streamOpen = false
+				continue
+			}
+			switch e := event.(type) {
+			case provider.EventTextDelta:
+				text.WriteString(e.Delta)
+				if maxBytes > 0 && text.Len() > maxBytes {
+					return "", errStreamTextLimit
+				}
+			case provider.EventDone:
+				done = true
+				finalErr = e.Err
+				finalMsg = e.Message
+			}
+		}
+	}
+	if finalErr != nil {
+		return "", fmt.Errorf("%s stream: %w", op, finalErr)
+	}
+	if !done {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("%s stream: %w", op, err)
+		}
+		return "", fmt.Errorf("%s stream ended without a result", op)
+	}
+	if text.Len() == 0 {
+		text.WriteString(textFromMessage(finalMsg))
+		if maxBytes > 0 && text.Len() > maxBytes {
+			return "", errStreamTextLimit
+		}
+	}
+	return text.String(), nil
 }
 
 func textFromMessage(message provider.Message) string {

@@ -1387,7 +1387,10 @@ func (a *Agent) buildTurnRequest(fastMode bool) provider.Request {
 		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
-		Advisor:     a.requestServerAdvisor(),
+		// The server advisor stays on side requests too because it is part
+		// of the cached prefix. If the model invokes it during a prediction,
+		// that call is billed and its output ignored (accepted risk).
+		Advisor: a.requestServerAdvisor(),
 	}
 }
 
