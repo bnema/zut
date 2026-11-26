@@ -93,6 +93,7 @@ func (c *Controller) abortCompaction() {
 	}
 }
 func (c *Controller) beginCompact(next *Input) error {
+	c.cancelPrediction()
 	ag := c.turnSeam.currentAgent()
 	if ag == nil {
 		return errors.New("agent unavailable")

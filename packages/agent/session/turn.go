@@ -102,6 +102,7 @@ func cloneTurn(in LiveTurn) LiveTurn {
 func (c *Controller) Submit(ctx context.Context, in Input) error {
 	var result error
 	err := c.call(ctx, func() {
+		c.cancelPrediction()
 		if in.Origin == "" {
 			in.Origin = InputOrigin("user")
 		}
@@ -257,6 +258,7 @@ func (c *Controller) publishError(text string) {
 func (c *Controller) startTurn(in Input) error { return c.runTurn(in, false) }
 
 func (c *Controller) runTurn(in Input, continuing bool) error {
+	c.cancelPrediction()
 	if c.turn.busy {
 		return ErrBusy
 	}
@@ -514,6 +516,7 @@ func (c *Controller) enqueueFront(in Input) {
 	c.publishQueue()
 }
 func (c *Controller) enqueue(in Input) {
+	c.cancelPrediction()
 	c.turn.next++
 	c.turn.queue = append(c.turn.queue, QueuedInput{ID: fmt.Sprint(c.turn.next), Input: in})
 	c.publishQueue()

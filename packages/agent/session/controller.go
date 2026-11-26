@@ -101,6 +101,7 @@ type Controller struct {
 	sched         schedState
 	res           residentState
 	compact       compactState
+	predict       predictState
 	settings      settingsState
 	inter         interState
 	turnSeam      turnSeam

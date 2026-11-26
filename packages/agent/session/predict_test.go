@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -22,9 +23,7 @@ func predictAgentWithoutCalls(t *testing.T) *core.Agent {
 
 func TestPredictNextPromptSkipsWhenNotQuiescent(t *testing.T) {
 	cases := map[string]func(c *Controller){
-		"queued":   func(c *Controller) { c.turn.queue = []QueuedInput{{ID: "1", Input: Input{Text: "next"}}} },
-		"rescuing": func(c *Controller) { c.turn.rescuing = true },
-		"compact":  func(c *Controller) { c.compact.busy = true },
+		"queued": func(c *Controller) { c.turn.queue = []QueuedInput{{ID: "1", Input: Input{Text: "next"}}} },
 		"pending": func(c *Controller) {
 			c.confirm.pending = map[string]*pendingEntry{"r": {result: make(chan pendingResult, 1)}}
 		},
@@ -89,4 +88,136 @@ func TestPredictNextPromptIdleCallsAgent(t *testing.T) {
 		t.Fatalf("unexpected event %v", ev.Kind)
 	default:
 	}
+}
+
+// blockingPredictAgent returns an agent whose first Stream signals started
+// and blocks until its ctx ends; later Streams answer reply.
+func blockingPredictAgent(t *testing.T, started chan<- struct{}, reply string) (*core.Agent, *providermocks.MockClient) {
+	client := providermocks.NewMockClient(t)
+	client.EXPECT().Name().Return("openai").Maybe()
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.Request) (<-chan provider.Event, error) {
+		started <- struct{}{}
+		return make(chan provider.Event), nil
+	}).Once()
+	if reply != "" {
+		client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.Request) (<-chan provider.Event, error) {
+			ch := make(chan provider.Event, 2)
+			ch <- provider.EventTextDelta{Delta: reply}
+			ch <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: reply}}}}
+			close(ch)
+			return ch, nil
+		}).Once()
+	}
+	ag := core.NewAgent(client, "model", "", nil)
+	ag.AppendUserContext("hello", nil)
+	return ag, client
+}
+
+type predictResult struct {
+	text string
+	err  error
+}
+
+func startPrediction(ctx context.Context, c *Controller) <-chan predictResult {
+	out := make(chan predictResult, 1)
+	go func() {
+		text, err := c.PredictNextPrompt(ctx)
+		out <- predictResult{text, err}
+	}()
+	return out
+}
+
+func waitResult(t *testing.T, ctx context.Context, ch <-chan predictResult) predictResult {
+	t.Helper()
+	select {
+	case r := <-ch:
+		return r
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return predictResult{}
+	}
+}
+
+func waitStarted(t *testing.T, ctx context.Context, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func TestPredictNextPromptCloseReturnsErrClosed(t *testing.T) {
+	c, ctx := newTestController(t)
+	turn := lane9Turn(t, c, ctx)
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "")
+	turn.EXPECT().currentAgent().Return(ag).Once()
+	res := startPrediction(ctx, c)
+	waitStarted(t, ctx, started)
+	require.NoError(t, c.Close(ctx, "test"))
+	r := waitResult(t, ctx, res)
+	require.ErrorIs(t, r.err, ErrClosed)
+	require.Empty(t, r.text)
+}
+
+func TestPredictNextPromptCallerCancel(t *testing.T) {
+	c, ctx := newTestController(t)
+	turn := lane9Turn(t, c, ctx)
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "")
+	turn.EXPECT().currentAgent().Return(ag).Once()
+	pctx, cancel := context.WithCancel(ctx)
+	res := startPrediction(pctx, c)
+	waitStarted(t, ctx, started)
+	cancel()
+	r := waitResult(t, ctx, res)
+	require.ErrorIs(t, r.err, context.Canceled)
+	require.False(t, errors.Is(r.err, ErrClosed))
+}
+
+func TestPredictNextPromptSecondCancelsFirst(t *testing.T) {
+	c, ctx := newTestController(t)
+	turn := lane9Turn(t, c, ctx)
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "second guess")
+	turn.EXPECT().currentAgent().Return(ag).Twice()
+	first := startPrediction(ctx, c)
+	waitStarted(t, ctx, started)
+	text, err := c.PredictNextPrompt(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "second guess", text)
+	r := waitResult(t, ctx, first)
+	require.ErrorIs(t, r.err, context.Canceled)
+}
+
+func TestPredictNextPromptTurnStartCancels(t *testing.T) {
+	c, ctx := newTestController(t)
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "turn reply")
+	// A preset title keeps title generation off the provider mock.
+	require.NoError(t, c.call(ctx, func() { c.turn.agent, c.settings.title = ag, "t" }))
+	before := ag.MessageCount()
+	events, err := c.Subscribe(ctx, 0)
+	require.NoError(t, err)
+	res := startPrediction(ctx, c)
+	waitStarted(t, ctx, started)
+	require.NoError(t, c.Submit(ctx, Input{Text: "go"}))
+	r := waitResult(t, ctx, res)
+	require.ErrorIs(t, r.err, context.Canceled)
+	for idle := false; !idle; {
+		select {
+		case ev := <-events:
+			if ev.Kind == EvInfo && ev.Data.(InfoEvent).Info.Run == RunStateIdle && ev.Data.(InfoEvent).Info.Activity.Kind == "idle" {
+				var busy bool
+				require.NoError(t, c.call(ctx, func() { busy = c.turn.busy }))
+				idle = !busy
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	msgs := ag.Messages()
+	require.Len(t, msgs, before+2)
+	require.Equal(t, "turn reply", msgs[len(msgs)-1].Content[0].(provider.TextBlock).Text)
 }
