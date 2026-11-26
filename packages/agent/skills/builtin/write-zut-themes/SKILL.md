@@ -60,7 +60,7 @@ branches use the available branch over the adaptive base.
 ## Valid values
 
 All fields are optional. Semantic roles include `fg`, `muted`, `accent`,
-`background`, `user`, `user_bubble_bg`, `user_bubble_fg`, `assistant`, `tool`,
+`background`, `user`, `user_bubble_bg`, `user_bubble_fg`, `search_line_bg`, `assistant`, `tool`,
 `tool_out`, `error`, `warning`, `spinner`, `thinking_max`, `selection_bg`, and
 `selection_fg`.
 

@@ -100,6 +100,7 @@ type Theme struct {
 	User         TerminalColor  // label color for the user role
 	UserBubbleBG TerminalColor  // background tint behind user message rows
 	UserBubbleFG TerminalColor  // foreground colour for user message rows
+	SearchLineBG TerminalColor  // subtle background behind search-matched lines
 	Assistant    TerminalColor  // label color for the zut role
 	Tool         TerminalColor
 	ToolOut      TerminalColor
@@ -192,6 +193,7 @@ var Dark = Theme{
 	User:              Color256(180),        // warm tan (unused now that the speaker label is gone, kept for skin compat)
 	UserBubbleBG:      ColorRGB(66, 69, 75), // #42454B
 	UserBubbleFG:      Color256(248),        // slightly lighter grey for readability on #42454B
+	SearchLineBG:      ColorRGB(58, 52, 36), // #3A3424 dim amber, distinct from user rows and selection
 	Assistant:         Color256(117),        // bright cyan — the zut label color
 	Tool:              Color256(114),        // green
 	ToolOut:           Color256(245),
@@ -216,6 +218,7 @@ var Light = Theme{
 	User:              Color256(94),
 	UserBubbleBG:      Color256(254), // very pale grey panel behind user rows on light theme
 	UserBubbleFG:      Color256(240), // dark grey text, legible on the pale panel
+	SearchLineBG:      Color256(230), // pale cream behind search-matched lines
 	Assistant:         Color256(31),  // deep cyan
 	Tool:              Color256(28),
 	ToolOut:           Color256(240),
