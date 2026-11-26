@@ -21,7 +21,8 @@ type ArchivedOptions struct {
 	Limit int
 }
 
-// ArchivedRow is one archived user or assistant text message.
+// ArchivedRow is one archived user or assistant text message. Message keeps
+// only its text blocks (plus role and meta) to bound memory.
 type ArchivedRow struct {
 	MsgSeq  int // same numbering as SessionTextRow.MsgSeq
 	Message provider.Message
@@ -54,24 +55,31 @@ type archiveCompaction struct {
 // into the live transcript. Compaction rows without a summary message (the
 // first dynamic-context insert) are not real compactions and are ignored.
 // Without a real compaction the history is empty. Oversized and malformed
-// rows are skipped like ScanSessionText. The file is read twice so that, with
+// rows are skipped like ScanSessionText, except that an oversized compaction
+// row still counts as a boundary: when it is the latest one, its kept tail is
+// unknown and the history is empty. The file is read twice so that, with
 // Limit > 0, row memory stays bounded by Limit plus the kept tail.
 func ReadArchivedSessionText(ctx context.Context, path string, opt ArchivedOptions) (ArchivedHistory, error) {
 	keep := func(m provider.Message) bool { return opt.Skip == nil || !opt.Skip(m) }
 
 	// Pass 1: find the latest real compaction and its kept tail.
 	latestRow := -1
+	latestOversized := false
 	var latest archiveCompaction
 	err := scanArchiveLines(ctx, path, func(rowIdx int, line []byte, oversized bool) error {
-		if oversized || !bytes.HasPrefix(line, []byte(`{"type":"compaction"`)) {
+		if !bytes.HasPrefix(line, compactionRowPrefix) {
+			return nil
+		}
+		if oversized {
+			latestRow, latestOversized = rowIdx, true
 			return nil
 		}
 		if c, ok := decodeArchiveCompaction(line, keep); ok {
-			latestRow, latest = rowIdx, c
+			latestRow, latestOversized, latest = rowIdx, false, c
 		}
 		return nil
 	})
-	if err != nil || latestRow < 0 {
+	if err != nil || latestRow < 0 || latestOversized {
 		return ArchivedHistory{}, err
 	}
 
@@ -90,8 +98,12 @@ func ReadArchivedSessionText(ctx context.Context, path string, opt ArchivedOptio
 			return errStopArchiveScan
 		}
 		if oversized {
-			if bytes.HasPrefix(line, messageRowPrefix) {
+			switch {
+			case bytes.HasPrefix(line, messageRowPrefix):
 				msgSeq++
+			case bytes.HasPrefix(line, compactionRowPrefix):
+				// Undecodable, but still a boundary (tokens unknown).
+				marks = append(marks, ArchivedMark{Index: total})
 			}
 			return nil
 		}
@@ -110,7 +122,7 @@ func ReadArchivedSessionText(ctx context.Context, path string, opt ArchivedOptio
 			if !ok || !keep(row.Message) {
 				return nil
 			}
-			rows = append(rows, ArchivedRow{MsgSeq: seq, Message: row.Message})
+			rows = append(rows, ArchivedRow{MsgSeq: seq, Message: archivedTextOnly(row.Message)})
 			fps = append(fps, row.Fingerprint)
 			total++
 			if bound > 0 && len(rows) > 2*bound {
@@ -165,6 +177,21 @@ func ReadArchivedSessionText(ctx context.Context, path string, opt ArchivedOptio
 }
 
 var errStopArchiveScan = errors.New("stop archive scan")
+
+var compactionRowPrefix = []byte(`{"type":"compaction"`)
+
+// archivedTextOnly keeps only the text blocks of m: archived rows are
+// rendered and matched as text only.
+func archivedTextOnly(m provider.Message) provider.Message {
+	text := make([]provider.Content, 0, len(m.Content))
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			text = append(text, tb)
+		}
+	}
+	m.Content = text
+	return m
+}
 
 func equalUint64s(a, b []uint64) bool {
 	for i := range a {

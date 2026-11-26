@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
@@ -156,5 +157,54 @@ func TestReadArchivedLimitTrimsLongHistory(t *testing.T) {
 	assertStrings(t, archiveTexts(h.Rows), []string{"m7", "m8"})
 	if h.Older != 7 || h.Rows[1].MsgSeq != 8 || len(h.Marks) != 1 || h.Marks[0].Index != 2 {
 		t.Fatalf("history = %+v", h)
+	}
+}
+
+func oversizedArchiveCompaction(t *testing.T) string {
+	big := archiveText(provider.RoleUser, strings.Repeat("x", maxSessionSearchRowBytes+1))
+	return archiveCompactionLine(t, archiveSummary("777"), big)
+}
+
+func TestReadArchivedOversizedLatestCompactionIsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	writeSessionText(t, path, sessionTextMeta(t, "s"),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u1")),
+		archiveCompactionLine(t, archiveSummary("1000")),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u2")),
+		oversizedArchiveCompaction(t),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u3")))
+	h := readArchive(t, path, ArchivedOptions{})
+	if len(h.Rows) != 0 || len(h.Marks) != 0 || h.Older != 0 {
+		t.Fatalf("history = %+v, want empty: never built from an older compaction", h)
+	}
+}
+
+func TestReadArchivedOversizedInnerCompactionIsBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	writeSessionText(t, path, sessionTextMeta(t, "s"),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u1")),
+		oversizedArchiveCompaction(t),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u2")),
+		archiveCompactionLine(t, archiveSummary("2000")),
+		sessionTextMsg(t, archiveText(provider.RoleUser, "u3")))
+	h := readArchive(t, path, ArchivedOptions{})
+	assertStrings(t, archiveTexts(h.Rows), []string{"u1", "u2"})
+	if len(h.Marks) != 2 || h.Marks[0].Index != 1 || h.Marks[1].Index != 2 || h.Marks[1].TokensBefore != 2000 {
+		t.Fatalf("marks = %+v", h.Marks)
+	}
+}
+
+func TestReadArchivedKeepsOnlyText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	withImage := textMsg(provider.RoleUser, provider.TextBlock{Text: "look"}, provider.ImageBlock{MimeType: "image/png", Data: []byte("png")})
+	writeSessionText(t, path, sessionTextMeta(t, "s"),
+		sessionTextMsg(t, withImage),
+		archiveCompactionLine(t, archiveSummary("1000")))
+	h := readArchive(t, path, ArchivedOptions{})
+	if len(h.Rows) != 1 || len(h.Rows[0].Message.Content) != 1 {
+		t.Fatalf("rows = %+v", h.Rows)
+	}
+	if _, ok := h.Rows[0].Message.Content[0].(provider.TextBlock); !ok {
+		t.Fatalf("content = %#v", h.Rows[0].Message.Content)
 	}
 }
