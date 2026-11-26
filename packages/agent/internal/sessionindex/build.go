@@ -195,8 +195,22 @@ func mergeDocs(results []docBuild) *memIndex {
 
 func (m *memIndex) nMsgs() int { return int(m.first[len(m.first)-1]) }
 
-// tokenBits returns the bitset of global message IDs matching prefix.
-func (m *memIndex) tokenBits(prefix string) (bitset, bool) {
+// querySource is the read side shared by memIndex and segment, so both
+// run the same query implementation.
+type querySource interface {
+	docList() []docEntry
+	firstIDs() []uint32
+	// tokenBits returns the bitset of global message IDs matching prefix and
+	// whether the prefix expansion was capped.
+	tokenBits(prefix string) (bitset, bool, error)
+	// docRows returns the indexed rows of doc d sorted by MsgID.
+	docRows(d int) ([]rowEntry, error)
+}
+
+func (m *memIndex) docList() []docEntry { return m.docs }
+func (m *memIndex) firstIDs() []uint32  { return m.first }
+
+func (m *memIndex) tokenBits(prefix string) (bitset, bool, error) {
 	bs := newBitset(m.nMsgs())
 	lo, hi, partial := PrefixRange(m.terms, prefix, maxPrefixTerms)
 	for i := lo; i < hi; i++ {
@@ -204,99 +218,123 @@ func (m *memIndex) tokenBits(prefix string) (bitset, bool) {
 			bs.set(id)
 		}
 	}
-	return bs, partial
+	return bs, partial, nil
 }
 
-// docOf returns the doc index owning global message id.
-func (m *memIndex) docOf(id uint32) int {
-	return sort.Search(len(m.docs), func(d int) bool { return m.first[d+1] > id })
+func (m *memIndex) docRows(d int) ([]rowEntry, error) {
+	return m.rows[m.rowFirst[d]:m.rowFirst[d+1]], nil
 }
 
-// rowOf returns the indexed row of global message id.
-func (m *memIndex) rowOf(id uint32) (rowEntry, bool) {
-	i := sort.Search(len(m.rows), func(i int) bool { return m.rows[i].MsgID >= id })
-	if i < len(m.rows) && m.rows[i].MsgID == id {
-		return m.rows[i], true
-	}
-	return rowEntry{}, false
+func (m *memIndex) query(ctx context.Context, q Query) (Result, error) {
+	return runQuery(ctx, m, q)
 }
 
-// query evaluates q. ModeMessages: every token in one message.
+// runQuery evaluates q. ModeMessages: every token in one message.
 // ModeSessions: every token somewhere in the session; hits are the
 // session's messages that match at least one token. Sessions are ordered
-// by Updated, newest first. A non-empty q.CWD keeps only that cwd.
-func (m *memIndex) query(ctx context.Context, q Query) (Result, error) {
+// by Updated, newest first. A non-empty q.CWD keeps only that cwd. Rows
+// are loaded only for the sessions kept after Limit.
+func runQuery(ctx context.Context, src querySource, q Query) (Result, error) {
 	tokens, _ := ParseQuery(q.Text)
+	docs, first := src.docList(), src.firstIDs()
 	var res Result
-	if len(tokens) == 0 || len(m.docs) == 0 {
+	if len(tokens) == 0 || len(docs) == 0 {
 		return res, nil
 	}
+	nMsgs := int(first[len(first)-1])
 	sets := make([]bitset, len(tokens))
 	for i, t := range tokens {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
-		bs, partial := m.tokenBits(t)
+		bs, partial, err := src.tokenBits(t)
+		if err != nil {
+			return Result{}, err
+		}
 		sets[i] = bs
 		res.Partial = res.Partial || partial
 	}
+	docOf := func(id uint32) int {
+		return sort.Search(len(docs), func(d int) bool { return first[d+1] > id })
+	}
 	var hits bitset
-	keepDoc := make([]bool, len(m.docs))
+	keepDoc := make([]bool, len(docs))
+	for i := range keepDoc {
+		keepDoc[i] = q.CWD == "" || docs[i].CWD == q.CWD
+	}
 	if q.Mode == ModeMessages {
 		hits = sets[0].clone()
 		for _, s := range sets[1:] {
 			hits.and(s)
 		}
-		for i := range keepDoc {
-			keepDoc[i] = true
-		}
 	} else {
-		hits = newBitset(m.nMsgs())
-		for i := range keepDoc {
-			keepDoc[i] = true
-		}
+		hits = newBitset(nMsgs)
 		for _, s := range sets {
-			present := make([]bool, len(m.docs))
-			s.each(func(id uint32) { present[m.docOf(id)] = true })
+			present := make([]bool, len(docs))
+			s.each(func(id uint32) { present[docOf(id)] = true })
 			for d := range keepDoc {
 				keepDoc[d] = keepDoc[d] && present[d]
 			}
 			hits.or(s)
 		}
 	}
-	byDoc := map[int]*SessionMatch{}
-	hits.each(func(id uint32) {
-		d := m.docOf(id)
-		if !keepDoc[d] || (q.CWD != "" && m.docs[d].CWD != q.CWD) {
-			return
-		}
-		row, ok := m.rowOf(id)
-		if !ok {
-			return
-		}
-		sm := byDoc[d]
-		if sm == nil {
-			sm = &SessionMatch{Doc: m.docs[d].SessionDoc}
-			byDoc[d] = sm
-		}
-		sm.Count++
-		sm.Hits = append(sm.Hits, HitRef{
-			Path: m.docs[d].Path, MsgSeq: int(id - m.first[d]), TotalMsgs: m.docs[d].TotalMsgs,
-			Fingerprint: row.Fingerprint, Role: row.Role, Time: row.Time, Offset: row.Offset, Len: row.Len,
-		})
-	})
-	for _, sm := range byDoc {
-		res.Sessions = append(res.Sessions, *sm)
+	type docHits struct {
+		d   int
+		ids []uint32
 	}
-	sort.Slice(res.Sessions, func(i, j int) bool {
-		a, b := res.Sessions[i].Doc, res.Sessions[j].Doc
+	byDoc := map[int]*docHits{}
+	var order []*docHits
+	hits.each(func(id uint32) {
+		d := docOf(id)
+		if !keepDoc[d] {
+			return
+		}
+		h := byDoc[d]
+		if h == nil {
+			h = &docHits{d: d}
+			byDoc[d] = h
+			order = append(order, h)
+		}
+		h.ids = append(h.ids, id)
+	})
+	sort.Slice(order, func(i, j int) bool {
+		a, b := docs[order[i].d], docs[order[j].d]
 		if !a.Updated.Equal(b.Updated) {
 			return a.Updated.After(b.Updated)
 		}
 		return a.Path < b.Path
 	})
-	if q.Limit > 0 && len(res.Sessions) > q.Limit {
-		res.Sessions = res.Sessions[:q.Limit]
+	if q.Limit > 0 && len(order) > q.Limit {
+		order = order[:q.Limit]
+	}
+	for _, h := range order {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		doc := docs[h.d]
+		rows, err := src.docRows(h.d)
+		if err != nil {
+			return Result{}, err
+		}
+		sm := SessionMatch{Doc: doc.SessionDoc}
+		r := 0
+		for _, id := range h.ids { // ids and rows are both ascending
+			for r < len(rows) && rows[r].MsgID < id {
+				r++
+			}
+			if r == len(rows) || rows[r].MsgID != id {
+				continue
+			}
+			row := rows[r]
+			sm.Count++
+			sm.Hits = append(sm.Hits, HitRef{
+				Path: doc.Path, MsgSeq: int(id - first[h.d]), TotalMsgs: doc.TotalMsgs,
+				Fingerprint: row.Fingerprint, Role: row.Role, Time: row.Time, Offset: row.Offset, Len: row.Len,
+			})
+		}
+		if sm.Count > 0 {
+			res.Sessions = append(res.Sessions, sm)
+		}
 	}
 	return res, nil
 }
