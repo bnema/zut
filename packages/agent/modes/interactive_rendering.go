@@ -592,6 +592,9 @@ func (i *Interactive) redraw() {
 			dialogID = "rescue-error"
 		}
 		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
+	case i.finderResume.Active():
+		dialogID = "finder-resume"
+		dialog = i.finderResume.Render(i.cfg.Theme, dialogWidth)
 	case i.finder.Active():
 		dialogID = "finder"
 		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, max(finderMinHeight, paneMax.ContentHeight()))

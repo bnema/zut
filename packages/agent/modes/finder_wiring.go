@@ -150,3 +150,39 @@ func (i *Interactive) finderDelete(item finderItem) {
 	_ = item
 	i.setFinderStatusErr("finder: delete is not implemented yet")
 }
+
+// openFinderResume resumes plan directly when it ran in this directory,
+// otherwise shows the resume confirmation.
+func (i *Interactive) openFinderResume(plan resumePlan) {
+	confirm := decideResume(plan)
+	if confirm == nil {
+		i.finderResumeChoice(plan, resumeChoiceResume)
+		return
+	}
+	i.mu.Lock()
+	i.finderResume = confirm
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// handleFinderResumeKey routes a key to the resume confirmation.
+func (i *Interactive) handleFinderResumeKey(k tui.Key) {
+	i.mu.Lock()
+	confirm := i.finderResume
+	choice := confirm.HandleKey(k)
+	if choice != resumeChoiceNone {
+		i.finderResume = nil
+	}
+	i.mu.Unlock()
+	if choice != resumeChoiceNone && choice != resumeChoiceCancel {
+		i.finderResumeChoice(confirm.plan, choice)
+	}
+	i.invalidate()
+}
+
+// finderResumeChoice executes the chosen way to open plan. TODO: resume,
+// switch directory, fork, or attach.
+func (i *Interactive) finderResumeChoice(plan resumePlan, choice resumeChoice) {
+	_, _ = plan, choice
+	i.setFinderStatusErr("finder: resume is not implemented yet")
+}

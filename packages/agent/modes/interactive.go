@@ -774,6 +774,8 @@ type Interactive struct {
 	finderCancel context.CancelFunc
 	// finderDelay debounces searches triggered by query edits.
 	finderDelay time.Duration
+	// finderResume asks how to open a session from another directory.
+	finderResume *resumeConfirm
 
 	dialog                  *loginDialog
 	modelDialog             *modelDialog
