@@ -251,8 +251,10 @@ func (m *finderModel) renderQuery(th tui.Theme, w int) string {
 
 func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 	out := make([]string, 0, rows)
-	for i := m.viewTop; i < len(m.items) && len(out) < rows; i++ {
-		out = append(out, m.renderItem(th, m.items[i], i == m.cursor, w))
+	end := min(len(m.items), m.viewTop+rows)
+	cols := finderListColumns(m.items[min(m.viewTop, end):end])
+	for i := m.viewTop; i < end; i++ {
+		out = append(out, m.renderItem(th, m.items[i], i == m.cursor, cols, w))
 	}
 	if len(out) == 0 && rows > 0 {
 		msg := " no matches"
@@ -270,53 +272,75 @@ func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 	return out
 }
 
-func (m *finderModel) renderItem(th tui.Theme, item finderItem, selected bool, w int) string {
+// finderColumns are the widths of the right-aligned detail and count
+// columns over the visible rows, so they line up and never truncate.
+type finderColumns struct{ detail, count int }
+
+func finderListColumns(items []finderItem) finderColumns {
+	var c finderColumns
+	for _, item := range items {
+		c.detail = max(c.detail, runewidth.StringWidth(sanitizeSessionTreeText(item.Detail)))
+		if item.Count > 0 {
+			c.count = max(c.count, len(strconv.Itoa(item.Count)))
+		}
+	}
+	return c
+}
+
+// renderItem renders "▸ group · label   detail  count ●" in w cells. A
+// label "group · rest" shows its group in the accent color. The detail and
+// count columns keep their width; only the label is truncated, and the
+// columns are dropped when the label would get fewer than 8 cells.
+func (m *finderModel) renderItem(th tui.Theme, item finderItem, selected bool, cols finderColumns, w int) string {
 	marker := "  "
 	if selected {
 		marker = "▸ "
 	}
-	right := ""
+	count := ""
 	if item.Count > 0 {
-		right = strconv.Itoa(item.Count)
+		count = strconv.Itoa(item.Count)
 	}
 	badge := " "
 	if item.Live {
 		badge = "●"
 	}
-	right += " " + badge + " "
-	label := sanitizeSessionTreeText(item.Label)
 	detail := sanitizeSessionTreeText(item.Detail)
-	avail := w - runewidth.StringWidth(marker) - runewidth.StringWidth(right)
+	detailCol := ""
+	if cols.detail > 0 {
+		detailCol = "  " + strings.Repeat(" ", cols.detail-runewidth.StringWidth(detail)) + detail
+	}
+	countCol := ""
+	if cols.count > 0 {
+		countCol = "  " + strings.Repeat(" ", cols.count-len(count)) + count
+	}
+	tail := " " + badge + " "
+	avail := w - runewidth.StringWidth(marker+detailCol+countCol+tail)
+	if avail < 8 {
+		detailCol = ""
+		avail = w - runewidth.StringWidth(marker+countCol+tail)
+	}
 	if avail < 1 {
-		return finderFit(marker+label, w)
+		return finderFit(marker+sanitizeSessionTreeText(item.Label), w)
 	}
-	label = finderFit(label, avail)
-	label = strings.TrimRight(label, " ")
-	lw := runewidth.StringWidth(label)
-	detailRoom := avail - lw - 2
-	if detail == "" || detailRoom < 4 {
-		detail = ""
-	} else {
-		detail = strings.TrimRight(finderFit(detail, detailRoom), " ")
-	}
-	sep := ""
-	if detail != "" {
-		sep = "  "
-	}
-	gap := strings.Repeat(" ", avail-lw-runewidth.StringWidth(sep+detail))
+	label := finderFit(sanitizeSessionTreeText(item.Label), avail)
 	if selected {
-		return th.Highlight(marker + label + sep + detail + gap + right)
+		return th.Highlight(marker + label + detailCol + countCol + tail)
 	}
 	var b strings.Builder
-	b.WriteString(marker + label + sep)
-	b.WriteString(th.FGColor(th.Muted, detail))
-	b.WriteString(gap)
-	if item.Live {
-		b.WriteString(right[:len(right)-len(badge)-1])
-		b.WriteString(th.FGColor(th.Accent, badge))
-		b.WriteString(" ")
+	b.WriteString(marker)
+	if group, rest, ok := strings.Cut(label, " · "); ok {
+		b.WriteString(th.FGColor(th.Accent, group))
+		b.WriteString(th.FGColor(th.Muted, " · "))
+		b.WriteString(rest)
 	} else {
-		b.WriteString(right)
+		b.WriteString(label)
+	}
+	b.WriteString(th.FGColor(th.Muted, detailCol))
+	b.WriteString(countCol)
+	if item.Live {
+		b.WriteString(" " + th.FGColor(th.Accent, badge) + " ")
+	} else {
+		b.WriteString(tail)
 	}
 	return b.String()
 }

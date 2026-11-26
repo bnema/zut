@@ -71,22 +71,28 @@ func windowSessionSearchExcerpt(text string, at, limit int) string {
 	return prefix + string(runes[start:end]) + suffix
 }
 
-func formatRelative(t time.Time) string {
+// formatAge renders how long ago t was, coarsening with age: "now",
+// "12m ago", "4h ago", "3d ago", "2w ago", "5mo ago", "1y ago".
+func formatAge(t time.Time) string {
 	if t.IsZero() {
-		return "unknown"
+		return "?"
 	}
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
-		return "just now"
+		return "now"
 	case d < time.Hour:
-		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%d h ago", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%d d ago", int(d.Hours()/24))
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 14*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	case d < 60*24*time.Hour:
+		return fmt.Sprintf("%dw ago", int(d.Hours()/(24*7)))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
 	default:
-		return t.Local().Format("2006-01-02")
+		return fmt.Sprintf("%dy ago", int(d.Hours()/(24*365)))
 	}
 }
 

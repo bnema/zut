@@ -46,7 +46,7 @@ func finderLiveItems(infos []session.Info) []finderItem {
 		items = append(items, finderItem{
 			Key:     key,
 			Label:   sessionProject(info.RepoRoot, info.CWD) + " · " + title,
-			Detail:  formatRelative(when),
+			Detail:  formatAge(when),
 			Live:    true,
 			LiveID:  info.ID,
 			Title:   raw,

@@ -140,7 +140,7 @@ func finderMatchItem(match sessionindex.SessionMatch) finderItem {
 		Title:  match.Doc.Title,
 		Key:    match.Doc.Path,
 		Label:  finderDocLabel(match.Doc),
-		Detail: formatRelative(when),
+		Detail: formatAge(when),
 		Count:  match.Count,
 		Hits:   make([]finderHit, 0, len(match.Hits)),
 	}

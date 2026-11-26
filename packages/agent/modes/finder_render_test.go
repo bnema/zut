@@ -195,3 +195,44 @@ func TestFinderHitHeaderColorsApartFromSnippet(t *testing.T) {
 	require.NotEqual(t, fg, dim)
 	require.Equal(t, "unknown", formatHitTime(time.Time{}))
 }
+
+func TestFormatAge(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		ago  time.Duration
+		want string
+	}{
+		{10 * time.Second, "now"},
+		{12 * time.Minute, "12m ago"},
+		{4 * time.Hour, "4h ago"},
+		{3 * 24 * time.Hour, "3d ago"},
+		{20 * 24 * time.Hour, "2w ago"},
+		{150 * 24 * time.Hour, "5mo ago"},
+		{400 * 24 * time.Hour, "1y ago"},
+	} {
+		require.Equal(t, tc.want, formatAge(now.Add(-tc.ago)), tc.ago)
+	}
+	require.Equal(t, "?", formatAge(time.Time{}))
+}
+
+func TestFinderListColumnsAlignAndKeepDetail(t *testing.T) {
+	m := newFinderModel("/work", newTestFinderSource(t, "Sessions"))
+	act := m.Open(0)
+	items := []finderItem{
+		{Key: "a", Label: "zut · short", Detail: "3d ago", Count: 110},
+		{Key: "b", Label: "ermite-workspace · " + strings.Repeat("very long title ", 10), Detail: "12h ago", Count: 6},
+	}
+	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: items}, nil))
+	cols := finderListColumns(m.items)
+	rows := []string{
+		m.renderItem(tui.Dark, m.items[0], false, cols, 60),
+		m.renderItem(tui.Dark, m.items[1], false, cols, 60),
+	}
+	plain := []string{stripANSIBytes(rows[0]), stripANSIBytes(rows[1])}
+	require.True(t, strings.HasSuffix(plain[0], "   3d ago  110   "), plain[0])
+	require.True(t, strings.HasSuffix(plain[1], "  12h ago    6   "), plain[1])
+	require.Contains(t, plain[1], "…", "only the label is truncated")
+	require.Equal(t, 60, runewidth.StringWidth(plain[0]))
+	require.Equal(t, 60, runewidth.StringWidth(plain[1]))
+	require.True(t, strings.HasPrefix(rows[0], "  "+tui.Dark.FGColor(tui.Dark.Accent, "zut")), "project uses the accent color")
+}

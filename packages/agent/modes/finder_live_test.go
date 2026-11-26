@@ -21,7 +21,7 @@ func TestFinderLiveItems(t *testing.T) {
 		{ID: "l3", SessionPath: "/s/b.jsonl", CWD: "/work/gordon"},
 	})
 	require.Len(t, items, 2)
-	require.Equal(t, finderItem{Key: "/s/a/one.jsonl", Label: "zut · Run", Detail: "just now", Live: true, LiveID: "l1", Title: "Run"}, items[0])
+	require.Equal(t, finderItem{Key: "/s/a/one.jsonl", Label: "zut · Run", Detail: "now", Live: true, LiveID: "l1", Title: "Run"}, items[0])
 	require.Equal(t, "gordon · (new session)", items[1].Label)
 	require.Equal(t, "l3", items[1].LiveID)
 	require.Equal(t, "/work/gordon", items[1].LiveCWD)
