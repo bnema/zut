@@ -379,6 +379,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.applySettingToggle("auto_subagents_enabled", enabled)
 	case "/settings":
 		i.openSettingsDialog()
+	case "/find":
+		i.openFinder(ctx)
 	case "/sessions":
 		if i.cfg.SessionsDisabled {
 			i.mu.Lock()

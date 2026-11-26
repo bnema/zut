@@ -592,6 +592,9 @@ func (i *Interactive) redraw() {
 			dialogID = "rescue-error"
 		}
 		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
+	case i.finder.Active():
+		dialogID = "finder"
+		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, max(finderMinHeight, paneMax.ContentHeight()))
 	case i.sessionDialog.Active():
 		dialogID = "sessions"
 		i.sessionDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
@@ -1108,6 +1111,13 @@ func (i *Interactive) redraw() {
 		} else {
 			cursorRow = -1
 			cursorCol = 0
+		}
+	}
+	if i.finder.Active() {
+		if r, c := i.finder.CursorPos(); r >= 0 {
+			cursorRow = dialogLead + r
+			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.sessionDialog.Active() {

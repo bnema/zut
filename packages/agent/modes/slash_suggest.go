@@ -58,6 +58,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/orchestrator", Desc: "toggle automatic subagent orchestration"},
 	{Name: "/goal", Desc: "start or control an autonomous goal"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
+	{Name: "/find", Desc: "search sessions and messages across all projects"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/fork", Desc: "pick a user message and fork; inherits parent launch settings"},
 	{Name: "/session", Desc: "inspect, export, import, fork, or browse the current session"},

@@ -65,6 +65,7 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 		i.llamaDialog.Active() ||
 		i.rescueDialog.Active() ||
 		i.sessionDialog.Active() ||
+		i.finder.Active() ||
 		i.residentSubagentsDialog.Active() ||
 		i.residentChildSession != nil ||
 		i.jumpDialog.Active() ||
@@ -236,6 +237,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	}
 	i.mu.Unlock()
+	i.mu.Lock()
+	finderActive := i.finder.Active()
+	i.mu.Unlock()
+	if finderActive {
+		i.handleFinderKey(ctx, k)
+		return false
+	}
 	i.mu.Lock()
 	sessionDialogActive := i.sessionDialog.Active()
 	i.mu.Unlock()
@@ -718,6 +726,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	case tui.KeyCtrlO:
 		i.toggleToolExpansion()
+		return false
+	case tui.KeyCtrlF:
+		i.openFinderShortcut(ctx)
 		return false
 	case tui.KeyCtrlR:
 		i.cycleReasoningSetting()

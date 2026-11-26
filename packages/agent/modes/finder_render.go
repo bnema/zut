@@ -117,13 +117,14 @@ func (m *finderModel) Render(th tui.Theme, width, height int) []string {
 }
 
 // CursorPos returns the 0-based row/col of the query caret within the
-// rendered box, or -1, -1 when the finder is closed.
+// rendered box, or -1, -1 when the finder is closed. It uses the query
+// scroll offset computed by the last Render.
 func (m *finderModel) CursorPos() (row, col int) {
 	if !m.Active() {
 		return -1, -1
 	}
-	prefix := sanitizeSessionTreeText(string(m.query[:m.qcursor]))
-	return 1, 4 + runewidth.StringWidth(prefix)
+	start := min(m.qscroll, m.qcursor)
+	return 1, 4 + runewidth.StringWidth(string(m.query[start:m.qcursor]))
 }
 
 func (m *finderModel) renderTop(th tui.Theme, l finderLayout) string {
@@ -189,17 +190,23 @@ func (m *finderModel) status(th tui.Theme) (string, tui.TerminalColor) {
 
 func (m *finderModel) renderQuery(th tui.Theme, w int) string {
 	prompt := " > "
-	query := sanitizeSessionTreeText(string(m.query))
 	status, color := m.status(th)
 	status += " "
 	room := w - runewidth.StringWidth(prompt)
 	sw := runewidth.StringWidth(status)
-	qw := runewidth.StringWidth(query)
-	if qw+1+sw > room {
-		// The query wins; drop the status when space runs out.
-		return th.FGColor(th.Accent, prompt) + finderFit(query, room)
+	qw := runewidth.StringWidth(string(m.query))
+	if qw+1+sw <= room {
+		m.qscroll = 0
+		return th.FGColor(th.Accent, prompt) + string(m.query) + strings.Repeat(" ", room-qw-sw) + th.FGColor(color, status)
 	}
-	return th.FGColor(th.Accent, prompt) + query + strings.Repeat(" ", room-qw-sw) + th.FGColor(color, status)
+	// The query wins over the status; scroll it horizontally so the caret
+	// (one cell after the text before it) stays inside the field.
+	field := max(room-1, 0)
+	m.qscroll = min(m.qscroll, m.qcursor)
+	for m.qscroll < m.qcursor && runewidth.StringWidth(string(m.query[m.qscroll:m.qcursor])) > field {
+		m.qscroll++
+	}
+	return th.FGColor(th.Accent, prompt) + finderFit(string(m.query[m.qscroll:]), room)
 }
 
 func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {

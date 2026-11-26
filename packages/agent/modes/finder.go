@@ -85,6 +85,7 @@ type finderModel struct {
 	cwd     string
 	query   []rune
 	qcursor int
+	qscroll int // first query rune shown when the query overflows
 
 	items   []finderItem
 	partial bool
@@ -113,7 +114,7 @@ func (m *finderModel) Open(tab int) finderAction {
 	if tab >= 0 && tab < len(m.tabs) {
 		m.tab = tab
 	}
-	m.query, m.qcursor = nil, 0
+	m.query, m.qcursor, m.qscroll = nil, 0, 0
 	m.items, m.partial = nil, false
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	m.err = ""

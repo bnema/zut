@@ -766,6 +766,15 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
+	// finder is the fuzzy session/message finder; nil until first opened.
+	finder *finderModel
+	// finderSources builds the finder tabs on open; nil or empty disables it.
+	finderSources func() []finderSource
+	// finderCancel cancels the in-flight finder search, if any.
+	finderCancel context.CancelFunc
+	// finderDelay debounces searches triggered by query edits.
+	finderDelay time.Duration
+
 	dialog                  *loginDialog
 	modelDialog             *modelDialog
 	llamaDialog             *llamaDialog
@@ -966,6 +975,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		sessionResults:    make(chan sessionResult, 4),
 		loopCalls:         make(chan func(), loopCallsCap),
 		sessionTimeout:    defaultSessionTimeout,
+		finderDelay:       finderSearchDebounce,
 		terminalProfile:   profile,
 		activeThemeSource: source,
 		themeWatchEvents:  make(chan themeWatchEvent, 8),
@@ -1155,6 +1165,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	i.markInteractiveStarted()
 	defer i.cancelSessionTitle()
 	defer i.sessionDialog.Close()
+	defer i.closeFinder()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
