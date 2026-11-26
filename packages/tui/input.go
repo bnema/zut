@@ -46,6 +46,9 @@ const (
 	KeyCtrlW
 	KeyCtrlO
 	KeyCtrlR
+	KeyCtrlF
+	KeyCtrlN
+	KeyCtrlP
 	KeyPaste
 	KeyPasteClipboard
 	KeyMouseWheelUp
@@ -189,6 +192,12 @@ func (r *Reader) Read() (Key, error) {
 		return Key{Kind: KeyCtrlO}, nil
 	case b == 0x12:
 		return Key{Kind: KeyCtrlR}, nil
+	case b == 0x06:
+		return Key{Kind: KeyCtrlF}, nil
+	case b == 0x0e:
+		return Key{Kind: KeyCtrlN}, nil
+	case b == 0x10:
+		return Key{Kind: KeyCtrlP}, nil
 	case b == 0x16:
 		return Key{Kind: KeyPasteClipboard, Ctrl: true}, nil
 	case b == '\r', b == '\n':
@@ -512,6 +521,12 @@ func keyFromModifiedCode(code, mod int) (Key, bool) {
 			return Key{Kind: KeyCtrlO, Shift: shift, Alt: alt, Ctrl: true}, true
 		case 'r', 'R':
 			return Key{Kind: KeyCtrlR, Shift: shift, Alt: alt, Ctrl: true}, true
+		case 'f', 'F':
+			return Key{Kind: KeyCtrlF, Shift: shift, Alt: alt, Ctrl: true}, true
+		case 'n', 'N':
+			return Key{Kind: KeyCtrlN, Shift: shift, Alt: alt, Ctrl: true}, true
+		case 'p', 'P':
+			return Key{Kind: KeyCtrlP, Shift: shift, Alt: alt, Ctrl: true}, true
 		case 'v', 'V':
 			return Key{Kind: KeyPasteClipboard, Shift: shift, Alt: alt, Ctrl: true}, true
 		}

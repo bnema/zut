@@ -328,3 +328,28 @@ func readReaderKey(t *testing.T, r *Reader) Key {
 	}
 	return k
 }
+
+func TestReaderParsesCtrlFNP(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sequence string
+		want     KeyKind
+	}{
+		{"raw ctrl+f", "\x06", KeyCtrlF},
+		{"raw ctrl+n", "\x0e", KeyCtrlN},
+		{"raw ctrl+p", "\x10", KeyCtrlP},
+		{"kitty ctrl+f", "\x1b[102;5u", KeyCtrlF},
+		{"kitty ctrl+n", "\x1b[110;5u", KeyCtrlN},
+		{"kitty ctrl+p", "\x1b[112;5u", KeyCtrlP},
+		{"modify other keys ctrl+f", "\x1b[27;5;102~", KeyCtrlF},
+		{"modify other keys ctrl+n", "\x1b[27;5;110~", KeyCtrlN},
+		{"modify other keys ctrl+p", "\x1b[27;5;112~", KeyCtrlP},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := readKey(t, tc.sequence)
+			if k.Kind != tc.want {
+				t.Fatalf("Read kind=%v, want %v", k.Kind, tc.want)
+			}
+		})
+	}
+}
