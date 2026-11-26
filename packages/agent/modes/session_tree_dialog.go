@@ -104,8 +104,8 @@ type sessionTreeItem struct {
 	depth      int
 	current    bool
 	target     sessionTreeTarget
-	// text is the message preview and when its time; both are empty for
-	// boundary rows, which render label.
+	// text is the message preview and when its timestamp; both are empty
+	// for boundary rows, which render label.
 	text string
 	when time.Time
 }
@@ -281,9 +281,24 @@ func (d *sessionTreeDialog) ApplyLoad(event sessionTreeLoadEvent) error {
 			d.viewTop++
 		}
 	case sessionTreeLoadFinished:
+		// Keep a row the user moved to during the preview; otherwise select
+		// the current row.
+		var picked *sessionTreeTarget
+		if len(d.items) > 0 && d.cursor < len(d.items)-1 {
+			target := d.item(d.cursor).target
+			picked = &target
+		}
 		d.items, d.newestFirst = event.items, false
 		d.loadingDone = len(d.items)
 		d.cursor = indexCurrentTreeItem(d.items)
+		if picked != nil {
+			for i := range d.items {
+				if d.items[i].target == *picked {
+					d.cursor = i
+					break
+				}
+			}
+		}
 		d.viewTop = 0
 		d.finishLoad()
 	case sessionTreeLoadFailed:
@@ -586,8 +601,16 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 	if start > 0 {
 		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↑ %d more above", start))))
 	}
+	// Show times on every visible row or none, so the text column lines up.
+	showTime := true
 	for i := start; i < end; i++ {
-		lines = append(lines, line(renderSessionTreeRow(th, d.item(i), renderWidth, i == d.cursor)))
+		if it := d.item(i); !it.target.IsBoundary() && renderWidth-sessionTreeRowFixedWidth(it, true) < sessionTreeMinText {
+			showTime = false
+			break
+		}
+	}
+	for i := start; i < end; i++ {
+		lines = append(lines, line(renderSessionTreeRow(th, d.item(i), renderWidth, i == d.cursor, showTime)))
 	}
 	if end < len(d.items) {
 		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end))))
@@ -618,11 +641,27 @@ func clampSessionTreeViewTop(viewTop, cursor, window, total int) int {
 // sessionTreeTimeLayout is the fixed-width message time of a tree row.
 const sessionTreeTimeLayout = "01-02 15:04:05"
 
+// sessionTreeMinText is the fewest text cells a row keeps before the
+// dialog drops the time column.
+const sessionTreeMinText = 12
+
+// sessionTreeRowFixedWidth is the width of a message row without its text.
+func sessionTreeRowFixedWidth(it sessionTreeItem, showTime bool) int {
+	w := 2 + 2*it.depth + 3 + 2 // indent, role, gap before the text
+	if showTime {
+		w += 2 + len(sessionTreeTimeLayout)
+	}
+	if it.current {
+		w += len("  current")
+	}
+	return w
+}
+
 // renderSessionTreeRow renders "  you  11-24 14:32:05  text  current":
-// the role in its chat color, the time dimmed, the text in the normal
-// color. The time is dropped when the text would get fewer than 12 cells;
-// boundary rows and very narrow widths use the plain label.
-func renderSessionTreeRow(th tui.Theme, it sessionTreeItem, width int, selected bool) string {
+// the role in its chat color, the time dimmed (blank when unknown), the
+// text in the normal color. Boundary rows and very narrow widths use the
+// plain label.
+func renderSessionTreeRow(th tui.Theme, it sessionTreeItem, width int, selected, showTime bool) string {
 	if it.target.IsBoundary() || it.role == "" {
 		plain := fitSessionTreeItemPlain(it, width)
 		if selected {
@@ -633,20 +672,17 @@ func renderSessionTreeRow(th tui.Theme, it sessionTreeItem, width int, selected 
 	prefix := "  " + strings.Repeat("  ", it.depth)
 	role := fmt.Sprintf("%-3s", sessionTreeRoleLabel(it.role))
 	stamp := ""
-	if !it.when.IsZero() {
-		stamp = "  " + it.when.Local().Format(sessionTreeTimeLayout)
+	if showTime {
+		stamp = "  " + strings.Repeat(" ", len(sessionTreeTimeLayout))
+		if !it.when.IsZero() {
+			stamp = "  " + it.when.Local().Format(sessionTreeTimeLayout)
+		}
 	}
 	suffix := ""
 	if it.current {
 		suffix = "  current"
 	}
-	fixed := func() int {
-		return runewidth.StringWidth(prefix+role+stamp+suffix) + 2
-	}
-	if width-fixed() < 12 {
-		stamp = ""
-	}
-	room := width - fixed()
+	room := width - sessionTreeRowFixedWidth(it, showTime)
 	if room < 1 {
 		plain := fitSessionTreeItemPlain(it, width)
 		if selected {
@@ -672,7 +708,7 @@ func fitSessionTreeItemPlain(it sessionTreeItem, maxWidth int) string {
 	prefix := "  " + strings.Repeat("  ", it.depth)
 	suffix := ""
 	if it.current {
-		suffix = "  [current]"
+		suffix = "  current"
 	}
 	prefixWidth := runewidth.StringWidth(prefix)
 	suffixWidth := runewidth.StringWidth(suffix)
