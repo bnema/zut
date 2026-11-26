@@ -596,6 +596,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	i.stream.Reset()
 	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
+	i.refreshChatArchiveLocked()
 	// A snapshot is authoritative for the title: a fresh successor (/clear,
 	// new) is untitled. Run starts the UI before attaching, so show it here.
 	i.sessionTitle = core.NormalizeSessionTitle(snap.Info.Title)
@@ -731,6 +732,7 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 		i.activity.activity = activity{kind: activityWaitingResidents, provider: info.Provider, model: info.Model}
 	}
 	if !busy {
+		i.drainChatArchiveLocked()
 		i.flushPortToolMsgLocked()
 		work := i.takePendingIdleWorkLocked()
 		if len(work) > 0 {

@@ -611,7 +611,7 @@ Opening a session from another directory asks first:
 
 Sessions running in the daemon can only be attached. Sessions from the current directory open directly. Opening, switching, and forking are refused while work is active; attaching a running daemon session follows the daemon's own rule.
 
-Opening a message hit shows it in a read-only reader over the chat: a snapshot of the transcript with the search words highlighted and the matched message tinted. Title matches open the session without the reader. If the hit was compacted away, the status says so and the reader opens on the next other match, if any.
+Opening a message hit shows it in a read-only reader over the chat: a snapshot of the transcript with the search words highlighted and the matched message tinted. Title matches open the session without the reader. For a compacted session, the reader also shows the archived history (messages from before each compaction) dimmed above the live transcript, and hits in it open there. If a hit is no longer in the session file, the status says so and the reader opens on the next other match, if any.
 - `ctrl+n`/`ctrl+p`: next/previous matching message.
 - `↑`/`↓`, `pgup`/`pgdn`, `home`/`end`: scroll.
 - `esc`: close the reader and return to the chat.
@@ -774,6 +774,8 @@ Lists discovered SKILL.md names, sources, descriptions; built-ins hidden. `enter
 ### `/compact`
 
 A structured model summary replaces the transcript with one synthetic user message, preserving recent exchanges verbatim and resetting context. Use around 80%. Manual `/compact` never silently starts work.
+
+The chat marks the compaction with `── compacted · ~182k tokens · older messages not in model context · ctrl+o ──` (`ctrl+o` shows the summary). Earlier messages stay visible: when a compacted session is resumed or switched to, the end of its archived history appears dimmed above that line, within the usual resume tail of 80 messages, with a `N older messages` line when more exist. Archived messages are display-only; the model context is unchanged. The `/find` reader shows the full archived history.
 
 Automatic compaction runs in the background at the `/settings` threshold (`off`, `70%`, `80%`, `85%` default, `90%`, `95%`). `condensing history, esc to cancel` appears above the status bar, with `(auto)` beside context percentage. `esc` aborts without changing the transcript. `off` keeps manual compaction and automatic compaction/retry for context-window or payload-too-large responses.
 

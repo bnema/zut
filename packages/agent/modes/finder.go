@@ -48,11 +48,10 @@ type finderItem struct {
 // finderHit is one match inside an item; Ref is opaque to the model and
 // interpreted by the source that produced it.
 type finderHit struct {
-	Ref       any
-	Role      provider.Role
-	Time      time.Time
-	Compacted bool
-	Text      string // snippet, filled lazily via ApplySnippets
+	Ref  any
+	Role provider.Role
+	Time time.Time
+	Text string // snippet, filled lazily via ApplySnippets
 }
 
 type finderActionKind int

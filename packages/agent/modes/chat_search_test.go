@@ -278,7 +278,7 @@ func TestSearchReaderShowsLoadingUntilBuilt(t *testing.T) {
 	require.True(t, readerVisible(i, "more refactoring"))
 }
 
-func TestSearchReaderDropsZeroRowMatches(t *testing.T) {
+func TestSearchReaderSkipsCompactionSummaryMatches(t *testing.T) {
 	i, _ := readerFixture(t)
 	summary := jumpTextMsg(provider.RoleUser, "summary: refactoring the watcher")
 	summary.Meta = map[string]string{"compaction": "true"}
@@ -291,8 +291,8 @@ func TestSearchReaderDropsZeroRowMatches(t *testing.T) {
 	rows := anchorRows(r.anchors, len(r.rows), 0)
 	matches := append([]int(nil), r.matches...)
 	i.mu.Unlock()
-	require.Zero(t, rows, "fixture: the summary renders collapsed")
-	require.NotContains(t, matches, 0, "collapsed summary is not a match")
+	require.Positive(t, rows, "fixture: the summary renders as its separator")
+	require.NotContains(t, matches, 0, "a collapsed summary is not a match")
 	require.Len(t, matches, 3)
 }
 
@@ -326,7 +326,7 @@ func TestSearchReaderCompactedHitWithoutOtherMatch(t *testing.T) {
 	require.False(t, ok)
 	require.Empty(t, i.statusErr)
 	require.Contains(t, i.statusOK, "forked into ~/x")
-	require.Contains(t, i.statusOK, "match is in compacted history")
+	require.Contains(t, i.statusOK, "match is no longer in the session history")
 	require.Contains(t, i.statusOK, "no match in this session")
 }
 
