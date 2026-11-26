@@ -77,6 +77,21 @@ func (c *Controller) residentsRunning() bool {
 	return residentSummariesRunning(c.residentSummaries())
 }
 
+// residentsUndelivered covers the gap between a child's terminal state and
+// its completion update: a child reads idle before it reports, and a reported
+// completion waits in the inbox until the actor queues it. Info must not
+// claim idle in either window, or a client could end its run before the
+// update arrives.
+func (c *Controller) residentsUndelivered() bool {
+	s := &c.res
+	if s.tracker == nil {
+		return false
+	}
+	s.inboxMu.Lock()
+	defer s.inboxMu.Unlock()
+	return !s.closed && (len(s.inbox) > 0 || s.tracker.Pending() > 0)
+}
+
 func residentSummariesRunning(residents []ResidentSummary) bool {
 	for _, r := range residents {
 		if r.State == string(subagents.ResidentRunning) || r.State == string(subagents.ResidentQueued) {

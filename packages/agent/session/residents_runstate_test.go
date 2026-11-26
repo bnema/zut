@@ -91,6 +91,7 @@ func TestWaitingResidentsActivity(t *testing.T) {
 				}
 				return nil
 			})
+			residents.EXPECT().residentsUndelivered().Return(false)
 			c.residentSeam = residents
 			busy := false
 			projection := Activity{Kind: "idle", Since: now.Add(-time.Minute)}
@@ -151,4 +152,47 @@ func TestWaitingResidentsActivity(t *testing.T) {
 			require.Equal(t, Activity{Kind: ActivityKindWaitingResidents, Since: now}, c.Info().Activity)
 		})
 	}
+}
+
+// A child reads idle before it reports its completion, and a reported
+// completion waits in the inbox until the actor queues it. Info must stay
+// running across both windows so a headless client never ends its run before
+// the completion update is queued.
+func TestResidentRunStateUntilCompletionQueued(t *testing.T) {
+	manager := newMockResidentHostLocal(t)
+	manager.EXPECT().Revision().Return(0).Maybe()
+	var accepted func(subagents.ResidentChildSpec, string, string)
+	var completion func(subagents.ResidentCompletion) bool
+	manager.EXPECT().SetAcceptedObserver(mock.Anything).Run(func(f func(subagents.ResidentChildSpec, string, string)) { accepted = f })
+	manager.EXPECT().SetCompletionObserver(mock.Anything).Run(func(f func(subagents.ResidentCompletion) bool) { completion = f })
+	manager.EXPECT().SetUpdateObserver(mock.Anything).Return()
+	// The child already reads idle, so its summary never reports it running.
+	manager.EXPECT().Snapshot().Return([]subagents.ResidentSnapshot{{ID: "child", State: subagents.ResidentIdle}}).Maybe()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c := NewController(ctx, Deps{ResidentManager: manager, HeadlessOrchestrate: true})
+	defer func() { cancel(); <-c.Done() }()
+
+	turn := newMockturnSeam(t)
+	turn.EXPECT().isBusy().Return(false)
+	turn.EXPECT().turnOrigin().Return("")
+	turn.EXPECT().turnInfo().Return(turnInfoProjection{})
+	turn.EXPECT().drainQueued().Return().Maybe()
+	queued := make(chan Input, 1)
+	turn.EXPECT().enqueue(mock.Anything).Run(func(in Input) { queued <- in }).Once()
+
+	runState := func() RunState { c.updateInfo(); return c.Info().Run }
+	require.NoError(t, c.call(ctx, func() {
+		c.turnSeam = turn
+		require.Equal(t, RunStateIdle, runState())
+		accepted(subagents.ResidentChildSpec{ID: "child"}, "turn", "task")
+		require.Equal(t, RunStateRunning, runState(), "acceptance waits in the inbox")
+		c.res.runPending()
+		require.Equal(t, RunStateRunning, runState(), "accepted turn has not reported")
+		require.True(t, completion(subagents.ResidentCompletion{ChildID: "child", TurnID: "turn", Task: "task"}))
+		require.Equal(t, RunStateRunning, runState(), "reported completion waits in the inbox")
+		c.res.runPending()
+		require.Len(t, queued, 1, "completion update queued")
+		require.Equal(t, RunStateIdle, runState())
+		c.turnSeam = c
+	}))
 }

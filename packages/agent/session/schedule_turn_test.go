@@ -69,6 +69,7 @@ func scheduleTurnController(t *testing.T, ag *core.Agent) (*Controller, context.
 	residents.EXPECT().residentsRunStarted().Return().Maybe()
 	residents.EXPECT().residentsRunEnded().Return().Maybe()
 	residents.EXPECT().residentSummaries().Return(nil).Maybe()
+	residents.EXPECT().residentsUndelivered().Return(false).Maybe()
 	residents.EXPECT().residentsRunning().Return(false).Maybe()
 	require.NoError(t, c.call(ctx, func() { c.residentSeam = residents; c.turn.agent = ag }))
 	return c, ctx

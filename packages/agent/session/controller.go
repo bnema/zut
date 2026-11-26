@@ -279,10 +279,11 @@ func (c *Controller) updateInfo() {
 	run := RunStateIdle
 	turnBusy := c.turnSeam != nil && c.turnSeam.isBusy()
 	var residents []ResidentSummary
+	residentsRunning := false
 	if c.residentSeam != nil {
 		residents = c.residentSeam.residentSummaries()
+		residentsRunning = residentSummariesRunning(residents) || c.residentSeam.residentsUndelivered()
 	}
-	residentsRunning := residentSummariesRunning(residents)
 	if turnBusy || residentsRunning {
 		run = RunStateRunning
 	}

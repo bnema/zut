@@ -62,6 +62,9 @@ type residentSeam interface {
 	residentsRunStarted()
 	residentsRunEnded()
 	residentsRunning() bool
+	// residentsUndelivered reports accepted resident turns whose completion
+	// has not reached the host queue yet.
+	residentsUndelivered() bool
 	residentSummaries() []ResidentSummary
 }
 type compactSeam interface {
