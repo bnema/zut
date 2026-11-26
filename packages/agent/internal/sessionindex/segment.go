@@ -29,6 +29,7 @@ import (
 //	  The docs section starts right after the header (offset headerSize).
 //	sections, in order:
 //	  docs      per doc: str Path, str ID, str CWD, str Title,
+//	            str Model, str Provider, Cost f64 bits u64,
 //	            Started i64, Updated i64 (unix ns, minInt64 = zero time),
 //	            Size varint, Cursor.Offset varint, Cursor.MsgSeq uvarint,
 //	            str Cursor.MetaID, Cursor.HeadHash u64, TotalMsgs uvarint,
@@ -44,7 +45,7 @@ import (
 //	            Len u32, Role u8, Time i64, Fingerprint u64
 const (
 	segmentMagic     = "ZUTSIDX\x00"
-	formatVersion    = 3
+	formatVersion    = 4
 	tokenizerVersion = 1
 	headerSize       = 128
 	rowSize          = 33
@@ -127,6 +128,9 @@ func encodeSegment(m *memIndex) []byte {
 		str(d.ID)
 		str(d.CWD)
 		str(d.Title)
+		str(d.Model)
+		str(d.Provider)
+		buf = le.AppendUint64(buf, math.Float64bits(d.Cost))
 		buf = le.AppendUint64(buf, uint64(encodeTime(d.Started)))
 		buf = le.AppendUint64(buf, uint64(encodeTime(d.Updated)))
 		buf = binary.AppendVarint(buf, d.Size)
@@ -427,6 +431,8 @@ func decodeDocs(b []byte, n int) ([]docEntry, error) {
 	for i := range docs {
 		d := &docs[i]
 		d.Path, d.ID, d.CWD, d.Title = str(), str(), str(), str()
+		d.Model, d.Provider = str(), str()
+		d.Cost = math.Float64frombits(u64())
 		d.Started = decodeTime(int64(u64()))
 		d.Updated = decodeTime(int64(u64()))
 		d.Size = sv()

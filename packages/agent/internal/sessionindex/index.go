@@ -44,6 +44,10 @@ type Query struct {
 type SessionDoc struct {
 	Path, ID, CWD, Title string
 	Started, Updated     time.Time
+	// Model and Provider are the session's latest model selection; Cost is
+	// its recorded total cost in USD.
+	Model, Provider string
+	Cost            float64
 }
 
 // HitRef locates one matching message row in a session file.

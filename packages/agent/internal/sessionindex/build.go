@@ -205,6 +205,7 @@ func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
 	reuse := job.old != nil && !cur.Reset && !cur.SawMetaChange && meta.Parent == "" && job.old.Title != ""
 	if reuse {
 		doc.ID, doc.CWD, doc.Title, doc.Started = job.old.ID, job.old.CWD, job.old.Title, job.old.Started
+		doc.Model, doc.Provider, doc.Cost = job.old.Model, job.old.Provider, job.old.Cost
 	} else {
 		if !checked && job.root != "" {
 			scanned += size
@@ -225,6 +226,7 @@ func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
 			title = sum.FirstUserText
 		}
 		doc.CWD, doc.Title, doc.Started = sum.CWD, docTitle(title), sum.Started
+		doc.Model, doc.Provider, doc.Cost = sum.Model, sum.Provider, sum.TotalCost
 	}
 	b.doc, b.reset, b.scanned = doc, cur.Reset, scanned
 	return b
