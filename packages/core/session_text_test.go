@@ -233,3 +233,21 @@ func TestScanSessionTextCallbackErrorAndCancel(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestSessionHeadHashMatchesCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	writeSessionText(t, path, sessionTextMeta(t, "s1"), sessionTextMsg(t, textMsg(provider.RoleUser, provider.TextBlock{Text: "hi"})))
+	_, cur, _ := scanAll(t, path, SessionScanCursor{})
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, ok, err := SessionHeadHash(f)
+	if err != nil || !ok || h != cur.HeadHash {
+		t.Fatalf("head hash = %x ok=%v err=%v, cursor %x", h, ok, err, cur.HeadHash)
+	}
+	if _, ok, _ := SessionHeadHash(strings.NewReader(`{"type":"meta"`)); ok {
+		t.Fatal("partial first row reported complete")
+	}
+}

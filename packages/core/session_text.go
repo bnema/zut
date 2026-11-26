@@ -183,16 +183,22 @@ func ScanSessionText(ctx context.Context, path string, from SessionScanCursor, f
 
 // ReadSessionTextRow reads and decodes the row at [off, off+n). MsgSeq is 0.
 func ReadSessionTextRow(path string, off, n int64) (SessionTextRow, error) {
-	if off < 0 || n <= 0 || n > maxSessionSearchRowBytes {
-		return SessionTextRow{}, fmt.Errorf("read session text row: invalid range %d+%d", off, n)
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return SessionTextRow{}, fmt.Errorf("read session text row: open: %w", err)
 	}
 	defer file.Close()
+	return ReadSessionTextRowAt(file, off, n)
+}
+
+// ReadSessionTextRowAt is ReadSessionTextRow over an open file, so callers
+// reading several rows open the file once.
+func ReadSessionTextRowAt(r io.ReaderAt, off, n int64) (SessionTextRow, error) {
+	if off < 0 || n <= 0 || n > maxSessionSearchRowBytes {
+		return SessionTextRow{}, fmt.Errorf("read session text row: invalid range %d+%d", off, n)
+	}
 	buf := make([]byte, n)
-	if _, err := file.ReadAt(buf, off); err != nil {
+	if _, err := r.ReadAt(buf, off); err != nil {
 		return SessionTextRow{}, fmt.Errorf("read session text row: %w", err)
 	}
 	var lineHead sessionLineHead
@@ -207,7 +213,29 @@ func ReadSessionTextRow(path string, off, n int64) (SessionTextRow, error) {
 	return row, nil
 }
 
+// SessionHeadHash returns the HeadHash that ScanSessionText records for r:
+// FNV-64a of the first complete row. ok is false without a complete row.
+func SessionHeadHash(r io.Reader) (hash uint64, ok bool, err error) {
+	head, _, complete, err := readScanLine(bufio.NewReaderSize(r, 64*1024))
+	if err != nil || !complete {
+		return 0, false, err
+	}
+	return fnvBytes(head), true, nil
+}
+
 func decodeTextRow(line []byte) (SessionTextRow, bool) {
+	// Cheap role pass first: tool rows (often large) skip the full decode.
+	// DecodeMessageJSON keeps the role verbatim, so this filter is the same
+	// one applied after decoding.
+	var peek struct {
+		Message *struct {
+			Role provider.Role `json:"role"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &peek) != nil || peek.Message == nil ||
+		(peek.Message.Role != provider.RoleUser && peek.Message.Role != provider.RoleAssistant) {
+		return SessionTextRow{}, false
+	}
 	var wire struct {
 		Message json.RawMessage `json:"message"`
 	}

@@ -11,10 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
-
-var errNotImplemented = errors.New("sessionindex: not implemented")
 
 // Mode selects how query tokens must co-occur.
 type Mode int
@@ -171,9 +170,99 @@ func (x *Index) currentLocked() (*segment, error) {
 	return seg, nil
 }
 
-// Snippets reads the text of refs from their session files.
+// maxSnippetRunes caps the text returned per snippet.
+const maxSnippetRunes = 4096
+
+// Snippets reads the text of refs back from their session files, in refs
+// order. A ref is skipped when its session is no longer indexed, the file
+// was replaced or truncated, or the row no longer has ref's fingerprint.
+// Texts are joined with a space and capped at maxSnippetRunes; they are not
+// sanitized.
 func (x *Index) Snippets(ctx context.Context, refs []HitRef) ([]Snippet, error) {
-	return nil, errNotImplemented
+	x.mu.Lock()
+	seg, err := x.currentLocked()
+	heads := map[string]uint64{}
+	if err == nil && seg != nil {
+		for _, r := range refs {
+			heads[r.Path] = 0
+		}
+		for _, d := range seg.docs {
+			if _, ok := heads[d.Path]; ok && !d.Excluded {
+				heads[d.Path] = d.Cursor.HeadHash
+			}
+		}
+	}
+	x.mu.Unlock()
+	if err != nil || seg == nil {
+		return nil, err
+	}
+
+	byPath := map[string][]int{}
+	var order []string
+	for i, r := range refs {
+		if _, ok := byPath[r.Path]; !ok {
+			order = append(order, r.Path)
+		}
+		byPath[r.Path] = append(byPath[r.Path], i)
+	}
+	texts := make([]*string, len(refs))
+	for _, path := range order {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if head := heads[path]; head != 0 {
+			readSnippets(path, head, refs, byPath[path], texts)
+		}
+	}
+	var out []Snippet
+	for i, t := range texts {
+		if t != nil {
+			out = append(out, Snippet{Ref: refs[i], Text: *t})
+		}
+	}
+	return out, nil
+}
+
+// readSnippets fills texts[i] for the refs of one file that still match.
+func readSnippets(path string, head uint64, refs []HitRef, idx []int, texts []*string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	if h, ok, err := core.SessionHeadHash(f); err != nil || !ok || h != head {
+		return
+	}
+	for _, i := range idx {
+		ref := refs[i]
+		if ref.Offset+ref.Len > info.Size() {
+			continue
+		}
+		row, err := core.ReadSessionTextRowAt(f, ref.Offset, ref.Len)
+		if err != nil || row.Fingerprint != ref.Fingerprint {
+			continue
+		}
+		text := capRunes(strings.Join(row.Texts, " "), maxSnippetRunes)
+		texts[i] = &text
+	}
+}
+
+func capRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }
 
 // Forget removes path and its text from the index now by publishing a new
