@@ -198,13 +198,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	}
 	if i.modelDialog.Active() {
+		// The renderer reads the dialog under i.mu; the actions below
+		// take it themselves.
+		i.mu.Lock()
 		if k.Kind == tui.KeyCtrlC {
 			i.modelDialog.Close()
+			i.mu.Unlock()
 			i.quickModelAssign = 0
 			i.quickModelActivate = false
 			return false
 		}
 		act := i.modelDialog.HandleKey(k)
+		i.mu.Unlock()
 		if act.Close {
 			i.quickModelAssign = 0
 			i.quickModelActivate = false

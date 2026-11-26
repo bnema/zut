@@ -901,6 +901,8 @@ Built-in providers:
 - **Live**: provider model endpoints queried with stored keys; cached 24h in `$ZUT_HOME/models-cache.json`, refreshed in the background at startup. OpenCode Go joins `https://opencode.ai/zen/go/v1/models` with limits, prices, names, reasoning, and wire-adapter metadata from `https://models.dev/api.json` (the linked provider page's JSON source). Its cache is credential-fingerprint/endpoint scoped; SDK runtimes load matching metadata before resolving. Catalog listing proves neither consent nor regional eligibility, quota, or account access.
 - **Speculative**: upstream-generator IDs not yet public. They return 404 until released.
 
+The `/model` picker has an `all` tab plus one tab per provider (`tab`/`shift+tab`). Without a query, `all` groups models under provider headers (the current model's provider first), newest version first. Dated snapshots of a listed alias (`claude-opus-4-5-20251101`) stay hidden until you type. Typing fuzzy-matches provider, name, and ID (`opus46` finds `claude-opus-4-6`), literal matches first. Rows show the name, `speculative`/`snapshot`/`live` notes, the ID, and `●` on the current model; the line under the list shows context, max output, prices per 1M tokens, and reasoning levels. `←`/`→` (or `H`/`L`) change reasoning; `enter` selects.
+
 The status-line context meter compares last-turn usage with the advertised context window. Historical tool-result text sent to providers is bounded, preserving call/result structure. Displayed and saved tool output remains complete.
 
 ### Model fallback (rescue)

@@ -92,6 +92,12 @@ func (q *pickerQuery) Edit(k tui.Key) bool {
 	return false
 }
 
+// InsertLine inserts pasted text as one line: surrounding whitespace is
+// trimmed, inner runs collapse to one space, and control runes are dropped.
+func (q *pickerQuery) InsertLine(paste string) bool {
+	return q.insert(pickerPasteRunes(singleLinePaste(paste)))
+}
+
 func (q *pickerQuery) insert(rs []rune) bool {
 	if len(rs) == 0 {
 		return false

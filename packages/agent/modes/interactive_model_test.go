@@ -135,10 +135,10 @@ func TestReasoningCommandOpensDirectSelector(t *testing.T) {
 
 func TestModelDialogAdvertisesReasoningNavigation(t *testing.T) {
 	d := newModelDialog()
-	d.Open("", nil, "high")
-	d.view = []provider.Model{{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true}}
+	d.Open("", "", nil, "high")
+	d.view = pickerView(provider.Model{Provider: "openai-codex", ID: "gpt-5.6-luna", Reasoning: true})
 
-	text := strings.Join(d.Render(tui.Dark, 100), "\n")
+	text := strings.Join(d.Render(tui.Dark, 100, 30), "\n")
 	plain := stripANSIBytes(text)
 	if !strings.Contains(plain, "reasoning: high") || !strings.Contains(plain, "←/→ or H/L to change") {
 		t.Fatalf("model dialog missing reasoning guidance: %q", plain)

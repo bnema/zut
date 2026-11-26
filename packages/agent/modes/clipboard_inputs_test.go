@@ -11,8 +11,8 @@ func TestFilterInputsAcceptPaste(t *testing.T) {
 
 	model := &modelDialog{}
 	model.HandleKey(paste)
-	if model.query != "pasted query" {
-		t.Fatalf("model query = %q", model.query)
+	if model.query.String() != "pasted query" {
+		t.Fatalf("model query = %q", model.query.String())
 	}
 
 	jump := &jumpDialog{}

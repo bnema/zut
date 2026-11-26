@@ -535,8 +535,9 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	}
 	i.quickModelAssign = slot
 	i.quickModelActivate = false
-	current, reasoning := i.cfg.Model, i.cfg.Reasoning
+	currentProvider, current, reasoning := i.cfg.Provider, i.cfg.Model, i.cfg.Reasoning
 	if len(i.cfg.QuickModelShortcuts) >= slot && i.cfg.QuickModelShortcuts[slot-1].Model != "" {
+		currentProvider = i.cfg.QuickModelShortcuts[slot-1].Provider
 		current = i.cfg.QuickModelShortcuts[slot-1].Model
 		reasoning = i.cfg.QuickModelShortcuts[slot-1].Reasoning
 	}
@@ -544,7 +545,11 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
-	i.modelDialog.Open(current, loggedIn, reasoning)
+	models := reachablePickerModels(loggedIn)
+	i.mu.Lock()
+	// The renderer reads the dialog under i.mu.
+	i.modelDialog.Open(currentProvider, current, models, reasoning)
+	i.mu.Unlock()
 }
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
 	i.portAssignProfile(slot, providerName, model)

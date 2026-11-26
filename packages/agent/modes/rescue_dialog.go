@@ -80,7 +80,10 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 		}
 		filtered = append(filtered, m)
 	}
-	d.all = sortedModels(filtered)
+	d.all = nil
+	for _, m := range provider.PickerModels(filtered) {
+		d.all = append(d.all, m.Model)
+	}
 	d.refilter()
 }
 
