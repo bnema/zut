@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/bits"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -277,7 +278,7 @@ func runQuery(ctx context.Context, src querySource, q Query) (Result, error) {
 	var hits bitset
 	keepDoc := make([]bool, len(docs))
 	for i := range keepDoc {
-		keepDoc[i] = !docs[i].Excluded && (q.CWD == "" || docs[i].CWD == q.CWD)
+		keepDoc[i] = !docs[i].Excluded && sameCWD(q.CWD, docs[i].CWD)
 	}
 	if q.Mode == ModeMessages {
 		hits = sets[0].clone()
@@ -385,7 +386,7 @@ func (b bitset) each(fn func(uint32)) {
 func recentDocs(docs []docEntry, cwd string, limit int) []SessionDoc {
 	var out []SessionDoc
 	for _, d := range docs {
-		if !d.Excluded && (cwd == "" || d.CWD == cwd) {
+		if !d.Excluded && sameCWD(cwd, d.CWD) {
 			out = append(out, d.SessionDoc)
 		}
 	}
@@ -399,4 +400,10 @@ func recentDocs(docs []docEntry, cwd string, limit int) []SessionDoc {
 		out = out[:limit]
 	}
 	return out
+}
+
+// sameCWD reports whether docCWD matches the filter want; an empty filter
+// matches everything. Paths are compared after filepath.Clean.
+func sameCWD(want, docCWD string) bool {
+	return want == "" || filepath.Clean(want) == filepath.Clean(docCWD)
 }

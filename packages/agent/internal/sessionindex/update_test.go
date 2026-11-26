@@ -420,11 +420,11 @@ func TestRecentAndEmptyQuery(t *testing.T) {
 	if p := docPaths(got); len(p) != 3 || p[0] != c || p[1] != b || p[2] != a {
 		t.Fatalf("recent order wrong (%d)", len(p))
 	}
-	if got, _ = x.Recent(context.Background(), "/proj/a", 1); len(got) != 1 || got[0].Path != c {
+	if got, _ = x.Recent(context.Background(), "/proj/a/", 1); len(got) != 1 || got[0].Path != c {
 		t.Fatalf("recent cwd/limit = %v", docPaths(got))
 	}
 	for _, text := range []string{"", "  ", "@here"} {
-		r, err := x.Query(context.Background(), Query{Text: text, CWD: "/proj/a"})
+		r, err := x.Query(context.Background(), Query{Text: text, CWD: "/proj/./a"})
 		if err != nil {
 			t.Fatal(err)
 		}
