@@ -33,7 +33,7 @@ func TestFinderDecorateLive(t *testing.T) {
 	raw := []finderItem{{Key: "/s/old.jsonl", Label: "old"}, {Key: "/s/./live.jsonl", Label: "indexed live", Hits: []finderHit{{Ref: 1}}}}
 	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: raw}, nil))
 	m.HandleKey(tui.Key{Kind: tui.KeyDown})
-	require.True(t, m.ApplySnippets(m.Generation(), "/s/./live.jsonl", map[int]string{0: "snippet"}))
+	require.True(t, m.ApplySnippets(m.ResultsVersion(), "/s/./live.jsonl", map[int]string{0: "snippet"}))
 
 	m.SetLive([]finderItem{
 		{Key: "/s/live.jsonl", Live: true, LiveID: "l1", LiveCWD: "/work/live"},

@@ -239,3 +239,33 @@ func TestFinderOpenUpdatesIndexAndShowsProgress(t *testing.T) {
 	i.closeFinderIndex()
 	require.Nil(t, i.finderIndex)
 }
+
+// A keystroke requests snippets for the old results under the new search
+// generation; the results of that search must still get their snippets.
+func TestFinderSnippetsAfterNarrowingQuery(t *testing.T) {
+	root := t.TempDir()
+	writeFinderSession(t, root, "/work/a", "a", "needle alpha", "reply", "needle beta")
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Terminal: &alertTestTerminal{}, CWD: "/work/a", SessionsRoot: root})
+	i.finderDelay, i.finderRetryDelay = 0, 0
+	t.Cleanup(i.closeFinderIndex)
+	t.Cleanup(i.closeFinder)
+	ctx := context.Background()
+	loaded := func() bool {
+		if i.finder.indexing || i.finder.loading || len(i.finder.items) != 1 {
+			return false
+		}
+		for _, hit := range i.finder.items[0].Hits {
+			if hit.Text == "" {
+				return false
+			}
+		}
+		return len(i.finder.items[0].Hits) == 2
+	}
+
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyCtrlF})
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyPaste, Paste: "needl"})
+	driveFinderLoop(t, i, loaded)
+
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyRune, Rune: 'e'})
+	driveFinderLoop(t, i, loaded)
+}

@@ -33,7 +33,7 @@ func (s *finderSnippetState) reset() {
 // requestFinderSnippets fills snippets for the hits of the selected item
 // around the hit cursor: cached texts apply at once, the rest are read on
 // a goroutine and applied on the Run loop. A newer request cancels the
-// previous fetch; ApplySnippets drops results of an older generation.
+// previous fetch; ApplySnippets drops texts for an older result set.
 func (i *Interactive) requestFinderSnippets(ctx context.Context) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -47,7 +47,7 @@ func (i *Interactive) requestFinderSnippets(ctx context.Context) {
 	}
 	lo := max(0, m.hit-finderSnippetWindow/2)
 	hi := min(len(item.Hits), lo+finderSnippetWindow)
-	req := fmt.Sprintf("%d\x00%s\x00%d", m.gen, item.Key, lo)
+	req := fmt.Sprintf("%d\x00%s\x00%d", m.results, item.Key, lo)
 	if req == i.finderSnippets.req {
 		return
 	}
@@ -75,9 +75,9 @@ func (i *Interactive) requestFinderSnippets(ctx context.Context) {
 			slot[key] = idx
 		}
 	}
-	gen := m.gen
+	version := m.results
 	if len(cached) > 0 {
-		m.ApplySnippets(gen, item.Key, cached)
+		m.ApplySnippets(version, item.Key, cached)
 	}
 	if len(refs) == 0 {
 		return
@@ -104,7 +104,7 @@ func (i *Interactive) requestFinderSnippets(ctx context.Context) {
 					texts[idx] = sn.Text
 				}
 			}
-			if m.ApplySnippets(gen, item.Key, texts) {
+			if m.ApplySnippets(version, item.Key, texts) {
 				i.invalidate()
 			}
 		}

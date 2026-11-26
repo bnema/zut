@@ -107,7 +107,10 @@ type finderModel struct {
 	hit     int
 	viewTop int
 
-	gen     uint64
+	gen uint64
+	// results counts installed result sets; snippet fetches are tied to
+	// it, not to gen, since a keystroke bumps gen before results change.
+	results uint64
 	loading bool
 	// loadingSince drives the spinner animation of the in-flight search.
 	loadingSince time.Time
@@ -175,6 +178,9 @@ func (m *finderModel) Query() string { return string(m.query) }
 // Generation is the id of the latest search request.
 func (m *finderModel) Generation() uint64 { return m.gen }
 
+// ResultsVersion is the id of the installed result set.
+func (m *finderModel) ResultsVersion() uint64 { return m.results }
+
 func (m *finderModel) source() finderSource {
 	if m.tab < 0 || m.tab >= len(m.tabs) {
 		return nil
@@ -232,6 +238,7 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	// source's slice.
 	m.raw, m.partial, m.hint = m.applyOverlay(append([]finderItem(nil), res.Items...)), res.Partial, res.Hint
 	m.items = m.decorateLive(m.raw)
+	m.results++
 	m.cursor, m.hit = 0, 0
 	if prevKey != "" {
 		for i, item := range m.items {
@@ -264,10 +271,10 @@ func (m *finderModel) Refresh() finderAction {
 }
 
 // ApplySnippets sets hit snippet texts (keyed by hit index) on the item
-// with the given key, for results of generation gen. It reports whether
+// with the given key, for the result set ResultsVersion returned. It reports whether
 // anything was applied.
-func (m *finderModel) ApplySnippets(gen uint64, key string, texts map[int]string) bool {
-	if !m.active || gen != m.gen {
+func (m *finderModel) ApplySnippets(version uint64, key string, texts map[int]string) bool {
+	if !m.active || version != m.results {
 		return false
 	}
 	for i := range m.items {

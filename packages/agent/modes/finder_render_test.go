@@ -159,9 +159,9 @@ func TestFinderRenderScrollsToCursor(t *testing.T) {
 
 func TestFinderApplySnippets(t *testing.T) {
 	m := renderFinderFixture(t)
-	require.False(t, m.ApplySnippets(m.Generation()-1, "a", map[int]string{1: "x"}))
-	require.False(t, m.ApplySnippets(m.Generation(), "missing", map[int]string{0: "x"}))
-	require.True(t, m.ApplySnippets(m.Generation(), "a", map[int]string{1: "agent text", 9: "ignored"}))
+	require.False(t, m.ApplySnippets(m.ResultsVersion()-1, "a", map[int]string{1: "x"}))
+	require.False(t, m.ApplySnippets(m.ResultsVersion(), "missing", map[int]string{0: "x"}))
+	require.True(t, m.ApplySnippets(m.ResultsVersion(), "a", map[int]string{1: "agent text", 9: "ignored"}))
 	require.Equal(t, "agent text", m.items[0].Hits[1].Text)
 }
 
