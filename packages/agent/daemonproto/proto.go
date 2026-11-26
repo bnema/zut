@@ -183,3 +183,9 @@ type DaemonStatusData struct {
 	UptimeMS int64  `json:"uptime_ms"`
 	Sessions int    `json:"sessions"`
 }
+
+// PredictNextPromptData is the predict_next_prompt reply; Text is empty when
+// there is no prediction.
+type PredictNextPromptData struct {
+	Text string `json:"text"`
+}

@@ -134,6 +134,11 @@ func (d *miniDaemon) handle(conn *daemonproto.Conn, r daemonproto.Request) (any,
 				return nil, errors.New(daemonproto.UnsupportedPortMethod + " \"clear_queued_user\"")
 			}
 			return nil, nil
+		case "predict_next_prompt":
+			if d.version == "old" {
+				return nil, errors.New(daemonproto.UnsupportedPortMethod + " \"predict_next_prompt\"")
+			}
+			return daemonproto.PredictNextPromptData{Text: "run the tests"}, nil
 		case "sessions_query":
 			return session.Tree{Workspaces: []session.WorkspaceNode{{RepoRoot: "/repo"}}}, nil
 		case "set_title":

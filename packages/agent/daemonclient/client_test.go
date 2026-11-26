@@ -111,6 +111,22 @@ func TestClearQueuedUserOldDaemonIsUnknownRequest(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrUnknownRequest)
 }
 
+func TestPredictNextPrompt(t *testing.T) {
+	_, path := newDaemon(t, "v", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "v"})
+	text, err := c.Port("s1", true).PredictNextPrompt(testCtx(t))
+	require.NoError(t, err)
+	require.Equal(t, "run the tests", text)
+}
+
+func TestPredictNextPromptOldDaemonIsUnknownRequest(t *testing.T) {
+	_, path := newDaemon(t, "old", daemonproto.ProtocolVersion)
+	c := dial(t, path, Options{ClientVersion: "old"})
+	text, err := c.Port("s1", true).PredictNextPrompt(testCtx(t))
+	require.ErrorIs(t, err, session.ErrUnknownRequest)
+	require.Empty(t, text)
+}
+
 func recvSeqs(t *testing.T, ch <-chan session.Event, n int) []session.Event {
 	t.Helper()
 	out := make([]session.Event, 0, n)

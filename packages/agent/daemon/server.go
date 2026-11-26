@@ -625,6 +625,9 @@ func (c *client) port(ctx context.Context, req daemonproto.PortRequest) (any, er
 		return nil, h.ExtensionPanelInput(ctx, p.Ext, p.PanelID, p.Key)
 	case "reload_credentials":
 		return nil, h.ReloadCredentials(ctx)
+	case "predict_next_prompt":
+		text, err := h.PredictNextPrompt(ctx)
+		return daemonproto.PredictNextPromptData{Text: text}, err
 	case "resident_action":
 		var rc session.ResidentCommand
 		if err := unmarshalOptional(p.Command, &rc); err != nil {

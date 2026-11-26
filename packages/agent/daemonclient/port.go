@@ -565,6 +565,18 @@ func (p *RemotePort) ClearQueuedUser(ctx context.Context) error {
 	return err
 }
 
+// PredictNextPrompt implements session.Port. Daemons predating the method
+// answer daemonproto.UnsupportedPortMethod; that is mapped to
+// ErrUnknownRequest so callers can ignore it.
+func (p *RemotePort) PredictNextPrompt(ctx context.Context) (string, error) {
+	var out daemonproto.PredictNextPromptData
+	err := p.port(ctx, "predict_next_prompt", nil, &out)
+	if isUnsupportedPortMethod(err) {
+		return "", fmt.Errorf("%w: %w", session.ErrUnknownRequest, err)
+	}
+	return out.Text, err
+}
+
 // isUnsupportedPortMethod reports a daemon rejecting an unknown port method.
 func isUnsupportedPortMethod(err error) bool {
 	var re *daemonproto.RemoteError

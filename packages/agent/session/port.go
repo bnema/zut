@@ -56,6 +56,10 @@ type Port interface {
 	ResidentHistory(ctx context.Context, childID, olderCursor string, limit int) (subagents.ResidentHistoryPage, error)
 	ResidentAction(ctx context.Context, command ResidentCommand) error
 	SessionsQuery(ctx context.Context) (Tree, error)
+	// PredictNextPrompt returns the user's likely next message, or "" when
+	// the session is not idle or the model has no confident guess. It is a
+	// side request: no events, persistence, or usage accounting.
+	PredictNextPrompt(ctx context.Context) (string, error)
 }
 
 // Directory provides daemon-owned discovery and guarded inter-session delivery.

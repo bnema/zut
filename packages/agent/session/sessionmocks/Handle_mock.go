@@ -1108,6 +1108,66 @@ func (_c *MockHandle_InvokeExtensionCommand_Call) RunAndReturn(run func(ctx cont
 	return _c
 }
 
+// PredictNextPrompt provides a mock function for the type MockHandle
+func (_mock *MockHandle) PredictNextPrompt(ctx context.Context) (string, error) {
+	ret := _mock.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for PredictNextPrompt")
+	}
+
+	var r0 string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context) (string, error)); ok {
+		return returnFunc(ctx)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context) string); ok {
+		r0 = returnFunc(ctx)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = returnFunc(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockHandle_PredictNextPrompt_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PredictNextPrompt'
+type MockHandle_PredictNextPrompt_Call struct {
+	*mock.Call
+}
+
+// PredictNextPrompt is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockHandle_Expecter) PredictNextPrompt(ctx any) *MockHandle_PredictNextPrompt_Call {
+	return &MockHandle_PredictNextPrompt_Call{Call: _e.mock.On("PredictNextPrompt", ctx)}
+}
+
+func (_c *MockHandle_PredictNextPrompt_Call) Run(run func(ctx context.Context)) *MockHandle_PredictNextPrompt_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockHandle_PredictNextPrompt_Call) Return(s string, err error) *MockHandle_PredictNextPrompt_Call {
+	_c.Call.Return(s, err)
+	return _c
+}
+
+func (_c *MockHandle_PredictNextPrompt_Call) RunAndReturn(run func(ctx context.Context) (string, error)) *MockHandle_PredictNextPrompt_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ReloadCredentials provides a mock function for the type MockHandle
 func (_mock *MockHandle) ReloadCredentials(ctx context.Context) error {
 	ret := _mock.Called(ctx)

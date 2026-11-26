@@ -144,6 +144,7 @@ Clients should tolerate activity kinds they do not recognize.
 | cancel_queued | `{"id":"q1"}` | omitted |
 | slide_back_queued | `{}` | Input |
 | clear_queued_user | `{}` | omitted; drops queued user input, keeps host events, publishes `queue` (older daemons reply `unsupported port method`) |
+| predict_next_prompt | `{}` | `{"text":"..."}`; the likely next user message from a side request that reuses the cached prompt prefix. `text` is empty when the session is headless or not idle (turn, queue, pending request, compaction, or running residents) or the model has no confident guess. Publishes no events and records no usage. Requires control (older daemons reply `unsupported port method`) |
 | answer_confirmation | `{"req_id":"r1","decision":ConfirmDecision}` | omitted |
 | answer_question | `{"req_id":"r1","answers":[QuestionAnswer]}` | omitted |
 | resolve_deferred | `{"id":"d1","action":"dismiss"}` | omitted |

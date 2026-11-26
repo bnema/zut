@@ -342,6 +342,14 @@ func TestDaemonCreateAttachSingleControllerDetachClose(t *testing.T) {
 	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "clear_queued_user"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
 		t.Fatalf("clear_queued_user by non-controller = %v", err)
 	}
+	s1.h.EXPECT().PredictNextPrompt(mock.Anything).Return("ship it", nil).Once()
+	var predicted daemonproto.PredictNextPromptData
+	if err := b.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "predict_next_prompt"}, &predicted); err != nil || predicted.Text != "ship it" {
+		t.Fatalf("predict_next_prompt = %+v, %v", predicted, err)
+	}
+	if err := a.call(t, daemonproto.PortRequest{Type: "port", Session: "s1", Method: "predict_next_prompt"}, nil); err == nil || !strings.Contains(err.Error(), ErrNotController.Error()) {
+		t.Fatalf("predict_next_prompt by non-controller = %v", err)
+	}
 	advSpec := "anthropic/claude-opus-4-7:high"
 	advStatus := session.AdvisorStatus{Enabled: true, Model: advSpec, Mode: "auto"}
 	s1.h.EXPECT().SetAdvisor(mock.Anything, session.AdvisorChange{Model: &advSpec}).Return(advStatus, nil).Once()
