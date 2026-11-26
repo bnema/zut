@@ -166,7 +166,7 @@ type SessionMeta struct {
 	// the child session continues from there.
 	ForkPoint int `json:"fork_point,omitempty"`
 	// HideFromSessions hides internal tree-navigation branches from the
-	// flat /sessions picker while keeping them available to /session tree.
+	// Finder session list while keeping them available to /session tree.
 	HideFromSessions bool `json:"hide_from_sessions,omitempty"`
 }
 
@@ -1098,7 +1098,7 @@ func sessionHasNoMessages(path string) bool {
 // modified first. Sorting on filesystem ModTime instead of the
 // timestamp embedded in the filename means a long-running session
 // the user actually returned to recently floats to the top of
-// /sessions, /continue, and the resume picker, even when it was
+// the Finder, /continue, and the resume picker, even when it was
 // originally created days earlier than newer but idle sessions.
 // Files with identical ModTime fall back to filename desc so the
 // order stays stable across calls.

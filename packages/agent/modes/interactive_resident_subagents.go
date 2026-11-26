@@ -455,7 +455,7 @@ func (i *Interactive) doSessionImport(src string) {
 	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
-		i.statusOK = "imported session at " + friendlyPath(newPath) + " (run /sessions to resume it)"
+		i.statusOK = "imported session at " + friendlyPath(newPath) + " (open it with /find)"
 		i.statusErr = ""
 		i.mu.Unlock()
 		i.invalidate()
@@ -749,7 +749,7 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
-		i.statusOK = "forked at message " + formatInt(upTo) + " (run /sessions to resume)"
+		i.statusOK = "forked at message " + formatInt(upTo) + " (open it with /find)"
 		i.statusErr = ""
 		i.mu.Unlock()
 		i.invalidate()

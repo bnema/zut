@@ -1010,7 +1010,7 @@ const (
 	sessionResultSuccessor
 	sessionResultExit
 	// sessionResultSwitch moves the view to another daemon session
-	// (/sessions pick, /fork). A failure keeps the current session.
+	// (Finder pick, /fork). A failure keeps the current session.
 	sessionResultSwitch
 	// sessionResultKeepCurrent leaves the controlling stream untouched.
 	sessionResultKeepCurrent
@@ -1162,7 +1162,6 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		if res.treeSelection != nil {
 			i.sessionLoading = false
 		}
-		i.sessionDialog.Close()
 		i.statusErr, i.statusOK = "", ""
 		i.mu.Unlock()
 		// Already in the target session: jump without a switch.
@@ -1226,7 +1225,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 	return false
 }
 
-// SwitchSession replaces the attached session with port (/sessions live
+// SwitchSession replaces the attached session with port (Finder live
 // pick, /fork) and rehydrates the view. Pending async results for the old
 // session are discarded. session.Port has no Detach; releasing the old
 // session is the caller's job (cfg.Detach / SessionClient).

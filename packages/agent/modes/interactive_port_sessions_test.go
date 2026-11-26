@@ -9,9 +9,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
-	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
-	"github.com/bnema/zut/packages/tui"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -76,15 +74,6 @@ func (r *sessionsRun) requireSwitched(t *testing.T, id session.ID, port session.
 	waitSignal(t, r.cancel, "old session release")
 }
 
-func (r *sessionsRun) waitDialogLive(t *testing.T, n int) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		r.i.mu.Lock()
-		defer r.i.mu.Unlock()
-		return len(r.i.sessionDialog.live) == n
-	}, 5*time.Second, 10*time.Millisecond)
-}
-
 func liveInfos() []session.Info {
 	return []session.Info{
 		{ID: "s1", Title: "mine", Attach: session.AttachStateAttached},
@@ -92,31 +81,19 @@ func liveInfos() []session.Info {
 	}
 }
 
-func TestPortSessionsDialogListsLiveSessions(t *testing.T) {
-	client := newMockSessionClient(t)
-	client.EXPECT().List(mock.Anything).Return(liveInfos(), nil).Once()
-	r := startSessionsPort(t, client)
-	r.term.send("/sessions\r")
-	r.waitDialogLive(t, 2)
-	r.i.mu.Lock()
-	out := stripANSIBytes(strings.Join(r.i.sessionDialog.Render(r.i.cfg.Theme, 120), "\n"))
-	r.i.mu.Unlock()
-	require.Contains(t, out, "live sessions")
-	require.Contains(t, out, "this terminal")
-	require.Contains(t, out, "detached")
-	require.Contains(t, out, "other")
-	require.Contains(t, out, "resumable sessions")
+// attachFromLoop runs portAttachSession on the Run loop once s1 is attached.
+func (r *sessionsRun) attachFromLoop(t *testing.T, id session.ID) {
+	t.Helper()
+	require.Eventually(t, func() bool { return r.i.SessionInfo().ID == "s1" }, 5*time.Second, 10*time.Millisecond)
+	r.i.loopCalls <- func() { r.i.portAttachSession(id) }
 }
 
-func TestPortSessionsPickLiveAttachesAndReleasesOld(t *testing.T) {
+func TestPortAttachSessionSwitchesAndReleasesOld(t *testing.T) {
 	client := newMockSessionClient(t)
-	client.EXPECT().List(mock.Anything).Return(liveInfos(), nil).Once()
 	s2 := targetPort(t, "s2")
 	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(s2, nil).Once()
 	r := startSessionsPort(t, client)
-	r.term.send("/sessions\r")
-	r.waitDialogLive(t, 2)
-	r.term.send("\x1b[B\r") // down to s2, enter
+	r.attachFromLoop(t, "s2")
 	r.requireSwitched(t, "s2", s2)
 }
 
@@ -151,12 +128,9 @@ func TestPortForkCreatesFork(t *testing.T) {
 
 func TestPortSessionsSwitchErrorKeepsSessionWithNote(t *testing.T) {
 	client := newMockSessionClient(t)
-	client.EXPECT().List(mock.Anything).Return(liveInfos(), nil).Once()
 	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(nil, errors.New("boom")).Once()
 	r := startSessionsPort(t, client)
-	r.term.send("/sessions\r")
-	r.waitDialogLive(t, 2)
-	r.term.send("\x1b[B\r")
+	r.attachFromLoop(t, "s2")
 	require.Eventually(t, func() bool {
 		r.i.mu.Lock()
 		defer r.i.mu.Unlock()
@@ -174,15 +148,12 @@ func TestPortSessionsSwitchErrorKeepsSessionWithNote(t *testing.T) {
 // on s1, so the Detach hook (which asks SessionID) releases s1, not s2.
 func TestPortSessionsFailedSwitchDetachReleasesOriginal(t *testing.T) {
 	client := newMockSessionClient(t)
-	client.EXPECT().List(mock.Anything).Return(liveInfos(), nil).Once()
 	s2 := sessionmocks.NewMockPort(t)
 	s2.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{}, errors.New("gone")).Once()
 	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(s2, nil).Once()
 	released := make(chan session.ID, 1)
 	r := startSessionsPortDetach(t, client, func(i *Interactive) { released <- i.SessionID() })
-	r.term.send("/sessions\r")
-	r.waitDialogLive(t, 2)
-	r.term.send("\x1b[B\r")
+	r.attachFromLoop(t, "s2")
 	require.Eventually(t, func() bool {
 		r.i.mu.Lock()
 		defer r.i.mu.Unlock()
@@ -201,22 +172,12 @@ func TestPortSessionsPickLiveOwnedDiskAttachesWithoutCreate(t *testing.T) {
 	client := newMockSessionClient(t)
 	infos := liveInfos()
 	infos[1].SessionPath = "/w/live.jsonl"
-	client.EXPECT().List(mock.Anything).Return(infos, nil).Twice()
+	client.EXPECT().List(mock.Anything).Return(infos, nil).Once()
 	s2 := targetPort(t, "s2")
 	client.EXPECT().Attach(mock.Anything, session.ID("s2")).Return(s2, nil).Once()
 	r := startSessionsPort(t, client)
-	r.term.send("/sessions\r")
-	r.waitDialogLive(t, 2)
-	r.i.loopCalls <- func() {
-		r.i.mu.Lock()
-		d := r.i.sessionDialog
-		d.sessions = []core.SessionSummary{{Path: "/w/live.jsonl"}}
-		d.liveFocus = false
-		act := d.HandleKey(tui.Key{Kind: tui.KeyEnter})
-		r.i.mu.Unlock()
-		require.Equal(t, "/w/live.jsonl", act.Path)
-		r.i.applySessionSelection(act.Path)
-	}
+	require.Eventually(t, func() bool { return r.i.SessionInfo().ID == "s1" }, 5*time.Second, 10*time.Millisecond)
+	r.i.loopCalls <- func() { r.i.applySessionSelection("/w/live.jsonl") }
 	r.requireSwitched(t, "s2", s2)
 }
 

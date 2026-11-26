@@ -164,7 +164,7 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 // of the created session file, ready to pass to OpenSession.
 //
 // The imported session is a first-class zut session: it'll show up
-// in /sessions, /jump, and on-disk summaries just like any other.
+// in the Finder, /jump, and on-disk summaries just like any other.
 // Messages and usage rows are preserved verbatim.
 func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	if srcPath == "" {
@@ -289,7 +289,7 @@ func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (s
 }
 
 // BranchSessionHidden creates a branch that participates in /session tree but
-// is hidden from the flat /sessions picker. Used for in-place tree navigation.
+// is hidden from the Finder session list. Used for in-place tree navigation.
 func BranchSessionHidden(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
 	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, true)
 }

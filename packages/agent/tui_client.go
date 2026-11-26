@@ -77,7 +77,7 @@ func (a *daemonSessionClient) createWithOutput(ctx context.Context, spec session
 
 // Attach returns a controlling RemotePort for id. Control is taken when the
 // TUI subscribes (RemotePort.Subscribe sends the controlling attach). The id
-// is validated by the caller's Snapshot (Interactive.Run, /sessions switch),
+// is validated by the caller's Snapshot (Interactive.Run, Finder switch),
 // which errors for an unknown session.
 func (a *daemonSessionClient) Attach(_ context.Context, id session.ID) (session.Port, error) {
 	return a.c.Port(id, true), nil

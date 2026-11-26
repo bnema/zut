@@ -59,7 +59,6 @@ var slashCatalog = []slashCommand{
 	{Name: "/goal", Desc: "start or control an autonomous goal"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/find", Desc: "search sessions and messages across all projects"},
-	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/fork", Desc: "pick a user message and fork; inherits parent launch settings"},
 	{Name: "/session", Desc: "inspect, export, import, fork, or browse the current session"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
@@ -335,8 +334,7 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 		}
 	}
 	out = pruneOrphanHeaders(out)
-	// Prefer an exact command over longer commands sharing its prefix so
-	// /session stays selected instead of the earlier /sessions entry.
+	// Prefer an exact command over longer commands sharing its prefix.
 	for _, c := range out {
 		if !c.Header && strings.EqualFold(c.Name, input) {
 			return []slashCommand{c}

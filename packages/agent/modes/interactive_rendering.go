@@ -604,10 +604,6 @@ func (i *Interactive) redraw() {
 	case i.finder.Active():
 		dialogID = "finder"
 		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, max(finderMinHeight, paneMax.ContentHeight()))
-	case i.sessionDialog.Active():
-		dialogID = "sessions"
-		i.sessionDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
-		dialog = i.sessionDialog.Render(i.cfg.Theme, dialogWidth)
 	case i.residentSubagentsDialog.Active():
 		dialogID = "subagents"
 		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
@@ -707,7 +703,7 @@ func (i *Interactive) redraw() {
 	var suggest []string
 	// Slash popup renders even while the agent is busy so the user
 	// can queue a destructive command (/clear, /compact, /logout,
-	// /model) or a read-only one (/help, /jump, /sessions, etc.)
+	// /model) or a read-only one (/help, /jump, /find, etc.)
 	// without waiting for the current turn to finish. The dispatcher
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
@@ -1127,13 +1123,6 @@ func (i *Interactive) redraw() {
 	}
 	if i.finder.Active() {
 		if r, c := i.finder.CursorPos(); r >= 0 {
-			cursorRow = dialogLead + r
-			cursorCol = c
-			cursorInDialog = true
-		}
-	}
-	if i.sessionDialog.Active() {
-		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true

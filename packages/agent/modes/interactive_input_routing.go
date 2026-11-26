@@ -64,7 +64,6 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||
 		i.rescueDialog.Active() ||
-		i.sessionDialog.Active() ||
 		i.finder.Active() ||
 		i.finderResume.Active() ||
 		i.residentSubagentsDialog.Active() ||
@@ -248,82 +247,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 	if finderActive {
 		i.handleFinderKey(ctx, k)
-		return false
-	}
-	i.mu.Lock()
-	sessionDialogActive := i.sessionDialog.Active()
-	i.mu.Unlock()
-	if sessionDialogActive {
-		if k.Kind == tui.KeyCtrlC {
-			i.mu.Lock()
-			i.sessionDialog.Close()
-			i.sessionLoads = nil
-			i.sessionSearches = nil
-			i.mu.Unlock()
-			i.invalidate()
-			return false
-		}
-		manualRenamePath := ""
-		renameActive := false
-		hasSelection := false
-		i.mu.Lock()
-		renameActive = i.sessionDialog.renaming
-		hasSelection = i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions)
-		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && hasSelection && i.cfg.CurrentSessionPath != nil {
-			manualRenamePath = i.sessionDialog.sessions[i.sessionDialog.cursor].Path
-		}
-		i.mu.Unlock()
-		if k.Kind == tui.KeyEnter && !renameActive && hasSelection && !i.canResumeSessionSelection() {
-			i.mu.Lock()
-			i.statusErr = "wait for the active work to finish before resuming a session"
-			i.statusOK = ""
-			i.mu.Unlock()
-			i.invalidate()
-			return false
-		}
-		manualRenameCurrent := manualRenamePath != "" && i.cfg.CurrentSessionPath() == manualRenamePath
-		if manualRenameCurrent {
-			i.markSessionTitleSwitching()
-		}
-		i.mu.Lock()
-		act := i.sessionDialog.HandleKey(k)
-		if act.Select || act.Close {
-			i.sessionLoads = nil
-			i.sessionSearches = nil
-		}
-		if act.ToggleScope {
-			i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD, !i.sessionDialog.allScope)
-			i.sessionSearches = nil
-		}
-		if act.StartSearch {
-			i.sessionSearches = i.sessionDialog.StartSearch(ctx)
-		}
-		i.mu.Unlock()
-		if act.Select && act.LiveID != "" {
-			i.portAttachSession(act.LiveID)
-		} else if act.Select {
-			i.applySessionSelection(act.Path)
-		}
-		if act.Delete {
-			i.applySessionDeletion(act.Path)
-		}
-		if act.Err != nil {
-			if manualRenameCurrent {
-				i.restoreFailedSessionTitle()
-			}
-			i.mu.Lock()
-			i.statusErr = "rename: " + act.Err.Error()
-			i.statusOK = ""
-			i.mu.Unlock()
-		} else if act.Renamed && act.Path != "" && i.cfg.CurrentSessionPath != nil && i.cfg.CurrentSessionPath() == act.Path {
-			i.setManualSessionTitle(act.RenameTitle)
-		}
-		// Always request a redraw after handling a key here: when esc
-		// closes the picker, the overlay-close detection in the render
-		// pass needs to run so the tall dialog rows get repainted from
-		// the chat (otherwise VS Code's retained scrollback leaves a
-		// duplicate frame on screen).
-		i.invalidate()
 		return false
 	}
 	i.mu.Lock()
@@ -1019,7 +942,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// cancel the active turn
 			// first and wait for the goroutine to wind down so they don't
 			// race with a streaming response. Safe commands (/help,
-			// /jump, /sessions, /jail, /unjail, /exit) run immediately
+			// /jump, /find, /jail, /unjail, /exit) run immediately
 			// without disturbing the active turn.
 			if slashCommandCancelsTurn(text) {
 				i.cancelAndWaitForIdle()

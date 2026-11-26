@@ -1,88 +1,16 @@
 package core
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"time"
-	"unicode"
-
-	"github.com/bnema/zut/packages/provider"
 )
 
-const (
-	maxSessionSearchRowBytes = 1 << 20
-	maxSessionSearchRunes    = 512
-)
-
-// SessionSearchSegment is one bounded, display-safe user or assistant text
-// excerpt from a persisted session. It deliberately never contains tool,
-// developer, image, or raw JSON data.
-type SessionSearchSegment struct {
-	Path       string
-	Text       string
-	Normalized string
-	Role       provider.Role
-	Time       time.Time
-	Order      int
-}
-
-// ListSessionPathsContext lists eligible session files for cwd or, when all is
-// true, for every cwd bucket in root's active session namespace. It ignores
-// symlinks, malformed buckets, files with invalid metadata, and files whose
-// stored cwd does not hash to the directory that contains them.
-func ListSessionPathsContext(ctx context.Context, root, cwd string, all bool) []string {
-	if err := contextErr(ctx); err != nil || strings.TrimSpace(root) == "" {
-		return nil
-	}
-
-	var dirs []string
-	if all {
-		dirs = sessionBucketDirs(ctx, root)
-	} else {
-		dir := SessionsDir(root, cwd)
-		info, err := os.Lstat(dir)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil
-		}
-		dirs = []string{dir}
-	}
-
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	var candidates []candidate
-	for _, file := range sessionFilesIn(ctx, dirs) {
-		meta, ok := listableSessionMeta(ctx, root, file.Path)
-		if !ok || (!all && meta.CWD != cwd) {
-			continue
-		}
-		candidates = append(candidates, candidate{path: file.Path, mod: file.Info.ModTime()})
-	}
-	if err := contextErr(ctx); err != nil {
-		return nil
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if !candidates[i].mod.Equal(candidates[j].mod) {
-			return candidates[i].mod.After(candidates[j].mod)
-		}
-		return candidates[i].path > candidates[j].path
-	})
-	paths := make([]string, len(candidates))
-	for i, candidate := range candidates {
-		paths[i] = candidate.path
-	}
-	return paths
-}
+// maxSessionSearchRowBytes bounds one JSONL row read for search text.
+const maxSessionSearchRowBytes = 1 << 20
 
 // SessionFile is a candidate session file found without reading it.
 type SessionFile struct {
@@ -92,8 +20,7 @@ type SessionFile struct {
 
 // SessionFiles lists regular *.jsonl files in every cwd bucket of root's
 // session namespace without reading them. Callers that cache eligibility
-// (the search index) pair it with SessionListable for new or changed files;
-// ListSessionPathsContext applies the same two steps.
+// (the search index) pair it with SessionListable for new or changed files.
 func SessionFiles(ctx context.Context, root string) []SessionFile {
 	if strings.TrimSpace(root) == "" {
 		return nil
@@ -101,7 +28,7 @@ func SessionFiles(ctx context.Context, root string) []SessionFile {
 	return sessionFilesIn(ctx, sessionBucketDirs(ctx, root))
 }
 
-// SessionListable reports whether path is a session the flat picker lists:
+// SessionListable reports whether path is a session the Finder lists:
 // valid metadata, not hidden, and stored in the bucket its cwd hashes to.
 // It reads the whole file to find the latest metadata.
 func SessionListable(ctx context.Context, root, path string) bool {
@@ -196,172 +123,4 @@ func ManagedSessionMeta(ctx context.Context, root, path string) (SessionMeta, er
 		return SessionMeta{}, errors.New("managed session: cwd bucket does not match metadata")
 	}
 	return meta, nil
-}
-
-// ReadSessionSearchSegments extracts bounded searchable text from persisted
-// message rows. It keeps historical user/assistant rows after compaction but
-// excludes compaction payloads and every non-text content block.
-func ReadSessionSearchSegments(ctx context.Context, path string) ([]SessionSearchSegment, error) {
-	if err := contextErr(ctx); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("read session search text: open: %w", err)
-	}
-	defer file.Close()
-
-	reader := bufio.NewReaderSize(file, 64*1024)
-	var segments []SessionSearchSegment
-	order := 0
-	for {
-		if err := contextErr(ctx); err != nil {
-			return nil, err
-		}
-		line, err := readBoundedSessionSearchLine(reader)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("read session search text: %w", err)
-		}
-		if len(line) > 0 {
-			var head sessionLineHead
-			if jsonErr := json.Unmarshal(line, &head); jsonErr == nil && head.Type == "message" {
-				message, messageErr := readSearchMessage(line)
-				if messageErr == nil && (message.Role == provider.RoleUser || message.Role == provider.RoleAssistant) {
-					for _, rawText := range message.Texts {
-						for _, text := range splitSessionSearchText(rawText) {
-							segments = append(segments, SessionSearchSegment{Path: path, Text: text, Normalized: NormalizeSessionSearchText(text), Role: message.Role, Time: message.Time, Order: order})
-							order++
-						}
-					}
-				}
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-	return segments, nil
-}
-
-type sessionSearchMessage struct {
-	Role  provider.Role
-	Time  time.Time
-	Texts []string
-}
-
-func readSearchMessage(line []byte) (sessionSearchMessage, error) {
-	var row struct {
-		Message json.RawMessage `json:"message"`
-	}
-	if err := json.Unmarshal(line, &row); err != nil {
-		return sessionSearchMessage{}, err
-	}
-	if len(row.Message) == 0 || bytes.Equal(bytes.TrimSpace(row.Message), []byte("null")) {
-		return sessionSearchMessage{}, errors.New("message row has no message")
-	}
-	var message struct {
-		Role    provider.Role     `json:"role"`
-		Time    time.Time         `json:"time"`
-		Content []json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(row.Message, &message); err != nil {
-		return sessionSearchMessage{}, err
-	}
-	if message.Role != provider.RoleUser && message.Role != provider.RoleAssistant && message.Role != provider.RoleTool && message.Role != provider.RoleDeveloper {
-		return sessionSearchMessage{}, fmt.Errorf("message has invalid role %q", message.Role)
-	}
-	if len(message.Content) == 0 {
-		return sessionSearchMessage{}, errors.New("message has no content")
-	}
-	result := sessionSearchMessage{Role: message.Role, Time: message.Time}
-	for _, rawContent := range message.Content {
-		var textBlock struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(rawContent, &textBlock); err != nil {
-			return sessionSearchMessage{}, err
-		}
-		if textBlock.Text != "" {
-			result.Texts = append(result.Texts, textBlock.Text)
-		}
-	}
-	return result, nil
-}
-
-func readBoundedSessionSearchLine(reader *bufio.Reader) ([]byte, error) {
-	var line []byte
-	for {
-		fragment, err := reader.ReadSlice('\n')
-		line = append(line, fragment...)
-		if len(line) > maxSessionSearchRowBytes {
-			return nil, fmt.Errorf("JSONL row exceeds %d bytes", maxSessionSearchRowBytes)
-		}
-		switch {
-		case err == nil:
-			return bytes.TrimRight(line, "\r\n"), nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			continue
-		case errors.Is(err, io.EOF):
-			return bytes.TrimRight(line, "\r\n"), io.EOF
-		default:
-			return nil, err
-		}
-	}
-}
-
-func splitSessionSearchText(text string) []string {
-	text = sanitizeSessionSearchText(text)
-	if text == "" {
-		return nil
-	}
-	runes := []rune(text)
-	if len(runes) <= maxSessionSearchRunes {
-		return []string{text}
-	}
-	segments := make([]string, 0, len(runes)/maxSessionSearchRunes+1)
-	for len(runes) > 0 {
-		end := min(len(runes), maxSessionSearchRunes)
-		if end < len(runes) {
-			for split := end - 1; split > end/2; split-- {
-				if unicode.IsSpace(runes[split]) || unicode.Is(unicode.Sentence_Terminal, runes[split]) {
-					end = split + 1
-					break
-				}
-			}
-		}
-		segment := strings.TrimSpace(string(runes[:end]))
-		if segment != "" {
-			segments = append(segments, segment)
-		}
-		runes = runes[end:]
-	}
-	return segments
-}
-
-// NormalizeSessionSearchText returns the display-safe case-folded form used
-// by the picker matcher. It removes terminal and bidi controls and collapses
-// whitespace without retaining any raw transcript representation.
-func NormalizeSessionSearchText(text string) string {
-	return strings.ToLower(sanitizeSessionSearchText(text))
-}
-
-func sanitizeSessionSearchText(text string) string {
-	var out strings.Builder
-	out.Grow(len(text))
-	space := true
-	for _, r := range text {
-		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || unicode.Is(unicode.Cf, r) {
-			continue
-		}
-		if unicode.IsSpace(r) {
-			if !space {
-				out.WriteByte(' ')
-				space = true
-			}
-			continue
-		}
-		out.WriteRune(r)
-		space = false
-	}
-	return strings.TrimSpace(out.String())
 }

@@ -138,7 +138,7 @@ func (m *finderModel) RenameItem(key, title string) {
 	update(m.items)
 }
 
-// finderSessionGuard applies the protections of the /sessions picker:
+// finderSessionGuard protects sessions from finder actions:
 // the active session cannot be deleted, and sessions running in the daemon
 // (other than this one) are not modified from the finder.
 func (i *Interactive) finderSessionGuard(item finderItem, deleting bool) (current bool, err string) {
@@ -165,7 +165,7 @@ func (i *Interactive) setFinderStatusOK(message string) {
 	i.invalidate()
 }
 
-// finderRename renames item's session file (as the /sessions picker does),
+// finderRename renames item's session file with core.RenameSession,
 // updates its row, and refreshes the index in the background.
 func (i *Interactive) finderRename(ctx context.Context, item finderItem, title string) {
 	title = core.NormalizeSessionTitle(title)
@@ -200,11 +200,10 @@ func (i *Interactive) finderRename(ctx context.Context, item finderItem, title s
 	i.startFinderIndexUpdate(ctx)
 }
 
-// finderDelete deletes item's session file with the /sessions picker's
+// finderDelete deletes item's session file with finderSessionGuard's
 // protections, removes its row, and drops it from the index.
 func (i *Interactive) finderDelete(ctx context.Context, item finderItem) {
-	// Mirrors applySessionDeletion: without a way to know the active
-	// session, deleting is refused.
+	// Without a way to know the active session, deleting is refused.
 	if !i.portMode.Load() && i.cfg.CurrentSessionPath == nil {
 		i.setFinderStatusErr("session deletion is not wired in this build")
 		return
