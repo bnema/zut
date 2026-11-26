@@ -45,6 +45,7 @@ func (i *Interactive) openFinder(ctx context.Context) {
 	}
 	i.mu.Lock()
 	i.finder = newFinderModel(i.cfg.CWD, sources...)
+	i.finderSnippets.reset()
 	act := i.finder.Open(0)
 	i.mu.Unlock()
 	i.dispatchFinderSearch(ctx, act, 0)
@@ -65,6 +66,7 @@ func (i *Interactive) closeFinder() {
 	if i.finder != nil {
 		i.finder.Close()
 	}
+	i.finderSnippets.reset()
 	cancel := i.finderCancel
 	i.finderCancel = nil
 	i.mu.Unlock()
@@ -91,6 +93,7 @@ func (i *Interactive) handleFinderKey(ctx context.Context, k tui.Key) {
 	case finderActionDelete:
 		i.finderDelete(act.Item)
 	}
+	i.requestFinderSnippets(ctx)
 	i.invalidate()
 }
 
@@ -128,6 +131,7 @@ func (i *Interactive) dispatchFinderSearch(ctx context.Context, act finderAction
 			applied := i.finder.ApplyResults(act.Gen, act.TabID, results, err)
 			i.mu.Unlock()
 			if applied {
+				i.requestFinderSnippets(ctx)
 				i.invalidate()
 			}
 		}

@@ -29,6 +29,7 @@ type finderQuery struct {
 type finderResults struct {
 	Items   []finderItem
 	Partial bool
+	Hint    string // shown instead of "no matches" when Items is empty
 }
 
 // finderItem is one selectable row. Key identifies it across result sets
@@ -89,6 +90,7 @@ type finderModel struct {
 
 	items   []finderItem
 	partial bool
+	hint    string
 	cursor  int
 	hit     int
 	viewTop int
@@ -120,7 +122,7 @@ func (m *finderModel) Open(tab int) finderAction {
 		m.tab = tab
 	}
 	m.query, m.qcursor, m.qscroll = nil, 0, 0
-	m.items, m.partial = nil, false
+	m.items, m.partial, m.hint = nil, false, ""
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	m.err = ""
 	m.confirmDelete = false
@@ -194,7 +196,7 @@ func (m *finderModel) ApplyResults(gen uint64, tabID string, res finderResults, 
 	if item, ok := m.selected(); ok {
 		prevKey = item.Key
 	}
-	m.items, m.partial = res.Items, res.Partial
+	m.items, m.partial, m.hint = res.Items, res.Partial, res.Hint
 	m.cursor, m.hit = 0, 0
 	if prevKey != "" {
 		for i, item := range m.items {
@@ -321,7 +323,7 @@ func (m *finderModel) switchTab(delta int) finderAction {
 		return finderAction{}
 	}
 	m.tab = (m.tab + delta + len(m.tabs)) % len(m.tabs)
-	m.items, m.partial = nil, false
+	m.items, m.partial, m.hint = nil, false, ""
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	return m.search()
 }

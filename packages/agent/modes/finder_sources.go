@@ -12,7 +12,12 @@ import (
 	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 )
 
-const finderSessionLimit = 200
+const (
+	finderSessionLimit = 200
+	// finderRecentLimit bounds the sessions fuzzy-matched by title/project.
+	finderRecentLimit = 500
+	finderMessageHint = "type to search messages"
+)
 
 // finderSessionSource is the "Sessions" tab: sessions containing every
 // query token somewhere in their text, ranked by title fit, hits and age.
@@ -26,19 +31,62 @@ func (*finderSessionSource) Title() string { return "Sessions" }
 
 func (s *finderSessionSource) Search(ctx context.Context, q finderQuery) (finderResults, error) {
 	tokens, here := sessionindex.ParseQuery(q.Text)
+	iq := finderIndexQuery(q, here, sessionindex.ModeSessions)
 	if len(tokens) == 0 {
-		return finderResults{}, nil
+		docs, err := s.index.Recent(ctx, iq.CWD, finderSessionLimit)
+		if err != nil {
+			return finderResults{}, err
+		}
+		items := make([]finderItem, 0, len(docs))
+		for _, doc := range docs {
+			items = append(items, finderMatchItem(sessionindex.SessionMatch{Doc: doc}))
+		}
+		return finderResults{Items: items}, nil
 	}
-	res, err := s.index.Query(ctx, finderIndexQuery(q, here, sessionindex.ModeSessions))
+	res, err := s.index.Query(ctx, iq)
 	if err != nil {
 		return finderResults{}, err
 	}
-	items := make([]finderItem, 0, len(res.Sessions))
-	for _, match := range res.Sessions {
+	matches := res.Sessions
+	fuzzyText := finderFuzzyText(q.Text)
+	// Sessions whose title or project matches but whose text does not.
+	recent, err := s.index.Recent(ctx, iq.CWD, finderRecentLimit)
+	if err != nil {
+		return finderResults{}, err
+	}
+	matches = append(matches, finderTitleMatches(recent, matches, fuzzyText)...)
+	items := make([]finderItem, 0, len(matches))
+	for _, match := range matches {
 		items = append(items, finderMatchItem(match))
 	}
-	rankFinderSessions(items, res.Sessions, finderFuzzyText(q.Text), s.now())
+	rankFinderSessions(items, matches, fuzzyText, s.now())
 	return finderResults{Items: items, Partial: res.Partial}, nil
+}
+
+// finderTitleMatches returns docs whose "project · title" label fuzzy
+// matches query with a positive score and that are not already in have.
+func finderTitleMatches(docs []sessionindex.SessionDoc, have []sessionindex.SessionMatch, query string) []sessionindex.SessionMatch {
+	if query == "" || len(docs) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(have))
+	for _, match := range have {
+		seen[match.Doc.Path] = true
+	}
+	labels := make([]string, len(docs))
+	for idx, doc := range docs {
+		labels[idx] = finderDocLabel(doc)
+	}
+	var out []sessionindex.SessionMatch
+	for _, m := range fuzzy.Find(query, labels) {
+		doc := docs[m.Index]
+		if m.Score <= 0 || seen[doc.Path] {
+			continue
+		}
+		seen[doc.Path] = true
+		out = append(out, sessionindex.SessionMatch{Doc: doc})
+	}
+	return out
 }
 
 // finderMessageSource is the "Messages" tab: messages containing every
@@ -53,7 +101,7 @@ func (*finderMessageSource) Title() string { return "Messages" }
 func (s *finderMessageSource) Search(ctx context.Context, q finderQuery) (finderResults, error) {
 	tokens, here := sessionindex.ParseQuery(q.Text)
 	if len(tokens) == 0 {
-		return finderResults{}, nil
+		return finderResults{Hint: finderMessageHint}, nil
 	}
 	res, err := s.index.Query(ctx, finderIndexQuery(q, here, sessionindex.ModeMessages))
 	if err != nil {

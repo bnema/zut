@@ -224,6 +224,9 @@ func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 	}
 	if len(out) == 0 && rows > 0 {
 		msg := " no matches"
+		if m.hint != "" {
+			msg = " " + m.hint
+		}
 		if m.loading {
 			msg = " …"
 		}

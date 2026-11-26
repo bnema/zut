@@ -2,6 +2,8 @@ package modes
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,9 +85,18 @@ func TestFinderSessionSourceTitleFitRanksFirst(t *testing.T) {
 	titled := writeFinderSession(t, root, "/work/b", "deploy pipeline", "deploy once")
 	src := &finderSessionSource{index: newFinderTestIndex(t, root), now: time.Now}
 
-	// Title-only matches need Index.Recent (not available yet); here both
-	// sessions match by content and the title fit outranks hit density.
-	res, err := src.Search(context.Background(), finderQuery{Text: "deploy"})
+	res, err := src.Search(context.Background(), finderQuery{Text: "deploy pipeline"})
+	require.NoError(t, err)
+	require.Equal(t, []string{titled}, finderKeys(res.Items), "title-only match")
+	require.Zero(t, res.Items[0].Count)
+	require.Empty(t, res.Items[0].Hits)
+
+	res, err = src.Search(context.Background(), finderQuery{Text: "gordon"})
+	require.NoError(t, err)
+	require.Empty(t, res.Items)
+
+	// Both match by content; the title fit outranks hit density.
+	res, err = src.Search(context.Background(), finderQuery{Text: "deploy"})
 	require.NoError(t, err)
 	require.Equal(t, []string{titled, busy}, finderKeys(res.Items))
 }
@@ -104,6 +115,87 @@ func TestFinderMessageSourceRequiresTokensInOneMessage(t *testing.T) {
 	res, err = src.Search(context.Background(), finderQuery{Text: "  @here "})
 	require.NoError(t, err)
 	require.Empty(t, res.Items)
+	require.Equal(t, "type to search messages", res.Hint)
+}
+
+func TestFinderSessionSourceEmptyQueryListsRecent(t *testing.T) {
+	root := t.TempDir()
+	older := writeFinderSession(t, root, "/work/zut", "older", "x")
+	newer := writeFinderSession(t, root, "/work/gordon", "newer", "y")
+	past := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, os.Chtimes(older, past, past))
+	src := &finderSessionSource{index: newFinderTestIndex(t, root), now: time.Now}
+
+	res, err := src.Search(context.Background(), finderQuery{CWD: "/work/zut"})
+	require.NoError(t, err)
+	require.Equal(t, []string{newer, older}, finderKeys(res.Items))
+	require.Equal(t, "gordon · newer", res.Items[0].Label)
+	require.Equal(t, "2 d ago", res.Items[1].Detail)
+
+	res, err = src.Search(context.Background(), finderQuery{Text: "@here", Here: true, CWD: "/work/zut"})
+	require.NoError(t, err)
+	require.Equal(t, []string{older}, finderKeys(res.Items))
+}
+
+func driveFinderLoop(t *testing.T, i *Interactive, done func() bool) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for !done() {
+		select {
+		case fn := <-i.loopCalls:
+			fn()
+		case <-deadline:
+			t.Fatal("finder loop did not settle")
+		}
+	}
+}
+
+func TestFinderSnippetsForSelectedItem(t *testing.T) {
+	root := t.TempDir()
+	first := writeFinderSession(t, root, "/work/a", "a", "needle alpha", "reply", "needle beta")
+	second := writeFinderSession(t, root, "/work/b", "b", "needle gamma")
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(second, past, past))
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Terminal: &alertTestTerminal{}, CWD: "/work/a", SessionsRoot: root})
+	i.finderDelay, i.finderRetryDelay = 0, 0
+	t.Cleanup(i.closeFinderIndex)
+	t.Cleanup(i.closeFinder)
+	ctx := context.Background()
+
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyCtrlF})
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyPaste, Paste: "needle"})
+	hitTexts := func(idx int) []string {
+		if len(i.finder.items) <= idx {
+			return nil
+		}
+		var out []string
+		for _, hit := range i.finder.items[idx].Hits {
+			out = append(out, hit.Text)
+		}
+		return out
+	}
+	driveFinderLoop(t, i, func() bool {
+		texts := hitTexts(0)
+		return !i.finder.indexing && len(i.finder.items) == 2 && len(texts) == 2 && texts[0] != "" && texts[1] != ""
+	})
+	require.Equal(t, first, i.finder.items[0].Key)
+	require.Equal(t, []string{"needle alpha", "needle beta"}, hitTexts(0))
+	require.Empty(t, hitTexts(1)[0], "only the selected item is fetched")
+
+	i.handleKey(ctx, tui.Key{Kind: tui.KeyDown})
+	driveFinderLoop(t, i, func() bool { return hitTexts(1)[0] != "" })
+	require.Equal(t, []string{"needle gamma"}, hitTexts(1))
+	require.Len(t, i.finderSnippets.cache, 3)
+	require.Contains(t, stripANSIBytes(strings.Join(i.finder.Render(tui.Dark, 120, 20), "\n")), "needle gamma")
+
+	// Cached snippets apply synchronously after a refresh.
+	i.mu.Lock()
+	act := i.finder.Refresh()
+	i.mu.Unlock()
+	i.dispatchFinderSearch(ctx, act, 0)
+	driveFinderLoop(t, i, func() bool { return !i.finder.loading })
+	require.Equal(t, second, i.finder.items[1].Key)
+	require.Equal(t, []string{"needle gamma"}, hitTexts(1))
 }
 
 func TestRankFinderSessionsFormula(t *testing.T) {

@@ -785,6 +785,8 @@ type Interactive struct {
 	finderUpdateCancel context.CancelFunc
 	// finderRetryDelay waits before retrying an Update that hit ErrBusy.
 	finderRetryDelay time.Duration
+	// finderSnippets caches and fetches hit snippets for the open finder.
+	finderSnippets finderSnippetState
 
 	dialog                  *loginDialog
 	modelDialog             *modelDialog
