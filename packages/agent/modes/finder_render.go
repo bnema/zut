@@ -366,14 +366,11 @@ func formatHitTime(t time.Time) string {
 	return t.Local().Format("2006-01-02 15:04:05")
 }
 
-// renderHitHeader renders "you · 2026-10-29 14:32:05 compacted" in w
-// cells: the role in its chat color, the time and badge dimmed, so the
-// header reads apart from the snippet text below it.
+// renderHitHeader renders "you · 2026-10-29 14:32:05" in w cells: the
+// role in its chat color, the time dimmed, so the header reads apart from
+// the snippet text below it.
 func renderHitHeader(th tui.Theme, hit finderHit, w int) string {
 	meta := " · " + formatHitTime(hit.Time)
-	if hit.Compacted {
-		meta += " compacted"
-	}
 	return renderRoleHeader(th, hit.Role, finderRoleLabel(hit.Role), meta, w)
 }
 

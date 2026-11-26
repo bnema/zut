@@ -22,7 +22,7 @@ func renderFinderFixture(t *testing.T) *finderModel {
 	items := []finderItem{
 		{Key: "a", Label: "zut · advisor \x1b[31mwatcher", Detail: "3 days ago", Count: 12, Live: true, Hits: []finderHit{
 			{Role: provider.RoleUser, Time: now.Add(-72 * time.Hour), Text: strings.Repeat("padding words ", 20) + "let's do a refactoring of the watcher " + strings.Repeat("tail ", 30)},
-			{Role: provider.RoleAssistant, Time: now.Add(-71 * time.Hour), Compacted: true},
+			{Role: provider.RoleAssistant, Time: now.Add(-71 * time.Hour)},
 		}},
 		{Key: "b", Label: "界面 · 日本語のセッション名前がとても長い場合のテスト", Detail: "gordon", Count: 8},
 		{Key: "c", Label: "plain", Count: 0},
@@ -86,7 +86,7 @@ func TestFinderRenderPreviewHighlights(t *testing.T) {
 	lines := m.Render(tui.Dark, 160, 20)
 	joined := stripANSIBytes(strings.Join(lines, "\n"))
 	require.Contains(t, joined, "you · "+formatHitTime(m.items[0].Hits[0].Time))
-	require.Contains(t, joined, "agent · "+formatHitTime(m.items[0].Hits[1].Time)+" compacted")
+	require.Contains(t, joined, "agent · "+formatHitTime(m.items[0].Hits[1].Time))
 	require.Regexp(t, `you · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`, joined)
 	require.Contains(t, joined, "refactoring")
 	snippet := ""

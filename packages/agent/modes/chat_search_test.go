@@ -326,7 +326,7 @@ func TestSearchReaderCompactedHitWithoutOtherMatch(t *testing.T) {
 	require.False(t, ok)
 	require.Empty(t, i.statusErr)
 	require.Contains(t, i.statusOK, "forked into ~/x")
-	require.Contains(t, i.statusOK, "match is in compacted history")
+	require.Contains(t, i.statusOK, "match is no longer in the session history")
 	require.Contains(t, i.statusOK, "no match in this session")
 }
 

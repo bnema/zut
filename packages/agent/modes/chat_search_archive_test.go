@@ -124,3 +124,67 @@ func TestSearchReaderNoArchiveWithoutCompaction(t *testing.T) {
 	require.Empty(t, i.searchReader.archivePath)
 	require.Empty(t, i.searchReader.archive.Rows)
 }
+
+func TestSearchReaderFinderHitPrefersExactArchivedRow(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "/work", "test", "model", "test")
+	require.NoError(t, err)
+	ok := jumpTextMsg(provider.RoleUser, "ok needle")
+	require.NoError(t, sess.AppendMessage(ok))                                                // seq 0, archived
+	require.NoError(t, sess.AppendMessage(jumpTextMsg(provider.RoleAssistant, "old answer"))) // seq 1, archived
+	require.NoError(t, sess.AppendMessage(ok))                                                // seq 2, kept tail
+	live := []provider.Message{archiveSummaryMsg("9000"), ok}
+	require.NoError(t, sess.AppendCompaction(live))
+	require.NoError(t, sess.Close())
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, sess.Path, live)
+	waitArchive(t, i, 0)
+
+	open := func(seq int) int {
+		hit := &sessionindex.HitRef{Fingerprint: core.MessageTextFingerprint(ok), MsgSeq: seq, TotalMsgs: 3}
+		i.openSearchReader(searchReaderTarget{terms: []string{"needle"}, hit: hit})
+		waitReader(t, i)
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		r := i.searchReader
+		require.NotNil(t, r)
+		require.Equal(t, []int{0, 3}, r.matches)
+		return r.matches[r.cur]
+	}
+	require.Equal(t, 0, open(0), "archived hit opens the archived row")
+	require.Equal(t, 3, open(2), "live hit opens the live row")
+}
+
+func TestSearchReaderCloseCancelsArchiveLoad(t *testing.T) {
+	i, _, _ := archiveReaderFixture(t)
+	i.openSearchReader(searchReaderTarget{terms: []string{"needle"}, focus: 1})
+	i.mu.Lock()
+	ctx := i.searchReader.archiveCtx
+	i.mu.Unlock()
+	require.NotNil(t, ctx)
+	i.handleSearchReaderKey(tui.Key{Kind: tui.KeyEsc})
+	require.Error(t, ctx.Err())
+}
+
+func TestArchiveSkipsForkedCompactionSummary(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "/work", "test", "model", "test")
+	require.NoError(t, err)
+	// A fork copies the parent's summary in as a normal message row.
+	require.NoError(t, sess.AppendMessage(archiveSummaryMsg("50000")))
+	require.NoError(t, sess.AppendMessage(jumpTextMsg(provider.RoleUser, "forked needle")))
+	live := []provider.Message{archiveSummaryMsg("90000"), jumpTextMsg(provider.RoleUser, "tail")}
+	require.NoError(t, sess.AppendMessage(live[1]))
+	require.NoError(t, sess.AppendCompaction(live))
+	require.NoError(t, sess.Close())
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, sess.Path, live)
+	waitArchive(t, i, 0)
+	chat := archiveChat(i)
+	require.Contains(t, chat, "forked needle")
+	require.NotContains(t, chat, "~50k", chat)
+
+	i.openSearchReader(searchReaderTarget{terms: []string{"summary"}, focus: 1})
+	waitReader(t, i)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	require.Nil(t, i.searchReader, "the copied summary never matches")
+}

@@ -34,6 +34,8 @@ type searchReader struct {
 	// rows; live message idx is len(archive.Rows)+idx. Written only by the
 	// first build before it publishes; dropped with the reader.
 	archivePath string
+	archiveCtx  context.Context
+	cancel      context.CancelFunc // cancels the archive load; called on close
 	archive     core.ArchivedHistory
 	sepRows     map[int]bool // rows of inner compaction separators
 
@@ -124,7 +126,13 @@ func (i *Interactive) openSearchReader(target searchReaderTarget) {
 	r := &searchReader{terms: terms, view: view, target: target, width: width, building: true}
 	if hasCompactionSummary(view.Messages) {
 		r.archivePath = i.sessionPathLocked()
+		parent := i.runCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		r.archiveCtx, r.cancel = context.WithCancel(parent)
 	}
+	i.closeSearchReaderLocked()
 	i.searchReader = r
 	i.mu.Unlock()
 	i.invalidate()
@@ -137,14 +145,10 @@ func (i *Interactive) loadSearchReaderArchive(r *searchReader) {
 	if r.archivePath == "" {
 		return
 	}
-	ctx := i.runCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if flush := i.cfg.FlushSession; flush != nil {
 		flush()
 	}
-	hist, err := core.ReadArchivedSessionText(ctx, r.archivePath, core.ArchivedOptions{Skip: isHiddenTranscriptMessage})
+	hist, err := core.ReadArchivedSessionText(r.archiveCtx, r.archivePath, core.ArchivedOptions{Skip: skipArchivedMessage})
 	if err != nil {
 		return
 	}
@@ -156,51 +160,22 @@ func (i *Interactive) loadSearchReaderArchive(r *searchReader) {
 // returns anchors indexed by display message index, the separator rows,
 // and the display indexes that render no rows.
 func (r *searchReader) buildSearchReaderRows(width int) (rows []string, anchors []tui.MessageAnchor, seps map[int]bool, empty map[int]bool) {
-	empty = map[int]bool{}
-	add := func(segRows []string, segAnchors []tui.MessageAnchor, base int, count int, dim bool) {
-		if dim {
-			segRows = tui.DimLines(segRows)
-		}
-		for k := range count {
-			if anchorRows(segAnchors, len(segRows), k) == 0 {
-				empty[base+k] = true
-			}
-		}
-		for _, a := range segAnchors {
-			anchors = append(anchors, tui.MessageAnchor{MessageIdx: base + a.MessageIdx, Row: len(rows) + a.Row})
-		}
-		rows = append(rows, segRows...)
+	arch := renderArchivedRows(r.view.Theme, r.archive, 0, width)
+	rows, anchors, seps, empty = arch.rows, arch.anchors, arch.seps, arch.empty
+	if empty == nil {
+		empty = map[int]bool{}
 	}
-	hist := r.archive
-	segment := func(from, to int) {
-		if from >= to {
-			return
-		}
-		msgs := make([]provider.Message, 0, to-from)
-		for _, row := range hist.Rows[from:to] {
-			msgs = append(msgs, row.Message)
-		}
-		v := &tui.View{Theme: r.view.Theme, Messages: msgs, ImageProto: tui.ImageProtocolNone}
-		segRows, segAnchors := v.BuildWithAnchors(width)
-		add(segRows, segAnchors, from, to-from, true)
-	}
-	from := 0
-	for _, m := range hist.Marks {
-		if m.Index <= 0 || m.Index >= len(hist.Rows) {
-			continue // the latest mark is the live summary separator
-		}
-		segment(from, m.Index)
-		if seps == nil {
-			seps = map[int]bool{}
-		}
-		seps[len(rows)] = true
-		rows = append(rows, tui.Dim(tui.CompactionSeparator(r.view.Theme, width, tui.CompactionTokensLabel(m.TokensBefore))))
-		from = m.Index
-	}
-	segment(from, len(hist.Rows))
+	base := len(r.archive.Rows)
 	liveRows, liveAnchors := r.view.BuildWithAnchors(width)
-	add(liveRows, liveAnchors, len(hist.Rows), len(r.view.Messages), false)
-	return rows, anchors, seps, empty
+	for k := range r.view.Messages {
+		if anchorRows(liveAnchors, len(liveRows), k) == 0 {
+			empty[base+k] = true
+		}
+	}
+	for _, a := range liveAnchors {
+		anchors = append(anchors, tui.MessageAnchor{MessageIdx: base + a.MessageIdx, Row: len(rows) + a.Row})
+	}
+	return append(rows, liveRows...), anchors, seps, empty
 }
 
 // resolveHitInArchive returns the display index of the archived row a
@@ -247,19 +222,17 @@ func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) 
 		}
 		focus := base + r.target.focus
 		if h := r.target.hit; h != nil {
-			if idx, ok := resolveHitInView(msgs, h.Fingerprint, h.MsgSeq, h.TotalMsgs); ok {
-				focus = base + idx
-			} else if k, ok := resolveHitInArchive(arch, h.Fingerprint, h.MsgSeq); ok {
+			// The archive first: its match is exact (MsgSeq and text), so
+			// repeated text from an archived era never lands on a live row.
+			if k, ok := resolveHitInArchive(arch, h.Fingerprint, h.MsgSeq); ok {
 				focus = k
+			} else if idx, ok := resolveHitInView(msgs, h.Fingerprint, h.MsgSeq, h.TotalMsgs); ok {
+				focus = base + idx
 			} else {
 				// The hit is gone: open on the next other match at or after
 				// where it was, else the last one.
 				focus = base + max(0, len(msgs)-(h.TotalMsgs-h.MsgSeq))
-				if r.archivePath != "" {
-					note = joinStatus(note, "match is no longer in the session history")
-				} else {
-					note = joinStatus(note, "match is in compacted history")
-				}
+				note = joinStatus(note, "match is no longer in the session history")
 			}
 		}
 		cur = len(matches) - 1
@@ -283,7 +256,7 @@ func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) 
 		}
 		r.ready = true
 		if len(matches) == 0 {
-			i.searchReader = nil
+			i.closeSearchReaderLocked()
 			msg := fmt.Sprintf("search %q: no match in this session", strings.Join(r.terms, " "))
 			if note != "" {
 				i.statusErr, i.statusOK = "", joinStatus(note, msg)
@@ -324,9 +297,13 @@ func anchorRows(anchors []tui.MessageAnchor, total, idx int) int {
 	return end - anchors[idx].Row
 }
 
-// closeSearchReaderLocked closes the reader; its snapshot belongs to the
-// transcript being replaced.
-func (i *Interactive) closeSearchReaderLocked() { i.searchReader = nil }
+// closeSearchReaderLocked closes the reader and cancels its archive load.
+func (i *Interactive) closeSearchReaderLocked() {
+	if r := i.searchReader; r != nil && r.cancel != nil {
+		r.cancel()
+	}
+	i.searchReader = nil
+}
 
 // handleSearchReaderKey handles a key while the reader is open. The reader
 // is modal: keys it does not use are ignored.
@@ -340,7 +317,7 @@ func (i *Interactive) handleSearchReaderKey(k tui.Key) {
 	page := max(1, r.page)
 	switch k.Kind {
 	case tui.KeyEsc, tui.KeyCtrlC:
-		i.searchReader = nil
+		i.closeSearchReaderLocked()
 	case tui.KeyCtrlN:
 		r.step(1)
 	case tui.KeyCtrlP:
