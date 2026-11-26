@@ -1360,24 +1360,17 @@ func newStreamIdleTimer(timeout time.Duration) (<-chan time.Time, func(), func()
 	return timer.C, stop, reset
 }
 
-func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, requestContext provider.RequestContext, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
-	fastMode := a.FastModeEnabled()
-	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
-		return provider.StopError, provider.Message{}, err
-	}
+// buildTurnRequest assembles the cache-relevant part of an agent request from
+// the live transcript and configuration. oneTurn and PredictNextPrompt share it
+// so side requests keep a byte-identical prompt prefix. Lifecycle and Context
+// are left to the caller.
+func (a *Agent) buildTurnRequest(fastMode bool) provider.Request {
 	system, tools := a.PromptConfig()
 	// Repair pairs before projecting the copied provider-input view. The
 	// repair can add stub results for aborted calls; those results must also
 	// remain in the request so every tool call still has a matching result.
 	messages := repairToolUseResultPairs(a.Messages())
-	requestLifecycle := &requestLifecycleSink{
-		sink:     sink,
-		observe:  a.fireRetryLifecycle,
-		provider: a.Client.Name(),
-		model:    a.Model,
-	}
-	defer requestLifecycle.close()
-	req := provider.Request{
+	return provider.Request{
 		Model:  a.Model,
 		System: system,
 		// Repair any dangling tool_use blocks before sending. A turn
@@ -1394,10 +1387,25 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
-		Lifecycle:   requestLifecycle,
 		Advisor:     a.requestServerAdvisor(),
-		Context:     requestContext,
 	}
+}
+
+func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, requestContext provider.RequestContext, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
+	fastMode := a.FastModeEnabled()
+	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
+		return provider.StopError, provider.Message{}, err
+	}
+	req := a.buildTurnRequest(fastMode)
+	requestLifecycle := &requestLifecycleSink{
+		sink:     sink,
+		observe:  a.fireRetryLifecycle,
+		provider: a.Client.Name(),
+		model:    a.Model,
+	}
+	defer requestLifecycle.close()
+	req.Lifecycle = requestLifecycle
+	req.Context = requestContext
 	sink(EvRequestStarted{
 		Provider:    a.Client.Name(),
 		Model:       a.Model,
