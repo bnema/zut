@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -28,6 +30,14 @@ type Editor struct {
 	// Mask replaces rendered input runes with asterisks while preserving the
 	// real buffer for submission. It is intended for secrets such as API keys.
 	Mask bool
+
+	// GhostStyle styles the ghost suggestion when rendered. Nil renders
+	// it unstyled. Modes pass the theme's muted colour here.
+	GhostStyle func(string) string
+
+	// ghost is a sanitized single-line suggestion shown dim after the
+	// prompt while the buffer is empty. It is never part of Value().
+	ghost string
 
 	// lastRenderWidth is the column count passed to the most recent
 	// Render() call. Up/Down key handling needs this to walk the
@@ -109,11 +119,52 @@ func (e *Editor) SetValue(s string) {
 	e.fileSeq = 0
 	e.dirs = nil
 	e.dirSeq = 0
+	e.ghost = ""
+}
+
+// SetGhost stores a suggestion shown while the buffer is empty. ANSI
+// escapes and control characters are removed and whitespace runs are
+// collapsed to single spaces. Empty text clears the suggestion.
+func (e *Editor) SetGhost(text string) {
+	text = stripANSI(text)
+	var b strings.Builder
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			b.WriteRune(' ')
+			continue
+		}
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	e.ghost = strings.Join(strings.Fields(b.String()), " ")
+}
+
+// Ghost returns the current suggestion, or "" when none is set or the
+// buffer is not empty.
+func (e *Editor) Ghost() string {
+	if !e.IsEmpty() {
+		return ""
+	}
+	return e.ghost
+}
+
+// AcceptGhost inserts the suggestion as typed text when the buffer is
+// empty and clears it. It reports whether a suggestion was inserted.
+func (e *Editor) AcceptGhost() bool {
+	g := e.Ghost()
+	if g == "" {
+		return false
+	}
+	e.insert(g)
+	return true
 }
 
 // Clone returns an independent copy of the editor, including the cursor,
 // prompt, last render width and placeholder tables, so another goroutine
-// can render it while the original keeps receiving input.
+// can render it while the original keeps receiving input. The ghost
+// suggestion and its style are copied too so the clone renders the same.
 func (e *Editor) Clone() *Editor {
 	c := *e
 	c.Lines = append([]string(nil), e.Lines...)
@@ -146,6 +197,9 @@ func (e *Editor) IsEmpty() bool {
 // the user pressed enter and there is content to send; the caller
 // should read SubmitValue() and then Clear().
 func (e *Editor) HandleKey(k Key) (submit bool) {
+	// Any key reaching the editor dismisses the ghost; Enter on an
+	// empty buffer must never submit it.
+	e.ghost = ""
 	switch k.Kind {
 	case KeyRune:
 		if k.Alt && (k.Rune == '\r' || k.Rune == '\n') {
@@ -450,6 +504,7 @@ func singleQuote(s string) string {
 func (e *Editor) Insert(s string) { e.insert(s) }
 
 func (e *Editor) insert(s string) {
+	e.ghost = ""
 	s = normalizeEditorText(s)
 	line := e.Lines[e.CursorR]
 	pre := substringBefore(line, e.CursorC)
@@ -821,7 +876,42 @@ func (e *Editor) Render(width int) (lines []string, visualRow, visualCol int) {
 		}
 		lines = append(lines, wrapped...)
 	}
+	if g := e.Ghost(); g != "" && !e.Mask && len(lines) == 1 {
+		if avail := width - promptLen - 1; avail > 0 {
+			g = truncateGhost(g, avail)
+			if g != "" {
+				if e.GhostStyle != nil {
+					g = e.GhostStyle(g)
+				}
+				lines[0] += g
+			}
+		}
+	}
 	return lines, visualRow, visualCol
+}
+
+// truncateGhost cuts s to at most limit display cells, ending with an
+// ellipsis when anything was dropped.
+func truncateGhost(s string, limit int) string {
+	if runewidth.StringWidth(s) <= limit {
+		return s
+	}
+	const ell = "…"
+	budget := limit - runewidth.StringWidth(ell)
+	if budget < 0 {
+		return ""
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > budget {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String() + ell
 }
 
 // locateCursor finds the wrapped row + visible column corresponding to
