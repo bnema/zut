@@ -5,13 +5,13 @@ go 1.27
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/image v0.48.0
 	golang.org/x/mod v0.43.0
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 )
