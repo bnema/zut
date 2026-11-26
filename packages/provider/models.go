@@ -881,6 +881,23 @@ func FindModel(provider, id string) (Model, error) {
 	return Model{}, fmt.Errorf("unknown model %q (provider=%q)", id, provider)
 }
 
+// ModelLookup snapshots the merged catalog (including models not currently
+// available, like FindModel) and returns a lookup by provider and id, so
+// callers resolving many ids copy the catalog once.
+func ModelLookup() func(provider, id string) (Model, bool) {
+	byKey := map[string]Model{}
+	for _, m := range activeModels(false) {
+		key := m.Provider + "\x00" + m.ID
+		if _, dup := byKey[key]; !dup { // first match wins, like FindModel
+			byKey[key] = m
+		}
+	}
+	return func(provider, id string) (Model, bool) {
+		m, ok := byKey[provider+"\x00"+id]
+		return m, ok
+	}
+}
+
 // IsProviderCatalogAuthoritative reports whether a successful live catalog
 // has declared the provider's available model IDs authoritative.
 func IsProviderCatalogAuthoritative(provider string) bool {

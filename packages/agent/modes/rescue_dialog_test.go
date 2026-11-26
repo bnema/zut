@@ -2,6 +2,7 @@ package modes
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -94,4 +95,26 @@ func TestRescueDialogPendingUsesCatalogAndShowsHelpWhenEmpty(t *testing.T) {
 	text := stripANSIBytes(strings.Join(d.Render(tui.Dark, 70, 20), "\n"))
 	require.Contains(t, text, "no other models available")
 	require.Contains(t, text, "tab full error")
+}
+
+// TestRescueDialogFitsPaneThroughFrame renders through the floating pane
+// path: the body fits the pane, the caret lands on the query line, and the
+// highlighted row stays visible.
+func TestRescueDialogFitsPaneThroughFrame(t *testing.T) {
+	var candidates []string
+	for n := 0; n < 20; n++ {
+		candidates = append(candidates, fmt.Sprintf("openai/gpt-test-%02d", n))
+	}
+	d := newRescueDialog()
+	d.OpenPending("r1", session.RescueOptions{Error: strings.Repeat("rate limited ", 40), Candidates: candidates}, nil)
+	for n := 0; n < 15; n++ {
+		d.HandleKey(tui.Key{Kind: tui.KeyDown})
+	}
+	for _, h := range []int{8, 12, 17, 40} {
+		_, body, removed := floatingDialogBody(padDialogFrame(d.Render(tui.Dark, 60, h)))
+		require.LessOrEqual(t, len(body), h, "height %d", h)
+		r, _ := d.CursorPos()
+		require.Contains(t, stripANSIBytes(body[r-removed]), " >", "height %d", h)
+		require.Contains(t, stripANSIBytes(strings.Join(body, "\n")), "gpt-test-15", "height %d", h)
+	}
 }

@@ -19,10 +19,12 @@ import (
 type rescueDialog struct {
 	active   bool
 	all      []provider.PickerModel // candidates, picker order
+	texts    []pickerModelText      // search text of all, same index
 	view     []provider.PickerModel // filtered view (typed query)
 	cursor   int
 	viewTop  int
 	queryRow int    // row of the query line in the last Render
+	listRows int    // list height of the last Render
 	current  string // currently active model id (excluded from view)
 	query    pickerQuery
 	failedAt string // failed provider/model pair, e.g. "kimi/kimi-for-coding"
@@ -82,8 +84,7 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 		}
 		filtered = append(filtered, m)
 	}
-	d.all = provider.PickerModels(filtered)
-	d.refilter()
+	d.setCandidates(provider.PickerModels(filtered))
 }
 
 // OpenPending shows a Port rescue request using the session's candidates.
@@ -95,7 +96,8 @@ func (d *rescueDialog) OpenPending(id string, opts session.RescueOptions, onAnsw
 	d.details, d.scroll = false, 0
 	d.reason = opts.Error
 	d.pendingID, d.onAnswer = id, onAnswer
-	d.all = nil
+	var candidates []provider.PickerModel
+	lookup := provider.ModelLookup()
 	for _, c := range opts.Candidates {
 		p, id, ok := strings.Cut(c, "/")
 		if !ok || p == "" || id == "" {
@@ -103,12 +105,18 @@ func (d *rescueDialog) OpenPending(id string, opts session.RescueOptions, onAnsw
 		}
 		// Catalog metadata feeds the row name and the detail line; the
 		// session's candidate order is kept.
-		m, err := provider.FindModel(p, id)
-		if err != nil {
+		m, found := lookup(p, id)
+		if !found {
 			m = provider.Model{Provider: p, ID: id}
 		}
-		d.all = append(d.all, provider.PickerModel{Model: m})
+		candidates = append(candidates, provider.PickerModel{Model: m})
 	}
+	d.setCandidates(candidates)
+}
+
+func (d *rescueDialog) setCandidates(models []provider.PickerModel) {
+	d.all = models
+	d.texts = pickerModelTexts(models)
 	d.refilter()
 }
 
@@ -136,14 +144,14 @@ func (d *rescueDialog) answer(answers []tools.QuestionAnswer) {
 func (d *rescueDialog) Active() bool { return d != nil && d.active }
 
 func (d *rescueDialog) refilter() {
-	d.view = rankPickerModels(d.all, d.query.String(), nil)
+	d.view = rankPickerModels(d.all, d.texts, d.query.String(), nil)
 	d.cursor, d.viewTop = 0, 0
 }
 
 // CursorPos returns the row/col of the query caret in the lines Render
-// returned, or -1, -1 when no query line is shown.
+// returned, or -1, -1 in the error view, which has no query line.
 func (d *rescueDialog) CursorPos() (row, col int) {
-	if !d.Active() || d.details || d.queryRow < 0 {
+	if !d.Active() || d.details {
 		return -1, -1
 	}
 	return d.queryRow, d.query.Caret()
@@ -181,10 +189,47 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 		}
 		return append(lines, frameRule(th, width))
 	}
+	// The spacer keeps the pane frame from inserting one (which would
+	// shift the caret row). The list gets up to rescueListRows rows; on a
+	// short pane the footer, then the detail (with its rule), then error
+	// preview rows give way first.
+	lines = append(lines, strings.Repeat(" ", width))
+	errLines := 0
 	if d.reason != "" {
-		for _, row := range errorRows[:min(3, len(errorRows))] {
-			lines = append(lines, th.FGColor(th.Warning, row))
+		errLines = min(3, len(errorRows))
+	}
+	footer, detail := true, true
+	rows := min(rescueListRows, max(len(d.view), 1))
+	if height > 0 {
+		want := min(rows, modelPickerMinRows)
+		chrome := func() int {
+			n := 1 + errLines + 3 // spacer, error, hint, query, rule
+			if detail {
+				n += 2
+			}
+			if footer {
+				n++
+			}
+			return n
 		}
+	shrink:
+		for height-chrome() < want {
+			switch {
+			case footer:
+				footer = false
+			case detail:
+				detail = false
+			case errLines > 0:
+				errLines--
+			default:
+				break shrink // nothing left to drop: one list row
+			}
+		}
+		rows = min(rows, max(height-chrome(), 1))
+	}
+	d.listRows = rows
+	for _, row := range errorRows[:errLines] {
+		lines = append(lines, th.FGColor(th.Warning, row))
 	}
 
 	hint := "retry this turn with another model - type to filter"
@@ -199,28 +244,38 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 			msg = " no other models available — log in to another provider with /login"
 		}
 		lines = append(lines, th.FGColor(th.Muted, pickerFit(msg, width)))
+	} else {
+		d.viewTop = clampViewTop(d.viewTop, d.cursor, rows, len(d.view))
+		end := min(len(d.view), d.viewTop+rows)
+		pickerRows := make([]pickerRow, 0, end-d.viewTop)
+		for _, m := range d.view[d.viewTop:end] {
+			pickerRows = append(pickerRows, modelPickerRow(m, true, false))
+		}
+		cols := pickerListColumns(pickerRows)
+		for n, row := range pickerRows {
+			lines = append(lines, renderPickerRow(th, row, d.viewTop+n == d.cursor, cols, width))
+		}
+	}
+	if detail {
 		lines = append(lines, frameRule(th, width))
-		lines = append(lines, th.FGColor(th.Muted, pickerFit(" tab full error · esc cancel", width)))
-		return lines
+		text := ""
+		if d.cursor < len(d.view) {
+			text = " " + modelDetail(d.view[d.cursor])
+		}
+		lines = append(lines, th.FGColor(th.FG, pickerFit(text, width)))
 	}
-
-	const visible = 12
-	rows := min(visible, len(d.view))
-	d.viewTop = clampViewTop(d.viewTop, d.cursor, rows, len(d.view))
-	end := min(len(d.view), d.viewTop+rows)
-	pickerRows := make([]pickerRow, 0, end-d.viewTop)
-	for _, m := range d.view[d.viewTop:end] {
-		pickerRows = append(pickerRows, modelPickerRow(m, true, false))
+	if footer {
+		help := " ↑↓ pick · enter retry · tab full error · esc cancel"
+		if len(d.view) == 0 {
+			help = " tab full error · esc cancel"
+		}
+		lines = append(lines, th.FGColor(th.Muted, pickerFit(help, width)))
 	}
-	cols := pickerListColumns(pickerRows)
-	for n, row := range pickerRows {
-		lines = append(lines, renderPickerRow(th, row, d.viewTop+n == d.cursor, cols, width))
-	}
-	lines = append(lines, frameRule(th, width))
-	lines = append(lines, th.FGColor(th.FG, pickerFit(" "+modelDetail(d.view[d.cursor]), width)))
-	lines = append(lines, th.FGColor(th.Muted, pickerFit(" ↑↓ pick · enter retry · tab full error · esc cancel", width)))
 	return lines
 }
+
+// rescueListRows caps the rescue list height.
+const rescueListRows = 12
 
 func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 	if k.Kind == tui.KeyTab {
