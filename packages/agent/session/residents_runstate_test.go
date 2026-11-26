@@ -186,13 +186,17 @@ func TestResidentRunStateUntilCompletionQueued(t *testing.T) {
 		require.Equal(t, RunStateIdle, runState())
 		accepted(subagents.ResidentChildSpec{ID: "child"}, "turn", "task")
 		require.Equal(t, RunStateRunning, runState(), "acceptance waits in the inbox")
+		require.True(t, c.residentsRunning())
 		c.res.runPending()
 		require.Equal(t, RunStateRunning, runState(), "accepted turn has not reported")
+		require.True(t, c.residentsRunning())
 		require.True(t, completion(subagents.ResidentCompletion{ChildID: "child", TurnID: "turn", Task: "task"}))
 		require.Equal(t, RunStateRunning, runState(), "reported completion waits in the inbox")
+		require.True(t, c.residentsRunning())
 		c.res.runPending()
 		require.Len(t, queued, 1, "completion update queued")
 		require.Equal(t, RunStateIdle, runState())
+		require.False(t, c.residentsRunning())
 		c.turnSeam = c
 	}))
 }

@@ -74,7 +74,7 @@ func (c *Controller) ResidentAction(ctx context.Context, command ResidentCommand
 }
 
 func (c *Controller) residentsRunning() bool {
-	return residentSummariesRunning(c.residentSummaries())
+	return residentSummariesRunning(c.residentSummaries()) || c.residentsUndelivered()
 }
 
 // residentsUndelivered covers the gap between a child's terminal state and
