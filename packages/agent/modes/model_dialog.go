@@ -3,35 +3,35 @@ package modes
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
-	"github.com/mattn/go-runewidth"
 )
 
-// modelDialog is an inline picker for choosing the active model.
-// It lists all models known to the provider package (baked-in catalog
-// + any live entries discovered via /v1/models) sorted by provider
-// then model id, and lets the user pick one with arrow keys + enter.
-// Typing characters narrows the list via a fuzzy substring match that
-// ignores punctuation (e.g. "opus46" matches "claude-opus-4-6").
+// modelDialog is the model picker. It lists the models of the providers
+// the user can reach, in provider.PickerModels order, with one tab per
+// provider plus "all". Without a query the "all" tab groups models under
+// provider headers (the active model's provider first) and hides dated
+// snapshots; typing ranks every model by fuzzy score (see
+// rankPickerModels). The line under the list details the highlighted
+// model.
 type modelDialog struct {
 	active        bool
-	all           []provider.Model // full catalog, sorted
-	view          []provider.Model // filtered view shown to the user
+	all           []provider.PickerModel // reachable models, picker order
+	tabs          []string               // "" (all), then provider ids
+	tab           int
+	view          []provider.PickerModel // selectable rows, display order
 	cursor        int
-	current       string // currently selected model id (highlighted)
+	viewTop       int // first display line of the list
+	listRows      int // list height of the last Render, for page keys
+	current       string
 	reasoning     string // current reasoning level, shown for discoverability
 	showReasoning bool   // whether this picker can route to /reasoning
-	query         string // live filter text typed by the user
-
-	// Column widths are computed once on Open() across the entire
-	// catalog so the layout stays stable while the user scrolls or
-	// filters. Recomputing per visible window would make the columns
-	// jitter left/right whenever rows entered or left the 14-row band.
-	provW int
-	idW   int
+	query         pickerQuery
 }
 
 // modelDialogAction is returned by HandleKey.
@@ -43,6 +43,13 @@ type modelDialogAction struct {
 	Reasoning        string
 	Close            bool
 }
+
+const (
+	modelPickerAllTab     = "all"
+	modelPickerQueryRow   = 3 // header, spacer, tabs, query
+	modelPickerMinRows    = 3
+	modelPickerFooterHelp = "tab provider · ↑↓ pick · enter select · esc close"
+)
 
 func newModelDialog() *modelDialog {
 	return &modelDialog{}
@@ -67,16 +74,47 @@ func (d *modelDialog) Open(current string, loggedInProviders []string, reasoning
 			filtered = append(filtered, m)
 		}
 	}
-	d.all = sortedModels(filtered)
-	d.current = current
 	d.reasoning = ""
 	d.showReasoning = len(reasoning) > 0
 	if d.showReasoning {
 		d.reasoning = provider.NormalizeReasoning(reasoning[0])
 	}
-	d.query = ""
-	d.provW, d.idW = columnWidths(d.all)
+	d.setModels(filtered, current)
+}
+
+// setModels lists models with current pre-selected, on the "all" tab with
+// an empty query.
+func (d *modelDialog) setModels(models []provider.Model, current string) {
+	d.current = current
+	d.all = currentProviderFirst(provider.PickerModels(models), current)
+	d.tabs = []string{""}
+	for _, m := range d.all {
+		if d.tabs[len(d.tabs)-1] != m.Provider {
+			d.tabs = append(d.tabs, m.Provider)
+		}
+	}
+	d.tab = 0
+	d.query.Reset()
 	d.refilter()
+}
+
+// currentProviderFirst moves the provider of the current model id ahead
+// of the others, keeping picker order otherwise.
+func currentProviderFirst(models []provider.PickerModel, current string) []provider.PickerModel {
+	first := ""
+	for _, m := range models {
+		if m.ID == current {
+			first = m.Provider
+			break
+		}
+	}
+	if first == "" {
+		return models
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		return models[i].Provider == first && models[j].Provider != first
+	})
+	return models
 }
 
 // Close hides the dialog.
@@ -85,22 +123,22 @@ func (d *modelDialog) Close() { d.active = false }
 // Active reports whether the dialog is visible and consumes input.
 func (d *modelDialog) Active() bool { return d != nil && d.active }
 
-// refilter rebuilds view from all according to query, and snaps the
-// cursor to either the current model (if visible) or the first row.
+// grouped reports whether the list shows provider headers.
+func (d *modelDialog) grouped() bool {
+	return d.tab == 0 && d.query.String() == "" && len(d.tabs) > 2
+}
+
+// refilter rebuilds view from all according to the tab and query, and
+// snaps the cursor to the current model (if visible) or the first row.
 func (d *modelDialog) refilter() {
-	needle := normalizeModelQuery(d.query)
-	if needle == "" {
-		d.view = append([]provider.Model(nil), d.all...)
-	} else {
-		out := make([]provider.Model, 0, len(d.all))
-		for _, m := range d.all {
-			if strings.Contains(normalizeModelQuery(m.Provider+" "+m.ID+" "+m.DisplayName), needle) {
-				out = append(out, m)
-			}
+	var models []provider.PickerModel
+	for _, m := range d.all {
+		if d.tab == 0 || m.Provider == d.tabs[d.tab] {
+			models = append(models, m)
 		}
-		d.view = out
 	}
-	d.cursor = 0
+	d.view = rankPickerModels(models, d.query.String())
+	d.cursor, d.viewTop = 0, 0
 	for i, m := range d.view {
 		if m.ID == d.current {
 			d.cursor = i
@@ -109,21 +147,64 @@ func (d *modelDialog) refilter() {
 	}
 }
 
-// sortedModels returns a fresh slice sorted by provider, then model id.
-func sortedModels(in []provider.Model) []provider.Model {
-	out := append([]provider.Model(nil), in...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Provider != out[j].Provider {
-			return out[i].Provider < out[j].Provider
+// rankPickerModels filters models for a picker query. An empty query
+// keeps the given order and drops dated snapshots of listed aliases.
+// Otherwise every query word must fuzzy-match "provider name id"; models
+// containing a word literally (ignoring punctuation and case, so "opus46"
+// finds claude-opus-4-6) rank first, then by fuzzy score, ties keeping
+// the given order.
+func rankPickerModels(models []provider.PickerModel, query string) []provider.PickerModel {
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		out := make([]provider.PickerModel, 0, len(models))
+		for _, m := range models {
+			if m.SnapshotOf == "" {
+				out = append(out, m)
+			}
 		}
-		return out[i].ID < out[j].ID
-	})
+		return out
+	}
+	haystacks := make([]string, len(models))
+	for i, m := range models {
+		haystacks[i] = m.Provider + " " + m.DisplayName + " " + m.ID
+	}
+	const literalBonus = 1000
+	total := make([]int, len(models))
+	keep := make([]bool, len(models))
+	for i := range keep {
+		keep[i] = true
+	}
+	for _, word := range words {
+		scores, matched := pickerFuzzyScores(word, haystacks)
+		needle := normalizeModelQuery(word)
+		for i := range models {
+			if !matched[i] {
+				keep[i] = false
+				continue
+			}
+			total[i] += scores[i]
+			if needle != "" && strings.Contains(normalizeModelQuery(haystacks[i]), needle) {
+				total[i] += literalBonus
+			}
+		}
+	}
+	idx := make([]int, 0, len(models))
+	for i := range models {
+		if keep[i] {
+			idx = append(idx, i)
+		}
+	}
+	sort.SliceStable(idx, func(a, b int) bool { return total[idx[a]] > total[idx[b]] })
+	out := make([]provider.PickerModel, len(idx))
+	for n, i := range idx {
+		out[n] = models[i]
+	}
 	return out
 }
 
-// normalizeModelQuery lowercases and strips punctuation so fuzzy
-// substring matching works on both the query and haystacks. "opus46"
-// and "opus-4-6" both become "opus46".
+// normalizeModelQuery lowercases and strips punctuation so substring
+// matching works on both the query and haystacks. "opus46" and
+// "opus-4-6" both become "opus46".
 func normalizeModelQuery(s string) string {
 	var sb strings.Builder
 	sb.Grow(len(s))
@@ -138,141 +219,246 @@ func normalizeModelQuery(s string) string {
 	return sb.String()
 }
 
-// Render returns the dialog lines.
-func (d *modelDialog) Render(th tui.Theme, width int) []string {
-	if !d.Active() {
+// modelPickerLine is one display line of the list: a provider header
+// (model < 0) or the model view[model].
+type modelPickerLine struct {
+	header string
+	count  int
+	model  int
+}
+
+func (d *modelDialog) lines() []modelPickerLine {
+	out := make([]modelPickerLine, 0, len(d.view)+len(d.tabs))
+	grouped := d.grouped()
+	for i, m := range d.view {
+		if grouped && (i == 0 || d.view[i-1].Provider != m.Provider) {
+			count := 0
+			for _, n := range d.view[i:] {
+				if n.Provider != m.Provider {
+					break
+				}
+				count++
+			}
+			out = append(out, modelPickerLine{header: m.Provider, count: count, model: -1})
+		}
+		out = append(out, modelPickerLine{model: i})
+	}
+	return out
+}
+
+// Render draws the picker in at most height body rows below the frame
+// header: tabs, query, reasoning (when routed), the list, the highlighted
+// model's details and the key help.
+func (d *modelDialog) Render(th tui.Theme, width, height int) []string {
+	if !d.Active() || width < 4 {
 		return nil
 	}
-	var lines []string
-	lines = append(lines, frameHeader(th, "model", width))
-
-	hint := "pick a model (↑/↓, enter, esc to cancel)"
-	if d.query != "" {
-		hint = fmt.Sprintf("filter: %s (%d match)", d.query, len(d.view))
-		if len(d.view) != 1 {
-			hint = fmt.Sprintf("filter: %s (%d matches)", d.query, len(d.view))
+	muted := func(s string) string { return th.FGColor(th.Muted, s) }
+	names := make([]string, len(d.tabs))
+	for i, p := range d.tabs {
+		names[i] = p
+		if p == "" {
+			names[i] = modelPickerAllTab
 		}
-	} else {
-		hint += " - type to filter"
 	}
-	lines = append(lines, th.FGColor(th.Muted, hint))
+	status := fmt.Sprintf("%d models", len(d.view))
+	if len(d.view) == 1 {
+		status = "1 model"
+	}
+	out := []string{
+		frameHeader(th, "model", width),
+		strings.Repeat(" ", width),
+		renderPickerTabs(th, names, d.tab, status, th.Muted, width),
+		d.query.Render(th, width),
+	}
 	if d.showReasoning {
-		reasoning, adjustable := d.cursorReasoning()
-		if reasoning == "" {
-			reasoning = "off"
-		}
-		help := "  unavailable for highlighted model"
-		if adjustable {
-			help = "  ←/→ or H/L to change"
-		}
-		lines = append(lines,
-			th.FGColor(th.Muted, "✦ reasoning: ")+th.FGColor(reasoningLevelColor(th, reasoning), reasoning)+th.FGColor(th.Muted, help),
-		)
+		out = append(out, d.renderReasoning(th, width))
 	}
+	out = append(out, muted(strings.Repeat("─", width)))
 
-	if len(d.view) == 0 {
-		msg := "  no models match " + fmt.Sprintf("%q", d.query)
+	lines := d.lines()
+	fixed := len(out) - 1 + 3 // rows above the list, rule, detail, footer
+	footer := true
+	rows := len(lines)
+	if height > 0 {
+		avail := height - fixed
+		if avail < modelPickerMinRows {
+			footer = false // short pane: the list keeps the row
+			avail++
+		}
+		rows = min(rows, avail)
+	}
+	rows = max(rows, 1)
+	d.listRows = rows
+	cursorLine := 0
+	for n, l := range lines {
+		if l.model == d.cursor {
+			cursorLine = n
+			break
+		}
+	}
+	d.viewTop = clampViewTop(d.viewTop, cursorLine, rows, len(lines))
+	// Keep the header of the cursor's group on screen when it fits.
+	if rows > 1 && d.viewTop == cursorLine && cursorLine > 0 && lines[cursorLine-1].model < 0 {
+		d.viewTop--
+	}
+	out = append(out, d.renderList(th, lines, width, rows)...)
+	out = append(out, muted(strings.Repeat("─", width)))
+	out = append(out, d.renderDetail(th, width))
+	if footer {
+		out = append(out, muted(pickerFit(" "+d.footerHelp(), width)))
+	}
+	if height > 0 && len(out) > height+1 {
+		out = out[:height+1] // very short panes: never exceed the budget
+	}
+	return out
+}
+
+func (d *modelDialog) footerHelp() string {
+	help := modelPickerFooterHelp
+	if d.showReasoning {
+		help = strings.Replace(help, "enter select", "←→ reasoning · enter select", 1)
+	}
+	return help
+}
+
+func (d *modelDialog) renderReasoning(th tui.Theme, width int) string {
+	reasoning, adjustable := d.cursorReasoning()
+	if reasoning == "" {
+		reasoning = "off"
+	}
+	help := "  unavailable for highlighted model"
+	if adjustable {
+		help = "  ←/→ or H/L to change"
+	}
+	prefix := " ✦ reasoning: "
+	line := th.FGColor(th.Muted, prefix) + th.FGColor(reasoningLevelColor(th, reasoning), reasoning)
+	used := len([]rune(prefix)) + len(reasoning)
+	return line + th.FGColor(th.Muted, pickerFit(help, width-used))
+}
+
+func (d *modelDialog) renderList(th tui.Theme, lines []modelPickerLine, width, rows int) []string {
+	out := make([]string, 0, rows)
+	if len(lines) == 0 {
+		msg := " no models match " + strconv.Quote(d.query.String())
 		if len(d.all) == 0 {
-			msg = "  no credentials found - run /login to add an api key or subscription"
+			msg = " no credentials found - run /login to add an api key or subscription"
 		}
-		lines = append(lines, th.FGColor(th.Muted, msg))
-		lines = append(lines, frameRule(th, width))
-		return lines
+		out = append(out, th.FGColor(th.Muted, pickerFit(msg, width)))
 	}
-
-	// Scroll window so very tall catalogs still fit in a short tui.
-	const visible = 14
-	start := 0
-	end := len(d.view)
-	if end > visible {
-		start = d.cursor - visible/2
-		if start < 0 {
-			start = 0
-		}
-		if start+visible > end {
-			start = end - visible
-		}
-		end = start + visible
-	}
-
-	// Column widths were computed once on Open() across the full catalog
-	// (d.provW / d.idW). Reusing them keeps the layout rock-stable while
-	// scrolling and filtering — recomputing per visible window made the
-	// columns visibly jitter.
-	provW, idW := d.provW, d.idW
-	for i := start; i < end; i++ {
-		m := d.view[i]
-		reason := " "
-		if m.Reasoning {
-			reason = "✦"
-		}
-		tag := ""
-		switch {
-		case m.Speculative:
-			tag = "[speculative] "
-		case m.Source == "live":
-			tag = "[live] "
-		}
-		curMark := "  "
-		if m.ID == d.current {
-			curMark = "● "
-		}
-		plain := fmt.Sprintf(" %s%s   %s %s  %s%s",
-			curMark,
-			padRight(m.Provider, provW),
-			padRight(m.ID, idW),
-			reason, tag, m.DisplayName)
-		if i == d.cursor {
-			lines = append(lines, th.PadHighlight(plain, width))
-		} else {
-			lines = append(lines, th.FGColor(th.Muted, plain))
+	end := min(len(lines), d.viewTop+rows)
+	visible := make([]pickerRow, 0, end-d.viewTop)
+	for _, l := range lines[d.viewTop:end] {
+		if l.model >= 0 {
+			visible = append(visible, d.row(d.view[l.model]))
 		}
 	}
-
-	if start > 0 {
-		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more above", start)))
+	cols := pickerListColumns(visible)
+	for _, l := range lines[d.viewTop:end] {
+		if l.model < 0 {
+			label := " " + provider.ProviderLabel(l.header)
+			count := fmt.Sprintf(" · %d", l.count)
+			out = append(out, th.FGColor(th.Accent, label)+th.FGColor(th.Muted, pickerFit(count, width-runewidth.StringWidth(label))))
+			continue
+		}
+		out = append(out, renderPickerRow(th, d.row(d.view[l.model]), l.model == d.cursor, cols, width))
 	}
-	if end < len(d.view) {
-		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
+	for len(out) < rows {
+		out = append(out, strings.Repeat(" ", width))
 	}
-	if len(d.view) > visible {
-		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   (%d/%d)", d.cursor+1, len(d.view))))
-	}
-
-	lines = append(lines, frameRule(th, width))
-	return lines
+	return out
 }
 
-// columnWidths returns the display-cell width of the longest provider
-// name and the longest model id in rows. Each column is clamped to a
-// minimum so a single-row filter still renders sensibly.
-func columnWidths(rows []provider.Model) (provW, idW int) {
-	const minProv, minID = 6, 12
-	provW, idW = minProv, minID
-	for _, m := range rows {
-		if w := runewidth.StringWidth(m.Provider); w > provW {
-			provW = w
-		}
-		if w := runewidth.StringWidth(m.ID); w > idW {
-			idW = w
-		}
+// row is the list row of m: its name (with the provider as group when the
+// list mixes providers without headers), a note for speculative, live and
+// snapshot entries, its id, and ● on the current model.
+func (d *modelDialog) row(m provider.PickerModel) pickerRow {
+	name := m.DisplayName
+	if name == "" {
+		name = m.ID
 	}
-	return
+	if d.tab == 0 && !d.grouped() && len(d.tabs) > 2 {
+		name = m.Provider + " · " + name
+	}
+	row := pickerRow{Label: name, Note: modelNote(m), Detail: m.ID}
+	if m.ID == d.current {
+		row.Mark = "●"
+	}
+	return row
 }
 
-// padRight returns s padded with spaces on the right so its display
-// width equals w. Truncates with an ellipsis when s is too wide to
-// avoid blowing out the column.
-func padRight(s string, w int) string {
-	cw := runewidth.StringWidth(s)
-	if cw == w {
-		return s
+func modelNote(m provider.PickerModel) string {
+	switch {
+	case m.Speculative:
+		return "speculative"
+	case m.SnapshotOf != "":
+		return "snapshot"
+	case m.Source == "live":
+		return "live"
 	}
-	if cw < w {
-		return s + strings.Repeat(" ", w-cw)
-	}
-	return runewidth.Truncate(s, w, "…")
+	return ""
 }
+
+// renderDetail renders the highlighted model's metadata, e.g.
+// "1M ctx · 128k out · $5 in / $25 out per 1M · cache $0.5 · reasoning low→max".
+func (d *modelDialog) renderDetail(th tui.Theme, width int) string {
+	if d.cursor < 0 || d.cursor >= len(d.view) {
+		return strings.Repeat(" ", width)
+	}
+	return th.FGColor(th.FG, pickerFit(" "+modelDetail(d.view[d.cursor]), width))
+}
+
+func modelDetail(m provider.PickerModel) string {
+	var parts []string
+	if m.ContextWindow > 0 {
+		parts = append(parts, modelTokens(m.ContextWindow)+" ctx")
+	}
+	if m.MaxOutput > 0 {
+		parts = append(parts, modelTokens(m.MaxOutput)+" out")
+	}
+	if m.PriceInput > 0 || m.PriceOutput > 0 {
+		parts = append(parts, "$"+modelPrice(m.PriceInput)+" in / $"+modelPrice(m.PriceOutput)+" out per 1M")
+		if m.PriceCacheRead > 0 {
+			parts = append(parts, "cache $"+modelPrice(m.PriceCacheRead))
+		}
+	}
+	levels := provider.AvailableReasoningLevels(m.Model)
+	if len(levels) > 1 {
+		first, last := levels[0], levels[len(levels)-1]
+		if first == "" {
+			first = "off"
+		}
+		parts = append(parts, "reasoning "+first+"→"+last)
+	} else {
+		parts = append(parts, "no reasoning")
+	}
+	switch {
+	case m.Speculative:
+		parts = append(parts, "not live on the API yet")
+	case m.SnapshotOf != "":
+		parts = append(parts, "snapshot of "+m.SnapshotOf)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// modelTokens renders a token count as "200k", "128k" or "1M".
+func modelTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		v := float64(n) / 1e6
+		if n%(1<<20) == 0 {
+			v = float64(n >> 20)
+		}
+		return strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0") + "M"
+	case n >= 1000 && n%1024 == 0:
+		return strconv.Itoa(n/1024) + "k"
+	case n >= 1000:
+		return strconv.Itoa((n+500)/1000) + "k"
+	}
+	return strconv.Itoa(n)
+}
+
+func modelPrice(p float64) string { return strconv.FormatFloat(p, 'f', -1, 64) }
 
 // reasoningLevelColor makes the active reasoning depth legible at a glance:
 // low levels use the theme accent, medium/high use the warning color, and the
@@ -296,7 +482,7 @@ func (d *modelDialog) cursorReasoning() (string, bool) {
 	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
 		return d.reasoning, false
 	}
-	model := d.view[d.cursor]
+	model := d.view[d.cursor].Model
 	levels := provider.AvailableReasoningLevels(model)
 	return provider.ClampReasoningForModel(model, d.reasoning), len(levels) > 1
 }
@@ -308,7 +494,7 @@ func (d *modelDialog) stepReasoning(direction int) modelDialogAction {
 	if len(d.view) == 0 || d.cursor < 0 || d.cursor >= len(d.view) {
 		return modelDialogAction{}
 	}
-	model := d.view[d.cursor]
+	model := d.view[d.cursor].Model
 	levels := provider.AvailableReasoningLevels(model)
 	current := provider.ClampReasoningForModel(model, d.reasoning)
 	idx := 0
@@ -326,52 +512,61 @@ func (d *modelDialog) stepReasoning(direction int) modelDialogAction {
 	return modelDialogAction{ReasoningChanged: true, Reasoning: d.reasoning}
 }
 
+// CursorPos returns the row/col of the query caret in the lines Render
+// returned, or -1, -1 when the dialog is closed.
+func (d *modelDialog) CursorPos() (row, col int) {
+	if !d.Active() {
+		return -1, -1
+	}
+	return modelPickerQueryRow, d.query.Caret()
+}
+
+func (d *modelDialog) switchTab(delta int) {
+	if len(d.tabs) < 2 {
+		return
+	}
+	d.tab = (d.tab + delta + len(d.tabs)) % len(d.tabs)
+	d.refilter()
+}
+
+func (d *modelDialog) moveCursor(delta int) {
+	if len(d.view) > 0 {
+		d.cursor = min(max(d.cursor+delta, 0), len(d.view)-1)
+	}
+}
+
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
+	page := max(d.listRows-1, 1)
 	switch k.Kind {
-	case tui.KeyLeft:
+	case tui.KeyLeft, tui.KeyRight:
 		if d.showReasoning {
-			return d.stepReasoning(-1)
-		}
-	case tui.KeyRight:
-		if d.showReasoning {
+			if k.Kind == tui.KeyLeft {
+				return d.stepReasoning(-1)
+			}
 			return d.stepReasoning(1)
 		}
 	case tui.KeyUp:
-		if d.cursor > 0 {
-			d.cursor--
-		}
+		d.moveCursor(-1)
+		return modelDialogAction{}
 	case tui.KeyDown:
-		if d.cursor < len(d.view)-1 {
-			d.cursor++
-		}
+		d.moveCursor(1)
+		return modelDialogAction{}
 	case tui.KeyPageUp:
-		if len(d.view) > 0 {
-			d.cursor -= 14
-			if d.cursor < 0 {
-				d.cursor = 0
-			}
-		}
+		d.moveCursor(-page)
+		return modelDialogAction{}
 	case tui.KeyPageDown:
-		if len(d.view) > 0 {
-			d.cursor += 14
-			if d.cursor >= len(d.view) {
-				d.cursor = len(d.view) - 1
-			}
-		}
-	case tui.KeyBackspace:
-		if len(d.query) > 0 {
-			// Drop one rune from the query.
-			r := []rune(d.query)
-			d.query = string(r[:len(r)-1])
-			d.refilter()
-		}
-	case tui.KeyPaste:
-		d.query += singleLinePaste(k.Paste)
-		d.refilter()
+		d.moveCursor(page)
+		return modelDialogAction{}
+	case tui.KeyTab:
+		d.switchTab(1)
+		return modelDialogAction{}
+	case tui.KeyShiftTab:
+		d.switchTab(-1)
+		return modelDialogAction{}
 	case tui.KeyRune:
 		if k.Alt || k.Ctrl {
-			break
+			return modelDialogAction{}
 		}
 		if d.showReasoning {
 			switch k.Rune {
@@ -381,11 +576,11 @@ func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 				return d.stepReasoning(1)
 			}
 		}
-		// Only printable ASCII is useful for narrowing.
-		if k.Rune >= 0x20 && k.Rune < 0x7f {
-			d.query += string(k.Rune)
+	case tui.KeyPaste:
+		if d.query.insert([]rune(singleLinePaste(k.Paste))) {
 			d.refilter()
 		}
+		return modelDialogAction{}
 	case tui.KeyEsc:
 		d.Close()
 		return modelDialogAction{Close: true}
@@ -397,6 +592,9 @@ func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 		m := d.view[d.cursor]
 		d.Close()
 		return modelDialogAction{Select: true, Provider: m.Provider, Model: m.ID}
+	}
+	if d.query.Edit(k) {
+		d.refilter()
 	}
 	return modelDialogAction{}
 }

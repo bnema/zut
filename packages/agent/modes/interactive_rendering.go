@@ -594,7 +594,7 @@ func (i *Interactive) redraw() {
 		dialog = i.dialog.Render(i.cfg.Theme, dialogWidth)
 	case i.modelDialog.Active():
 		dialogID = "model"
-		dialog = i.modelDialog.Render(i.cfg.Theme, dialogWidth)
+		dialog = i.modelDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.llamaDialog.Active():
 		dialogID = "llama"
 		dialog = i.llamaDialog.Render(i.cfg.Theme, dialogWidth)
@@ -1135,6 +1135,13 @@ func (i *Interactive) redraw() {
 		} else {
 			cursorRow = -1
 			cursorCol = 0
+		}
+	}
+	if i.modelDialog.Active() {
+		if r, c := i.modelDialog.CursorPos(); r >= 0 {
+			cursorRow = dialogLead + r
+			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.finder.Active() {

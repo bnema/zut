@@ -77,7 +77,7 @@ func profPick(t *testing.T, i *Interactive, prov, model string) {
 	t.Helper()
 	m, err := provider.FindModel(prov, model)
 	require.NoError(t, err)
-	i.modelDialog.view = []provider.Model{m}
+	i.modelDialog.view = pickerView(m)
 	i.modelDialog.cursor = 0
 	profKey(i, tui.Key{Kind: tui.KeyEnter})
 }
