@@ -35,6 +35,8 @@ type SessionTextRow struct {
 	Offset, Len int64
 	// Fingerprint is MessageTextFingerprint of the decoded message.
 	Fingerprint uint64
+	// Message is the decoded message, for caller-side filtering.
+	Message provider.Message
 }
 
 // SessionScanCursor records where an incremental ScanSessionText resumes.
@@ -220,7 +222,7 @@ func decodeTextRow(line []byte) (SessionTextRow, bool) {
 	if len(texts) == 0 {
 		return SessionTextRow{}, false
 	}
-	return SessionTextRow{Role: msg.Role, Time: msg.Time, Texts: texts, Fingerprint: MessageTextFingerprint(msg)}, true
+	return SessionTextRow{Role: msg.Role, Time: msg.Time, Texts: texts, Fingerprint: MessageTextFingerprint(msg), Message: msg}, true
 }
 
 func decodeMetaRow(line []byte) (SessionMeta, bool) {

@@ -98,7 +98,7 @@ func TestScanSessionTextFingerprintAndRoles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rows[i].Fingerprint != MessageTextFingerprint(decoded) {
+		if rows[i].Fingerprint != MessageTextFingerprint(decoded) || rows[i].Fingerprint != MessageTextFingerprint(rows[i].Message) {
 			t.Fatalf("row %d fingerprint mismatch", i)
 		}
 	}
@@ -117,7 +117,7 @@ func TestScanSessionTextFingerprintAndRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Fingerprint != rows[1].Fingerprint || strings.Join(got.Texts, "|") != "answer|more" || got.Role != provider.RoleAssistant || !got.Time.Equal(assistant.Time) {
+	if got.Fingerprint != rows[1].Fingerprint || MessageTextFingerprint(got.Message) != got.Fingerprint || strings.Join(got.Texts, "|") != "answer|more" || got.Role != provider.RoleAssistant || !got.Time.Equal(assistant.Time) {
 		t.Fatalf("round trip = %+v", got)
 	}
 	if _, err := ReadSessionTextRow(path, 0, rows[0].Offset-1); err == nil {
