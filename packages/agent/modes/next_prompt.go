@@ -67,6 +67,8 @@ func (i *Interactive) nextPromptEligibleLocked() bool {
 		i.ed != nil &&
 		!i.busy &&
 		!i.autoCompacting &&
+		!i.sessionLoading &&
+		!i.shellRunning &&
 		len(i.portQueue) == 0 &&
 		len(i.portPending) == 0 &&
 		!i.confirmDialog.Active() &&
@@ -90,8 +92,12 @@ func (i *Interactive) maybeRequestNextPromptLocked(end *core.EvTurnEnd) {
 	i.nextPromptCancel = cancel
 	version := i.nextPromptVersion
 	port := i.port
+	finished := i.nextPromptFinished
 	go func() {
 		defer cancel()
+		if finished != nil {
+			defer finished()
+		}
 		text, err := port.PredictNextPrompt(ctx)
 		if err != nil || text == "" {
 			return
@@ -123,10 +129,24 @@ func (i *Interactive) applyNextPrompt(version uint64, text string) {
 	}
 }
 
-// noteNextPromptKey runs for every key before routing. Any key invalidates
-// an in-flight request; keys other than a bare Tab or Escape also dismiss
-// the shown ghost, which those two handle in handleNextPromptKey.
+// isNextPromptViewKey reports pure view keys (scrolling, tool expansion)
+// that keep both a shown ghost and an in-flight request.
+func isNextPromptViewKey(k tui.Key) bool {
+	switch k.Kind {
+	case tui.KeyPageUp, tui.KeyPageDown, tui.KeyMouseWheelUp, tui.KeyMouseWheelDown, tui.KeyCtrlO:
+		return true
+	}
+	return false
+}
+
+// noteNextPromptKey runs for every key before routing. Any key other than a
+// view key invalidates an in-flight request; keys other than a bare Tab or
+// Escape also dismiss the shown ghost, which those two handle in
+// handleNextPromptKey.
 func (i *Interactive) noteNextPromptKey(k tui.Key) {
+	if isNextPromptViewKey(k) {
+		return
+	}
 	i.mu.Lock()
 	i.invalidateNextPromptLocked()
 	if i.ed != nil && !isNextPromptAcceptKey(k) && !isUnmodifiedEscape(k) {
@@ -153,6 +173,9 @@ func (i *Interactive) handleNextPromptKey(k tui.Key) bool {
 		i.mu.Lock()
 		i.doubleEscape.Reset()
 		i.mu.Unlock()
+	case k.Kind == tui.KeyMouseWheelUp || k.Kind == tui.KeyMouseWheelDown:
+		// The editor ignores the wheel but would drop the ghost.
+		return true
 	default:
 		return false
 	}

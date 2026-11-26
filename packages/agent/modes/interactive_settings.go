@@ -302,7 +302,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:   "next_prompt_suggestions_enabled",
 			label: "next prompt suggestions",
-			desc:  "after each finished turn, one extra request to the active model guesses your next message; shown dim in the empty input, Tab inserts it; reuses the prompt cache, so providers without prompt caching pay the full context each turn",
+			desc:  "after each finished turn, one extra request suggests your next message; Tab inserts it; full context cost without prompt caching",
 			value: nextPrompts,
 		},
 		{

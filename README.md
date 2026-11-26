@@ -719,7 +719,7 @@ Without spawn permission, metadata is omitted; the proactive interactive primary
 - **render images when supported:** inline screenshots and `read` images via terminal image protocol, otherwise text placeholders. `TERM_PROGRAM` detection can be overridden; terminals with no image protocol force the greyed-out row off.
 - **terminal alerts:** on by default, immediate; `terminal_alerts_enabled`. Bell on input needs (tool confirmation, question, login, blocked/paused goal), main-session stop, or structured extension alert. Terminal may make it audible, visual, or silent.
 - **AI terminal titles:** on by default; `terminal_title_enabled`. One small hidden request to the active model after a fresh interactive session's first real prompt sets `zut: <title>` (max 40 Unicode characters). Saved with the session, restored on resume, never conversation context. Toggle applies immediately; startup context, resumed history, and slash commands never trigger generation. Disable to avoid the extra request.
-- **Next prompt suggestions:** on by default; `next_prompt_suggestions_enabled`. After each finished turn, one extra request to the active model predicts your next message and shows it dim in the empty input. Tab inserts it without sending; any other key dismisses it. The request reuses the prompt cache, so it is cheap with prompt caching and pays the full context without it. Interactive mode only.
+- **next prompt suggestions:** on by default; `next_prompt_suggestions_enabled`. After each finished turn, one extra request to the active model predicts your next message and shows it dim in the empty input. Tab inserts it without sending; scrolling and `ctrl+o` keep it; any other key dismisses it. The request reuses the prompt cache, so it is cheap with prompt caching and pays the full context without it. Disabled on `github-copilot`, where each prediction would count as a premium request. Interactive mode only.
 - **proactive delegation:** off by default; `/orchestrator` is the shortcut. See `/subagents` and Named subagent profiles above for delegation, permissions, host-driven completion, no-polling rules, and headless `--orchestrate` behavior.
 - **fast mode:** off by default; `/fast` is the shortcut, effective next model call. Uses OpenAI Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex; other providers return unsupported-provider errors. May cost more; availability depends on model/account. Saves to the active profile, restored on profile switch; otherwise `fast_mode`.
 - **lsp in main session:** on by default; `lsp_enabled` enables built-in `lsp` and code diagnostics.
@@ -1345,9 +1345,9 @@ Busy slash commands:
 |---|---|
 | `enter` | Submit (steers the active turn if the agent is busy). |
 | `alt+enter` | Newline. |
-| `tab` | Complete selected slash command/file/path; otherwise next model profile (empty slot opens picker). |
+| `tab` | Complete selected slash command/file/path; else insert a shown next prompt suggestion; otherwise next model profile (empty slot opens picker). |
 | `shift+tab` | Previous model profile (empty slot opens picker). |
-| `esc` | Busy: cancel turn. Idle: clear input. Two parsed bare `Esc` presses within 500 ms open `/session tree` only with an idle, empty editor. Dialogs, busy/queued work, and modified keys retain precedence. |
+| `esc` | A shown next prompt suggestion is dismissed first, without clearing input or arming the tree gesture. Busy: cancel turn. Idle: clear input. Two parsed bare `Esc` presses within 500 ms open `/session tree` only with an idle, empty editor. Dialogs, busy/queued work, and modified keys retain precedence. |
 | `ctrl+c` | Idle: clear input/queue. Otherwise daemon: Q quit / D detach / Esc cancel menu; Ctrl+C again forces quit. In-process: exit hint; repeat within 2s to exit. Outside the menu, `esc` cancels running turns. |
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |

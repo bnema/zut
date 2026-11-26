@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -190,18 +192,18 @@ func TestNextPromptStaleAfterSubmit(t *testing.T) {
 
 func TestNextPromptUnknownRequestIsSilent(t *testing.T) {
 	i, port, ctx := newPortNextPromptInteractive(t, nil)
-	done := make(chan struct{})
-	port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(context.Context) (string, error) {
-		defer close(done)
-		return "", fmt.Errorf("predict: %w", session.ErrUnknownRequest)
-	}).Once()
+	finished := make(chan struct{})
+	i.nextPromptFinished = func() { close(finished) }
+	port.EXPECT().PredictNextPrompt(mock.Anything).Return("", fmt.Errorf("predict: %w", session.ErrUnknownRequest)).Once()
 	var seq uint64 = 1
 	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
-	waitClosed(t, done, "prediction")
+	waitClosed(t, finished, "prediction goroutine")
+	require.Empty(t, i.loopCalls, "an error must not post a result")
 	require.Empty(t, i.ed.Ghost())
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	require.Empty(t, i.statusErr)
+	require.Empty(t, i.statusOK)
 }
 
 func TestNextPromptTabAcceptsWithoutSubmitting(t *testing.T) {
@@ -217,7 +219,9 @@ func TestNextPromptTabWithoutShownGhostCyclesProfile(t *testing.T) {
 	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5}))
 	called := profExpectApply(port, 2, nil)
 	i.ed.SetGhost("run the tests")
-	i.ed.SetValue("hello") // a non-empty buffer hides the ghost
+	// Typed text hides the ghost; Insert keeps it stored, SetValue drops it.
+	i.ed.Insert("hello")
+	require.Empty(t, i.ed.Ghost())
 	profKey(i, tui.Key{Kind: tui.KeyTab})
 	profWait(t, called, "ApplyProfile")
 	require.Equal(t, "hello", i.ed.Value())
@@ -242,4 +246,106 @@ func TestNextPromptEnterDoesNotSubmitGhost(t *testing.T) {
 	profKey(i, tui.Key{Kind: tui.KeyEnter})
 	require.Empty(t, i.ed.Ghost())
 	require.True(t, i.ed.IsEmpty())
+}
+
+func startedNextPrompt(t *testing.T, i *Interactive) uint64 {
+	t.Helper()
+	require.True(t, nextPromptInFlight(i))
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.nextPromptVersion
+}
+
+func TestNextPromptViewKeysKeepGhostAndRequest(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	// The request may not reach the port before the test ends.
+	port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}).Maybe()
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	version := startedNextPrompt(t, i)
+	i.ed.SetGhost("shown")
+	for _, k := range []tui.Key{{Kind: tui.KeyPageUp}, {Kind: tui.KeyPageDown}, {Kind: tui.KeyMouseWheelUp}, {Kind: tui.KeyMouseWheelDown}, {Kind: tui.KeyCtrlO}} {
+		i.handleKey(ctx, k)
+		require.Equal(t, "shown", i.ed.Ghost(), "key %v dismissed the ghost", k.Kind)
+		require.Equal(t, version, startedNextPrompt(t, i), "key %v invalidated the request", k.Kind)
+	}
+}
+
+func TestNextPromptNewTurnDismissesGhost(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	cancelled := blockingPrediction(port)
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	version := startedNextPrompt(t, i)
+	i.ed.SetGhost("shown")
+	seq++
+	i.handleSessionEvent(ctx, session.Event{Seq: seq, Kind: session.EvInfo, Data: session.InfoEvent{Info: session.Info{ID: "np", Run: session.RunStateRunning}}})
+	waitClosed(t, cancelled, "request cancellation")
+	require.Empty(t, i.ed.Ghost())
+	require.False(t, nextPromptInFlight(i))
+	i.mu.Lock()
+	require.NotEqual(t, version, i.nextPromptVersion)
+	i.mu.Unlock()
+}
+
+func TestNextPromptSettingOffDropsLateResult(t *testing.T) {
+	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	cancelled := blockingPrediction(port)
+	var seq uint64 = 1
+	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+	version := startedNextPrompt(t, i)
+	i.applySettingToggle("next_prompt_suggestions_enabled", false)
+	waitClosed(t, cancelled, "request cancellation")
+	i.applyNextPrompt(version, "late")
+	require.Empty(t, i.ed.Ghost())
+}
+
+func TestNextPromptTabDefersToSlashPopup(t *testing.T) {
+	// A popup needs typed text, which already hides the ghost; Tab must
+	// complete the command instead of inserting the stored suggestion.
+	i, _ := newPortProfileInteractive(t, profileInfo(1, nil))
+	i.ed.SetGhost("run the tests")
+	i.ed.Insert("/hel")
+	require.True(t, i.suggest.Active(i.ed.Value()))
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	require.Equal(t, "/help", i.ed.Value())
+}
+
+func TestNextPromptTabDefersToFilePopup(t *testing.T) {
+	i, _ := newPortProfileInteractive(t, profileInfo(1, nil))
+	i.ed.SetGhost("run the tests")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600))
+	i.fileSuggest.SetCWD(dir)
+	i.ed.Insert("@")
+	require.True(t, i.fileSuggest.Active(i.ed.Value()))
+	profKey(i, tui.Key{Kind: tui.KeyTab})
+	require.NotContains(t, i.ed.Value(), "run the tests")
+}
+
+func TestNextPromptLateResultDroppedWhileShellOrLoading(t *testing.T) {
+	for name, set := range map[string]func(*Interactive){
+		"shell":   func(i *Interactive) { i.shellRunning = true },
+		"loading": func(i *Interactive) { i.sessionLoading = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			i, port, ctx := newPortNextPromptInteractive(t, nil)
+			release := make(chan struct{})
+			port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(context.Context) (string, error) {
+				<-release
+				return "late", nil
+			}).Once()
+			var seq uint64 = 1
+			runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
+			i.mu.Lock()
+			set(i)
+			i.mu.Unlock()
+			close(release)
+			drainLoopCall(t, i)
+			require.Empty(t, i.ed.Ghost())
+		})
+	}
 }

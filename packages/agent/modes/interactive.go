@@ -894,7 +894,10 @@ type Interactive struct {
 	// prediction (guarded by mu); see next_prompt.go.
 	nextPromptVersion uint64
 	nextPromptCancel  context.CancelFunc
-	sessionTitle      string
+	// nextPromptFinished, when set (tests), runs after a request goroutine
+	// has posted its result or given up.
+	nextPromptFinished func()
+	sessionTitle       string
 
 	// extNotes are one-shot styled lines pushed by extensions via
 	// Notify / Display. They live above the editor (just below the
