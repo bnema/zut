@@ -171,7 +171,9 @@ func (i *Interactive) handleFinderResumeKey(k tui.Key) {
 		i.finderResume = nil
 	}
 	i.mu.Unlock()
-	if choice != resumeChoiceNone && choice != resumeChoiceCancel {
+	if choice == resumeChoiceCancel {
+		i.dropPendingFinderJump()
+	} else if choice != resumeChoiceNone {
 		i.finderResumeChoice(confirm.plan, choice)
 	}
 	i.invalidate()

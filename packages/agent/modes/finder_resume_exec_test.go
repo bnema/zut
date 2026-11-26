@@ -11,6 +11,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/agent/session"
+	"github.com/bnema/zut/packages/agent/session/sessionmocks"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -236,4 +237,52 @@ func TestFinderPortAttachUsesLiveID(t *testing.T) {
 	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.Equal(t, session.ID("live-7"), <-attached)
 	awaitResumeResult(t, i)
+}
+
+func TestFinderResumeEscDropsPendingJump(t *testing.T) {
+	cwd, other := t.TempDir(), t.TempDir()
+	l := newFinderExecLocal(t, cwd)
+	path := newTreeTestSession(t, l.root, other, finderExecMessages())
+	finderSearchQuery(t, l.i, "refacto")
+	l.i.finderOpen(finderExecItem(path), 0)
+	require.NotNil(t, l.i.pendingFinderJump)
+
+	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyEsc})
+	require.False(t, l.i.finderResume.Active())
+	require.Nil(t, l.i.pendingFinderJump)
+	require.Empty(t, l.loaded)
+}
+
+func TestFinderPortSwitchRunsJumpAfterHydrate(t *testing.T) {
+	cwd, other := t.TempDir(), t.TempDir()
+	i, client, root := newFinderExecPort(t, cwd)
+	path := newTreeTestSession(t, root, other, finderExecMessages())
+	finderSearchQuery(t, i, "refacto")
+
+	client.EXPECT().List(mock.Anything).Return(nil, nil).Once()
+	client.EXPECT().Create(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, spec session.CreateSpec) (session.Info, error) {
+		require.Equal(t, other, spec.CWD)
+		return session.Info{ID: "target"}, nil
+	}).Once()
+	target := sessionmocks.NewMockPort(t)
+	target.EXPECT().Snapshot(mock.Anything).Return(session.Snapshot{
+		Info:     session.Info{ID: "target", CWD: other, SessionPath: path, Run: session.RunStateIdle},
+		Seq:      3,
+		Messages: finderExecMessages(),
+	}, nil).Once()
+	expectPortSubscribe(target, make(chan session.Event), nil)
+	client.EXPECT().Attach(mock.Anything, session.ID("target")).Return(target, nil).Once()
+
+	i.finderOpen(finderExecItem(path), 0)
+	i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
+	res := awaitResumeResult(t, i)
+	require.NoError(t, res.err)
+	require.False(t, i.applySessionResult(context.Background(), res))
+
+	require.Equal(t, session.ID("target"), i.SessionID())
+	cur, ok := chatSearchCur(i)
+	require.True(t, ok)
+	require.Equal(t, 3, cur)
+	require.Nil(t, i.pendingFinderJump)
+	require.Contains(t, i.statusOK, `search "refacto"`)
 }
