@@ -42,7 +42,7 @@ func TestNextPromptSuggestionsSettingDefaultsEnabledAndToggles(t *testing.T) {
 		}
 	}
 	require.NotNil(t, item, "next prompt suggestions setting should be listed")
-	require.True(t, item.value, "next prompt suggestions should be enabled by default")
+	require.False(t, item.value, "next prompt suggestions should be disabled by default")
 
 	i.ed.SetGhost("run the tests")
 	require.Equal(t, "run the tests", i.ed.Ghost())
@@ -58,6 +58,9 @@ func TestNextPromptSuggestionsSettingDefaultsEnabledAndToggles(t *testing.T) {
 
 // newPortNextPromptInteractive attaches an idle daemon session; tests feed
 // turns through runNextPromptTurn and drain i.loopCalls themselves.
+// nextPromptOn opts a test into the feature, which is off by default.
+var nextPromptOn = true
+
 func newPortNextPromptInteractive(t *testing.T, enabled *bool) (*Interactive, *sessionmocks.MockPort, context.Context) {
 	t.Helper()
 	port := sessionmocks.NewMockPort(t)
@@ -100,7 +103,7 @@ func nextPromptInFlight(i *Interactive) bool {
 }
 
 func TestNextPromptShownAfterCleanTurn(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	port.EXPECT().PredictNextPrompt(mock.Anything).Return("run the tests", nil).Once()
 	var seq uint64 = 1
 	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
@@ -113,11 +116,13 @@ func TestNextPromptNotRequested(t *testing.T) {
 	disabled := false
 	cases := map[string]struct {
 		enabled *bool
+		unset   bool
 		end     core.EvTurnEnd
 		queue   []session.QueuedInput
 		draft   string
 	}{
 		"setting off":   {enabled: &disabled, end: core.EvTurnEnd{Stop: provider.StopEnd}},
+		"setting unset": {unset: true, end: core.EvTurnEnd{Stop: provider.StopEnd}},
 		"cancelled":     {end: core.EvTurnEnd{Stop: provider.StopAborted, Err: context.Canceled}},
 		"aborted":       {end: core.EvTurnEnd{Stop: provider.StopAborted}},
 		"length":        {end: core.EvTurnEnd{Stop: provider.StopLength}},
@@ -128,7 +133,11 @@ func TestNextPromptNotRequested(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			// No PredictNextPrompt expectation: any call fails the mock.
-			i, _, ctx := newPortNextPromptInteractive(t, tc.enabled)
+			enabled := tc.enabled
+			if enabled == nil && !tc.unset {
+				enabled = &nextPromptOn
+			}
+			i, _, ctx := newPortNextPromptInteractive(t, enabled)
 			i.ed.SetValue(tc.draft)
 			var seq uint64 = 1
 			runNextPromptTurn(ctx, i, &seq, tc.queue, tc.end)
@@ -160,7 +169,7 @@ func waitClosed(t *testing.T, ch chan struct{}, what string) {
 }
 
 func TestNextPromptStaleAfterKeypress(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	cancelled := blockingPrediction(port)
 	var seq uint64 = 1
 	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
@@ -175,7 +184,7 @@ func TestNextPromptStaleAfterKeypress(t *testing.T) {
 }
 
 func TestNextPromptStaleAfterSubmit(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	cancelled := blockingPrediction(port)
 	submitted := make(chan struct{})
 	port.EXPECT().Submit(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, session.Input) error { close(submitted); return nil }).Once()
@@ -192,7 +201,7 @@ func TestNextPromptStaleAfterSubmit(t *testing.T) {
 }
 
 func TestNextPromptUnknownRequestIsSilent(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	finished := make(chan struct{})
 	i.nextPromptFinished = func() { close(finished) }
 	port.EXPECT().PredictNextPrompt(mock.Anything).Return("", fmt.Errorf("predict: %w", session.ErrUnknownRequest)).Once()
@@ -258,7 +267,7 @@ func startedNextPrompt(t *testing.T, i *Interactive) uint64 {
 }
 
 func TestNextPromptViewKeysKeepGhostAndRequest(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	// The request may not reach the port before the test ends.
 	port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(ctx context.Context) (string, error) {
 		<-ctx.Done()
@@ -276,7 +285,7 @@ func TestNextPromptViewKeysKeepGhostAndRequest(t *testing.T) {
 }
 
 func TestNextPromptNewTurnDismissesGhost(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	cancelled := blockingPrediction(port)
 	var seq uint64 = 1
 	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
@@ -293,7 +302,7 @@ func TestNextPromptNewTurnDismissesGhost(t *testing.T) {
 }
 
 func TestNextPromptSettingOffDropsLateResult(t *testing.T) {
-	i, port, ctx := newPortNextPromptInteractive(t, nil)
+	i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 	cancelled := blockingPrediction(port)
 	var seq uint64 = 1
 	runNextPromptTurn(ctx, i, &seq, nil, core.EvTurnEnd{Stop: provider.StopEnd})
@@ -310,7 +319,7 @@ func TestNextPromptLateResultDroppedWhileShellOrLoading(t *testing.T) {
 		"loading": func(i *Interactive) { i.sessionLoading = true },
 	} {
 		t.Run(name, func(t *testing.T) {
-			i, port, ctx := newPortNextPromptInteractive(t, nil)
+			i, port, ctx := newPortNextPromptInteractive(t, &nextPromptOn)
 			release := make(chan struct{})
 			port.EXPECT().PredictNextPrompt(mock.Anything).RunAndReturn(func(context.Context) (string, error) {
 				<-release

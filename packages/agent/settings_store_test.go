@@ -236,18 +236,18 @@ func TestConfigSettingsStorePersistsNextPromptSuggestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.NextPromptSuggestionsEnabled != nil {
-		t.Fatal("next_prompt_suggestions_enabled should be unset (enabled) by default")
+		t.Fatal("next_prompt_suggestions_enabled should be unset (disabled) by default")
 	}
 
-	if err := (configSettingsStore{}).SetNextPromptSuggestionsEnabled(false); err != nil {
+	if err := (configSettingsStore{}).SetNextPromptSuggestionsEnabled(true); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err = LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.NextPromptSuggestionsEnabled == nil || *cfg.NextPromptSuggestionsEnabled {
-		t.Fatal("next_prompt_suggestions_enabled was not persisted as disabled")
+	if cfg.NextPromptSuggestionsEnabled == nil || !*cfg.NextPromptSuggestionsEnabled {
+		t.Fatal("next_prompt_suggestions_enabled was not persisted as enabled")
 	}
 	if cfg.Theme != "dark" {
 		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)

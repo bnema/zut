@@ -111,7 +111,7 @@ type InteractiveConfig struct {
 	TerminalTitleEnabled *bool
 
 	// NextPromptSuggestionsEnabled controls the predicted next message shown
-	// as ghost text after a finished turn. nil means enabled.
+	// as ghost text after a finished turn. nil means disabled.
 	NextPromptSuggestionsEnabled *bool
 
 	// AutoSubagentsEnabled mirrors the persisted config flag at startup so

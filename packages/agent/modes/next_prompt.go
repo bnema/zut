@@ -13,9 +13,10 @@ import (
 const nextPromptTimeout = 20 * time.Second
 
 // nextPromptSuggestionsEnabled reports whether next prompt suggestions are
-// on. nil means enabled.
+// on. nil means disabled: the feature is opt-in because every prediction is
+// an extra model request.
 func nextPromptSuggestionsEnabled(enabled *bool) bool {
-	return enabled == nil || *enabled
+	return enabled != nil && *enabled
 }
 
 // Locking: i.ed is owned by the Run loop. The functions below that touch it

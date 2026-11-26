@@ -95,7 +95,7 @@ type Config struct {
 
 	// NextPromptSuggestionsEnabled controls the predicted next user message
 	// shown as ghost text after each finished interactive turn. nil/missing
-	// means enabled; false disables the extra request. Toggle from /settings.
+	// means disabled; true opts into the extra request. Toggle from /settings.
 	NextPromptSuggestionsEnabled *bool `json:"next_prompt_suggestions_enabled,omitempty"`
 
 	// Subagents controls manager-owned child lifecycle and resource policy.
