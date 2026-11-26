@@ -126,19 +126,52 @@ func (e *Editor) SetValue(s string) {
 // escapes and control characters are removed and whitespace runs are
 // collapsed to single spaces. Empty text clears the suggestion.
 func (e *Editor) SetGhost(text string) {
-	text = stripANSI(text)
+	text = stripANSI(stripC1Strings(text))
 	var b strings.Builder
 	for _, r := range text {
 		if unicode.IsSpace(r) {
 			b.WriteRune(' ')
 			continue
 		}
-		if unicode.IsControl(r) || r == utf8.RuneError {
+		if unicode.IsControl(r) || r == utf8.RuneError || isBidiControl(r) {
 			continue
 		}
 		b.WriteRune(r)
 	}
 	e.ghost = strings.Join(strings.Fields(b.String()), " ")
+}
+
+// isBidiControl reports the explicit bidi embedding, override, and isolate
+// controls (U+202A-U+202E, U+2066-U+2069), which can reorder the rendered
+// line. Joiners such as ZWJ are kept.
+func isBidiControl(r rune) bool {
+	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// stripC1Strings removes 8-bit OSC, DCS, APC, PM, and SOS strings
+// (U+009D, U+0090, U+009F, U+009E, U+0098) through their BEL, ST (U+009C),
+// or ESC \ terminator, or to the end when unterminated. 7-bit ESC forms are
+// left to stripANSI.
+func stripC1Strings(s string) string {
+	var b strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
+		case 0x9d, 0x90, 0x9f, 0x9e, 0x98:
+			for i++; i < len(runes); i++ {
+				if runes[i] == 0x07 || runes[i] == 0x9c {
+					break
+				}
+				if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '\\' {
+					i++
+					break
+				}
+			}
+			continue
+		}
+		b.WriteRune(runes[i])
+	}
+	return b.String()
 }
 
 // Ghost returns the current suggestion, or "" when none is set or the
