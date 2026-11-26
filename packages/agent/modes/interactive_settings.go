@@ -154,6 +154,7 @@ func (i *Interactive) openSettingsDialog() {
 
 	terminalAlerts := terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled)
 	terminalTitles := terminalTitleEnabled(i.cfg.TerminalTitleEnabled)
+	nextPrompts := nextPromptSuggestionsEnabled(i.cfg.NextPromptSuggestionsEnabled)
 	autoSubagents := false
 	if i.cfg.AutoSubagentsEnabled != nil {
 		autoSubagents = *i.cfg.AutoSubagentsEnabled
@@ -297,6 +298,12 @@ func (i *Interactive) openSettingsDialog() {
 			label: "AI terminal titles",
 			desc:  "ask the active model for a concise title after the first prompt; uses one extra hidden request",
 			value: terminalTitles,
+		},
+		{
+			key:   "next_prompt_suggestions_enabled",
+			label: "next prompt suggestions",
+			desc:  "after each finished turn, one extra request to the active model guesses your next message; shown dim in the empty input, Tab inserts it; reuses the prompt cache, so providers without prompt caching pay the full context each turn",
+			value: nextPrompts,
 		},
 		{
 			key:      "auto_subagents_enabled",
@@ -813,6 +820,26 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		}
 		i.mu.Lock()
 		i.statusOK = "AI terminal titles " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "next_prompt_suggestions_enabled":
+		val := value
+		i.mu.Lock()
+		i.cfg.NextPromptSuggestionsEnabled = &val
+		i.mu.Unlock()
+		if !value {
+			i.clearNextPromptSuggestion()
+		}
+		if store, ok := i.cfg.SettingsStore.(nextPromptSettingsStore); ok {
+			if err := store.SetNextPromptSuggestionsEnabled(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.statusOK = "next prompt suggestions " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "web_search_enabled":

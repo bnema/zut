@@ -93,6 +93,11 @@ type Config struct {
 	// both so no extra provider request is made. Toggle from /settings.
 	TerminalTitleEnabled *bool `json:"terminal_title_enabled,omitempty"`
 
+	// NextPromptSuggestionsEnabled controls the predicted next user message
+	// shown as ghost text after each finished interactive turn. nil/missing
+	// means enabled; false disables the extra request. Toggle from /settings.
+	NextPromptSuggestionsEnabled *bool `json:"next_prompt_suggestions_enabled,omitempty"`
+
 	// Subagents controls manager-owned child lifecycle and resource policy.
 	Subagents SubagentsConfig `json:"subagents,omitempty"`
 

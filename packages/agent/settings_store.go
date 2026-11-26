@@ -93,6 +93,13 @@ func (configSettingsStore) SetTerminalTitleEnabled(enabled bool) error {
 	})
 }
 
+func (configSettingsStore) SetNextPromptSuggestionsEnabled(enabled bool) error {
+	return updateConfig(func(c *Config) error {
+		c.NextPromptSuggestionsEnabled = &enabled
+		return nil
+	})
+}
+
 func (configSettingsStore) SetAutoSubagents(enabled bool) error {
 	return updateConfig(func(c *Config) error {
 		c.AutoSubagentsEnabled = &enabled

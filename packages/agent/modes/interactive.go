@@ -110,6 +110,10 @@ type InteractiveConfig struct {
 	// title updates. nil means enabled; false disables both.
 	TerminalTitleEnabled *bool
 
+	// NextPromptSuggestionsEnabled controls the predicted next message shown
+	// as ghost text after a finished turn. nil means enabled.
+	NextPromptSuggestionsEnabled *bool
+
 	// AutoSubagentsEnabled mirrors the persisted config flag at startup so
 	// the /settings dialog can render the current state without
 	// re-reading config.json on every open.
@@ -550,6 +554,10 @@ type terminalAlertsSettingsStore interface {
 
 type terminalTitleSettingsStore interface {
 	SetTerminalTitleEnabled(enabled bool) error
+}
+
+type nextPromptSettingsStore interface {
+	SetNextPromptSuggestionsEnabled(enabled bool) error
 }
 
 type codemodeSettingsStore interface {

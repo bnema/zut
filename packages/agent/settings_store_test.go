@@ -226,6 +226,34 @@ func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsStorePersistsNextPromptSuggestions(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NextPromptSuggestionsEnabled != nil {
+		t.Fatal("next_prompt_suggestions_enabled should be unset (enabled) by default")
+	}
+
+	if err := (configSettingsStore{}).SetNextPromptSuggestionsEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NextPromptSuggestionsEnabled == nil || *cfg.NextPromptSuggestionsEnabled {
+		t.Fatal("next_prompt_suggestions_enabled was not persisted as disabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
