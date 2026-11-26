@@ -153,6 +153,7 @@ $ZUT_HOME/
 ├── config.json         # last-used provider/model/theme and persistent settings
 ├── auth.json           # api keys and oauth tokens (mode 0600)
 ├── sessions/           # jsonl transcripts, one dir per cwd
+├── search/             # Finder search index; safe to delete
 ├── models-cache.json   # live model discovery cache (24h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the built-in identity; addenda remain
@@ -515,7 +516,7 @@ TUI and messaging commands ignore name case, not argument case. Type `/` in the 
 | `/orchestrator` | Toggle proactive delegation. |
 | `/goal <objective>` | Start an autonomous interactive mission. |
 | `/llama` | Manage the configured llama.cpp router and GGUF models. |
-| `/sessions` | Resume a session. |
+| `/find` | Search sessions and messages across all projects (also `ctrl+f`). |
 | `/fork` | Branch after a past user turn without starting a provider call. |
 | `/session` | Inspect, export, import, fork, or browse the current session. |
 | `/jump` | Scroll to a turn, optionally filtered with `/jump <text>`. |
@@ -580,18 +581,38 @@ Prefix a command with `!` to run it without the model. The remainder goes to the
 
 Escapes always time out at 600 seconds (10 minutes). Command, merged output, and exit status enter the transcript as user context, without starting a model turn. `esc` cancels; escapes cannot start during an agent turn or another escape.
 
-### `/sessions`
+### `/find`
 
-Daemon sessions come first, marked `this terminal`, `attached` elsewhere, or `detached`. Selection switches this terminal; the released session keeps running. Previous cwd sessions follow newest first, with timestamp, model, message count, cost, and title.
+`/find` or `ctrl+f` opens the Finder, a search over every saved session of the active normal or Zutfile-agent namespace.
+
+Tabs (`tab` switches):
+- **Sessions**: sessions that contain every search word, plus sessions whose project or title fuzzy-matches the query. An empty query lists recent sessions. In daemon mode, running sessions are marked `●`.
+- **Messages**: messages that contain every search word, grouped by session.
+
+Searching:
+- Typing searches immediately. Words match by prefix: `refacto` finds `refactoring`.
+- Only user and assistant text is searched; tool calls and results are not.
+- All projects by default; `@here` limits results to the current directory.
 
 Keys:
-- `Tab`: switch **this directory** / **all sessions** within the active normal or Zutfile-agent namespace; other agent namespaces never appear.
-- `/`: search contiguous persisted user/assistant text (minimum two characters). The temporary in-memory corpus excludes tool calls/results, images, developer context, and compaction payloads. Queries reuse it without reopening transcripts; results show counts and first highlighted excerpts.
-- `up`/`down`, `enter`: select as soon as an entry appears; entries and search corpus load in the background.
-- `r`: rename; `d`: confirm deletion. Active session protected; sessions open in other zut processes are undetectable and deleted like ordinary files.
-- `esc`: clear search or cancel/close.
+- `↑`/`↓`: pick a session; `ctrl+n`/`ctrl+p`: next/previous match in it.
+- `enter`: open; `ctrl+r`: rename; `ctrl+d` then `y`: delete.
+- `esc`: close.
 
-Resume switches workspace to the recorded cwd before replay, updating tools, instructions, sandbox, and file suggestions. It restores provider/model, rebuilding the agent if needed. Failed staged switches leave the current session unchanged.
+The active session and sessions running elsewhere in the daemon cannot be deleted. Sessions open in other in-process zut instances are not detected.
+
+Opening a session from another directory asks first:
+- `[y]`: switch to that directory and resume.
+- `[n]`: fork into the current directory as a new session; the original stays untouched. This is the only option when the original directory no longer exists.
+- `esc`: cancel.
+
+Sessions running in the daemon can only be attached. Sessions from the current directory open directly.
+
+After opening, the chat scrolls to the match and highlights the search words. `ctrl+n`/`ctrl+p` move between matching messages; `esc` clears the highlight.
+
+Resume switches the workspace to the recorded cwd before replay, updating tools, instructions, sandbox, and file suggestions. It restores provider/model, rebuilding the agent if needed. Failed staged switches leave the current session unchanged.
+
+The search index lives in `search/` next to `sessions/` (`$ZUT_HOME/search` by default). It updates incrementally each time the Finder opens and drops the text of deleted sessions. Deleting it is safe; it is rebuilt on the next open.
 
 Tree-navigation branches appear only in `/session tree`. Unavailable with `--no-session`. Fresh interactive sessions get a concise model title after the first real prompt; resume restores it (see AI terminal titles).
 
@@ -607,7 +628,7 @@ Tree-navigation branches appear only in `/session tree`. Unavailable with `--no-
 
   Images show MIME/size; private provider signatures and encrypted reasoning are omitted. Review conversation/tool text before sharing. Context estimates use bytes, not exact tokens.
 - **`/session export [path]`**: save the running main transcript to `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zutsession` by default. Override with a path: directories get dated filenames; bare names gain `.zutsession`. Strips metadata cwd to hide filesystem layout. Includes messages, tool calls/results, compactions, usage, **not `/subagents` child journals**. Copy those machine-local conversations manually from child views.
-- **`/session import <path>`**: copy a `.zutsession` into `$ZUT_HOME/sessions/<cwd-hash>/` with fresh ID/current cwd, then switch to it. Imports appear in `/sessions`, `/jump`, and the current-family tree when applicable. Drag-dropped paths work; surrounding quotes are stripped.
+- **`/session import <path>`**: copy a `.zutsession` into `$ZUT_HOME/sessions/<cwd-hash>/` with fresh ID/current cwd, then switch to it. Imports appear in `/find`, `/jump`, and the current-family tree when applicable. Drag-dropped paths work; surrounding quotes are stripped.
 - **`/fork`**, also **`/session fork`**: a `/jump`-style picker copies through a past user turn into a new branch, switching without a provider call. Parent stays on disk. Try another question or rewind; tree user rows instead restore editable prompts with images.
 
   Daemon `/fork`, tree branches, and `/btw` inherit only registered-parent launch settings: cwd, tool/extension policy, confirmation/sandbox, environment, zutfile permissions. No client overrides; unregistered parents fail with `parent session not found`.
@@ -770,7 +791,7 @@ This is not a hard security boundary. For real isolation, run zut in docker or a
 
 ## Sessions
 
-Interactive and print/json runs save JSONL transcripts in `$ZUT_HOME/sessions/<cwd-hash>/` unless `--no-session`. Resume with `--continue`, `--resume`, `--session <path>`, or TUI `/sessions`. Resume restores the recorded provider/model, rebuilding the agent if needed; failed rebuilds leave the current session intact. Empty sessions are deleted on close.
+Interactive and print/json runs save JSONL transcripts in `$ZUT_HOME/sessions/<cwd-hash>/` unless `--no-session`. Resume with `--continue`, `--resume`, `--session <path>`, or TUI `/find`. Resume restores the recorded provider/model, rebuilding the agent if needed; failed rebuilds leave the current session intact. Empty sessions are deleted on close.
 
 Usage checkpoints may store sanitized `retry_lifecycle` attempts, backoffs, terminal state, and allowlisted failure category, never raw provider errors or response bodies. Provider-context reconstruction ignores this metadata.
 
@@ -1302,7 +1323,7 @@ While the agent works, `enter` steers text and screenshots into its active turn.
 Recall keys: `Alt+↑` (`Option+↑` on macOS); `Alt+Shift+↑` in Vev (pane navigation owns `Alt+↑`); `Option+Shift+↑` in macOS VS Code terminals. The `$TERM_PROGRAM`-aware hint appears only when a user message can be recovered.
 
 Busy slash commands:
-- Immediate: `/help`, `/info`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`.
+- Immediate: `/help`, `/info`, `/jump`, `/btw`, `/find`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`.
 - Cancel the turn first: `/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`.
 
 ## Keys (interactive mode)
@@ -1322,6 +1343,7 @@ Busy slash commands:
 | `ctrl+v` | Paste text into focused chat, side chat, dialog, filter, or credential input. Main chat attaches images to the next prompt via macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`. Linux text uses `wl-paste`, `xclip`, or `xsel`; native bracketed paste needs none. |
 | `ctrl+o` | Expand/collapse long tool results (read, bash, worktree, grep, glob, lsp, web_search, …). `edit`, `write`, and `ast` rewrites always render in full. |
 | `ctrl+r` | Cycle supported reasoning levels; applies to future calls and persists in `config.json`. |
+| `ctrl+f` | Open the [Finder](#find) to search sessions and messages. |
 | `ctrl+1` ... `ctrl+9` | Activate persistent model/reasoning/fast-mode profile; empty slots open picker. French AZERTY Ctrl + top-row symbols work if forwarded. Rejected during turns. See [Model profiles](#model-profiles); fallback: `/profile N`. |
 | `alt+v` | Start/stop-and-transcribe dictation; `esc` cancels. Needs ChatGPT login. See [Dictation](#dictation). |
 | `@` | Browse working-directory files/directories. |

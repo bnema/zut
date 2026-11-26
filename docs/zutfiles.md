@@ -507,7 +507,7 @@ Sessions created by a zutfile are isolated from ordinary zut sessions and from o
 $ZUT_HOME/sessions/agents/<name>/
 ```
 
-Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent. The interactive `/sessions` picker and `/session` import, fork, and tree commands use that same agent-scoped root; `/fork` is the direct alias for selecting a user message and branching after that turn. `/session tree` shows the current session's family within that root (its ancestor and descendants), keeps pre-compaction user and assistant history available for checkout, and hides tool/internal rows from the fork picker. Tree-navigation branches stay hidden from the flat `/sessions` picker. Resuming honors the selected session's stored provider/model pair; a failed provider/model rebuild leaves the current session unchanged.
+Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent. The interactive `/find` Finder (with its search index) and `/session` import, fork, and tree commands use that same agent-scoped root; `/fork` is the direct alias for selecting a user message and branching after that turn. `/session tree` shows the current session's family within that root (its ancestor and descendants), keeps pre-compaction user and assistant history available for checkout, and hides tool/internal rows from the fork picker. Tree-navigation branches stay hidden from the Finder's session list. Resuming honors the selected session's stored provider/model pair; a failed provider/model rebuild leaves the current session unchanged.
 
 ## Commands
 
