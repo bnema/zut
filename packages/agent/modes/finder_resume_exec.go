@@ -37,6 +37,9 @@ func (i *Interactive) finderOpenItem(item finderItem, hit int) {
 			exists = true
 		}
 	}
+	if !(item.Live && i.portMode.Load()) && i.finderResumeBusy() {
+		return
+	}
 	i.mu.Lock()
 	plan := resumePlan{
 		Path:       item.Key,
@@ -64,6 +67,10 @@ func (i *Interactive) finderOpenItem(item finderItem, hit int) {
 // finderExecuteResume runs the chosen way to open plan.
 func (i *Interactive) finderExecuteResume(plan resumePlan, choice resumeChoice) {
 	port := i.portMode.Load()
+	attach := choice == resumeChoiceAttach || (choice == resumeChoiceResume && port && plan.Live && plan.LiveID != "")
+	if !attach && choice != resumeChoiceCancel && i.finderResumeBusy() {
+		return
+	}
 	switch choice {
 	case resumeChoiceResume:
 		switch {
@@ -204,4 +211,21 @@ func joinStatus(a, b string) string {
 		return a
 	}
 	return a + " · " + b
+}
+
+const finderResumeBusyMsg = "wait for the active work to finish before resuming a session"
+
+// finderResumeBusy refuses a resume, switch, or fork while work is active,
+// dropping the pending jump. A local build without session loading is let
+// through so applySessionSelection reports that instead.
+func (i *Interactive) finderResumeBusy() bool {
+	if !i.portMode.Load() && i.cfg.LoadSession == nil {
+		return false
+	}
+	if i.canResumeSessionSelection() {
+		return false
+	}
+	i.dropPendingFinderJump()
+	i.setFinderStatusErr(finderResumeBusyMsg)
+	return true
 }

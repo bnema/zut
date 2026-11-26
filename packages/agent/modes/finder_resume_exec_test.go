@@ -286,3 +286,47 @@ func TestFinderPortSwitchRunsJumpAfterHydrate(t *testing.T) {
 	require.Nil(t, i.pendingFinderJump)
 	require.Contains(t, i.statusOK, `search "refacto"`)
 }
+
+func TestFinderResumeRefusedWhileBusy(t *testing.T) {
+	cwd, other := t.TempDir(), t.TempDir()
+	l := newFinderExecLocal(t, cwd)
+	same := newTreeTestSession(t, l.root, cwd, finderExecMessages())
+	away := newTreeTestSession(t, l.root, other, finderExecMessages())
+	finderSearchQuery(t, l.i, "refacto")
+	before := countJSONL(t, l.root)
+
+	// Busy at open: no confirm, no load, jump dropped.
+	l.i.busy = true
+	l.i.finderOpen(finderExecItem(same), 0)
+	require.Equal(t, finderResumeBusyMsg, l.i.statusErr)
+	require.Nil(t, l.i.pendingFinderJump)
+	require.False(t, l.i.finderResume.Active())
+	l.i.finderOpen(finderExecItem(away), 0)
+	require.False(t, l.i.finderResume.Active(), "no y/n prompt while busy")
+
+	// Idle at open, busy by the time the user picks: switch and fork refused.
+	for _, key := range []rune{'y', 'n'} {
+		l.i.busy = false
+		l.i.statusErr = ""
+		l.i.finderOpen(finderExecItem(away), 0)
+		require.True(t, l.i.finderResume.Active())
+		l.i.busy = true
+		l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: key})
+		require.Equal(t, finderResumeBusyMsg, l.i.statusErr)
+		require.Nil(t, l.i.pendingFinderJump)
+	}
+	require.Empty(t, l.loaded)
+	require.Equal(t, before, countJSONL(t, l.root), "fork wrote no new session")
+}
+
+func countJSONL(t *testing.T, root string) int {
+	t.Helper()
+	n := 0
+	require.NoError(t, filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && filepath.Ext(p) == ".jsonl" {
+			n++
+		}
+		return err
+	}))
+	return n
+}
