@@ -708,6 +708,8 @@ func (c *Controller) setAgent(ag *core.Agent) error {
 	if c.turn.busy {
 		return ErrBusy
 	}
+	// A prediction against the old agent is stale after any swap.
+	c.cancelPrediction()
 	c.turn.agent = ag
 	return nil
 }

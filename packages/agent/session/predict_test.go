@@ -95,9 +95,11 @@ func TestPredictNextPromptIdleCallsAgent(t *testing.T) {
 func blockingPredictAgent(t *testing.T, started chan<- struct{}, reply string) (*core.Agent, *providermocks.MockClient) {
 	client := providermocks.NewMockClient(t)
 	client.EXPECT().Name().Return("openai").Maybe()
-	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.Request) (<-chan provider.Event, error) {
+	client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
 		started <- struct{}{}
-		return make(chan provider.Event), nil
+		ch := make(chan provider.Event)
+		go func() { <-ctx.Done(); close(ch) }()
+		return ch, nil
 	}).Once()
 	if reply != "" {
 		client.EXPECT().Stream(mock.Anything, mock.Anything).RunAndReturn(func(context.Context, provider.Request) (<-chan provider.Event, error) {
@@ -220,4 +222,41 @@ func TestPredictNextPromptTurnStartCancels(t *testing.T) {
 	msgs := ag.Messages()
 	require.Len(t, msgs, before+2)
 	require.Equal(t, "turn reply", msgs[len(msgs)-1].Content[0].(provider.TextBlock).Text)
+}
+
+func TestPredictNextPromptAgentSwapCancels(t *testing.T) {
+	c, ctx := newTestController(t)
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "")
+	require.NoError(t, c.call(ctx, func() { c.turn.agent = ag }))
+	res := startPrediction(ctx, c)
+	waitStarted(t, ctx, started)
+	var swapErr error
+	require.NoError(t, c.call(ctx, func() { swapErr = c.setAgent(core.NewAgent(nil, "other", "", nil)) }))
+	require.NoError(t, swapErr)
+	r := waitResult(t, ctx, res)
+	require.ErrorIs(t, r.err, context.Canceled)
+}
+
+func TestPredictNextPromptCompactionCancels(t *testing.T) {
+	c, ctx := newTestController(t)
+	turn := lane9Turn(t, c, ctx)
+	turn.EXPECT().drainQueued().Return().Maybe()
+	started := make(chan struct{}, 1)
+	ag, _ := blockingPredictAgent(t, started, "summary")
+	turn.EXPECT().currentAgent().Return(ag).Maybe()
+	res := startPrediction(ctx, c)
+	waitStarted(t, ctx, started)
+	var compactErr error
+	require.NoError(t, c.call(ctx, func() { compactErr = c.beginCompact(nil) }))
+	require.NoError(t, compactErr)
+	r := waitResult(t, ctx, res)
+	require.ErrorIs(t, r.err, context.Canceled)
+	var done chan struct{}
+	require.NoError(t, c.call(ctx, func() { done = c.compactDone }))
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
