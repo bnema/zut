@@ -117,6 +117,12 @@ packages:
           pkgname: modes
           filename: sessionClient_mock_test.go
           structname: mockSessionClient
+      finderSource:
+        config:
+          dir: packages/agent/modes
+          pkgname: modes
+          filename: finderSource_mock_test.go
+          structname: mockFinderSource
   github.com/bnema/zut/packages/agent/daemon:
     interfaces:
       BotFactory:
