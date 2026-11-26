@@ -3,7 +3,6 @@ package modes
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -203,20 +202,9 @@ func renderChatArchive(th tui.Theme, hist core.ArchivedHistory, budget, cols int
 			continue
 		}
 		segment(from, m.Index)
-		out = append(out, tui.Dim(tui.CompactionSeparator(th, cols, archiveTokensLabel(m.TokensBefore))))
+		out = append(out, tui.Dim(tui.CompactionSeparator(th, cols, tui.CompactionTokensLabel(m.TokensBefore))))
 		from = m.Index
 	}
 	segment(from, len(hist.Rows))
 	return out
-}
-
-// archiveTokensLabel formats tokens_before like the live separator does.
-func archiveTokensLabel(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if n >= 1000 {
-		return "~" + strconv.Itoa((n+500)/1000) + "k tokens"
-	}
-	return "~" + strconv.Itoa(n) + " tokens"
 }

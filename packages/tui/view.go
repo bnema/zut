@@ -2960,11 +2960,20 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 	return []string{CompactionSeparator(th, width, compactionTokensLabel(m.Meta["tokens_before"]), "older messages not in model context · ctrl+o")}
 }
 
-// compactionTokensLabel renders a tokens_before value as "~182k tokens",
-// or "" when it is missing or invalid.
+// compactionTokensLabel renders a tokens_before meta value as
+// CompactionTokensLabel does, or "" when it is missing or invalid.
 func compactionTokensLabel(raw string) string {
 	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || n <= 0 {
+	if err != nil {
+		return ""
+	}
+	return CompactionTokensLabel(n)
+}
+
+// CompactionTokensLabel renders a pre-compaction token count as
+// "~182k tokens", or "" when it is not positive.
+func CompactionTokensLabel(n int) string {
+	if n <= 0 {
 		return ""
 	}
 	if n >= 1000 {
