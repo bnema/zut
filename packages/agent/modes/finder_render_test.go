@@ -85,8 +85,9 @@ func TestFinderRenderPreviewHighlights(t *testing.T) {
 	m := renderFinderFixture(t)
 	lines := m.Render(tui.Dark, 160, 20)
 	joined := stripANSIBytes(strings.Join(lines, "\n"))
-	require.Contains(t, joined, "you · 3 d ago")
-	require.Contains(t, joined, "agent · 2 d ago compacted")
+	require.Contains(t, joined, "you · "+formatHitTime(m.items[0].Hits[0].Time))
+	require.Contains(t, joined, "agent · "+formatHitTime(m.items[0].Hits[1].Time)+" compacted")
+	require.Regexp(t, `you · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`, joined)
 	require.Contains(t, joined, "refactoring")
 	snippet := ""
 	for _, line := range lines {
@@ -178,4 +179,19 @@ func TestFinderCursorPos(t *testing.T) {
 	require.Equal(t, 5, col)
 	line := stripANSIBytes(m.Render(tui.Dark, 60, 10)[row])
 	require.Equal(t, " > 界", runewidth.Truncate(line, col, ""))
+}
+
+func TestFinderHitHeaderColorsApartFromSnippet(t *testing.T) {
+	th := tui.Dark
+	hit := finderHit{Role: provider.RoleUser, Time: time.Date(2026, 10, 29, 14, 32, 5, 0, time.Local)}
+	header := renderHitHeader(th, hit, 60)
+	require.Equal(t, " you · 2026-10-29 14:32:05", strings.TrimRight(stripANSIBytes(header), " "))
+	require.True(t, strings.HasPrefix(header, th.FGColor(th.User, " you")), "role uses the chat role color")
+	dim := strings.TrimSuffix(th.FGColor(th.DimColor(th.Muted, 40), "x"), "x\x1b[0m")
+	require.Contains(t, header, dim+" · 2026-10-29 14:32:05", "time is dimmed")
+	snippet := renderHitSnippet(th, "plain text", nil, 60)
+	fg := strings.TrimSuffix(th.FGColor(th.FG, "x"), "x\x1b[0m")
+	require.True(t, strings.HasPrefix(snippet, fg+" plain text"), "snippet uses the text color")
+	require.NotEqual(t, fg, dim)
+	require.Equal(t, "unknown", formatHitTime(time.Time{}))
 }

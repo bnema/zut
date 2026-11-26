@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 
@@ -327,17 +328,32 @@ func finderRoleLabel(role provider.Role) string {
 	return "agent"
 }
 
-// renderHitHeader renders "you · 3 days ago [compacted]" in w cells.
+// formatHitTime renders a hit's local time to the second: hits of one
+// session usually share a day, so the date alone does not tell them apart.
+func formatHitTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
+// renderHitHeader renders "you · 2026-10-29 14:32:05 compacted" in w
+// cells: the role in its chat color, the time and badge dimmed, so the
+// header reads apart from the snippet text below it.
 func renderHitHeader(th tui.Theme, hit finderHit, w int) string {
-	head := " " + finderRoleLabel(hit.Role) + " · " + formatRelative(hit.Time)
-	if !hit.Compacted {
-		return th.FGColor(th.Muted, finderFit(head, w))
+	role, roleColor := " "+finderRoleLabel(hit.Role), th.Assistant
+	if hit.Role == provider.RoleUser {
+		roleColor = th.User
 	}
-	badge := " compacted"
-	if runewidth.StringWidth(head+badge) > w {
-		return th.FGColor(th.Muted, finderFit(head, w))
+	meta := " · " + formatHitTime(hit.Time)
+	if hit.Compacted {
+		meta += " compacted"
 	}
-	return th.FGColor(th.Muted, head) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(badge, w-runewidth.StringWidth(head)))
+	rw := runewidth.StringWidth(role)
+	if rw >= w {
+		return th.FGColor(roleColor, finderFit(role, w))
+	}
+	return th.FGColor(roleColor, role) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(meta, w-rw))
 }
 
 // renderHitSnippet renders the snippet windowed around the first match
@@ -348,7 +364,7 @@ func renderHitSnippet(th tui.Theme, text string, terms []string, w int) string {
 		return th.FGColor(th.DimColor(th.Muted, 40), finderFit(" …", w))
 	}
 	text = windowSessionSearchExcerpt(text, tui.FirstTermMatch(text, terms), max(w-1, 1))
-	line := th.FGColor(th.Muted, finderFit(" "+text, w))
+	line := th.FGColor(th.FG, finderFit(" "+text, w))
 	line, _ = tui.HighlightTerms(line, terms, th)
 	return line
 }
