@@ -1181,6 +1181,7 @@ func (i *Interactive) installResolvedTheme(resolution tui.ThemeResolution) {
 	i.cfg.Theme = th
 	i.view.Theme = th
 	i.view.InvalidateRenderCache()
+	i.invalidateChatArchiveRenderLocked()
 	i.chatCacheValid = false
 	i.stableChatCacheValid = false
 	i.ed.Prompt = th.AccentBar(th.Accent)

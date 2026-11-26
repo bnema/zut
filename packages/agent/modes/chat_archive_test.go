@@ -2,6 +2,7 @@ package modes
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -119,27 +120,28 @@ func TestChatArchiveNothingWithoutCompaction(t *testing.T) {
 	require.NotContains(t, archiveChat(i), "ctrl+f to search")
 }
 
-func TestChatArchiveClearedAfterReplacementWithoutCompaction(t *testing.T) {
+func TestChatArchiveClearedForSessionWithoutCompaction(t *testing.T) {
 	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
 	i := newArchiveInteractive(t)
 	hydrateArchive(i, path, live)
 	waitArchive(t, i, 0)
 	require.Contains(t, archiveChat(i), "old question")
 
-	hydrateArchive(i, path, []provider.Message{jumpTextMsg(provider.RoleUser, "fresh")})
+	hydrateArchive(i, filepath.Join(t.TempDir(), "other.jsonl"), []provider.Message{jumpTextMsg(provider.RoleUser, "fresh")})
 	require.NotContains(t, archiveChat(i), "old question")
 }
 
 func TestChatArchiveStaleLoadDropped(t *testing.T) {
-	path, live := writeArchiveSession(t, []string{"stale archived"}, "kept")
+	stalePath, staleLive := writeArchiveSession(t, []string{"stale archived"}, "kept")
+	path, live := writeArchiveSession(t, []string{"current archived"}, "kept")
 	i := newArchiveInteractive(t)
-	hydrateArchive(i, path, live)
+	hydrateArchive(i, stalePath, staleLive)
 	i.mu.Lock()
 	gen := i.chatArchive.gen
 	i.mu.Unlock()
-	// A newer load supersedes the first one before it is applied.
+	// Switching sessions supersedes the first load before it is applied.
 	hydrateArchive(i, path, live)
-	i.applyChatArchive(gen, path, core.ArchivedHistory{Rows: []core.ArchivedRow{{Message: jumpTextMsg(provider.RoleUser, "from stale load")}}})
+	i.applyChatArchive(gen, stalePath, core.ArchivedHistory{Rows: []core.ArchivedRow{{Message: jumpTextMsg(provider.RoleUser, "from stale load")}}})
 	require.NotContains(t, archiveChat(i), "from stale load")
 	// A result for another session path is dropped too.
 	i.mu.Lock()
@@ -148,7 +150,120 @@ func TestChatArchiveStaleLoadDropped(t *testing.T) {
 	i.applyChatArchive(cur, "/other/session.jsonl", core.ArchivedHistory{Rows: []core.ArchivedRow{{Message: jumpTextMsg(provider.RoleUser, "from other path")}}})
 	require.NotContains(t, archiveChat(i), "from other path")
 	waitArchive(t, i, 0)
-	require.Contains(t, archiveChat(i), "stale archived")
+	chat := archiveChat(i)
+	require.Contains(t, chat, "current archived")
+	require.NotContains(t, chat, "stale archived")
+}
+
+func archiveHist(texts ...string) core.ArchivedHistory {
+	var h core.ArchivedHistory
+	for n, s := range texts {
+		h.Rows = append(h.Rows, core.ArchivedRow{MsgSeq: n, Message: jumpTextMsg(provider.RoleUser, s)})
+	}
+	h.Marks = []core.ArchivedMark{{Index: len(texts), TokensBefore: 1000}}
+	return h
+}
+
+func archiveState(i *Interactive) (rev, gen uint64, pending bool, budget int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	a := &i.chatArchive
+	return a.rev, a.gen, a.pending != nil, a.budget
+}
+
+func TestChatArchiveSameSessionResnapshotKeepsArchive(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	waitArchive(t, i, 0)
+	rev, gen, _, _ := archiveState(i)
+
+	// Live compaction: same path, new transcript. No reload, no change.
+	hydrateArchive(i, path, []provider.Message{archiveSummaryMsg("5000"), jumpTextMsg(provider.RoleUser, "newer")})
+	rev2, gen2, _, _ := archiveState(i)
+	require.Equal(t, gen, gen2, "no new load for the same session")
+	require.Equal(t, rev, rev2)
+	i.mu.Lock()
+	require.Nil(t, i.chatArchive.cancel)
+	i.mu.Unlock()
+	require.Contains(t, archiveChat(i), "old question")
+}
+
+func TestChatArchiveEqualResultDoesNotRepaint(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	waitArchive(t, i, 0)
+	rev, gen, _, _ := archiveState(i)
+	i.mu.Lock()
+	hist := i.chatArchive.hist
+	i.mu.Unlock()
+	i.applyChatArchive(gen, path, hist)
+	rev2, _, _, _ := archiveState(i)
+	require.Equal(t, rev, rev2)
+}
+
+func TestChatArchiveWaitsForIdleTurn(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	i.mu.Lock()
+	i.busy = true // the attached session is running a turn
+	i.mu.Unlock()
+	_, gen, _, _ := archiveState(i)
+	i.applyChatArchive(gen, path, archiveHist("during turn"))
+	rev, _, pending, _ := archiveState(i)
+	require.True(t, pending)
+	require.Zero(t, rev, "nothing painted while a turn is active")
+	require.NotContains(t, archiveChat(i), "during turn")
+
+	i.mu.Lock()
+	i.applyInfoLocked(session.Info{ID: "s", SessionPath: path, Run: session.RunStateIdle})
+	i.mu.Unlock()
+	rev, _, pending, _ = archiveState(i)
+	require.False(t, pending)
+	require.Equal(t, uint64(1), rev)
+	require.Contains(t, archiveChat(i), "during turn")
+}
+
+func TestChatArchiveBudgetFrozenAtApply(t *testing.T) {
+	var archived []string
+	for n := range 100 {
+		archived = append(archived, fmt.Sprintf("archived row %03d", n))
+	}
+	path, live := writeArchiveSession(t, archived, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	waitArchive(t, i, 0)
+	_, _, _, budget := archiveState(i)
+	require.Equal(t, 78, budget)
+	before := archiveChat(i)
+	require.Contains(t, before, "archived row 022")
+
+	// New live messages do not push archived rows out of the top.
+	i.mu.Lock()
+	for range 5 {
+		i.view.Messages = append(i.view.Messages, jumpTextMsg(provider.RoleUser, "live"))
+	}
+	i.stableChatCacheValid = false
+	i.mu.Unlock()
+	require.Contains(t, archiveChat(i), "archived row 022")
+	require.Contains(t, archiveChat(i), "22 older messages")
+}
+
+func TestChatArchiveThemeChangeRerenders(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	waitArchive(t, i, 0)
+	_ = archiveChat(i)
+	i.mu.Lock()
+	require.True(t, i.chatArchive.renderedOK)
+	i.mu.Unlock()
+	i.installResolvedTheme(tui.ThemeResolution{Theme: tui.Light})
+	i.mu.Lock()
+	require.False(t, i.chatArchive.renderedOK)
+	i.mu.Unlock()
 }
 
 func TestChatArchiveLeavesModelContextUnchanged(t *testing.T) {

@@ -732,6 +732,7 @@ func (i *Interactive) applyInfoLocked(info session.Info) {
 		i.activity.activity = activity{kind: activityWaitingResidents, provider: info.Provider, model: info.Model}
 	}
 	if !busy {
+		i.drainChatArchiveLocked()
 		i.flushPortToolMsgLocked()
 		work := i.takePendingIdleWorkLocked()
 		if len(work) > 0 {

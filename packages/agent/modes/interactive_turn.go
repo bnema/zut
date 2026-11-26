@@ -107,6 +107,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		i.shellLive = ""
 		i.busy = false
 		i.cancelTurn = nil
+		i.drainChatArchiveLocked()
 		pendingIdleWork := i.takePendingIdleWorkLocked()
 		awaitingPre := i.awaitingStartupPre
 		if failed {
