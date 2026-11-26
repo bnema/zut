@@ -1098,6 +1098,17 @@ func (i *Interactive) openJumpDialog(args []string) {
 }
 func (i *Interactive) applyJumpSelection(msgIdx, turnNo int) {
 	cols := i.lastCols()
+	// A resumed transcript renders only its tail; widen it so the target
+	// gets an anchor. Redraw keeps expanding from here as the user scrolls.
+	i.mu.Lock()
+	if limit := i.view.TailLimit; limit > 0 && msgIdx >= 0 && msgIdx < len(i.view.Messages)-limit {
+		i.view.TailLimit = len(i.view.Messages) - msgIdx
+		if i.view.TailLimit >= len(i.view.Messages) {
+			i.view.TailLimit = 0
+		}
+		i.chatCacheValid = false
+	}
+	i.mu.Unlock()
 	chat, anchors := i.view.BuildWithAnchors(cols)
 	var row int
 	found := false
