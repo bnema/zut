@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/internal/flock"
 	"github.com/bnema/zut/packages/core"
@@ -107,6 +108,9 @@ func mergeEntries(old *segment, entries []mergeEntry) (*memIndex, error) {
 					return nil, corrupt("postings")
 				}
 				d = d[k:]
+				if v >= uint64(nMsgs) { // also rules out wraparound
+					return nil, corrupt("postings")
+				}
 				id += v
 				if id >= uint64(nMsgs) {
 					return nil, corrupt("postings")
@@ -200,7 +204,10 @@ func readCurrent(dir string) (uint64, error) {
 	return gen, nil
 }
 
-func writeCurrent(dir string, gen uint64) error {
+// writeCurrent publishes gen through a temp file and rename. On Windows the
+// rename fails while another process is reading `current`, so it is retried a
+// few times with a short backoff (bounded, ctx-aware).
+func writeCurrent(ctx context.Context, dir string, gen uint64) error {
 	tmp, err := os.CreateTemp(dir, ".current-*.tmp")
 	if err != nil {
 		return fmt.Errorf("write session index pointer: %w", err)
@@ -214,13 +221,31 @@ func writeCurrent(dir string, gen uint64) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(name, filepath.Join(dir, currentName))
+		err = renameRetry(ctx, name, filepath.Join(dir, currentName))
 	}
 	if err != nil {
 		os.Remove(name)
 		return fmt.Errorf("write session index pointer: %w", err)
 	}
 	return nil
+}
+
+func renameRetry(ctx context.Context, from, to string) error {
+	delay := 10 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		err := os.Rename(from, to)
+		if err == nil || attempt == 4 {
+			return err
+		}
+		t := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return errors.Join(err, ctx.Err())
+		case <-t.C:
+		}
+		delay *= 2
+	}
 }
 
 // maxGen returns the highest generation among segment files in dir.
@@ -238,8 +263,10 @@ func maxGen(dir string) uint64 {
 	return g
 }
 
-// cleanup removes old generations and temp files. Errors are ignored:
-// on Windows a segment still open elsewhere cannot be removed yet.
+// cleanup removes old generations and temp files. Errors are ignored.
+// Windows limitation: a generation still open in another process (Go opens
+// files without FILE_SHARE_DELETE) cannot be removed, so its text stays on
+// disk until a later locked Update or Forget, which call cleanup first.
 func cleanup(dir string, keep uint64) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -293,9 +320,11 @@ func (x *Index) update(ctx context.Context, progress func(done, total int)) (upd
 	} else {
 		defer old.Close()
 	}
-	files := core.SessionFiles(ctx, x.root)
-	if err := ctx.Err(); err != nil {
-		return st, err
+	cleanup(x.dir, gen) // retry removals that failed earlier (Windows)
+	files, err := core.SessionFiles(ctx, x.root)
+	if err != nil {
+		// Never mistake an unreadable bucket for deleted sessions.
+		return st, fmt.Errorf("update session index: %w", err)
 	}
 	m, err := x.plan(ctx, old, files, progress, &st)
 	if errors.Is(err, ErrCorrupt) && old != nil {
@@ -307,7 +336,7 @@ func (x *Index) update(ctx context.Context, progress func(done, total int)) (upd
 		st.Gen = gen
 		return st, err
 	}
-	return st, x.commit(m, gen, &st)
+	return st, x.commit(ctx, m, gen, &st)
 }
 
 // plan scans what changed and merges it with old. It returns a nil index
@@ -343,7 +372,7 @@ func (x *Index) plan(ctx context.Context, old *segment, files []core.SessionFile
 			slots = append(slots, slot{oldDoc: d, job: -1})
 		case info.Size() > od.Size:
 			slots = append(slots, slot{oldDoc: d, job: len(jobs)})
-			jobs = append(jobs, scanJob{path: p, from: od.Cursor, root: x.root})
+			jobs = append(jobs, scanJob{path: p, root: x.root, old: &od})
 		default:
 			slots = append(slots, slot{oldDoc: d, job: len(jobs)})
 			jobs = append(jobs, scanJob{path: p, root: x.root})
@@ -368,6 +397,13 @@ func (x *Index) plan(ctx context.Context, old *segment, files []core.SessionFile
 	entries := make([]mergeEntry, 0, len(slots))
 	for _, s := range slots {
 		if s.job < 0 {
+			// Re-stat right before merging: a session deleted (and possibly
+			// Forgotten, which got ErrBusy) while this update scanned must not
+			// be republished.
+			if _, err := os.Stat(old.docs[s.oldDoc].Path); errors.Is(err, os.ErrNotExist) {
+				st.Deleted++
+				continue
+			}
 			st.Unchanged++
 			entries = append(entries, mergeEntry{oldDoc: s.oldDoc, doc: old.docs[s.oldDoc]})
 			continue
@@ -382,7 +418,7 @@ func (x *Index) plan(ctx context.Context, old *segment, files []core.SessionFile
 			continue
 		}
 		e := mergeEntry{oldDoc: -1, doc: r.doc, add: r}
-		if s.oldDoc >= 0 && jobs[s.job].from.Offset > 0 && !r.reset {
+		if jobs[s.job].old != nil && !r.reset {
 			e.oldDoc = s.oldDoc
 			st.Appended++
 		} else {
@@ -394,12 +430,12 @@ func (x *Index) plan(ctx context.Context, old *segment, files []core.SessionFile
 }
 
 // commit writes m as the next generation and publishes it.
-func (x *Index) commit(m *memIndex, gen uint64, st *updateStats) error {
+func (x *Index) commit(ctx context.Context, m *memIndex, gen uint64, st *updateStats) error {
 	next := max(gen, maxGen(x.dir)) + 1
 	if err := writeSegment(filepath.Join(x.dir, segName(next)), m); err != nil {
 		return fmt.Errorf("update session index: %w", err)
 	}
-	if err := writeCurrent(x.dir, next); err != nil {
+	if err := writeCurrent(ctx, x.dir, next); err != nil {
 		os.Remove(filepath.Join(x.dir, segName(next)))
 		return fmt.Errorf("update session index: %w", err)
 	}
@@ -431,6 +467,7 @@ func (x *Index) forget(path string) (updateStats, error) {
 		return st, err
 	}
 	defer old.Close()
+	cleanup(x.dir, gen) // retry removals that failed earlier (Windows)
 	entries := make([]mergeEntry, 0, len(old.docs))
 	for i, d := range old.docs {
 		if d.Path == path {
@@ -447,5 +484,5 @@ func (x *Index) forget(path string) (updateStats, error) {
 	if err != nil {
 		return st, fmt.Errorf("forget session: %w", err)
 	}
-	return st, x.commit(m, gen, &st)
+	return st, x.commit(context.Background(), m, gen, &st)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
@@ -34,7 +35,11 @@ func TestSessionFilesListableValidatesBuckets(t *testing.T) {
 
 	listable := func() []string {
 		var paths []string
-		for _, file := range SessionFiles(context.Background(), root) {
+		files, err := SessionFiles(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range files {
 			if SessionListable(context.Background(), root, file.Path) {
 				paths = append(paths, file.Path)
 			}
@@ -66,6 +71,29 @@ func TestSessionFilesListableValidatesBuckets(t *testing.T) {
 	}
 	if got := listable(); len(got) != 2 {
 		t.Fatalf("all scope included invalid session paths: %q", got)
+	}
+}
+
+func TestSessionFilesReportsUnreadableBucket(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	root := t.TempDir()
+	if files, err := SessionFiles(context.Background(), root); err != nil || files != nil {
+		t.Fatalf("missing sessions dir = %v, %v", files, err)
+	}
+	s, err := NewSession(root, t.TempDir(), "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	bucket := filepath.Dir(s.Path)
+	if err := os.Chmod(bucket, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(bucket, 0o755) })
+	if _, err := SessionFiles(context.Background(), root); err == nil {
+		t.Fatal("unreadable bucket not reported")
 	}
 }
 

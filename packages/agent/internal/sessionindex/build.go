@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,7 +44,8 @@ type rowEntry struct {
 	Fingerprint uint64
 }
 
-// memIndex is the in-memory index; B3 serializes it section by section.
+// memIndex is a built index generation in memory. encodeSegment writes it
+// section by section.
 type memIndex struct {
 	docs []docEntry
 	// first[d] is the first global message ID of docs[d]; len(docs)+1 entries.
@@ -65,35 +67,26 @@ type docBuild struct {
 	skip  bool                // hidden or unreadable: not indexed
 	// reset reports that a resumed scan restarted at 0 (file rewritten).
 	reset bool
-	// scanned is the number of file bytes consumed by the scan.
+	// scanned counts the session bytes read for this doc across every pass
+	// (listability check, summary, text scan).
 	scanned int64
 }
 
 func buildWorkers() int { return max(1, runtime.NumCPU()/2) }
 
-// scanJob is one file to scan, from a zero cursor or a resume cursor.
+// scanJob is one file to scan, from a zero cursor or, with old set, from
+// old's cursor to append its tail.
 type scanJob struct {
 	path string
-	from core.SessionScanCursor
 	// root, when set, requires core.SessionListable(root, path).
 	root string
-}
-
-// buildMem indexes paths. Hidden sessions and unreadable files are left out.
-func buildMem(ctx context.Context, paths []string, opts Options, progress func(done, total int)) (*memIndex, error) {
-	jobs := make([]scanJob, len(paths))
-	for i, p := range paths {
-		jobs[i] = scanJob{path: p}
-	}
-	results, err := scanDocs(ctx, jobs, opts, progress)
-	if err != nil {
-		return nil, err
-	}
-	return mergeDocs(results), nil
+	// old is the indexed doc being appended to, or nil for a full scan.
+	old *docEntry
 }
 
 // scanDocs runs jobs on buildWorkers goroutines. Results keep job order.
-// Only cancellation is returned as an error.
+// progress, when set, is called from the worker goroutines, serialized, after
+// each finished job. Only cancellation is returned as an error.
 func scanDocs(ctx context.Context, jobs []scanJob, opts Options, progress func(done, total int)) ([]docBuild, error) {
 	results := make([]docBuild, len(jobs))
 	feed := make(chan int)
@@ -132,29 +125,48 @@ loop:
 	return results, nil
 }
 
-// buildDoc extracts one session from cursor from. Files that vanish, are
-// hidden, or fail to scan are marked skip. With a non-zero from, terms and
-// rows hold only the tail, unless the scan restarted (reset).
+// maxTitleRunes caps the stored session title.
+const maxTitleRunes = 200
+
+// docTitle returns the first non-empty line of s with whitespace collapsed,
+// capped at maxTitleRunes.
+func docTitle(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.Join(strings.Fields(line), " "); t != "" {
+			return capRunes(t, maxTitleRunes)
+		}
+	}
+	return ""
+}
+
+// buildDoc extracts one session. Files that vanish, are not listable, or
+// fail to scan are marked skip (excluded when they exist but are not
+// listable). An append job scans only the tail and reuses the old summary
+// unless the tail may change it (meta, rename, compaction, or malformed rows),
+// the session is a branch, or the old title is empty: in those cases the
+// listability check and summary run again.
 func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
-	path, from := job.path, job.from
+	path := job.path
 	info, err := os.Stat(path)
 	if err != nil {
 		return docBuild{skip: true}
 	}
-	excluded := docBuild{skip: true, doc: docEntry{SessionDoc: SessionDoc{Path: path, Updated: info.ModTime()}, Size: info.Size(), Excluded: true}}
-	if job.root != "" && !core.SessionListable(ctx, job.root, path) {
-		return excluded
+	size := info.Size()
+	excluded := func(scanned int64) docBuild {
+		return docBuild{skip: true, scanned: scanned, doc: docEntry{SessionDoc: SessionDoc{Path: path, Updated: info.ModTime()}, Size: size, Excluded: true}}
 	}
-	sum := core.DescribeSessionContext(ctx, path)
-	if ctx.Err() != nil {
-		return docBuild{skip: true}
+	var from core.SessionScanCursor
+	if job.old != nil {
+		from = job.old.Cursor
 	}
-	if sum.HideFromSessions {
-		return excluded
-	}
-	title := sum.Title
-	if title == "" {
-		title = sum.FirstUserText
+	var scanned int64
+	checked := false
+	if job.old == nil && job.root != "" {
+		scanned += size
+		if !core.SessionListable(ctx, job.root, path) {
+			return excluded(scanned)
+		}
+		checked = true
 	}
 	b := docBuild{terms: map[string][]uint32{}}
 	// ScanSessionText decides a restart before emitting any row, so on
@@ -178,77 +190,56 @@ func buildDoc(ctx context.Context, job scanJob, opts Options) docBuild {
 	if err != nil {
 		return docBuild{skip: true}
 	}
-	b.reset = cur.Reset
-	b.scanned = cur.Offset - from.Offset
 	if cur.Reset {
-		b.scanned = cur.Offset
+		scanned += cur.Offset
+	} else {
+		scanned += cur.Offset - from.Offset
 	}
-	b.doc = docEntry{
-		SessionDoc: SessionDoc{Path: path, ID: meta.ID, CWD: sum.CWD, Title: title, Started: sum.Started, Updated: info.ModTime()},
-		Size:       info.Size(),
+	doc := docEntry{
+		SessionDoc: SessionDoc{Path: path, ID: meta.ID, Updated: info.ModTime()},
+		Size:       size,
 		Cursor:     cur,
 		TotalMsgs:  cur.MsgSeq,
 	}
-	b.doc.Cursor.Reset = false
+	doc.Cursor.Reset, doc.Cursor.SawMetaChange = false, false
+	reuse := job.old != nil && !cur.Reset && !cur.SawMetaChange && meta.Parent == "" && job.old.Title != ""
+	if reuse {
+		doc.ID, doc.CWD, doc.Title, doc.Started = job.old.ID, job.old.CWD, job.old.Title, job.old.Started
+	} else {
+		if !checked && job.root != "" {
+			scanned += size
+			if !core.SessionListable(ctx, job.root, path) {
+				return excluded(scanned)
+			}
+		}
+		sum := core.DescribeSessionContext(ctx, path)
+		scanned += 2 * size // snapshot read plus rename scan
+		if ctx.Err() != nil {
+			return docBuild{skip: true}
+		}
+		if sum.HideFromSessions {
+			return excluded(scanned)
+		}
+		title := sum.Title
+		if title == "" {
+			title = sum.FirstUserText
+		}
+		doc.CWD, doc.Title, doc.Started = sum.CWD, docTitle(title), sum.Started
+	}
+	b.doc, b.reset, b.scanned = doc, cur.Reset, scanned
 	return b
 }
 
-// mergeDocs builds an index from fresh full scans.
-func mergeDocs(results []docBuild) *memIndex {
-	entries := make([]mergeEntry, 0, len(results))
-	for _, r := range results {
-		if !r.skip {
-			entries = append(entries, mergeEntry{oldDoc: -1, doc: r.doc, add: r})
-		}
-	}
-	m, _ := mergeEntries(nil, entries) // no old segment: cannot fail
-	return m
-}
-
 func (m *memIndex) nMsgs() int { return int(m.first[len(m.first)-1]) }
-
-// querySource is the read side shared by memIndex and segment, so both
-// run the same query implementation.
-type querySource interface {
-	docList() []docEntry
-	firstIDs() []uint32
-	// tokenBits returns the bitset of global message IDs matching prefix and
-	// whether the prefix expansion was capped.
-	tokenBits(prefix string) (bitset, bool, error)
-	// docRows returns the indexed rows of doc d sorted by MsgID.
-	docRows(d int) ([]rowEntry, error)
-}
-
-func (m *memIndex) docList() []docEntry { return m.docs }
-func (m *memIndex) firstIDs() []uint32  { return m.first }
-
-func (m *memIndex) tokenBits(prefix string) (bitset, bool, error) {
-	bs := newBitset(m.nMsgs())
-	lo, hi, partial := PrefixRange(m.terms, prefix, maxPrefixTerms)
-	for i := lo; i < hi; i++ {
-		for _, id := range m.postings[i] {
-			bs.set(id)
-		}
-	}
-	return bs, partial, nil
-}
-
-func (m *memIndex) docRows(d int) ([]rowEntry, error) {
-	return m.rows[m.rowFirst[d]:m.rowFirst[d+1]], nil
-}
-
-func (m *memIndex) query(ctx context.Context, q Query) (Result, error) {
-	return runQuery(ctx, m, q)
-}
 
 // runQuery evaluates q. ModeMessages: every token in one message.
 // ModeSessions: every token somewhere in the session; hits are the
 // session's messages that match at least one token. Sessions are ordered
 // by Updated, newest first. A non-empty q.CWD keeps only that cwd. Rows
 // are loaded only for the sessions kept after Limit.
-func runQuery(ctx context.Context, src querySource, q Query) (Result, error) {
+func runQuery(ctx context.Context, src *segment, q Query) (Result, error) {
 	tokens, _ := ParseQuery(q.Text)
-	docs, first := src.docList(), src.firstIDs()
+	docs, first := src.docs, src.first
 	var res Result
 	if len(tokens) == 0 {
 		for _, d := range recentDocs(docs, q.CWD, q.Limit) {

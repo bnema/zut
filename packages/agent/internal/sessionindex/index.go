@@ -68,7 +68,8 @@ type SessionMatch struct {
 // Result is the answer to a Query.
 type Result struct {
 	Sessions []SessionMatch
-	// Partial is set when prefix expansion was capped or the index is stale.
+	// Partial is set when a token's prefix expansion was capped, or when no
+	// index exists yet.
 	Partial bool
 }
 
@@ -116,8 +117,10 @@ func (x *Index) Close() error {
 // Update indexes new, appended, and rewritten sessions and drops deleted
 // ones across every project, then publishes a new generation. Nothing is
 // written when no session changed. A missing or corrupt index is rebuilt.
-// progress reports scanned files. When another writer holds the lock it
-// returns ErrBusy without writing; queries keep using the current index.
+// progress reports scanned files; it is called from worker goroutines,
+// serialized. When another writer holds the lock it returns ErrBusy without
+// writing; queries keep using the current index. An unreadable session
+// directory aborts the update without changing the index.
 func (x *Index) Update(ctx context.Context, progress func(done, total int)) error {
 	_, err := x.update(ctx, progress)
 	return err
@@ -227,7 +230,7 @@ func (x *Index) Snippets(ctx context.Context, refs []HitRef) ([]Snippet, error) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if head := heads[path]; head != 0 {
+		if head := heads[path]; head != 0 && x.managedPath(path) {
 			readSnippets(path, head, refs, byPath[path], texts)
 		}
 	}
@@ -238,6 +241,18 @@ func (x *Index) Snippets(ctx context.Context, refs []HitRef) ([]Snippet, error) 
 		}
 	}
 	return out, nil
+}
+
+// managedPath reports whether path is a regular, non-symlink *.jsonl file
+// directly inside a bucket of <root>/sessions, so Snippets never opens a
+// path from a damaged or crafted index elsewhere.
+func (x *Index) managedPath(path string) bool {
+	clean := filepath.Clean(path)
+	if filepath.Ext(clean) != ".jsonl" || filepath.Dir(filepath.Dir(clean)) != filepath.Clean(filepath.Join(x.root, "sessions")) {
+		return false
+	}
+	info, err := os.Lstat(clean)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // readSnippets fills texts[i] for the refs of one file that still match.

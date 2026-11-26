@@ -57,11 +57,11 @@ func TestSegmentRoundTrip(t *testing.T) {
 		{Text: "parser", Limit: 1}, {Text: "nothing"}, {Text: "zzz"},
 	}
 	for _, q := range queries {
-		want, err := f.idx.query(context.Background(), q)
+		want, err := queryMem(t, f.idx, q)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := seg.query(context.Background(), q)
+		got, err := runQuery(context.Background(), seg, q)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestSegmentEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer seg.Close()
-	if r, err := seg.query(context.Background(), Query{Text: "x1"}); err != nil || len(r.Sessions) != 0 {
+	if r, err := runQuery(context.Background(), seg, Query{Text: "x1"}); err != nil || len(r.Sessions) != 0 {
 		t.Fatalf("empty query = %+v, %v", r, err)
 	}
 }
@@ -105,12 +105,19 @@ func TestSegmentCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]func([]byte){
-		"body byte":  func(b []byte) { b[len(b)-5] ^= 0xff },
-		"magic":      func(b []byte) { b[0] = 'X' },
-		"format":     func(b []byte) { binary.LittleEndian.PutUint16(b[8:], formatVersion+1) },
-		"tokenizer":  func(b []byte) { binary.LittleEndian.PutUint16(b[10:], tokenizerVersion+1) },
-		"offsets":    func(b []byte) { binary.LittleEndian.PutUint64(b[40:], 1<<40) },
-		"doc count":  func(b []byte) { binary.LittleEndian.PutUint32(b[16:], 99) },
+		"body byte": func(b []byte) { b[len(b)-5] ^= 0xff },
+		"magic":     func(b []byte) { b[0] = 'X' },
+		"format":    func(b []byte) { binary.LittleEndian.PutUint16(b[8:], formatVersion+1) },
+		"tokenizer": func(b []byte) { binary.LittleEndian.PutUint16(b[10:], tokenizerVersion+1) },
+		"offsets":   func(b []byte) { binary.LittleEndian.PutUint64(b[40:], 1<<40) },
+		"doc count": func(b []byte) { binary.LittleEndian.PutUint32(b[16:], 99) },
+		"docs offset": func(b []byte) {
+			binary.LittleEndian.PutUint64(b[32+8*secDocs:], headerSize+1)
+		},
+		"in-range offset shift": func(b []byte) {
+			o := binary.LittleEndian.Uint64(b[32+8*secTerms:])
+			binary.LittleEndian.PutUint64(b[32+8*secTerms:], o+1)
+		},
 		"truncation": nil,
 	}
 	for name, mutate := range cases {
@@ -157,5 +164,59 @@ func TestSegmentPermissions(t *testing.T) {
 	// Rewriting over an existing file replaces it.
 	if err := writeSegment(path, f.idx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// recrc rewrites the checksum so a crafted change passes the CRC check.
+func recrc(b []byte) {
+	binary.LittleEndian.PutUint32(b[crcOffset:], segmentCRC(b[:crcOffset], b[headerSize:]))
+}
+
+// TestSegmentCraftedValidCRC checks that decoding fails closed on data a
+// valid checksum does not vouch for.
+func TestSegmentCraftedValidCRC(t *testing.T) {
+	f := buildFixture(t)
+	path := writeFixtureSegment(t, f)
+	orig, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := binary.LittleEndian
+	rowsOff := le.Uint64(orig[32+8*secRows:])
+	postOff := le.Uint64(orig[32+8*secPostings:])
+	termsOff := le.Uint64(orig[32+8*secTerms:])
+	cases := map[string]func([]byte){
+		"row id out of doc":  func(b []byte) { le.PutUint32(b[rowsOff:], 1<<30) },
+		"row role":           func(b []byte) { b[rowsOff+16] = 9 },
+		"posting overflow":   func(b []byte) { copy(b[postOff:], []byte{0xff, 0xff, 0xff, 0xff, 0x0f}) },
+		"terms out of order": func(b []byte) { b[termsOff] = 0xff },
+	}
+	for name, mutate := range cases {
+		b := append([]byte(nil), orig...)
+		mutate(b)
+		recrc(b)
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		seg, err := openSegment(path)
+		if err == nil {
+			for _, q := range []string{"parser", "refacto", "problème", "tests", "a", "b"} {
+				if _, qerr := runQuery(context.Background(), seg, Query{Text: q}); qerr != nil {
+					err = qerr
+					break
+				}
+			}
+			if err == nil {
+				for d := range seg.docs {
+					if _, err = seg.docRows(d); err != nil {
+						break
+					}
+				}
+			}
+			seg.Close()
+		}
+		if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("%s: err = %v, want ErrCorrupt", name, err)
+		}
 	}
 }

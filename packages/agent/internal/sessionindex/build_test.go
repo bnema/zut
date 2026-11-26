@@ -113,7 +113,7 @@ func seqs(m SessionMatch) []int {
 
 func run(t *testing.T, idx *memIndex, q Query) Result {
 	t.Helper()
-	r, err := idx.query(context.Background(), q)
+	r, err := queryMem(t, idx, q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,12 @@ func TestQueryPrefixSkipAndRows(t *testing.T) {
 			if h.Path == f.a && (h.MsgSeq == 1 || h.MsgSeq == 3) {
 				t.Fatalf("tool or skipped row indexed: %+v", h)
 			}
-			row, err := core.ReadSessionTextRow(h.Path, h.Offset, h.Len)
+			f, err := os.Open(h.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, err := core.ReadSessionTextRowAt(f, h.Offset, h.Len)
+			f.Close()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -204,5 +209,63 @@ func TestBuildCanceled(t *testing.T) {
 	cancel()
 	if _, err := buildMem(ctx, []string{"x"}, Options{}, nil); err == nil {
 		t.Fatal("expected cancellation error")
+	}
+}
+
+// buildMem indexes paths with full scans (test helper).
+func buildMem(ctx context.Context, paths []string, opts Options, progress func(done, total int)) (*memIndex, error) {
+	jobs := make([]scanJob, len(paths))
+	for i, p := range paths {
+		jobs[i] = scanJob{path: p}
+	}
+	results, err := scanDocs(ctx, jobs, opts, progress)
+	if err != nil {
+		return nil, err
+	}
+	return mergeDocs(results), nil
+}
+
+// mergeDocs builds an index from fresh full scans (test helper).
+func mergeDocs(results []docBuild) *memIndex {
+	entries := make([]mergeEntry, 0, len(results))
+	for _, r := range results {
+		if !r.skip {
+			entries = append(entries, mergeEntry{oldDoc: -1, doc: r.doc, add: r})
+		}
+	}
+	m, err := mergeEntries(nil, entries)
+	if err != nil {
+		panic(err) // no old segment: cannot fail
+	}
+	return m
+}
+
+// queryMem runs q through the production path: write m as a segment in a
+// test temp dir, open it, and call runQuery.
+func queryMem(t *testing.T, m *memIndex, q Query) (Result, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "q.idx")
+	if err := writeSegment(path, m); err != nil {
+		return Result{}, err
+	}
+	seg, err := openSegment(path)
+	if err != nil {
+		return Result{}, err
+	}
+	defer seg.Close()
+	return runQuery(context.Background(), seg, q)
+}
+
+func TestDocTitle(t *testing.T) {
+	long := strings.Repeat("é", maxTitleRunes+50)
+	cases := map[string]string{
+		"\n\n  first   line \t here\nsecond": "first line here",
+		long:                                 strings.Repeat("é", maxTitleRunes),
+		"   ":                                "",
+	}
+	for in, want := range cases {
+		if got := docTitle(in); got != want {
+			t.Errorf("docTitle(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -440,3 +440,120 @@ func TestRecentAndEmptyQuery(t *testing.T) {
 		t.Fatalf("recent without index = %v, %v", got, err)
 	}
 }
+
+func TestUpdateAppendRefreshesTitleOnRename(t *testing.T) {
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	a := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "first prompt"))
+	mustUpdate(t, x)
+
+	before, _ := os.Stat(a)
+	appendSession(t, a, msg(provider.RoleAssistant, "plain reply"))
+	after, _ := os.Stat(a)
+	st := mustUpdate(t, x)
+	if st.Appended != 1 || st.ScannedBytes != after.Size()-before.Size() {
+		t.Fatalf("plain append read more than the tail: %+v (tail %d)", st, after.Size()-before.Size())
+	}
+
+	s, _, err := core.OpenSession(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTitle("Renamed Title"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	size, _ := os.Stat(a)
+	st = mustUpdate(t, x)
+	if st.Appended != 1 || st.ScannedBytes <= size.Size()-after.Size() {
+		t.Fatalf("rename append did not refresh the summary: %+v", st)
+	}
+	docs, err := x.Recent(context.Background(), "", 0)
+	if err != nil || len(docs) != 1 || docs[0].Title != "Renamed Title" {
+		t.Fatalf("title after rename = %+v, %v", docs, err)
+	}
+}
+
+func TestUpdateAbortsOnUnreadableBucket(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	a := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "alphaword"))
+	gen := mustUpdate(t, x).Gen
+	bucket := filepath.Dir(a)
+	if err := os.Chmod(bucket, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(bucket, 0o755) })
+	if _, err := x.update(context.Background(), nil); err == nil {
+		t.Fatal("update over an unreadable bucket succeeded")
+	}
+	if cur, _ := readCurrent(x.dir); cur != gen {
+		t.Fatalf("generation changed: %d -> %d", gen, cur)
+	}
+	os.Chmod(bucket, 0o755)
+	if got := hitPaths(t, x, "alpha"); len(got) != 1 {
+		t.Fatalf("doc lost: %v", got)
+	}
+}
+
+func TestUpdateDropsDocDeletedDuringScan(t *testing.T) {
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	a := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "vanishmarker"))
+	mustUpdate(t, x)
+	newRootSession(t, root, "/proj/b", msg(provider.RoleUser, "newword"))
+	// progress runs after listing and before the merge: delete the
+	// unchanged session then, as a racing delete+Forget would.
+	st, err := x.update(context.Background(), func(done, total int) {
+		if done == total {
+			os.Remove(a)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Deleted != 1 || searchDirContains(t, x, "vanishmarker") || len(hitPaths(t, x, "vanishmarker")) != 0 {
+		t.Fatalf("deleted doc republished: %+v", st)
+	}
+}
+
+func TestUpdateCleansStaleGenerationsFirst(t *testing.T) {
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "alphaword"))
+	gen := mustUpdate(t, x).Gen
+	// A generation a Windows reader kept open would linger like this.
+	stale := filepath.Join(x.dir, segName(gen+5))
+	if err := os.WriteFile(stale, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st := mustUpdate(t, x); st.Wrote {
+		t.Fatalf("idle update wrote: %+v", st)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("stale generation not removed by an idle update")
+	}
+}
+
+func TestManagedPath(t *testing.T) {
+	root := t.TempDir()
+	x := openTestIndex(t, root)
+	a := newRootSession(t, root, "/proj/a", msg(provider.RoleUser, "x1"))
+	outside := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(outside, []byte("{}\n"), 0o600)
+	deep := filepath.Join(filepath.Dir(a), "sub", "s.jsonl")
+	if !x.managedPath(a) || x.managedPath(outside) || x.managedPath(deep) || x.managedPath(filepath.Join(filepath.Dir(a), "x.txt")) {
+		t.Fatal("managedPath accepted a path outside the session buckets")
+	}
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(filepath.Dir(a), "link.jsonl")
+		if err := os.Symlink(outside, link); err == nil && x.managedPath(link) {
+			t.Fatal("managedPath followed a symlink")
+		}
+	}
+}

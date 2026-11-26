@@ -3,7 +3,6 @@ package sessionindex
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -26,7 +25,8 @@ import (
 //	  8   format version u16, tokenizer version u16, reserved u32
 //	  16  nDocs, nMsgs, nTerms, nRows u32
 //	  32  section offsets u64 x numSections, then the end offset (file size)
-//	  104 CRC32 (IEEE) of bytes [headerSize, end)
+//	  104 CRC32 (IEEE) of header bytes [0, 104) followed by [headerSize, end)
+//	  The docs section starts right after the header (offset headerSize).
 //	sections, in order:
 //	  docs      per doc: str Path, str ID, str CWD, str Title,
 //	            Started i64, Updated i64 (unix ns, minInt64 = zero time),
@@ -44,7 +44,7 @@ import (
 //	            Len u32, Role u8, Time i64, Fingerprint u64
 const (
 	segmentMagic     = "ZUTSIDX\x00"
-	formatVersion    = 2
+	formatVersion    = 3
 	tokenizerVersion = 1
 	headerSize       = 128
 	rowSize          = 33
@@ -66,6 +66,11 @@ const (
 // ErrCorrupt reports an unreadable, damaged, or incompatible index file.
 // Callers should rebuild the index.
 var ErrCorrupt = errors.New("sessionindex: corrupt or incompatible index")
+
+// segmentCRC checksums the header fields before the CRC and the body.
+func segmentCRC(header, body []byte) uint32 {
+	return crc32.Update(crc32.ChecksumIEEE(header), crc32.IEEETable, body)
+}
 
 func corrupt(what string) error { return fmt.Errorf("%w: %s", ErrCorrupt, what) }
 
@@ -194,7 +199,7 @@ func encodeSegment(m *memIndex) []byte {
 	for i, o := range offs {
 		le.PutUint64(buf[32+8*i:], o)
 	}
-	le.PutUint32(buf[crcOffset:], crc32.ChecksumIEEE(buf[headerSize:]))
+	le.PutUint32(buf[crcOffset:], segmentCRC(buf[:crcOffset], buf[headerSize:]))
 	return buf
 }
 
@@ -295,8 +300,8 @@ func loadSegment(f *os.File) (*segment, error) {
 		}
 		offs[i], prev = o, o
 	}
-	if offs[numSections] != size {
-		return nil, corrupt("size mismatch")
+	if offs[secDocs] != headerSize || offs[numSections] != size {
+		return nil, corrupt("section bounds")
 	}
 	secLen := func(s int) int64 { return offs[s+1] - offs[s] }
 	if secLen(secFirst) != 4*int64(nDocs+1) || secLen(secRowFirst) != 4*int64(nDocs+1) ||
@@ -306,6 +311,7 @@ func loadSegment(f *os.File) (*segment, error) {
 	}
 
 	crc := crc32.NewIEEE()
+	crc.Write(h[:crcOffset])
 	if _, err := io.Copy(crc, bufio.NewReaderSize(io.NewSectionReader(f, headerSize, size-headerSize), 256*1024)); err != nil {
 		return nil, fmt.Errorf("open session index: read body: %w", err)
 	}
@@ -365,6 +371,13 @@ func (s *segment) validate(nMsgs int, postLen int64) error {
 	for i := 1; i < len(s.termOffs); i++ {
 		if s.termOffs[i] < s.termOffs[i-1] || s.postOffs[i] < s.postOffs[i-1] {
 			return corrupt("term tables")
+		}
+	}
+	// Terms must be strictly ascending: lookups binary search them and
+	// merges rely on the order.
+	for i := 1; i+1 < len(s.termOffs); i++ {
+		if bytes.Compare(s.term(i-1), s.term(i)) >= 0 {
+			return corrupt("term order")
 		}
 	}
 	return nil
@@ -440,9 +453,6 @@ func decodeDocs(b []byte, n int) ([]docEntry, error) {
 // Close releases the file handle.
 func (s *segment) Close() error { return s.f.Close() }
 
-func (s *segment) docList() []docEntry { return s.docs }
-func (s *segment) firstIDs() []uint32  { return s.first }
-
 func (s *segment) term(i int) []byte { return s.terms[s.termOffs[i]:s.termOffs[i+1]] }
 
 // tokenBits reads the postings of all terms starting with prefix in one
@@ -478,6 +488,9 @@ func (s *segment) tokenBits(prefix string) (bitset, bool, error) {
 				return nil, false, corrupt("postings")
 			}
 			d = d[k:]
+			if v >= uint64(nMsgs) { // also rules out wraparound
+				return nil, false, corrupt("postings")
+			}
 			id += v
 			if id >= uint64(nMsgs) {
 				return nil, false, corrupt("postings")
@@ -510,8 +523,11 @@ func (s *segment) docRows(d int) ([]rowEntry, error) {
 			Time:        decodeTime(int64(le.Uint64(b[17:]))),
 			Fingerprint: le.Uint64(b[25:]),
 		}
+		// Rows must lie in the doc's ID range, ascending, with a sane span.
+		r := rows[i]
+		if r.MsgID < s.first[d] || r.MsgID >= s.first[d+1] || (i > 0 && r.MsgID <= rows[i-1].MsgID) || r.Offset < 0 || r.Len <= 0 {
+			return nil, corrupt("rows")
+		}
 	}
 	return rows, nil
 }
-
-func (s *segment) query(ctx context.Context, q Query) (Result, error) { return runQuery(ctx, s, q) }

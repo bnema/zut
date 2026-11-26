@@ -15,6 +15,9 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+// maxSessionSearchRowBytes bounds one JSONL row read for search text.
+const maxSessionSearchRowBytes = 1 << 20
+
 // oversizedRowPrefixBytes is how much of an oversized row is kept to classify
 // it. Writers marshal sessionLine, whose "type" field always comes first.
 const oversizedRowPrefixBytes = 64
@@ -55,6 +58,12 @@ type SessionScanCursor struct {
 	// already received the rescanned rows, and it is also set on error
 	// returns (callback error, cancellation) of a restarted scan.
 	Reset bool
+	// SawMetaChange is set on a returned cursor when the consumed rows
+	// include anything that can change session metadata, title, or
+	// listability: meta, rename, or compaction rows, and rows that are
+	// malformed, untyped, or oversized and not message rows. Callers caching
+	// a summary must refresh it then. It is ignored on input.
+	SawMetaChange bool
 }
 
 // MessageTextFingerprint hashes the role and the non-empty text blocks of m.
@@ -89,6 +98,7 @@ func messageTexts(m provider.Message) []string {
 // resumed scans agree; later meta rows are ignored.
 func ScanSessionText(ctx context.Context, path string, from SessionScanCursor, fn func(SessionTextRow) error) (SessionScanCursor, SessionMeta, error) {
 	from.Reset = false
+	from.SawMetaChange = false
 	if err := contextErr(ctx); err != nil {
 		return from, SessionMeta{}, err
 	}
@@ -154,20 +164,25 @@ func ScanSessionText(ctx context.Context, path string, from SessionScanCursor, f
 		if rowLen > int64(len(line)) {
 			if bytes.HasPrefix(line, messageRowPrefix) {
 				cur.MsgSeq++
+			} else {
+				cur.SawMetaChange = true
 			}
 			cur.Offset += rowLen + 1
 			continue
 		}
 		cur.Offset += rowLen + 1
-		var lineHead sessionLineHead
-		if json.Unmarshal(line, &lineHead) != nil {
+		var wire textRowWire
+		if json.Unmarshal(line, &wire) != nil {
+			cur.SawMetaChange = true
 			continue
 		}
-		switch lineHead.Type {
+		switch wire.Type {
+		case "meta", "rename", "compaction", "":
+			cur.SawMetaChange = true
 		case "message":
 			seq := cur.MsgSeq
 			cur.MsgSeq++
-			row, ok := decodeTextRow(line)
+			row, ok := decodeTextMessage(wire.Message)
 			if !ok {
 				continue
 			}
@@ -181,18 +196,8 @@ func ScanSessionText(ctx context.Context, path string, from SessionScanCursor, f
 	}
 }
 
-// ReadSessionTextRow reads and decodes the row at [off, off+n). MsgSeq is 0.
-func ReadSessionTextRow(path string, off, n int64) (SessionTextRow, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return SessionTextRow{}, fmt.Errorf("read session text row: open: %w", err)
-	}
-	defer file.Close()
-	return ReadSessionTextRowAt(file, off, n)
-}
-
-// ReadSessionTextRowAt is ReadSessionTextRow over an open file, so callers
-// reading several rows open the file once.
+// ReadSessionTextRowAt reads and decodes the row at [off, off+n) of an open
+// session file. MsgSeq is 0. Callers reading several rows open the file once.
 func ReadSessionTextRowAt(r io.ReaderAt, off, n int64) (SessionTextRow, error) {
 	if off < 0 || n <= 0 || n > maxSessionSearchRowBytes {
 		return SessionTextRow{}, fmt.Errorf("read session text row: invalid range %d+%d", off, n)
@@ -201,11 +206,11 @@ func ReadSessionTextRowAt(r io.ReaderAt, off, n int64) (SessionTextRow, error) {
 	if _, err := r.ReadAt(buf, off); err != nil {
 		return SessionTextRow{}, fmt.Errorf("read session text row: %w", err)
 	}
-	var lineHead sessionLineHead
-	if err := json.Unmarshal(buf, &lineHead); err != nil || lineHead.Type != "message" {
+	var wire textRowWire
+	if err := json.Unmarshal(buf, &wire); err != nil || wire.Type != "message" {
 		return SessionTextRow{}, errors.New("read session text row: not a message row")
 	}
-	row, ok := decodeTextRow(buf)
+	row, ok := decodeTextMessage(wire.Message)
 	if !ok {
 		return SessionTextRow{}, errors.New("read session text row: no user or assistant text")
 	}
@@ -223,26 +228,26 @@ func SessionHeadHash(r io.Reader) (hash uint64, ok bool, err error) {
 	return fnvBytes(head), true, nil
 }
 
-func decodeTextRow(line []byte) (SessionTextRow, bool) {
-	// Cheap role pass first: tool rows (often large) skip the full decode.
+// textRowWire is the one decode of a JSONL row done by the text scanner.
+type textRowWire struct {
+	Type    string          `json:"type"`
+	Message json.RawMessage `json:"message"`
+}
+
+func decodeTextMessage(raw json.RawMessage) (SessionTextRow, bool) {
+	// Cheap role peek first: tool rows (often large) skip the full decode.
 	// DecodeMessageJSON keeps the role verbatim, so this filter is the same
 	// one applied after decoding.
+	if len(raw) == 0 {
+		return SessionTextRow{}, false
+	}
 	var peek struct {
-		Message *struct {
-			Role provider.Role `json:"role"`
-		} `json:"message"`
+		Role provider.Role `json:"role"`
 	}
-	if json.Unmarshal(line, &peek) != nil || peek.Message == nil ||
-		(peek.Message.Role != provider.RoleUser && peek.Message.Role != provider.RoleAssistant) {
+	if json.Unmarshal(raw, &peek) != nil || (peek.Role != provider.RoleUser && peek.Role != provider.RoleAssistant) {
 		return SessionTextRow{}, false
 	}
-	var wire struct {
-		Message json.RawMessage `json:"message"`
-	}
-	if json.Unmarshal(line, &wire) != nil || len(wire.Message) == 0 {
-		return SessionTextRow{}, false
-	}
-	msg, err := DecodeMessageJSON(wire.Message)
+	msg, err := DecodeMessageJSON(raw)
 	if err != nil || (msg.Role != provider.RoleUser && msg.Role != provider.RoleAssistant) {
 		return SessionTextRow{}, false
 	}
@@ -281,7 +286,12 @@ func readScanLine(reader *bufio.Reader) (line []byte, n int64, complete bool, er
 		n += int64(len(fragment))
 		if !oversized {
 			line = append(line, fragment...)
-			if len(line) > maxSessionSearchRowBytes {
+			// The row content (without its '\n') may be up to the max.
+			content := len(line)
+			if readErr == nil {
+				content--
+			}
+			if content > maxSessionSearchRowBytes {
 				oversized = true
 				line = append([]byte(nil), line[:oversizedRowPrefixBytes]...)
 			}

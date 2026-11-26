@@ -113,14 +113,14 @@ func TestScanSessionTextFingerprintAndRoles(t *testing.T) {
 		t.Fatalf("offset = %d, size %d", cur.Offset, info.Size())
 	}
 
-	got, err := ReadSessionTextRow(path, rows[1].Offset, rows[1].Len)
+	got, err := readTextRow(t, path, rows[1].Offset, rows[1].Len)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Fingerprint != rows[1].Fingerprint || MessageTextFingerprint(got.Message) != got.Fingerprint || strings.Join(got.Texts, "|") != "answer|more" || got.Role != provider.RoleAssistant || !got.Time.Equal(assistant.Time) {
 		t.Fatalf("round trip = %+v", got)
 	}
-	if _, err := ReadSessionTextRow(path, 0, rows[0].Offset-1); err == nil {
+	if _, err := readTextRow(t, path, 0, rows[0].Offset-1); err == nil {
 		t.Fatal("meta row read as text row")
 	}
 }
@@ -179,7 +179,7 @@ func TestScanSessionTextOversizedRow(t *testing.T) {
 	if len(rows) != 1 || rows[0].Texts[0] != "after" || rows[0].MsgSeq != 1 || cur.MsgSeq != 2 {
 		t.Fatalf("rows = %+v cur=%+v", rows, cur)
 	}
-	got, err := ReadSessionTextRow(path, rows[0].Offset, rows[0].Len)
+	got, err := readTextRow(t, path, rows[0].Offset, rows[0].Len)
 	if err != nil || got.Texts[0] != "after" {
 		t.Fatalf("round trip = %+v err=%v", got, err)
 	}
@@ -250,4 +250,68 @@ func TestSessionHeadHashMatchesCursor(t *testing.T) {
 	if _, ok, _ := SessionHeadHash(strings.NewReader(`{"type":"meta"`)); ok {
 		t.Fatal("partial first row reported complete")
 	}
+}
+
+func TestScanSessionTextSawMetaChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	user := sessionTextMsg(t, textMsg(provider.RoleUser, provider.TextBlock{Text: "one"}))
+	writeSessionText(t, path, sessionTextMeta(t, "s1"), user)
+	_, cur, _ := scanAll(t, path, SessionScanCursor{})
+	if cur.SawMetaChange {
+		t.Fatal("plain messages reported a meta change")
+	}
+	cases := map[string]string{
+		"message":    user,
+		"rename":     sessionTextLine(t, sessionLine{Type: "rename", Title: "new"}),
+		"meta":       sessionTextMeta(t, "s1"),
+		"compaction": sessionTextLine(t, sessionLine{Type: "compaction", Messages: &[]provider.Message{}}),
+		"malformed":  "{not json\n",
+		"untyped":    "{}\n",
+	}
+	for name, row := range cases {
+		base, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tail := filepath.Join(t.TempDir(), "t.jsonl")
+		writeSessionText(t, tail, string(base), row)
+		_, got, _ := scanAll(t, tail, cur)
+		if got.Reset || got.SawMetaChange != (name != "message") {
+			t.Fatalf("%s: cursor = %+v", name, got)
+		}
+	}
+	// SawMetaChange is not carried over from the input cursor.
+	in := cur
+	in.SawMetaChange = true
+	if _, got, _ := scanAll(t, path, in); got.SawMetaChange {
+		t.Fatal("input SawMetaChange leaked")
+	}
+}
+
+func TestScanSessionTextRowAtLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	small := sessionTextMsg(t, textMsg(provider.RoleUser, provider.TextBlock{Text: ""}))
+	pad := maxSessionSearchRowBytes - (len(small) - 1)
+	exact := sessionTextMsg(t, textMsg(provider.RoleUser, provider.TextBlock{Text: strings.Repeat("x", pad)}))
+	if len(exact)-1 != maxSessionSearchRowBytes {
+		t.Fatalf("row size = %d", len(exact)-1)
+	}
+	writeSessionText(t, path, sessionTextMeta(t, "s1"), exact)
+	rows, _, _ := scanAll(t, path, SessionScanCursor{})
+	if len(rows) != 1 || rows[0].Len != maxSessionSearchRowBytes {
+		t.Fatalf("rows at limit = %d", len(rows))
+	}
+	if _, err := readTextRow(t, path, rows[0].Offset, rows[0].Len); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTextRow(t *testing.T, path string, off, n int64) (SessionTextRow, error) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	return ReadSessionTextRowAt(f, off, n)
 }
