@@ -162,7 +162,9 @@ func isNextPromptAcceptKey(k tui.Key) bool {
 // handleNextPromptKey lets the main input accept (Tab) or dismiss (Escape)
 // a shown ghost. It reports whether it consumed the key. Run loop only.
 func (i *Interactive) handleNextPromptKey(k tui.Key) bool {
-	if i.ed == nil || i.ed.Ghost() == "" || i.suggest.Active(i.ed.Value()) || i.fileSuggest.Active(i.ed.Value()) {
+	// Ghost() is empty once text is typed, so slash and @ popups, which
+	// need typed text, always keep Tab.
+	if i.ed == nil || i.ed.Ghost() == "" {
 		return false
 	}
 	switch {

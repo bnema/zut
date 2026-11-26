@@ -1,12 +1,11 @@
 package modes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,6 +67,8 @@ func newPortNextPromptInteractive(t *testing.T, enabled *bool) (*Interactive, *s
 	i.rend = tui.NewRenderer(io.Discard)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	// Request goroutines derive from runCtx, so they end with the test.
+	i.runCtx = ctx
 	require.NoError(t, i.attachPort(ctx))
 	return i, port, ctx
 }
@@ -219,7 +220,7 @@ func TestNextPromptTabWithoutShownGhostCyclesProfile(t *testing.T) {
 	i, port := newPortProfileInteractive(t, profileInfo(1, map[int]session.QuickModelShortcut{1: profSol, 2: profGPT5}))
 	called := profExpectApply(port, 2, nil)
 	i.ed.SetGhost("run the tests")
-	// Typed text hides the ghost; Insert keeps it stored, SetValue drops it.
+	// Typing drops the ghost.
 	i.ed.Insert("hello")
 	require.Empty(t, i.ed.Ghost())
 	profKey(i, tui.Key{Kind: tui.KeyTab})
@@ -303,29 +304,6 @@ func TestNextPromptSettingOffDropsLateResult(t *testing.T) {
 	require.Empty(t, i.ed.Ghost())
 }
 
-func TestNextPromptTabDefersToSlashPopup(t *testing.T) {
-	// A popup needs typed text, which already hides the ghost; Tab must
-	// complete the command instead of inserting the stored suggestion.
-	i, _ := newPortProfileInteractive(t, profileInfo(1, nil))
-	i.ed.SetGhost("run the tests")
-	i.ed.Insert("/hel")
-	require.True(t, i.suggest.Active(i.ed.Value()))
-	profKey(i, tui.Key{Kind: tui.KeyTab})
-	require.Equal(t, "/help", i.ed.Value())
-}
-
-func TestNextPromptTabDefersToFilePopup(t *testing.T) {
-	i, _ := newPortProfileInteractive(t, profileInfo(1, nil))
-	i.ed.SetGhost("run the tests")
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600))
-	i.fileSuggest.SetCWD(dir)
-	i.ed.Insert("@")
-	require.True(t, i.fileSuggest.Active(i.ed.Value()))
-	profKey(i, tui.Key{Kind: tui.KeyTab})
-	require.NotContains(t, i.ed.Value(), "run the tests")
-}
-
 func TestNextPromptLateResultDroppedWhileShellOrLoading(t *testing.T) {
 	for name, set := range map[string]func(*Interactive){
 		"shell":   func(i *Interactive) { i.shellRunning = true },
@@ -348,4 +326,15 @@ func TestNextPromptLateResultDroppedWhileShellOrLoading(t *testing.T) {
 			require.Empty(t, i.ed.Ghost())
 		})
 	}
+}
+
+func TestNextPromptGhostRendersMuted(t *testing.T) {
+	var out bytes.Buffer
+	i := NewInteractive(InteractiveConfig{Theme: tui.Dark, Terminal: &alertTestTerminal{}})
+	i.rend = tui.NewRenderer(&out)
+	i.rend.Resize(80, 24)
+	i.ed.SetGhost("run the tests")
+	i.publishEditorView()
+	i.redraw()
+	require.Contains(t, out.String(), tui.Dark.FGColor(tui.Dark.Muted, "run the tests"))
 }
