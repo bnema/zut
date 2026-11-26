@@ -6,9 +6,10 @@ import (
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
-func TestSessionsSlashUsesAgentSessionRoot(t *testing.T) {
+func TestFinderUsesAgentSessionRoot(t *testing.T) {
 	zutHome := t.TempDir()
 	agentRoot := t.TempDir()
 	cwd := t.TempDir()
@@ -26,34 +27,28 @@ func TestSessionsSlashUsesAgentSessionRoot(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := core.NewSession(zutHome, cwd, "test", "test-model", "test-version"); err != nil {
+		t.Fatal(err)
+	}
 
 	i := NewInteractive(InteractiveConfig{
+		Theme:        tui.Dark,
+		Terminal:     &alertTestTerminal{},
 		ZutHome:      zutHome,
 		SessionsRoot: agentRoot,
 		CWD:          cwd,
 	})
-	i.runSlash(context.Background(), "/sessions")
-	defer i.sessionDialog.Close()
-	for event := range i.sessionLoads {
-		i.sessionDialog.ApplyLoad(event)
-	}
+	i.finderDelay, i.finderRetryDelay = 0, 0
+	t.Cleanup(i.closeFinderIndex)
+	t.Cleanup(i.closeFinder)
+	i.runSlash(context.Background(), "/find")
+	driveFinderLoop(t, i, func() bool { return !i.finder.indexing && !i.finder.loading && len(i.finder.items) > 0 })
 
-	if got := len(i.sessionDialog.sessions); got != 1 {
-		t.Fatalf("session picker entries = %d, want 1 from agent session root", got)
+	if got := len(i.finder.items); got != 1 {
+		t.Fatalf("finder entries = %d, want 1 from agent session root", got)
 	}
-	if got := i.sessionDialog.sessions[0].Path; got != session.Path {
-		t.Fatalf("session picker path = %q, want %q", got, session.Path)
-	}
-}
-
-func TestSessionsSlashRejectsNoSessionMode(t *testing.T) {
-	i := NewInteractive(InteractiveConfig{SessionsDisabled: true})
-	i.runSlash(context.Background(), "/sessions")
-	if i.sessionDialog.Active() {
-		t.Fatal("session picker opened while sessions were disabled")
-	}
-	if i.statusErr != "sessions are disabled by --no-session" {
-		t.Fatalf("status error = %q", i.statusErr)
+	if got := i.finder.items[0].Key; got != session.Path {
+		t.Fatalf("finder path = %q, want %q", got, session.Path)
 	}
 }
 

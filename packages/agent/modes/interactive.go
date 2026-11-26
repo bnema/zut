@@ -10,6 +10,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/skills"
@@ -22,7 +23,7 @@ import (
 )
 
 // SessionClient is the daemon-side session lifecycle surface the TUI needs
-// for /clear, /sessions, /fork, /exit and successor reattach (D9). Attach
+// for /clear, /find, /fork, /exit and successor reattach (D9). Attach
 // returns a controlling Port for id. The agent package adapts
 // daemonclient.Client to it so modes never imports daemonclient.
 type SessionClient interface {
@@ -305,7 +306,7 @@ type InteractiveConfig struct {
 	// from ZutHome for Zutfile agents, whose sessions are isolated by agent
 	// name. Empty falls back to ZutHome for embedders and tests.
 	SessionsRoot string
-	// SessionsDisabled is true for --no-session invocations. The picker must
+	// SessionsDisabled is true for --no-session invocations. The Finder must
 	// fail closed instead of offering stale or non-persisted state.
 	SessionsDisabled bool
 
@@ -327,7 +328,7 @@ type InteractiveConfig struct {
 	// LoadSession swaps the current session for the one at path. The
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
-	// LoadSessionContext is the cancellation-aware picker path. Embedders that
+	// LoadSessionContext is the cancellation-aware session-selection path. Embedders that
 	// only implement LoadSession retain the existing synchronous contract.
 	LoadSessionContext func(context.Context, string) error
 
@@ -385,7 +386,7 @@ type InteractiveConfig struct {
 	InitialSessionTitlePending bool
 
 	// CurrentSessionTitle returns the title of the session currently owned by
-	// the host. It is used after /sessions and import switches.
+	// the host. It is used after Finder and import switches.
 	CurrentSessionTitle func() string
 	// CurrentSessionTitlePending reports whether the loaded session is a new
 	// branch that has not received a post-fork prompt yet.
@@ -747,6 +748,12 @@ type Interactive struct {
 	stableChatCacheKey   chatCacheKey
 	stableChatCacheValid bool
 
+	// searchReader is the read-only search-hit reader (chat_search.go).
+	searchReader *searchReader
+
+	// pendingFinderJump runs after a finder resume (finder_resume_exec.go).
+	pendingFinderJump *pendingFinderJump
+
 	// Messages typed while a turn is in flight. Each is delivered as
 	// steering input at the next safe model/tool boundary. Rendered
 	// above the status bar as "sliding in: ..." chips.
@@ -766,11 +773,33 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
+	// finder is the fuzzy session/message finder; nil until first opened.
+	finder *finderModel
+	// finderSources builds the finder tabs on open; nil or empty disables it.
+	finderSources func() []finderSource
+	// finderCancel cancels the in-flight finder search, if any.
+	finderCancel context.CancelFunc
+	// finderDelay debounces searches triggered by query edits.
+	finderDelay time.Duration
+	// finderResume asks how to open a session from another directory.
+	finderResume *resumeConfirm
+	// finderIndex is the session text index, opened on first finder use.
+	finderIndex *sessionindex.Index
+	// finderUpdating is set while a background index Update runs.
+	finderUpdating bool
+	// finderUpdateCancel stops the background index Update on shutdown.
+	finderUpdateCancel context.CancelFunc
+	// finderRetryDelay waits before retrying an Update that hit ErrBusy.
+	finderRetryDelay time.Duration
+	// finderSnippets caches and fetches hit snippets for the open finder.
+	finderSnippets finderSnippetState
+	// finderCard tracks the card fetch for the selected item without hits.
+	finderCard finderCardState
+
 	dialog                  *loginDialog
 	modelDialog             *modelDialog
 	llamaDialog             *llamaDialog
 	rescueDialog            *rescueDialog
-	sessionDialog           *sessionDialog
 	residentSubagentsDialog *residentSubagentsDialog
 	residentChildSession    *residentChildSession
 	residentChildMouse      bool
@@ -875,21 +904,13 @@ type Interactive struct {
 	deferredInitialInput string
 	autoSubmitDeferred   bool
 
-	// sessionLoading is true while a /sessions selection is being read
+	// sessionLoading is true while a selected session is being read
 	// on a background goroutine. Keeping this off the input goroutine
 	// lets ctrl+c/exit remain responsive for very large JSONL sessions.
 	sessionLoading bool
 
-	// sessionLoads carries per-entry results for the /sessions picker. The
-	// picker owns the load lifecycle; the interactive loop applies results so
-	// rendering never races with background file reads.
-	sessionLoads <-chan sessionLoadEvent
-	// sessionSearches carries the one-time corpus read and query-match results.
-	// It stays separate from summary loading so a query edit never reopens JSONL.
-	sessionSearches <-chan sessionSearchEvent
-
-	// sessionTreeLoads delivers asynchronously-read tree rows. Like the flat
-	// picker, the main loop is the sole owner of dialog mutation and rendering.
+	// sessionTreeLoads delivers asynchronously-read tree rows. The main loop
+	// is the sole owner of dialog mutation and rendering.
 	sessionTreeLoads <-chan sessionTreeLoadEvent
 
 	clipboardImages []clipboardImageAttachment
@@ -966,6 +987,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		sessionResults:    make(chan sessionResult, 4),
 		loopCalls:         make(chan func(), loopCallsCap),
 		sessionTimeout:    defaultSessionTimeout,
+		finderDelay:       finderSearchDebounce,
+		finderRetryDelay:  finderIndexRetryDelay,
 		terminalProfile:   profile,
 		activeThemeSource: source,
 		themeWatchEvents:  make(chan themeWatchEvent, 8),
@@ -992,7 +1015,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		modelDialog:       newModelDialog(),
 		llamaDialog:       newLlamaDialog(),
 		rescueDialog:      newRescueDialog(),
-		sessionDialog:     newSessionDialog(),
 		jumpDialog:        newJumpDialog(),
 		btwDialog:         newBtwDialog(),
 		skillsDialog:      newSkillsDialog(),
@@ -1060,6 +1082,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.SetPinnedSkillsPending(true)
 	}
 	i.portMode.Store(cfg.Port != nil)
+	i.finderSources = i.defaultFinderSources
 	return i
 }
 
@@ -1154,7 +1177,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer restore()
 	i.markInteractiveStarted()
 	defer i.cancelSessionTitle()
-	defer i.sessionDialog.Close()
+	defer i.closeFinder()
+	defer i.closeFinderIndex()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
@@ -1567,28 +1591,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 				i.invalidate()
 			}
 			changelog = nil // single-shot
-		case event, ok := <-i.sessionLoads:
-			i.mu.Lock()
-			if !ok {
-				i.sessionLoads = nil
-				i.sessionDialog.ApplyLoadClosed()
-				i.mu.Unlock()
-				i.invalidate()
-				break
-			}
-			i.sessionDialog.ApplyLoad(event)
-			i.mu.Unlock()
-			i.invalidate()
-		case event, ok := <-i.sessionSearches:
-			i.mu.Lock()
-			if !ok {
-				i.sessionSearches = nil
-				i.mu.Unlock()
-				break
-			}
-			i.sessionDialog.ApplySearch(event)
-			i.mu.Unlock()
-			i.invalidate()
 		case event, ok := <-i.sessionTreeLoads:
 			i.mu.Lock()
 			if !ok {
@@ -1640,8 +1642,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// need the tick and firing it cancels the terminal's cursor
 			// blink inside dialogs that host their own editor (btw),
 			// because each frame re-emits hide-cursor + show-cursor.
-			// A session picker that is still loading is an exception so
-			// its dialog-local spinner can advance.
 			//
 			i.redrawAnimationTick(requestRedraw)
 		}
@@ -2079,7 +2079,7 @@ type telegramHost struct{ iv *Interactive }
 
 // doSessionImport copies the .zutsession file at src into the
 // running cwd's sessions directory and loads it as the active
-// session, same as `/sessions` -> pick. When src is empty we ask
+// session, same as picking it in the Finder. When src is empty we ask
 // the user to pass a path (no usable default here).
 
 // defaultExportDir returns ~/Downloads when it exists, or ~ as a

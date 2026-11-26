@@ -22,12 +22,11 @@ func (i *Interactive) redrawAnimationTick(requestRedraw func()) {
 	i.mu.Lock()
 	busy := i.busy
 	dictating := i.dictation.phase != ""
-	sessionLoading := i.sessionDialog.Loading()
-	sessionSearching := i.sessionDialog.SearchLoading()
 	// Resident activity comes only from the session-published summaries.
 	residentAnimating := hasActivePortResidents(i.portInfo.Residents)
+	finderAnimating := i.finder.Active() && (i.finder.loading || i.finder.indexing)
 	i.mu.Unlock()
-	if busy || dictating || sessionLoading || sessionSearching || i.btwDialog.Loading() || residentAnimating {
+	if busy || dictating || i.btwDialog.Loading() || residentAnimating || finderAnimating {
 		requestRedraw()
 	}
 }

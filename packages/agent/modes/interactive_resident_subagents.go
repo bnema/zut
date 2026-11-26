@@ -455,7 +455,7 @@ func (i *Interactive) doSessionImport(src string) {
 	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
-		i.statusOK = "imported session at " + friendlyPath(newPath) + " (run /sessions to resume it)"
+		i.statusOK = "imported session at " + friendlyPath(newPath) + " (open it with /find)"
 		i.statusErr = ""
 		i.mu.Unlock()
 		i.invalidate()
@@ -474,6 +474,7 @@ func (i *Interactive) doSessionImport(src string) {
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
+	i.closeSearchReaderLocked()
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 		i.cumUsage = i.agent.Cost()
@@ -692,6 +693,7 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	i.scrollToBottom()
 	i.mu.Lock()
 	i.lastCtxInput = 0
+	i.closeSearchReaderLocked()
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 		i.cumUsage = i.agent.Cost()
@@ -749,7 +751,7 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 	}
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
-		i.statusOK = "forked at message " + formatInt(upTo) + " (run /sessions to resume)"
+		i.statusOK = "forked at message " + formatInt(upTo) + " (open it with /find)"
 		i.statusErr = ""
 		i.mu.Unlock()
 		i.invalidate()

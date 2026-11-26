@@ -111,10 +111,16 @@ they retain terminal-default or terminal-palette-slot provenance and therefore
 change with the terminal palette.
 
 Color roles are `fg`, `muted`, `accent`, `background`, `user`,
-`user_bubble_bg`, `user_bubble_fg`, `assistant`, `tool`, `tool_out`, `error`,
+`user_bubble_bg`, `user_bubble_fg`, `search_line_bg`, `assistant`, `tool`, `tool_out`, `error`,
 `warning`, `spinner`, `thinking_max` (or `thinkingMax`), `selection_bg`,
 `selection_fg`, `diff_add_bg`, and `diff_del_bg`. `background` intentionally
 paints the full zut row; omit it to retain terminal background ownership.
+
+`search_line_bg` is the subtle tint behind lines that match a search. Keep it
+distinct from `user_bubble_bg` and readable under `selection_bg` term
+highlights. `auto` blends the terminal background with its bright yellow; when
+the terminal does not report its colors, `auto` draws no line tint and only
+the matched terms are highlighted.
 
 `diff_add_bg` and `diff_del_bg` tint whole added and removed rows in edit
 diffs and written files. The built-in `dark` and `light` themes set both.

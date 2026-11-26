@@ -4,12 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
 )
 
-func TestListSessionPathsContextScopesAndValidatesBuckets(t *testing.T) {
+func TestSessionFilesListableValidatesBuckets(t *testing.T) {
 	root := t.TempDir()
 	cwdA := filepath.Join(t.TempDir(), "workspace-a")
 	cwdB := filepath.Join(t.TempDir(), "workspace-b")
@@ -32,10 +33,20 @@ func TestListSessionPathsContextScopesAndValidatesBuckets(t *testing.T) {
 	a := newSession(cwdA, "from a")
 	b := newSession(cwdB, "from b")
 
-	if got := ListSessionPathsContext(context.Background(), root, cwdA, false); len(got) != 1 || got[0] != a.Path {
-		t.Fatalf("current scope = %q, want %q", got, a.Path)
+	listable := func() []string {
+		var paths []string
+		files, err := SessionFiles(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range files {
+			if SessionListable(context.Background(), root, file.Path) {
+				paths = append(paths, file.Path)
+			}
+		}
+		return paths
 	}
-	got := ListSessionPathsContext(context.Background(), root, cwdA, true)
+	got := listable()
 	if len(got) != 2 || !containsPath(got, a.Path) || !containsPath(got, b.Path) {
 		t.Fatalf("all scope = %q, want both valid sessions", got)
 	}
@@ -58,8 +69,31 @@ func TestListSessionPathsContextScopesAndValidatesBuckets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wrongBucket, "wrong.jsonl"), contents, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := ListSessionPathsContext(context.Background(), root, cwdA, true); len(got) != 2 {
+	if got := listable(); len(got) != 2 {
 		t.Fatalf("all scope included invalid session paths: %q", got)
+	}
+}
+
+func TestSessionFilesReportsUnreadableBucket(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	root := t.TempDir()
+	if files, err := SessionFiles(context.Background(), root); err != nil || files != nil {
+		t.Fatalf("missing sessions dir = %v, %v", files, err)
+	}
+	s, err := NewSession(root, t.TempDir(), "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	bucket := filepath.Dir(s.Path)
+	if err := os.Chmod(bucket, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(bucket, 0o755) })
+	if _, err := SessionFiles(context.Background(), root); err == nil {
+		t.Fatal("unreadable bucket not reported")
 	}
 }
 
@@ -92,39 +126,6 @@ func TestManagedSessionMetaRejectsWrongBucket(t *testing.T) {
 	}
 	if _, err := ManagedSessionMeta(context.Background(), root, wrongPath); err == nil {
 		t.Fatal("wrong-bucket session was accepted")
-	}
-}
-
-func TestReadSessionSearchSegmentsIncludesOnlyUserAssistantText(t *testing.T) {
-	root := t.TempDir()
-	cwd := t.TempDir()
-	s, err := NewSession(root, cwd, "provider", "model", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, msg := range []provider.Message{
-		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "find this user sentence"}}},
-		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "find this assistant sentence"}, provider.ToolCallBlock{ID: "call", Name: "secret-tool"}}},
-		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "call", Content: []provider.Content{provider.TextBlock{Text: "never expose tool result"}}}}},
-		{Role: provider.RoleDeveloper, Content: []provider.Content{provider.TextBlock{Text: "never expose developer text"}}},
-	} {
-		if err := s.AppendMessage(msg); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	segments, err := ReadSessionSearchSegments(context.Background(), s.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) != 2 {
-		t.Fatalf("segments = %#v, want exactly user and assistant text", segments)
-	}
-	if segments[0].Text != "find this user sentence" || segments[1].Text != "find this assistant sentence" {
-		t.Fatalf("segments = %#v", segments)
 	}
 }
 

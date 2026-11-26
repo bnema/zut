@@ -752,7 +752,7 @@ func runClientWithArgs(args Args, rawArgs []string, version string) error {
 	if err != nil {
 		return err
 	}
-	if code := runTUIClient(ctx, "", spec, os.Stderr); code != 0 {
+	if code := runTUIClient(ctx, "", spec, os.Stderr, version); code != 0 {
 		os.Exit(code)
 	}
 	return nil

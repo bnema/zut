@@ -74,8 +74,8 @@ func ScanStoredSessionGroups(sessionsRoot string) ([]StoredSessionGroup, []Sessi
 			return nil
 		}
 		// Tree-navigation branches stay visible through /session tree;
-		// pruning them here would silently remove sessions the picker
-		// deliberately hides from the flat list.
+		// pruning them here would silently remove sessions the Finder
+		// deliberately hides from its list.
 		if meta.HideFromSessions {
 			return nil
 		}

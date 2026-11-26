@@ -591,6 +591,8 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	}
 	i.resetTranscriptRenderLocked()
 	i.stableChatCacheValid = false
+	// Search matches are view indexes into the replaced transcript.
+	i.closeSearchReaderLocked()
 	i.stream.Reset()
 	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
@@ -1010,7 +1012,7 @@ const (
 	sessionResultSuccessor
 	sessionResultExit
 	// sessionResultSwitch moves the view to another daemon session
-	// (/sessions pick, /fork). A failure keeps the current session.
+	// (Finder pick, /fork). A failure keeps the current session.
 	sessionResultSwitch
 	// sessionResultKeepCurrent leaves the controlling stream untouched.
 	sessionResultKeepCurrent
@@ -1149,6 +1151,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			return true
 		}
 		i.sessionGen++
+		i.closeSearchReaderLocked()
 		if i.subCancel != nil {
 			i.subCancel()
 		}
@@ -1161,9 +1164,10 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		if res.treeSelection != nil {
 			i.sessionLoading = false
 		}
-		i.sessionDialog.Close()
 		i.statusErr, i.statusOK = "", ""
 		i.mu.Unlock()
+		// Already in the target session: jump without a switch.
+		i.runPendingFinderJump(i.currentSessionPath())
 		i.invalidate()
 		return false
 	case sessionResultSwitch:
@@ -1172,11 +1176,14 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 		}
 		if res.err != nil {
 			i.statusErr, i.statusOK = res.err.Error(), ""
+			orphan := i.failPendingFinderJumpLocked()
 			i.mu.Unlock()
+			removeFinderOrphanFork(orphan)
 			i.invalidate()
 			return false
 		}
 		i.sessionGen++
+		i.closeSearchReaderLocked()
 		// Cancelling the old controlling stream releases it (detach).
 		if i.subCancel != nil {
 			i.subCancel()
@@ -1216,11 +1223,12 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 	i.mu.Unlock()
 	i.syncPortDialogs()
 	i.scrollToBottom()
+	i.runPendingFinderJump(i.currentSessionPath())
 	i.invalidate()
 	return false
 }
 
-// SwitchSession replaces the attached session with port (/sessions live
+// SwitchSession replaces the attached session with port (Finder live
 // pick, /fork) and rehydrates the view. Pending async results for the old
 // session are discarded. session.Port has no Detach; releasing the old
 // session is the caller's job (cfg.Detach / SessionClient).
@@ -1228,6 +1236,7 @@ func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port ses
 	i.stopSubscription()
 	i.mu.Lock()
 	i.sessionGen++
+	i.closeSearchReaderLocked()
 	i.port = port
 	if port != nil {
 		i.portMode.Store(true)

@@ -164,7 +164,7 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 // of the created session file, ready to pass to OpenSession.
 //
 // The imported session is a first-class zut session: it'll show up
-// in /sessions, /jump, and on-disk summaries just like any other.
+// in the Finder, /jump, and on-disk summaries just like any other.
 // Messages and usage rows are preserved verbatim.
 func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	if srcPath == "" {
@@ -289,7 +289,7 @@ func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (s
 }
 
 // BranchSessionHidden creates a branch that participates in /session tree but
-// is hidden from the flat /sessions picker. Used for in-place tree navigation.
+// is hidden from the Finder session list. Used for in-place tree navigation.
 func BranchSessionHidden(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
 	return branchSession(context.Background(), parentPath, root, cwd, version, upToMessageIdx, true)
 }
@@ -326,6 +326,30 @@ func branchSession(ctx context.Context, parentPath, root, cwd, version string, u
 	compactHandoff := compactHandoffAtBranch(snapshot.Meta, snapshot.Messages, limit)
 	goal := goalAtBranch(snapshot.Meta, snapshot.Messages, limit)
 	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions, extensionState, compactHandoff, goal)
+}
+
+// ForkSessionToCWD copies the full effective transcript of a non-live session
+// into a new visible session owned by cwd. The parent file is only read; the
+// new session records the parent ID and starts from the parent's latest
+// extension state, compaction handoff, goal, and plan.
+func ForkSessionToCWD(ctx context.Context, parentPath, root, cwd, version string) (string, error) {
+	if parentPath == "" {
+		return "", errors.New("fork: parent path is empty")
+	}
+	if cwd == "" || !filepath.IsAbs(cwd) {
+		return "", fmt.Errorf("fork: cwd %q must be an absolute path", cwd)
+	}
+	snapshot, err := readSessionSnapshot(ctx, parentPath)
+	if err != nil {
+		return "", fmt.Errorf("fork: read parent snapshot: %w", err)
+	}
+	if err := contextErr(ctx); err != nil {
+		return "", err
+	}
+	limit := len(snapshot.Messages)
+	compactHandoff := compactHandoffAtBranch(snapshot.Meta, snapshot.Messages, limit)
+	goal := goalAtBranch(snapshot.Meta, snapshot.Messages, limit)
+	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, false, snapshot.ExtensionState, compactHandoff, goal)
 }
 
 // BranchSessionHiddenFromHistory creates a hidden tree branch from a

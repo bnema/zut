@@ -379,21 +379,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.applySettingToggle("auto_subagents_enabled", enabled)
 	case "/settings":
 		i.openSettingsDialog()
-	case "/sessions":
-		if i.cfg.SessionsDisabled {
-			i.mu.Lock()
-			i.statusErr = "sessions are disabled by --no-session"
-			i.statusOK = ""
-			i.mu.Unlock()
-			break
-		}
-		i.mu.Lock()
-		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
-		i.sessionSearches = nil
-		i.mu.Unlock()
-		if i.portMode.Load() {
-			i.loadLiveSessions(ctx)
-		}
+	case "/find":
+		i.openFinder(ctx)
 	case "/fork":
 		if i.portMode.Load() {
 			i.portOpenFork()
@@ -1096,6 +1083,17 @@ func (i *Interactive) openJumpDialog(args []string) {
 }
 func (i *Interactive) applyJumpSelection(msgIdx, turnNo int) {
 	cols := i.lastCols()
+	// A resumed transcript renders only its tail; widen it so the target
+	// gets an anchor. Redraw keeps expanding from here as the user scrolls.
+	i.mu.Lock()
+	if limit := i.view.TailLimit; limit > 0 && msgIdx >= 0 && msgIdx < len(i.view.Messages)-limit {
+		i.view.TailLimit = len(i.view.Messages) - msgIdx
+		if i.view.TailLimit >= len(i.view.Messages) {
+			i.view.TailLimit = 0
+		}
+		i.chatCacheValid = false
+	}
+	i.mu.Unlock()
 	chat, anchors := i.view.BuildWithAnchors(cols)
 	var row int
 	found := false
@@ -1168,47 +1166,9 @@ func (i *Interactive) canResumeSessionSelection() bool {
 	return !busy && !queued && ag != nil && ag.QueuedMessageCount() == 0
 }
 
-// applySessionDeletion permanently removes a session selected in the
-// picker. The active session is protected because unlinking its open file
-// would lose subsequent transcript writes on Unix and behaves differently
-// on Windows.
-func (i *Interactive) applySessionDeletion(path string) {
-	// The attached session reports its own file; without one the legacy
-	// path callback is required to protect the active session (L16 SHIM).
-	if !i.portMode.Load() && i.cfg.CurrentSessionPath == nil {
-		i.mu.Lock()
-		i.statusErr = "session deletion is not wired in this build"
-		i.statusOK = ""
-		i.mu.Unlock()
-		return
-	}
-	current := i.currentSessionPath()
-	if current != "" && filepath.Clean(current) == filepath.Clean(path) {
-		i.mu.Lock()
-		i.statusErr = "cannot delete the active session; resume another session first"
-		i.statusOK = ""
-		i.mu.Unlock()
-		return
-	}
-	if err := core.DeleteSession(path); err != nil {
-		i.mu.Lock()
-		i.statusErr = "delete session: " + err.Error()
-		i.statusOK = ""
-		i.mu.Unlock()
-		return
-	}
-	// Remove runs under the mutex: the render-scheduler goroutine assembles
-	// state and renders the dialog concurrently while it stays active.
-	i.mu.Lock()
-	i.sessionDialog.Remove(path)
-	i.statusOK = "deleted session: " + friendlyPath(path)
-	i.statusErr = ""
-	i.mu.Unlock()
-}
-
 func (i *Interactive) applySessionSelection(path string) {
 	if i.portMode.Load() {
-		i.portResumeSession(path)
+		i.portResumeSession(path, "")
 		return
 	}
 	if i.cfg.LoadSession == nil {
@@ -1248,6 +1208,7 @@ func (i *Interactive) applySessionSelection(path string) {
 }
 
 func (i *Interactive) finishSessionSelection(path string, err error) {
+	defer i.queuePendingFinderJump(path, err)
 	if err != nil {
 		i.restoreFailedSessionTitle()
 		i.mu.Lock()
@@ -1261,6 +1222,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 	i.restoreLoadedSessionTitle()
 	i.mu.Lock()
 	i.sessionLoading = false
+	i.closeSearchReaderLocked() // matches index the replaced transcript
 	i.resetNestedRecapsLocked()
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""
@@ -1527,83 +1489,7 @@ func (i *Interactive) showLoginResult(success bool, message string) {
 	i.dialog.ShowResult(success, message)
 }
 
-// loadLiveSessions owns one serial poller for the current dialog lifetime.
-func (i *Interactive) loadLiveSessions(ctx context.Context) {
-	client := i.SessionClient()
-	if client == nil {
-		return
-	}
-	i.mu.Lock()
-	if !i.sessionDialog.Active() {
-		i.mu.Unlock()
-		return
-	}
-	if i.sessionDialog.liveCancel != nil {
-		i.sessionDialog.liveCancel()
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	i.sessionDialog.liveCancel = cancel
-	generation := i.sessionDialog.liveGeneration
-	i.mu.Unlock()
-	ticker := time.NewTicker(time.Second)
-	go func() {
-		defer ticker.Stop()
-		defer cancel()
-		i.refreshLiveSessions(ctx, client, i.SessionID(), generation, ticker.C)
-	}()
-}
-
-// refreshLiveSessions accepts ticks so lifecycle tests can drive polling without
-// wall-clock synchronization. Calls and loop applications are strictly serial.
-func (i *Interactive) refreshLiveSessions(ctx context.Context, client SessionClient, self session.ID, generation uint64, ticks <-chan time.Time) {
-	lastError := ""
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		callCtx, cancel := context.WithTimeout(ctx, i.sessionCallTimeout())
-		infos, err := client.List(callCtx)
-		cancel()
-		message := ""
-		if err != nil {
-			message = "sessions: list live: " + err.Error()
-		}
-		showError := message != "" && message != lastError
-		lastError = message
-		applied := make(chan struct{})
-		apply := func() {
-			defer close(applied)
-			i.mu.Lock()
-			defer i.mu.Unlock()
-			if ctx.Err() != nil || !i.sessionDialog.Active() || i.sessionDialog.liveGeneration != generation {
-				return
-			}
-			if err == nil {
-				i.sessionDialog.SetLive(infos, self)
-			} else if showError {
-				i.statusErr, i.statusOK = message, ""
-			}
-			i.invalidate()
-		}
-		select {
-		case i.loopCalls <- apply:
-		case <-ctx.Done():
-			return
-		}
-		select {
-		case <-applied:
-		case <-ctx.Done():
-			return
-		}
-		select {
-		case <-ticks:
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// portAttachSession switches to live session id (/sessions live pick).
+// portAttachSession switches to live session id (Finder live pick).
 func (i *Interactive) portAttachSession(id session.ID) {
 	if id == i.SessionID() {
 		return
@@ -1612,8 +1498,11 @@ func (i *Interactive) portAttachSession(id session.ID) {
 }
 
 // portResumeSession asks the daemon to resume the on-disk session at path.
-func (i *Interactive) portResumeSession(path string) {
-	cwd := i.SessionInfo().CWD
+// cwd is the workspace for a newly created session; "" keeps the current one.
+func (i *Interactive) portResumeSession(path, cwd string) {
+	if cwd == "" {
+		cwd = i.SessionInfo().CWD
+	}
 	i.portSwitchAsync("resume", func(ctx context.Context, client SessionClient) (session.ID, error) {
 		// Resolve against the daemon, not the possibly empty or stale picker.
 		infos, err := client.List(ctx)

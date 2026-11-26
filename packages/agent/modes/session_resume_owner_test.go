@@ -10,8 +10,6 @@ import (
 
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/session/sessionmocks"
-	"github.com/bnema/zut/packages/core"
-	"github.com/bnema/zut/packages/tui"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +29,7 @@ func awaitResumeResult(t *testing.T, i *Interactive) sessionResult {
 }
 
 func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
-	for _, scenario := range []string{"tab", "initial-list-pending", "self", "symlink-alias"} {
+	for _, scenario := range []string{"self", "symlink-alias"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -52,38 +50,7 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 			}
 			infos := []session.Info{{ID: owner, SessionPath: path}}
 			client := newMockSessionClient(t)
-			i := &Interactive{client: client, sessionID: "self", portInfo: session.Info{CWD: root}, runCtx: ctx, sessionDialog: newSessionDialog(), sessionResults: make(chan sessionResult, 1), loopCalls: make(chan func(), 1)}
-			i.sessionDialog.active = true
-			var releaseInitial chan struct{}
-			if scenario == "tab" {
-				i.sessionDialog.SetLive(infos, "self")
-				act := i.sessionDialog.HandleKey(tui.Key{Kind: tui.KeyTab})
-				require.True(t, act.ToggleScope)
-				i.sessionDialog.Open(ctx, root, root, true)
-				defer i.sessionDialog.Close()
-				require.Equal(t, infos, i.sessionDialog.live)
-			}
-			if scenario == "initial-list-pending" {
-				started, release := make(chan struct{}), make(chan struct{})
-				client.EXPECT().List(mock.Anything).RunAndReturn(func(callCtx context.Context) ([]session.Info, error) {
-					close(started)
-					select {
-					case <-release:
-						return infos, nil
-					case <-callCtx.Done():
-						return nil, callCtx.Err()
-					}
-				}).Once()
-				i.loadLiveSessions(ctx)
-				select {
-				case <-started:
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				case <-time.After(5 * time.Second):
-					t.Fatal("initial list did not start")
-				}
-				releaseInitial = release
-			}
+			i := &Interactive{client: client, sessionID: "self", portInfo: session.Info{CWD: root}, runCtx: ctx, sessionResults: make(chan sessionResult, 1), loopCalls: make(chan func(), 1)}
 			client.EXPECT().List(mock.Anything).Return(infos, nil).Once()
 			var port session.Port
 			if scenario == "self" {
@@ -94,11 +61,7 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 				port = targetPort(t, owner)
 				client.EXPECT().Attach(mock.Anything, session.ID(owner)).Return(port, nil).Once()
 			}
-			i.sessionDialog.sessions = []core.SessionSummary{{Path: pick}}
-			i.sessionDialog.liveFocus = false
-			act := i.sessionDialog.HandleKey(tui.Key{Kind: tui.KeyEnter})
-			require.True(t, act.Select)
-			i.portResumeSession(act.Path)
+			i.portResumeSession(pick, "")
 			res := awaitResumeResult(t, i)
 			require.NoError(t, res.err)
 			require.Equal(t, session.ID(owner), res.id)
@@ -114,7 +77,6 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 				require.Equal(t, (<-chan session.Event)(events), i.events)
 				require.Equal(t, beforeGen, i.sessionGen)
 				require.Empty(t, canceled)
-				require.False(t, i.sessionDialog.Active())
 				require.Empty(t, i.statusOK)
 				require.Empty(t, i.statusErr)
 				client.AssertNotCalled(t, "Attach", mock.Anything, mock.Anything)
@@ -122,17 +84,6 @@ func TestResumeResolvesDaemonOwnerWithoutPicker(t *testing.T) {
 				require.Equal(t, port, res.port)
 			}
 			client.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
-			if releaseInitial != nil {
-				close(releaseInitial)
-				// Closing the picker cancels the poller; it need not enqueue a
-				// stale result. Any already-queued result must be harmless.
-				select {
-				case apply := <-i.loopCalls:
-					apply()
-					require.False(t, i.sessionDialog.Active())
-				default:
-				}
-			}
 		})
 	}
 }
@@ -141,7 +92,7 @@ func TestResumeListFailureDoesNotCreate(t *testing.T) {
 	client := newMockSessionClient(t)
 	client.EXPECT().List(mock.Anything).Return(nil, errors.New("list unavailable")).Once()
 	i := &Interactive{client: client, sessionResults: make(chan sessionResult, 1)}
-	i.portResumeSession("missing.jsonl")
+	i.portResumeSession("missing.jsonl", "")
 	require.ErrorContains(t, awaitResumeResult(t, i).err, "list live sessions: list unavailable")
 	client.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }

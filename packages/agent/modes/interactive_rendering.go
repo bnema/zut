@@ -592,10 +592,25 @@ func (i *Interactive) redraw() {
 			dialogID = "rescue-error"
 		}
 		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
-	case i.sessionDialog.Active():
-		dialogID = "sessions"
-		i.sessionDialog.MaxRows = max(3, paneMax.ContentHeight()-5)
-		dialog = i.sessionDialog.Render(i.cfg.Theme, dialogWidth)
+	case i.confirmDialog.Focused() && (i.finderResume.Active() || i.searchReader.Active() || i.finder.Active()):
+		// A tool confirmation that arrived over a finder view owns the keys
+		// (handleKey routes them to it first), so it must also be what is
+		// shown; the finder view returns once it is answered.
+		dialogID = "confirmation"
+		if i.btwDialog.Active() {
+			dialog = renderBtwConfirmation(i.cfg.Theme, dialogWidth, i.btwDialog, i.confirmDialog)
+		} else {
+			dialog = i.confirmDialog.Render(i.cfg.Theme, dialogWidth)
+		}
+	case i.finderResume.Active():
+		dialogID = "finder-resume"
+		dialog = i.finderResume.Render(i.cfg.Theme, dialogWidth)
+	case i.searchReader.Active():
+		dialogID = "search-reader"
+		dialog = i.renderSearchReaderLocked(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
+	case i.finder.Active():
+		dialogID = "finder"
+		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.residentSubagentsDialog.Active():
 		dialogID = "subagents"
 		dialog = i.residentSubagentsDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
@@ -695,7 +710,7 @@ func (i *Interactive) redraw() {
 	var suggest []string
 	// Slash popup renders even while the agent is busy so the user
 	// can queue a destructive command (/clear, /compact, /logout,
-	// /model) or a read-only one (/help, /jump, /sessions, etc.)
+	// /model) or a read-only one (/help, /jump, /find, etc.)
 	// without waiting for the current turn to finish. The dispatcher
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
@@ -1110,8 +1125,8 @@ func (i *Interactive) redraw() {
 			cursorCol = 0
 		}
 	}
-	if i.sessionDialog.Active() {
-		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
+	if i.finder.Active() {
+		if r, c := i.finder.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 			cursorInDialog = true

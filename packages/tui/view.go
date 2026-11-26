@@ -1296,7 +1296,7 @@ func toolThemeKey(theme Theme) uint64 {
 	}
 	for _, c := range []TerminalColor{
 		theme.FG, theme.Muted, theme.Accent, theme.User, theme.UserBubbleBG,
-		theme.UserBubbleFG, theme.Assistant, theme.Tool, theme.ToolOut,
+		theme.UserBubbleFG, theme.SearchLineBG, theme.Assistant, theme.Tool, theme.ToolOut,
 		theme.Error, theme.Warning, theme.Spinner, theme.ThinkingMax,
 		theme.SelectionBG, theme.SelectionFG, theme.Terminal.Foreground,
 		theme.Terminal.Background,
