@@ -386,12 +386,12 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		// The host already tracks the accepted turn; end it like a failed
-		// start. Record before Close, which closes the journal.
+		// The host already tracks the accepted turn: end it as a turn that
+		// never started. Record before Close, which closes the journal.
 		err := errors.New("resident manager: closed")
 		_ = journal.RecordTurnInterrupted(spec, spec.InitialTurnID)
 		_ = child.Close(context.Background())
-		m.reportCompletion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err})
+		m.reportCompletion(ResidentCompletion{ChildID: spec.ID, TurnID: spec.InitialTurnID, Task: task, Err: err, NotStarted: true})
 		return nil, err
 	}
 	m.children[spec.ID] = child

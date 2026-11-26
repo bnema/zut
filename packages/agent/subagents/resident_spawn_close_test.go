@@ -38,13 +38,16 @@ func TestResidentSpawnClosedAfterAcceptanceReportsCompletion(t *testing.T) {
 	if len(completions) != 1 {
 		t.Fatalf("completions = %d, want one for the accepted turn", len(completions))
 	}
-	got := completions[0]
-	if got.ChildID != "late" || got.TurnID != "initial" || got.Task != "task" || got.Err == nil {
-		t.Fatalf("completion = %#v, want failed late/initial", got)
+	got := completions[0].Completion()
+	if got.AgentID != "late" || got.TurnID != "initial" || got.Status != CompletionDropped || got.Error == "" {
+		t.Fatalf("completion = %#v, want late/initial dropped with its cause", got)
 	}
 	records, err := ReadResidentJournal(filepath.Join(root, spec.ID, residentTranscriptName))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		t.Fatal("journal has no records")
 	}
 	last := records[len(records)-1]
 	if last.Type != residentRecordInterrupted || last.TurnID != "initial" {
