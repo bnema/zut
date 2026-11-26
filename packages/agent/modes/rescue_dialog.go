@@ -18,11 +18,15 @@ import (
 // logged in to — no static fallback config.
 type rescueDialog struct {
 	active   bool
-	all      []provider.Model // candidates, sorted
-	view     []provider.Model // filtered view (typed query)
+	all      []provider.PickerModel // candidates, picker order
+	texts    []pickerModelText      // search text of all, same index
+	view     []provider.PickerModel // filtered view (typed query)
 	cursor   int
+	viewTop  int
+	queryRow int    // row of the query line in the last Render
+	listRows int    // list height of the last Render
 	current  string // currently active model id (excluded from view)
-	query    string
+	query    pickerQuery
 	failedAt string // failed provider/model pair, e.g. "kimi/kimi-for-coding"
 	reason   string // complete diagnostic, including provider response
 	prompt   string // the user prompt that should be retried on Select
@@ -50,7 +54,7 @@ func newRescueDialog() *rescueDialog { return &rescueDialog{} }
 func (d *rescueDialog) Open(current string, loggedInProviders []string, failedProvider, failedModel, reason, prompt string) {
 	d.active = true
 	d.current = current
-	d.query = ""
+	d.query.Reset()
 	d.details = false
 	d.scroll = 0
 	d.reason = reason
@@ -80,27 +84,39 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 		}
 		filtered = append(filtered, m)
 	}
-	d.all = nil
-	for _, m := range provider.PickerModels(filtered) {
-		d.all = append(d.all, m.Model)
-	}
-	d.refilter()
+	d.setCandidates(provider.PickerModels(filtered))
 }
 
 // OpenPending shows a Port rescue request using the session's candidates.
 func (d *rescueDialog) OpenPending(id string, opts session.RescueOptions, onAnswer func([]tools.QuestionAnswer)) {
 	d.Close()
 	d.active = true
-	d.current, d.query, d.prompt, d.failedAt = "", "", "", ""
+	d.current, d.prompt, d.failedAt = "", "", ""
+	d.query.Reset()
 	d.details, d.scroll = false, 0
 	d.reason = opts.Error
 	d.pendingID, d.onAnswer = id, onAnswer
-	d.all = nil
+	var candidates []provider.PickerModel
+	lookup := provider.ModelLookup()
 	for _, c := range opts.Candidates {
-		if p, m, ok := strings.Cut(c, "/"); ok && p != "" && m != "" {
-			d.all = append(d.all, provider.Model{Provider: p, ID: m})
+		p, id, ok := strings.Cut(c, "/")
+		if !ok || p == "" || id == "" {
+			continue
 		}
+		// Catalog metadata feeds the row name and the detail line; the
+		// session's candidate order is kept.
+		m, found := lookup(p, id)
+		if !found {
+			m = provider.Model{Provider: p, ID: id}
+		}
+		candidates = append(candidates, provider.PickerModel{Model: m})
 	}
+	d.setCandidates(candidates)
+}
+
+func (d *rescueDialog) setCandidates(models []provider.PickerModel) {
+	d.all = models
+	d.texts = pickerModelTexts(models)
 	d.refilter()
 }
 
@@ -128,19 +144,17 @@ func (d *rescueDialog) answer(answers []tools.QuestionAnswer) {
 func (d *rescueDialog) Active() bool { return d != nil && d.active }
 
 func (d *rescueDialog) refilter() {
-	needle := normalizeModelQuery(d.query)
-	if needle == "" {
-		d.view = append([]provider.Model(nil), d.all...)
-	} else {
-		out := make([]provider.Model, 0, len(d.all))
-		for _, m := range d.all {
-			if strings.Contains(normalizeModelQuery(m.Provider+" "+m.ID+" "+m.DisplayName), needle) {
-				out = append(out, m)
-			}
-		}
-		d.view = out
+	d.view = rankPickerModels(d.all, d.texts, d.query.String(), nil)
+	d.cursor, d.viewTop = 0, 0
+}
+
+// CursorPos returns the row/col of the query caret in the lines Render
+// returned, or -1, -1 in the error view, which has no query line.
+func (d *rescueDialog) CursorPos() (row, col int) {
+	if !d.Active() || d.details {
+		return -1, -1
 	}
-	d.cursor = 0
+	return d.queryRow, d.query.Caret()
 }
 
 // Render mirrors modelDialog so a rescue prompt feels identical to
@@ -175,79 +189,93 @@ func (d *rescueDialog) Render(th tui.Theme, width, height int) []string {
 		}
 		return append(lines, frameRule(th, width))
 	}
+	// The spacer keeps the pane frame from inserting one (which would
+	// shift the caret row). The list gets up to rescueListRows rows; on a
+	// short pane the footer, then the detail (with its rule), then error
+	// preview rows give way first.
+	lines = append(lines, strings.Repeat(" ", width))
+	errLines := 0
 	if d.reason != "" {
-		for _, row := range errorRows[:min(3, len(errorRows))] {
-			lines = append(lines, th.FGColor(th.Warning, row))
+		errLines = min(3, len(errorRows))
+	}
+	footer, detail := true, true
+	rows := min(rescueListRows, max(len(d.view), 1))
+	if height > 0 {
+		want := min(rows, modelPickerMinRows)
+		chrome := func() int {
+			n := 1 + errLines + 3 // spacer, error, hint, query, rule
+			if detail {
+				n += 2
+			}
+			if footer {
+				n++
+			}
+			return n
 		}
-		for _, row := range wrapDialogTextRows("tab: full error", width) {
-			lines = append(lines, th.FGColor(th.Muted, row))
+	shrink:
+		for height-chrome() < want {
+			switch {
+			case footer:
+				footer = false
+			case detail:
+				detail = false
+			case errLines > 0:
+				errLines--
+			default:
+				break shrink // nothing left to drop: one list row
+			}
 		}
+		rows = min(rows, max(height-chrome(), 1))
+	}
+	d.listRows = rows
+	for _, row := range errorRows[:errLines] {
+		lines = append(lines, th.FGColor(th.Warning, row))
 	}
 
-	hint := "retry this turn with another model (↑/↓, enter, esc to cancel)"
-	if d.query != "" {
-		hint = fmt.Sprintf("filter: %s (%d match)", d.query, len(d.view))
-		if len(d.view) != 1 {
-			hint = fmt.Sprintf("filter: %s (%d matches)", d.query, len(d.view))
-		}
-	} else {
-		hint += " - type to filter"
-	}
-	lines = append(lines, th.FGColor(th.Muted, hint))
+	hint := "retry this turn with another model - type to filter"
+	lines = append(lines, th.FGColor(th.Muted, pickerFit(" "+hint, width)))
+	d.queryRow = len(lines)
+	lines = append(lines, d.query.Render(th, width))
+	lines = append(lines, frameRule(th, width))
 
 	if len(d.view) == 0 {
+		msg := " no models match " + fmt.Sprintf("%q", d.query.String())
 		if len(d.all) == 0 {
-			lines = append(lines, th.FGColor(th.Muted, "  no other models available — log in to another provider with /login"))
-		} else {
-			lines = append(lines, th.FGColor(th.Muted, "  no models match "+fmt.Sprintf("%q", d.query)))
+			msg = " no other models available — log in to another provider with /login"
 		}
+		lines = append(lines, th.FGColor(th.Muted, pickerFit(msg, width)))
+	} else {
+		d.viewTop = clampViewTop(d.viewTop, d.cursor, rows, len(d.view))
+		end := min(len(d.view), d.viewTop+rows)
+		pickerRows := make([]pickerRow, 0, end-d.viewTop)
+		for _, m := range d.view[d.viewTop:end] {
+			pickerRows = append(pickerRows, modelPickerRow(m, true, false))
+		}
+		cols := pickerListColumns(pickerRows)
+		for n, row := range pickerRows {
+			lines = append(lines, renderPickerRow(th, row, d.viewTop+n == d.cursor, cols, width))
+		}
+	}
+	if detail {
 		lines = append(lines, frameRule(th, width))
-		return lines
-	}
-
-	const visible = 12
-	start := 0
-	end := len(d.view)
-	if end > visible {
-		start = d.cursor - visible/2
-		if start < 0 {
-			start = 0
+		text := ""
+		if d.cursor < len(d.view) {
+			text = " " + modelDetail(d.view[d.cursor])
 		}
-		if start+visible > end {
-			start = end - visible
-		}
-		end = start + visible
+		lines = append(lines, th.FGColor(th.FG, pickerFit(text, width)))
 	}
-	for i := start; i < end; i++ {
-		m := d.view[i]
-		reason := " "
-		if m.Reasoning {
-			reason = "✦"
+	if footer {
+		help := " ↑↓ pick · enter retry · tab full error · esc cancel"
+		if len(d.view) == 0 {
+			help = " tab full error · esc cancel"
 		}
-		tag := ""
-		switch {
-		case m.Speculative:
-			tag = "[speculative] "
-		case m.Source == "live":
-			tag = "[live] "
-		}
-		plain := fmt.Sprintf("   %-10s %-28s %s  %s%s", m.Provider, m.ID, reason, tag, m.DisplayName)
-		if i == d.cursor {
-			lines = append(lines, th.PadHighlight(plain, width))
-		} else {
-			lines = append(lines, th.FGColor(th.Muted, plain))
-		}
+		lines = append(lines, th.FGColor(th.Muted, pickerFit(help, width)))
 	}
-	if start > 0 {
-		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more above", start)))
-	}
-	if end < len(d.view) {
-		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
-	}
-
-	lines = append(lines, frameRule(th, width))
 	return lines
 }
+
+// rescueListRows caps the rescue list height.
+const rescueListRows = 12
 
 func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 	if k.Kind == tui.KeyTab {
@@ -281,21 +309,8 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 		if d.cursor < len(d.view)-1 {
 			d.cursor++
 		}
-	case tui.KeyBackspace:
-		if len(d.query) > 0 {
-			r := []rune(d.query)
-			d.query = string(r[:len(r)-1])
-			d.refilter()
-		}
 	case tui.KeyPaste:
-		d.query += singleLinePaste(k.Paste)
-		d.refilter()
-	case tui.KeyRune:
-		if k.Alt || k.Ctrl {
-			break
-		}
-		if k.Rune >= 0x20 && k.Rune < 0x7f {
-			d.query += string(k.Rune)
+		if d.query.InsertLine(k.Paste) {
 			d.refilter()
 		}
 	case tui.KeyEsc:
@@ -315,6 +330,10 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 		prompt := d.prompt
 		d.Close()
 		return rescueDialogAction{Select: true, Provider: m.Provider, Model: m.ID, Prompt: prompt}
+	default:
+		if !k.Alt && d.query.Edit(k) {
+			d.refilter()
+		}
 	}
 	return rescueDialogAction{}
 }

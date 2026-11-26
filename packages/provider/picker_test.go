@@ -97,3 +97,18 @@ func TestPickerModelsKeepsSnapshotWithoutAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestModelLookupMatchesFindModel(t *testing.T) {
+	lookup := ModelLookup()
+	want, err := FindModel("anthropic", "claude-opus-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := lookup("anthropic", "claude-opus-4-5")
+	if !ok || got.ID != want.ID || got.DisplayName != want.DisplayName {
+		t.Fatalf("lookup = %+v, %v; want %+v", got, ok, want)
+	}
+	if _, ok := lookup("anthropic", "no-such-model"); ok {
+		t.Fatal("lookup found an unknown model")
+	}
+}

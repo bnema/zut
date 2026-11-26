@@ -909,7 +909,7 @@ The status-line context meter compares last-turn usage with the advertised conte
 
 Recoverable errors open a **rescue** model picker over chat: expired token (`401`), permission denied (`403`), rate limit (`429`), outage (`502`/`503`/`504`), or transient network failure.
 
-Rescue uses `/model`'s vertical fuzzy list, excluding the failed model and including only providers available through env vars, `auth.json`, Kimi CLI fallback, or ollama. `↑`/`↓` selects; `enter` retries the **same prompt**; `esc` dismisses. `tab` shows the full, pane-wrapped error; scroll with arrows or `PageUp`/`PageDown`, then `tab`/`esc` returns.
+Rescue uses `/model`'s list without tabs or groups (rows read `provider · name`, with the same fuzzy query and detail line), excluding the failed model and including only providers available through env vars, `auth.json`, Kimi CLI fallback, or ollama. `↑`/`↓` selects; `enter` retries the **same prompt**; `esc` dismisses. `tab` shows the full, pane-wrapped error; scroll with arrows or `PageUp`/`PageDown`, then `tab`/`esc` returns.
 
 Shared OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex HTTP streaming clients silently retry transient HTTP failures and connection-reset / EOF-before-headers errors up to four times (250ms, 750ms, 750ms, 750ms). Open streams get up to five reconnect attempts.
 
