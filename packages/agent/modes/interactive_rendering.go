@@ -592,12 +592,22 @@ func (i *Interactive) redraw() {
 			dialogID = "rescue-error"
 		}
 		dialog = i.rescueDialog.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
+	case i.confirmDialog.Focused() && (i.finderResume.Active() || i.searchReader.Active() || i.finder.Active()):
+		// A tool confirmation that arrived over a finder view owns the keys
+		// (handleKey routes them to it first), so it must also be what is
+		// shown; the finder view returns once it is answered.
+		dialogID = "confirmation"
+		if i.btwDialog.Active() {
+			dialog = renderBtwConfirmation(i.cfg.Theme, dialogWidth, i.btwDialog, i.confirmDialog)
+		} else {
+			dialog = i.confirmDialog.Render(i.cfg.Theme, dialogWidth)
+		}
 	case i.finderResume.Active():
 		dialogID = "finder-resume"
 		dialog = i.finderResume.Render(i.cfg.Theme, dialogWidth)
 	case i.searchReader.Active():
 		dialogID = "search-reader"
-		dialog = i.searchReader.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
+		dialog = i.renderSearchReaderLocked(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.finder.Active():
 		dialogID = "finder"
 		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())

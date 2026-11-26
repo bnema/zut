@@ -243,12 +243,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	finderActive := i.finder.Active()
 	readerActive := i.searchReader.Active()
 	i.mu.Unlock()
-	if readerActive {
-		i.handleSearchReaderKey(k)
-		return false
-	}
+	// Same order as redraw: keys go to the view that is shown.
 	if resumeActive {
 		i.handleFinderResumeKey(k)
+		return false
+	}
+	if readerActive {
+		i.handleSearchReaderKey(k)
 		return false
 	}
 	if finderActive {

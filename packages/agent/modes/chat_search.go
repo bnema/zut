@@ -16,35 +16,43 @@ import (
 // searchReader is a modal, read-only view of a transcript snapshot opened
 // on a search hit. zut's main view is terminal scrollback that cannot be
 // scrolled or restyled after printing, so matches are shown here instead.
-// Guarded by Interactive.mu.
+// Fields are guarded by Interactive.mu; view is only touched by the build
+// goroutine (one at a time, see building).
 type searchReader struct {
 	terms   []string
-	view    *tui.View // snapshot; never the live view
-	matches []int     // message indexes in view.Messages, ascending
-	cur     int       // position in matches
+	view    *tui.View // private snapshot; never the live view
+	target  searchReaderTarget
+	matches []int // message indexes in view.Messages, ascending
+	cur     int   // position in matches
+	ready   bool  // first build published
 
-	// Built rows, cached per width; rebuilt only on resize.
+	// Built rows, cached per width; rebuilt off the lock on resize.
 	width    int
 	rows     []string
 	anchors  []tui.MessageAnchor
+	building bool
 	top      int  // first visible row
 	recenter bool // place the current match near the top on next render
 	page     int  // body rows of the last render, for PgUp/PgDn
 }
 
-func (r *searchReader) Active() bool { return r != nil }
-
-func (i *Interactive) searchReaderOpen() bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.searchReader != nil
+// searchReaderTarget says where to open the reader. hit, when set, is
+// resolved against the snapshot; otherwise focus is a message index. note
+// is shown in the status once the reader resolved (opened or not).
+type searchReaderTarget struct {
+	terms []string
+	focus int
+	hit   *sessionindex.HitRef
+	note  string
 }
+
+func (r *searchReader) Active() bool { return r != nil }
 
 const searchReaderFooter = "^n/^p match · ↑↓ PgUp/PgDn scroll · esc close"
 
-// chatSearchMessageText returns the searchable text of a user or assistant
-// message, or "" for other roles.
-func chatSearchMessageText(m provider.Message) string {
+// searchReaderMessageText returns the searchable text of a user or
+// assistant message, or "" for other roles.
+func searchReaderMessageText(m provider.Message) string {
 	if m.Role != provider.RoleUser && m.Role != provider.RoleAssistant {
 		return ""
 	}
@@ -58,9 +66,9 @@ func chatSearchMessageText(m provider.Message) string {
 	return b.String()
 }
 
-// chatSearchMatches reports whether every term is a prefix of some index
+// searchReaderMatches reports whether every term is a prefix of some index
 // token of text, mirroring the session index semantics.
-func chatSearchMatches(text string, terms []string) bool {
+func searchReaderMatches(text string, terms []string) bool {
 	if text == "" || len(terms) == 0 {
 		return false
 	}
@@ -77,39 +85,120 @@ func chatSearchMatches(text string, terms []string) bool {
 	return left == 0
 }
 
-// openSearchReader opens the reader on a snapshot of the current transcript
-// at the match at (or nearest after) focusMsgIdx. With no match it reports
-// a status error and stays closed.
-func (i *Interactive) openSearchReader(terms []string, focusMsgIdx int) {
-	terms, _ = sessionindex.ParseQuery(strings.Join(terms, " "))
+// openSearchReader opens the reader on a snapshot of the current
+// transcript. Matching and row building run off the input loop; the reader
+// shows a loading row until they finish. With no match it closes and
+// reports a status error.
+func (i *Interactive) openSearchReader(target searchReaderTarget) {
+	terms, _ := sessionindex.ParseQuery(strings.Join(target.terms, " "))
+	target.terms = terms
+	cols, rows := i.cfg.Terminal.Size()
+	width := tui.FloatingPaneMaxRect(cols, rows).ContentWidth()
 	i.mu.Lock()
-	defer i.invalidate()
-	defer i.mu.Unlock()
 	view := i.view.CloneForRender()
 	view.TailLimit = 0
 	view.Streaming, view.StreamingActive = "", false
 	view.ToolCalls, view.Err = nil, ""
+	// Image escapes are not text: measuring or clipping them corrupts the
+	// terminal. The reader shows the text fallback.
+	view.ImageProto = tui.ImageProtocolNone
+	r := &searchReader{terms: terms, view: view, target: target, width: width, building: true}
+	i.searchReader = r
+	i.mu.Unlock()
+	i.invalidate()
+	go i.buildSearchReader(r, width, true)
+}
+
+// buildSearchReader computes matches (first build) and rows for width on
+// the private snapshot, then publishes them on the Run loop if r is still
+// the open reader.
+func (i *Interactive) buildSearchReader(r *searchReader, width int, first bool) {
+	rows, anchors := r.view.BuildWithAnchors(width)
 	var matches []int
-	if len(terms) > 0 {
-		for idx, m := range view.Messages {
-			if chatSearchMatches(chatSearchMessageText(m), terms) {
-				matches = append(matches, idx)
+	cur := 0
+	// r.target is written only before the first build starts.
+	note := r.target.note
+	if first {
+		msgs := r.view.Messages
+		for idx, m := range msgs {
+			// Messages that render no rows (collapsed compaction summaries)
+			// cannot be shown or tinted.
+			if !searchReaderMatches(searchReaderMessageText(m), r.terms) || anchorRows(anchors, len(rows), idx) == 0 {
+				continue
+			}
+			matches = append(matches, idx)
+		}
+		focus := r.target.focus
+		if h := r.target.hit; h != nil {
+			if idx, ok := resolveHitInView(msgs, h.Fingerprint, h.MsgSeq, h.TotalMsgs); ok {
+				focus = idx
+			} else {
+				// The hit is gone: open on the next other match at or after
+				// where it was, else the last one.
+				focus = max(0, len(msgs)-(h.TotalMsgs-h.MsgSeq))
+				note = joinStatus(note, "match is in compacted history")
+			}
+		}
+		cur = len(matches) - 1
+		for k, idx := range matches {
+			if idx >= focus {
+				cur = k
+				break
 			}
 		}
 	}
-	if len(matches) == 0 {
-		i.searchReader = nil
-		i.statusErr, i.statusOK = fmt.Sprintf("search %q: no match in this session", strings.Join(terms, " ")), ""
-		return
-	}
-	cur := len(matches) - 1
-	for k, idx := range matches {
-		if idx >= focusMsgIdx {
-			cur = k
-			break
+	apply := func() {
+		i.mu.Lock()
+		defer i.invalidate()
+		defer i.mu.Unlock()
+		if i.searchReader != r {
+			return
+		}
+		r.rows, r.anchors, r.width, r.building, r.recenter = rows, anchors, width, false, true
+		if !first {
+			return
+		}
+		r.ready = true
+		if len(matches) == 0 {
+			i.searchReader = nil
+			msg := fmt.Sprintf("search %q: no match in this session", strings.Join(r.terms, " "))
+			if note != "" {
+				i.statusErr, i.statusOK = "", joinStatus(note, msg)
+			} else {
+				i.statusErr, i.statusOK = msg, ""
+			}
+			return
+		}
+		r.matches, r.cur = matches, cur
+		if note != "" {
+			i.statusErr, i.statusOK = "", note
 		}
 	}
-	i.searchReader = &searchReader{terms: terms, view: view, matches: matches, cur: cur, recenter: true}
+	ctx := i.runCtx
+	if ctx == nil {
+		select {
+		case i.loopCalls <- apply:
+		default:
+		}
+		return
+	}
+	select {
+	case i.loopCalls <- apply:
+	case <-ctx.Done():
+	}
+}
+
+// anchorRows returns how many rows message idx renders. Anchors hold one
+// entry per message in order when the view has no tail limit.
+func anchorRows(anchors []tui.MessageAnchor, total, idx int) int {
+	if idx < 0 || idx >= len(anchors) || anchors[idx].MessageIdx != idx {
+		return 0
+	}
+	end := total
+	if idx+1 < len(anchors) {
+		end = anchors[idx+1].Row
+	}
+	return end - anchors[idx].Row
 }
 
 // closeSearchReaderLocked closes the reader; its snapshot belongs to the
@@ -146,18 +235,30 @@ func (i *Interactive) handleSearchReaderKey(k tui.Key) {
 	case tui.KeyEnd:
 		r.top = len(r.rows)
 	}
+	r.clampTop(page)
 	i.mu.Unlock()
 	i.invalidate()
 }
 
+func (r *searchReader) clampTop(page int) {
+	r.top = max(0, min(r.top, len(r.rows)-page))
+}
+
 func (r *searchReader) step(delta int) {
 	n := len(r.matches)
+	if n == 0 {
+		return
+	}
 	r.cur = ((r.cur+delta)%n + n) % n
 	r.recenter = true
 }
 
 func (r *searchReader) title() string {
-	return fmt.Sprintf("%s · %d/%d", sanitizeSessionTreeText(strings.Join(r.terms, " ")), r.cur+1, len(r.matches))
+	terms := sanitizeSessionTreeText(strings.Join(r.terms, " "))
+	if len(r.matches) == 0 {
+		return terms
+	}
+	return fmt.Sprintf("%s · %d/%d", terms, r.cur+1, len(r.matches))
 }
 
 // messageAt returns the message index owning row, or -1.
@@ -170,62 +271,71 @@ func (r *searchReader) messageAt(row int) int {
 }
 
 func (r *searchReader) matchRow() int {
-	want := r.matches[r.cur]
-	for _, a := range r.anchors {
-		if a.MessageIdx == want {
-			return a.Row
-		}
+	if want := r.matches[r.cur]; want < len(r.anchors) && r.anchors[want].MessageIdx == want {
+		return r.anchors[want].Row
 	}
 	return 0
 }
 
-// Render draws exactly height lines: header, spacer, body, footer.
+// Render draws exactly height lines: header, spacer, body, footer. A width
+// change starts a rebuild off the lock; the old rows show meanwhile, or a
+// loading row before the first build.
+func (i *Interactive) renderSearchReaderLocked(th tui.Theme, width, height int) []string {
+	r := i.searchReader
+	if r.ready && r.width != width && !r.building {
+		r.building = true
+		go i.buildSearchReader(r, width, false)
+	}
+	return r.Render(th, width, height)
+}
+
+// Render draws the reader from its current rows; see renderSearchReaderLocked.
 func (r *searchReader) Render(th tui.Theme, width, height int) []string {
 	if width < 4 || height < 1 {
 		return nil
 	}
-	if r.width != width {
-		r.rows, r.anchors = r.view.BuildWithAnchors(width)
-		r.width = width
-		r.recenter = true
-	}
 	body := max(1, height-3)
 	r.page = body
-	if r.recenter {
-		r.top = r.matchRow() - body/4
-		r.recenter = false
-	}
-	r.top = min(r.top, len(r.rows)-body)
-	r.top = max(r.top, 0)
-
-	matched := make(map[int]bool, len(r.matches))
-	for _, idx := range r.matches {
-		matched[idx] = true
-	}
-	current := r.matches[r.cur]
 	title := r.title()
 	if runewidth.StringWidth(title) > width-4 {
 		title = runewidth.Truncate(title, max(1, width-5), "…")
 	}
 	lines := []string{frameHeader(th, title, width), strings.Repeat(" ", width)}
-	for row := r.top; row < r.top+body; row++ {
-		if row >= len(r.rows) {
+	if !r.ready || len(r.matches) == 0 {
+		lines = append(lines, th.FGColor(th.Muted, finderFit(" searching…", width)))
+		for len(lines) < height-1 {
 			lines = append(lines, strings.Repeat(" ", width))
-			continue
 		}
-		line := r.rows[row]
-		if w := runewidth.StringWidth(stripANSIBytes(line)); w > width {
-			line = clipStyledLine(line, width)
-		} else if w < width {
-			line += strings.Repeat(" ", width-w)
+	} else {
+		if r.recenter {
+			r.top = r.matchRow() - body/4
+			r.recenter = false
 		}
-		if msg := r.messageAt(row); matched[msg] {
-			line, _ = tui.HighlightTerms(line, r.terms, th)
-			if msg == current {
-				line = tui.HighlightLine(line, th)
+		r.clampTop(body)
+		matched := make(map[int]bool, len(r.matches))
+		for _, idx := range r.matches {
+			matched[idx] = true
+		}
+		current := r.matches[r.cur]
+		for row := r.top; row < r.top+body; row++ {
+			if row >= len(r.rows) {
+				lines = append(lines, strings.Repeat(" ", width))
+				continue
 			}
+			line := r.rows[row]
+			if w := runewidth.StringWidth(stripANSIBytes(line)); w > width {
+				line = clipStyledLine(line, width)
+			} else if w < width {
+				line += strings.Repeat(" ", width-w)
+			}
+			if msg := r.messageAt(row); matched[msg] {
+				line, _ = tui.HighlightTerms(line, r.terms, th)
+				if msg == current {
+					line = tui.HighlightLine(line, th)
+				}
+			}
+			lines = append(lines, line)
 		}
-		lines = append(lines, line)
 	}
 	lines = append(lines, th.FGColor(th.Muted, finderFit(searchReaderFooter, width)))
 	if len(lines) > height {

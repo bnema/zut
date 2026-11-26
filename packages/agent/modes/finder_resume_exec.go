@@ -267,29 +267,23 @@ func (i *Interactive) runPendingFinderJump(current string) {
 		i.mu.Unlock()
 		return
 	}
-	msgs := i.view.Messages
 	i.mu.Unlock()
 	if current == "" ||
 		normalizedSessionPath(current) != normalizedSessionPath(jump.path) {
 		return
 	}
-	note := jump.note
 	// Only a message hit locates a message; title or session-level matches
-	// open no reader.
+	// open no reader. The reader resolves the hit against its own snapshot
+	// and shows the note (fork, compacted history) once it resolved.
 	if jump.hit != nil && len(jump.terms) > 0 {
-		focus, ok := resolveHitInView(msgs, jump.hit.Fingerprint, jump.hit.MsgSeq, jump.hit.TotalMsgs)
-		if !ok {
-			// Nearest other match to where the hit was.
-			focus = max(0, len(msgs)-(jump.hit.TotalMsgs-jump.hit.MsgSeq))
-			note = joinStatus(note, "match is in compacted history")
-		}
-		i.openSearchReader(jump.terms, focus)
+		i.openSearchReader(searchReaderTarget{terms: jump.terms, hit: jump.hit, note: jump.note})
+		return
 	}
-	if note == "" {
+	if jump.note == "" {
 		return
 	}
 	i.mu.Lock()
-	i.statusErr, i.statusOK = "", note
+	i.statusErr, i.statusOK = "", jump.note
 	i.mu.Unlock()
 	i.invalidate()
 }

@@ -71,6 +71,7 @@ func (l *finderExecLocal) finishJump(t *testing.T) string {
 	t.Helper()
 	path := <-l.loaded
 	runLoopCall(t, l.i)
+	drainReader(t, l.i)
 	return path
 }
 
@@ -89,6 +90,7 @@ func TestFinderOpenLocalSameDirResumesAndJumps(t *testing.T) {
 	l.i.finderOpenItem(finderExecItem(path), 0)
 	runLoopCall(t, l.i)
 	require.Equal(t, path, l.finishJump(t))
+	drainReader(t, l.i)
 	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -107,6 +109,7 @@ func TestFinderOpenLocalSwitchResumes(t *testing.T) {
 	require.NotNil(t, l.i.finderResume, "other directory asks first")
 	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.Equal(t, path, l.finishJump(t))
+	drainReader(t, l.i)
 	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -132,6 +135,7 @@ func TestFinderOpenLocalForkKeepsOriginal(t *testing.T) {
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "original is byte-identical")
+	drainReader(t, l.i)
 	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -166,6 +170,7 @@ func TestFinderResumeCancelAndMismatchDropPendingJump(t *testing.T) {
 	l.i.pendingFinderJump = &pendingFinderJump{path: path, terms: []string{"refacto"}}
 	l.i.runPendingFinderJump(filepath.Join(l.root, "other.jsonl"))
 	require.Nil(t, l.i.pendingFinderJump)
+	drainReader(t, l.i)
 	_, ok := readerCur(l.i)
 	require.False(t, ok)
 }
@@ -296,6 +301,7 @@ func TestFinderPortSwitchRunsJumpAfterHydrate(t *testing.T) {
 	require.False(t, i.applySessionResult(context.Background(), res))
 
 	require.Equal(t, session.ID("target"), i.SessionID())
+	drainReader(t, i)
 	cur, ok := readerCur(i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -363,6 +369,7 @@ func TestFinderOpenCurrentSessionJumpsInPlaceLocal(t *testing.T) {
 	l.i.finderOpenItem(finderExecItem(path), 0)
 	require.Empty(t, l.loaded)
 	require.Empty(t, l.i.loopCalls)
+	drainReader(t, l.i)
 	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -386,6 +393,7 @@ func TestFinderOpenCurrentSessionJumpsInPlacePort(t *testing.T) {
 	item := finderExecItem(path)
 	item.Live, item.LiveID, item.LiveCWD = true, string(i.SessionID()), cwd
 	i.finderOpenItem(item, 0)
+	drainReader(t, i)
 	cur, ok := readerCur(i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
@@ -410,7 +418,7 @@ func TestFinderOpenMarksLoadingUntilResolved(t *testing.T) {
 	require.False(t, l.i.sessionLoading)
 }
 
-func TestFinderJumpWithoutHitSkipsChatSearch(t *testing.T) {
+func TestFinderJumpWithoutHitSkipsReader(t *testing.T) {
 	cwd := t.TempDir()
 	l := newFinderExecLocal(t, cwd)
 	path := newTreeTestSession(t, l.root, cwd, finderExecMessages())
@@ -420,6 +428,7 @@ func TestFinderJumpWithoutHitSkipsChatSearch(t *testing.T) {
 	l.i.finderOpenItem(item, -1)
 	runLoopCall(t, l.i)
 	l.finishJump(t)
+	drainReader(t, l.i)
 	_, ok := readerCur(l.i)
 	require.False(t, ok)
 	require.Empty(t, l.i.statusErr, "no misleading no-match error")

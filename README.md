@@ -608,7 +608,7 @@ Opening a session from another directory asks first:
 
 Sessions running in the daemon can only be attached. Sessions from the current directory open directly.
 
-Opening a message hit shows it in a read-only reader over the chat: a snapshot of the transcript with the search words highlighted and the matched message tinted. Title matches open the session without the reader. If the hit was compacted away, the status says so and the reader opens on the nearest other match.
+Opening a message hit shows it in a read-only reader over the chat: a snapshot of the transcript with the search words highlighted and the matched message tinted. Title matches open the session without the reader. If the hit was compacted away, the status says so and the reader opens on the next other match, if any.
 - `ctrl+n`/`ctrl+p`: next/previous matching message.
 - `↑`/`↓`, `pgup`/`pgdn`, `home`/`end`: scroll.
 - `esc`: close the reader and return to the chat.
