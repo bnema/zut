@@ -1185,6 +1185,9 @@ func (i *Interactive) redraw() {
 		i.pendingAlert = nil
 		i.emitAlertLocked(alert)
 	}
+	// A streamed tail may outlive the busy flag: apply a held-back
+	// archive once it settled too.
+	i.drainChatArchiveLocked()
 	i.mu.Unlock()
 }
 

@@ -274,7 +274,7 @@ func (i *Interactive) runPendingFinderJump(current string) {
 	}
 	// Only a message hit locates a message; title or session-level matches
 	// open no reader. The reader resolves the hit against its own snapshot
-	// and shows the note (fork, compacted history) once it resolved.
+	// and shows the note (fork, hit no longer in the history) once it resolved.
 	if jump.hit != nil && len(jump.terms) > 0 {
 		i.openSearchReader(searchReaderTarget{terms: jump.terms, hit: jump.hit, note: jump.note})
 		return

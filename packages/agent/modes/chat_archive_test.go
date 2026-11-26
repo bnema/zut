@@ -299,3 +299,65 @@ func TestRenderChatArchiveInnerMarksOnly(t *testing.T) {
 	require.NotContains(t, chat, "compacted")
 	require.Contains(t, chat, "1 older message · ctrl+f to search")
 }
+
+func newArchiveScreen(t *testing.T) (*Interactive, *alertTestTerminal) {
+	t.Helper()
+	i := newArchiveInteractive(t)
+	term := &alertTestTerminal{}
+	i.cfg.Terminal = term
+	i.rend = tui.NewRenderer(term)
+	i.rend.Resize(100, 40)
+	return i, term
+}
+
+// screenSince returns the plain text written to term after mark bytes.
+func screenSince(term *alertTestTerminal, mark int) string {
+	return stripANSIBytes(term.String()[mark:])
+}
+
+func TestChatArchivePaintedWithFullRepaint(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept tail text")
+	i, term := newArchiveScreen(t)
+	hydrateArchive(i, path, live)
+	i.redraw()
+	require.Contains(t, stripANSIBytes(term.String()), "kept tail text")
+
+	mark := len(term.String())
+	waitArchive(t, i, 0)
+	i.redraw()
+	raw := term.String()[mark:]
+	require.Contains(t, raw, tui.SeqClearScreenNoHome, "the archive is applied with a full repaint")
+	out := screenSince(term, mark)
+	require.Equal(t, 1, strings.Count(out, "old question"), out)
+	require.Equal(t, 1, strings.Count(out, "kept tail text"), out)
+	require.Less(t, strings.Index(out, "old question"), strings.Index(out, "compacted"), out)
+	require.Less(t, strings.Index(out, "compacted"), strings.Index(out, "kept tail text"), out)
+
+	// An equal result repaints nothing.
+	i.mu.Lock()
+	gen, hist := i.chatArchive.gen, i.chatArchive.hist
+	i.mu.Unlock()
+	mark = len(term.String())
+	i.applyChatArchive(gen, path, hist)
+	i.redraw()
+	require.NotContains(t, term.String()[mark:], tui.SeqClearScreenNoHome)
+}
+
+func TestChatArchivePendingDroppedOnSessionSwitch(t *testing.T) {
+	path, live := writeArchiveSession(t, []string{"old question"}, "kept")
+	i := newArchiveInteractive(t)
+	hydrateArchive(i, path, live)
+	i.mu.Lock()
+	i.busy = true
+	gen := i.chatArchive.gen
+	i.mu.Unlock()
+	i.applyChatArchive(gen, path, archiveHist("from session a"))
+	_, _, pending, _ := archiveState(i)
+	require.True(t, pending)
+
+	hydrateArchive(i, filepath.Join(t.TempDir(), "b.jsonl"), []provider.Message{jumpTextMsg(provider.RoleUser, "fresh")})
+	rev, _, pending, _ := archiveState(i)
+	require.False(t, pending)
+	require.Zero(t, rev)
+	require.NotContains(t, archiveChat(i), "from session a")
+}

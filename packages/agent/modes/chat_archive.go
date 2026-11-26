@@ -133,7 +133,7 @@ func (i *Interactive) applyChatArchive(gen uint64, path string, hist core.Archiv
 		return
 	}
 	a.cancel = nil
-	if i.busy {
+	if !i.chatArchiveIdleLocked() {
 		a.pending = &hist
 		return
 	}
@@ -141,11 +141,16 @@ func (i *Interactive) applyChatArchive(gen uint64, path string, hist core.Archiv
 	i.installChatArchiveLocked(hist)
 }
 
+// chatArchiveIdleLocked reports whether no turn is running or streaming.
+func (i *Interactive) chatArchiveIdleLocked() bool {
+	return !i.busy && !i.stream.Active()
+}
+
 // drainChatArchiveLocked applies a result held back during a turn. Called
-// when the session goes idle.
+// when the session goes idle and after each frame.
 func (i *Interactive) drainChatArchiveLocked() {
 	a := &i.chatArchive
-	if a.pending == nil || i.busy {
+	if a.pending == nil || !i.chatArchiveIdleLocked() {
 		return
 	}
 	hist := *a.pending
