@@ -57,7 +57,7 @@ func (m *finderModel) handleRenameKey(k tui.Key) finderAction {
 		}
 		m.rename = m.rename[:end]
 	case tui.KeyPaste:
-		m.rename = append(m.rename, finderPasteRunes(k.Paste)...)
+		m.rename = append(m.rename, pickerPasteRunes(k.Paste)...)
 	case tui.KeyRune:
 		if !k.Ctrl && unicode.IsPrint(k.Rune) {
 			m.rename = append(m.rename, k.Rune)

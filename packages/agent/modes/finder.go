@@ -3,7 +3,6 @@ package modes
 import (
 	"context"
 	"time"
-	"unicode"
 
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -91,13 +90,11 @@ const (
 // finderModel holds finder state and key handling; it does no rendering
 // and no I/O.
 type finderModel struct {
-	active  bool
-	tabs    []finderSource
-	tab     int
-	cwd     string
-	query   []rune
-	qcursor int
-	qscroll int // first query rune shown when the query overflows
+	active bool
+	tabs   []finderSource
+	tab    int
+	cwd    string
+	query  pickerQuery
 
 	items   []finderItem
 	partial bool
@@ -159,7 +156,7 @@ func (m *finderModel) Open(tab int) finderAction {
 	if tab >= 0 && tab < len(m.tabs) {
 		m.tab = tab
 	}
-	m.query, m.qcursor, m.qscroll = nil, 0, 0
+	m.query.Reset()
 	m.items, m.partial, m.hint = nil, false, ""
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	m.err = ""
@@ -203,7 +200,7 @@ func (m *finderModel) Close() {
 }
 
 func (m *finderModel) Active() bool  { return m != nil && m.active }
-func (m *finderModel) Query() string { return string(m.query) }
+func (m *finderModel) Query() string { return m.query.String() }
 
 // Generation is the id of the latest search request.
 func (m *finderModel) Generation() uint64 { return m.gen }
@@ -237,7 +234,7 @@ func (m *finderModel) search() finderAction {
 	}
 	m.loading = true
 	m.loadingSince = time.Now()
-	text := string(m.query)
+	text := m.query.String()
 	return finderAction{
 		Kind:   finderActionSearch,
 		Source: src,
@@ -367,7 +364,7 @@ func (m *finderModel) HandleKey(k tui.Key) finderAction {
 	case tui.KeyShiftTab:
 		return m.switchTab(-1)
 	default:
-		if m.editQuery(k) {
+		if m.query.Edit(k) {
 			return m.search()
 		}
 	}
@@ -405,83 +402,4 @@ func (m *finderModel) switchTab(delta int) finderAction {
 	m.items, m.partial, m.hint = nil, false, ""
 	m.cursor, m.hit, m.viewTop = 0, 0, 0
 	return m.search()
-}
-
-// editQuery applies single-line editing keys; it reports whether the
-// query text changed.
-func (m *finderModel) editQuery(k tui.Key) bool {
-	switch k.Kind {
-	case tui.KeyRune:
-		if k.Ctrl || !unicode.IsPrint(k.Rune) {
-			return false
-		}
-		return m.insert([]rune{k.Rune})
-	case tui.KeyPaste:
-		return m.insert(finderPasteRunes(k.Paste))
-	case tui.KeyBackspace:
-		if m.qcursor == 0 {
-			return false
-		}
-		m.query = append(m.query[:m.qcursor-1], m.query[m.qcursor:]...)
-		m.qcursor--
-		return true
-	case tui.KeyCtrlW:
-		end := m.qcursor
-		start := end
-		for start > 0 && unicode.IsSpace(m.query[start-1]) {
-			start--
-		}
-		for start > 0 && !unicode.IsSpace(m.query[start-1]) {
-			start--
-		}
-		if start == end {
-			return false
-		}
-		m.query = append(m.query[:start], m.query[end:]...)
-		m.qcursor = start
-		return true
-	case tui.KeyCtrlU:
-		if m.qcursor == 0 {
-			return false
-		}
-		m.query = append([]rune(nil), m.query[m.qcursor:]...)
-		m.qcursor = 0
-		return true
-	case tui.KeyLeft:
-		m.qcursor = max(m.qcursor-1, 0)
-	case tui.KeyRight:
-		m.qcursor = min(m.qcursor+1, len(m.query))
-	case tui.KeyHome, tui.KeyCtrlA:
-		m.qcursor = 0
-	case tui.KeyEnd, tui.KeyCtrlE:
-		m.qcursor = len(m.query)
-	}
-	return false
-}
-
-func (m *finderModel) insert(rs []rune) bool {
-	if len(rs) == 0 {
-		return false
-	}
-	next := make([]rune, 0, len(m.query)+len(rs))
-	next = append(next, m.query[:m.qcursor]...)
-	next = append(next, rs...)
-	next = append(next, m.query[m.qcursor:]...)
-	m.query = next
-	m.qcursor += len(rs)
-	return true
-}
-
-// finderPasteRunes keeps the printable runes of a paste for a single-line
-// field; other whitespace (newlines, tabs) becomes a space.
-func finderPasteRunes(paste string) []rune {
-	var rs []rune
-	for _, r := range paste {
-		if unicode.IsPrint(r) {
-			rs = append(rs, r)
-		} else if unicode.IsSpace(r) {
-			rs = append(rs, ' ')
-		}
-	}
-	return rs
 }

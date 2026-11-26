@@ -111,7 +111,7 @@ func (m *finderModel) decorateLive(raw []finderItem) []finderItem {
 	lister, ok := m.source().(finderLiveLister)
 	// Same empty-query rule as the sources: no index tokens means the
 	// source lists recent sessions.
-	if tokens, _ := sessionindex.ParseQuery(string(m.query)); !ok || !lister.ListsLive() || len(tokens) > 0 {
+	if tokens, _ := sessionindex.ParseQuery(m.query.String()); !ok || !lister.ListsLive() || len(tokens) > 0 {
 		return out
 	}
 	var top []finderItem

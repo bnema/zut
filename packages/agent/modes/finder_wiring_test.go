@@ -157,7 +157,7 @@ func TestFinderRendersInFrameWithVisibleCaret(t *testing.T) {
 	require.Contains(t, query, "END")
 	_, col := i.finder.CursorPos()
 	require.Less(t, col, 80)
-	require.Equal(t, 3+runewidth.StringWidth(string(i.finder.query[i.finder.qscroll:])), col)
+	require.Equal(t, 3+runewidth.StringWidth(string(i.finder.query.text[i.finder.query.scroll:])), col)
 
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyHome})
 	lines = i.finder.Render(tui.Dark, 80, 20)

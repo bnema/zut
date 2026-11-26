@@ -405,7 +405,7 @@ func (r *searchReader) Render(th tui.Theme, width, height int) []string {
 	}
 	lines := []string{frameHeader(th, title, width), strings.Repeat(" ", width)}
 	if !r.ready || len(r.matches) == 0 {
-		lines = append(lines, th.FGColor(th.Muted, finderFit(" searching…", width)))
+		lines = append(lines, th.FGColor(th.Muted, pickerFit(" searching…", width)))
 		for len(lines) < height-1 {
 			lines = append(lines, strings.Repeat(" ", width))
 		}
@@ -440,7 +440,7 @@ func (r *searchReader) Render(th tui.Theme, width, height int) []string {
 			lines = append(lines, line)
 		}
 	}
-	lines = append(lines, th.FGColor(th.Muted, finderFit(searchReaderFooter, width)))
+	lines = append(lines, th.FGColor(th.Muted, pickerFit(searchReaderFooter, width)))
 	if len(lines) > height {
 		lines = lines[len(lines)-height:]
 	}

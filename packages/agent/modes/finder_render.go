@@ -2,7 +2,6 @@ package modes
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,18 +17,6 @@ const (
 	finderPreviewMinWidth = 50  // below this: list plus one preview line
 	finderFooterHelp      = "tab source · ↑↓ pick · ^n/^p hit · enter open · ^r rename · ^d delete · @here this dir · esc close"
 )
-
-// finderFit truncates s (plain text) to w display cells and pads it to
-// exactly w cells.
-func finderFit(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if runewidth.StringWidth(s) > w {
-		s = runewidth.Truncate(s, w, "…")
-	}
-	return s + strings.Repeat(" ", w-runewidth.StringWidth(s))
-}
 
 // finderLayout is the row budget of one Render call.
 type finderLayout struct {
@@ -100,7 +87,7 @@ func (m *finderModel) Render(th tui.Theme, width, height int) []string {
 
 	lines := []string{frameHeader(th, "Find", width), strings.Repeat(" ", width), m.renderTop(th, width), m.renderQuery(th, width)}
 	if m.err != "" {
-		lines = append(lines, th.FGColor(th.Warning, finderFit(" "+sanitizeSessionTreeText(m.err), width)))
+		lines = append(lines, th.FGColor(th.Warning, pickerFit(" "+sanitizeSessionTreeText(m.err), width)))
 	}
 	terms, _ := sessionindex.ParseQuery(m.Query())
 	if l.split {
@@ -147,58 +134,25 @@ func (m *finderModel) CursorPos() (row, col int) {
 	if m.mode == finderModeRename {
 		return finderQueryRow, m.renameCaret
 	}
-	start := min(m.qscroll, m.qcursor)
-	return finderQueryRow, 3 + runewidth.StringWidth(string(m.query[start:m.qcursor]))
+	return finderQueryRow, m.query.Caret()
 }
 
 // renderTop draws the tabs (active one bracketed in the accent color) and
 // the right-aligned status in exactly w cells; the status is dropped first
 // when space runs out.
 func (m *finderModel) renderTop(th tui.Theme, w int) string {
-	var names []string
-	tabsW := 1 // leading space
+	names := make([]string, len(m.tabs))
 	for i, src := range m.tabs {
-		name := sanitizeSessionTreeText(src.Title())
-		if i == m.tab {
-			name = "[" + name + "]"
-		}
-		names = append(names, name)
-		tabsW += runewidth.StringWidth(name)
-	}
-	if len(names) > 1 {
-		tabsW += len(names) - 1
-	}
-	if tabsW > w {
-		return th.FGColor(th.Muted, finderFit(" "+strings.Join(names, " "), w))
-	}
-	var b strings.Builder
-	b.WriteString(" ")
-	for i, name := range names {
-		if i > 0 {
-			b.WriteString(" ")
-		}
-		if i == m.tab {
-			b.WriteString(th.FGColor(th.Accent, name))
-		} else {
-			b.WriteString(th.FGColor(th.Muted, name))
-		}
+		names[i] = sanitizeSessionTreeText(src.Title())
 	}
 	status, color := m.status(th)
-	status += " "
-	sw := runewidth.StringWidth(status)
-	if tabsW+1+sw > w {
-		b.WriteString(strings.Repeat(" ", w-tabsW))
-		return b.String()
-	}
-	b.WriteString(strings.Repeat(" ", w-tabsW-sw))
-	b.WriteString(th.FGColor(color, status))
-	return b.String()
+	return renderPickerTabs(th, names, m.tab, status, color, w)
 }
 
 // finderFitBorder renders left, a ─ fill, and the corner in exactly w cells.
 func finderFitBorder(left, corner string, w int) string {
 	if runewidth.StringWidth(left)+1 > w {
-		return finderFit(strings.Repeat("─", w-1), w-1) + corner
+		return pickerFit(strings.Repeat("─", w-1), w-1) + corner
 	}
 	return left + strings.Repeat("─", w-runewidth.StringWidth(left)-1) + corner
 }
@@ -234,27 +188,19 @@ func (m *finderModel) renderQuery(th tui.Theme, w int) string {
 		m.renameCaret = caret
 		return line
 	}
-	prompt := " > "
-	room := max(w-runewidth.StringWidth(prompt), 0)
-	// Scroll horizontally so the caret (one cell after the text before it)
-	// stays inside the field.
-	field := max(room-1, 0)
-	m.qscroll = min(m.qscroll, m.qcursor)
-	for m.qscroll < m.qcursor && runewidth.StringWidth(string(m.query[m.qscroll:m.qcursor])) > field {
-		m.qscroll++
-	}
-	if runewidth.StringWidth(string(m.query)) <= field {
-		m.qscroll = 0
-	}
-	return th.FGColor(th.Accent, prompt) + finderFit(string(m.query[m.qscroll:]), room)
+	return m.query.Render(th, w)
 }
 
 func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 	out := make([]string, 0, rows)
 	end := min(len(m.items), m.viewTop+rows)
-	cols := finderListColumns(m.items[min(m.viewTop, end):end])
+	visible := make([]pickerRow, 0, end-min(m.viewTop, end))
 	for i := m.viewTop; i < end; i++ {
-		out = append(out, m.renderItem(th, m.items[i], i == m.cursor, cols, w))
+		visible = append(visible, m.items[i].row())
+	}
+	cols := pickerListColumns(visible)
+	for i, row := range visible {
+		out = append(out, renderPickerRow(th, row, m.viewTop+i == m.cursor, cols, w))
 	}
 	if len(out) == 0 && rows > 0 {
 		msg := " no matches"
@@ -264,7 +210,7 @@ func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 		if m.loading {
 			msg = " …"
 		}
-		out = append(out, th.FGColor(th.Muted, finderFit(msg, w)))
+		out = append(out, th.FGColor(th.Muted, pickerFit(msg, w)))
 	}
 	for len(out) < rows {
 		out = append(out, strings.Repeat(" ", max(w, 0)))
@@ -272,82 +218,13 @@ func (m *finderModel) renderList(th tui.Theme, w, rows int) []string {
 	return out
 }
 
-// finderColumns are the widths of the right-aligned detail and count
-// columns over the visible rows, so they line up and never truncate.
-type finderColumns struct{ detail, count int }
-
-func finderListColumns(items []finderItem) finderColumns {
-	var c finderColumns
-	for _, item := range items {
-		c.detail = max(c.detail, runewidth.StringWidth(sanitizeSessionTreeText(item.Detail)))
-		if item.Count > 0 {
-			c.count = max(c.count, len(strconv.Itoa(item.Count)))
-		}
-	}
-	return c
-}
-
-// renderItem renders "▸ group · label   detail  count ●" in w cells. A
-// label "group · rest" shows its group in the accent color. The detail and
-// count columns keep their width; only the label is truncated, and the
-// columns are dropped when the label would get fewer than 8 cells.
-func (m *finderModel) renderItem(th tui.Theme, item finderItem, selected bool, cols finderColumns, w int) string {
-	marker := "  "
-	if selected {
-		marker = "▸ "
-	}
-	count := ""
-	if item.Count > 0 {
-		count = strconv.Itoa(item.Count)
-	}
-	badge := " "
+// row is the list row of item: a live session gets the ● mark.
+func (item finderItem) row() pickerRow {
+	row := pickerRow{Label: item.Label, Detail: item.Detail, Count: item.Count}
 	if item.Live {
-		badge = "●"
+		row.Mark = "●"
 	}
-	detail := sanitizeSessionTreeText(item.Detail)
-	detailCol := ""
-	if cols.detail > 0 {
-		detailCol = "  " + strings.Repeat(" ", cols.detail-runewidth.StringWidth(detail)) + detail
-	}
-	countCol := ""
-	if cols.count > 0 {
-		countCol = "  " + strings.Repeat(" ", cols.count-len(count)) + count
-	}
-	tail := " " + badge + " "
-	avail := w - runewidth.StringWidth(marker+detailCol+countCol+tail)
-	if avail < 8 {
-		detailCol = ""
-		avail = w - runewidth.StringWidth(marker+countCol+tail)
-	}
-	if avail < 1 {
-		return finderFit(marker+sanitizeSessionTreeText(item.Label), w)
-	}
-	label := finderFit(sanitizeSessionTreeText(item.Label), avail)
-	if selected {
-		return th.Highlight(marker + label + detailCol + countCol + tail)
-	}
-	var b strings.Builder
-	b.WriteString(marker)
-	b.WriteString(renderFinderLabel(th, label, avail))
-	b.WriteString(th.FGColor(th.Muted, detailCol))
-	b.WriteString(countCol)
-	if item.Live {
-		b.WriteString(" " + th.FGColor(th.Accent, badge) + " ")
-	} else {
-		b.WriteString(tail)
-	}
-	return b.String()
-}
-
-// renderFinderLabel fits label to w cells; a "group · rest" label shows
-// its group in the accent color.
-func renderFinderLabel(th tui.Theme, label string, w int) string {
-	label = finderFit(label, w)
-	group, rest, ok := strings.Cut(label, " · ")
-	if !ok {
-		return label
-	}
-	return th.FGColor(th.Accent, group) + th.FGColor(th.Muted, " · ") + rest
+	return row
 }
 
 func finderRoleLabel(role provider.Role) string {
@@ -384,9 +261,9 @@ func renderRoleHeader(th tui.Theme, role provider.Role, label, meta string, w in
 	label = " " + label
 	lw := runewidth.StringWidth(label)
 	if lw >= w {
-		return th.FGColor(color, finderFit(label, w))
+		return th.FGColor(color, pickerFit(label, w))
 	}
-	return th.FGColor(color, label) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(meta, w-lw))
+	return th.FGColor(color, label) + th.FGColor(th.DimColor(th.Muted, 40), pickerFit(meta, w-lw))
 }
 
 // renderHitSnippet renders the snippet windowed around the first match
@@ -394,10 +271,10 @@ func renderRoleHeader(th tui.Theme, role provider.Role, label, meta string, w in
 func renderHitSnippet(th tui.Theme, text string, terms []string, w int) string {
 	text = strings.Join(strings.Fields(sanitizeSessionTreeText(text)), " ")
 	if text == "" {
-		return th.FGColor(th.DimColor(th.Muted, 40), finderFit(" …", w))
+		return th.FGColor(th.DimColor(th.Muted, 40), pickerFit(" …", w))
 	}
 	text = windowSessionSearchExcerpt(text, tui.FirstTermMatch(text, terms), max(w-1, 1))
-	line := th.FGColor(th.FG, finderFit(" "+text, w))
+	line := th.FGColor(th.FG, pickerFit(" "+text, w))
 	line, _ = tui.HighlightTerms(line, terms, th)
 	return line
 }
@@ -422,7 +299,7 @@ func (m *finderModel) renderPreview(th tui.Theme, terms []string, w, rows int) [
 	} else if e, has := m.cards[item.Key]; ok && rows > 0 && has && !e.card.empty() {
 		out = renderFinderCard(th, item, e.card, w, rows)
 	} else if ok && rows > 0 {
-		out = append(out, th.FGColor(th.Muted, finderFit(" "+sanitizeSessionTreeText(item.Detail), w)))
+		out = append(out, th.FGColor(th.Muted, pickerFit(" "+sanitizeSessionTreeText(item.Detail), w)))
 	}
 	for len(out) > rows {
 		out = out[:rows]
@@ -448,7 +325,7 @@ func (m *finderModel) renderFooter(th tui.Theme, w int) string {
 		if item, ok := m.selected(); ok {
 			label = sanitizeSessionTreeText(item.Label)
 		}
-		return th.FGColor(th.Warning, finderFit(" delete "+label+"? y confirm · any key cancel", w))
+		return th.FGColor(th.Warning, pickerFit(" delete "+label+"? y confirm · any key cancel", w))
 	}
-	return th.FGColor(th.Muted, finderFit(" "+finderFooterHelp, w))
+	return th.FGColor(th.Muted, pickerFit(" "+finderFooterHelp, w))
 }

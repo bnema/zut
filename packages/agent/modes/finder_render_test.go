@@ -223,10 +223,10 @@ func TestFinderListColumnsAlignAndKeepDetail(t *testing.T) {
 		{Key: "b", Label: "long-project-name · " + strings.Repeat("very long title ", 10), Detail: "12h ago", Count: 6},
 	}
 	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: items}, nil))
-	cols := finderListColumns(m.items)
+	cols := pickerListColumns([]pickerRow{m.items[0].row(), m.items[1].row()})
 	rows := []string{
-		m.renderItem(tui.Dark, m.items[0], false, cols, 60),
-		m.renderItem(tui.Dark, m.items[1], false, cols, 60),
+		renderPickerRow(tui.Dark, m.items[0].row(), false, cols, 60),
+		renderPickerRow(tui.Dark, m.items[1].row(), false, cols, 60),
 	}
 	plain := []string{stripANSIBytes(rows[0]), stripANSIBytes(rows[1])}
 	require.True(t, strings.HasSuffix(plain[0], "   3d ago  110   "), plain[0])
