@@ -92,6 +92,7 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 		rescueActive ||
 		i.finder.Active() ||
 		i.finderResume.Active() ||
+		i.searchReader.Active() ||
 		i.residentSubagentsDialog != nil && i.residentSubagentsDialog.Active() ||
 		i.residentChildSession != nil ||
 		i.jumpDialog != nil && i.jumpDialog.Active() ||

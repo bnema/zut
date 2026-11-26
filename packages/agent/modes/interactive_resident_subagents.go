@@ -474,7 +474,7 @@ func (i *Interactive) doSessionImport(src string) {
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
-	i.clearChatSearchLocked()
+	i.closeSearchReaderLocked()
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 		i.cumUsage = i.agent.Cost()
@@ -693,7 +693,7 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	i.scrollToBottom()
 	i.mu.Lock()
 	i.lastCtxInput = 0
-	i.clearChatSearchLocked()
+	i.closeSearchReaderLocked()
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 		i.cumUsage = i.agent.Cost()

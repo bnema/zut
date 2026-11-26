@@ -256,9 +256,9 @@ func (i *Interactive) queuePendingFinderJump(path string, err error) {
 	}
 }
 
-// runPendingFinderJump starts the in-chat search for the pending jump when
-// current is the session it was waiting for. The pending jump is always
-// consumed.
+// runPendingFinderJump opens the search reader on the pending jump's hit
+// when current is the session it was waiting for. The pending jump is
+// always consumed.
 func (i *Interactive) runPendingFinderJump(current string) {
 	i.mu.Lock()
 	jump := i.pendingFinderJump
@@ -275,27 +275,21 @@ func (i *Interactive) runPendingFinderJump(current string) {
 	}
 	note := jump.note
 	// Only a message hit locates a message; title or session-level matches
-	// would make the in-chat search report a misleading "no match".
+	// open no reader.
 	if jump.hit != nil && len(jump.terms) > 0 {
-		focus := len(msgs) - 1
-		if idx, ok := resolveHitInView(msgs, jump.hit.Fingerprint, jump.hit.MsgSeq, jump.hit.TotalMsgs); ok {
-			focus = idx
-		} else {
+		focus, ok := resolveHitInView(msgs, jump.hit.Fingerprint, jump.hit.MsgSeq, jump.hit.TotalMsgs)
+		if !ok {
+			// Nearest other match to where the hit was.
+			focus = max(0, len(msgs)-(jump.hit.TotalMsgs-jump.hit.MsgSeq))
 			note = joinStatus(note, "match is in compacted history")
 		}
-		i.startChatSearch(jump.terms, focus)
+		i.openSearchReader(jump.terms, focus)
 	}
 	if note == "" {
 		return
 	}
 	i.mu.Lock()
-	i.statusErr = ""
-	if i.chatSearch.active {
-		i.statusOK = joinStatus(note, i.chatSearch.hint)
-		i.chatSearch.hint = i.statusOK
-	} else {
-		i.statusOK = note
-	}
+	i.statusErr, i.statusOK = "", note
 	i.mu.Unlock()
 	i.invalidate()
 }

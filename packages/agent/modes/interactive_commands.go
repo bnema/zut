@@ -229,7 +229,6 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/copy":
 		i.runCopy(ctx, parts[1:])
 	case "/clear":
-		i.clearChatSearch()
 		if i.port != nil {
 			i.portClear(ctx)
 			return false
@@ -1223,7 +1222,7 @@ func (i *Interactive) finishSessionSelection(path string, err error) {
 	i.restoreLoadedSessionTitle()
 	i.mu.Lock()
 	i.sessionLoading = false
-	i.clearChatSearchLocked() // matches index the replaced transcript
+	i.closeSearchReaderLocked() // matches index the replaced transcript
 	i.resetNestedRecapsLocked()
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""

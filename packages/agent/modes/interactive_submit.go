@@ -82,9 +82,6 @@ func (i *Interactive) portSubmit(ctx context.Context, text string, images []prov
 }
 
 func (i *Interactive) portSubmitInput(ctx context.Context, in session.Input) {
-	if in.Origin == session.InputOriginUser {
-		i.clearChatSearch()
-	}
 	port := i.SessionPort()
 	if port == nil {
 		i.ReportError(errors.New("submit: no session attached"))

@@ -226,9 +226,7 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	infoBlocks := append([]sessionInfoBlock(nil), i.sessionInfoBlocks...)
 	if !i.renderOutsideLock {
 		rows, anchors := renderView.BuildWithAnchors(cols)
-		i.stableChatAnchors = shiftAnchorsForInfoBlocks(anchors, infoBlocks, len(rows))
 		rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
-		i.stableChatLen = len(rows)
 		i.stableChatCache = append(i.stableChatCache[:0], rows...)
 		i.stableChatCacheKey = key
 		i.stableChatCacheValid = true
@@ -239,10 +237,8 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	// mutex so key processing can continue while a cold transcript renders.
 	i.mu.Unlock()
 	rows, anchors := renderView.BuildWithAnchors(cols)
-	shifted := shiftAnchorsForInfoBlocks(anchors, infoBlocks, len(rows))
 	rows = insertSessionInfoBlocks(rows, anchors, infoBlocks)
 	i.mu.Lock()
-	i.stableChatAnchors, i.stableChatLen = shifted, len(rows)
 	if i.chatCacheKeyLocked(cols) != key {
 		// State changed while mu was released (e.g. a snapshot hydrate).
 		// Its own invalidate() may not have run yet, so the caller's
@@ -321,7 +317,6 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	stable := i.stableChatRowsLocked(cols)
 	chat := append([]string(nil), stable...)
 	chat = append(chat, i.view.BuildLive(cols)...)
-	unprefixed := len(chat)
 
 	// Welcome banner: shown at the top of the chat area when there is
 	// no transcript yet. Disappears after the first message is sent.
@@ -341,7 +336,6 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		banner := renderUpdateBanner(i.cfg.Theme, i.updateInfo, cols)
 		chat = append(banner, chat...)
 	}
-	i.chatRowBase = len(chat) - unprefixed
 
 	// /help block: appended to the transcript so it appears at the
 	// bottom of the chat area (right above the status bar / editor).
@@ -601,6 +595,9 @@ func (i *Interactive) redraw() {
 	case i.finderResume.Active():
 		dialogID = "finder-resume"
 		dialog = i.finderResume.Render(i.cfg.Theme, dialogWidth)
+	case i.searchReader.Active():
+		dialogID = "search-reader"
+		dialog = i.searchReader.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
 	case i.finder.Active():
 		dialogID = "finder"
 		dialog = i.finder.Render(i.cfg.Theme, dialogWidth, paneMax.ContentHeight())
@@ -1027,7 +1024,6 @@ func (i *Interactive) redraw() {
 	}
 
 	var visibleChat []string
-	visibleStart := 0
 	if len(chat) <= chatRows {
 		visibleChat = chat
 	} else {
@@ -1063,11 +1059,9 @@ func (i *Interactive) redraw() {
 			}
 		}
 		visibleChat = chat[start:end]
-		visibleStart = start
 	}
 	i.prevScrollOffset = i.scrollOffset
 	visibleChat = clipBottomClippedImages(visibleChat)
-	visibleChat = i.applyChatSearchLocked(visibleChat, visibleStart, i.chatRowBase, i.stableChatLen)
 
 	// A tiny "scrolled up" indicator in the top-right of the chat pane
 	// so you know you're not at the bottom. When the viewport was

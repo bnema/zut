@@ -2,22 +2,45 @@ package modes
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/bnema/zut/packages/agent/internal/sessionindex"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
 )
 
-// chatSearch is the vim-like in-chat search left active after resuming a
-// session from a finder hit. Guarded by Interactive.mu.
-type chatSearch struct {
+// searchReader is a modal, read-only view of a transcript snapshot opened
+// on a search hit. zut's main view is terminal scrollback that cannot be
+// scrolled or restyled after printing, so matches are shown here instead.
+// Guarded by Interactive.mu.
+type searchReader struct {
 	terms   []string
-	matches []int // view message indexes, ascending
-	cur     int   // position in matches
-	active  bool
-	hint    string // statusOK text owned by the search
+	view    *tui.View // snapshot; never the live view
+	matches []int     // message indexes in view.Messages, ascending
+	cur     int       // position in matches
+
+	// Built rows, cached per width; rebuilt only on resize.
+	width    int
+	rows     []string
+	anchors  []tui.MessageAnchor
+	top      int  // first visible row
+	recenter bool // place the current match near the top on next render
+	page     int  // body rows of the last render, for PgUp/PgDn
 }
+
+func (r *searchReader) Active() bool { return r != nil }
+
+func (i *Interactive) searchReaderOpen() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.searchReader != nil
+}
+
+const searchReaderFooter = "^n/^p match · ↑↓ PgUp/PgDn scroll · esc close"
 
 // chatSearchMessageText returns the searchable text of a user or assistant
 // message, or "" for other roles.
@@ -54,32 +77,29 @@ func chatSearchMatches(text string, terms []string) bool {
 	return left == 0
 }
 
-// normalizeChatSearchTerms lowercases and splits terms the way the index
-// tokenizer does, dropping duplicates.
-func normalizeChatSearchTerms(terms []string) []string {
-	toks, _ := sessionindex.ParseQuery(strings.Join(terms, " "))
-	return toks
-}
-
-// startChatSearch activates in-chat search for terms over the current
-// transcript and scrolls to the match at (or nearest after) focusMsgIdx.
-// With no match the search stays inactive and a status error is shown.
-func (i *Interactive) startChatSearch(terms []string, focusMsgIdx int) {
-	terms = normalizeChatSearchTerms(terms)
+// openSearchReader opens the reader on a snapshot of the current transcript
+// at the match at (or nearest after) focusMsgIdx. With no match it reports
+// a status error and stays closed.
+func (i *Interactive) openSearchReader(terms []string, focusMsgIdx int) {
+	terms, _ = sessionindex.ParseQuery(strings.Join(terms, " "))
 	i.mu.Lock()
+	defer i.invalidate()
+	defer i.mu.Unlock()
+	view := i.view.CloneForRender()
+	view.TailLimit = 0
+	view.Streaming, view.StreamingActive = "", false
+	view.ToolCalls, view.Err = nil, ""
 	var matches []int
 	if len(terms) > 0 {
-		for idx, m := range i.view.Messages {
+		for idx, m := range view.Messages {
 			if chatSearchMatches(chatSearchMessageText(m), terms) {
 				matches = append(matches, idx)
 			}
 		}
 	}
 	if len(matches) == 0 {
-		i.chatSearch = chatSearch{}
+		i.searchReader = nil
 		i.statusErr, i.statusOK = fmt.Sprintf("search %q: no match in this session", strings.Join(terms, " ")), ""
-		i.mu.Unlock()
-		i.invalidate()
 		return
 	}
 	cur := len(matches) - 1
@@ -89,183 +109,156 @@ func (i *Interactive) startChatSearch(terms []string, focusMsgIdx int) {
 			break
 		}
 	}
-	i.chatSearch = chatSearch{terms: terms, matches: matches, cur: cur, active: true}
-	i.mu.Unlock()
-	i.chatSearchJump()
+	i.searchReader = &searchReader{terms: terms, view: view, matches: matches, cur: cur, recenter: true}
 }
 
-// chatSearchNext moves to the next matching message, wrapping around.
-func (i *Interactive) chatSearchNext() { i.chatSearchStep(1) }
+// closeSearchReaderLocked closes the reader; its snapshot belongs to the
+// transcript being replaced.
+func (i *Interactive) closeSearchReaderLocked() { i.searchReader = nil }
 
-// chatSearchPrev moves to the previous matching message, wrapping around.
-func (i *Interactive) chatSearchPrev() { i.chatSearchStep(-1) }
-
-func (i *Interactive) chatSearchStep(delta int) {
+// handleSearchReaderKey handles a key while the reader is open. The reader
+// is modal: keys it does not use are ignored.
+func (i *Interactive) handleSearchReaderKey(k tui.Key) {
 	i.mu.Lock()
-	s := &i.chatSearch
-	if !s.active || len(s.matches) == 0 {
+	r := i.searchReader
+	if r == nil {
 		i.mu.Unlock()
 		return
 	}
-	n := len(s.matches)
-	s.cur = ((s.cur+delta)%n + n) % n
-	i.mu.Unlock()
-	i.chatSearchJump()
-}
-
-// chatSearchJump scrolls to the current match and refreshes the hint.
-func (i *Interactive) chatSearchJump() {
-	i.mu.Lock()
-	if !i.chatSearch.active || len(i.chatSearch.matches) == 0 {
-		i.mu.Unlock()
-		return
-	}
-	msgIdx := i.chatSearch.matches[i.chatSearch.cur]
-	turn := 0
-	for k := 0; k <= msgIdx && k < len(i.view.Messages); k++ {
-		if i.view.Messages[k].Role == provider.RoleUser {
-			turn++
-		}
-	}
-	i.mu.Unlock()
-	i.applyJumpSelection(msgIdx, turn)
-	i.mu.Lock()
-	s := &i.chatSearch
-	if s.active {
-		s.hint = fmt.Sprintf("search %q %d/%d · ^n/^p · esc clear", strings.Join(s.terms, " "), s.cur+1, len(s.matches))
-		if i.statusErr == "" {
-			i.statusOK = s.hint
-		}
+	page := max(1, r.page)
+	switch k.Kind {
+	case tui.KeyEsc, tui.KeyCtrlC:
+		i.searchReader = nil
+	case tui.KeyCtrlN:
+		r.step(1)
+	case tui.KeyCtrlP:
+		r.step(-1)
+	case tui.KeyUp:
+		r.top--
+	case tui.KeyDown:
+		r.top++
+	case tui.KeyPageUp:
+		r.top -= page
+	case tui.KeyPageDown:
+		r.top += page
+	case tui.KeyHome:
+		r.top = 0
+	case tui.KeyEnd:
+		r.top = len(r.rows)
 	}
 	i.mu.Unlock()
 	i.invalidate()
 }
 
-// clearChatSearch deactivates the search and drops its status hint.
-func (i *Interactive) clearChatSearch() {
-	i.mu.Lock()
-	changed := i.clearChatSearchLocked()
-	i.mu.Unlock()
-	if changed {
-		i.invalidate()
-	}
+func (r *searchReader) step(delta int) {
+	n := len(r.matches)
+	r.cur = ((r.cur+delta)%n + n) % n
+	r.recenter = true
 }
 
-func (i *Interactive) clearChatSearchLocked() bool {
-	if !i.chatSearch.active {
-		return false
-	}
-	if i.statusOK != "" && i.statusOK == i.chatSearch.hint {
-		i.statusOK = ""
-	}
-	i.chatSearch = chatSearch{}
-	return true
+func (r *searchReader) title() string {
+	return fmt.Sprintf("%s · %d/%d", sanitizeSessionTreeText(strings.Join(r.terms, " ")), r.cur+1, len(r.matches))
 }
 
-// chatSearchActive reports whether an in-chat search is active.
-func (i *Interactive) chatSearchActive() bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.chatSearch.active
+// messageAt returns the message index owning row, or -1.
+func (r *searchReader) messageAt(row int) int {
+	k := sort.Search(len(r.anchors), func(n int) bool { return r.anchors[n].Row > row }) - 1
+	if k < 0 {
+		return -1
+	}
+	return r.anchors[k].MessageIdx
 }
 
-// handleChatSearchKey consumes ctrl+n, ctrl+p and a bare Esc while the
-// search is active. Callers run it after modal dialogs had their turn.
-func (i *Interactive) handleChatSearchKey(k tui.Key) bool {
-	if !i.chatSearchActive() {
-		return false
-	}
-	switch {
-	case k.Kind == tui.KeyCtrlN:
-		i.chatSearchNext()
-		return true
-	case k.Kind == tui.KeyCtrlP:
-		i.chatSearchPrev()
-		return true
-	case isUnmodifiedEscape(k):
-		// Slash/file popups and transient help/notes keep Esc priority.
-		if i.suggest.Active(i.ed.Value()) || i.fileSuggest.Active(i.ed.Value()) {
-			return false
+func (r *searchReader) matchRow() int {
+	want := r.matches[r.cur]
+	for _, a := range r.anchors {
+		if a.MessageIdx == want {
+			return a.Row
 		}
-		i.mu.Lock()
-		overlay := len(i.helpBlock) > 0 || len(i.extNotes) > 0
-		i.mu.Unlock()
-		if overlay {
-			return false
-		}
-		i.clearChatSearch()
-		return true
 	}
-	return false
+	return 0
 }
 
-// shiftAnchorsForInfoBlocks returns anchors re-based onto the stable rows
-// after insertSessionInfoBlocks added its blocks.
-func shiftAnchorsForInfoBlocks(anchors []tui.MessageAnchor, blocks []sessionInfoBlock, rowCount int) []tui.MessageAnchor {
-	out := append([]tui.MessageAnchor(nil), anchors...)
-	if len(blocks) == 0 {
-		return out
+// Render draws exactly height lines: header, spacer, body, footer.
+func (r *searchReader) Render(th tui.Theme, width, height int) []string {
+	if width < 4 || height < 1 {
+		return nil
 	}
-	// Mirror insertSessionInfoBlocks: each block is inserted at the row of
-	// anchors[afterMessage] (or the end), never before an earlier insert.
-	rowStart := 0
-	for _, block := range blocks {
-		insertAt := rowCount
-		if block.afterMessage >= 0 && block.afterMessage < len(anchors) {
-			insertAt = anchors[block.afterMessage].Row
-		}
-		if insertAt < rowStart {
-			insertAt = rowStart
-		}
-		for k := range out {
-			if anchors[k].Row >= insertAt {
-				out[k].Row += len(block.lines)
-			}
-		}
-		rowStart = insertAt
+	if r.width != width {
+		r.rows, r.anchors = r.view.BuildWithAnchors(width)
+		r.width = width
+		r.recenter = true
 	}
-	return out
-}
+	body := max(1, height-3)
+	r.page = body
+	if r.recenter {
+		r.top = r.matchRow() - body/4
+		r.recenter = false
+	}
+	r.top = min(r.top, len(r.rows)-body)
+	r.top = max(r.top, 0)
 
-// applyChatSearchLocked returns visible with matched terms highlighted on
-// rows of matching messages and the current match tinted. visible[k] is
-// chat row start+k; base is the number of rows above the stable transcript.
-// visible is never mutated.
-func (i *Interactive) applyChatSearchLocked(visible []string, start, base, stableLen int) []string {
-	s := &i.chatSearch
-	if !s.active || len(visible) == 0 || len(i.stableChatAnchors) == 0 {
-		return visible
-	}
-	anchors := i.stableChatAnchors
-	matched := make(map[int]bool, len(s.matches))
-	for _, idx := range s.matches {
+	matched := make(map[int]bool, len(r.matches))
+	for _, idx := range r.matches {
 		matched[idx] = true
 	}
-	curIdx := s.matches[s.cur]
-	out := append([]string(nil), visible...)
-	end := start + len(visible)
-	for k, a := range anchors {
-		if !matched[a.MessageIdx] {
+	current := r.matches[r.cur]
+	title := r.title()
+	if runewidth.StringWidth(title) > width-4 {
+		title = runewidth.Truncate(title, max(1, width-5), "…")
+	}
+	lines := []string{frameHeader(th, title, width), strings.Repeat(" ", width)}
+	for row := r.top; row < r.top+body; row++ {
+		if row >= len(r.rows) {
+			lines = append(lines, strings.Repeat(" ", width))
 			continue
 		}
-		rowEnd := stableLen
-		if k+1 < len(anchors) {
-			rowEnd = anchors[k+1].Row
+		line := r.rows[row]
+		if w := runewidth.StringWidth(stripANSIBytes(line)); w > width {
+			line = clipStyledLine(line, width)
+		} else if w < width {
+			line += strings.Repeat(" ", width-w)
 		}
-		lo, hi := base+a.Row, base+rowEnd
-		if lo < start {
-			lo = start
-		}
-		if hi > end {
-			hi = end
-		}
-		for r := lo; r < hi; r++ {
-			line, _ := tui.HighlightTerms(out[r-start], s.terms, i.cfg.Theme)
-			if a.MessageIdx == curIdx {
-				line = tui.HighlightLine(line, i.cfg.Theme)
+		if msg := r.messageAt(row); matched[msg] {
+			line, _ = tui.HighlightTerms(line, r.terms, th)
+			if msg == current {
+				line = tui.HighlightLine(line, th)
 			}
-			out[r-start] = line
 		}
+		lines = append(lines, line)
 	}
-	return out
+	lines = append(lines, th.FGColor(th.Muted, finderFit(searchReaderFooter, width)))
+	if len(lines) > height {
+		lines = lines[len(lines)-height:]
+	}
+	return lines
+}
+
+// clipStyledLine cuts an ANSI-styled line to width display cells, keeping
+// escape sequences and ending with a reset.
+func clipStyledLine(line string, width int) string {
+	var b strings.Builder
+	w := 0
+	for k := 0; k < len(line); {
+		if line[k] == 0x1b && k+1 < len(line) && line[k+1] == '[' {
+			j := k + 2
+			for j < len(line) && (line[j] < 0x40 || line[j] > 0x7e) {
+				j++
+			}
+			j = min(j+1, len(line))
+			b.WriteString(line[k:j])
+			k = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[k:])
+		rw := runewidth.RuneWidth(r)
+		if w+rw > width {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+		k += size
+	}
+	b.WriteString("\x1b[0m")
+	return b.String()
 }

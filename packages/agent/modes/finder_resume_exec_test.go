@@ -89,7 +89,7 @@ func TestFinderOpenLocalSameDirResumesAndJumps(t *testing.T) {
 	l.i.finderOpenItem(finderExecItem(path), 0)
 	runLoopCall(t, l.i)
 	require.Equal(t, path, l.finishJump(t))
-	cur, ok := chatSearchCur(l.i)
+	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 	require.Nil(t, l.i.pendingFinderJump)
@@ -107,7 +107,7 @@ func TestFinderOpenLocalSwitchResumes(t *testing.T) {
 	require.NotNil(t, l.i.finderResume, "other directory asks first")
 	l.i.handleFinderResumeKey(tui.Key{Kind: tui.KeyRune, Rune: 'y'})
 	require.Equal(t, path, l.finishJump(t))
-	cur, ok := chatSearchCur(l.i)
+	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 }
@@ -132,7 +132,7 @@ func TestFinderOpenLocalForkKeepsOriginal(t *testing.T) {
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "original is byte-identical")
-	cur, ok := chatSearchCur(l.i)
+	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 	require.Contains(t, l.i.statusOK, "forked into")
@@ -166,7 +166,7 @@ func TestFinderResumeCancelAndMismatchDropPendingJump(t *testing.T) {
 	l.i.pendingFinderJump = &pendingFinderJump{path: path, terms: []string{"refacto"}}
 	l.i.runPendingFinderJump(filepath.Join(l.root, "other.jsonl"))
 	require.Nil(t, l.i.pendingFinderJump)
-	_, ok := chatSearchCur(l.i)
+	_, ok := readerCur(l.i)
 	require.False(t, ok)
 }
 
@@ -296,11 +296,11 @@ func TestFinderPortSwitchRunsJumpAfterHydrate(t *testing.T) {
 	require.False(t, i.applySessionResult(context.Background(), res))
 
 	require.Equal(t, session.ID("target"), i.SessionID())
-	cur, ok := chatSearchCur(i)
+	cur, ok := readerCur(i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 	require.Nil(t, i.pendingFinderJump)
-	require.Contains(t, i.statusOK, `search "refacto"`)
+	require.Contains(t, stripANSIBytes(readerFrame(i)[0]), "refacto · ")
 }
 
 func TestFinderResumeRefusedWhileBusy(t *testing.T) {
@@ -358,12 +358,12 @@ func TestFinderOpenCurrentSessionJumpsInPlaceLocal(t *testing.T) {
 	l.finishJump(t)
 
 	// Pick the same session again: no reload, the jump runs directly.
-	l.i.clearChatSearch()
+	l.i.searchReader = nil
 	finderSearchQuery(t, l.i, "refacto")
 	l.i.finderOpenItem(finderExecItem(path), 0)
 	require.Empty(t, l.loaded)
 	require.Empty(t, l.i.loopCalls)
-	cur, ok := chatSearchCur(l.i)
+	cur, ok := readerCur(l.i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 	require.Nil(t, l.i.pendingFinderJump)
@@ -386,7 +386,7 @@ func TestFinderOpenCurrentSessionJumpsInPlacePort(t *testing.T) {
 	item := finderExecItem(path)
 	item.Live, item.LiveID, item.LiveCWD = true, string(i.SessionID()), cwd
 	i.finderOpenItem(item, 0)
-	cur, ok := chatSearchCur(i)
+	cur, ok := readerCur(i)
 	require.True(t, ok)
 	require.Equal(t, 3, cur)
 	require.Nil(t, i.pendingFinderJump)
@@ -420,7 +420,7 @@ func TestFinderJumpWithoutHitSkipsChatSearch(t *testing.T) {
 	l.i.finderOpenItem(item, -1)
 	runLoopCall(t, l.i)
 	l.finishJump(t)
-	_, ok := chatSearchCur(l.i)
+	_, ok := readerCur(l.i)
 	require.False(t, ok)
 	require.Empty(t, l.i.statusErr, "no misleading no-match error")
 
@@ -429,19 +429,6 @@ func TestFinderJumpWithoutHitSkipsChatSearch(t *testing.T) {
 	l.i.runPendingFinderJump(path)
 	require.Equal(t, "forked into ~/x (new session)", l.i.statusOK)
 	require.Empty(t, l.i.statusErr)
-}
-
-func TestChatSearchClearedWhenTranscriptReplaced(t *testing.T) {
-	i, _ := chatSearchFixture(t)
-	i.startChatSearch([]string{"watcher"}, 0)
-	i.mu.Lock()
-	i.hydrateLocked(session.Snapshot{Messages: []provider.Message{jumpTextMsg(provider.RoleUser, "x")}})
-	i.mu.Unlock()
-	_, ok := chatSearchCur(i)
-	require.False(t, ok)
-	// A stale step after the reset is a no-op, not an index panic.
-	i.chatSearchNext()
-	i.chatSearchJump()
 }
 
 func TestFinderPortForkFailureRemovesOrphan(t *testing.T) {

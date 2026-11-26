@@ -592,7 +592,7 @@ func (i *Interactive) hydrateLocked(snap session.Snapshot) {
 	i.resetTranscriptRenderLocked()
 	i.stableChatCacheValid = false
 	// Search matches are view indexes into the replaced transcript.
-	i.clearChatSearchLocked()
+	i.closeSearchReaderLocked()
 	i.stream.Reset()
 	prevTitle := i.sessionTitle
 	i.applyInfoLocked(snap.Info)
@@ -1151,7 +1151,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			return true
 		}
 		i.sessionGen++
-		i.clearChatSearchLocked()
+		i.closeSearchReaderLocked()
 		if i.subCancel != nil {
 			i.subCancel()
 		}
@@ -1183,7 +1183,7 @@ func (i *Interactive) applySessionResult(ctx context.Context, res sessionResult)
 			return false
 		}
 		i.sessionGen++
-		i.clearChatSearchLocked()
+		i.closeSearchReaderLocked()
 		// Cancelling the old controlling stream releases it (detach).
 		if i.subCancel != nil {
 			i.subCancel()
@@ -1236,7 +1236,7 @@ func (i *Interactive) SwitchSession(ctx context.Context, id session.ID, port ses
 	i.stopSubscription()
 	i.mu.Lock()
 	i.sessionGen++
-	i.clearChatSearchLocked()
+	i.closeSearchReaderLocked()
 	i.port = port
 	if port != nil {
 		i.portMode.Store(true)

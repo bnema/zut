@@ -66,6 +66,7 @@ func (i *Interactive) confirmChildActiveLocked() bool {
 		i.rescueDialog.Active() ||
 		i.finder.Active() ||
 		i.finderResume.Active() ||
+		i.searchReader.Active() ||
 		i.residentSubagentsDialog.Active() ||
 		i.residentChildSession != nil ||
 		i.jumpDialog.Active() ||
@@ -240,7 +241,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	i.mu.Lock()
 	resumeActive := i.finderResume.Active()
 	finderActive := i.finder.Active()
+	readerActive := i.searchReader.Active()
 	i.mu.Unlock()
+	if readerActive {
+		i.handleSearchReaderKey(k)
+		return false
+	}
 	if resumeActive {
 		i.handleFinderResumeKey(k)
 		return false
@@ -473,12 +479,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 
 	if slot := quickModelShortcutSlot(k); slot > 0 {
 		i.applyQuickModelShortcut(slot)
-		return false
-	}
-
-	// In-chat search owns ctrl+n/ctrl+p and a single Esc while active, ahead
-	// of the double-Esc gesture and turn cancellation.
-	if i.handleChatSearchKey(k) {
 		return false
 	}
 

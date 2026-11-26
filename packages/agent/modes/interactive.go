@@ -748,12 +748,8 @@ type Interactive struct {
 	stableChatCacheKey   chatCacheKey
 	stableChatCacheValid bool
 
-	// In-chat search (chat_search.go). stableChatAnchors maps view messages
-	// to stable transcript rows; chatRowBase counts rows prepended above them.
-	chatSearch        chatSearch
-	stableChatAnchors []tui.MessageAnchor
-	stableChatLen     int
-	chatRowBase       int
+	// searchReader is the read-only search-hit reader (chat_search.go).
+	searchReader *searchReader
 
 	// pendingFinderJump runs after a finder resume (finder_resume_exec.go).
 	pendingFinderJump *pendingFinderJump

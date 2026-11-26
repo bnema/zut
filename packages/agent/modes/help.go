@@ -25,7 +25,7 @@ var helpKeyRows = [][2]string{
 	{"ctrl+l", "redraw the screen"},
 	{"ctrl+o", "expand / collapse long tool results"},
 	{"ctrl+r", "cycle reasoning levels for the active model"},
-	{"ctrl+f", "open the Finder: search sessions and messages across all projects"},
+	{"ctrl+f", "open the Finder: search sessions and messages across all projects; a message hit opens a reader (ctrl+n / ctrl+p match, esc close)"},
 	{"ctrl+1…9", "activate model + reasoning + fast-mode profile (AZERTY top row also works); empty slots open the model picker"},
 	{"pgup / pgdn", "scroll the chat one page up / down"},
 	{"up / down", "move in input, browse prompt history at top edge, scroll chat when empty"},
