@@ -155,13 +155,13 @@ func renderFinderCard(th tui.Theme, item finderItem, card finderCard, w, rows in
 	label := tui.WrapANSILine(" "+sanitizeSessionTreeText(item.Label), max(w, 1))
 	for n, line := range label[:min(len(label), 3)] {
 		if n == 0 {
-			out = append(out, renderFinderLabel(th, line, w))
+			out = append(out, renderPickerLabel(th, line, w))
 		} else {
-			out = append(out, finderFit(line, w))
+			out = append(out, pickerFit(line, w))
 		}
 	}
 	for _, fact := range card.Facts {
-		out = append(out, th.FGColor(dim, finderFit(" "+sanitizeSessionTreeText(fact), w)))
+		out = append(out, th.FGColor(dim, pickerFit(" "+sanitizeSessionTreeText(fact), w)))
 	}
 	if n := len(card.Sections); n > 0 {
 		room := rows - len(out) - 2*n // a blank line and a header per section
@@ -175,7 +175,7 @@ func renderFinderCard(th tui.Theme, item finderItem, card finderCard, w, rows in
 			room -= len(lines)
 			out = append(out, blank, renderRoleHeader(th, sec.Role, sec.Label, " · "+formatHitTime(sec.Time), w))
 			for _, line := range lines {
-				out = append(out, th.FGColor(th.FG, finderFit(" "+line, w)))
+				out = append(out, th.FGColor(th.FG, pickerFit(" "+line, w)))
 			}
 		}
 	}

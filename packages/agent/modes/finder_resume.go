@@ -134,7 +134,7 @@ func (c *resumeConfirm) Render(th tui.Theme, width int) []string {
 		if leadW > text/2 {
 			// Too narrow to indent under the lead: give it its own rows.
 			for _, part := range tui.WrapANSILine(lead, text) {
-				row(finderFit(part, text))
+				row(pickerFit(part, text))
 			}
 			styledLead, leadW = "", 0
 		}
@@ -143,7 +143,7 @@ func (c *resumeConfirm) Render(th tui.Theme, width int) []string {
 			if idx == 0 {
 				prefix = styledLead
 			}
-			body := finderFit(part, text-leadW)
+			body := pickerFit(part, text-leadW)
 			if line.warn {
 				body = th.FGColor(th.Warning, body)
 			}

@@ -174,19 +174,14 @@ func rankFinderSessions(items []finderItem, matches []sessionindex.SessionMatch,
 	for idx, item := range items {
 		labels[idx] = item.Label
 	}
-	fz := make([]int, len(items))
-	if query != "" {
-		for _, m := range fuzzy.Find(query, labels) {
-			fz[m.Index] = max(m.Score, 0)
-		}
-	}
+	fz, _ := pickerFuzzyScores(query, labels)
 	scores := make([]float64, len(items))
 	for idx, item := range items {
 		age := 0.0
 		if updated := matches[idx].Doc.Updated; !updated.IsZero() {
 			age = max(now.Sub(updated).Hours()/24, 0)
 		}
-		scores[idx] = float64(fz[idx]) + 10*math.Log2(1+float64(item.Count)) + 30/(1+age)
+		scores[idx] = float64(max(fz[idx], 0)) + 10*math.Log2(1+float64(item.Count)) + 30/(1+age)
 	}
 	order := make([]int, len(items))
 	for idx := range order {
