@@ -24,7 +24,23 @@ type finderCardSection struct {
 	Label string
 	Role  provider.Role
 	Time  time.Time
-	Text  string
+	Text  string // sanitized, whitespace collapsed, capped
+}
+
+// finderCardTextRunes caps a section's text: far more than a preview pane
+// shows, small enough to rewrap on every render.
+const finderCardTextRunes = 4000
+
+func finderCardText(s string) string {
+	s = strings.Join(strings.Fields(sanitizeSessionTreeText(s)), " ")
+	n := 0
+	for i := range s {
+		if n == finderCardTextRunes {
+			return s[:i]
+		}
+		n++
+	}
+	return s
 }
 
 func (c finderCard) empty() bool { return len(c.Facts) == 0 && len(c.Sections) == 0 }
@@ -33,6 +49,7 @@ func (c finderCard) empty() bool { return len(c.Facts) == 0 && len(c.Sections) =
 // Interactive.mu.
 type finderCardState struct {
 	key    string
+	gen    uint64
 	cancel context.CancelFunc
 }
 
@@ -54,22 +71,19 @@ func (i *Interactive) requestFinderCard(ctx context.Context) {
 		return
 	}
 	item, ok := m.selected()
-	if !ok || len(item.Hits) > 0 || item.Key == "" || m.hasCard(item.Key) || i.finderCard.key == item.Key {
+	gen := m.CardsGeneration()
+	if !ok || len(item.Hits) > 0 || item.Key == "" || m.hasFreshCard(item.Key) || (i.finderCard.key == item.Key && i.finderCard.gen == gen) {
 		return
 	}
 	i.finderCard.reset()
 	fetchCtx, cancel := context.WithCancel(ctx)
-	i.finderCard = finderCardState{key: item.Key, cancel: cancel}
+	i.finderCard = finderCardState{key: item.Key, gen: gen, cancel: cancel}
 	key := item.Key
 	go func() {
 		defer cancel()
 		ov, found, err := index.Overview(fetchCtx, key)
-		if err != nil || fetchCtx.Err() != nil {
-			return
-		}
-		card := finderCard{}
-		if found {
-			card = sessionCard(ov)
+		if fetchCtx.Err() != nil {
+			return // superseded or closed; the newer request owns the state
 		}
 		apply := func() {
 			i.mu.Lock()
@@ -77,10 +91,17 @@ func (i *Interactive) requestFinderCard(ctx context.Context) {
 			if i.finder != m {
 				return // finder closed or reopened
 			}
-			if i.finderCard.key == key {
-				i.finderCard = finderCardState{}
+			if i.finderCard.key == key && i.finderCard.gen == gen {
+				i.finderCard = finderCardState{} // a failed fetch can be retried
 			}
-			if m.SetCard(key, card) {
+			if err != nil {
+				return
+			}
+			card := finderCard{}
+			if found {
+				card = sessionCard(ov)
+			}
+			if m.SetCard(gen, key, card) {
 				i.invalidate()
 			}
 		}
@@ -116,10 +137,10 @@ func sessionCard(ov sessionindex.Overview) finderCard {
 		c.Facts = append(c.Facts, strings.Join(model, " · "))
 	}
 	if ov.First != nil {
-		c.Sections = append(c.Sections, finderCardSection{Label: "first request", Role: provider.RoleUser, Time: ov.First.Ref.Time, Text: ov.First.Text})
+		c.Sections = append(c.Sections, finderCardSection{Label: "first request", Role: provider.RoleUser, Time: ov.First.Ref.Time, Text: finderCardText(ov.First.Text)})
 	}
 	if ov.Last != nil {
-		c.Sections = append(c.Sections, finderCardSection{Label: "last reply", Role: provider.RoleAssistant, Time: ov.Last.Ref.Time, Text: ov.Last.Text})
+		c.Sections = append(c.Sections, finderCardSection{Label: "last reply", Role: provider.RoleAssistant, Time: ov.Last.Ref.Time, Text: finderCardText(ov.Last.Text)})
 	}
 	return c
 }
@@ -146,14 +167,13 @@ func renderFinderCard(th tui.Theme, item finderItem, card finderCard, w, rows in
 		room := rows - len(out) - 2*n // a blank line and a header per section
 		for idx, sec := range card.Sections {
 			budget := max(room/(n-idx), 1)
-			text := strings.Join(strings.Fields(sanitizeSessionTreeText(sec.Text)), " ")
-			lines := tui.WrapANSILine(text, max(w-1, 1))
+			lines := tui.WrapANSILine(sec.Text, max(w-1, 1))
 			if len(lines) > budget {
 				lines = lines[:budget]
 				lines[budget-1] = runewidth.Truncate(lines[budget-1]+" …", max(w-1, 1), "…")
 			}
 			room -= len(lines)
-			out = append(out, blank, renderCardHeader(th, sec, w))
+			out = append(out, blank, renderRoleHeader(th, sec.Role, sec.Label, " · "+formatHitTime(sec.Time), w))
 			for _, line := range lines {
 				out = append(out, th.FGColor(th.FG, finderFit(" "+line, w)))
 			}
@@ -166,17 +186,4 @@ func renderFinderCard(th tui.Theme, item finderItem, card finderCard, w, rows in
 		out = append(out, blank)
 	}
 	return out
-}
-
-func renderCardHeader(th tui.Theme, sec finderCardSection, w int) string {
-	color := th.Assistant
-	if sec.Role == provider.RoleUser {
-		color = th.User
-	}
-	label := " " + sec.Label
-	lw := runewidth.StringWidth(label)
-	if lw >= w {
-		return th.FGColor(color, finderFit(label, w))
-	}
-	return th.FGColor(color, label) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(" · "+formatHitTime(sec.Time), w-lw))
 }

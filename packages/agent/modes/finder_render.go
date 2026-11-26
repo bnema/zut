@@ -370,19 +370,26 @@ func formatHitTime(t time.Time) string {
 // cells: the role in its chat color, the time and badge dimmed, so the
 // header reads apart from the snippet text below it.
 func renderHitHeader(th tui.Theme, hit finderHit, w int) string {
-	role, roleColor := " "+finderRoleLabel(hit.Role), th.Assistant
-	if hit.Role == provider.RoleUser {
-		roleColor = th.User
-	}
 	meta := " · " + formatHitTime(hit.Time)
 	if hit.Compacted {
 		meta += " compacted"
 	}
-	rw := runewidth.StringWidth(role)
-	if rw >= w {
-		return th.FGColor(roleColor, finderFit(role, w))
+	return renderRoleHeader(th, hit.Role, finderRoleLabel(hit.Role), meta, w)
+}
+
+// renderRoleHeader renders " label" in the chat color of role followed by
+// the dimmed meta, in exactly w cells.
+func renderRoleHeader(th tui.Theme, role provider.Role, label, meta string, w int) string {
+	color := th.Assistant
+	if role == provider.RoleUser {
+		color = th.User
 	}
-	return th.FGColor(roleColor, role) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(meta, w-rw))
+	label = " " + label
+	lw := runewidth.StringWidth(label)
+	if lw >= w {
+		return th.FGColor(color, finderFit(label, w))
+	}
+	return th.FGColor(color, label) + th.FGColor(th.DimColor(th.Muted, 40), finderFit(meta, w-lw))
 }
 
 // renderHitSnippet renders the snippet windowed around the first match
@@ -415,8 +422,8 @@ func (m *finderModel) renderPreview(th tui.Theme, terms []string, w, rows int) [
 				out = append(out, snippet)
 			}
 		}
-	} else if card, has := m.cards[item.Key]; ok && rows > 0 && has && !card.empty() {
-		out = renderFinderCard(th, item, card, w, rows)
+	} else if e, has := m.cards[item.Key]; ok && rows > 0 && has && !e.card.empty() {
+		out = renderFinderCard(th, item, e.card, w, rows)
 	} else if ok && rows > 0 {
 		out = append(out, th.FGColor(th.Muted, finderFit(" "+sanitizeSessionTreeText(item.Detail), w)))
 	}

@@ -220,7 +220,7 @@ func TestFinderListColumnsAlignAndKeepDetail(t *testing.T) {
 	act := m.Open(0)
 	items := []finderItem{
 		{Key: "a", Label: "zut · short", Detail: "3d ago", Count: 110},
-		{Key: "b", Label: "ermite-workspace · " + strings.Repeat("very long title ", 10), Detail: "12h ago", Count: 6},
+		{Key: "b", Label: "long-project-name · " + strings.Repeat("very long title ", 10), Detail: "12h ago", Count: 6},
 	}
 	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: items}, nil))
 	cols := finderListColumns(m.items)

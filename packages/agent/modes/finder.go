@@ -108,8 +108,10 @@ type finderModel struct {
 	viewTop int
 
 	gen uint64
-	// cards caches previews of items without hits, by Key.
-	cards map[string]finderCard
+	// cards caches previews of items without hits, by Key. A card whose gen
+	// is older than cardsGen still renders but is refetched.
+	cards    map[string]finderCardEntry
+	cardsGen uint64
 	// results counts installed result sets; snippet fetches are tied to
 	// it, not to gen, since a keystroke bumps gen before results change.
 	results uint64
@@ -166,22 +168,31 @@ func (m *finderModel) Open(tab int) finderAction {
 	return m.search()
 }
 
-// SetCard stores the preview card of the item with key and reports
-// whether the finder is active.
-func (m *finderModel) SetCard(key string, card finderCard) bool {
-	if !m.Active() {
+type finderCardEntry struct {
+	card finderCard
+	gen  uint64
+}
+
+// CardsGeneration is the id of the current card set; Refresh bumps it.
+func (m *finderModel) CardsGeneration() uint64 { return m.cardsGen }
+
+// SetCard stores the preview card of the item with key, fetched for card
+// generation gen, and reports whether it was stored.
+func (m *finderModel) SetCard(gen uint64, key string, card finderCard) bool {
+	if !m.Active() || gen != m.cardsGen {
 		return false
 	}
 	if m.cards == nil {
-		m.cards = map[string]finderCard{}
+		m.cards = map[string]finderCardEntry{}
 	}
-	m.cards[key] = card
+	m.cards[key] = finderCardEntry{card: card, gen: gen}
 	return true
 }
 
-func (m *finderModel) hasCard(key string) bool {
-	_, ok := m.cards[key]
-	return ok
+// hasFreshCard reports whether key has a card of the current generation.
+func (m *finderModel) hasFreshCard(key string) bool {
+	e, ok := m.cards[key]
+	return ok && e.gen == m.cardsGen
 }
 
 // Close deactivates the finder; in-flight results become stale.
@@ -287,7 +298,7 @@ func (m *finderModel) Refresh() finderAction {
 	if !m.Active() {
 		return finderAction{}
 	}
-	m.cards = nil // the index may have changed
+	m.cardsGen++ // the index may have changed: refetch, keep showing old cards
 	return m.search()
 }
 

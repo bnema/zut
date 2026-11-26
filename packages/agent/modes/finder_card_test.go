@@ -24,7 +24,7 @@ func TestFinderCardForItemWithoutHits(t *testing.T) {
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlF})
 	driveFinderLoop(t, i, func() bool {
 		item, ok := i.finder.selected()
-		return !i.finder.indexing && !i.finder.loading && ok && i.finder.hasCard(item.Key)
+		return !i.finder.indexing && !i.finder.loading && ok && i.finder.hasFreshCard(item.Key)
 	})
 	joined := stripANSIBytes(strings.Join(i.finder.Render(tui.Dark, 140, 24), "\n"))
 	require.Contains(t, joined, "2 messages · you 1 · agent 1")
@@ -62,6 +62,22 @@ func TestRenderFinderCardBudget(t *testing.T) {
 	m := newFinderModel("/work", newTestFinderSource(t, "Sessions"))
 	act := m.Open(0)
 	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: []finderItem{{Key: "k", Label: "zut · x", Detail: "3d ago"}}}, nil))
-	require.True(t, m.SetCard("k", finderCard{}))
+	require.True(t, m.SetCard(m.CardsGeneration(), "k", finderCard{}))
 	require.Contains(t, stripANSIBytes(strings.Join(m.Render(tui.Dark, 140, 12), "\n")), "3d ago")
+}
+
+func TestFinderCardsSurviveRefreshUntilRefetched(t *testing.T) {
+	m := newFinderModel("/work", newTestFinderSource(t, "Sessions"))
+	act := m.Open(0)
+	require.True(t, m.ApplyResults(act.Gen, act.TabID, finderResults{Items: []finderItem{{Key: "k", Label: "zut · x"}}}, nil))
+	old := m.CardsGeneration()
+	require.True(t, m.SetCard(old, "k", finderCard{Facts: []string{"old facts"}}))
+	require.True(t, m.hasFreshCard("k"))
+
+	m.Refresh()
+	require.False(t, m.hasFreshCard("k"), "an index change asks for a refetch")
+	require.Contains(t, stripANSIBytes(strings.Join(m.Render(tui.Dark, 140, 12), "\n")), "old facts", "the old card shows meanwhile")
+	require.False(t, m.SetCard(old, "k", finderCard{Facts: []string{"stale"}}), "a fetch from before the refresh is dropped")
+	require.True(t, m.SetCard(m.CardsGeneration(), "k", finderCard{Facts: []string{"new facts"}}))
+	require.True(t, m.hasFreshCard("k"))
 }
