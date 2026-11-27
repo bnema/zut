@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -26,19 +27,19 @@ func TestMCPDeferredRegistration(t *testing.T) {
 	yes, no := true, false
 	for _, tc := range []struct {
 		name         string
-		experimental *ExperimentalConfig
+		experimental *config.ExperimentalConfig
 		edit         func(*Args)
 		deferred     bool
 	}{
 		{"default", nil, nil, false},
-		{"enabled", &ExperimentalConfig{Codemode: &yes}, nil, true},
-		{"opt out", &ExperimentalConfig{Codemode: &yes, CodemodeDeferMCP: &no}, nil, false},
-		{"codemode excluded", &ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.Tools = []string{"mcp"} }, false},
-		{"resident", &ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.ResidentChild = true }, false},
-		{"orchestrator", &ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.Orchestrate = true }, false},
+		{"enabled", &config.ExperimentalConfig{Codemode: &yes}, nil, true},
+		{"opt out", &config.ExperimentalConfig{Codemode: &yes, CodemodeDeferMCP: &no}, nil, false},
+		{"codemode excluded", &config.ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.Tools = []string{"mcp"} }, false},
+		{"resident", &config.ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.ResidentChild = true }, false},
+		{"orchestrator", &config.ExperimentalConfig{Codemode: &yes}, func(a *Args) { a.Orchestrate = true }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := SaveConfig(Config{Experimental: tc.experimental}); err != nil {
+			if err := config.Save(config.Config{Experimental: tc.experimental}); err != nil {
 				t.Fatal(err)
 			}
 			next := args
@@ -105,7 +106,7 @@ func TestCodemodeDeferredMCPDiscoveryAndCall(t *testing.T) {
 	args.Env = os.Environ()
 	startTestMCP(t, &args)
 	yes := true
-	if err := SaveConfig(Config{Experimental: &ExperimentalConfig{Codemode: &yes}, PythonInterpreter: py}); err != nil {
+	if err := config.Save(config.Config{Experimental: &config.ExperimentalConfig{Codemode: &yes}, PythonInterpreter: py}); err != nil {
 		t.Fatal(err)
 	}
 	resolved := resolvePython(t, args)
@@ -162,7 +163,7 @@ func TestMCPDeferredFollowsLiveJail(t *testing.T) {
 	args.Env = os.Environ()
 	startTestMCP(t, &args)
 	yes := true
-	if err := SaveConfig(Config{Experimental: &ExperimentalConfig{Codemode: &yes}, JailByDefault: &yes}); err != nil {
+	if err := config.Save(config.Config{Experimental: &config.ExperimentalConfig{Codemode: &yes}, JailByDefault: &yes}); err != nil {
 		t.Fatal(err)
 	}
 	resolved := resolvePython(t, args)

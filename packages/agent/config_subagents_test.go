@@ -1,9 +1,13 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bnema/zut/packages/agent/config"
+)
 
 func TestSubagentPolicyFromConfigRetainsSchedulingAndToolSettings(t *testing.T) {
-	policy := subagentPolicyFromConfig(SubagentsConfig{
+	policy := subagentPolicyFromConfig(config.SubagentsConfig{
 		MaxConcurrent: 3,
 		QueueTimeout:  "2s",
 		AllowedTools:  []string{"read"},

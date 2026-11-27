@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/skills"
 )
 
@@ -38,7 +39,7 @@ func TestSkillPinsPersistIndependentScopes(t *testing.T) {
 	if err != nil || !slices.Equal(pins.Project, []string{"other"}) || !slices.Equal(pins.Global, []string{"review"}) {
 		t.Fatalf("pins = %+v, %v", pins, err)
 	}
-	info, err := os.Stat(filepath.Join(ZutHome(), skillPinsFileName))
+	info, err := os.Stat(filepath.Join(config.ZutHome(), skillPinsFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestSkillPinsPersistIndependentScopes(t *testing.T) {
 		t.Fatalf("project was modified: %v, %v", entries, err)
 	}
 	// No temp files are left next to the preferences.
-	entries, err := os.ReadDir(ZutHome())
+	entries, err := os.ReadDir(config.ZutHome())
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("home entries = %v, %v", entries, err)
 	}
@@ -64,7 +65,7 @@ func TestSkillPinsSavedSortedAndDeduplicated(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(skillPinsFile{Global: []string{"b", "a", "b", " "}, Projects: map[string][]string{key: {"z", "a", "a"}}})
-	if err := os.WriteFile(filepath.Join(ZutHome(), skillPinsFileName), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(config.ZutHome(), skillPinsFileName), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pins, err := loadSkillPins(cwd)
@@ -110,7 +111,7 @@ func TestSkillPinsRejectCorruptFileWithoutOverwriting(t *testing.T) {
 		`{"global":["review"],"future":{"x":1}}`, `{"version":2,"global":[]}`, `{"projects":{},"extra":null}`,
 	} {
 		t.Setenv("ZUT_HOME", t.TempDir())
-		path := filepath.Join(ZutHome(), skillPinsFileName)
+		path := filepath.Join(config.ZutHome(), skillPinsFileName)
 		if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +199,7 @@ func TestPreloadSkillPinsFreshOnlyAndNoSkill(t *testing.T) {
 
 func TestPreloadSkillPinsMalformedFileWarnsAndKeepsPrompt(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := os.WriteFile(filepath.Join(ZutHome(), skillPinsFileName), []byte("{"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(config.ZutHome(), skillPinsFileName), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var diagnostics bytes.Buffer
@@ -230,7 +231,7 @@ func TestSkillPinsSymlinkedFileIsReadableButNeverReplaced(t *testing.T) {
 	if err := os.WriteFile(target, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(ZutHome(), skillPinsFileName)
+	link := filepath.Join(config.ZutHome(), skillPinsFileName)
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestSkillPinsSymlinkedFileIsReadableButNeverReplaced(t *testing.T) {
 	if got, _ := os.ReadFile(target); !bytes.Equal(got, original) {
 		t.Fatalf("target changed: %q", got)
 	}
-	entries, _ := os.ReadDir(ZutHome())
+	entries, _ := os.ReadDir(config.ZutHome())
 	if len(entries) != 1 {
 		t.Fatalf("temp file left behind: %v", entries)
 	}
@@ -256,7 +257,7 @@ func TestSkillPinsSymlinkedFileIsReadableButNeverReplaced(t *testing.T) {
 
 func TestSkillPinsUnknownFieldsFailClosedWithClearError(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	path := filepath.Join(ZutHome(), skillPinsFileName)
+	path := filepath.Join(config.ZutHome(), skillPinsFileName)
 	original := []byte(`{"global":["a"],"notes":"keep me"}`)
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)

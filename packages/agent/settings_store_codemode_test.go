@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,7 +17,7 @@ func TestSettingsStoreCodemode(t *testing.T) {
 	require.False(t, enabled)
 	// A missing experimental section is created on the first write.
 	require.NoError(t, store.SetCodemodeEnabled(true))
-	require.NoError(t, updateConfig(func(c *Config) error {
+	require.NoError(t, config.Update(func(c *config.Config) error {
 		c.Model = "preserved-model"
 		deferred := false
 		c.Experimental.CodemodeDeferMCP = &deferred
@@ -24,7 +25,7 @@ func TestSettingsStoreCodemode(t *testing.T) {
 	}))
 	for _, want := range []bool{false, true, false} {
 		require.NoError(t, store.SetCodemodeEnabled(want))
-		data, err := os.ReadFile(ConfigPath())
+		data, err := os.ReadFile(config.Path())
 		require.NoError(t, err)
 		var persisted struct {
 			Model        string `json:"model"`

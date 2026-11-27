@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/config"
 )
 
 // ChangelogInfo is what FetchChangelog returns. Body is the markdown
@@ -127,7 +129,7 @@ func FetchChangelogAsync(version string) <-chan ChangelogInfo {
 // Returns false on development builds and on the first-ever launch (no
 // LastChangelogShown stored — we don't dump release notes at someone who
 // just installed).
-func ShouldShowChangelog(currentVersion string, cfg Config) bool {
+func ShouldShowChangelog(currentVersion string, cfg config.Config) bool {
 	if isDevVersion(currentVersion) {
 		return false
 	}
@@ -143,9 +145,9 @@ func ShouldShowChangelog(currentVersion string, cfg Config) bool {
 // actually shown (e.g. fetch failed) so we don't keep retrying.
 func MarkChangelogShown(version string) error {
 	v := semverOnly(version)
-	return updateConfig(func(cfg *Config) error {
+	return config.Update(func(cfg *config.Config) error {
 		if semverOnly(cfg.LastChangelogShown) == v {
-			return errConfigUnchanged
+			return config.ErrUnchanged
 		}
 		cfg.LastChangelogShown = v
 		return nil
@@ -161,9 +163,9 @@ func SeedChangelogVersion(version string) {
 		return
 	}
 	version = semverOnly(version)
-	_ = updateConfig(func(cfg *Config) error {
+	_ = config.Update(func(cfg *config.Config) error {
 		if cfg.LastChangelogShown != "" {
-			return errConfigUnchanged
+			return config.ErrUnchanged
 		}
 		cfg.LastChangelogShown = version
 		return nil

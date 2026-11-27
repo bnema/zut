@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bnema/zut/packages/agent/advisor"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -34,7 +35,7 @@ func advisorSystemAddendum(reg core.Registry) string {
 // advisor enabled. Packaged agents (PermissionSet, named agents, zutfiles),
 // side chats and SDK runtimes (NoAdvisor) are excluded because the tool sends
 // the transcript to another provider. Native mode requires this too.
-func advisorToolAllowed(args Args, cfg Config) bool {
+func advisorToolAllowed(args Args, cfg config.Config) bool {
 	if !cfg.AdvisorSettings().Enabled || args.NoAdvisor || args.NoTools || args.PermissionSet != nil ||
 		args.ResidentChild || args.AgentName != "" || args.zutfile != nil {
 		return false
@@ -48,7 +49,7 @@ func advisorToolAllowed(args Args, cfg Config) bool {
 // maybeAddAdvisorTool registers the advisor tool. The tool reloads config on
 // each call, so an enabled advisor without a model still registers and
 // reports the missing model to the executor.
-func maybeAddAdvisorTool(reg core.Registry, args Args, cfg Config) {
+func maybeAddAdvisorTool(reg core.Registry, args Args, cfg config.Config) {
 	if reg == nil || !advisorToolAllowed(args, cfg) {
 		return
 	}
@@ -73,7 +74,7 @@ func clientAdvisorTool(reg core.Registry) *tools.AdvisorTool {
 // bound to the watcher's reviewer so explicit consultations share the
 // advisor's conversation. A registry refresh keeps the agent's existing
 // watcher, so the advisor keeps what it already reviewed.
-func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.NativeAdvisor, decided AdvisorSettings) {
+func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.NativeAdvisor, decided config.AdvisorSettings) {
 	if ag == nil {
 		return
 	}
@@ -116,15 +117,15 @@ func installAdvisor(ag *core.Agent, adv *tools.AdvisorTool, server *providerpkg.
 // advisorStillDecided reports whether the persisted advisor settings still
 // match the ones a session decided its advisor mode from. config.json is
 // shared by every session, so another session may have changed them.
-func advisorStillDecided(decided AdvisorSettings) bool {
-	cfg, err := LoadConfig()
+func advisorStillDecided(decided config.AdvisorSettings) bool {
+	cfg, err := config.Load()
 	return err == nil && cfg.AdvisorSettings() == decided
 }
 
 // resolveAdvisorTarget loads the current advisor settings and builds a
 // client for the configured model.
 func resolveAdvisorTarget(ctx context.Context, getenv func(string) string) (advisor.Target, error) {
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		return advisor.Target{}, fmt.Errorf("load advisor config: %w", err)
 	}
@@ -162,7 +163,7 @@ func resolveAdvisorEndpoint(ctx context.Context, spec AdvisorModelSpec, getenv f
 			model.BaseURL = c.BaseURL
 		}
 	}
-	cfg, _ := LoadConfig()
+	cfg, _ := config.Load()
 	discovered := model.Source == "live" && isDiscoverableCustomProvider(spec.Provider)
 	ec := resolveEndpointCredential(ctx, spec.Provider, "", getenv)
 	ep, err := resolveEndpoint(ctx, endpointInput{
@@ -221,13 +222,13 @@ type advisorSettingsStore struct {
 	getenv func(string) string
 }
 
-func advisorStatusFromConfig(cfg Config) session.AdvisorStatus {
+func advisorStatusFromConfig(cfg config.Config) session.AdvisorStatus {
 	s := cfg.AdvisorSettings()
 	return session.AdvisorStatus{Enabled: s.Enabled, Model: s.Model, Mode: s.Mode, MaxTokens: s.MaxTokens}
 }
 
 func (advisorSettingsStore) AdvisorStatus() (session.AdvisorStatus, error) {
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		return session.AdvisorStatus{}, err
 	}
@@ -256,8 +257,8 @@ func (s advisorSettingsStore) SetAdvisor(change session.AdvisorChange) (session.
 		model = spec.String()
 	}
 	var status session.AdvisorStatus
-	err := updateConfig(func(c *Config) error {
-		next := AdvisorConfig{}
+	err := config.Update(func(c *config.Config) error {
+		next := config.AdvisorConfig{}
 		if c.Advisor != nil {
 			next = *c.Advisor
 		}
@@ -273,7 +274,7 @@ func (s advisorSettingsStore) SetAdvisor(change session.AdvisorChange) (session.
 		}
 		if c.Advisor == nil && !next.Enabled && next.Model == "" {
 			status = advisorStatusFromConfig(*c)
-			return errConfigUnchanged
+			return config.ErrUnchanged
 		}
 		c.Advisor = &next
 		status = advisorStatusFromConfig(*c)
@@ -290,8 +291,8 @@ func (s advisorSettingsStore) SetAdvisor(change session.AdvisorChange) (session.
 // session admits the advisor at all (the client tool was registered). Native
 // mode needs auto mode, a first-party Anthropic executor and advisor, and a
 // pair the Anthropic advisor tool accepts.
-func decideAdvisorMode(available bool, s AdvisorSettings, executorProvider, executorModel string) *providerpkg.NativeAdvisor {
-	if !available || !s.Enabled || s.Mode != AdvisorModeAuto || s.Model == "" || executorProvider != "anthropic" {
+func decideAdvisorMode(available bool, s config.AdvisorSettings, executorProvider, executorModel string) *providerpkg.NativeAdvisor {
+	if !available || !s.Enabled || s.Mode != config.AdvisorModeAuto || s.Model == "" || executorProvider != "anthropic" {
 		return nil
 	}
 	spec, err := ParseAdvisorModelSpec(s.Model)
@@ -305,7 +306,7 @@ func decideAdvisorMode(available bool, s AdvisorSettings, executorProvider, exec
 // advisor applies, and returns the server advisor to set on the agent (nil
 // for client mode or no advisor). The advisor prompt addendum is kept in both
 // modes because the native tool is also named "advisor".
-func applyAdvisorMode(reg core.Registry, s AdvisorSettings, executorProvider, executorModel string) *providerpkg.NativeAdvisor {
+func applyAdvisorMode(reg core.Registry, s config.AdvisorSettings, executorProvider, executorModel string) *providerpkg.NativeAdvisor {
 	_, available := reg[tools.AdvisorToolName]
 	server := decideAdvisorMode(available, s, executorProvider, executorModel)
 	if server != nil {
@@ -319,7 +320,7 @@ func applyAdvisorMode(reg core.Registry, s AdvisorSettings, executorProvider, ex
 // dropped as soon as the persisted settings no longer match the decision
 // (disabled, other model, mode or max_tokens). The session resyncs its tools
 // at the next idle point (turn end) and decides again.
-func installServerAdvisor(ag *core.Agent, server *providerpkg.NativeAdvisor, decided AdvisorSettings) {
+func installServerAdvisor(ag *core.Agent, server *providerpkg.NativeAdvisor, decided config.AdvisorSettings) {
 	ag.SetServerAdvisor(server)
 	if server == nil {
 		ag.SetServerAdvisorFunc(nil)

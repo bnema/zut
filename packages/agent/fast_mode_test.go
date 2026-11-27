@@ -2,11 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -21,7 +21,7 @@ func TestParseArgsRejectsLegacyFastModeChildFlags(t *testing.T) {
 
 func TestResolveFastModeDefaultsOff(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5"}); err != nil {
+	if err := config.Save(config.Config{Provider: "openai", Model: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -37,7 +37,7 @@ func TestResolveFastModeDefaultsOff(t *testing.T) {
 func TestResolveFastModeFromConfig(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
+	if err := config.Save(config.Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,7 +53,7 @@ func TestResolveFastModeFromConfig(t *testing.T) {
 func TestResolveFastModeRemainsEnabledForUnsupportedProviderUntilRequest(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
-	if err := SaveConfig(Config{Provider: "anthropic", Model: "claude-sonnet-4-5", FastMode: &enabled}); err != nil {
+	if err := config.Save(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,10 +71,10 @@ func TestResolveFastModeFromActiveModelProfile(t *testing.T) {
 		t.Run(fmt.Sprintf("%v", want), func(t *testing.T) {
 			t.Setenv("ZUT_HOME", t.TempDir())
 			global := !want
-			if err := SaveConfig(Config{
+			if err := config.Save(config.Config{
 				Provider: "openai", Model: "gpt-5", FastMode: &global,
 				ActiveModelProfile: 1,
-				QuickModelShortcuts: []QuickModelShortcut{{
+				QuickModelShortcuts: []config.QuickModelShortcut{{
 					Provider: "openai", Model: "gpt-5", FastMode: want,
 				}},
 			}); err != nil {
@@ -93,7 +93,7 @@ func TestResolveFastModeFromActiveModelProfile(t *testing.T) {
 
 func TestResolveFastModeRequiresExplicitChildOverride(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5"}); err != nil {
+	if err := config.Save(config.Config{Provider: "openai", Model: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +109,7 @@ func TestResolveFastModeRequiresExplicitChildOverride(t *testing.T) {
 func TestResolveFastModeDurableChildDisableOverridesConfig(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
+	if err := config.Save(config.Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Resolve(Args{FastModeSet: true}, false)
@@ -123,14 +123,14 @@ func TestResolveFastModeDurableChildDisableOverridesConfig(t *testing.T) {
 
 func TestConfigSettingsStorePersistsFastMode(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetFastMode(true); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,17 +139,6 @@ func TestConfigSettingsStorePersistsFastMode(t *testing.T) {
 	}
 	if cfg.Theme != "dark" {
 		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
-	}
-}
-
-func TestFastModeConfigJSONUsesSnakeCase(t *testing.T) {
-	enabled := true
-	data, err := json.Marshal(Config{FastMode: &enabled})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"fast_mode":true`) {
-		t.Fatalf("config JSON = %s, want fast_mode", data)
 	}
 }
 

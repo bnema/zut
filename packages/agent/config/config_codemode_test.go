@@ -1,4 +1,4 @@
-package agent
+package config
 
 import (
 	"encoding/json"
@@ -6,7 +6,7 @@ import (
 )
 
 func TestCodemodeConfigDefaultsAndRoundTrip(t *testing.T) {
-	pythonTestEnv(t)
+	t.Setenv("ZUT_HOME", t.TempDir())
 	for _, tc := range []struct {
 		raw               string
 		enabled, deferMCP bool
@@ -23,10 +23,10 @@ func TestCodemodeConfigDefaultsAndRoundTrip(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.raw), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			if err := SaveConfig(cfg); err != nil {
+			if err := Save(cfg); err != nil {
 				t.Fatal(err)
 			}
-			loaded, err := LoadConfig()
+			loaded, err := Load()
 			if err != nil {
 				t.Fatal(err)
 			}

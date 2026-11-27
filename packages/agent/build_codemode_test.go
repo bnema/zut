@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 	"os"
 	"reflect"
@@ -16,7 +17,7 @@ import (
 
 func TestCodemodeRegistrationPolicy(t *testing.T) {
 	enabled := true
-	cfg := Config{Experimental: &ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/configured/python"}
+	cfg := config.Config{Experimental: &config.ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/configured/python"}
 	for _, tc := range []struct {
 		name string
 		args Args
@@ -44,7 +45,7 @@ func TestCodemodeRegistrationPolicy(t *testing.T) {
 			}
 			if got {
 				tool, ok := reg["codemode"].(*tools.CodemodeTool)
-				if !ok || tool.SnippetHome == nil || tool.SnippetHome() != ZutHome() || tool.CWD != sandbox.Root || tool.Sandbox != sandbox || tool.Interpreter != cfg.PythonInterpreter || !reflect.DeepEqual(tool.Env, tc.args.Env) {
+				if !ok || tool.SnippetHome == nil || tool.SnippetHome() != config.ZutHome() || tool.CWD != sandbox.Root || tool.Sandbox != sandbox || tool.Interpreter != cfg.PythonInterpreter || !reflect.DeepEqual(tool.Env, tc.args.Env) {
 					t.Fatalf("tool=%#v", reg["codemode"])
 				}
 			}
@@ -66,8 +67,8 @@ func TestCodemodeResolveRegistration(t *testing.T) {
 		t.Fatal("codemode guidance enabled by default")
 	}
 	enabled := true
-	cfg := Config{Experimental: &ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/missing/python"}
-	if err := SaveConfig(cfg); err != nil {
+	cfg := config.Config{Experimental: &config.ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/missing/python"}
+	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	resolved = resolvePython(t, args)
@@ -136,7 +137,7 @@ func (c *codemodeSandboxClient) Stream(context.Context, provider.Request) (<-cha
 func TestCodemodeUseSandboxDeniesBeforeSpawn(t *testing.T) {
 	project := pythonTestEnv(t)
 	enabled := true
-	if err := SaveConfig(Config{Experimental: &ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/does-not-exist/must-not-probe"}); err != nil {
+	if err := config.Save(config.Config{Experimental: &config.ExperimentalConfig{Codemode: &enabled}, PythonInterpreter: "/does-not-exist/must-not-probe"}); err != nil {
 		t.Fatal(err)
 	}
 	args := pythonTestArgs(project)
@@ -183,7 +184,7 @@ func TestCodemodeConnectorHintsWiring(t *testing.T) {
 	startTestMCP(t, &args)
 	yes := true
 	reg := core.Registry{}
-	if !maybeAddCodemodeTool(reg, args, project, nil, Config{Experimental: &ExperimentalConfig{Codemode: &yes}}) {
+	if !maybeAddCodemodeTool(reg, args, project, nil, config.Config{Experimental: &config.ExperimentalConfig{Codemode: &yes}}) {
 		t.Fatal("not registered")
 	}
 	cm := reg["codemode"].(*tools.CodemodeTool)
@@ -192,7 +193,7 @@ func TestCodemodeConnectorHintsWiring(t *testing.T) {
 	}
 	args.Tools = []string{"codemode", "mcp__fake__lookup"}
 	reg = core.Registry{}
-	maybeAddCodemodeTool(reg, args, project, nil, Config{Experimental: &ExperimentalConfig{Codemode: &yes}})
+	maybeAddCodemodeTool(reg, args, project, nil, config.Config{Experimental: &config.ExperimentalConfig{Codemode: &yes}})
 	if got := reg["codemode"].(*tools.CodemodeTool).MCPServers()["fake"]; got != 1 {
 		t.Fatal(got)
 	}

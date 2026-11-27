@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -17,7 +18,7 @@ func openOrCreateSessionState(ctx context.Context, args Args, r Resolved, ag *co
 		ag.SessionID()
 		return nil, true, nil
 	}
-	root := agentSessionsRoot(ZutHome(), args)
+	root := agentSessionsRoot(config.ZutHome(), args)
 	// Explicit paths and UUIDs may identify empty sessions. Don't delete them
 	// before deciding whether this is a restoration.
 	if args.ResumeSessionID == "" && args.Session == "" {
@@ -43,7 +44,7 @@ func openOrCreateSessionState(ctx context.Context, args Args, r Resolved, ag *co
 	case args.Resume:
 		var path string
 		if args.ResumeSessionID != "" {
-			path, err = core.FindManagedSessionByID(ctx, ZutHome(), args.ResumeSessionID)
+			path, err = core.FindManagedSessionByID(ctx, config.ZutHome(), args.ResumeSessionID)
 			if err != nil {
 				return nil, false, err
 			}

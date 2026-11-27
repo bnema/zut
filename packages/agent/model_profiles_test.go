@@ -4,19 +4,20 @@ import (
 	"os"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/modes"
 )
 
 func TestActiveAliasedModelProfileResolvesCanonicalProvider(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	cfg := Config{
+	cfg := config.Config{
 		ActiveModelProfile: 2,
-		QuickModelShortcuts: []QuickModelShortcut{
+		QuickModelShortcuts: []config.QuickModelShortcut{
 			{},
 			{Provider: "bedrock", Model: "amazon.nova-lite-v1:0"},
 		},
 	}
-	if err := SaveConfig(cfg); err != nil {
+	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Resolve(Args{APIKey: "synthetic-test-key"}, false)
@@ -33,8 +34,8 @@ func TestActiveAliasedModelProfileResolvesCanonicalProvider(t *testing.T) {
 
 func TestLegacyQuickModelShortcutPreservesProfileState(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{
-		QuickModelShortcuts: []QuickModelShortcut{{
+	if err := config.Save(config.Config{
+		QuickModelShortcuts: []config.QuickModelShortcut{{
 			Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high", FastMode: true,
 		}},
 	}); err != nil {
@@ -43,7 +44,7 @@ func TestLegacyQuickModelShortcutPreservesProfileState(t *testing.T) {
 	if err := (configSettingsStore{}).SetQuickModelShortcut(1, "openai", "gpt-5.5"); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestLegacyQuickModelShortcutPreservesProfileState(t *testing.T) {
 
 func TestModelProfileConfigRoundTrip(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 	store := configSettingsStore{}
@@ -63,7 +64,7 @@ func TestModelProfileConfigRoundTrip(t *testing.T) {
 	if err := store.SetModelProfile(9, p, 9); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,14 +74,14 @@ func TestModelProfileConfigRoundTrip(t *testing.T) {
 	// The selected profile is authoritative even after hand-editing its model
 	// and reasoning, without requiring duplicate changes to the legacy defaults.
 	cfg.QuickModelShortcuts[8].Reasoning = "low"
-	cfg.applyActiveModelProfile()
+	applyActiveModelProfile(&cfg)
 	if cfg.Reasoning != "low" {
 		t.Fatal("active profile did not supply defaults")
 	}
 	if err := store.SetModelProfile(9, modes.QuickModelShortcut{}, 0); err != nil {
 		t.Fatal(err)
 	}
-	cleared, err := LoadConfig()
+	cleared, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,24 +92,24 @@ func TestModelProfileConfigRoundTrip(t *testing.T) {
 
 func TestModelProfileConfigLegacyAndInvalidActiveSlots(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := os.WriteFile(ConfigPath(), []byte(`{"provider":"openai","model":"gpt-5.5","reasoning":"high","quick_model_shortcuts":[{"provider":"openai","model":"gpt-5.6-sol"}]}`), 0600); err != nil {
+	if err := os.WriteFile(config.Path(), []byte(`{"provider":"openai","model":"gpt-5.5","reasoning":"high","quick_model_shortcuts":[{"provider":"openai","model":"gpt-5.6-sol"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, slot := range []int{-1, 0, 2, 10} {
 		copy := cfg
 		copy.ActiveModelProfile = slot
-		copy.applyActiveModelProfile()
+		applyActiveModelProfile(&copy)
 		want := "gpt-5.5" // invalid or unassigned active slots preserve plain settings
 		if copy.Model != want {
 			t.Fatalf("active slot %d: model %s, want %s", slot, copy.Model, want)
 		}
 	}
 	cfg.ActiveModelProfile = 1
-	cfg.applyActiveModelProfile()
+	applyActiveModelProfile(&cfg)
 	if cfg.Model != "gpt-5.6-sol" || cfg.Reasoning != "" {
 		t.Fatal("legacy slots should recall with reasoning off")
 	}
@@ -123,13 +124,13 @@ func TestModelProfileStoreRejectsInvalidSlotsAndCorruptConfig(t *testing.T) {
 		}
 	}
 	original := []byte(`{"invalid":`)
-	if err := os.WriteFile(ConfigPath(), original, 0600); err != nil {
+	if err := os.WriteFile(config.Path(), original, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetModelProfile(1, modes.QuickModelShortcut{Provider: "openai", Model: "gpt-5.5"}, 1); err == nil {
 		t.Fatal("corrupt config was accepted")
 	}
-	got, err := os.ReadFile(ConfigPath())
+	got, err := os.ReadFile(config.Path())
 	if err != nil || string(got) != string(original) {
 		t.Fatal("corrupt config was overwritten")
 	}
@@ -137,7 +138,7 @@ func TestModelProfileStoreRejectsInvalidSlotsAndCorruptConfig(t *testing.T) {
 
 func TestModelProfileResolveDefaultsAndExplicitOverrides(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5.5", Reasoning: "high", ActiveModelProfile: 1, QuickModelShortcuts: []QuickModelShortcut{{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "max"}}}); err != nil {
+	if err := config.Save(config.Config{Provider: "openai", Model: "gpt-5.5", Reasoning: "high", ActiveModelProfile: 1, QuickModelShortcuts: []config.QuickModelShortcut{{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "max"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, override := range []bool{false, true} {

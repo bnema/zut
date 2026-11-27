@@ -3,6 +3,8 @@ package agent
 import (
 	"os"
 	"testing"
+
+	"github.com/bnema/zut/packages/agent/config"
 )
 
 func TestApplyConfiguredHTTPProxy(t *testing.T) {
@@ -10,7 +12,7 @@ func TestApplyConfiguredHTTPProxy(t *testing.T) {
 	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		t.Setenv(key, "")
 	}
-	if err := SaveConfig(Config{HTTPProxy: "  http://proxy.example:8080  "}); err != nil {
+	if err := config.Save(config.Config{HTTPProxy: "  http://proxy.example:8080  "}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -32,7 +34,7 @@ func TestApplyConfiguredHTTPProxyPreservesUppercaseEnvironment(t *testing.T) {
 	t.Setenv("https_proxy", "")
 	t.Setenv("HTTP_PROXY", "http://http-env.example:8080")
 	t.Setenv("HTTPS_PROXY", "http://https-env.example:8080")
-	if err := SaveConfig(Config{HTTPProxy: "http://config.example:8080"}); err != nil {
+	if err := config.Save(config.Config{HTTPProxy: "http://config.example:8080"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +56,7 @@ func TestApplyConfiguredHTTPProxyPreservesLowercaseEnvironment(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("http_proxy", "http://http-env.example:8080")
 	t.Setenv("https_proxy", "http://https-env.example:8080")
-	if err := SaveConfig(Config{HTTPProxy: "http://config.example:8080"}); err != nil {
+	if err := config.Save(config.Config{HTTPProxy: "http://config.example:8080"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,7 +75,7 @@ func TestApplyConfiguredHTTPProxyIgnoresEmptySetting(t *testing.T) {
 	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		t.Setenv(key, "")
 	}
-	if err := SaveConfig(Config{HTTPProxy: "  "}); err != nil {
+	if err := config.Save(config.Config{HTTPProxy: "  "}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"testing"
+
+	"github.com/bnema/zut/packages/agent/config"
 )
 
 func TestFetchChangelogSkipsDevVersions(t *testing.T) {
@@ -21,7 +23,7 @@ func TestFetchChangelogSkipsDevVersions(t *testing.T) {
 }
 
 func TestShouldShowChangelogSkipsDevVersions(t *testing.T) {
-	cfg := Config{LastChangelogShown: "0.0.1"}
+	cfg := config.Config{LastChangelogShown: "0.0.1"}
 	for _, version := range []string{"0.0.0", "0.0.0-dev", "0.0.0-dev (abc123, today)"} {
 		if ShouldShowChangelog(version, cfg) {
 			t.Errorf("ShouldShowChangelog(%q) = true, want false", version)

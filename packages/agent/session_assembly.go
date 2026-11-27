@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/mcp"
@@ -156,7 +157,7 @@ type sessionAssembly struct {
 
 	r          Resolved
 	sandbox    *tools.Sandbox
-	initialCfg Config
+	initialCfg config.Config
 	authMgr    *auth.Manager
 	extMgr     *extensions.Manager
 	extAdapter *extToolAdapter
@@ -190,7 +191,7 @@ type sessionAssembly struct {
 func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) error {
 	life := context.WithoutCancel(ctx)
 	timer := a.timer
-	a.initialCfg, _ = LoadConfig()
+	a.initialCfg, _ = config.Load()
 	if a.initialCfg.Goals.MaxTokenBudget != nil && *a.initialCfg.Goals.MaxTokenBudget == 0 {
 		return errors.New("goals.max_token_budget must be greater than zero")
 	}
@@ -230,7 +231,7 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 			timer.item("extension", name, d, err, "step", phase)
 		}))
 	}
-	a.extMgr = extensions.New(ZutHome(), a.r.CWD, a.version, a.r.Provider, a.r.Model, a.bind.hooks(), extOpts...)
+	a.extMgr = extensions.New(config.ZutHome(), a.r.CWD, a.version, a.r.Provider, a.r.Model, a.bind.hooks(), extOpts...)
 	var startupErrs []error
 	startupErrs = append(startupErrs, a.extMgr.LoadExplicit(life, a.args.Exts)...)
 	if !a.args.NoExt {
@@ -251,7 +252,7 @@ func (a *sessionAssembly) build(ctx context.Context, spec session.CreateSpec) er
 	a.webGuard = &webSearchSessionGuard{}
 	a.runtime = newSubagentRuntime(subagentRuntimeConfig{
 		Args:            a.args,
-		Root:            filepath.Join(ZutHome(), "subagents"),
+		Root:            filepath.Join(config.ZutHome(), "subagents"),
 		RepoRoot:        a.r.CWD,
 		Provider:        a.r.Provider,
 		Model:           a.r.Model,
@@ -347,7 +348,7 @@ func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.Cr
 		if spec.ResumePath != "" {
 			return fmt.Errorf("fork cannot include resume_path: %w", session.ErrInvalidFork)
 		}
-		root := agentSessionsRoot(ZutHome(), a.args)
+		root := agentSessionsRoot(config.ZutHome(), a.args)
 		path, err := core.BranchSessionChecked(ctx, spec.Fork.ParentPath, root, a.args.CWD, a.version, spec.Fork.UpToMessage, spec.Fork.Hidden, spec.Fork.HistorySegment, spec.Fork.ParentFile)
 		if err != nil {
 			return fmt.Errorf("fork session: %w", err)
@@ -676,8 +677,8 @@ func (a *sessionAssembly) deps() session.Deps {
 		WritingGuidance:                   WritingGuidance(),
 		MaxSteps:                          a.r.MaxSteps,
 		Version:                           a.version,
-		ZutHome:                           ZutHome(),
-		SessionsRoot:                      agentSessionsRoot(ZutHome(), a.args),
+		ZutHome:                           config.ZutHome(),
+		SessionsRoot:                      agentSessionsRoot(config.ZutHome(), a.args),
 		NoYolo:                            a.args.NoYolo,
 		AutoCompactThreshold:              a.initialCfg.AutoCompactThreshold,
 		GoalMaxTokenBudget:                a.initialCfg.Goals.MaxTokenBudget,
@@ -849,7 +850,7 @@ func (s sessionFileStore) CurrentSessionPath() string {
 // is staged for the next BuildAgent so the controller installs it.
 func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 	a := s.a
-	meta, err := core.ManagedSessionMeta(context.Background(), agentSessionsRoot(ZutHome(), a.args), path)
+	meta, err := core.ManagedSessionMeta(context.Background(), agentSessionsRoot(config.ZutHome(), a.args), path)
 	if err != nil {
 		return fmt.Errorf("validate selected session: %w", err)
 	}
@@ -1040,7 +1041,7 @@ func (s sessionFileStore) ChangeCWD(path string) error {
 	}
 	var newSess *core.Session
 	if !a.args.NoSess {
-		root := agentSessionsRoot(ZutHome(), a.args)
+		root := agentSessionsRoot(config.ZutHome(), a.args)
 		core.PruneEmptySessions(root, absPath)
 		if newSess, err = core.NewSession(root, absPath, newProvider, newModel, a.version); err != nil {
 			rollback()

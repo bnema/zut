@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -136,7 +137,7 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	if cfg.Args.PermissionSet == nil {
 		root := rt.root
 		if strings.TrimSpace(root) == "" {
-			root = filepath.Join(ZutHome(), "subagents")
+			root = filepath.Join(config.ZutHome(), "subagents")
 			rt.root = root
 		}
 		rt.resident = subagents.NewResidentManagerWithPolicy(root, cfg.Policy, func(spec subagents.ResidentChildSpec, journal *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
@@ -574,7 +575,7 @@ func (rt *subagentRuntime) Close(ctx context.Context) error {
 	return err
 }
 
-func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
+func subagentPolicyFromConfig(cfg config.SubagentsConfig) subagents.SubagentPolicy {
 	parseDuration := func(value string) time.Duration {
 		if strings.TrimSpace(value) == "" {
 			return 0

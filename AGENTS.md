@@ -36,7 +36,8 @@ Put behavior in the package that owns the concern:
 | `packages/core` | Agent loop, messages, tool contracts, events, confirmation, sessions, compaction |
 | `packages/provider` | Provider clients, wire formats, streaming, retries, model metadata and discovery |
 | `packages/provider/auth` | Login flows, credential lookup, refresh, and storage |
-| `packages/agent` | CLI configuration, model selection, runtime assembly, RPC, and zutfiles |
+| `packages/agent` | CLI flags, model selection, runtime assembly, RPC, and zutfiles |
+| `packages/agent/config` | Persisted configuration (config.json), ZUT_HOME paths, and serialized config updates |
 | `packages/agent/modes` | Interactive, print, JSON, dialog, bot, and Telegram interfaces |
 | `packages/agent/extensions` | Extension process lifecycle and host integration |
 | `packages/agent/extproto` | Extension wire protocol |

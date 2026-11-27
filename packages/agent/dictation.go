@@ -2,28 +2,13 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/dictation"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/provider"
 )
-
-// DictationSettings configures interactive audio capture, independently of the
-// selected model. Omitted max_seconds defaults to ten minutes.
-type DictationSettings struct {
-	Recorder   []string `json:"recorder,omitempty"`
-	MaxSeconds *int     `json:"max_seconds,omitempty"`
-	Language   string   `json:"language,omitempty"`
-}
-
-func validateDictationSettings(s *DictationSettings) error {
-	if s != nil && s.MaxSeconds != nil && (*s.MaxSeconds <= 0 || *s.MaxSeconds > 1800) {
-		return fmt.Errorf("dictation.max_seconds must be between 1 and 1800")
-	}
-	return nil
-}
 
 // dictationCredentials reads the stored ChatGPT OAuth login directly: the
 // transcription endpoint rejects API keys, so env API keys must not shadow it.
@@ -38,7 +23,7 @@ func dictationCredentials(ctx context.Context) (string, string, error) {
 	return tok.AccessToken, tok.AccountID, nil
 }
 
-func interactiveDictationConfig(s *DictationSettings) modes.DictationConfig {
+func interactiveDictationConfig(s *config.DictationSettings) modes.DictationConfig {
 	cfg := modes.DictationConfig{
 		Service:     "ChatGPT",
 		Transcriber: &provider.ChatGPTTranscriber{Credentials: dictationCredentials},

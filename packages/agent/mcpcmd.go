@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/mcp/oauth"
 	"github.com/bnema/zut/packages/provider"
@@ -85,7 +86,7 @@ func mcpConfigPath(cwd string, project bool) string {
 	if project {
 		return mcp.ProjectConfigPath(cwd)
 	}
-	return mcp.GlobalConfigPath(ZutHome())
+	return mcp.GlobalConfigPath(config.ZutHome())
 }
 
 // rawMCPConfig merges the global and project files without ${VAR} expansion
@@ -94,7 +95,7 @@ func mcpConfigPath(cwd string, project bool) string {
 func rawMCPConfig(cwd string) (mcp.Config, error) {
 	cfg := mcp.Config{Servers: map[string]mcp.ServerConfig{}}
 	var errs []error
-	for _, path := range []string{mcp.GlobalConfigPath(ZutHome()), mcp.ProjectConfigPath(cwd)} {
+	for _, path := range []string{mcp.GlobalConfigPath(config.ZutHome()), mcp.ProjectConfigPath(cwd)} {
 		file, err := mcp.ReadConfigFile(path)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
@@ -354,7 +355,7 @@ func mcpAuth(ctx context.Context, out io.Writer, cwd, action string, args []stri
 	if len(args) != 1 {
 		return fmt.Errorf("usage: zut mcp %s NAME", action)
 	}
-	cfg, _ := mcp.LoadConfig(ZutHome(), cwd)
+	cfg, _ := mcp.LoadConfig(config.ZutHome(), cwd)
 	srv, ok := cfg.Servers[args[0]]
 	if !ok {
 		return fmt.Errorf("mcp server %q is not configured, disabled, or invalid", args[0])
@@ -366,7 +367,7 @@ func mcpAuth(ctx context.Context, out io.Writer, cwd, action string, args []stri
 	if err != nil {
 		return err
 	}
-	store := oauth.Store{Path: filepath.Join(ZutHome(), "mcp-auth.json")}
+	store := oauth.Store{Path: filepath.Join(config.ZutHome(), "mcp-auth.json")}
 	if action == "login" {
 		err = oauth.Login(ctx, store, srv.URL, mcpCommandStderr, nil)
 	} else {
@@ -384,7 +385,7 @@ func mcpAuth(ctx context.Context, out io.Writer, cwd, action string, args []stri
 }
 
 func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []string) error {
-	cfg, errs := mcp.LoadConfig(ZutHome(), cwd)
+	cfg, errs := mcp.LoadConfig(config.ZutHome(), cwd)
 	for _, err := range errs {
 		fmt.Fprintln(mcpCommandStderr, "mcp config error:", err)
 	}
@@ -397,7 +398,7 @@ func mcpTest(ctx context.Context, out io.Writer, cwd, version string, args []str
 	}
 	manager := mcp.NewManager(cfg, cwd, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
 	defer manager.Close()
-	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
+	manager.SetAuthPath(filepath.Join(config.ZutHome(), "mcp-auth.json"))
 	manager.SetStderrWriter(mcpCommandStderr)
 	failures, _ := manager.Start(ctx)
 	fmt.Fprintln(out, mcp.FormatStatus(manager.Status()))

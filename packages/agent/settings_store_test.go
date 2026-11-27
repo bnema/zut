@@ -1,10 +1,10 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bnema/zut/packages/agent/config"
 )
 
 func TestSubagentsSystemAddendaListOnlyEnabledLifecycleTools(t *testing.T) {
@@ -165,14 +165,14 @@ func TestSubagentPoliciesHandleUnavailableDelegationByMode(t *testing.T) {
 
 func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetShowInstructionsAtStartup(true); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,14 +186,14 @@ func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 
 func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetTerminalAlertsEnabled(false); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,14 +207,14 @@ func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
 
 func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetTerminalTitleEnabled(false); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,10 +228,10 @@ func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
 
 func TestConfigSettingsStorePersistsNextPromptSuggestions(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestConfigSettingsStorePersistsNextPromptSuggestions(t *testing.T) {
 	if err := (configSettingsStore{}).SetNextPromptSuggestionsEnabled(true); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig()
+	cfg, err = config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +256,14 @@ func TestConfigSettingsStorePersistsNextPromptSuggestions(t *testing.T) {
 
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetJailByDefault(true); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,14 +277,14 @@ func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 
 func TestConfigSettingsStorePersistsAutoCompactThreshold(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetAutoCompactThreshold(70); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestConfigSettingsStorePersistsAutoCompactThreshold(t *testing.T) {
 
 func TestConfigSettingsStorePersistsLSPDefaults(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +308,7 @@ func TestConfigSettingsStorePersistsLSPDefaults(t *testing.T) {
 	if err := (configSettingsStore{}).SetSubagentLSPEnabled(false); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,44 +323,16 @@ func TestConfigSettingsStorePersistsLSPDefaults(t *testing.T) {
 	}
 }
 
-func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
-	cfg := Config{}
-	if !cfg.LSPEnabledFor(false) {
-		t.Fatal("main-session LSP should default to enabled")
-	}
-	if !cfg.LSPEnabledFor(true) {
-		t.Fatal("sub-agent LSP should default to enabled")
-	}
-
-	noMain, noSub := false, false
-	cfg.LSPEnabled = &noMain
-	cfg.SubagentLSPEnabled = &noSub
-	if cfg.LSPEnabledFor(false) || cfg.LSPEnabledFor(true) {
-		t.Fatal("explicitly disabled LSP settings were ignored")
-	}
-	yesSub := true
-	cfg.SubagentLSPEnabled = &yesSub
-	write, edit := true, true
-	cfg.LSPDiagnosticsOnWrite = &write
-	cfg.LSPDiagnosticsOnEdit = &edit
-	if cfg.LSPDiagnosticsOnWriteEnabled(false) || cfg.LSPDiagnosticsOnEditEnabled(false) {
-		t.Fatal("diagnostics remained enabled with main-session LSP disabled")
-	}
-	if !cfg.LSPDiagnosticsOnWriteEnabled(true) || !cfg.LSPDiagnosticsOnEditEnabled(true) {
-		t.Fatal("sub-agent diagnostics did not follow sub-agent LSP settings")
-	}
-}
-
 func TestConfigSettingsStoreResetsRemovedInheritedThemeToAuto(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetTheme("inherited"); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,28 +341,16 @@ func TestConfigSettingsStoreResetsRemovedInheritedThemeToAuto(t *testing.T) {
 	}
 }
 
-func TestConfigWebSearchEnabledForCLIDefaultsToTrue(t *testing.T) {
-	cfg := Config{}
-	if !cfg.WebSearchEnabledForCLI() {
-		t.Fatal("web search should default to enabled when the config field is absent")
-	}
-	disabled := false
-	cfg.WebSearchEnabled = &disabled
-	if cfg.WebSearchEnabledForCLI() {
-		t.Fatal("explicitly disabled web search setting was ignored")
-	}
-}
-
 func TestConfigSettingsStorePersistsWebSearch(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+	if err := config.Save(config.Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := (configSettingsStore{}).SetWebSearchEnabled(false); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,21 +359,5 @@ func TestConfigSettingsStorePersistsWebSearch(t *testing.T) {
 	}
 	if cfg.Theme != "dark" {
 		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
-	}
-}
-
-func TestLoadConfigIgnoresRemovedRenderOptions(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("ZUT_HOME", home)
-	body := []byte(`{"compact_mode":true,"tool_render":"flat","compact_input":true}`)
-	if err := os.WriteFile(filepath.Join(home, "config.json"), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig with removed options: %v", err)
-	}
-	if cfg.CompactInput == nil || !*cfg.CompactInput {
-		t.Fatalf("compact_input not preserved: %#v", cfg.CompactInput)
 	}
 }

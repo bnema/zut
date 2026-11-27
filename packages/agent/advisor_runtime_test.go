@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/advisor"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -18,15 +19,15 @@ import (
 )
 
 func TestAdvisorRegistrationPolicy(t *testing.T) {
-	enabled := Config{Advisor: &AdvisorConfig{Enabled: true}}
+	enabled := config.Config{Advisor: &config.AdvisorConfig{Enabled: true}}
 	for _, tc := range []struct {
 		name string
 		args Args
-		cfg  Config
+		cfg  config.Config
 		want bool
 	}{
-		{"default config", Args{}, Config{}, false},
-		{"disabled block", Args{}, Config{Advisor: &AdvisorConfig{Model: "anthropic/claude-opus-4-7"}}, false},
+		{"default config", Args{}, config.Config{}, false},
+		{"disabled block", Args{}, config.Config{Advisor: &config.AdvisorConfig{Model: "anthropic/claude-opus-4-7"}}, false},
 		{"enabled without model", Args{}, enabled, true},
 		{"explicit", Args{ToolsSet: true, Tools: []string{"advisor"}}, enabled, true},
 		{"excluded", Args{Tools: []string{"read"}}, enabled, false},
@@ -56,7 +57,7 @@ func TestAdvisorResolveRegistrationAndPrompt(t *testing.T) {
 	if _, ok := r.ToolRegistry[tools.AdvisorToolName]; ok || strings.Contains(r.SystemPrompt, "[advisor]") {
 		t.Fatal("advisor enabled by default")
 	}
-	if err := SaveConfig(Config{Advisor: &AdvisorConfig{Enabled: true}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
 	r = resolvePython(t, args)
@@ -95,17 +96,17 @@ func TestAdvisorExtensionCannotClaimName(t *testing.T) {
 func TestAdvisorToolTargetErrors(t *testing.T) {
 	pythonTestEnv(t)
 	reg := core.Registry{}
-	maybeAddAdvisorTool(reg, Args{Env: []string{"ANTHROPIC_API_KEY=", "ANTHROPIC_OAUTH_TOKEN="}}, Config{Advisor: &AdvisorConfig{Enabled: true}})
+	maybeAddAdvisorTool(reg, Args{Env: []string{"ANTHROPIC_API_KEY=", "ANTHROPIC_OAUTH_TOKEN="}}, config.Config{Advisor: &config.AdvisorConfig{Enabled: true}})
 	tool := reg[tools.AdvisorToolName].(*tools.AdvisorTool)
 	for _, tc := range []struct {
-		cfg  *AdvisorConfig
+		cfg  *config.AdvisorConfig
 		want string
 	}{
-		{&AdvisorConfig{Enabled: true}, "no advisor model configured; run /advisor provider/model:reasoning"},
-		{&AdvisorConfig{Enabled: false, Model: "anthropic/claude-opus-4-7"}, "advisor is disabled"},
-		{&AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7"}, `no credential for advisor provider "anthropic"`},
+		{&config.AdvisorConfig{Enabled: true}, "no advisor model configured; run /advisor provider/model:reasoning"},
+		{&config.AdvisorConfig{Enabled: false, Model: "anthropic/claude-opus-4-7"}, "advisor is disabled"},
+		{&config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7"}, `no credential for advisor provider "anthropic"`},
 	} {
-		if err := SaveConfig(Config{Advisor: tc.cfg}); err != nil {
+		if err := config.Save(config.Config{Advisor: tc.cfg}); err != nil {
 			t.Fatal(err)
 		}
 		_, err := tool.Target(context.Background())
@@ -134,14 +135,14 @@ func TestInstallAdvisorForwardsLiveAgentContext(t *testing.T) {
 	}
 	first := core.Registry{tools.AdvisorToolName: newTool()}
 	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "first system", first)
-	installAdvisor(ag, clientAdvisorTool(first), nil, AdvisorSettings{})
+	installAdvisor(ag, clientAdvisorTool(first), nil, config.AdvisorSettings{})
 	if ag.Watcher() == nil {
 		t.Fatal("installAdvisor must install the passive watcher")
 	}
 
 	// A refresh installs a freshly built registry; it must be bound too.
 	second := core.Registry{tools.AdvisorToolName: newTool()}
-	installAdvisor(ag, clientAdvisorTool(second), nil, AdvisorSettings{})
+	installAdvisor(ag, clientAdvisorTool(second), nil, config.AdvisorSettings{})
 	ag.SetPromptConfig("refreshed system", second)
 	ag.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "user task"}}}})
 
@@ -188,7 +189,7 @@ func TestAdvisorSettingsStoreSetAdvisor(t *testing.T) {
 	if _, err := store.SetAdvisor(session.AdvisorChange{Model: str("anthropic/claude-opus-4-7:low")}); err == nil || !strings.Contains(err.Error(), "no credential") {
 		t.Fatalf("missing credential: %v", err)
 	}
-	if cfg, _ := LoadConfig(); cfg.Advisor != nil {
+	if cfg, _ := config.Load(); cfg.Advisor != nil {
 		t.Fatalf("failed validation persisted: %+v", cfg.Advisor)
 	}
 
@@ -214,35 +215,35 @@ func TestAdvisorSettingsStoreSetAdvisor(t *testing.T) {
 		t.Fatalf("model+disable: %+v %v", status, err)
 	}
 	// An explicit disable without a block writes nothing.
-	if err := SaveConfig(Config{}); err != nil {
+	if err := config.Save(config.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SetAdvisor(session.AdvisorChange{Enabled: boolp(false)}); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, _ := LoadConfig(); cfg.Advisor != nil {
+	if cfg, _ := config.Load(); cfg.Advisor != nil {
 		t.Fatalf("disable created a block: %+v", cfg.Advisor)
 	}
 }
 
 func TestDecideAdvisorMode(t *testing.T) {
-	native := AdvisorSettings{Enabled: true, Model: "anthropic/claude-opus-4-7:high", Mode: AdvisorModeAuto, MaxTokens: 4096}
-	with := func(f func(*AdvisorSettings)) AdvisorSettings { s := native; f(&s); return s }
+	native := config.AdvisorSettings{Enabled: true, Model: "anthropic/claude-opus-4-7:high", Mode: config.AdvisorModeAuto, MaxTokens: 4096}
+	with := func(f func(*config.AdvisorSettings)) config.AdvisorSettings { s := native; f(&s); return s }
 	for _, tc := range []struct {
 		name          string
 		available     bool
-		s             AdvisorSettings
+		s             config.AdvisorSettings
 		prov, model   string
 		wantServerMdl string
 	}{
 		{"anthropic pair compatible", true, native, "anthropic", "claude-sonnet-4-6", "claude-opus-4-7"},
 		{"incompatible pair", true, native, "anthropic", "claude-opus-5-5", ""},
 		{"openai executor", true, native, "openai", "gpt-6.1-sol", ""},
-		{"openai advisor", true, with(func(s *AdvisorSettings) { s.Model = "openai/gpt-6.1-sol" }), "anthropic", "claude-sonnet-4-6", ""},
+		{"openai advisor", true, with(func(s *config.AdvisorSettings) { s.Model = "openai/gpt-6.1-sol" }), "anthropic", "claude-sonnet-4-6", ""},
 		{"anthropic-compatible endpoint", true, native, "kimi", "claude-sonnet-4-6", ""},
-		{"mode client", true, with(func(s *AdvisorSettings) { s.Mode = AdvisorModeClient }), "anthropic", "claude-sonnet-4-6", ""},
-		{"no model", true, with(func(s *AdvisorSettings) { s.Model = "" }), "anthropic", "claude-sonnet-4-6", ""},
-		{"disabled", true, with(func(s *AdvisorSettings) { s.Enabled = false }), "anthropic", "claude-sonnet-4-6", ""},
+		{"mode client", true, with(func(s *config.AdvisorSettings) { s.Mode = config.AdvisorModeClient }), "anthropic", "claude-sonnet-4-6", ""},
+		{"no model", true, with(func(s *config.AdvisorSettings) { s.Model = "" }), "anthropic", "claude-sonnet-4-6", ""},
+		{"disabled", true, with(func(s *config.AdvisorSettings) { s.Enabled = false }), "anthropic", "claude-sonnet-4-6", ""},
 		{"not available", false, native, "anthropic", "claude-sonnet-4-6", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,7 +269,7 @@ func TestAdvisorNativeModeFollowsExecutor(t *testing.T) {
 	project := pythonTestEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-test-key")
 	t.Setenv("OPENAI_API_KEY", "synthetic-test-key")
-	if err := SaveConfig(Config{Advisor: &AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high", MaxTokens: 2048}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high", MaxTokens: 2048}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -324,7 +325,7 @@ func TestAdvisorNativeModeFollowsExecutor(t *testing.T) {
 }
 
 func TestAdvisorExcludedForPackagedAndOptedOutRuntimes(t *testing.T) {
-	enabled := Config{Advisor: &AdvisorConfig{Enabled: true}}
+	enabled := config.Config{Advisor: &config.AdvisorConfig{Enabled: true}}
 	for name, args := range map[string]Args{
 		"no advisor": {NoAdvisor: true},
 		"agent name": {AgentName: "packaged"},
@@ -339,7 +340,7 @@ func TestAdvisorExcludedForPackagedAndOptedOutRuntimes(t *testing.T) {
 func TestNewAgentDoesNotMutateResolvedRegistry(t *testing.T) {
 	project := pythonTestEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-test-key")
-	if err := SaveConfig(Config{Advisor: &AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
 		t.Fatal(err)
 	}
 	r := resolvePython(t, advisorAnthropicArgs(project, "claude-sonnet-4-6"))
@@ -365,7 +366,7 @@ func TestNewAgentDoesNotMutateResolvedRegistry(t *testing.T) {
 func TestSessionDepsNoAdvisorFork(t *testing.T) {
 	sessionAssemblyEnv(t)
 	server := sessionAssemblyProvider(t)
-	if err := SaveConfig(Config{Advisor: &AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"--provider", "anthropic", "--model", "claude-sonnet-4-6", "--base-url", server.URL, "--api-key", "test-key", "--no-ext", "--no-mcp"}
@@ -389,7 +390,7 @@ func TestSessionDepsNoAdvisorFork(t *testing.T) {
 
 func TestResolveAdvisorEndpointMatchesExecutorRules(t *testing.T) {
 	pythonTestEnv(t)
-	if err := os.MkdirAll(ZutHome(), 0o755); err != nil {
+	if err := os.MkdirAll(config.ZutHome(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	loadTestModelsJSON(t, `{"providers":{
@@ -434,8 +435,8 @@ func TestResolveAdvisorEndpointMatchesExecutorRules(t *testing.T) {
 
 func TestInstallServerAdvisorDropsStaleNativeAdvisor(t *testing.T) {
 	pythonTestEnv(t)
-	cfg := Config{Advisor: &AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high", MaxTokens: 2048}}
-	if err := SaveConfig(cfg); err != nil {
+	cfg := config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high", MaxTokens: 2048}}
+	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	client := providermocks.NewMockClient(t)
@@ -464,7 +465,7 @@ func TestInstallServerAdvisorDropsStaleNativeAdvisor(t *testing.T) {
 	if len(sent) != 2 || sent[0] == nil || sent[0].Model != "claude-opus-4-7" || sent[1] != nil {
 		t.Fatalf("sent advisors = %+v", sent)
 	}
-	installServerAdvisor(ag, nil, AdvisorSettings{})
+	installServerAdvisor(ag, nil, config.AdvisorSettings{})
 	if ag.ServerAdvisor() != nil {
 		t.Fatal("clearing left a static advisor")
 	}
@@ -473,7 +474,7 @@ func TestInstallServerAdvisorDropsStaleNativeAdvisor(t *testing.T) {
 func TestNewAgentBindsClonedAdvisorTool(t *testing.T) {
 	project := pythonTestEnv(t)
 	t.Setenv("OPENAI_API_KEY", "synthetic-test-key")
-	if err := SaveConfig(Config{Advisor: &AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
 		t.Fatal(err)
 	}
 	r := resolvePython(t, Args{Provider: "openai", Model: "gpt-5", CWD: project, NoLSP: true, NoSkill: true, NoContextFiles: true})
@@ -497,14 +498,14 @@ func TestInstallAdvisorKeepsWatcherAcrossRefreshAndClearsWhenOff(t *testing.T) {
 		return &tools.AdvisorTool{Target: func(context.Context) (advisor.Target, error) { return advisor.Target{}, advisor.ErrNoModel }}
 	}
 	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "system", core.Registry{})
-	installAdvisor(ag, newTool(), nil, AdvisorSettings{Mode: AdvisorModeAuto})
+	installAdvisor(ag, newTool(), nil, config.AdvisorSettings{Mode: config.AdvisorModeAuto})
 	first := ag.Watcher()
 	require.NotNil(t, first)
 
-	installAdvisor(ag, newTool(), nil, AdvisorSettings{Mode: AdvisorModeAuto})
+	installAdvisor(ag, newTool(), nil, config.AdvisorSettings{Mode: config.AdvisorModeAuto})
 	require.Same(t, first, ag.Watcher(), "a refresh keeps the advisor's conversation")
 
-	installAdvisor(ag, nil, nil, AdvisorSettings{})
+	installAdvisor(ag, nil, nil, config.AdvisorSettings{})
 	require.Nil(t, ag.Watcher(), "/advisor off removes the watcher")
 }
 
@@ -517,7 +518,7 @@ func TestInstallAdvisorPausesWhenSettingsChanged(t *testing.T) {
 	ag := core.NewAgent(providermocks.NewMockClient(t), "exec", "system", core.Registry{})
 	// The session decided from settings that another session has since
 	// changed: the watcher must stay quiet until the next refresh.
-	installAdvisor(ag, tool, nil, AdvisorSettings{Enabled: true, Model: "anthropic/x", Mode: AdvisorModeAuto})
+	installAdvisor(ag, tool, nil, config.AdvisorSettings{Enabled: true, Model: "anthropic/x", Mode: config.AdvisorModeAuto})
 	w := ag.Watcher()
 	ctx := context.Background()
 	w.RunStarted(ctx)

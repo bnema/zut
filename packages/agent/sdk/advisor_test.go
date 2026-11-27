@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bnema/zut/packages/agent"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/tools"
 )
 
@@ -13,7 +13,7 @@ func TestRuntimeExcludesAdvisor(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("ZUT_HOME", filepath.Join(root, "zut"))
 	t.Setenv("HOME", filepath.Join(root, "home"))
-	if err := agent.SaveConfig(agent.Config{Advisor: &agent.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
+	if err := config.Save(config.Config{Advisor: &config.AdvisorConfig{Enabled: true, Model: "anthropic/claude-opus-4-7:high"}}); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := New(Config{Provider: "anthropic", Model: "claude-sonnet-4-6", APIKey: "synthetic-test-key", CWD: root})

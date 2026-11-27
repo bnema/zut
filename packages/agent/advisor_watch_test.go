@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/advisor"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -73,7 +74,7 @@ func TestAdvisorWatcherEndToEnd(t *testing.T) {
 	}}
 	reg := core.Registry{"edit": edit, tools.AdvisorToolName: adv}
 	ag := core.NewAgent(executor, "exec", "system", reg)
-	installAdvisor(ag, clientAdvisorTool(reg), nil, AdvisorSettings{Mode: AdvisorModeAuto})
+	installAdvisor(ag, clientAdvisorTool(reg), nil, config.AdvisorSettings{Mode: config.AdvisorModeAuto})
 
 	require.NoError(t, ag.Prompt(context.Background(), "fix the parse bug", nil, nil))
 

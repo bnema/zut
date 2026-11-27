@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -11,10 +12,10 @@ func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		active  int
-		profile QuickModelShortcut
+		profile config.QuickModelShortcut
 	}{
-		{"missing model", 2, QuickModelShortcut{Provider: "openai", Model: "removed-model", Reasoning: "high"}},
-		{"missing provider active slot", 1, QuickModelShortcut{Provider: "removed-provider", Model: "removed-model", Reasoning: "high"}},
+		{"missing model", 2, config.QuickModelShortcut{Provider: "openai", Model: "removed-model", Reasoning: "high"}},
+		{"missing provider active slot", 1, config.QuickModelShortcut{Provider: "removed-provider", Model: "removed-model", Reasoning: "high"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ZUT_HOME", t.TempDir())
@@ -22,9 +23,9 @@ func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
 			if slot == 0 {
 				slot = 1
 			}
-			profiles := make([]QuickModelShortcut, slot)
+			profiles := make([]config.QuickModelShortcut, slot)
 			profiles[slot-1] = tc.profile
-			if err := SaveConfig(Config{ActiveModelProfile: tc.active, QuickModelShortcuts: profiles}); err != nil {
+			if err := config.Save(config.Config{ActiveModelProfile: tc.active, QuickModelShortcuts: profiles}); err != nil {
 				t.Fatal(err)
 			}
 			args := Args{APIKey: "synthetic-test-key"}
@@ -32,7 +33,7 @@ func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			saved, err := LoadConfig()
+			saved, err := config.Load()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -54,15 +55,15 @@ func TestResolveRepairsActiveModelProfileFallback(t *testing.T) {
 func TestResolveExplicitFallbackDoesNotRepairFavorite(t *testing.T) {
 	for _, args := range []Args{{Model: "removed-model"}, {Provider: "removed-provider"}} {
 		t.Setenv("ZUT_HOME", t.TempDir())
-		original := QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}
-		if err := SaveConfig(Config{ActiveModelProfile: 1, QuickModelShortcuts: []QuickModelShortcut{original}}); err != nil {
+		original := config.QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "high"}
+		if err := config.Save(config.Config{ActiveModelProfile: 1, QuickModelShortcuts: []config.QuickModelShortcut{original}}); err != nil {
 			t.Fatal(err)
 		}
 		args.APIKey = "synthetic-test-key"
 		if _, err := Resolve(args, false); err != nil {
 			t.Fatal(err)
 		}
-		saved, err := LoadConfig()
+		saved, err := config.Load()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,16 +75,16 @@ func TestResolveExplicitFallbackDoesNotRepairFavorite(t *testing.T) {
 
 func TestModelProfileStartupClampsReasoning(t *testing.T) {
 	for _, tc := range []struct {
-		profile QuickModelShortcut
+		profile config.QuickModelShortcut
 		want    string
 	}{
-		{QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "minimum"}, "low"},
-		{QuickModelShortcut{Provider: "google", Model: "gemini-2.0-flash", Reasoning: "high"}, ""},
+		{config.QuickModelShortcut{Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "minimum"}, "low"},
+		{config.QuickModelShortcut{Provider: "google", Model: "gemini-2.0-flash", Reasoning: "high"}, ""},
 	} {
 		t.Run(tc.profile.Model, func(t *testing.T) {
 			t.Setenv("ZUT_HOME", t.TempDir())
-			cfg := Config{ActiveModelProfile: 1, QuickModelShortcuts: []QuickModelShortcut{tc.profile}}
-			if err := SaveConfig(cfg); err != nil {
+			cfg := config.Config{ActiveModelProfile: 1, QuickModelShortcuts: []config.QuickModelShortcut{tc.profile}}
+			if err := config.Save(cfg); err != nil {
 				t.Fatal(err)
 			}
 			r, err := Resolve(Args{APIKey: "synthetic-test-key"}, false)
@@ -102,12 +103,12 @@ func TestResolveWithoutActiveProfilePreservesPlainSettings(t *testing.T) {
 		for _, model := range []string{"gpt-5", "removed-model"} {
 			t.Run(fmt.Sprintf("active=%d/model=%s", active, model), func(t *testing.T) {
 				t.Setenv("ZUT_HOME", t.TempDir())
-				favorite := QuickModelShortcut{Provider: "removed-provider", Model: "removed-favorite", Reasoning: "max", FastMode: true}
+				favorite := config.QuickModelShortcut{Provider: "removed-provider", Model: "removed-favorite", Reasoning: "max", FastMode: true}
 				fast := false
-				cfg := Config{Provider: "openai", Model: model, Reasoning: "low", FastMode: &fast, ActiveModelProfile: active, QuickModelShortcuts: []QuickModelShortcut{favorite}}
-				require.Equal(t, 0, cfg.applyActiveModelProfile())
+				cfg := config.Config{Provider: "openai", Model: model, Reasoning: "low", FastMode: &fast, ActiveModelProfile: active, QuickModelShortcuts: []config.QuickModelShortcut{favorite}}
+				require.Equal(t, 0, applyActiveModelProfile(&cfg))
 				require.Equal(t, model, cfg.Model)
-				require.NoError(t, SaveConfig(cfg))
+				require.NoError(t, config.Save(cfg))
 				resolved, err := Resolve(Args{APIKey: "synthetic-test-key"}, false)
 				require.NoError(t, err)
 				require.Equal(t, "openai", resolved.Provider)
@@ -115,10 +116,10 @@ func TestResolveWithoutActiveProfilePreservesPlainSettings(t *testing.T) {
 				if model == "gpt-5" {
 					require.Equal(t, model, resolved.Model)
 				}
-				saved, err := LoadConfig()
+				saved, err := config.Load()
 				require.NoError(t, err)
 				require.Equal(t, active, saved.ActiveModelProfile)
-				require.Equal(t, []QuickModelShortcut{favorite}, saved.QuickModelShortcuts)
+				require.Equal(t, []config.QuickModelShortcut{favorite}, saved.QuickModelShortcuts)
 				require.Equal(t, "low", saved.Reasoning)
 				require.Equal(t, &fast, saved.FastMode)
 				require.Equal(t, resolved.Model, saved.Model)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/tui"
@@ -16,11 +17,11 @@ func (configSettingsStore) SetQuickModelShortcut(slot int, providerName, model s
 	if slot < 1 || slot > 9 {
 		return nil
 	}
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		if c.ActiveModelProfile == slot {
 			c.ActiveModelProfile = 0
 		}
-		profile := QuickModelShortcut{Provider: providerName, Model: model}
+		profile := config.QuickModelShortcut{Provider: providerName, Model: model}
 		if slot <= len(c.QuickModelShortcuts) {
 			current := c.QuickModelShortcuts[slot-1]
 			profile.Reasoning = current.Reasoning
@@ -31,23 +32,23 @@ func (configSettingsStore) SetQuickModelShortcut(slot int, providerName, model s
 }
 
 func (configSettingsStore) SetModelProfile(slot int, profile modes.QuickModelShortcut, activeSlot int) error {
-	return updateConfig(func(c *Config) error {
-		return setModelProfile(c, slot, QuickModelShortcut{Provider: profile.Provider, Model: profile.Model, Reasoning: profile.Reasoning, FastMode: profile.FastMode}, activeSlot)
+	return config.Update(func(c *config.Config) error {
+		return setModelProfile(c, slot, config.QuickModelShortcut{Provider: profile.Provider, Model: profile.Model, Reasoning: profile.Reasoning, FastMode: profile.FastMode}, activeSlot)
 	})
 }
 
 // setModelProfile writes slot and activeSlot into cfg; activating slot also
 // sets the startup provider, model, reasoning and fast mode.
-func setModelProfile(cfg *Config, slot int, profile QuickModelShortcut, activeSlot int) error {
+func setModelProfile(cfg *config.Config, slot int, profile config.QuickModelShortcut, activeSlot int) error {
 	if slot < 1 || slot > 9 || activeSlot < 0 || activeSlot > 9 {
 		return fmt.Errorf("model profile slot must be between 1 and 9 (active may be 0)")
 	}
 	if len(cfg.QuickModelShortcuts) < slot {
-		next := make([]QuickModelShortcut, slot)
+		next := make([]config.QuickModelShortcut, slot)
 		copy(next, cfg.QuickModelShortcuts)
 		cfg.QuickModelShortcuts = next
 	}
-	cfg.QuickModelShortcuts[slot-1] = QuickModelShortcut{
+	cfg.QuickModelShortcuts[slot-1] = config.QuickModelShortcut{
 		Provider: profile.Provider, Model: profile.Model,
 		Reasoning: provider.NormalizeReasoning(profile.Reasoning), FastMode: profile.FastMode,
 	}
@@ -73,42 +74,42 @@ func setModelProfile(cfg *Config, slot int, profile QuickModelShortcut, activeSl
 }
 
 func (configSettingsStore) SetInlineImages(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.InlineImagesEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetTerminalAlertsEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.TerminalAlertsEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetTerminalTitleEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.TerminalTitleEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetNextPromptSuggestionsEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.NextPromptSuggestionsEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetAutoSubagents(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.AutoSubagentsEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetWebSearchEnabled(enabled bool) error {
-	if err := updateConfig(func(c *Config) error {
+	if err := config.Update(func(c *config.Config) error {
 		c.WebSearchEnabled = &enabled
 		return nil
 	}); err != nil {
@@ -118,7 +119,7 @@ func (configSettingsStore) SetWebSearchEnabled(enabled bool) error {
 }
 
 func (configSettingsStore) SetFastMode(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.FastMode = &enabled
 		return nil
 	})
@@ -126,14 +127,14 @@ func (configSettingsStore) SetFastMode(enabled bool) error {
 
 // CodemodeEnabled reads the persisted preference, not the current session's tools.
 func (configSettingsStore) CodemodeEnabled() (bool, error) {
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	return cfg.CodemodeEnabled(), err
 }
 
 func (configSettingsStore) SetCodemodeEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		if c.Experimental == nil {
-			c.Experimental = &ExperimentalConfig{}
+			c.Experimental = &config.ExperimentalConfig{}
 		}
 		c.Experimental.Codemode = &enabled
 		return nil
@@ -141,56 +142,56 @@ func (configSettingsStore) SetCodemodeEnabled(enabled bool) error {
 }
 
 func (configSettingsStore) SetLSPEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.LSPEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetSubagentLSPEnabled(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.SubagentLSPEnabled = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetAutoCompactThreshold(percent int) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.AutoCompactThreshold = &percent
 		return nil
 	})
 }
 
 func (configSettingsStore) SetJailByDefault(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.JailByDefault = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetRecursiveFileSuggest(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.RecursiveFileSuggest = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetRespectGitignore(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.RespectGitignore = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetShowInstructionsAtStartup(enabled bool) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.ShowInstructionsAtStartup = &enabled
 		return nil
 	})
 }
 
 func (configSettingsStore) SetTUIInputStyle(style string) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		style = tui.NormalizeInputStyle(style)
 		if style == tui.InputStylePlain {
 			c.TUIInputStyle = ""
@@ -202,7 +203,7 @@ func (configSettingsStore) SetTUIInputStyle(style string) error {
 }
 
 func (configSettingsStore) SetTUIStatusPosition(position string) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		position = tui.NormalizeStatusPosition(position)
 		if position == tui.StatusPositionAboveInput {
 			c.TUIStatusPosition = ""
@@ -214,7 +215,7 @@ func (configSettingsStore) SetTUIStatusPosition(position string) error {
 }
 
 func (configSettingsStore) SetTUIWorkingPosition(position string) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		position = tui.NormalizeWorkingPosition(position)
 		if position == tui.WorkingPositionAboveInput {
 			c.TUIWorkingPosition = ""
@@ -226,14 +227,14 @@ func (configSettingsStore) SetTUIWorkingPosition(position string) error {
 }
 
 func (configSettingsStore) SetReasoning(level string) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		c.Reasoning = provider.NormalizeReasoning(level)
 		return nil
 	})
 }
 
 func (configSettingsStore) SetTheme(name string) error {
-	return updateConfig(func(c *Config) error {
+	return config.Update(func(c *config.Config) error {
 		if name == "auto" || name == "inherited" {
 			name = ""
 		}
@@ -246,7 +247,7 @@ func (configSettingsStore) SetTheme(name string) error {
 // delegate proactively. The canonical subagent tools remain available for
 // user-requested delegation and skill-mandated workflows when disabled.
 func AutoSubagentsEnabled() bool {
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		return false
 	}

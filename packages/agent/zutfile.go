@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/provider"
@@ -146,7 +147,7 @@ func runLocalZutfile(ref string, args Args, rawArgs []string, version string) er
 		args.AgentName = zf.Manifest.Name
 		return validateOrchestrationArgs(args)
 	}
-	agentData := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "data")
+	agentData := filepath.Join(config.ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "data")
 	if err := os.MkdirAll(agentData, 0o755); err != nil {
 		return err
 	}
@@ -267,8 +268,8 @@ func zutInspect(ref string) error {
 func zutfileCatalogSelection(args Args, m ZutfileManifest, userModels []provider.Model) (string, string) {
 	providerName := canonicalProvider(args.Provider)
 	modelID := strings.TrimSpace(args.Model)
-	if cfg, err := LoadConfig(); err == nil {
-		cfg.applyActiveModelProfile()
+	if cfg, err := config.Load(); err == nil {
+		applyActiveModelProfile(&cfg)
 		if providerName == "" {
 			providerName = canonicalProvider(cfg.Provider)
 		}
@@ -352,7 +353,7 @@ func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
 		}
 		return nil
 	}
-	cfg, _ := LoadConfig()
+	cfg, _ := config.Load()
 	if cfg.Model != "" {
 		model, err := provider.FindModel(cfg.Provider, cfg.Model)
 		if err == nil && compatible(model) {
@@ -416,11 +417,11 @@ func effectiveCatalogProvider(explicitProvider string) string {
 	if providerName := canonicalProvider(explicitProvider); providerName != "" {
 		return providerName
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		return ""
 	}
-	cfg.applyActiveModelProfile()
+	applyActiveModelProfile(&cfg)
 	return canonicalProvider(cfg.Provider)
 }
 
@@ -431,8 +432,8 @@ func effectiveCatalogBaseURL(explicitProvider, explicitModel, explicitBaseURL st
 	}
 	modelID := strings.TrimSpace(explicitModel)
 	if modelID == "" {
-		if cfg, err := LoadConfig(); err == nil {
-			cfg.applyActiveModelProfile()
+		if cfg, err := config.Load(); err == nil {
+			applyActiveModelProfile(&cfg)
 			modelID = strings.TrimSpace(cfg.Model)
 		}
 	}
@@ -983,7 +984,7 @@ func consentZutfile(zf zutfileLoaded, perms tools.PermissionSet, autoYes bool) (
 	// "ask" deliberately requires approval on every launch. Other consent
 	// is durable only for this exact artifact digest, so any package change
 	// causes a fresh prompt.
-	consentPath := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
+	consentPath := filepath.Join(config.ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) != "ask" {
 		if _, err := os.Stat(consentPath); err == nil {
 			return true, nil
@@ -992,8 +993,8 @@ func consentZutfile(zf zutfileLoaded, perms tools.PermissionSet, autoYes bool) (
 	interactive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	th := tui.Dark
 	if interactive {
-		cfg, _ := LoadConfig()
-		th, _, _ = tui.DetectThemeWithCustom(ZutHome(), cfg.Theme, 80*time.Millisecond)
+		cfg, _ := config.Load()
+		th, _, _ = tui.DetectThemeWithCustom(config.ZutHome(), cfg.Theme, 80*time.Millisecond)
 	}
 	fmt.Print(formatZutfileConsent(zf, perms, th, interactive))
 	if !interactive {
@@ -1013,7 +1014,7 @@ func acceptZutfileConsent(zf zutfileLoaded, perms tools.PermissionSet) (bool, er
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) == "ask" {
 		return true, nil
 	}
-	consentPath := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
+	consentPath := filepath.Join(config.ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if err := os.MkdirAll(filepath.Dir(consentPath), 0o700); err != nil {
 		return false, fmt.Errorf("save agent consent: %w", err)
 	}

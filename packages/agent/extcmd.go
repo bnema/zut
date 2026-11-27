@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/ignore"
@@ -176,7 +177,7 @@ func extDoctor(version string) error {
 	cwd, _ := os.Getwd()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	mgr := extensions.New(ZutHome(), cwd, version, "", "", extDoctorHooks{})
+	mgr := extensions.New(config.ZutHome(), cwd, version, "", "", extDoctorHooks{})
 	errs := mgr.Discover(ctx)
 	mgr.WaitForReady(3 * time.Second)
 	diags := mgr.Diagnostics()
@@ -213,7 +214,7 @@ func scanExtDoctorStatic() []extDoctorStaticRow {
 	if cwd, err := os.Getwd(); err == nil {
 		dirs = append(dirs, scanDir{scope: "project", dir: filepath.Join(cwd, ".zut", "extensions")})
 	}
-	if h := ZutHome(); h != "" {
+	if h := config.ZutHome(); h != "" {
 		dirs = append(dirs, scanDir{scope: "global", dir: filepath.Join(h, "extensions")})
 	}
 
@@ -360,10 +361,10 @@ func printExtDoctorRow(w io.Writer, row extDoctorStaticRow, diag extensions.Exte
 }
 
 func extDoctorLogPath(name string) string {
-	if name == "" || ZutHome() == "" {
+	if name == "" || config.ZutHome() == "" {
 		return ""
 	}
-	return filepath.Join(ZutHome(), "logs", "ext-"+name+".log")
+	return filepath.Join(config.ZutHome(), "logs", "ext-"+name+".log")
 }
 
 // extLogs locates the named extension's log file and either cats or
@@ -379,7 +380,7 @@ func extLogs(args []string) error {
 			follow = true
 		}
 	}
-	logPath := filepath.Join(ZutHome(), "logs", "ext-"+name+".log")
+	logPath := filepath.Join(config.ZutHome(), "logs", "ext-"+name+".log")
 	if _, err := os.Stat(logPath); err != nil {
 		return fmt.Errorf("no log for %q at %s", name, logPath)
 	}
@@ -485,7 +486,7 @@ func extInstallContext(ctx context.Context, args []string) error {
 		return err
 	}
 	src := opts.source
-	dest := filepath.Join(ZutHome(), "extensions")
+	dest := filepath.Join(config.ZutHome(), "extensions")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
@@ -758,7 +759,7 @@ func validateExtensionExecutable(dir string, manifest extensions.Manifest) error
 
 func extensionDirs() map[string]string {
 	out := map[string]string{}
-	if h := ZutHome(); h != "" {
+	if h := config.ZutHome(); h != "" {
 		out["global"] = filepath.Join(h, "extensions")
 	}
 	if cwd, err := os.Getwd(); err == nil {

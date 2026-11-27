@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
+	providerpkg "github.com/bnema/zut/packages/provider"
 )
 
 // modelProfileStore is the daemon-wide session.ProfileStore over config.json.
-// Writes go through updateConfig, which serialises them with every other
+// Writes go through config.Update, which serialises them with every other
 // in-process config update; mu orders store writes and cache refreshes.
 type modelProfileStore struct {
 	mu     sync.Mutex
@@ -24,9 +26,7 @@ var _ session.ProfileStore = (*modelProfileStore)(nil)
 func (s *modelProfileStore) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	configMu.Lock()
-	cfg, err := LoadConfig()
-	configMu.Unlock()
+	cfg, err := config.LoadLocked()
 	if err != nil {
 		return err
 	}
@@ -34,7 +34,7 @@ func (s *modelProfileStore) Reload() error {
 	return nil
 }
 
-func (s *modelProfileStore) cache(cfg Config) {
+func (s *modelProfileStore) cache(cfg config.Config) {
 	s.slots = [session.ProfileSlots]session.QuickModelShortcut{}
 	for i, p := range cfg.QuickModelShortcuts {
 		if i >= session.ProfileSlots {
@@ -90,8 +90,8 @@ func (s *modelProfileStore) save(slot int, p session.QuickModelShortcut, makeDef
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var saved Config
-	err := updateConfig(func(cfg *Config) error {
+	var saved config.Config
+	err := config.Update(func(cfg *config.Config) error {
 		active := cfg.ActiveModelProfile
 		switch {
 		case makeDefault:
@@ -102,7 +102,7 @@ func (s *modelProfileStore) save(slot int, p session.QuickModelShortcut, makeDef
 		if active < 0 || active > session.ProfileSlots {
 			active = 0
 		}
-		if err := setModelProfile(cfg, slot, QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}, active); err != nil {
+		if err := setModelProfile(cfg, slot, config.QuickModelShortcut{Provider: p.Provider, Model: p.Model, Reasoning: p.Reasoning, FastMode: p.FastMode}, active); err != nil {
 			return err
 		}
 		saved = *cfg
@@ -113,4 +113,35 @@ func (s *modelProfileStore) save(slot int, p session.QuickModelShortcut, makeDef
 	}
 	s.cache(saved)
 	return nil
+}
+
+// normalizedModelProfile keeps startup defaults and the TUI's copy consistent.
+// Unknown/open-catalog models retain their configured reasoning until resolved.
+func normalizedModelProfile(p config.QuickModelShortcut) config.QuickModelShortcut {
+	p.Provider = canonicalProvider(p.Provider)
+	p.Reasoning = providerpkg.NormalizeReasoning(p.Reasoning)
+	if model, err := providerpkg.FindModel(p.Provider, p.Model); err == nil {
+		p.Reasoning = providerpkg.ClampReasoningForModel(model, p.Reasoning)
+	}
+	return p
+}
+
+// applyActiveModelProfile supplies defaults without rewriting the config and
+// returns their source slot (0 when none). Explicit flags retain precedence.
+func applyActiveModelProfile(c *config.Config) int {
+	slot := c.ActiveModelProfile
+	if slot < 1 || slot > 9 {
+		return 0
+	}
+	if slot > len(c.QuickModelShortcuts) {
+		return 0
+	}
+	p := normalizedModelProfile(c.QuickModelShortcuts[slot-1])
+	if p.Provider == "" || p.Model == "" {
+		return 0
+	}
+	c.Provider, c.Model, c.Reasoning = p.Provider, p.Model, p.Reasoning
+	fastMode := p.FastMode
+	c.FastMode = &fastMode
+	return slot
 }

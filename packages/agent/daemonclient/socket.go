@@ -32,8 +32,7 @@ func socketPath(goos string, getenv func(string) string) string {
 	return join(zutHome(goos, getenv), "run", "daemon.sock")
 }
 
-// ZutHome mirrors agent.ZutHome over getenv. It is duplicated here because the
-// agent package will import daemonclient.
+// ZutHome mirrors config.ZutHome using the supplied environment lookup.
 func ZutHome(getenv func(string) string) string { return zutHome(runtime.GOOS, getenv) }
 
 func zutHome(goos string, getenv func(string) string) string {

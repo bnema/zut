@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 )
@@ -29,7 +30,7 @@ func TestResolveSeparatesInteractiveProactiveAndHeadlessStrictPolicies(t *testin
 		t.Fatal(err)
 	}
 	enabled := true
-	if err := SaveConfig(Config{AutoSubagentsEnabled: &enabled}); err != nil {
+	if err := config.Save(config.Config{AutoSubagentsEnabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 

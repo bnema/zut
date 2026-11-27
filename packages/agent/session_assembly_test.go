@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -640,7 +641,7 @@ func TestLoadSessionClosesReplacedAgentLSP(t *testing.T) {
 	conn := startFakeLSP(t, old.ToolsSnapshot(), cwd, listener)
 	store := deps.SessionStore.(sessionFileStore)
 	targetCWD := t.TempDir()
-	target, err := core.NewSession(agentSessionsRoot(ZutHome(), store.a.args), targetCWD, "openai", "gpt-5", "test")
+	target, err := core.NewSession(agentSessionsRoot(config.ZutHome(), store.a.args), targetCWD, "openai", "gpt-5", "test")
 	require.NoError(t, err)
 	require.NoError(t, target.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "resume"}}}))
 	require.NoError(t, target.Close())

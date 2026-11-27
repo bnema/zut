@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/daemon"
 	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/daemonproto"
@@ -117,7 +118,7 @@ func clientLogPath(home string) string { return filepath.Join(home, "logs", "cli
 // (0600, rotated at open like daemon.log); stderr is unusable once the TUI
 // owns the terminal. nil on any error.
 func clientTimingLog() (*slog.Logger, func()) {
-	logger, closer, err := daemon.OpenSharedLogFile(clientLogPath(ZutHome()))
+	logger, closer, err := daemon.OpenSharedLogFile(clientLogPath(config.ZutHome()))
 	if err != nil {
 		return nil, func() {}
 	}
@@ -129,7 +130,7 @@ func clientTimingLog() (*slog.Logger, func()) {
 func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID session.ID, spec *session.CreateSpec, out io.Writer, tlog *slog.Logger, version string) int {
 	defer c.Disconnect()
 	start := time.Now()
-	setupCrashOutput(ZutHome(), "client", tlog)
+	setupCrashOutput(config.ZutHome(), "client", tlog)
 	logPhase := func(name string, attrs ...any) {
 		if tlog != nil {
 			tlog.Info("tui startup", append([]any{"phase", name, "since_daemon", time.Since(start)}, attrs...)...)
@@ -180,7 +181,7 @@ func runTUIWithClientLog(ctx context.Context, c *daemonclient.Client, attachID s
 // tuiClientConfig fills the presentation fields runInteractive derives from
 // config and the terminal. Session/domain state comes from the Port.
 func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.InteractiveConfig {
-	cfg, _ := LoadConfig()
+	cfg, _ := config.Load()
 	// Normal and zutfile launches already prepared the catalog, including
 	// endpoint-scoped overlays. Only direct attachments need local metadata;
 	// do not discover models or make network calls on this path.
@@ -194,7 +195,7 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		themeEnv = ""
 	}
 	pref := tui.ResolveThemePreference(cfg.Theme, themeEnv)
-	theme, _, err := tui.DetectThemeWithCustom(ZutHome(), pref.Effective, 80*time.Millisecond)
+	theme, _, err := tui.DetectThemeWithCustom(config.ZutHome(), pref.Effective, 80*time.Millisecond)
 	if err != nil {
 		fmt.Fprintln(out, "theme load:", err)
 		if !pref.Forced {
@@ -227,7 +228,7 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		CompactUser:                  cfg.CompactUserInput(),
 		ShowInstructionsAtStartup:    cfg.ShowInstructionsAtStartup,
 		SettingsStore:                configSettingsStore{},
-		ZutHome:                      ZutHome(),
+		ZutHome:                      config.ZutHome(),
 		// Login and logout run in the client, next to the user's browser;
 		// the daemon session reloads credentials afterwards.
 		LoggedInProviders:          modelPickerProviders,
@@ -242,7 +243,7 @@ func tuiClientConfig(out io.Writer, launch *session.CreateSpec) modes.Interactiv
 		if err == nil { // Creation already validated these arguments.
 			applyZutfileSpec(&args, launch.Zutfile)
 			// The Finder and forks use the namespace this session was created in.
-			ui.SessionsRoot = agentSessionsRoot(ZutHome(), args)
+			ui.SessionsRoot = agentSessionsRoot(config.ZutHome(), args)
 			web := webSearchToolAllowedForSession(args)
 			spawn, status := autoSubagentsToolAllowed(args), autoSubagentsStatusToolAllowed(args)
 			stop, resume := autoSubagentsStopToolAllowed(args), autoSubagentsResumeToolAllowed(args)

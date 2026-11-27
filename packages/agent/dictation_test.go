@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/provider/auth"
 )
@@ -59,16 +60,16 @@ func TestDictationSettings(t *testing.T) {
 		t.Fatal("wrong default")
 	}
 	for _, seconds := range []int{-1, 0, 1801} {
-		if err := SaveConfig(Config{Dictation: &DictationSettings{MaxSeconds: &seconds}}); err == nil {
+		if err := config.Save(config.Config{Dictation: &config.DictationSettings{MaxSeconds: &seconds}}); err == nil {
 			t.Fatalf("accepted %d", seconds)
 		}
 	}
 	seconds := 120
-	s := &DictationSettings{Recorder: []string{"fake-recorder", "{output}"}, MaxSeconds: &seconds, Language: "fr"}
-	if err := SaveConfig(Config{Dictation: s}); err != nil {
+	s := &config.DictationSettings{Recorder: []string{"fake-recorder", "{output}"}, MaxSeconds: &seconds, Language: "fr"}
+	if err := config.Save(config.Config{Dictation: s}); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := LoadConfig()
+	loaded, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}

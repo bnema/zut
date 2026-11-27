@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -14,7 +15,7 @@ import (
 func endpointTestEnv(t *testing.T) string {
 	t.Helper()
 	project := pythonTestEnv(t)
-	if err := os.MkdirAll(ZutHome(), 0o755); err != nil {
+	if err := os.MkdirAll(config.ZutHome(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range []string{"OLLAMA_API_KEY", "OPENAI_API_KEY"} {

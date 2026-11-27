@@ -117,6 +117,125 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
 
+	if i.handleConfirmDialogKey(k) {
+		return false
+	}
+	if handled, done := i.handleAuthModelDialogKey(ctx, k); handled {
+		return done
+	}
+	if handled, done := i.handleFinderViewKey(ctx, k); handled {
+		return done
+	}
+	if handled, done := i.handleResidentSubagentKey(ctx, k); handled {
+		return done
+	}
+	if handled, done := i.handlePanelKey(ctx, k); handled {
+		return done
+	}
+
+	if slot := quickModelShortcutSlot(k); slot > 0 {
+		i.applyQuickModelShortcut(slot)
+		return false
+	}
+
+	if i.handleNextPromptKey(k) {
+		return false
+	}
+
+	// The first eligible bare Escape is deliberately left to the existing
+	// Escape path (which clears idle input or cancels a turn). A second tap
+	// within the gesture window only gets first refusal while the cheap,
+	// local eligibility rules still hold. If a turn started, a message was
+	// queued, or the input became ineligible between taps, reset the detector
+	// and fall through so Escape retains its normal cancellation behavior.
+	// Once those rules still hold, the full tree gate owns the second tap:
+	// family/read failures are fail-closed but are nevertheless consumed so
+	// they cannot fall through into ordinary editor handling.
+	if isUnmodifiedEscape(k) {
+		now := i.sessionTreeEscapeNow()
+		i.mu.Lock()
+		consumed := i.doubleEscape.Consume(now)
+		i.mu.Unlock()
+		if consumed {
+			if i.canArmSessionTreeEscape() {
+				i.openSessionTree()
+				return false
+			}
+			i.mu.Lock()
+			i.doubleEscape.Reset()
+			i.mu.Unlock()
+		} else if i.canArmSessionTreeEscape() {
+			i.mu.Lock()
+			i.doubleEscape.Arm(now)
+			i.mu.Unlock()
+		}
+	}
+
+	if handled, done := i.handleGlobalKey(ctx, k); handled {
+		return done
+	}
+
+	// Note: we intentionally do NOT gate the editor on i.busy here.
+	// Typing while the agent is working is supported — submitted
+	// messages steer the active turn at its next safe boundary.
+	// See the submit handler below.
+
+	if k.Kind == tui.KeyEnter && (k.Alt || k.Shift) {
+		i.ed.HandleKey(k)
+		return false
+	}
+
+	// A tree checkout must finish before Enter can send to the new daemon session.
+	if i.portMode.Load() && k.Kind == tui.KeyEnter {
+		i.mu.Lock()
+		loading := i.sessionLoading
+		i.mu.Unlock()
+		if loading {
+			return false
+		}
+	}
+
+	if handled, done := i.handleSlashSuggestKey(ctx, k); handled {
+		return done
+	}
+
+	if handled, done := i.handleFileSuggestKey(ctx, k); handled {
+		return done
+	}
+
+	// Tab cycles model profiles when no popup is open and the token is not
+	// a path. Path-like tokens keep shell-style completion (paths win);
+	// plain Tab on anything else moves to the next profile slot, stopping
+	// on empty slots via the model picker like Ctrl+1..9. Shift-Tab moves
+	// to the previous slot. Modified chords (ctrl/alt/super) are left alone.
+	if k.Kind == tui.KeyShiftTab && !k.Ctrl && !k.Alt && !k.Super && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
+		i.inputHistoryIndex = -1
+		i.cycleModelProfile(-1)
+		return false
+	}
+	if k.Kind == tui.KeyTab && !k.Ctrl && !k.Alt && !k.Super && !k.Shift && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
+		if i.tryPathTabComplete() {
+			return false
+		}
+		i.inputHistoryIndex = -1
+		i.cycleModelProfile(+1)
+		return false
+	}
+
+	if i.inputHistoryIndex >= 0 && k.Kind != tui.KeyUp && k.Kind != tui.KeyDown {
+		i.inputHistoryIndex = -1
+	}
+
+	if k.Kind == tui.KeyEsc {
+		i.clipboardImages = nil
+	}
+	if submit := i.ed.HandleKey(k); submit {
+		return i.handleSubmit(ctx)
+	}
+	return false
+}
+
+func (i *Interactive) handleConfirmDialogKey(k tui.Key) (handled bool) {
 	// Confirmation owns input by default. Pressing / deliberately moves
 	// focus to the main editor without answering the pending request, so
 	// slash commands and the dialogs they open can run first.
@@ -129,7 +248,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.ed.Insert("/")
 			i.suggest.Reset()
 			i.invalidate()
-			return false
+			return true
 		}
 		if k.Kind == tui.KeyCtrlO {
 			if i.btwDialog != nil && i.btwDialog.Active() {
@@ -137,11 +256,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			} else {
 				i.toggleToolExpansion()
 			}
-			return false
+			return true
 		}
 		i.confirmDialog.HandleKey(k)
 		i.invalidate()
-		return false
+		return true
 	}
 	if i.confirmDialog.Active() && !i.confirmChildActive() && k.Kind == tui.KeyEsc {
 		i.ed.Clear()
@@ -149,18 +268,22 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.fileSuggest.Reset()
 		i.confirmDialog.Focus()
 		i.invalidate()
-		return false
+		return true
 	}
 	if i.questionDialog.Active() && !i.confirmDialog.Active() {
 		i.questionDialog.HandleKey(k)
 		i.invalidate()
-		return false
+		return true
 	}
 	if i.deferredDialog.Active() && !i.confirmDialog.Active() {
 		i.deferredDialog.HandleKey(k)
 		i.invalidate()
-		return false
+		return true
 	}
+	return false
+}
+
+func (i *Interactive) handleAuthModelDialogKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	i.mu.Lock()
 	loginActive := i.dialog.Active()
 	var loginAction loginDialogAction
@@ -196,7 +319,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.CopyURL {
 			i.copyLoginURL(ctx)
 		}
-		return false
+		return true, false
 	}
 	if i.modelDialog.Active() {
 		// The renderer reads the dialog under i.mu; the actions below
@@ -207,7 +330,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.mu.Unlock()
 			i.quickModelAssign = 0
 			i.quickModelActivate = false
-			return false
+			return true, false
 		}
 		act := i.modelDialog.HandleKey(k)
 		i.mu.Unlock()
@@ -226,12 +349,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.applyModelSelection(act.Provider, act.Model)
 			}
 		}
-		return false
+		return true, false
 	}
 	if i.llamaDialog.Active() {
 		i.llamaDialog.HandleKey(k)
 		i.invalidate()
-		return false
+		return true, false
 	}
 	i.mu.Lock()
 	if i.rescueDialog.Active() {
@@ -239,14 +362,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.rescueDialog.Close()
 			i.mu.Unlock()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		i.rescueDialog.HandleKey(k)
 		i.mu.Unlock()
 		i.invalidate()
-		return false
+		return true, false
 	}
 	i.mu.Unlock()
+	return false, false
+}
+
+func (i *Interactive) handleFinderViewKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	i.mu.Lock()
 	resumeActive := i.finderResume.Active()
 	finderActive := i.finder.Active()
@@ -255,16 +382,20 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Same order as redraw: keys go to the view that is shown.
 	if resumeActive {
 		i.handleFinderResumeKey(k)
-		return false
+		return true, false
 	}
 	if readerActive {
 		i.handleSearchReaderKey(k)
-		return false
+		return true, false
 	}
 	if finderActive {
 		i.handleFinderKey(ctx, k)
-		return false
+		return true, false
 	}
+	return false, false
+}
+
+func (i *Interactive) handleResidentSubagentKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	i.mu.Lock()
 	residentDialog := i.residentSubagentsDialog
 	residentDialogActive := residentDialog != nil && residentDialog.Active()
@@ -278,7 +409,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 			i.mu.Unlock()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		i.mu.Lock()
 		childID := residentDialog.HandleKey(k)
@@ -287,7 +418,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.openResidentChildSession(childID)
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if residentSession != nil {
 		switch k.Kind {
@@ -332,39 +463,43 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
+	return false, false
+}
+
+func (i *Interactive) handlePanelKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	if i.logoutDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.logoutDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		act := i.logoutDialog.HandleKey(k)
 		if act.Select {
 			i.doLogout(act.Target)
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.telegramDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.telegramDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		act := i.telegramDialog.HandleKey(k)
 		if act.Select {
 			i.doTelegram(act.Action)
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.settingsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.settingsDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		act := i.settingsDialog.HandleKey(k)
 		if act.ModelShortcutSlot > 0 {
@@ -374,30 +509,30 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.applySettingChange(act)
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.timeline.Active() {
 		i.handleTimelineKey(k)
-		return false
+		return true, false
 	}
 	if i.sessionOpsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.sessionOpsDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		act := i.sessionOpsDialog.HandleKey(k)
 		if act.Select {
 			i.doSessionOp(act.Action, "")
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.sessionTreeDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.sessionTreeDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		act := i.sessionTreeDialog.HandleKey(k)
 		if act.Select {
@@ -410,7 +545,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.extPanel.Active() {
 		if k.Kind == tui.KeyCtrlC || k.Kind == tui.KeyEsc {
@@ -419,18 +554,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 			i.extPanel.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		if i.cfg.Extensions != nil {
 			_ = i.cfg.Extensions.SendPanelKey(i.extPanel.ext, i.extPanel.id, panelKeyName(k), panelKeyText(k))
 		}
-		return false
+		return true, false
 	}
 	if i.jumpDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.jumpDialog.Close()
 			i.pendingFork = false
-			return false
+			return true, false
 		}
 		act := i.jumpDialog.HandleKey(k)
 		if act.Select {
@@ -446,34 +581,34 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Close {
 			i.pendingFork = false
 		}
-		return false
+		return true, false
 	}
 	if i.btwDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.btwDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		if k.Kind == tui.KeyCtrlO {
 			i.toggleBtwToolExpansion()
-			return false
+			return true, false
 		}
 		i.btwDialog.HandleKey(k, i.invalidate)
-		return false
+		return true, false
 	}
 	if i.skillsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.skillsDialog.Close()
 			i.invalidate()
-			return false
+			return true, false
 		}
 		if i.handleSkillPinKey(k) {
 			i.invalidate()
-			return false
+			return true, false
 		}
 		i.skillsDialog.HandleKey(k)
 		i.invalidate()
-		return false
+		return true, false
 	}
 	if i.changelogDialog.Active() {
 		if closed := i.changelogDialog.HandleKey(k); closed {
@@ -484,47 +619,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 		}
 		i.invalidate()
-		return false
+		return true, false
 	}
+	return false, false
+}
 
-	if slot := quickModelShortcutSlot(k); slot > 0 {
-		i.applyQuickModelShortcut(slot)
-		return false
-	}
-
-	if i.handleNextPromptKey(k) {
-		return false
-	}
-
-	// The first eligible bare Escape is deliberately left to the existing
-	// Escape path (which clears idle input or cancels a turn). A second tap
-	// within the gesture window only gets first refusal while the cheap,
-	// local eligibility rules still hold. If a turn started, a message was
-	// queued, or the input became ineligible between taps, reset the detector
-	// and fall through so Escape retains its normal cancellation behavior.
-	// Once those rules still hold, the full tree gate owns the second tap:
-	// family/read failures are fail-closed but are nevertheless consumed so
-	// they cannot fall through into ordinary editor handling.
-	if isUnmodifiedEscape(k) {
-		now := i.sessionTreeEscapeNow()
-		i.mu.Lock()
-		consumed := i.doubleEscape.Consume(now)
-		i.mu.Unlock()
-		if consumed {
-			if i.canArmSessionTreeEscape() {
-				i.openSessionTree()
-				return false
-			}
-			i.mu.Lock()
-			i.doubleEscape.Reset()
-			i.mu.Unlock()
-		} else if i.canArmSessionTreeEscape() {
-			i.mu.Lock()
-			i.doubleEscape.Arm(now)
-			i.mu.Unlock()
-		}
-	}
-
+func (i *Interactive) handleGlobalKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	// Global keys.
 	switch k.Kind {
 	case tui.KeyCtrlC:
@@ -534,24 +634,24 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if portClear && !i.ctrlCExitArmed() && i.portClearUnsupportedGen != i.sessionGen+1 {
 			i.portClearQueuedUser(ctx)
 			i.armCtrlCExit()
-			return false
+			return true, false
 		}
 		if i.port != nil && (i.busy || portClear || (i.ed.IsEmpty() && len(i.queued) == 0 && (i.agent == nil || i.agent.QueuedMessageCount() == 0))) {
 			i.mu.Lock()
 			i.daemonExitMenu = true
 			i.statusOK, i.statusErr = daemonExitPrompt, ""
 			i.mu.Unlock()
-			return false
+			return true, false
 		}
 		i.mu.Lock()
 		loadingSession := i.sessionLoading
 		i.mu.Unlock()
 		if loadingSession {
 			if i.port != nil {
-				return i.portDetach()
+				return true, i.portDetach()
 			}
 			i.markCtrlCExit()
-			return true
+			return true, true
 		}
 		// While busy: do NOT cancel the turn. ctrl+c during a
 		// running turn is almost always reflex muscle memory
@@ -564,17 +664,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if i.busy {
 			if i.ctrlCExitArmed() {
 				if i.port != nil {
-					return i.portDetach()
+					return true, i.portDetach()
 				}
 				i.markCtrlCExit()
-				return true
+				return true, true
 			}
 			i.mu.Lock()
 			i.statusOK = "press ctrl+c again to exit, esc to cancel the turn"
 			i.statusErr = ""
 			i.mu.Unlock()
 			i.armCtrlCExit()
-			return false
+			return true, false
 		}
 		// Idle: first press clears the editor (and any queued
 		// follow-up messages); a second press within ctrlCExitWindow
@@ -590,21 +690,21 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.statusErr = ""
 			i.mu.Unlock()
 			i.armCtrlCExit()
-			return false
+			return true, false
 		}
 		if i.ctrlCExitArmed() {
 			if i.port != nil {
-				return i.portDetach()
+				return true, i.portDetach()
 			}
 			i.markCtrlCExit()
-			return true
+			return true, true
 		}
 		i.mu.Lock()
 		i.statusOK = "press ctrl+c again to exit"
 		i.statusErr = ""
 		i.mu.Unlock()
 		i.armCtrlCExit()
-		return false
+		return true, false
 	case tui.KeyEsc:
 		// Esc interrupts a running turn — but only when nothing
 		// else on screen wants to consume the key first. The slash
@@ -628,12 +728,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Unlock()
 		if hadHelp || hadNotes {
 			i.invalidate()
-			return false
+			return true, false
 		}
 		if i.port != nil {
 			if i.portRunning() {
 				i.portSlideBackQueued(ctx, true)
-				return false
+				return true, false
 			}
 			break
 		}
@@ -657,37 +757,37 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// goroutine unblocks and the context cancellation can
 			// actually take effect.
 			i.confirmDialog.CancelAll("turn cancelled")
-			return false
+			return true, false
 		}
 	case tui.KeyCtrlD:
 		if i.ed.IsEmpty() && !i.busy {
 			if i.port != nil {
-				return i.portDetach()
+				return true, i.portDetach()
 			}
-			return true
+			return true, true
 		}
 	case tui.KeyCtrlL:
 		i.requestRendererClear()
 		i.invalidate()
-		return false
+		return true, false
 	case tui.KeyPasteClipboard:
 		i.pasteClipboard(ctx)
-		return false
+		return true, false
 	case tui.KeyCtrlO:
 		i.toggleToolExpansion()
-		return false
+		return true, false
 	case tui.KeyCtrlF:
 		i.openFinderShortcut(ctx)
-		return false
+		return true, false
 	case tui.KeyCtrlR:
 		i.cycleReasoningSetting()
-		return false
+		return true, false
 	case tui.KeyPageUp:
 		i.scrollBy(+i.chatPage())
-		return false
+		return true, false
 	case tui.KeyPageDown:
 		i.scrollBy(-i.chatPage())
-		return false
+		return true, false
 	case tui.KeyUp:
 		// Alt/Option+Up: pop the most recently queued ("sliding in")
 		// user message (never host evidence) so the user can edit and
@@ -699,7 +799,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if i.port != nil {
 				if i.portRecall != nil && i.portRecall.gen == i.sessionGen {
 					i.portSlideBackQueued(ctx, false)
-					return false
+					return true, false
 				}
 				i.mu.Lock()
 				hasQueued := false
@@ -712,7 +812,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.mu.Unlock()
 				if hasQueued {
 					i.portSlideBackQueued(ctx, false)
-					return false
+					return true, false
 				}
 			}
 			if i.port == nil {
@@ -721,7 +821,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.mu.Unlock()
 				if ok && i.restoreQueuedMessageToEditor(message) {
 					i.invalidate()
-					return false
+					return true, false
 				}
 			}
 		}
@@ -732,75 +832,58 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
 			if i.ed.MoveVertical(-1) {
 				i.invalidate()
-				return false
+				return true, false
 			}
 			if !k.Alt && i.handleInputHistoryKey(k) {
-				return false
+				return true, false
 			}
 			i.scrollBy(+3)
-			return false
+			return true, false
 		}
 	case tui.KeyDown:
 		if !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
 			if i.ed.MoveVertical(+1) {
 				i.invalidate()
-				return false
+				return true, false
 			}
 			if !k.Alt && i.inputHistoryIndex < 0 && i.hasResidentSubagents() {
 				i.runResidentSubagents(ctx, nil)
-				return false
+				return true, false
 			}
 			if !k.Alt && i.handleInputHistoryKey(k) {
-				return false
+				return true, false
 			}
 			if i.scrollOffset > 0 {
 				i.scrollBy(-3)
 			}
-			return false
+			return true, false
 		}
 	}
+	return false, false
+}
 
-	// Note: we intentionally do NOT gate the editor on i.busy here.
-	// Typing while the agent is working is supported — submitted
-	// messages steer the active turn at its next safe boundary.
-	// See the submit handler below.
-
-	if k.Kind == tui.KeyEnter && (k.Alt || k.Shift) {
-		i.ed.HandleKey(k)
-		return false
-	}
-
-	// A tree checkout must finish before Enter can send to the new daemon session.
-	if i.portMode.Load() && k.Kind == tui.KeyEnter {
-		i.mu.Lock()
-		loading := i.sessionLoading
-		i.mu.Unlock()
-		if loading {
-			return false
-		}
-	}
-
+func (i *Interactive) handleSlashSuggestKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	// Slash suggestions: intercept up/down/tab/enter when the popup is visible.
 	if i.suggest.Active(i.ed.Value()) {
 		switch k.Kind {
 		case tui.KeyUp:
 			i.suggest.Up()
-			return false
+			return true, false
 		case tui.KeyDown:
 			i.suggest.Down()
-			return false
+			return true, false
 		case tui.KeyPageUp:
 			i.suggest.PageUp()
-			return false
+			return true, false
 		case tui.KeyPageDown:
 			i.suggest.PageDown()
-			return false
+			return true, false
 		case tui.KeyTab:
 			if name := i.suggest.Selection(i.ed.Value()); name != "" {
 				i.ed.SetValue(name)
 				i.suggest.Reset()
 			}
-			return false
+			return true, false
 		case tui.KeyEnter:
 			// Enter on an ambiguous or partial slash prefix: complete to the
 			// currently highlighted command and run it. That way typing
@@ -811,24 +894,27 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if name := i.suggest.Selection(i.ed.Value()); name != "" {
 				i.ed.Clear()
 				i.suggest.Reset()
-				return i.runSlash(ctx, name)
+				return true, i.runSlash(ctx, name)
 			}
 		case tui.KeyEsc:
 			i.ed.Clear()
 			i.suggest.Reset()
-			return false
+			return true, false
 		}
 	}
+	return false, false
+}
 
+func (i *Interactive) handleFileSuggestKey(ctx context.Context, k tui.Key) (handled, done bool) {
 	// File suggestions: intercept up/down/tab/enter when the @-popup is visible.
 	if i.fileSuggest.Active(i.ed.Value()) {
 		switch k.Kind {
 		case tui.KeyUp:
 			i.fileSuggest.Up()
-			return false
+			return true, false
 		case tui.KeyDown:
 			i.fileSuggest.Down()
-			return false
+			return true, false
 		case tui.KeyRight:
 			// Open selected directory. The filter the user typed picked
 			// that directory at the current level; once we descend it no
@@ -838,14 +924,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			if i.fileSuggest.Right() {
 				i.clearFileSuggestQuery()
 			}
-			return false
+			return true, false
 		case tui.KeyLeft:
 			// Go back to parent directory. Clear the filter for the same
 			// reason as Right: it was scoped to the level we just left.
 			if i.fileSuggest.Left() {
 				i.clearFileSuggestQuery()
 			}
-			return false
+			return true, false
 		case tui.KeyEnter:
 			if entry, ok := i.fileSuggest.SelectedEntry(i.ed.Value()); ok {
 				var chip string
@@ -861,114 +947,90 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.ed.SetValue(val + chip + " ")
 				i.fileSuggest.Reset()
 			}
-			return false
+			return true, false
 		case tui.KeyEsc:
 			val := i.ed.Value()
 			if idx := strings.LastIndex(val, "@"); idx >= 0 {
 				i.ed.SetValue(val[:idx])
 			}
 			i.fileSuggest.Reset()
-			return false
+			return true, false
 		}
 	}
+	return false, false
+}
 
-	// Tab cycles model profiles when no popup is open and the token is not
-	// a path. Path-like tokens keep shell-style completion (paths win);
-	// plain Tab on anything else moves to the next profile slot, stopping
-	// on empty slots via the model picker like Ctrl+1..9. Shift-Tab moves
-	// to the previous slot. Modified chords (ctrl/alt/super) are left alone.
-	if k.Kind == tui.KeyShiftTab && !k.Ctrl && !k.Alt && !k.Super && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
-		i.inputHistoryIndex = -1
-		i.cycleModelProfile(-1)
+func (i *Interactive) handleSubmit(ctx context.Context) (done bool) {
+	// SubmitValue() expands any [pasted text #N +L lines]
+	// placeholders back into their bodies; the raw Value()
+	// is only what the user sees on screen.
+	text := strings.TrimRight(i.ed.SubmitValue(), "\n")
+	// Expand [file:name] and [dir:name/] chips to full paths.
+	text = expandFileChips(text, i.cfg.CWD)
+	text, images := preparePromptWithClipboardImages(text, i.clipboardImages)
+	if text == "" && len(images) == 0 {
 		return false
 	}
-	if k.Kind == tui.KeyTab && !k.Ctrl && !k.Alt && !k.Super && !k.Shift && !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
-		if i.tryPathTabComplete() {
-			return false
-		}
-		i.inputHistoryIndex = -1
-		i.cycleModelProfile(+1)
-		return false
-	}
-
-	if i.inputHistoryIndex >= 0 && k.Kind != tui.KeyUp && k.Kind != tui.KeyDown {
-		i.inputHistoryIndex = -1
-	}
-
-	if k.Kind == tui.KeyEsc {
+	clearSubmittedInput := func() {
 		i.clipboardImages = nil
+		i.ed.Clear()
+		i.inputHistoryIndex = -1
+		i.suggest.Reset()
+		i.fileSuggest.Reset()
 	}
-	if submit := i.ed.HandleKey(k); submit {
-		// SubmitValue() expands any [pasted text #N +L lines]
-		// placeholders back into their bodies; the raw Value()
-		// is only what the user sees on screen.
-		text := strings.TrimRight(i.ed.SubmitValue(), "\n")
-		// Expand [file:name] and [dir:name/] chips to full paths.
-		text = expandFileChips(text, i.cfg.CWD)
-		text, images := preparePromptWithClipboardImages(text, i.clipboardImages)
-		if text == "" && len(images) == 0 {
+
+	// Shell escapes and slash commands are text-only. An image-bearing
+	// draft remains a normal provider prompt instead of silently dropping
+	// its attachments.
+	if len(images) == 0 {
+		if cmd, ok := shellEscapeCommand(text); ok {
+			clearSubmittedInput()
+			i.startShellEscape(ctx, cmd)
 			return false
 		}
-		clearSubmittedInput := func() {
-			i.clipboardImages = nil
-			i.ed.Clear()
-			i.inputHistoryIndex = -1
-			i.suggest.Reset()
-			i.fileSuggest.Reset()
-		}
-
-		// Shell escapes and slash commands are text-only. An image-bearing
-		// draft remains a normal provider prompt instead of silently dropping
-		// its attachments.
-		if len(images) == 0 {
-			if cmd, ok := shellEscapeCommand(text); ok {
-				clearSubmittedInput()
-				i.startShellEscape(ctx, cmd)
-				return false
-			}
-		}
-
-		if len(images) == 0 && looksLikeSlashCommand(text) {
-			clearSubmittedInput()
-			head := text
-			rest := ""
-			if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-				head = text[:idx]
-				rest = strings.TrimSpace(text[idx:])
-			}
-			if !isKnownSlashCommand(text) {
-				// Try extensions before giving up. Extensions register
-				// commands by bare name (no leading slash); strip it here.
-				extName := strings.TrimPrefix(head, "/")
-				if i.cfg.Extensions != nil && i.cfg.Extensions.HasCommand(extName) {
-					go i.invokeExtensionCommand(ctx, extName, rest)
-					return false
-				}
-				i.mu.Lock()
-				i.statusErr = "unknown command " + head + " — type /help to see the list"
-				i.statusOK = ""
-				i.mu.Unlock()
-				return false
-			}
-			// Slash commands run regardless of busy state. Commands that
-			// would mutate the transcript or replace the agent (/clear,
-			// /compact, /logout, /login, /model, /fork, /session fork)
-			// cancel the active turn
-			// first and wait for the goroutine to wind down so they don't
-			// race with a streaming response. Safe commands (/help,
-			// /jump, /find, /jail, /unjail, /exit) run immediately
-			// without disturbing the active turn.
-			if slashCommandCancelsTurn(text) {
-				i.cancelAndWaitForIdle()
-			}
-			return i.runSlash(ctx, text)
-		}
-
-		clearSubmittedInput()
-		i.portSubmit(ctx, text, images)
 	}
+
+	if len(images) == 0 && looksLikeSlashCommand(text) {
+		clearSubmittedInput()
+		head := text
+		rest := ""
+		if idx := strings.IndexAny(text, " \t"); idx >= 0 {
+			head = text[:idx]
+			rest = strings.TrimSpace(text[idx:])
+		}
+		if !isKnownSlashCommand(text) {
+			// Try extensions before giving up. Extensions register
+			// commands by bare name (no leading slash); strip it here.
+			extName := strings.TrimPrefix(head, "/")
+			if i.cfg.Extensions != nil && i.cfg.Extensions.HasCommand(extName) {
+				go i.invokeExtensionCommand(ctx, extName, rest)
+				return false
+			}
+			i.mu.Lock()
+			i.statusErr = "unknown command " + head + " — type /help to see the list"
+			i.statusOK = ""
+			i.mu.Unlock()
+			return false
+		}
+		// Slash commands run regardless of busy state. Commands that
+		// would mutate the transcript or replace the agent (/clear,
+		// /compact, /logout, /login, /model, /fork, /session fork)
+		// cancel the active turn
+		// first and wait for the goroutine to wind down so they don't
+		// race with a streaming response. Safe commands (/help,
+		// /jump, /find, /jail, /unjail, /exit) run immediately
+		// without disturbing the active turn.
+		if slashCommandCancelsTurn(text) {
+			i.cancelAndWaitForIdle()
+		}
+		return i.runSlash(ctx, text)
+	}
+
+	clearSubmittedInput()
+	i.portSubmit(ctx, text, images)
 	return false
 }
+
 func (i *Interactive) pasteClipboard(ctx context.Context) {
 	image, ok, _ := tui.ReadClipboardImage(ctx)
 	if ok {

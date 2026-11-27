@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 )
@@ -160,15 +161,15 @@ func TestPythonSummaryPresenceAbsence(t *testing.T) {
 
 func TestPythonConfigRoundTripAndAssembly(t *testing.T) {
 	project := pythonTestEnv(t)
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.PythonInterpreter = "/opt/py/bin/python"
-	if err := SaveConfig(cfg); err != nil {
+	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := LoadConfig()
+	loaded, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,12 +249,12 @@ func TestPythonExtensionCannotBypassPolicyExclusion(t *testing.T) {
 
 func TestPythonUnavailableInterpreterDoesNotBlockStartup(t *testing.T) {
 	project := pythonTestEnv(t)
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.PythonInterpreter = filepath.Join(project, "missing", "python")
-	if err := SaveConfig(cfg); err != nil {
+	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	// Startup succeeds; the missing interpreter fails only on invocation

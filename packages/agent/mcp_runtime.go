@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/mcp"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
@@ -69,7 +70,7 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 	if args.mcpManager != nil || !mcpAllowed(*args) {
 		return args.mcpManager, noop, nil
 	}
-	cfg, cfgErrs := mcp.LoadConfig(ZutHome(), args.CWD, env)
+	cfg, cfgErrs := mcp.LoadConfig(config.ZutHome(), args.CWD, env)
 	for _, err := range cfgErrs {
 		args.mcpStartupErrors = append(args.mcpStartupErrors, err.Error())
 	}
@@ -79,7 +80,7 @@ func startMCPManager(ctx context.Context, args *Args, version string, env []stri
 	}
 	// MCP endpoints always verify TLS; --insecure is scoped to inference endpoints.
 	manager := mcp.NewManager(cfg, args.CWD, mcp.ClientInfo{Name: "zut", Version: version}, provider.NewHTTPClient(false))
-	manager.SetAuthPath(filepath.Join(ZutHome(), "mcp-auth.json"))
+	manager.SetAuthPath(filepath.Join(config.ZutHome(), "mcp-auth.json"))
 	manager.SetPool(opts.Pool)
 	if timer := opts.Timer; timer != nil {
 		manager.SetStartupObserver(func(name string, d time.Duration, err error) {

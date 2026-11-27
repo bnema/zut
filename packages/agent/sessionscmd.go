@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/core"
 )
 
@@ -56,7 +57,7 @@ func runSessionsCommand(rawArgs []string) (handled bool, err error) {
 			printSessionsHelp(os.Stderr)
 			return true, err
 		}
-		return true, runSessionsPrune(SessionsPath(), opts, os.Stdin, os.Stdout, os.Stderr, os.Stat)
+		return true, runSessionsPrune(config.SessionsPath(), opts, os.Stdin, os.Stdout, os.Stderr, os.Stat)
 	default:
 		printSessionsHelp(os.Stderr)
 		return true, fmt.Errorf("unknown sessions subcommand: %s", rawArgs[1])

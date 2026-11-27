@@ -12,6 +12,7 @@ import (
 	"time"
 
 	zutdocs "github.com/bnema/zut"
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/lsp"
 	"github.com/bnema/zut/packages/agent/skills"
 	"github.com/bnema/zut/packages/agent/subagents"
@@ -99,7 +100,7 @@ type Resolved struct {
 	toolDescriptions map[string]string
 	// advisorSettings is the advisor config captured at resolve time; the
 	// native/client decision is made against the live executor model.
-	advisorSettings AdvisorSettings
+	advisorSettings config.AdvisorSettings
 }
 
 // HasCredential reports whether the resolved configuration can create a client.
@@ -186,7 +187,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		Tools:      r.ToolSummary,
 		Custom:     r.systemCustom,
 		Append:     r.systemAppend,
-		ZutDocsDir: filepath.Join(ZutHome(), "docs"),
+		ZutDocsDir: filepath.Join(config.ZutHome(), "docs"),
 	})
 }
 
@@ -461,7 +462,7 @@ func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
 // resolveWebSearchPolicy applies capability precedence at the owning resolver
 // boundary. Permission, tool-list, and named-profile restrictions are ceilings
 // on every caller-provided policy.
-func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error) subagents.WebSearchPolicy {
+func resolveWebSearchPolicy(args Args, cfg config.Config, cfgErr error) subagents.WebSearchPolicy {
 	if args.NoTools || args.PermissionSet != nil {
 		return subagents.WebSearchDeny
 	}
@@ -563,9 +564,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 // resolve is Resolve with optional per-phase timing logs (nil logs nothing).
 func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error) {
 	timer.reset()
-	cfg, cfgErr := LoadConfig()
+	cfg, cfgErr := config.Load()
 	timer.phase("resolve: config load")
-	profileSlot := cfg.applyActiveModelProfile()
+	profileSlot := applyActiveModelProfile(&cfg)
 	repairConfig := false
 	// Programmatic callers historically supplied Tools without the parser's
 	// provenance bit. Treat a non-empty list as explicit before a named profile
@@ -583,27 +584,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	argProvider := canonicalProvider(args.Provider)
 	provName := firstNonEmpty(argProvider, canonicalProvider(cfg.Provider), "anthropic")
 	if !isKnownProvider(provName) {
-		// Unknown provider (maybe removed or renamed). Fall back to
-		// the first provider that has credentials, or anthropic.
-		// Custom providers (from models.json) are already accepted
-		// by isKnownProvider, so we only reach here for truly unknown
-		// names.
-		provName = "anthropic"
-		if CredentialAvailable("openai") {
-			provName = "openai"
-		}
-		if CredentialAvailable("openai-codex") {
-			provName = "openai-codex"
-		}
-		if CredentialAvailable("kimi") {
-			provName = "kimi"
-		}
-		if CredentialAvailable("deepseek") {
-			provName = "deepseek"
-		}
-		if CredentialAvailable("anthropic") {
-			provName = "anthropic"
-		}
+		provName = fallbackUnknownProvider()
 		// Reset the saved config so this doesn't keep happening.
 		cfg.Provider = provName
 		cfg.Model = ""
@@ -623,6 +604,169 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 		}
 	}
 
+	var autoFellBack bool
+	provName, cred, method, accountID, credErr, autoFellBack = autoFallbackCredential(args, cfg, provName, cred, method, accountID, credErr)
+
+	var customProviderConfig *provider.CustomProviderConfig
+	if custom, ok := provider.CustomProviders()[provName]; ok {
+		customProviderConfig = &custom
+	}
+
+	model, err := initialModel(args, cfg, provName, autoFellBack)
+	if err != nil {
+		return Resolved{}, err
+	}
+	resolvedModel, model, repairConfigDelta := resolveModelEntry(args, cfg, provName, model, customProviderConfig)
+	if repairConfigDelta {
+		cfg.Model = model
+		repairConfig = true
+	}
+
+	if repairConfig {
+		repairPersistedConfig(&cfg, profileSlot, args, provName, model, resolvedModel)
+	}
+
+	// Discovered custom-provider models inherit the user's models.json
+	// endpoint, so they count as explicit for --insecure scoping too.
+	discoveredCustom := resolvedModel.Source == "live" && isDiscoverableCustomProvider(provName)
+	explicitBaseURL := args.BaseURL != "" || ((resolvedModel.Source == "user" || discoveredCustom) && resolvedModel.BaseURL != "")
+
+	ec.cred, ec.err = cred, credErr
+	ep, err := resolveEndpoint(context.Background(), endpointInput{
+		provider:        provName,
+		baseURL:         args.BaseURL,
+		model:           resolvedModel,
+		explicitBaseURL: explicitBaseURL,
+		insecure:        args.InsecureTLS || cfg.Insecure,
+		custom:          customProviderConfig,
+		getenv:          argsGetenv(args),
+	}, &ec)
+	if err != nil {
+		return Resolved{}, err
+	}
+	args.BaseURL, cred, credErr = ep.baseURL, ec.cred, ec.err
+	insecureTLS, credentialOptional := ep.insecureTLS, ep.credentialOptional
+	if ep.credRelaxed {
+		requireCred = false
+	}
+
+	if credErr != nil && requireCred {
+		return Resolved{}, fmt.Errorf("%w; set %s_API_KEY, pass --api-key, or run `zut` and /login",
+			credErr, envVarName(provName))
+	}
+
+	timer.phase("resolve: model selection", "model", model)
+	sandbox, reg := resolveToolRegistry(args, cfg)
+	timer.phase("resolve: tool registry", "tools", len(reg))
+
+	docsDir, _ := zutdocs.EnsureInstalled(config.ZutHome())
+	timer.phase("resolve: zut docs install")
+
+	discovered, skillTool, skillAddendum, skillsEnabled := discoverSkills(args, reg)
+	timer.phase("resolve: skills discovery", "skills", len(discovered))
+
+	summaries := toolSummaries(reg, args)
+
+	contextFiles := []ContextFile(nil)
+	if !args.NoContextFiles {
+		contextFiles = loadAgentsContext(args.CWD, config.ZutHome())
+	}
+	timer.phase("resolve: AGENTS.md load", "files", len(contextFiles))
+	append_ := systemPromptAppend(args, cfg, reg, contextFiles, skillAddendum)
+	// Custom system prompt resolution order:
+	//   1. --system-prompt flag (highest priority; ad-hoc per run)
+	//   2. $ZUT_HOME/SYSTEM.md (persistent user override)
+	//   3. built-in default (defaultIdentity + defaultGuidelines)
+	custom := args.SystemPrompt
+	if custom == "" {
+		custom = readUserSystemPrompt(config.ZutHome())
+	}
+
+	sys := BuildSystemPrompt(SystemPromptOpts{
+		CWD:        args.CWD,
+		Tools:      summaries,
+		Custom:     custom,
+		Append:     append_,
+		ZutDocsDir: docsDir,
+	})
+	timer.phase("resolve: system prompt build")
+
+	reasoning := provider.NormalizeReasoning(firstNonEmpty(args.Reasoning, cfg.Reasoning))
+	temperature := args.Temperature
+	if temperature == nil {
+		temperature = cfg.Temperature
+	}
+	fastMode := cfg.FastMode != nil && *cfg.FastMode
+	if args.FastModeSet {
+		fastMode = args.FastMode
+	}
+	max := args.MaxSteps // 0 = unlimited
+
+	modelCatalog := opencodeModelCatalog(provName, model, args, resolvedModel)
+
+	return Resolved{
+		Provider:                  provName,
+		Model:                     model,
+		Credential:                cred,
+		AuthMethod:                method,
+		AccountID:                 accountID,
+		BaseURL:                   args.BaseURL,
+		InsecureTLS:               insecureTLS,
+		CWD:                       args.CWD,
+		Reasoning:                 reasoning,
+		Temperature:               temperature,
+		FastMode:                  fastMode,
+		WebSearchPolicy:           webSearchPolicy,
+		ToolRegistry:              reg,
+		ToolSummary:               summaries,
+		SystemPrompt:              sys,
+		MaxSteps:                  max,
+		DisableRepetitionGuard:    args.DisableRepetitionGuard,
+		ContextWindow:             resolvedModel.ContextWindow,
+		MaxOutput:                 resolvedModel.MaxOutput,
+		modelCatalog:              modelCatalog,
+		modelCatalogAuthoritative: args.modelCatalogAuthoritative,
+		customProviderConfig:      customProviderConfig,
+		credentialOptional:        credentialOptional,
+		Sandbox:                   sandbox,
+		SkillTool:                 skillTool,
+		skillsEnabled:             skillsEnabled,
+		ContextFiles:              contextFiles,
+		systemAppend:              append_,
+		systemCustom:              custom,
+		skillAddendum:             skillAddendum,
+		toolDescriptions:          descMapFromSummaries(summaries),
+		advisorSettings:           cfg.AdvisorSettings(),
+	}, nil
+}
+
+func fallbackUnknownProvider() string {
+	// Unknown provider (maybe removed or renamed). Probe every listed
+	// provider in order; the last one with credentials wins. If none
+	// match, default to anthropic.
+	// Custom providers (from models.json) are already accepted
+	// by isKnownProvider, so we only reach here for truly unknown
+	// names.
+	provName := "anthropic"
+	if CredentialAvailable("openai") {
+		provName = "openai"
+	}
+	if CredentialAvailable("openai-codex") {
+		provName = "openai-codex"
+	}
+	if CredentialAvailable("kimi") {
+		provName = "kimi"
+	}
+	if CredentialAvailable("deepseek") {
+		provName = "deepseek"
+	}
+	if CredentialAvailable("anthropic") {
+		provName = "anthropic"
+	}
+	return provName
+}
+
+func autoFallbackCredential(args Args, cfg config.Config, provName, cred, method, accountID string, credErr error) (string, string, string, string, error, bool) {
 	// If the user did NOT explicitly pick a provider (neither via --provider
 	// nor by saving one in config.json) and the default one has no
 	// credentials, auto-fall-back to whichever provider is actually logged
@@ -634,13 +778,9 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	// if no credential is found — the tui will show the login dialog or
 	// surface a clear credential error rather than silently switching to
 	// a completely different provider and model.
-	// autoFellBack tracks whether the provider was changed by the
-	// auto-fallback loop (no explicit provider from CLI or config,
-	// and the default had no credentials). When false, the provider
-	// came from the user's explicit choice (--provider or config.json)
-	// and must be respected, including any model id that may belong
-	// to a different provider in the catalog — for example when using
-	// a gateway/router like OpenRouter with "deepseek/deepseek-v4-flash".
+	// autoFellBack records that the fallback scan was attempted because no
+	// provider was explicitly selected and the default had no credentials.
+	// It is true even if no other provider matched and the provider did not change.
 	var autoFellBack bool
 	userPickedProvider := args.Provider != "" || cfg.Provider != ""
 	if credErr != nil && !userPickedProvider && provName != "ollama" {
@@ -668,12 +808,10 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 			break
 		}
 	}
+	return provName, cred, method, accountID, credErr, autoFellBack
+}
 
-	var customProviderConfig *provider.CustomProviderConfig
-	if custom, ok := provider.CustomProviders()[provName]; ok {
-		customProviderConfig = &custom
-	}
-
+func initialModel(args Args, cfg config.Config, provName string, autoFellBack bool) (string, error) {
 	// Normalize model ids at the resolver boundary without mutating the
 	// caller's Args value. Treat whitespace-only values as missing so a
 	// configured fallback can still be selected.
@@ -683,7 +821,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	}
 	if model == "" {
 		if provName == "ollama" || provName == provider.LlamaCPPProviderID {
-			return Resolved{}, fmt.Errorf("%s requires --model or a model selected from its manager", provName)
+			return "", fmt.Errorf("%s requires --model or a model selected from its manager", provName)
 		}
 		if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
 			// Keep model selection inside the runtime snapshot instead of
@@ -695,8 +833,8 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	}
 	// If the resolved model belongs to a different provider (e.g. config
 	// says gpt-5 but we auto-fell back to anthropic), pick that provider's
-	// default. This override only fires when the provider was auto-fallback-
-	// changed, NOT when the user explicitly configured the pair — gateway/
+	// default. This override only fires when the fallback scan was attempted,
+	// NOT when the user explicitly configured the pair — gateway/
 	// router providers (openrouter, vercel-ai-gateway, etc.) can serve
 	// models from any provider in the catalog.
 	if autoFellBack && provName != "ollama" {
@@ -708,6 +846,11 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 			model = defaultModelForProvider(provName)
 		}
 	}
+	return model, nil
+}
+
+func resolveModelEntry(args Args, cfg config.Config, provName, model string, customProviderConfig *provider.CustomProviderConfig) (provider.Model, string, bool) {
+	repairConfigDelta := false
 	if isDiscoverableCustomProvider(provName) {
 		if _, ferr := provider.FindModel(provName, model); ferr != nil {
 			// Restore discovery-enabled custom models after restart. Skipped
@@ -809,73 +952,45 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 				"zut: model %q is not in the active catalogue; using %q instead. Pick a different model with --model or /model.\n",
 				model, fm.ID)
 			if strings.TrimSpace(args.Model) == "" && strings.TrimSpace(cfg.Model) == model {
-				cfg.Model = fm.ID
-				repairConfig = true
+				repairConfigDelta = true
 			}
 			resolvedModel = fm
 			model = fm.ID
 		}
 	}
+	return resolvedModel, model, repairConfigDelta
+}
 
-	if repairConfig {
-		// Repair the source favorite as well as legacy defaults, but never
-		// overwrite it because an explicit CLI override required fallback.
-		repairProfile := profileSlot > 0 && args.Provider == "" && args.Model == ""
+func repairPersistedConfig(cfg *config.Config, profileSlot int, args Args, provName, model string, resolvedModel provider.Model) {
+	// Repair the source favorite as well as legacy defaults, but never
+	// overwrite it because an explicit CLI override required fallback.
+	repairProfile := profileSlot > 0 && args.Provider == "" && args.Model == ""
+	if repairProfile {
+		cfg.Provider, cfg.Model = provName, model
+		cfg.Reasoning = provider.ClampReasoningForModel(resolvedModel, cfg.Reasoning)
+	}
+	// Apply only the repaired fields to the current file so concurrent
+	// config updates are kept.
+	_ = config.Update(func(disk *config.Config) error {
+		disk.Provider, disk.Model = cfg.Provider, cfg.Model
 		if repairProfile {
-			cfg.Provider, cfg.Model = provName, model
-			cfg.Reasoning = provider.ClampReasoningForModel(resolvedModel, cfg.Reasoning)
-		}
-		// Apply only the repaired fields to the current file so concurrent
-		// config updates are kept.
-		_ = updateConfig(func(disk *Config) error {
-			disk.Provider, disk.Model = cfg.Provider, cfg.Model
-			if repairProfile {
-				disk.Reasoning = cfg.Reasoning
-				if len(disk.QuickModelShortcuts) < profileSlot {
-					next := make([]QuickModelShortcut, profileSlot)
-					copy(next, disk.QuickModelShortcuts)
-					disk.QuickModelShortcuts = next
-				}
-				disk.QuickModelShortcuts[profileSlot-1] = QuickModelShortcut{
-					Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
-					FastMode: cfg.FastMode != nil && *cfg.FastMode,
-				}
-				disk.ActiveModelProfile = profileSlot
+			disk.Reasoning = cfg.Reasoning
+			if len(disk.QuickModelShortcuts) < profileSlot {
+				next := make([]config.QuickModelShortcut, profileSlot)
+				copy(next, disk.QuickModelShortcuts)
+				disk.QuickModelShortcuts = next
 			}
-			return nil
-		})
-	}
+			disk.QuickModelShortcuts[profileSlot-1] = config.QuickModelShortcut{
+				Provider: cfg.Provider, Model: cfg.Model, Reasoning: cfg.Reasoning,
+				FastMode: cfg.FastMode != nil && *cfg.FastMode,
+			}
+			disk.ActiveModelProfile = profileSlot
+		}
+		return nil
+	})
+}
 
-	// Discovered custom-provider models inherit the user's models.json
-	// endpoint, so they count as explicit for --insecure scoping too.
-	discoveredCustom := resolvedModel.Source == "live" && isDiscoverableCustomProvider(provName)
-	explicitBaseURL := args.BaseURL != "" || ((resolvedModel.Source == "user" || discoveredCustom) && resolvedModel.BaseURL != "")
-
-	ec.cred, ec.err = cred, credErr
-	ep, err := resolveEndpoint(context.Background(), endpointInput{
-		provider:        provName,
-		baseURL:         args.BaseURL,
-		model:           resolvedModel,
-		explicitBaseURL: explicitBaseURL,
-		insecure:        args.InsecureTLS || cfg.Insecure,
-		custom:          customProviderConfig,
-		getenv:          argsGetenv(args),
-	}, &ec)
-	if err != nil {
-		return Resolved{}, err
-	}
-	args.BaseURL, cred, credErr = ep.baseURL, ec.cred, ec.err
-	insecureTLS, credentialOptional := ep.insecureTLS, ep.credentialOptional
-	if ep.credRelaxed {
-		requireCred = false
-	}
-
-	if credErr != nil && requireCred {
-		return Resolved{}, fmt.Errorf("%w; set %s_API_KEY, pass --api-key, or run `zut` and /login",
-			credErr, envVarName(provName))
-	}
-
-	timer.phase("resolve: model selection", "model", model)
+func resolveToolRegistry(args Args, cfg config.Config) (*tools.Sandbox, core.Registry) {
 	sandbox := tools.NewSandbox(args.CWD)
 	if cfg.JailByDefault != nil && *cfg.JailByDefault {
 		sandbox.Lock()
@@ -889,11 +1004,10 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	addMCPTools(reg, args, codemodeToolAllowed(args, cfg) && cfg.CodemodeDeferMCP())
 	maybeAddCodemodeTool(reg, args, args.CWD, sandbox, cfg)
 	maybeAddAdvisorTool(reg, args, cfg)
-	timer.phase("resolve: tool registry", "tools", len(reg))
+	return sandbox, reg
+}
 
-	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
-	timer.phase("resolve: zut docs install")
-
+func discoverSkills(args Args, reg core.Registry) ([]*skills.Skill, *skills.Tool, string, bool) {
 	// Skill discovery: scan project + global locations + built-in
 	// skills shipped with the binary. If any are found, register
 	// the on-demand `skill` loader tool plus a system-prompt
@@ -911,23 +1025,17 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	if !args.NoSkill {
 		skillsEnabled = true
 		homeDir, _ := os.UserHomeDir()
-		discovered, _ = skills.Discover(ZutHome(), args.CWD, homeDir, args.WithSkills, args.ExtraSkillDirs...)
+		discovered, _ = skills.Discover(config.ZutHome(), args.CWD, homeDir, args.WithSkills, args.ExtraSkillDirs...)
 		if len(discovered) > 0 {
 			skillTool = skills.NewTool(discovered)
 			reg[skillTool.Name()] = skillTool
 			skillAddendum = skills.SystemPromptAddendum(discovered)
 		}
 	}
-	_ = skillTool
-	timer.phase("resolve: skills discovery", "skills", len(discovered))
+	return discovered, skillTool, skillAddendum, skillsEnabled
+}
 
-	summaries := toolSummaries(reg, args)
-
-	contextFiles := []ContextFile(nil)
-	if !args.NoContextFiles {
-		contextFiles = loadAgentsContext(args.CWD, ZutHome())
-	}
-	timer.phase("resolve: AGENTS.md load", "files", len(contextFiles))
+func systemPromptAppend(args Args, cfg config.Config, reg core.Registry, contextFiles []ContextFile, skillAddendum string) []string {
 	append_ := []string(nil)
 	append_ = append(append_, args.AppendSystemPrompt...)
 	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
@@ -964,35 +1072,10 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 	} else if primaryInteractive && autoSubagentsAnyToolAllowed(args) {
 		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
-	// Custom system prompt resolution order:
-	//   1. --system-prompt flag (highest priority; ad-hoc per run)
-	//   2. $ZUT_HOME/SYSTEM.md (persistent user override)
-	//   3. built-in default (defaultIdentity + defaultGuidelines)
-	custom := args.SystemPrompt
-	if custom == "" {
-		custom = readUserSystemPrompt(ZutHome())
-	}
+	return append_
+}
 
-	sys := BuildSystemPrompt(SystemPromptOpts{
-		CWD:        args.CWD,
-		Tools:      summaries,
-		Custom:     custom,
-		Append:     append_,
-		ZutDocsDir: docsDir,
-	})
-	timer.phase("resolve: system prompt build")
-
-	reasoning := provider.NormalizeReasoning(firstNonEmpty(args.Reasoning, cfg.Reasoning))
-	temperature := args.Temperature
-	if temperature == nil {
-		temperature = cfg.Temperature
-	}
-	fastMode := cfg.FastMode != nil && *cfg.FastMode
-	if args.FastModeSet {
-		fastMode = args.FastMode
-	}
-	max := args.MaxSteps // 0 = unlimited
-
+func opencodeModelCatalog(provName, model string, args Args, resolvedModel provider.Model) []provider.Model {
 	var modelCatalog []provider.Model
 	if provName == provider.ProviderOpenCodeGo && args.modelCatalog != nil {
 		modelCatalog = append([]provider.Model{}, args.modelCatalog...)
@@ -1007,41 +1090,7 @@ func resolve(args Args, requireCred bool, timer *startupTimer) (Resolved, error)
 			modelCatalog = append(modelCatalog, resolvedModel)
 		}
 	}
-
-	return Resolved{
-		Provider:                  provName,
-		Model:                     model,
-		Credential:                cred,
-		AuthMethod:                method,
-		AccountID:                 accountID,
-		BaseURL:                   args.BaseURL,
-		InsecureTLS:               insecureTLS,
-		CWD:                       args.CWD,
-		Reasoning:                 reasoning,
-		Temperature:               temperature,
-		FastMode:                  fastMode,
-		WebSearchPolicy:           webSearchPolicy,
-		ToolRegistry:              reg,
-		ToolSummary:               summaries,
-		SystemPrompt:              sys,
-		MaxSteps:                  max,
-		DisableRepetitionGuard:    args.DisableRepetitionGuard,
-		ContextWindow:             resolvedModel.ContextWindow,
-		MaxOutput:                 resolvedModel.MaxOutput,
-		modelCatalog:              modelCatalog,
-		modelCatalogAuthoritative: args.modelCatalogAuthoritative,
-		customProviderConfig:      customProviderConfig,
-		credentialOptional:        credentialOptional,
-		Sandbox:                   sandbox,
-		SkillTool:                 skillTool,
-		skillsEnabled:             skillsEnabled,
-		ContextFiles:              contextFiles,
-		systemAppend:              append_,
-		systemCustom:              custom,
-		skillAddendum:             skillAddendum,
-		toolDescriptions:          descMapFromSummaries(summaries),
-		advisorSettings:           cfg.AdvisorSettings(),
-	}, nil
+	return modelCatalog
 }
 
 // readUserSystemPrompt looks for $ZUT_HOME/SYSTEM.md and returns its
@@ -1419,7 +1468,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"bash":  &tools.BashTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		"worktree": &tools.WorktreeTool{
-			Create: &tools.CreateWorktreeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, DefaultRoot: filepath.Join(ZutHome(), "worktrees")},
+			Create: &tools.CreateWorktreeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, DefaultRoot: filepath.Join(config.ZutHome(), "worktrees")},
 			Manage: &tools.ManageWorktreesTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
 		},
 		"grep":              &tools.GrepTool{CWD: cwd, Env: args.Env, Sandbox: sandbox},
@@ -1513,11 +1562,11 @@ func maybeAddPythonTool(reg core.Registry, args Args, cwd string, sandbox *tools
 
 // maybeAddCodemodeTool adds the opt-in bridge only to unrestricted main
 // sessions. Interpreter discovery remains lazy, as with the python tool.
-func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *tools.Sandbox, cfg Config) bool {
+func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *tools.Sandbox, cfg config.Config) bool {
 	if reg == nil || !codemodeToolAllowed(args, cfg) {
 		return false
 	}
-	cm := &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter, SnippetHome: ZutHome}
+	cm := &tools.CodemodeTool{CWD: cwd, Env: args.Env, Sandbox: sandbox, Interpreter: cfg.PythonInterpreter, SnippetHome: config.ZutHome}
 	if args.mcpManager != nil && mcpAllowed(args) {
 		cm.MCPServers = func() map[string]int {
 			counts := map[string]int{}
@@ -1539,7 +1588,7 @@ func maybeAddCodemodeTool(reg core.Registry, args Args, cwd string, sandbox *too
 	return true
 }
 
-func codemodeToolAllowed(args Args, cfg Config) bool {
+func codemodeToolAllowed(args Args, cfg config.Config) bool {
 	if !cfg.CodemodeEnabled() || args.NoTools || args.PermissionSet != nil ||
 		args.ResidentChild || args.Orchestrate || args.AgentName != "" || args.zutfile != nil {
 		return false

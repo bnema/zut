@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/skills"
 )
 
@@ -38,7 +39,7 @@ func userSkillSnapshot(args Args, cwd string, bundled []*skills.Skill) []*skills
 		return nil
 	}
 	userHome, _ := os.UserHomeDir()
-	list, _ := skills.Discover(ZutHome(), cwd, userHome, args.WithSkills, args.ExtraSkillDirs...)
+	list, _ := skills.Discover(config.ZutHome(), cwd, userHome, args.WithSkills, args.ExtraSkillDirs...)
 	list = mergeExtensionSkills(skills.NewTool(list), bundled)
 	return skills.VisibleSkills(list)
 }
@@ -91,7 +92,7 @@ func normalizePinNames(names []string) []string {
 
 func readSkillPins() (skillPinsFile, error) {
 	var pins skillPinsFile
-	data, err := os.ReadFile(filepath.Join(ZutHome(), skillPinsFileName))
+	data, err := os.ReadFile(filepath.Join(config.ZutHome(), skillPinsFileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return pins, nil
 	}
@@ -158,7 +159,7 @@ func toggleSkillPin(cwd, name string, global bool) error {
 	// A symlinked preferences file is read-only: renaming over it would
 	// silently replace the link, and writing through it would modify a file
 	// zut does not own. Loading may still follow it.
-	path := filepath.Join(ZutHome(), skillPinsFileName)
+	path := filepath.Join(config.ZutHome(), skillPinsFileName)
 	if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symbolic link; skill pins can be read from it but not saved (replace it with a regular file to change pins)", skillPinsFileName)
 	}

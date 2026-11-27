@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/auth"
 )
@@ -56,7 +57,7 @@ func newModelsServer(t *testing.T, requests *atomic.Int32, wantAuth string, ids 
 
 func TestCustomDiscoveryKeepsTLSVerificationWithInsecureInference(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())
-	if err := SaveConfig(Config{Insecure: true}); err != nil {
+	if err := config.Save(config.Config{Insecure: true}); err != nil {
 		t.Fatal(err)
 	}
 	client := customDiscoveryHTTPClient()
@@ -180,7 +181,7 @@ func TestRefreshCustomProviderModelsBackgroundSkipsKeyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+	if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshCustomProviderModels(context.Background(), apiKeyCommandSkip); err != nil {
@@ -233,22 +234,22 @@ func TestValidateAndRepairConfig_PreservesDiscoverableCustomModel(t *testing.T) 
 		"m4": {"baseUrl": "http://127.0.0.1:1/v1", "discover": true},
 		"m5": {"baseUrl": "http://127.0.0.1:1/v1", "models": [{"id": "pinned"}]}
 	}}`)
-	write := func(c Config) {
+	write := func(c config.Config) {
 		t.Helper()
 		b, _ := json.Marshal(c)
 		if err := os.WriteFile(filepath.Join(home, "config.json"), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write(Config{Provider: "m4", Model: "qwen3-coder"})
+	write(config.Config{Provider: "m4", Model: "qwen3-coder"})
 	ValidateAndRepairConfig()
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "m4" || out.Model != "qwen3-coder" {
 		t.Fatalf("discoverable custom model repaired away: %+v", out)
 	}
-	write(Config{Provider: "m5", Model: "gone"})
+	write(config.Config{Provider: "m5", Model: "gone"})
 	ValidateAndRepairConfig()
-	out, _ = LoadConfig()
+	out, _ = config.Load()
 	if out.Provider != "m5" || out.Model != "pinned" {
 		t.Fatalf("non-discoverable custom model not repaired: %+v", out)
 	}
@@ -344,7 +345,7 @@ func TestCustomProviderExplicitKeylessIgnoresInheritedKeys(t *testing.T) {
 				"unsloth": {APIKeyCommand: &auth.APIKeyCommand{Program: "/bin/sh", Args: []string{"-c", "touch " + marker + "; echo secret"}}},
 			}}
 			encoded, _ := json.Marshal(creds)
-			if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+			if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			r, err := Resolve(Args{Provider: "unsloth", Model: "qista", APIKey: "cli-key", NoSkill: true}, true)
@@ -445,7 +446,7 @@ func TestResolveUnknownModelRefreshesOnlySelectedCustomProvider(t *testing.T) {
 		"m5": {APIKeyCommand: &auth.APIKeyCommand{Program: "/bin/sh", Args: []string{"-c", "touch " + marker + "; echo secret"}}},
 	}}
 	encoded, _ := json.Marshal(creds)
-	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+	if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

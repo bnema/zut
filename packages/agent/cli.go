@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
 	"github.com/bnema/zut/packages/agent/modes"
@@ -99,7 +100,7 @@ func newPersistModelCallback(persistMu *sync.Mutex, sess **core.Session, activeP
 			return
 		}
 
-		if err := updateConfig(func(cfg *Config) error {
+		if err := config.Update(func(cfg *config.Config) error {
 			cfg.Provider = providerName
 			cfg.Model = model
 			return nil
@@ -771,7 +772,7 @@ func defaultSessionLocator() sessionLocator {
 	return sessionLocator{
 		latest: core.LatestSession,
 		findByID: func(ctx context.Context, id string) (string, error) {
-			return core.FindManagedSessionByID(ctx, ZutHome(), id)
+			return core.FindManagedSessionByID(ctx, config.ZutHome(), id)
 		},
 		pick:  pickSession,
 		prune: core.PruneEmptySessions,
@@ -788,7 +789,7 @@ func buildCreateSpec(ctx context.Context, args Args, rawArgs []string, cwd strin
 	if args.NoSess {
 		return spec, nil
 	}
-	root := agentSessionsRoot(ZutHome(), args)
+	root := agentSessionsRoot(config.ZutHome(), args)
 	// Explicit paths and UUIDs may identify empty sessions; keep them.
 	if args.ResumeSessionID == "" && args.Session == "" && loc.prune != nil {
 		loc.prune(root, args.CWD)

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/daemon"
 	"github.com/bnema/zut/packages/agent/daemonproto"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
@@ -62,7 +63,7 @@ func runBotCommand(rawArgs []string, version string) (handled bool, err error) {
 // botStart asks the daemon (spawned when absent) to run the bot service in
 // one headless session created with this cwd, environment and flags.
 func botStart(spec *botSpec, rawTail []string, version string) error {
-	if ok, cerr := spec.configured(ZutHome()); cerr != nil {
+	if ok, cerr := spec.configured(config.ZutHome()); cerr != nil {
 		return cerr
 	} else if !ok {
 		return fmt.Errorf("%s is not configured — run `zut %s setup` first", spec.name, spec.subcommand)
@@ -138,7 +139,7 @@ func botLogs(spec *botSpec, rawTail []string) error {
 			follow = true
 		}
 	}
-	p := daemon.LogPath(ZutHome())
+	p := daemon.LogPath(config.ZutHome())
 	f, err := os.Open(p)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Println("no log file at", p)
@@ -270,7 +271,7 @@ func readBotToken(in *os.File, out io.Writer) (string, error) {
 // telegramBotSetup interactively reads a bot token without echoing it on a
 // terminal, verifies it via getMe, and saves it.
 func telegramBotSetup(_ []string) error {
-	cfg, err := telegram.LoadConfig(ZutHome())
+	cfg, err := telegram.LoadConfig(config.ZutHome())
 	if err != nil {
 		return err
 	}
@@ -296,10 +297,10 @@ func telegramBotSetup(_ []string) error {
 	// Any stored pairing might be for a different bot; clear it.
 	cfg.AllowedUserID = 0
 	cfg.LastUpdateID = 0
-	if err := telegram.SaveConfig(ZutHome(), cfg); err != nil {
+	if err := telegram.SaveConfig(config.ZutHome(), cfg); err != nil {
 		return err
 	}
-	fmt.Printf("\nsaved: @%s (id=%d) to %s\n", me.Username, me.ID, telegram.ConfigPath(ZutHome()))
+	fmt.Printf("\nsaved: @%s (id=%d) to %s\n", me.Username, me.ID, telegram.ConfigPath(config.ZutHome()))
 	fmt.Println("next: run `zut telegram-bot start`, then send /start to your bot from telegram.")
 	return nil
 }
@@ -307,7 +308,7 @@ func telegramBotSetup(_ []string) error {
 // telegramBotStatus prints the bot config without the token, plus whether
 // the daemon runs the bot service or a session bridge.
 func telegramBotStatus(w io.Writer, version string) error {
-	cfg, err := telegram.LoadConfig(ZutHome())
+	cfg, err := telegram.LoadConfig(config.ZutHome())
 	if err != nil {
 		return err
 	}
@@ -323,7 +324,7 @@ func telegramBotStatus(w io.Writer, version string) error {
 		fmt.Fprintf(w, "paired with:  telegram user id %d\n", cfg.AllowedUserID)
 	}
 	fmt.Fprintf(w, "last update:  %d\n", cfg.LastUpdateID)
-	fmt.Fprintf(w, "config file:  %s\n", telegram.ConfigPath(ZutHome()))
+	fmt.Fprintf(w, "config file:  %s\n", telegram.ConfigPath(config.ZutHome()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), botRequestTimeout)
 	defer cancel()
@@ -360,7 +361,7 @@ func writeBotServiceStatus(w io.Writer, st daemonproto.BotStatusData) {
 
 // telegramBotReset wipes the on-disk bot.json entry.
 func telegramBotReset() error {
-	p := telegram.ConfigPath(ZutHome())
+	p := telegram.ConfigPath(config.ZutHome())
 	if _, err := os.Stat(p); os.IsNotExist(err) {
 		fmt.Println("no bot config to reset")
 		return nil

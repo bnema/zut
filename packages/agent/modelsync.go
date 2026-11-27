@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 )
 
@@ -22,12 +23,12 @@ var (
 
 // ModelCachePath returns the on-disk location of the merged model cache.
 func ModelCachePath() string {
-	return filepath.Join(ZutHome(), "models-cache.json")
+	return filepath.Join(config.ZutHome(), "models-cache.json")
 }
 
 // UserModelsPath returns the path to the user's models.json override.
 func UserModelsPath() string {
-	return filepath.Join(ZutHome(), "models.json")
+	return filepath.Join(config.ZutHome(), "models.json")
 }
 
 // LoadCachedModels loads the cache file and applies it to the provider
@@ -283,9 +284,9 @@ func isGatewayRoutedModelID(model string) bool {
 // Silent on success; one stderr line per repair. Errors loading or
 // saving the file are non-fatal — the caller continues with defaults.
 func ValidateAndRepairConfig() {
-	err := updateConfig(func(c *Config) error {
+	err := config.Update(func(c *config.Config) error {
 		if !repairConfigModel(c) {
-			return errConfigUnchanged
+			return config.ErrUnchanged
 		}
 		return nil
 	})
@@ -296,7 +297,7 @@ func ValidateAndRepairConfig() {
 
 // repairConfigModel fixes an unknown provider or model in cfg and reports
 // whether anything changed.
-func repairConfigModel(cfg *Config) bool {
+func repairConfigModel(cfg *config.Config) bool {
 	changed := false
 
 	if cfg.Provider != "" && !isKnownProvider(cfg.Provider) {

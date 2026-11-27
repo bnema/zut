@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/bnema/zut/packages/core"
@@ -111,7 +112,7 @@ func TestAttachNoDaemon(t *testing.T) {
 func TestDaemonSessionClientResumeStoredSession(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	t.Setenv("OPENAI_API_KEY", "test-resume-key")
-	require.NoError(t, SaveConfig(Config{Provider: "openai", Model: "gpt-5"}))
+	require.NoError(t, config.Save(config.Config{Provider: "openai", Model: "gpt-5"}))
 	cwd := t.TempDir()
 	stored, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
 	require.NoError(t, err)
@@ -135,7 +136,7 @@ func TestDaemonSessionClientResumeStoredSession(t *testing.T) {
 func TestDaemonShortIDResumeLookup(t *testing.T) {
 	home := sessionAssemblyEnv(t)
 	t.Setenv("OPENAI_API_KEY", "test-resume-key")
-	require.NoError(t, SaveConfig(Config{Provider: "openai", Model: "gpt-5"}))
+	require.NoError(t, config.Save(config.Config{Provider: "openai", Model: "gpt-5"}))
 	cwd := t.TempDir()
 	stored, err := core.NewSession(home, cwd, "openai", "gpt-5", "test")
 	require.NoError(t, err)
@@ -452,8 +453,8 @@ func TestTUIClientConfigSessionNamespace(t *testing.T) {
 	require.Empty(t, cfg.SessionsRoot, "attach falls back to ZutHome")
 
 	cfg = tuiClientConfig(&bytes.Buffer{}, &session.CreateSpec{})
-	require.Equal(t, ZutHome(), cfg.SessionsRoot)
+	require.Equal(t, config.ZutHome(), cfg.SessionsRoot)
 
 	cfg = tuiClientConfig(&bytes.Buffer{}, &session.CreateSpec{Zutfile: &session.ZutfileSpec{Name: "helper"}})
-	require.Equal(t, agentSessionsRoot(ZutHome(), Args{AgentName: "helper"}), cfg.SessionsRoot)
+	require.Equal(t, agentSessionsRoot(config.ZutHome(), Args{AgentName: "helper"}), cfg.SessionsRoot)
 }

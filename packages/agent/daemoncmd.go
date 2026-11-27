@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/daemon"
 	"github.com/bnema/zut/packages/agent/daemonclient"
 	"github.com/bnema/zut/packages/agent/internal/flock"
@@ -106,7 +107,7 @@ func daemonRun(args []string, version string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("zut daemon run: unexpected arguments %v", fs.Args())
 	}
-	home := ZutHome()
+	home := config.ZutHome()
 	t := time.Now()
 	logger, logCloser, err := daemon.OpenLog(home, stderrUnlessLog(home))
 	if err != nil {
@@ -252,7 +253,7 @@ func daemonStatus(w io.Writer, version string) error {
 	defer cancel()
 	c, err := daemonClient(ctx, version)
 	if err != nil {
-		state, serr := probeDaemonState(err, ZutHome())
+		state, serr := probeDaemonState(err, config.ZutHome())
 		if serr != nil {
 			return serr
 		}
@@ -337,14 +338,14 @@ func stopDaemon(version string) (bool, error) {
 	err := daemonclient.StopAnyVersion(ctx, daemonclient.SocketPath(os.Getenv), daemonclient.Options{ClientVersion: version, ClientKind: "cli"}, daemonStopGrace)
 	if err != nil {
 		if errors.Is(err, daemonclient.ErrProtocolMismatch) {
-			return stopIncompatibleDaemon(ctx, ZutHome(), os.Stderr)
+			return stopIncompatibleDaemon(ctx, config.ZutHome(), os.Stderr)
 		}
-		if running, rerr := daemonNotRunning(err, ZutHome()); !running {
+		if running, rerr := daemonNotRunning(err, config.ZutHome()); !running {
 			return false, rerr
 		}
 		return false, nil
 	}
-	return true, waitDaemonLockFree(ctx, ZutHome())
+	return true, waitDaemonLockFree(ctx, config.ZutHome())
 }
 
 // stopIncompatibleDaemon uses the PID only while the daemon lock is busy.
@@ -469,7 +470,7 @@ func daemonLogsCommand(w io.Writer, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return daemonLogs(ctx, w, daemon.LogPath(ZutHome()), *follow)
+	return daemonLogs(ctx, w, daemon.LogPath(config.ZutHome()), *follow)
 }
 
 // daemonLogs copies the log to w; with follow it then polls the file size

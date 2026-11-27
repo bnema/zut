@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/bnema/zut/packages/agent/config"
 )
 
 // runUpdateCommand dispatches `zut update`. Returns (handled=true, err)
@@ -231,7 +233,7 @@ func runUpdateWithRestart(version string, restart bool) error {
 	// Best-effort: also refresh installed extensions that live in
 	// git checkouts. Failures here are advisory and never abort the
 	// overall update — the binary swap already succeeded.
-	updateAllExtensions(ZutHome())
+	updateAllExtensions(config.ZutHome())
 
 	return updateDaemonAfterInstall(os.Stdout, latest, restart, updateDaemonProbe, daemonRestart)
 }

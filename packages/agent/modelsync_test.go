@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/provider"
 	"github.com/bnema/zut/packages/provider/auth"
 )
@@ -222,18 +223,18 @@ func TestValidateAndRepairConfig_MismatchedPair(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	must := func(c Config) {
+	must := func(c config.Config) {
 		t.Helper()
 		b, _ := json.Marshal(c)
 		if err := os.WriteFile(filepath.Join(home, "config.json"), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	must(Config{Provider: "anthropic", Model: "kimi-for-coding"})
+	must(config.Config{Provider: "anthropic", Model: "kimi-for-coding"})
 
 	ValidateAndRepairConfig()
 
-	out, err := LoadConfig()
+	out, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,12 +256,12 @@ func TestValidateAndRepairConfig_UnknownProvider(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	b, _ := json.Marshal(Config{Provider: "made-up-provider", Model: "some-model"})
+	b, _ := json.Marshal(config.Config{Provider: "made-up-provider", Model: "some-model"})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "anthropic" {
 		t.Errorf("provider not reset: %q", out.Provider)
 	}
@@ -276,12 +277,12 @@ func TestValidateAndRepairConfig_UnknownModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	b, _ := json.Marshal(Config{Provider: "anthropic", Model: "claude-deleted-model"})
+	b, _ := json.Marshal(config.Config{Provider: "anthropic", Model: "claude-deleted-model"})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "anthropic" {
 		t.Errorf("provider changed: %q", out.Provider)
 	}
@@ -295,14 +296,14 @@ func TestValidateAndRepairConfig_OpenCodeGoPreservesDynamicModel(t *testing.T) {
 	t.Setenv("ZUT_HOME", home)
 
 	const model = "muse-spark-1.2-contributor"
-	b, _ := json.Marshal(Config{Provider: "opencode-go", Model: model})
+	b, _ := json.Marshal(config.Config{Provider: "opencode-go", Model: model})
 	if err := os.WriteFile(filepath.Join(home, "config.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	ValidateAndRepairConfig()
 
-	out, err := LoadConfig()
+	out, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +405,7 @@ func TestValidateAndRepairConfigPreservesPaddedDynamicModel(t *testing.T) {
 
 	ValidateAndRepairConfig()
 
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +485,7 @@ func TestSynchronousOpenCodeGoAPIKeyHonorsCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+	if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -569,7 +570,7 @@ func TestSynchronousRefreshExecutesOpenCodeGoAPIKeyCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+	if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previous := discoverOpenCodeGoFn
@@ -618,7 +619,7 @@ func TestResolveSDKRefreshReusesResolvedCommandCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(AuthPath(), encoded, 0o600); err != nil {
+	if err := os.WriteFile(config.AuthPath(), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previous := discoverOpenCodeGoFn
@@ -917,11 +918,11 @@ func TestResolveSDKFollowsActiveModelProfile(t *testing.T) {
 				provider.SetUserModels(nil)
 			})
 
-			if err := SaveConfig(Config{
+			if err := config.Save(config.Config{
 				Provider:           tc.topProvider,
 				Model:              tc.topModel,
 				ActiveModelProfile: 1,
-				QuickModelShortcuts: []QuickModelShortcut{{
+				QuickModelShortcuts: []config.QuickModelShortcut{{
 					Provider: tc.profileProvider,
 					Model:    tc.profileModel,
 				}},
@@ -1064,12 +1065,12 @@ func TestValidateAndRepairConfig_DuplicateModelIDValidForConfiguredProvider(t *t
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	b, _ := json.Marshal(Config{Provider: "openai-codex", Model: "gpt-5.5"})
+	b, _ := json.Marshal(config.Config{Provider: "openai-codex", Model: "gpt-5.5"})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "openai-codex" {
 		t.Errorf("provider mutated: %q", out.Provider)
 	}
@@ -1083,12 +1084,12 @@ func TestValidateAndRepairConfig_OpenRouterPreservesRoutedModelID(t *testing.T) 
 	t.Setenv("ZUT_HOME", home)
 
 	want := "deepseek/deepseek-v4-flash"
-	b, _ := json.Marshal(Config{Provider: "openrouter", Model: want})
+	b, _ := json.Marshal(config.Config{Provider: "openrouter", Model: want})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "openrouter" {
 		t.Errorf("provider mutated: %q", out.Provider)
 	}
@@ -1101,12 +1102,12 @@ func TestValidateAndRepairConfig_GatewayPlainUnknownModelStillRepairs(t *testing
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	b, _ := json.Marshal(Config{Provider: "openrouter", Model: "not-a-routed-model"})
+	b, _ := json.Marshal(config.Config{Provider: "openrouter", Model: "not-a-routed-model"})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "openrouter" {
 		t.Errorf("provider mutated: %q", out.Provider)
 	}
@@ -1120,12 +1121,12 @@ func TestValidateAndRepairConfig_HappyPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
 
-	b, _ := json.Marshal(Config{Provider: "anthropic", Model: "claude-sonnet-4-5"})
+	b, _ := json.Marshal(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-5"})
 	_ = os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
 
 	ValidateAndRepairConfig()
 
-	out, _ := LoadConfig()
+	out, _ := config.Load()
 	if out.Provider != "anthropic" {
 		t.Errorf("provider mutated: %q", out.Provider)
 	}

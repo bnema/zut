@@ -3,22 +3,21 @@ package agent
 import (
 	"context"
 	"os"
-	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/config"
 	"github.com/bnema/zut/packages/agent/session"
 	"github.com/stretchr/testify/require"
 )
 
 func TestModelProfileStoreNonDefaultSaveKeepsActive(t *testing.T) {
 	sessionAssemblyEnv(t)
-	require.NoError(t, SaveConfig(Config{ActiveModelProfile: 2, QuickModelShortcuts: []QuickModelShortcut{{}, {Provider: "openai", Model: "gpt-5"}}}))
+	require.NoError(t, config.Save(config.Config{ActiveModelProfile: 2, QuickModelShortcuts: []config.QuickModelShortcut{{}, {Provider: "openai", Model: "gpt-5"}}}))
 	s := &modelProfileStore{}
 	require.NoError(t, s.Save(4, session.QuickModelShortcut{Provider: "openai", Model: "gpt-5-mini"}, false))
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Equal(t, 2, cfg.ActiveModelProfile)
 	require.Equal(t, "gpt-5-mini", cfg.QuickModelShortcuts[3].Model)
@@ -29,7 +28,7 @@ func TestModelProfileStoreMakeDefaultWritesDefaults(t *testing.T) {
 	sessionAssemblyEnv(t)
 	s := &modelProfileStore{}
 	require.NoError(t, s.Save(3, session.QuickModelShortcut{Provider: "openai", Model: "gpt-5", Reasoning: "high", FastMode: true}, true))
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Equal(t, 3, cfg.ActiveModelProfile)
 	require.Equal(t, "openai", cfg.Provider)
@@ -45,7 +44,7 @@ func TestModelProfileStoreClearConfigActiveZeroes(t *testing.T) {
 	s := &modelProfileStore{}
 	require.NoError(t, s.Save(2, session.QuickModelShortcut{Provider: "openai", Model: "gpt-5"}, true))
 	require.NoError(t, s.Save(2, session.QuickModelShortcut{}, false))
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
 	require.Empty(t, cfg.QuickModelShortcuts)
@@ -64,7 +63,7 @@ func TestModelProfileStoreConcurrentSaves(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Len(t, cfg.QuickModelShortcuts, 9)
 	for _, p := range cfg.QuickModelShortcuts {
@@ -102,7 +101,7 @@ waitInfo:
 			t.Fatal("profile info event not received: ", ctx.Err())
 		}
 	}
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Equal(t, 0, cfg.ActiveModelProfile)
 }
@@ -112,10 +111,10 @@ func TestNewSessionsStartWithoutDefaultSlot(t *testing.T) {
 	s := &modelProfileStore{}
 	require.NoError(t, s.Reload())
 	require.Equal(t, 0, s.ActiveDefault())
-	require.NoError(t, SaveConfig(Config{ActiveModelProfile: 12}))
+	require.NoError(t, config.Save(config.Config{ActiveModelProfile: 12}))
 	require.NoError(t, s.Reload())
 	require.Equal(t, 0, s.ActiveDefault())
-	require.NoError(t, SaveConfig(Config{ActiveModelProfile: 4}))
+	require.NoError(t, config.Save(config.Config{ActiveModelProfile: 4}))
 	require.NoError(t, s.Reload())
 	require.Equal(t, 4, s.ActiveDefault())
 }
@@ -148,7 +147,7 @@ func TestConcurrentProfileAndSettingsWritesKeepAllUpdates(t *testing.T) {
 	go func() { defer wg.Done(); require.NoError(t, store.SetAutoSubagents(true)) }()
 	go func() { defer wg.Done(); require.NoError(t, store.SetJailByDefault(true)) }()
 	wg.Wait()
-	cfg, err := LoadConfig()
+	cfg, err := config.Load()
 	require.NoError(t, err)
 	require.Len(t, cfg.QuickModelShortcuts, 9)
 	for i, p := range cfg.QuickModelShortcuts {
@@ -159,46 +158,6 @@ func TestConcurrentProfileAndSettingsWritesKeepAllUpdates(t *testing.T) {
 	require.Equal(t, "high", cfg.Reasoning)
 	require.True(t, *cfg.AutoSubagentsEnabled)
 	require.True(t, *cfg.JailByDefault)
-}
-
-func TestSaveConfigAtomicReplace(t *testing.T) {
-	home := sessionAssemblyEnv(t)
-	big := Config{QuickModelShortcuts: make([]QuickModelShortcut, 9)}
-	for i := range big.QuickModelShortcuts {
-		big.QuickModelShortcuts[i] = QuickModelShortcut{Provider: "openai", Model: strings.Repeat("m", 4096)}
-	}
-	require.NoError(t, SaveConfig(big))
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			_, err := LoadConfig()
-			require.NoError(t, err, "reader saw a partial config.json")
-		}
-	}()
-	for n := 0; n < 50; n++ {
-		require.NoError(t, SaveConfig(big))
-		require.NoError(t, SaveConfig(Config{Model: "small"}))
-	}
-	close(done)
-	wg.Wait()
-	info, err := os.Stat(ConfigPath())
-	require.NoError(t, err)
-	if runtime.GOOS != "windows" {
-		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	}
-	entries, err := os.ReadDir(home)
-	require.NoError(t, err)
-	for _, e := range entries {
-		require.False(t, strings.Contains(e.Name(), ".tmp-"), "leftover temp file %s", e.Name())
-	}
 }
 
 func TestProfileFanoutDrainsOnShutdown(t *testing.T) {
