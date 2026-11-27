@@ -141,7 +141,8 @@ func newResidentChildRunner(args Args, spec subagents.ResidentChildSpec, journal
 		// Journals written before root cache identity was persisted can still
 		// resume safely: their immediate parent was the only available root.
 		rootCacheID = strings.TrimSpace(spec.ParentSessionID)
-		if rootCacheID == "" {
+		// Runtime scopes isolate management, not provider cache affinity.
+		if rootCacheID == "" || strings.HasPrefix(rootCacheID, residentRuntimeScopePrefix) {
 			rootCacheID = spec.SessionID
 		}
 	}

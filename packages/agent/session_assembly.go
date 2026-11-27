@@ -388,9 +388,7 @@ func (a *sessionAssembly) openSession(ctx, life context.Context, spec session.Cr
 	a.wireAgentPersist(ag)
 	a.next = ag
 	announceSession(a.extMgr, a.sess)
-	if a.sess != nil {
-		a.runtime.SetActiveSession(a.sess.ID)
-	}
+	a.runtime.SetActiveSession(ctx, a.sess)
 	return nil
 }
 
@@ -903,6 +901,7 @@ func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 		return err
 	}
 	a.wireAgentPersist(candidate.agent)
+	scope := residentSessionScope(context.Background(), config.ZutHome(), candidate.session)
 
 	a.mu.Lock()
 	newStates := copyExtensionStates(candidate.session.ExtensionState)
@@ -928,7 +927,7 @@ func (s sessionFileStore) LoadSession(path string) (loadErr error) {
 	a.live, a.next = candidate.agent, candidate.agent
 	a.provider, a.model = candidate.provider, candidate.model
 	a.planSnaps = candidate.planSnapshots
-	a.runtime.SetActiveSession(candidate.session.ID)
+	a.runtime.setActiveSessionScope(scope)
 	committed = true
 	a.mu.Unlock()
 	if candidate.agent != current {
@@ -1086,8 +1085,8 @@ func (s sessionFileStore) ChangeCWD(path string) error {
 	a.next = newAg
 	a.mu.Unlock()
 	closeAgentLSP(current)
+	a.runtime.SetActiveSession(context.Background(), newSess)
 	if newSess != nil {
-		a.runtime.SetActiveSession(newSess.ID)
 		a.extMgr.EmitSessionEvent("session_opened", sessionContext(newSess), newStates)
 	}
 	if oldCloseErr != nil {

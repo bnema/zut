@@ -374,3 +374,42 @@ func createPruneTestSession(t *testing.T, root, cwd string) string {
 	}
 	return session.Path
 }
+
+func TestSessionsPruneConfirmationAcceptsUnterminatedAnswer(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantDeleted bool
+	}{
+		{name: "unterminated y at EOF", input: "y", wantDeleted: true},
+		{name: "unterminated yes at EOF", input: "yes", wantDeleted: true},
+		{name: "terminated y", input: "y\n", wantDeleted: true},
+		{name: "empty input", input: ""},
+		{name: "terminated n", input: "n\n"},
+		{name: "unterminated n at EOF", input: "n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := createPruneTestSession(t, root, filepath.Join(root, "gone"))
+
+			var out, errOut bytes.Buffer
+			if err := runSessionsPrune(root, sessionsPruneOptions{all: true}, strings.NewReader(tt.input), &out, &errOut, os.Stat); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Stat(path)
+			if tt.wantDeleted {
+				if !os.IsNotExist(err) || !strings.Contains(out.String(), "deleted 1 session from 1 directory") {
+					t.Fatalf("confirmed prune kept the session: %v / %q", err, out.String())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("declined prune removed the session: %v", err)
+			}
+			if !strings.Contains(out.String(), "no sessions deleted") {
+				t.Fatalf("output = %q, want declined message", out.String())
+			}
+		})
+	}
+}

@@ -624,12 +624,13 @@ func Run(rawArgs []string, version string) error {
 	// request. Standard proxy environment variables retain precedence.
 	applyConfiguredHTTPProxy()
 
-	// Extension installs can invoke external build and clone processes.
+	// Extension installs can invoke external processes; prune needs to stop
+	// safely on interruption.
 	// Give those processes a cancellation context without changing signal
 	// handling for the interactive modes below.
 	extCtx := context.Background()
 	stopExtContext := func() {}
-	if len(rawArgs) > 0 && (rawArgs[0] == "ext" || rawArgs[0] == "mcp") {
+	if len(rawArgs) > 0 && (rawArgs[0] == "ext" || rawArgs[0] == "mcp" || rawArgs[0] == "subagents") {
 		extCtx, stopExtContext = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	}
 	defer stopExtContext()
@@ -663,6 +664,9 @@ func Run(rawArgs []string, version string) error {
 		return err
 	}
 	if handled, err := runSessionsCommand(rawArgs); handled {
+		return err
+	}
+	if handled, err := runSubagentsCommand(extCtx, rawArgs); handled {
 		return err
 	}
 	if handled, err := runZutfileCommand(rawArgs, version); handled {

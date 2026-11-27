@@ -803,6 +803,9 @@ zut sessions prune --older-than 30d --all --yes      # delete without prompting
 
 `--all` selects every match but still confirms; `--yes` requires `--all` and skips prompts. Malformed, unreadable, and symlinked entries are reported and preserved. Scans cover `$ZUT_HOME/sessions/`, including named-agent namespaces, not explicit session files elsewhere.
 
+To preview cleanup of old resident subagent journals, run `zut subagents prune --dry-run`.
+See [pruning stored subagents](docs/subagents.md#pruning-stored-subagents) for age and safety rules.
+
 ## Daemon and sessions
 
 A local daemon owns sessions. `zut`, `zut -p`, `--stream`, `--json`, `zut rpc`, and Telegram create or attach as clients. The first client auto-starts detached `zut daemon run`, printing `Starting zut daemon…` then `zut daemon ready (1.2s)` on stderr. An existing daemon produces no startup message.

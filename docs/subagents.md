@@ -246,9 +246,18 @@ all of them.
     task until it reaches a terminal failure, cancellation, or interruption. It
     returns a logical `subagent://<id>` reference.
   - `status` accepts optional `agent_id` and `include_result`, and returns
-    bounded current state for one child or the current set immediately. With
-    `agent_id` and `include_result: true`, it also reads the saved terminal
-    result without model execution. Without this option it remains
+    current state for one child or lists the resident children of the current
+    session and its ancestors, plus children spawned by the current host even
+    after switching sessions. The list returns up to 20 children, with queued
+    and running children first. Within each group, children are ordered by
+    most recent update, with ties broken by ID. `total` is the in-scope count
+    before the cap; `truncated: true` appears only if entries were omitted.
+    Status, stop, resume, and interrupt treat IDs
+    outside that scope as not found, even when the full ID is supplied.
+    With `--no-session`, only children spawned by the current run are visible
+    or controllable. With `agent_id` and
+    `include_result: true`, it also reads the saved terminal result without
+    model execution. Without this option it remains
     metadata-only; foreign-owned results cannot be read. Result-read errors
     distinguish foreign ownership, a missing saved result, and permission
     denial without exposing filesystem paths or saved content.
@@ -382,3 +391,28 @@ An OpenAI-compatible wire shape is not itself evidence that a cache extension
 or transport feature is available. Models continue through their declared
 provider transport; a transport change must not change the logical session or
 turn identity used by the provider request.
+
+## Pruning stored subagents
+
+Preview cleanup with `zut subagents prune --dry-run`. The default age is `7d`;
+set `--older-than AGE` to change it. Run without `--dry-run` to confirm permanent
+removal. Confirmation reads a newline-terminated `y` or `yes` from stdin; EOF
+or an incomplete line declines. Scripts should use `-y` / `--yes` to skip
+the prompt. Preview counts candidates, not guaranteed deletions: ownership and
+eligibility are checked again under the child lease. No provider credentials
+are needed.
+Stop ALL zut processes using this ZUT_HOME (including standalone and older ones)
+and keep them stopped until prune finishes. The per-home daemon lock is a guard,
+not proof that the directory is offline. Dry-run does not take that lock.
+
+Prune keeps active or in-use children, recently modified or unresolved parent
+sessions (except runtime-only scopes), unsuccessful
+required children, worktrees, patches, and journals it cannot safely verify. It
+only unlinks known journal files; it preserves directories with unknown entries,
+including backups, and never recursively removes staged content. If Windows refuses a rename while the lease is held, the child
+is kept. Leftover `.prune-*` staging entries are reported for manual inspection.
+
+Journals missing `owner.lock` are left untouched and zut does not open them.
+To restore one manually, stop every zut process, check that the child's
+`transcript.jsonl` is complete, then create an empty regular `owner.lock` with
+mode `0600` in the child directory (for example `install -m 600 /dev/null owner.lock`).

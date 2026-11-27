@@ -800,7 +800,7 @@ func TestResidentManagerReconcileMakesInterruptedJournalDiscoverableWithoutRepla
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := ResidentChildSpec{ID: "recovered", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5", Required: true}
+	spec := ResidentChildSpec{ID: "recovered", ParentSessionID: "parent-session", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5", Required: true}
 	if err := journal.Accept(spec, "do not replay"); err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +822,7 @@ func TestResidentManagerReconcileMakesInterruptedJournalDiscoverableWithoutRepla
 		t.Fatalf("factory ran %d times during reconciliation", runs)
 	}
 	snapshots := manager.Snapshot()
-	if len(snapshots) != 1 || snapshots[0].State != ResidentInterrupted || !snapshots[0].Required {
+	if len(snapshots) != 1 || snapshots[0].State != ResidentInterrupted || !snapshots[0].Required || snapshots[0].ParentSessionID != spec.ParentSessionID {
 		t.Fatalf("snapshots = %#v", snapshots)
 	}
 	if _, err := manager.Spawn(context.Background(), spec, "overwrite"); err == nil {
@@ -837,7 +837,7 @@ func TestResidentManagerReconcileDoesNotMutateForeignProcessJournal(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		spec := ResidentChildSpec{ID: "foreign-process", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
+		spec := ResidentChildSpec{ID: "foreign-process", ParentSessionID: "foreign-parent", SessionID: "child-session", InitialTurnID: "turn-1", Provider: "openai", Model: "gpt-5"}
 		if err := journal.Accept(spec, "active task"); err != nil {
 			t.Fatal(err)
 		}
@@ -912,7 +912,7 @@ func TestResidentManagerReconcileDoesNotMutateForeignProcessJournal(t *testing.T
 		t.Fatal("foreign reconciliation modified the transcript")
 	}
 	snapshot, ok := observer.SnapshotFor("foreign-process")
-	if !ok || !snapshot.OwnedElsewhere || snapshot.State != ResidentRunning {
+	if !ok || !snapshot.OwnedElsewhere || snapshot.State != ResidentRunning || snapshot.ParentSessionID != "foreign-parent" {
 		t.Fatalf("foreign snapshot = %#v, found=%v", snapshot, ok)
 	}
 	if err := observer.Resume(context.Background(), "foreign-process", "follow up"); err == nil || !strings.Contains(err.Error(), "owned by another") {
@@ -1242,5 +1242,76 @@ func TestResidentManagerDoesNotQuarantineIOFailure(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, residentQuarantineName)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("I/O failure marker: %v", err)
 		}
+	}
+}
+
+func TestResidentMissingLeaseLeavesJournalUntouched(t *testing.T) {
+	root := t.TempDir()
+	id := oldResidentForPrune(t, root)
+	path := filepath.Join(root, id, residentLeaseName)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	m := NewResidentManager(root, nil)
+	errs := m.Reconcile()
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "missing owner.lock; journal left untouched") {
+		t.Fatalf("reconcile: %v", errs)
+	}
+	_, historyErr := m.History(id, 1)
+	_, resultErr := m.Result(id)
+	for _, err := range []error{historyErr, resultErr} {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected missing lease: %v", err)
+		}
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lease recreated: %v", err)
+	}
+}
+
+func TestResidentScopeKeepsSpawnedHereAfterForeignLease(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{}, 1)
+	manager := NewResidentManager(root, func(ResidentChildSpec, *ResidentJournal) (ResidentRuntime, error) {
+		return ResidentTurnRunner(func(ctx context.Context, _ string) error {
+			started <- struct{}{}
+			<-ctx.Done()
+			return ctx.Err()
+		}), nil
+	})
+	defer manager.Close(context.Background())
+	spec := ResidentChildSpec{ID: "handoff-child", SessionID: "child-session", ParentSessionID: "original-parent", Provider: "openai", Model: "gpt-5"}
+	if _, err := manager.Spawn(context.Background(), spec, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := manager.Stop(context.Background(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Another host takes the lease before this manager reconciles.
+	lease, err := acquireResidentLease(filepath.Join(root, spec.ID), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	if errs := manager.Reconcile(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	snapshot, ok := manager.ResolveScopedSnapshot([]string{"unrelated-session"}, spec.ID)
+	if !ok || !snapshot.OwnedElsewhere {
+		t.Fatalf("resolve after handoff = %#v, %v", snapshot, ok)
+	}
+	if got := manager.ScopedSnapshots([]string{"unrelated-session"}); len(got) != 1 || got[0].ID != spec.ID {
+		t.Fatalf("scoped snapshots = %#v", got)
+	}
+}
+
+func TestResolveScopedSnapshotRejectsAmbiguousPrefix(t *testing.T) {
+	m := NewResidentManager(t.TempDir(), nil)
+	for _, id := range []string{"resident-abcd", "resident-abef"} {
+		m.recovered[id] = ResidentSnapshot{ID: id, ParentSessionID: "parent"}
+	}
+	if _, ok := m.ResolveScopedSnapshot([]string{"parent"}, "resident-ab"); ok {
+		t.Fatal("ambiguous prefix resolved")
 	}
 }

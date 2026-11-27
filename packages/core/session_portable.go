@@ -1069,6 +1069,36 @@ func readSessionMetaHeader(path string) (SessionMeta, error) {
 		return SessionMeta{}, err
 	}
 	defer f.Close()
+	return decodeSessionMetaHeader(f)
+}
+
+// VerifySessionHeaderID verifies the expected regular file and session ID
+// without parsing the transcript body.
+func VerifySessionHeaderID(path string, expected os.FileInfo, id string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return errors.New("session file changed")
+	}
+	meta, err := decodeSessionMetaHeader(f)
+	if err != nil {
+		return err
+	}
+	if meta.ID != id {
+		return errors.New("session ID changed")
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(info, after) || !info.ModTime().Equal(after.ModTime()) || !expected.ModTime().Equal(info.ModTime()) {
+		return errors.New("session file changed")
+	}
+	return nil
+}
+
+func decodeSessionMetaHeader(f io.Reader) (SessionMeta, error) {
 	line, err := bufio.NewReader(f).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		return SessionMeta{}, err
@@ -1223,30 +1253,24 @@ func FindManagedSessionByID(ctx context.Context, root, id string) (string, error
 		return "", errors.New("find managed session: id is empty")
 	}
 
-	stores := []string{root}
-	agentsDir := filepath.Join(root, "sessions", "agents")
-	agents, err := os.ReadDir(agentsDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("find managed session: read agent stores: %w", err)
-	}
-	if err == nil {
-		for _, entry := range agents {
-			if entry.IsDir() {
-				stores = append(stores, filepath.Join(agentsDir, entry.Name()))
+	var matches []string
+	if err := walkManagedSessionHeaders(ctx, root, func(path string, meta SessionMeta) {
+		match := meta.ID == id
+		// UUID lookup remains header-only and tolerant of corrupt bodies.
+		// Runtime aliases can be appended by later daemon lifetimes.
+		if len(id) == 12 && sessionContainsID(ctx, path, id) {
+			if latest, err := scanSessionMetaContext(ctx, path); err == nil {
+				for _, alias := range latest.DaemonIDs {
+					if alias == id {
+						match = true
+					}
+				}
 			}
 		}
-	}
-
-	var matches []string
-	for _, store := range stores {
-		if err := contextErr(ctx); err != nil {
-			return "", err
+		if match {
+			matches = append(matches, path)
 		}
-		if err := collectManagedSessionMatches(ctx, store, id, &matches); err != nil {
-			return "", err
-		}
-	}
-	if err := contextErr(ctx); err != nil {
+	}); err != nil {
 		return "", err
 	}
 	if len(matches) == 0 {
@@ -1258,7 +1282,47 @@ func FindManagedSessionByID(ctx context.Context, root, id string) (string, error
 	return matches[0], nil
 }
 
-func collectManagedSessionMatches(ctx context.Context, root, id string, matches *[]string) error {
+// ManagedSessionParents returns the parent links from managed transcript headers.
+// Ambiguous session IDs are returned separately and must not be followed.
+func ManagedSessionParents(ctx context.Context, root string) (map[string]string, map[string]bool, error) {
+	parents := make(map[string]string)
+	ambiguous := make(map[string]bool)
+	err := walkManagedSessionHeaders(ctx, root, func(_ string, meta SessionMeta) {
+		if _, exists := parents[meta.ID]; exists {
+			ambiguous[meta.ID] = true
+		}
+		parents[meta.ID] = meta.Parent
+	})
+	return parents, ambiguous, err
+}
+
+func walkManagedSessionHeaders(ctx context.Context, root string, visit func(string, SessionMeta)) error {
+	if strings.TrimSpace(root) == "" {
+		return errors.New("find managed session: root is empty")
+	}
+	stores := []string{root}
+	agentsDir := filepath.Join(root, "sessions", "agents")
+	agents, err := os.ReadDir(agentsDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("find managed session: read agent stores: %w", err)
+	}
+	if err == nil {
+		for _, entry := range agents {
+			if entry.IsDir() {
+				stores = append(stores, filepath.Join(agentsDir, entry.Name()))
+			}
+		}
+	}
+
+	for _, store := range stores {
+		if err := walkManagedStoreHeaders(ctx, store, visit); err != nil {
+			return err
+		}
+	}
+	return contextErr(ctx)
+}
+
+func walkManagedStoreHeaders(ctx context.Context, root string, visit func(string, SessionMeta)) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
@@ -1298,21 +1362,7 @@ func collectManagedSessionMatches(ctx context.Context, root, id string, matches 
 			if err != nil || meta.CWD == "" || filepath.Clean(SessionsDir(root, meta.CWD)) != filepath.Clean(bucketPath) {
 				continue
 			}
-			match := meta.ID == id
-			// UUID lookup remains header-only and tolerant of corrupt bodies.
-			// Runtime aliases can be appended by later daemon lifetimes.
-			if len(id) == 12 && sessionContainsID(ctx, path, id) {
-				if latest, err := scanSessionMetaContext(ctx, path); err == nil {
-					for _, alias := range latest.DaemonIDs {
-						if alias == id {
-							match = true
-						}
-					}
-				}
-			}
-			if match {
-				*matches = append(*matches, path)
-			}
+			visit(path, meta)
 		}
 	}
 	return nil

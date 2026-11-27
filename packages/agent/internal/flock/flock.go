@@ -31,6 +31,12 @@ func TryLock(path string) (*Lock, error) {
 		return nil, fmt.Errorf("flock: open lock file: %w", err)
 	}
 	_ = file.Chmod(0o600)
+	return TryLockFile(file)
+}
+
+// TryLockFile takes ownership of an already opened file, closing it on error.
+// It does not create or change permissions on the file.
+func TryLockFile(file *os.File) (*Lock, error) {
 	if err := lockFile(file); err != nil {
 		_ = file.Close()
 		if errors.Is(err, ErrBusy) {
@@ -38,7 +44,7 @@ func TryLock(path string) (*Lock, error) {
 		}
 		return nil, fmt.Errorf("flock: lock: %w", err)
 	}
-	return &Lock{file: file, path: path}, nil
+	return &Lock{file: file, path: file.Name()}, nil
 }
 
 // Path returns the lock file path.

@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -15,13 +17,15 @@ import (
 )
 
 // SubagentStatusTool reports live state for background sub-agents without
-// waiting for a child to finish. An omitted agent_id lists resident children;
-// an agent_id queries one child.
+// waiting for a child to finish. An omitted agent_id lists resident children
+// in the current session lineage or spawned by this manager; an agent_id
+// queries one child in that scope.
 // By default the result contains metadata only. Explicit include_result reads
 // the bounded durable outcome/handoff for one child without model execution.
 type SubagentStatusTool struct {
 	ResidentManager *subagents.ResidentManager
 	Enabled         func() bool
+	SessionScope    func() []string
 }
 
 type subagentStatusArgs struct {
@@ -31,6 +35,7 @@ type subagentStatusArgs struct {
 }
 
 const (
+	subagentStatusListLimit = 20
 	subagentWatchMaxSeconds = 60
 	subagentWatchInterval   = 250 * time.Millisecond
 	subagentWatchMaxEntries = 40
@@ -39,11 +44,13 @@ const (
 )
 
 type subagentStatusResponse struct {
-	Agent    *subagentStatusEntry      `json:"agent,omitempty"`
-	Agents   []subagentStatusEntry     `json:"agents"`
-	Activity *subagentActivity         `json:"activity,omitempty"`
-	Watch    *subagentWatchReport      `json:"watch,omitempty"`
-	Result   *subagents.ResidentResult `json:"result,omitempty"`
+	Agent     *subagentStatusEntry      `json:"agent,omitempty"`
+	Agents    []subagentStatusEntry     `json:"agents"`
+	Total     *int                      `json:"total,omitempty"`
+	Truncated bool                      `json:"truncated,omitempty"`
+	Activity  *subagentActivity         `json:"activity,omitempty"`
+	Watch     *subagentWatchReport      `json:"watch,omitempty"`
+	Result    *subagents.ResidentResult `json:"result,omitempty"`
 }
 
 // subagentActivity is a bounded view of the child's unfinished turn: what it
@@ -111,7 +118,6 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if err := decodeSubagentArgs(raw, &args); err != nil {
 		return core.ToolResult{}, err
 	}
-	snapshots := t.ResidentManager.Snapshot()
 	id := strings.TrimSpace(args.AgentID)
 	if id == "" {
 		if args.IncludeResult {
@@ -120,13 +126,9 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		if args.Watch != 0 {
 			return protocolToolError(prefix + ": watch requires agent_id")
 		}
-		entries := make([]subagentStatusEntry, 0, len(snapshots))
-		for _, snapshot := range snapshots {
-			entries = append(entries, publicResidentStatus(snapshot))
-		}
-		return renderSubagentStatus(subagentStatusResponse{Agents: entries})
+		return renderSubagentStatus(listResidentStatus(t.ResidentManager.ScopedSnapshots(residentScope(t.SessionScope))))
 	}
-	snapshot, ok := findResidentStatusSnapshot(snapshots, id)
+	snapshot, ok := t.ResidentManager.ResolveScopedSnapshot(residentScope(t.SessionScope), id)
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}
@@ -279,21 +281,37 @@ func tailRunes(s string, limit int) string {
 	return "…" + string(runes[len(runes)-limit:])
 }
 
-func findResidentStatusSnapshot(snapshots []subagents.ResidentSnapshot, id string) (subagents.ResidentSnapshot, bool) {
-	for _, snapshot := range snapshots {
-		if snapshot.ID == id {
-			return snapshot, true
-		}
+// listResidentStatus sorts the scoped snapshots in place before projecting the page.
+func listResidentStatus(snapshots []subagents.ResidentSnapshot) subagentStatusResponse {
+	active := func(state subagents.ResidentState) bool {
+		return state == subagents.ResidentQueued || state == subagents.ResidentRunning
 	}
-	var match subagents.ResidentSnapshot
-	hits := 0
-	for _, snapshot := range snapshots {
-		if strings.HasPrefix(snapshot.ID, id) {
-			match = snapshot
-			hits++
+	slices.SortFunc(snapshots, func(a, b subagents.ResidentSnapshot) int {
+		if aActive, bActive := active(a.State), active(b.State); aActive != bActive {
+			if aActive {
+				return -1
+			}
+			return 1
 		}
+		if order := b.UpdatedAt.Compare(a.UpdatedAt); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	total := len(snapshots)
+	page := snapshots[:min(total, subagentStatusListLimit)]
+	entries := make([]subagentStatusEntry, 0, len(page))
+	for _, snapshot := range page {
+		entries = append(entries, publicResidentStatus(snapshot))
 	}
-	return match, hits == 1
+	return subagentStatusResponse{Agents: entries, Total: &total, Truncated: total > len(page)}
+}
+
+func residentScope(scope func() []string) []string {
+	if scope == nil {
+		return nil
+	}
+	return scope()
 }
 
 func publicResidentStatus(snapshot subagents.ResidentSnapshot) subagentStatusEntry {

@@ -40,6 +40,7 @@ type ResidentManager struct {
 	children          map[string]*ResidentChild
 	recovered         map[string]ResidentSnapshot
 	recoveredSpec     map[string]ResidentChildSpec
+	spawnedHere       map[string]bool // manager-lifetime provenance; guarded by mu
 	pending           map[string]struct{}
 	activeChildren    map[string]struct{}
 	scheduler         *ResidentScheduler
@@ -230,6 +231,7 @@ func (m *ResidentManager) notifyUpdate(childID string, historyChanged bool) {
 // ResidentSnapshot is the manager's bounded public state projection. It
 // deliberately omits prompts, provider credentials, and filesystem paths.
 type ResidentSnapshot struct {
+	ParentSessionID   string `json:"-"`
 	ID                string
 	State             ResidentState
 	Profile           string
@@ -256,7 +258,7 @@ func residentSnapshot(child *ResidentChild) ResidentSnapshot {
 		return ResidentSnapshot{}
 	}
 	live := child.Live()
-	return ResidentSnapshot{ID: child.spec.ID, State: child.State(), Profile: child.spec.Profile,
+	return ResidentSnapshot{ID: child.spec.ID, ParentSessionID: child.spec.ParentSessionID, State: child.State(), Profile: child.spec.Profile,
 		Provider: child.spec.Provider, Model: child.spec.Model,
 		WorkspaceMode: child.spec.WorkspaceMode, Required: child.spec.Required,
 		UpdatedAt: child.StateUpdatedAt(), TurnStartedAt: child.TurnStartedAt(),
@@ -296,6 +298,7 @@ func newResidentManager(root string, policy SubagentPolicy, prepare func(context
 		children:          make(map[string]*ResidentChild),
 		recovered:         make(map[string]ResidentSnapshot),
 		recoveredSpec:     make(map[string]ResidentChildSpec),
+		spawnedHere:       make(map[string]bool),
 		pending:           make(map[string]struct{}),
 		activeChildren:    make(map[string]struct{}),
 		completionWaiters: make(map[string][]chan ResidentCompletion),
@@ -395,6 +398,7 @@ func (m *ResidentManager) Spawn(ctx context.Context, spec ResidentChildSpec, tas
 		return nil, err
 	}
 	m.children[spec.ID] = child
+	m.spawnedHere[spec.ID] = true
 	m.revision.Add(1)
 	m.mu.Unlock()
 	if childAccepted, err := child.resumeAccepted(ctx, spec.InitialTurnID, task); err != nil {
@@ -574,10 +578,10 @@ func (m *ResidentManager) resumeWithTurn(ctx context.Context, childID, prompt, t
 		return errors.New("resident manager: closed")
 	}
 	child := m.children[childID]
-	spec, recovered := m.recoveredSpec[childID]
+	_, recovered := m.recoveredSpec[childID]
 	snapshot := m.recovered[childID]
 	// A recovered foreign snapshot is advisory. Its owner may have exited since
-	// Reconcile; OpenResidentJournal below makes the authoritative fresh check.
+	// Reconcile; the existing-only journal open below makes the fresh check.
 	if child == nil && snapshot.OwnedElsewhere {
 		recovered = true
 	}
@@ -591,25 +595,20 @@ func (m *ResidentManager) resumeWithTurn(ctx context.Context, childID, prompt, t
 	m.mu.Unlock()
 	if child == nil && recovered {
 		defer func() { m.mu.Lock(); delete(m.pending, childID); m.mu.Unlock() }()
-		journal, err := OpenResidentJournal(m.root, childID)
+		journal, err := openResidentJournal(m.root, childID, false)
 		if err != nil {
 			if errors.Is(err, ErrResidentLeaseBusy) {
 				return errors.New("resident manager: child is owned by another zut process")
 			}
 			return err
 		}
-		metadata, err := reconcileOwnedResidentJournal(journal)
+		metadata, spec, err := reconcileOwnedResidentJournal(journal)
 		if err != nil {
 			_ = journal.Close()
 			return err
 		}
 		journal.ConfigureUsage(metadata.ContextMax, metadata.Subscription)
-		records, err := ReadResidentJournal(filepath.Join(journal.Dir(), residentTranscriptName))
-		if err != nil || len(records) == 0 || records[0].Spec == nil {
-			_ = journal.Close()
-			return errors.New("resident manager: invalid accepted specification")
-		}
-		spec = *records[0].Spec
+
 		var workspace WorkspaceHandle
 		workspaceRoot := strings.TrimSpace(spec.RepositoryRoot)
 		if workspaceRoot == "" {
@@ -956,7 +955,7 @@ func (m *ResidentManager) Reconcile() []error {
 		// The old subprocess runtime stored children beneath an "agents"
 		// container. Resident children are direct entries in this root. Leave
 		// that legacy state untouched: it is neither read nor migrated.
-		if entry.Name() == "agents" {
+		if entry.Name() == "agents" || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		childID := entry.Name()
@@ -1008,7 +1007,7 @@ func (m *ResidentManager) Reconcile() []error {
 			}
 			m.mu.Lock()
 			m.recovered[childID] = ResidentSnapshot{
-				ID: childID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true,
+				ID: childID, ParentSessionID: foreign.ParentSessionID, State: state, UpdatedAt: updatedAt, OwnedElsewhere: true,
 				Usage: foreign.Usage, ContextUsed: foreign.ContextUsed, ContextMax: foreign.ContextMax, Subscription: foreign.Subscription,
 			}
 			m.revision.Add(1)
@@ -1022,7 +1021,7 @@ func (m *ResidentManager) Reconcile() []error {
 		m.mu.Lock()
 		if _, live := m.children[childID]; !live {
 			m.recovered[childID] = ResidentSnapshot{
-				ID: childID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model,
+				ID: childID, ParentSessionID: spec.ParentSessionID, State: metadata.State, Profile: spec.Profile, Provider: spec.Provider, Model: spec.Model,
 				WorkspaceMode: spec.WorkspaceMode, Required: spec.Required, UpdatedAt: metadata.UpdatedAt,
 				Usage: metadata.Usage, ContextUsed: metadata.ContextUsed, ContextMax: metadata.ContextMax, Subscription: metadata.Subscription,
 			}
@@ -1157,7 +1156,7 @@ func (m *ResidentManager) readableResidentDir(childID string) (string, func(), e
 	if live {
 		return dir, func() {}, nil
 	}
-	lease, err := acquireResidentLease(dir)
+	lease, err := acquireResidentLease(dir, false)
 	if err != nil {
 		if errors.Is(err, ErrResidentLeaseBusy) {
 			return "", nil, errors.New("resident manager: child is owned by another zut process")

@@ -61,7 +61,7 @@ func TestResidentResumeSteersRunningChildAndWaitsOnItsTurn(t *testing.T) {
 		return runtime, nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "steer-tool", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "investigate"); err != nil {
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "steer-tool", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "investigate"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -69,7 +69,7 @@ func TestResidentResumeSteersRunningChildAndWaitsOnItsTurn(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn did not start")
 	}
-	facade := &SubagentTool{Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}}
+	facade := &SubagentTool{Resume: &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}}
 	result, err := facade.Execute(t.Context(), json.RawMessage(`{"action":"resume","agent_id":"steer-tool","prompt":"report now","wait":5}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
@@ -92,7 +92,7 @@ func TestResidentSteeredWaitUsesAcceptedHostReport(t *testing.T) {
 	tracker := subagents.NewCompletionTracker()
 	manager.SetAcceptedObserver(func(spec subagents.ResidentChildSpec, turn, _ string) { tracker.TrackResident(spec.ID, turn) })
 	manager.SetCompletionObserver(func(c subagents.ResidentCompletion) bool { return tracker.Report(c.Completion()) })
-	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "steered-host", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "investigate"); err != nil {
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "steered-host", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "investigate"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -100,7 +100,7 @@ func TestResidentSteeredWaitUsesAcceptedHostReport(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn did not start")
 	}
-	facade := &SubagentTool{Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}}
+	facade := &SubagentTool{Resume: &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}}
 	result, err := facade.Execute(t.Context(), json.RawMessage(`{"action":"resume","agent_id":"steered-host","prompt":"report now","wait":5}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
@@ -124,7 +124,7 @@ func TestResidentResumeRejectsUnknownMode(t *testing.T) {
 		return subagents.ResidentTurnRunner(func(context.Context, string) error { return nil }), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	result, err := resume.Execute(t.Context(), json.RawMessage(`{"agent_id":"x","prompt":"p","mode":"now"}`), nil)
 	if err != nil || !result.IsError {
 		t.Fatalf("result = (%#v, %v), want mode error", result, err)
@@ -138,11 +138,11 @@ func TestResidentInterruptToolRequiresRunningTurn(t *testing.T) {
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	done, cancel := manager.WatchCompletion("idle-child", "initial")
 	defer cancel()
-	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "idle-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "task"); err != nil {
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "idle-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "task"); err != nil {
 		t.Fatal(err)
 	}
 	<-done
-	interrupt := &SubagentInterruptTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	interrupt := &SubagentInterruptTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	result, err := interrupt.Execute(t.Context(), json.RawMessage(`{"agent_id":"idle-child"}`), nil)
 	if err != nil || !result.IsError {
 		t.Fatalf("result = (%#v, %v), want no-running-turn error", result, err)
@@ -162,11 +162,11 @@ func TestSubagentFacadeInterruptsRunningTurn(t *testing.T) {
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	done, cancel := manager.WatchCompletion("running-child", "initial")
 	defer cancel()
-	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ID: "running-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "task"); err != nil {
+	if _, err := manager.Spawn(t.Context(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "running-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}, "task"); err != nil {
 		t.Fatal(err)
 	}
 	<-started
-	facade := &SubagentTool{Interrupt: &SubagentInterruptTool{ResidentManager: manager, Enabled: func() bool { return true }}}
+	facade := &SubagentTool{Interrupt: &SubagentInterruptTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}}
 	result, err := facade.Execute(t.Context(), json.RawMessage(`{"action":"interrupt","agent_id":"running-child"}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("interrupt = (%#v, %v)", result, err)

@@ -486,6 +486,7 @@ func PrintHelp(version string) {
 		row{"zut sessions prune", "select and delete sessions for directories that no longer exist"},
 		row{"zut sessions prune --dry-run", "list stale session groups without deleting them"},
 		row{"zut sessions prune --older-than 30d", "select sessions inactive for 30 days"},
+		row{"zut subagents prune [--dry-run]", "preview or delete old resident subagent journals"},
 	)
 	section("self-update",
 		row{"zut update", "download and install the latest release"},

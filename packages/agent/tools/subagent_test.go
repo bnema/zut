@@ -69,7 +69,7 @@ func TestSubagentFacadeNameAndSchema(t *testing.T) {
 			t.Fatalf("schema is missing property %q", field)
 		}
 	}
-	if got := facade.Description(); got != "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call.\n\n"+subagentSpawnGuidance {
+	if got := facade.Description(); got != "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call. Status lists up to 20 children.\n\n"+subagentSpawnGuidance {
 		t.Fatalf("description = %q", got)
 	}
 }

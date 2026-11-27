@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"github.com/bnema/zut/packages/core"
 	"github.com/google/uuid"
 )
+
+const residentRuntimeScopePrefix = "runtime:"
 
 // subagentRuntime owns the manager-facing runtime assembled around a host
 // session. Every injected manager tool shares the same resident manager,
@@ -47,6 +50,8 @@ type subagentRuntime struct {
 	webSearchPolicy subagents.WebSearchPolicy
 	policy          subagents.SubagentPolicy
 	activeSession   string
+	sessionScope    []string
+	runtimeScopeID  string // immutable; used only when there is no active session
 	webSearchGuard  *webSearchSessionGuard
 	browsingStore   *tools.BrowsingStore
 
@@ -94,6 +99,7 @@ type subagentRuntimeConfig struct {
 
 func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 	rt := &subagentRuntime{
+		runtimeScopeID:     residentRuntimeScopePrefix + uuid.NewString(),
 		args:               cfg.Args,
 		root:               cfg.Root,
 		provider:           strings.TrimSpace(cfg.Provider),
@@ -288,18 +294,67 @@ func (rt *subagentRuntime) restoreConfiguration(snapshot subagentRuntimeConfigur
 	rt.settingsMu.Unlock()
 }
 
-func (rt *subagentRuntime) SetActiveSession(sessionID string) {
+func (rt *subagentRuntime) SetActiveSession(ctx context.Context, sess *core.Session) {
 	if rt == nil {
 		return
 	}
-	sessionID = strings.TrimSpace(sessionID)
+	rt.setActiveSessionScope(residentSessionScope(ctx, config.ZutHome(), sess))
+}
+
+func (rt *subagentRuntime) setActiveSessionScope(scope []string) {
+	if rt == nil {
+		return
+	}
+	var sessionID string
+	if len(scope) != 0 {
+		sessionID = scope[0]
+	}
 	rt.settingsMu.Lock()
 	if rt.activeSession != "" && rt.activeSession != sessionID && rt.browsingStore != nil {
 		rt.browsingStore.Clear()
 		rt.browsingStore = nil
 	}
 	rt.activeSession = sessionID
+	rt.sessionScope = scope
 	rt.settingsMu.Unlock()
+}
+
+func (rt *subagentRuntime) activeSessionScope() []string {
+	rt.settingsMu.RLock()
+	defer rt.settingsMu.RUnlock()
+	if len(rt.sessionScope) == 0 && rt.runtimeScopeID != "" {
+		return []string{rt.runtimeScopeID}
+	}
+	return slices.Clone(rt.sessionScope)
+}
+
+// residentSessionScope follows parent IDs, not descendants or siblings. Keep
+// an explicitly recorded parent even if its file is gone, but stop there if
+// the store cannot resolve it to continue the walk. When the header index
+// fails, only the current session's recorded parent stays in scope: links
+// beyond it are unverified, and ambiguity is only known for the headers read
+// before the failure.
+func residentSessionScope(ctx context.Context, root string, sess *core.Session) []string {
+	if sess == nil || strings.TrimSpace(sess.ID) == "" {
+		return nil
+	}
+	scope := []string{strings.TrimSpace(sess.ID)}
+	if sess.Meta.Parent == "" {
+		return scope
+	}
+	parents, ambiguous, err := core.ManagedSessionParents(ctx, root)
+	if err != nil {
+		parents = nil
+	}
+	visited := map[string]bool{scope[0]: true}
+	for parent := sess.Meta.Parent; parent != ""; parent = parents[parent] {
+		if visited[parent] || ambiguous[parent] || ctx.Err() != nil {
+			break
+		}
+		visited[parent] = true
+		scope = append(scope, parent)
+	}
+	return scope
 }
 
 // residentProbeResolve resolves the catalogue probe of a resident child spec.
@@ -314,7 +369,11 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 	activeProvider := strings.TrimSpace(rt.provider)
 	providerID, model, reasoning := activeProvider, rt.model, rt.reasoning
 	baseURL, insecureTLS := rt.baseURL, rt.insecureTLS
-	workspace, parentSession := rt.repoRoot, rt.activeSession
+	workspace, rootCacheID := rt.repoRoot, rt.activeSession
+	parentSession := rootCacheID
+	if parentSession == "" {
+		parentSession = rt.runtimeScopeID
+	}
 	fastMode, policy := rt.fastMode, rt.policy
 	rt.settingsMu.RUnlock()
 	if strings.TrimSpace(request.Provider) != "" {
@@ -343,7 +402,7 @@ func (rt *subagentRuntime) buildResidentChildSpec(_ context.Context, request too
 		workspaceMode = subagents.WorkspaceShared
 	}
 	spec := subagents.ResidentChildSpec{
-		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: parentSession, ParentSessionID: parentSession,
+		ID: uuid.NewString(), SessionID: uuid.NewString(), RootCacheID: rootCacheID, ParentSessionID: parentSession,
 		Provider: strings.TrimSpace(providerID), BaseURL: strings.TrimSpace(baseURL), InsecureTLS: insecureTLS, Model: strings.TrimSpace(model),
 		Reasoning: strings.TrimSpace(reasoning), FastMode: fastMode,
 		RepositoryRoot: workspace, Workspace: workspace, WorkspaceMode: workspaceMode, Required: request.Required,
@@ -510,24 +569,28 @@ func (rt *subagentRuntime) InjectTools(reg core.Registry) core.Registry {
 		facade.Status = &tools.SubagentStatusTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
+			SessionScope:    rt.activeSessionScope,
 		}
 	}
 	if autoSubagentsStopToolAllowed(rt.args) {
 		facade.Stop = &tools.SubagentStopTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
+			SessionScope:    rt.activeSessionScope,
 		}
 	}
 	if autoSubagentsResumeToolAllowed(rt.args) {
 		facade.Resume = &tools.SubagentResumeTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
+			SessionScope:    rt.activeSessionScope,
 		}
 	}
 	if autoSubagentsInterruptToolAllowed(rt.args) {
 		facade.Interrupt = &tools.SubagentInterruptTool{
 			ResidentManager: rt.residentManagerForTools(),
 			Enabled:         func() bool { return true },
+			SessionScope:    rt.activeSessionScope,
 		}
 	}
 	reg[facade.Name()] = facade

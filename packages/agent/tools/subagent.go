@@ -88,7 +88,7 @@ const subagentSchema = `{
     },
     "agent_id": {
       "type": "string",
-      "description": "Child id or unique id prefix. With status, omit it to list all resident sub-agents. Required when action is stop, resume, or interrupt."
+      "description": "Child id or unique id prefix within this session, its ancestors, or children spawned by this host. With status, omit it to list those children. Required when action is stop, resume, or interrupt."
     },
     "include_result": {
       "type": "boolean",
@@ -147,7 +147,7 @@ func (e *subagentForeignFieldError) Error() string {
 
 func (t *SubagentTool) Name() string { return SubagentToolName }
 func (t *SubagentTool) Description() string {
-	return "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call.\n\n" + subagentSpawnGuidance
+	return "Spawn, inspect, resume, interrupt, and stop resident sub-agents. One action per call. Status lists up to 20 children.\n\n" + subagentSpawnGuidance
 }
 func (t *SubagentTool) Schema() json.RawMessage { return json.RawMessage(subagentSchema) }
 

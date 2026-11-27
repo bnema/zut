@@ -20,6 +20,7 @@ import (
 type SubagentResumeTool struct {
 	ResidentManager *subagents.ResidentManager
 	Enabled         func() bool
+	SessionScope    func() []string
 }
 
 type subagentResumeArgs struct {
@@ -78,7 +79,7 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 	if args.Wait != nil && (*args.Wait < 1 || *args.Wait > maxSubagentWaitSeconds) {
 		return protocolToolError(fmt.Sprintf("%s: wait must be between 1 and %d seconds", prefix, maxSubagentWaitSeconds))
 	}
-	snapshot, ok := findResidentStatusSnapshot(t.ResidentManager.Snapshot(), id)
+	snapshot, ok := t.ResidentManager.ResolveScopedSnapshot(residentScope(t.SessionScope), id)
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}

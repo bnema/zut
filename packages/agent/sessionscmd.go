@@ -306,13 +306,11 @@ func runSessionsPrune(sessionsRoot string, opts sessionsPruneOptions, in io.Read
 		selectedSessions += len(candidates[idx].Paths)
 	}
 	if !opts.yes {
-		fmt.Fprintf(out, "permanently delete %s in %s? [y/N]: ", sessionCount(selectedSessions), directoryCount(len(selected)))
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("read confirmation: %w", err)
+		confirmed, err := confirmPrune(reader, out, fmt.Sprintf("permanently delete %s in %s? [y/N]: ", sessionCount(selectedSessions), directoryCount(len(selected))), false)
+		if err != nil {
+			return err
 		}
-		answer := strings.ToLower(strings.TrimSpace(line))
-		if answer != "y" && answer != "yes" {
+		if !confirmed {
 			fmt.Fprintln(out, "no sessions deleted")
 			return nil
 		}
@@ -431,4 +429,25 @@ func directoryCount(count int) string {
 		return "1 directory"
 	}
 	return fmt.Sprintf("%d directories", count)
+}
+
+// confirmPrune checks that the prompt was written before reading an answer.
+// Session pruning historically accepted a final unterminated answer at EOF.
+func confirmPrune(reader *bufio.Reader, out io.Writer, prompt string, requireNewline bool) (bool, error) {
+	if _, err := io.WriteString(out, prompt); err != nil {
+		return false, fmt.Errorf("write confirmation prompt: %w", err)
+	}
+	return readPruneAnswer(reader, requireNewline)
+}
+
+func readPruneAnswer(reader *bufio.Reader, requireNewline bool) (bool, error) {
+	line, err := reader.ReadString('\n')
+	if errors.Is(err, io.EOF) && requireNewline {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }

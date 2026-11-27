@@ -90,7 +90,7 @@ func TestResidentWaitResultDelivery(t *testing.T) {
 // initial turn before the tested follow-up; observers are installed afterwards.
 func newDeliveryFacade(t *testing.T, manager *subagents.ResidentManager, action string) *SubagentTool {
 	t.Helper()
-	spec := subagents.ResidentChildSpec{ID: "report-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
+	spec := subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "report-child", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test"}
 	if action == "resume" {
 		done, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
 		defer cancel()
@@ -108,7 +108,7 @@ func newDeliveryFacade(t *testing.T, manager *subagents.ResidentManager, action 
 			ResidentManager: manager, Enabled: func() bool { return true },
 			BuildResidentSpec: func(context.Context, ResidentSpawnRequest) (subagents.ResidentChildSpec, error) { return spec, nil },
 		},
-		Resume: &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }},
+		Resume: &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }},
 	}
 }
 

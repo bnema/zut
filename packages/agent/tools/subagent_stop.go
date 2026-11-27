@@ -16,6 +16,7 @@ import (
 type SubagentStopTool struct {
 	ResidentManager *subagents.ResidentManager
 	Enabled         func() bool
+	SessionScope    func() []string
 }
 
 type subagentStopArgs struct {
@@ -72,7 +73,7 @@ func (t *SubagentStopTool) Execute(ctx context.Context, raw json.RawMessage, _ f
 	if id == "" {
 		return protocolToolError(prefix + ": agent_id is required")
 	}
-	snapshot, ok := findResidentStatusSnapshot(t.ResidentManager.Snapshot(), id)
+	snapshot, ok := t.ResidentManager.ResolveScopedSnapshot(residentScope(t.SessionScope), id)
 	if !ok {
 		return protocolToolError(fmt.Sprintf("%s: no such agent %q", prefix, id))
 	}

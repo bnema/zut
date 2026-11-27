@@ -26,7 +26,7 @@ func TestResidentStatusRetrievesFailedResultWithoutExecution(t *testing.T) {
 		}), nil
 	})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	spec := subagents.ResidentChildSpec{ID: "failed-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
+	spec := subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "failed-status", InitialTurnID: "initial", SessionID: "session", Provider: "openai", Model: "test", Required: true}
 	completed, cancel := manager.WatchCompletion(spec.ID, spec.InitialTurnID)
 	defer cancel()
 	if _, err := manager.Spawn(t.Context(), spec, "investigate"); err != nil {
@@ -37,7 +37,7 @@ func TestResidentStatusRetrievesFailedResultWithoutExecution(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no completion")
 	}
-	status := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	status := &SubagentStatusTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	for _, include := range []bool{false, true} {
 		raw := json.RawMessage(`{"agent_id":"failed-status"}`)
 		if include {
@@ -76,7 +76,7 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 		DefaultProvider: func() string { return "openai" },
 		DefaultModel:    func() string { return "gpt-5" },
 		BuildResidentSpec: func(_ context.Context, request ResidentSpawnRequest) (subagents.ResidentChildSpec, error) {
-			return subagents.ResidentChildSpec{ID: "resident-tool", SessionID: "child-session", Provider: request.Provider, Model: request.Model, Required: request.Required}, nil
+			return subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "resident-tool", SessionID: "child-session", Provider: request.Provider, Model: request.Model, Required: request.Required}, nil
 		},
 	}
 	result, err := spawn.Execute(context.Background(), json.RawMessage(`{"task":"initial"}`), nil)
@@ -89,7 +89,7 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	if got := <-runs; got != "initial" {
 		t.Fatalf("initial prompt = %q", got)
 	}
-	status := &SubagentStatusTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	status := &SubagentStatusTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	result, err = status.Execute(context.Background(), json.RawMessage(`{"agent_id":"resident-tool"}`), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestResidentToolsUseManagerOnly(t *testing.T) {
 	if details, ok := result.Details.(subagentStatusResponse); !ok || details.Agent == nil || details.Agent.State == "" {
 		t.Fatalf("status details = %#v", result.Details)
 	}
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	if _, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"resident-tool","prompt":"follow up"}`), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -304,9 +304,9 @@ func TestResidentToolsRejectUnknownFields(t *testing.T) {
 	for _, tool := range []interface {
 		Execute(context.Context, json.RawMessage, func(string)) (core.ToolResult, error)
 	}{
-		&SubagentStatusTool{ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
-		&SubagentStopTool{ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
-		&SubagentResumeTool{ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
+		&SubagentStatusTool{SessionScope: testResidentSessionScope, ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
+		&SubagentStopTool{SessionScope: testResidentSessionScope, ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
+		&SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: subagents.NewResidentManager(t.TempDir(), nil), Enabled: func() bool { return true }},
 	} {
 		_, err := tool.Execute(context.Background(), json.RawMessage(`{"unknown":true}`), nil)
 		if err == nil || !strings.Contains(err.Error(), "unknown field") {
@@ -326,7 +326,7 @@ func TestResidentResumeWaitReturnsFollowUpCompletion(t *testing.T) {
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	initial, cancelInitial := manager.WatchCompletion("waited-resume", "initial-turn")
 	defer cancelInitial()
-	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "waited-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "waited-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -334,7 +334,7 @@ func TestResidentResumeWaitReturnsFollowUpCompletion(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("initial turn did not complete")
 	}
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"waited-resume","prompt":"confirm","wait":5}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
@@ -372,7 +372,7 @@ func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
 		releaseBlocker()
 		_ = manager.Close(context.Background())
 	})
-	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "blocked-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "blocker"); err != nil {
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "blocked-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "blocker"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -380,7 +380,7 @@ func TestResidentResumeWaitExpiryLeavesChildActive(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocking turn did not start")
 	}
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	result, err := resume.Execute(context.Background(), json.RawMessage(`{"agent_id":"blocked-resume","prompt":"follow up","mode":"queue","wait":1}`), nil)
 	if err != nil || result.IsError {
 		t.Fatalf("resume = (%#v, %v)", result, err)
@@ -423,7 +423,7 @@ func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
 	})
 	initial, cancelInitial := manager.WatchCompletion("cancel-resume", "initial-turn")
 	defer cancelInitial()
-	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ID: "cancel-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
+	if _, err := manager.Spawn(context.Background(), subagents.ResidentChildSpec{ParentSessionID: "parent-session", ID: "cancel-resume", InitialTurnID: "initial-turn", SessionID: "child-session", Provider: "openai", Model: "gpt-5"}, "start"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -432,7 +432,7 @@ func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
 		t.Fatal("initial turn did not complete")
 	}
 
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	type outcome struct {
@@ -466,7 +466,7 @@ func TestResidentResumeWaitCancellationBeatsTimeout(t *testing.T) {
 func TestResidentResumeRejectsWaitOutsideBounds(t *testing.T) {
 	manager := subagents.NewResidentManager(t.TempDir(), nil)
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	resume := &SubagentResumeTool{ResidentManager: manager, Enabled: func() bool { return true }}
+	resume := &SubagentResumeTool{SessionScope: testResidentSessionScope, ResidentManager: manager, Enabled: func() bool { return true }}
 	for _, raw := range []string{
 		`{"agent_id":"child","prompt":"x","wait":0}`,
 		`{"agent_id":"child","prompt":"x","wait":301}`,
@@ -500,12 +500,5 @@ func TestPublicResidentStatusOmitsBudget(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "budget") {
 		t.Fatalf("status entry carries budget = %s", encoded)
-	}
-}
-
-func TestFindResidentStatusSnapshotRejectsAmbiguousPrefix(t *testing.T) {
-	_, ok := findResidentStatusSnapshot([]subagents.ResidentSnapshot{{ID: "resident-abcd"}, {ID: "resident-abef"}}, "resident-ab")
-	if ok {
-		t.Fatal("ambiguous resident prefix resolved")
 	}
 }

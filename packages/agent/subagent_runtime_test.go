@@ -3,13 +3,18 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestExpandWebCapabilityTools(t *testing.T) {
@@ -405,5 +410,230 @@ func TestInjectToolsRegistersOneSubagentFacade(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSubagentRuntimeActiveSessionScope(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("ZUT_HOME", home)
+	root, err := core.NewSession(home, cwd, "openai", "test", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "task"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	branch := func(path, store, workspace string) *core.Session {
+		t.Helper()
+		path, err := core.BranchSessionHidden(path, store, workspace, "test", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := core.ReadSessionSnapshot(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &core.Session{ID: snapshot.Meta.ID, Path: path, Meta: snapshot.Meta}
+	}
+	parent := branch(root.Path, agentSessionsRoot(home, Args{AgentName: "test"}), cwd)
+	child := branch(parent.Path, home, t.TempDir())
+	rt := &subagentRuntime{}
+	rt.SetActiveSession(t.Context(), child)
+	if got := rt.activeSessionScope(); !slices.Equal(got, []string{child.ID, parent.ID, root.ID}) {
+		t.Fatalf("branch scope = %v", got)
+	}
+	rt.SetActiveSession(t.Context(), root)
+	if got := rt.activeSessionScope(); !slices.Equal(got, []string{root.ID}) {
+		t.Fatalf("root scope = %v", got)
+	}
+	rt.SetActiveSession(t.Context(), nil)
+	if got := rt.activeSessionScope(); len(got) != 0 {
+		t.Fatalf("cleared scope = %v", got)
+	}
+}
+
+func TestSubagentRuntimeNoSessionScope(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	root := t.TempDir()
+	newRuntime := func() *subagentRuntime {
+		rt := newSubagentRuntime(subagentRuntimeConfig{
+			Args: Args{NoSess: true, NoSkill: true, NoContextFiles: true, NoLSP: true},
+			Root: root, RepoRoot: root, Provider: "openai", Model: "test",
+		})
+		t.Cleanup(func() { _ = rt.Close(context.Background()) })
+		return rt
+	}
+	check := func(rt *subagentRuntime) string {
+		t.Helper()
+		facade := rt.InjectTools(core.Registry{})[tools.SubagentToolName].(*tools.SubagentTool)
+		rt.SetActiveSession(t.Context(), nil)
+		spec, err := rt.buildResidentChildSpec(t.Context(), tools.ResidentSpawnRequest{Task: "review"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(spec.ParentSessionID, "runtime:") || spec.RootCacheID != "" {
+			t.Fatalf("parent = %q, root cache = %q", spec.ParentSessionID, spec.RootCacheID)
+		}
+		if got := facade.Status.SessionScope(); !slices.Equal(got, []string{spec.ParentSessionID}) {
+			t.Fatalf("status scope = %v, want [%s]", got, spec.ParentSessionID)
+		}
+		return spec.ParentSessionID
+	}
+	first := newRuntime()
+	id := check(first)
+	if check(first) != id {
+		t.Fatal("scope changed within one runtime")
+	}
+	if check(newRuntime()) == id {
+		t.Fatal("distinct runtimes share a scope")
+	}
+	second := newRuntime()
+	secondID := check(second)
+	for _, fixture := range []struct{ child, parent string }{{"first-worker", id}, {"second-worker", secondID}} {
+		journal, err := subagents.OpenResidentJournal(root, fixture.child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := subagents.ResidentChildSpec{ID: fixture.child, SessionID: fixture.child, ParentSessionID: fixture.parent, InitialTurnID: "turn", Provider: "openai", Model: "test"}
+		if err := journal.Accept(spec, "task"); err != nil {
+			_ = journal.Close()
+			t.Fatal(err)
+		}
+		if err := journal.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		rt         *subagentRuntime
+		own, other string
+	}{{first, "first-worker", "second-worker"}, {second, "second-worker", "first-worker"}} {
+		if errs := tc.rt.resident.Reconcile(); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		facade := tc.rt.InjectTools(core.Registry{})[tools.SubagentToolName].(*tools.SubagentTool)
+		for _, child := range []string{tc.own, tc.other} {
+			raw, _ := json.Marshal(map[string]string{"action": "status", "agent_id": child})
+			result, err := facade.Execute(t.Context(), raw, nil)
+			if err != nil || result.IsError != (child == tc.other) {
+				t.Fatalf("status %s: %#v, %v", child, result, err)
+			}
+		}
+	}
+}
+
+func TestSubagentRuntimeKeepsSpawnedChildAcrossSessionSwitch(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	started := make(chan struct{}, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	manager := subagents.NewResidentManager(t.TempDir(), func(subagents.ResidentChildSpec, *subagents.ResidentJournal) (subagents.ResidentRuntime, error) {
+		return subagents.ResidentTurnRunner(func(ctx context.Context, _ string) error {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}), nil
+	})
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	rt := &subagentRuntime{resident: manager}
+	rt.SetActiveSession(t.Context(), &core.Session{ID: "original"})
+	facade := rt.InjectTools(core.Registry{})[tools.SubagentToolName].(*tools.SubagentTool)
+	spec := subagents.ResidentChildSpec{ID: "worker", SessionID: "worker-session", ParentSessionID: "original", Provider: "openai", Model: "test", Required: true}
+	if _, err := manager.Spawn(t.Context(), spec, "task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("resident child did not start before deadline")
+	}
+	rt.SetActiveSession(t.Context(), &core.Session{ID: "unrelated"})
+	if got := rt.activeSessionScope(); !slices.Equal(got, []string{"unrelated"}) {
+		t.Fatalf("scope = %v", got)
+	}
+	for _, args := range []string{`{"action":"status","agent_id":"worker"}`, `{"action":"stop","agent_id":"worker"}`, `{"action":"status","agent_id":"worker"}`} {
+		result, err := facade.Execute(ctx, json.RawMessage(args), nil)
+		if err != nil || result.IsError {
+			t.Fatalf("%s: %#v, %v", args, result, err)
+		}
+	}
+	if unmet := manager.UnmetRequired(); len(unmet) != 1 || unmet[0].ID != spec.ID {
+		t.Fatalf("unmet = %#v", unmet)
+	}
+	if errs := manager.Reconcile(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	result, err := facade.Execute(ctx, json.RawMessage(`{"action":"resume","agent_id":"worker","prompt":"continue"}`), nil)
+	if err != nil || result.IsError {
+		t.Fatalf("resume after reconcile: %#v, %v", result, err)
+	}
+}
+
+func TestResidentSessionScopeDeepHeaderChain(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	dir := core.SessionsDir(home, cwd)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	writeHeader := func(id, parent, filename string) {
+		t.Helper()
+		header, err := json.Marshal(map[string]any{"type": "meta", "meta": core.SessionMeta{ID: id, Parent: parent, CWD: cwd}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filename), append(header, '\n', '{', '\n'), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 128; i++ {
+		id := fmt.Sprintf("ancestor-%03d", i)
+		parent := ""
+		if len(want) > 0 {
+			parent = want[len(want)-1]
+		}
+		writeHeader(id, parent, id+".jsonl")
+		want = append(want, id)
+	}
+	slices.Reverse(want)
+	child := &core.Session{ID: "child", Meta: core.SessionMeta{Parent: want[0]}}
+	if got := residentSessionScope(t.Context(), home, child); !slices.Equal(got, append([]string{child.ID}, want...)) {
+		t.Fatalf("scope has %d IDs, want %d", len(got), 1+len(want))
+	}
+	writeHeader(want[1], want[2], "duplicate.jsonl")
+	if got := residentSessionScope(t.Context(), home, child); !slices.Equal(got, []string{child.ID, want[0]}) {
+		t.Fatalf("scope crossed ambiguous ancestor: %v", got)
+	}
+}
+
+func TestResidentSessionScopeIndexErrorKeepsDirectParent(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	dir := core.SessionsDir(home, cwd)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	header, err := json.Marshal(map[string]any{"type": "meta", "meta": core.SessionMeta{ID: "parent", Parent: "grandparent", CWD: cwd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "parent.jsonl"), append(header, '\n', '{', '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where the agent-store directory belongs makes the
+	// header index fail with a non-ENOENT read error.
+	if err := os.WriteFile(filepath.Join(home, "sessions", "agents"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := core.ManagedSessionParents(t.Context(), home); err == nil {
+		t.Fatal("index error was not triggered")
+	}
+	child := &core.Session{ID: "child", Meta: core.SessionMeta{Parent: "parent"}}
+	if got := residentSessionScope(t.Context(), home, child); !slices.Equal(got, []string{"child", "parent"}) {
+		t.Fatalf("scope = %v, want [child parent]", got)
 	}
 }

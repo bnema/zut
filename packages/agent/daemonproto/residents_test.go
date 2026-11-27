@@ -31,3 +31,11 @@ func TestResidentHistoryDataUsesSnakeCase(t *testing.T) {
 	require.Contains(t, string(raw), `"items":[`)
 	require.Contains(t, string(raw), `"older_cursor":"c"`)
 }
+
+func TestResidentListOmitsScopeMetadata(t *testing.T) {
+	raw, err := json.Marshal(ResidentListData{Residents: []subagents.ResidentSnapshot{{ID: "child", ParentSessionID: "private-parent"}}})
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"ID":"child"`)
+	require.NotContains(t, string(raw), `"ParentSessionID"`)
+	require.NotContains(t, string(raw), `private-parent`)
+}
